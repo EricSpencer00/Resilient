@@ -222,16 +222,25 @@ fn count_body_statements(node: &Node) -> usize {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1206: this pass historically called `score_program` and
-    // discarded the returned `Vec<ResilienceScore>`. The real
-    // consumers (the `--score` CLI flag and any external integrator)
-    // call `score_program` directly when they need the scores, so the
-    // work here was unobservable: a call-reference HashMap build, an
-    // AST walk, and a Vec population, all dropped on function exit.
-    // The entry point is kept so the `EXTENSION_PASSES` block in
-    // `typechecker.rs` stays undisturbed and a future use can flow
-    // data through this slot.
+/// Emit warnings for functions that score F (0–39/100).
+///
+/// A low resilience score is diagnostic, not a compile error — the
+/// developer may be in the middle of adding contracts. The warning
+/// surface is kept as `eprintln!` so it shows up in the build log
+/// without blocking compilation.
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let scores = score_program(program);
+    let f_grade: Vec<&ResilienceScore> = scores.iter().filter(|s| s.total < 40).collect();
+    for s in &f_grade {
+        eprintln!(
+            "{source_path}:0:0: warning[resilience]: \
+             `{}` scores {}/100 ({}) — \
+             add `requires`/`ensures` contracts to improve resilience",
+            s.function_name,
+            s.total,
+            s.grade()
+        );
+    }
     Ok(())
 }
 
@@ -279,6 +288,36 @@ mod tests {
         assert!(s.contracts_pts >= 40);
         assert!(s.coverage_pts > 0);
         assert!(s.total > 60);
+    }
+
+    // ── check() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_well_specified_fn() {
+        let src = r#"
+            fn add(int a, int b) -> int
+                requires a >= 0
+                ensures result >= 0
+            {
+                return a + b;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_even_for_f_grade_fn() {
+        // check() emits a warning but always returns Ok() — it's advisory.
+        let src = "fn vibe(int x) { return x; }";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "<test>").is_ok());
     }
 
     #[test]

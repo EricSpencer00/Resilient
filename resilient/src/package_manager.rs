@@ -95,8 +95,124 @@ pub fn matches(constraint: &str, version: &str) -> bool {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    Ok(())
+/// Validate the project's `rz.toml` / `resilient.toml` manifest if one
+/// exists adjacent to `source_path`.
+///
+/// Checks:
+/// 1. Manifest parses without errors (name, version present).
+/// 2. Version field is a valid semver triple (`MAJOR.MINOR.PATCH`).
+/// 3. Each dependency constraint is parseable (`^`, `~`, or exact).
+/// 4. If a `resilient.lock` exists, locked versions satisfy the constraints.
+pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+    let source_dir = std::path::Path::new(source_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+
+    // Look for manifest in the source directory or cwd
+    let manifest_path = ["rz.toml", "resilient.toml"]
+        .iter()
+        .map(|name| source_dir.join(name))
+        .find(|p| p.exists());
+
+    let manifest_content = match manifest_path {
+        Some(ref p) => match std::fs::read_to_string(p) {
+            Ok(s) => s,
+            Err(_) => return Ok(()), // unreadable — skip silently
+        },
+        None => return Ok(()), // no manifest — nothing to check
+    };
+
+    let manifest = parse_manifest(&manifest_content);
+
+    let mut errors: Vec<String> = Vec::new();
+
+    // Validate package name and version
+    if manifest.name.is_empty() {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: manifest is missing `name` field"
+        ));
+    }
+    if manifest.version.is_empty() {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: manifest is missing `version` field"
+        ));
+    } else if !is_valid_semver(&manifest.version) {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: manifest `version` `{}` is not a \
+             valid semver triple (MAJOR.MINOR.PATCH)",
+            manifest.version
+        ));
+    }
+
+    // Validate dependency constraint syntax
+    for (dep, constraint) in &manifest.dependencies {
+        let (_, base) = parse_constraint(constraint);
+        if !is_valid_semver(&base) {
+            errors.push(format!(
+                "{source_path}:0:0: error[pkg]: dependency `{dep}` has \
+                 invalid constraint `{constraint}` — expected semver \
+                 optionally prefixed with `^` or `~`"
+            ));
+        }
+    }
+
+    // If lock file exists, check locked versions satisfy constraints
+    let lock_path = source_dir.join("resilient.lock");
+    if lock_path.exists() {
+        if let Ok(lock_content) = std::fs::read_to_string(&lock_path) {
+            let locked = parse_lock_file(&lock_content);
+            for (dep, constraint) in &manifest.dependencies {
+                if let Some(locked_version) = locked.get(dep) {
+                    if !matches(constraint, locked_version) {
+                        errors.push(format!(
+                            "{source_path}:0:0: error[pkg]: locked version \
+                             `{locked_version}` for `{dep}` does not satisfy \
+                             constraint `{constraint}`"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        if !manifest.dependencies.is_empty() {
+            eprintln!(
+                "pkg: manifest `{}` v{} with {} dependency/ies validated",
+                manifest.name,
+                manifest.version,
+                manifest.dependencies.len()
+            );
+        }
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+fn is_valid_semver(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| p.parse::<u64>().is_ok())
+}
+
+/// Parse a simple `resilient.lock` format:
+/// ```
+/// dep_name = "resolved_version"
+/// ```
+fn parse_lock_file(s: &str) -> std::collections::HashMap<String, String> {
+    let mut locked = std::collections::HashMap::new();
+    for line in s.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim().to_string();
+            let v = v.trim().trim_matches('"').to_string();
+            locked.insert(k, v);
+        }
+    }
+    locked
 }
 
 #[cfg(test)]
@@ -141,5 +257,106 @@ bar = "~0.3.1"
     fn exact_matching() {
         assert!(matches("1.2.3", "1.2.3"));
         assert!(!matches("1.2.3", "1.2.4"));
+    }
+
+    // ── is_valid_semver ──────────────────────────────────────────────────────
+
+    #[test]
+    fn valid_semver_accepted() {
+        assert!(is_valid_semver("1.2.3"));
+        assert!(is_valid_semver("0.0.0"));
+        assert!(is_valid_semver("100.200.300"));
+    }
+
+    #[test]
+    fn invalid_semver_rejected() {
+        assert!(!is_valid_semver("1.2"));
+        assert!(!is_valid_semver("1.2.3.4"));
+        assert!(!is_valid_semver("1.2.x"));
+        assert!(!is_valid_semver(""));
+    }
+
+    // ── parse_lock_file ──────────────────────────────────────────────────────
+
+    #[test]
+    fn lock_file_parses_entries() {
+        let s = r#"
+# Generated lock file
+foo = "1.2.3"
+bar = "0.3.5"
+"#;
+        let locked = parse_lock_file(s);
+        assert_eq!(locked.get("foo").map(|s| s.as_str()), Some("1.2.3"));
+        assert_eq!(locked.get("bar").map(|s| s.as_str()), Some("0.3.5"));
+    }
+
+    // ── check() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_ok_when_no_manifest_in_tmpdir() {
+        let tmp = std::env::temp_dir().join("__resilient_check_no_manifest_test.rz");
+        std::fs::write(&tmp, b"fn f() {}").unwrap();
+        let (prog, _) = crate::parse("fn f() {}");
+        let result = check(&prog, tmp.to_str().unwrap());
+        assert!(result.is_ok());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn check_validates_manifest_with_valid_entries() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = "^2.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(result.is_ok(), "expected ok, got: {:?}", result);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_invalid_version() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badver");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "not-semver"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(result.is_err(), "expected error for invalid version");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_invalid_dep_constraint() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_baddep");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = "latest"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(result.is_err(), "expected error for invalid constraint");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -73,24 +73,45 @@ pub fn stats() -> (u64, u64) {
         .unwrap_or((0, 0))
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1210: the historical body called `fingerprint_program` and
-    // pre-populated the cache with `ProofResult::Discharged` for every
-    // function on every type-check. Two problems with that:
-    //
-    //   1. No consumer in the crate calls `lookup` (a
-    //      `grep -rn 'incremental_verify::' resilient/src/` shows
-    //      only this pass — the Z3 verifier doesn't consult the
-    //      cache yet), so the work was unobservable.
-    //   2. If a future PR wires the Z3 verifier to call `lookup`,
-    //      the pre-population would already cache every function as
-    //      `Discharged`, *skipping the actual proof*. The cache
-    //      should only record verdicts the verifier has produced.
-    //
-    // The `lookup` / `store` / `stats` / `reset` API stays as-is so
-    // the cache infrastructure is ready for the consumer side when
-    // someone lands it. The `EXTENSION_PASSES` slot in
-    // `typechecker.rs` stays present for the same reason.
+/// Evict proof-cache entries for functions that no longer exist in
+/// the program.
+///
+/// The cache is keyed on `(fn_name, contract_digest)` and persists
+/// across type-check calls within a build session. When a function
+/// is deleted or renamed the old entries become stale — they waste
+/// memory and, once a future PR wires the Z3 verifier to call
+/// `lookup`, could produce ghost hits for names that have been
+/// recycled with different contracts.
+///
+/// This pass is a lightweight O(N) retention scan: collect all live
+/// function names from the AST, then drop every cache entry whose
+/// function name is absent from that set.
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    let live_names: std::collections::HashSet<&str> = match program {
+        Node::Program(stmts) => stmts
+            .iter()
+            .filter_map(|s| {
+                if let Node::Function { name, .. } = &s.node {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => return Ok(()),
+    };
+    if let Ok(mut g) = CACHE.write() {
+        if let Some(cache) = g.as_mut() {
+            let before = cache.entries.len();
+            cache
+                .entries
+                .retain(|(fn_name, _), _| live_names.contains(fn_name.as_str()));
+            let evicted = before.saturating_sub(cache.entries.len());
+            if evicted > 0 {
+                eprintln!("incremental_verify: evicted {evicted} stale proof-cache entry/ies");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -111,6 +132,43 @@ mod tests {
         let (h, m) = stats();
         assert_eq!(h, 1);
         assert_eq!(m, 1);
+    }
+
+    // ── check() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_evicts_stale_entry() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        // Store a cache entry for "deleted_fn" that won't be in the AST
+        store("deleted_fn", 42, ProofResult::Discharged);
+        // Parse a program that has no "deleted_fn"
+        let src = "fn live_fn(int x) { return x; }";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+        // The stale entry should have been evicted
+        assert_eq!(lookup("deleted_fn", 42), None);
+    }
+
+    #[test]
+    fn check_preserves_live_entry() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        // Store a cache entry for "live_fn" that IS in the AST
+        store("live_fn", 99, ProofResult::Discharged);
+        let src = "fn live_fn(int x) { return x; }";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+        // The live entry must be preserved
+        assert_eq!(lookup("live_fn", 99), Some(ProofResult::Discharged));
     }
 
     #[test]

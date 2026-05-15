@@ -94,7 +94,10 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // RES-910: keyword-only statements have no expressions and bind
         // no names, so they contribute nothing to free vars.
         | Node::Break { .. }
-        | Node::Continue { .. } => {}
+        | Node::Continue { .. }
+        // RES-2653: labeled variants likewise.
+        | Node::BreakLabel { .. }
+        | Node::ContinueLabel { .. } => {}
         // RES-911: slicing — walk the target plus both endpoints; binds
         // no names of its own.
         Node::Slice { target, lo, hi, .. } => {
@@ -833,6 +836,7 @@ mod tests {
             }),
             invariants: Vec::new(),
             span: Span::default(),
+            label: None,
         };
         assert_eq!(free_vars(&stmt), as_set(["sum", "xs"]));
     }
@@ -1069,6 +1073,7 @@ mod tests {
                 span: Span::default(),
             }],
             span: Span::default(),
+            label: None,
         };
         assert_eq!(free_vars(&stmt), as_set(["cond", "p"]));
     }

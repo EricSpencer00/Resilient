@@ -78,8 +78,43 @@ pub fn format_chain(target_actor: u64) -> String {
     s
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // Fast-reject: skip programs with no actor call sites.
+    let has_actor_call = crate::uniqueness_walk::any_node(program, |n| {
+        if let Node::CallExpression { function, .. } = n {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                return matches!(name.as_str(), "spawn" | "send" | "receive");
+            }
+        }
+        false
+    });
+    if !has_actor_call {
+        return Ok(());
+    }
+    let site_count = count_actor_sites(program);
+    eprintln!(
+        "causal-trace: {} actor call site(s) detected — \
+         circular trace buffer active ({} entries capacity)",
+        site_count, TRACE_CAPACITY
+    );
     Ok(())
+}
+
+fn count_actor_sites(node: &Node) -> u32 {
+    let mut n = 0u32;
+    count_sites_rec(node, &mut n);
+    n
+}
+
+fn count_sites_rec(node: &Node, count: &mut u32) {
+    if let Node::CallExpression { function, .. } = node {
+        if let Node::Identifier { name, .. } = function.as_ref() {
+            if matches!(name.as_str(), "spawn" | "send" | "receive") {
+                *count += 1;
+            }
+        }
+    }
+    crate::uniqueness_walk::walk_children(node, &mut |child| count_sites_rec(child, count));
 }
 
 #[cfg(test)]
@@ -88,6 +123,34 @@ mod tests {
     use std::sync::Mutex;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_program_without_actor_calls() {
+        let src = r#"fn f(int x) -> int { return x + 1; }"#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn count_actor_sites_finds_spawn_send_receive() {
+        let src = r#"fn f(int x) { let pid = spawn(g); send(pid, x); }"#;
+        let (prog, _) = crate::parse(src);
+        let n = count_actor_sites(&prog);
+        assert!(n >= 2, "expected at least 2 actor call sites, got {n}");
+    }
+
+    #[test]
+    fn check_ok_with_actor_calls() {
+        let src = r#"fn f(int x) { let pid = spawn(g); send(pid, x); }"#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 
     #[test]
     fn records_and_replays() {

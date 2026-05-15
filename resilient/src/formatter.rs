@@ -484,6 +484,15 @@ impl Formatter {
                 self.write("continue;");
                 self.newline();
             }
+            // RES-2653: labeled break/continue.
+            Node::BreakLabel { label, .. } => {
+                self.write(&format!("break {label};"));
+                self.newline();
+            }
+            Node::ContinueLabel { label, .. } => {
+                self.write(&format!("continue {label};"));
+                self.newline();
+            }
             Node::IfStatement {
                 condition,
                 consequence,
@@ -1167,6 +1176,8 @@ impl Formatter {
             | Node::ReturnStatement { .. }
             | Node::Break { .. }
             | Node::Continue { .. }
+            | Node::BreakLabel { .. }
+            | Node::ContinueLabel { .. }
             | Node::ExpressionStatement { .. }
             | Node::Function { .. }
             | Node::StructDecl { .. }

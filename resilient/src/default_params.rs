@@ -78,10 +78,118 @@ pub fn lower_program(program: &mut Node) {
 }
 
 /// RES-326: type-check pass for default parameter values.
-/// MVP: all defaults are accepted — a future ticket may enforce that
-/// defaults are constant-foldable or otherwise restricted.
-pub fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+///
+/// Validates two invariants across every function declaration:
+///
+/// 1. **Trailing-only defaults** — defaults may only appear on
+///    trailing parameters.  A function like `fn f(int x = 0, int y)`
+///    is rejected because `y` comes after the defaulted `x` with no
+///    default of its own, which makes call-site resolution ambiguous.
+///
+/// 2. **Constant defaults** — default expressions must be compile-time
+///    constants (integer, float, string, bool literals, or `null`/
+///    `None` identifiers). Dynamic defaults (function calls, arithmetic,
+///    variable references) are rejected: they would be evaluated at
+///    parse time in `lower_program`, producing unexpected behaviour.
+pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return Ok(()),
+    };
+    for s in stmts {
+        check_fn_defaults(&s.node, source_path)?;
+    }
     Ok(())
+}
+
+fn check_fn_defaults(node: &Node, source_path: &str) -> Result<(), String> {
+    match node {
+        Node::Function {
+            name,
+            parameters,
+            defaults,
+            span,
+            ..
+        } => {
+            check_defaults_for_fn(name, parameters, defaults, span, source_path)?;
+        }
+        Node::ImplBlock { methods, .. } => {
+            for m in methods {
+                if let Node::Function {
+                    name,
+                    parameters,
+                    defaults,
+                    span,
+                    ..
+                } = m
+                {
+                    check_defaults_for_fn(name, parameters, defaults, span, source_path)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn check_defaults_for_fn(
+    fn_name: &str,
+    parameters: &[(String, String)],
+    defaults: &[Option<Box<Node>>],
+    span: &crate::Span,
+    source_path: &str,
+) -> Result<(), String> {
+    let loc = if span.start.line > 0 {
+        format!(
+            "{}:{}:{}: ",
+            source_path, span.start.line, span.start.column
+        )
+    } else {
+        format!("{}: ", source_path)
+    };
+
+    // Rule 1: defaults must be trailing — once a gap (None after Some)
+    // is found, the declaration is ambiguous.
+    let mut saw_default = false;
+    for (i, ((_ty, pname), default)) in parameters.iter().zip(defaults.iter()).enumerate() {
+        if default.is_some() {
+            saw_default = true;
+        } else if saw_default {
+            return Err(format!(
+                "{loc}fn `{fn_name}`: parameter `{pname}` (position {i}) \
+                 has no default but follows a defaulted parameter — \
+                 defaults must be trailing"
+            ));
+        }
+    }
+
+    // Rule 2: default expressions must be compile-time constants.
+    for ((_ty, pname), default) in parameters.iter().zip(defaults.iter()) {
+        let Some(expr) = default else { continue };
+        if !is_const_default(expr) {
+            return Err(format!(
+                "{loc}fn `{fn_name}`: default for parameter `{pname}` must \
+                 be a compile-time constant (integer, float, string, bool, \
+                 or `null`/`none`)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Returns true when the expression is acceptable as a default value:
+/// a literal or a well-known constant identifier.
+fn is_const_default(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::IntegerLiteral { .. }
+            | Node::FloatLiteral { .. }
+            | Node::StringLiteral { .. }
+            | Node::BooleanLiteral { .. }
+    ) || matches!(
+        node,
+        Node::Identifier { name, .. } if name == "null" || name == "none" || name == "None"
+    )
 }
 
 fn collect_defaults(node: &Node, sigs: &mut HashMap<String, FnDefaults>) {
@@ -543,5 +651,66 @@ mod tests {
         {
             assert_eq!(arguments.len(), 1);
         }
+    }
+
+    // ---- check() tests ----
+
+    fn wrap(node: Node) -> Node {
+        Node::Program(vec![crate::span::Spanned {
+            node,
+            span: Span::default(),
+        }])
+    }
+
+    #[test]
+    fn check_trailing_defaults_ok() {
+        // fn f(int p0, int p1 = 0) — p1 is trailing → OK
+        let f = make_fn("f", 2, vec![None, Some(Box::new(int_lit(0)))]);
+        let prog = wrap(f);
+        assert!(check(&prog, "test").is_ok(), "trailing default should pass");
+    }
+
+    #[test]
+    fn check_non_trailing_default_errors() {
+        // fn f(int p0 = 0, int p1) — p1 has no default but follows p0 → error
+        let f = make_fn("f", 2, vec![Some(Box::new(int_lit(0))), None]);
+        let prog = wrap(f);
+        let err = check(&prog, "test");
+        assert!(err.is_err(), "non-trailing default must be rejected");
+        let msg = err.unwrap_err();
+        assert!(
+            msg.contains("trailing"),
+            "error must mention trailing: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_non_const_default_errors() {
+        // fn f(int p0 = some_var) — some_var is not a constant → error
+        let f = make_fn("f", 1, vec![Some(Box::new(ident("some_var")))]);
+        let prog = wrap(f);
+        let err = check(&prog, "test");
+        assert!(err.is_err(), "non-const default must be rejected");
+        let msg = err.unwrap_err();
+        assert!(
+            msg.contains("compile-time constant"),
+            "error must mention constant: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_null_default_ok() {
+        // fn f(int p0 = null) — null is an accepted constant
+        let f = make_fn("f", 1, vec![Some(Box::new(ident("null")))]);
+        let prog = wrap(f);
+        assert!(check(&prog, "test").is_ok(), "null default should pass");
+    }
+
+    #[test]
+    fn check_no_defaults_ok() {
+        // fn f(int p0, int p1) — no defaults → check is a no-op
+        let f = make_fn("f", 2, vec![None, None]);
+        let prog = wrap(f);
+        assert!(check(&prog, "test").is_ok(), "no-defaults should pass");
     }
 }

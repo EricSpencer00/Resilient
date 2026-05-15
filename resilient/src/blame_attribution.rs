@@ -5,26 +5,88 @@
 //! met. That's only half the story — the bug is usually at the
 //! *caller*, who passed bad arguments.
 //!
-//! Blame Attribution maintains a small static graph from each
-//! `requires` clause to every call site that supplies its arguments.
-//! When a precondition fails (runtime path), the diagnostic walks the
-//! call graph one level up and names the responsible caller.
+//! Blame Attribution maintains a static call graph at typecheck time
+//! and exposes a `blame_chain(callee, depth)` API that walks backward
+//! through the call graph to identify the root caller responsible for
+//! a bad argument.
 //!
-//! This module owns the static analysis: it builds the
-//! `requires_var → caller_set` map at typecheck time and exposes a
-//! `lookup(callee, param_name)` API the runtime error path consults.
+//! Example: `main(int n) → process(int y) → validate(int x) requires x > 0`
+//! If `n = -1`, `callers_of("validate")` names `process`, but
+//! `blame_chain("validate", 3)` returns `["process", "main"]` — the
+//! full ancestry pointing to the original source of the bad value.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::RwLock;
 
 #[derive(Debug, Clone, Default)]
 pub struct BlameMap {
-    /// Key: callee fn name. Value: list of (caller_name, arg_index)
-    /// pairs that pass arguments into that fn.
+    /// Key: callee fn name. Value: list of (caller_name, arg_index) pairs.
     pub edges: HashMap<String, Vec<(String, usize)>>,
+}
+
+impl BlameMap {
+    /// Returns all immediate callers of `callee`.
+    pub fn callers_of(&self, callee: &str) -> Vec<(String, usize)> {
+        self.edges.get(callee).cloned().unwrap_or_default()
+    }
+
+    /// Returns the blame chain from `callee` backward through the call graph,
+    /// up to `max_depth` hops. Returns callers in order from closest to
+    /// farthest (BFS order). Each entry is (function_name, arg_index).
+    ///
+    /// Example: for `main → process → validate`, calling
+    /// `blame_chain("validate", 3)` returns `[("process", 0), ("main", 0)]`.
+    pub fn blame_chain(&self, callee: &str, max_depth: usize) -> Vec<(String, usize)> {
+        let mut result = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(callee.to_string());
+
+        // BFS queue: (fn_name, arg_idx_that_brought_us_here, depth)
+        let mut queue: VecDeque<(String, usize, usize)> = VecDeque::new();
+        if let Some(callers) = self.edges.get(callee) {
+            for (caller, idx) in callers {
+                if !visited.contains(caller) {
+                    queue.push_back((caller.clone(), *idx, 1));
+                }
+            }
+        }
+
+        while let Some((node, arg_idx, depth)) = queue.pop_front() {
+            if visited.contains(&node) {
+                continue;
+            }
+            visited.insert(node.clone());
+            result.push((node.clone(), arg_idx));
+
+            if depth < max_depth {
+                if let Some(callers) = self.edges.get(&node) {
+                    for (caller, idx) in callers {
+                        if !visited.contains(caller) {
+                            queue.push_back((caller.clone(), *idx, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Format a human-readable blame chain for diagnostic output.
+    /// Returns a string like `"main → process → validate"` where
+    /// `validate` is the callee whose precondition failed.
+    pub fn format_chain(&self, callee: &str, max_depth: usize) -> String {
+        let chain = self.blame_chain(callee, max_depth);
+        if chain.is_empty() {
+            return callee.to_string();
+        }
+        let mut parts: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
+        parts.reverse(); // root first
+        parts.push(callee);
+        parts.join(" → ")
+    }
 }
 
 static BLAME_MAP: RwLock<Option<BlameMap>> = RwLock::new(None);
@@ -106,13 +168,8 @@ pub fn install(map: BlameMap) {
     }
 }
 
+/// Returns direct callers of `callee` from the installed map.
 pub fn callers_of(callee: &str) -> Vec<(String, usize)> {
-    // RES-1544: hold the read guard for the lookup so we can borrow
-    // through the `Option<BlameMap>` and clone only the value Vec.
-    // The previous shape cloned the entire `BlameMap` (a HashMap
-    // keyed by every callee in the program) on every call before
-    // looking up one row — pure waste when the diagnostic path only
-    // wants the callers of one specific callee.
     BLAME_MAP
         .read()
         .ok()
@@ -120,23 +177,84 @@ pub fn callers_of(callee: &str) -> Vec<(String, usize)> {
         .unwrap_or_default()
 }
 
+/// Returns the transitive blame chain for `callee` up to `max_depth` hops.
+/// Callers are returned in BFS order (closest first). Empty when no callers.
+pub fn blame_chain(callee: &str, max_depth: usize) -> Vec<(String, usize)> {
+    BLAME_MAP
+        .read()
+        .ok()
+        .and_then(|g| Some(g.as_ref()?.blame_chain(callee, max_depth)))
+        .unwrap_or_default()
+}
+
+/// Format a human-readable blame chain for diagnostic output.
+pub fn format_blame_chain(callee: &str, max_depth: usize) -> String {
+    BLAME_MAP
+        .read()
+        .ok()
+        .and_then(|g| Some(g.as_ref()?.format_chain(callee, max_depth)))
+        .unwrap_or_else(|| callee.to_string())
+}
+
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1291: fast-reject. `build` walks every function body
-    // recursively, emitting one (caller, arg_index) edge per
-    // `CallExpression`. For programs with zero `CallExpression`
-    // anywhere, the walk visits every Node but emits nothing. Pre-
-    // scan with the early-terminating `any_node` (RES-1238) and skip
-    // the walk when no `CallExpression` exists. We still call
-    // `install` with an empty `BlameMap` so the process-global
-    // `BLAME_MAP` is reset between compilations and `callers_of(...)`
-    // doesn't return stale entries from a prior program.
+    // RES-1291: fast-reject when no calls exist.
     let has_call =
         crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::CallExpression { .. }));
     if !has_call {
         install(BlameMap::default());
         return Ok(());
     }
-    install(build(program));
+    let map = build(program);
+
+    // At compile time, for every function with `requires` clauses, emit a
+    // diagnostic when the blame chain reveals a root caller. This surfaces
+    // likely precondition violations before the program runs.
+    let Node::Program(stmts) = program else {
+        install(map);
+        return Ok(());
+    };
+    for s in stmts {
+        if let Node::Function {
+            name,
+            requires,
+            parameters,
+            ..
+        } = &s.node
+        {
+            if requires.is_empty() {
+                continue;
+            }
+            let callers = map.callers_of(name);
+            if callers.is_empty() {
+                continue;
+            }
+            // Find the root callers via the transitive chain.
+            let chain = map.blame_chain(name, 4);
+            let root_callers: Vec<&str> = if chain.is_empty() {
+                callers.iter().map(|(n, _)| n.as_str()).collect()
+            } else {
+                // Last entries in the chain are deepest; collect unique roots
+                let mut roots: Vec<&str> = Vec::new();
+                for (caller, _) in chain.iter().rev() {
+                    if !roots.contains(&caller.as_str()) {
+                        roots.push(caller.as_str());
+                    }
+                }
+                roots
+            };
+            let param_names: Vec<&str> = parameters.iter().map(|(_, n)| n.as_str()).collect();
+            let chain_str = map.format_chain(name, 4);
+            eprintln!(
+                "blame: `{}` has `requires` on [{}]; root caller(s) responsible: [{}] (chain: {})",
+                name,
+                param_names.join(", "),
+                root_callers.join(", "),
+                chain_str
+            );
+        }
+    }
+
+    install(map);
     Ok(())
 }
 
@@ -175,5 +293,77 @@ mod tests {
         let (prog, _) = parse(src);
         let map = build(&prog);
         assert!(!map.edges.contains_key("solo"));
+    }
+
+    #[test]
+    fn blame_chain_two_hops() {
+        // main → process → validate
+        let src = r#"
+            fn validate(int x) requires x > 0 { return x; }
+            fn process(int y) { validate(y); }
+            fn main(int n) { process(n); }
+        "#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+
+        // Direct caller of validate is process
+        let direct = map.callers_of("validate");
+        assert!(direct.iter().any(|(c, _)| c == "process"));
+
+        // Transitive chain should reach main
+        let chain = map.blame_chain("validate", 3);
+        let names: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"process"),
+            "chain must include process; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"main"),
+            "chain must include root caller main; got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn format_chain_includes_callee() {
+        let src = r#"
+            fn validate(int x) requires x > 0 { return x; }
+            fn caller(int n) { validate(n); }
+        "#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        let formatted = map.format_chain("validate", 2);
+        assert!(
+            formatted.contains("validate"),
+            "chain must include callee; got: {formatted}"
+        );
+        assert!(
+            formatted.contains("caller"),
+            "chain must include caller; got: {formatted}"
+        );
+    }
+
+    #[test]
+    fn blame_chain_stops_at_max_depth() {
+        // a → b → c → d → e: depth 2 should not reach e from a
+        let src = r#"
+            fn e(int x) { return x; }
+            fn d(int x) { e(x); }
+            fn c(int x) { d(x); }
+            fn b(int x) { c(x); }
+            fn a(int x) { b(x); }
+        "#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        let chain = map.blame_chain("e", 2);
+        let names: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
+        // At depth 2: e ← d ← c; should include d and c but not b
+        assert!(
+            !names.contains(&"a"),
+            "depth-limited chain must not reach 'a'"
+        );
+        assert!(
+            !names.contains(&"b"),
+            "depth-limited chain must not reach 'b'"
+        );
     }
 }

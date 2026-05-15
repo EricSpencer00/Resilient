@@ -130,3 +130,39 @@ fn recovers_to_unhandled_destructive_is_rejected() {
         combined
     );
 }
+
+/// RES-1857 Phase 3: unprovable `recovers_to` without `requires` is
+/// rejected at compile time.
+///
+/// `recovers_to_bmc_prefix_warns.rz` declares `recovers_to: x > 0`
+/// with no `requires` constraint and no `fails` set. Z3 finds x = 0
+/// as a counterexample to the clause being universally true, returning
+/// `Some(false)`. The typechecker's final-state check treats `Some(false)`
+/// as a hard compile error regardless of whether `fails` is set, so the
+/// program is rejected with a diagnostic naming `recovers_to`.
+#[test]
+fn unprovable_recovers_to_without_requires_is_rejected() {
+    let output = typecheck("recovers_to_bmc_prefix_warns.rz");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        !output.status.success(),
+        "expected typecheck to FAIL — unprovable recovers_to without requires \
+         must be a compile error; combined output:\n{}",
+        combined
+    );
+    assert!(
+        combined.contains("recovers_to"),
+        "error must mention `recovers_to`; combined:\n{}",
+        combined
+    );
+    // Z3 found a counterexample (x = 0 violates x > 0).
+    // Either the "counterexample" or "never hold" message confirms Z3 ran.
+    assert!(
+        combined.contains("counterexample") || combined.contains("never hold"),
+        "error must contain Z3 counterexample info; combined:\n{}",
+        combined
+    );
+}

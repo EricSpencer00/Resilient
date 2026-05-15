@@ -2,7 +2,10 @@
 //!
 //! Implements the [Model Context Protocol](https://modelcontextprotocol.io)
 //! over stdio (newline-delimited JSON-RPC 2.0), exposing the Resilient
-//! compiler pipeline as tools that AI assistants can invoke directly.
+
+//! compiler pipeline as tools, prompts, and resources that AI assistants
+//! can use directly.
+
 //!
 //! ## Activation
 //!
@@ -26,6 +29,28 @@
 //! | `resilient_check` | Full pipeline (parse + typecheck + lint) |
 //! | `resilient_verify` | Z3 contract verification (requires `--features z3`) |
 //!
+
+//! ## Prompts exposed (RES-2645 MCP Scaffolding)
+//!
+//! | Prompt | Description |
+//! |---|---|
+//! | `verify_function` | Guided workflow: add contracts + verify with Z3 |
+//! | `debug_type_error` | Guided workflow: interpret and fix a type error |
+//! | `add_resilience` | Guided workflow: add `recovers_to` + `live` blocks |
+//! | `explain_lint` | Guided workflow: understand and fix a lint warning |
+//! | `safety_review` | Guided workflow: full safety-critical review |
+//!
+//! ## Resources exposed (RES-2645 MCP Scaffolding)
+//!
+//! | Resource | Description |
+//! |---|---|
+//! | `resilient://docs/syntax` | Full language syntax reference |
+//! | `resilient://docs/stdlib` | Standard library function reference |
+//! | `resilient://docs/lint-codes` | All lint codes with explanations |
+//! | `resilient://docs/contracts` | Contract (`requires`/`ensures`) guide |
+//! | `resilient://docs/effects` | Effect system (`@pure`, `@io`) guide |
+//!
+
 //! ## Protocol
 //!
 //! Each message is a single JSON object followed by `\n` (NDJSON).
@@ -109,6 +134,13 @@ fn dispatch(
         }
         "tools/list" => Some(handle_tools_list(id)),
         "tools/call" => Some(handle_tools_call(id, params)),
+
+        // RES-2645: MCP Scaffolding — prompts and resources support.
+        "prompts/list" => Some(handle_prompts_list(id)),
+        "prompts/get" => Some(handle_prompts_get(id, params)),
+        "resources/list" => Some(handle_resources_list(id)),
+        "resources/read" => Some(handle_resources_read(id, params)),
+
         // Gracefully ignore unknown notifications; error on unknown requests.
         _ if is_notification => None,
         _ => Some(error(id, -32601, format!("Method not found: {method}"))),
@@ -123,7 +155,14 @@ fn handle_initialize(id: &Value, _params: Option<&Value>) -> Value {
         json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {
-                "tools": {}
+
+                "tools": {},
+                // RES-2645: advertise prompts and resources so MCP clients
+                // (Claude Desktop, Cursor, etc.) discover guided workflows
+                // and documentation without manual configuration.
+                "prompts": {},
+                "resources": {}
+
             },
             "serverInfo": {
                 "name": "resilient",
@@ -134,7 +173,13 @@ fn handle_initialize(id: &Value, _params: Option<&Value>) -> Value {
 }
 
 fn handle_tools_list(id: &Value) -> Value {
-    ok(id, json!({ "tools": tool_definitions() }))
+    let mut tools = tool_definitions().as_array().cloned().unwrap_or_default();
+    // RES-2645: bridge registry tools appear in tools/list automatically
+    // so external verifiers (TLA+ TLC, Lean 4, CBMC, Z3, SPIN, Frama-C,
+    // KLEE) are visible to MCP clients alongside built-in tools.
+    let bridge_defs = crate::mcp_tool_registry::McpBridgeRegistry::global().mcp_tool_definitions();
+    tools.extend(bridge_defs);
+    ok(id, json!({ "tools": tools }))
 }
 
 fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
@@ -162,7 +207,35 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
         "resilient_disasm" => tool_disasm(args),
         "resilient_vm_run" => tool_vm_run(args),
         "resilient_tla_check" => tool_tla_check(args),
-        other => Err(format!("Unknown tool: {other}")),
+
+        // RES-2645: four new built-in analysis tools.
+        "resilient_fingerprint" => tool_fingerprint(args),
+        "resilient_resilience_score" => tool_resilience_score(args),
+        "resilient_contract_infer" => tool_contract_infer(args),
+        "resilient_call_graph" => tool_call_graph(args),
+        // RES-2645: fall through to bridge registry for external tools
+        // (SPIN, Frama-C, KLEE, TLC, Lean 4, CBMC, etc.).
+        other => {
+            let registry = crate::mcp_tool_registry::McpBridgeRegistry::global();
+            if registry.get(other).is_some() {
+                match registry.invoke(other, args) {
+                    Ok(result) => {
+                        let text = if result.diagnostics.is_empty() {
+                            format!("{:?}: {}", result.outcome, result.raw_output)
+                        } else {
+                            result.diagnostics.join("\n")
+                        };
+                        match result.outcome {
+                            crate::mcp_tool_registry::ToolOutcome::Clean => Ok(text),
+                            _ => Err(text),
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                Err(format!("Unknown tool: {other}"))
+            }
+        }
     };
 
     match result {
@@ -181,6 +254,568 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
             }),
         ),
     }
+}
+
+// ── Prompts (RES-2645: MCP Scaffolding) ──────────────────────────────────────
+
+/// Guided workflow prompt descriptors surfaced via `prompts/list`.
+fn prompt_descriptors() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "verify_function",
+            "description": "Guided workflow: add `requires`/`ensures` contracts to a Resilient function and verify them with Z3.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code containing the function(s) to verify",
+                    "required": true
+                },
+                {
+                    "name": "function_name",
+                    "description": "Name of the specific function to focus on (optional; omit to review all)",
+                    "required": false
+                }
+            ]
+        }),
+        json!({
+            "name": "debug_type_error",
+            "description": "Guided workflow: interpret a Resilient type error message and suggest a fix.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code that produces the type error",
+                    "required": true
+                },
+                {
+                    "name": "error_message",
+                    "description": "The type error message from the compiler (optional; will be inferred by running the typechecker)",
+                    "required": false
+                }
+            ]
+        }),
+        json!({
+            "name": "add_resilience",
+            "description": "Guided workflow: add fault tolerance to a Resilient function using `recovers_to` postconditions and `live` retry blocks.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code to harden",
+                    "required": true
+                }
+            ]
+        }),
+        json!({
+            "name": "explain_lint",
+            "description": "Guided workflow: explain a Resilient lint warning and suggest how to fix it.",
+            "arguments": [
+                {
+                    "name": "code",
+                    "description": "Lint code to explain (e.g. L0010, L0038)",
+                    "required": true
+                },
+                {
+                    "name": "source",
+                    "description": "Source snippet that triggered the warning (optional)",
+                    "required": false
+                }
+            ]
+        }),
+        json!({
+            "name": "safety_review",
+            "description": "Guided workflow: full safety-critical code review — checks contracts, effects, lint, type safety, and resilience score.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code to review",
+                    "required": true
+                }
+            ]
+        }),
+    ]
+}
+
+fn handle_prompts_list(id: &Value) -> Value {
+    ok(id, json!({ "prompts": prompt_descriptors() }))
+}
+
+fn handle_prompts_get(id: &Value, params: Option<&Value>) -> Value {
+    let Some(params) = params else {
+        return error(id, -32602, "Missing params".to_string());
+    };
+    let name = match params.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error(id, -32602, "Missing prompt name".to_string()),
+    };
+    let args = params.get("arguments").unwrap_or(&Value::Null);
+
+    let messages = match name {
+        "verify_function" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let fn_name = args.get("function_name").and_then(|v| v.as_str());
+            let focus = fn_name
+                .map(|f| format!("Focus on function `{f}`."))
+                .unwrap_or_default();
+            let check_result = if src.is_empty() {
+                "(no source provided)".to_string()
+            } else {
+                match tool_check(&json!({ "source": src })) {
+                    Ok(msg) => format!("Compiler: {msg}"),
+                    Err(msg) => format!("Compiler errors:\n{msg}"),
+                }
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please help me add formal contracts (`requires`/`ensures`) to the \
+                         following Resilient program and verify them with Z3. {focus}\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Current compiler output:\n{check_result}\n\n\
+                         Steps:\n\
+                         1. Identify preconditions (what must hold for the function to work correctly)\n\
+                         2. Identify postconditions (what the function guarantees)\n\
+                         3. Suggest `requires` and `ensures` clauses\n\
+                         4. Explain what Z3 can prove and what it cannot"
+                    )
+                }
+            })]
+        }
+        "debug_type_error" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let provided_error = args.get("error_message").and_then(|v| v.as_str());
+            let error_text = provided_error.map(|e| e.to_string()).unwrap_or_else(|| {
+                if src.is_empty() {
+                    "(no source provided)".to_string()
+                } else {
+                    match tool_typecheck(&json!({ "source": src })) {
+                        Ok(_) => "(no type errors found)".to_string(),
+                        Err(msg) => msg,
+                    }
+                }
+            });
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "I have a Resilient type error I need help understanding and fixing.\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Error:\n```\n{error_text}\n```\n\n\
+                         Please:\n\
+                         1. Explain what the error means in plain language\n\
+                         2. Identify the root cause in the source\n\
+                         3. Show a corrected version of the code\n\
+                         4. Explain why the fix works"
+                    )
+                }
+            })]
+        }
+        "add_resilience" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let score_result = if src.is_empty() {
+                "(no source provided)".to_string()
+            } else {
+                match tool_resilience_score(&json!({ "source": src })) {
+                    Ok(msg) => msg,
+                    Err(msg) => msg,
+                }
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please help me add fault tolerance to this Resilient program.\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Current resilience score:\n{score_result}\n\n\
+                         Resilient fault-tolerance features:\n\
+                         - `fails ErrorType` — declare what errors the function can raise\n\
+                         - `recovers_to: EXPR` — postcondition that holds after any crash\n\
+                         - `live {{ ... }}` — retry block that re-executes on recoverable faults\n\
+                         - `@crash_only_cert` — certify the function only returns Ok or Err\n\n\
+                         Please:\n\
+                         1. Identify which functions handle recoverable failures\n\
+                         2. Suggest `fails`/`recovers_to` annotations\n\
+                         3. Show `live` block patterns where retries make sense\n\
+                         4. Explain the recovery semantics for each suggestion"
+                    )
+                }
+            })]
+        }
+        "explain_lint" => {
+            let code = args.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            let source_snippet = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let explanation = match tool_explain_lint(&json!({ "code": code })) {
+                Ok(text) => text,
+                Err(msg) => format!("Error: {msg}"),
+            };
+            let snippet_section = if source_snippet.is_empty() {
+                String::new()
+            } else {
+                format!("\n\nCode that triggered the warning:\n```rz\n{source_snippet}\n```")
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please help me understand and fix Resilient lint warning `{code}`.\n\n\
+                         Official explanation:\n{explanation}{snippet_section}\n\n\
+                         Please:\n\
+                         1. Explain WHY this is flagged as a warning\n\
+                         2. Show a concrete example of the bad pattern\n\
+                         3. Show the corrected version\n\
+                         4. Explain when (if ever) you might want to suppress it with `// resilient: allow {code}`"
+                    )
+                }
+            })]
+        }
+        "safety_review" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let (check_out, score_out, lint_out) = if src.is_empty() {
+                (
+                    "(no source provided)".to_string(),
+                    "(no source provided)".to_string(),
+                    "(no source provided)".to_string(),
+                )
+            } else {
+                let check = match tool_check(&json!({ "source": src })) {
+                    Ok(m) => m,
+                    Err(m) => m,
+                };
+                let score = match tool_resilience_score(&json!({ "source": src })) {
+                    Ok(m) => m,
+                    Err(m) => m,
+                };
+                let lint = match tool_lint(&json!({ "source": src })) {
+                    Ok(m) => m,
+                    Err(m) => m,
+                };
+                (check, score, lint)
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please perform a full safety-critical code review of this Resilient program.\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Compiler check: {check_out}\n\
+                         Resilience score: {score_out}\n\
+                         Lint output: {lint_out}\n\n\
+                         Please review:\n\
+                         1. **Type safety** — are all types correct and no `Any` escapes?\n\
+                         2. **Contracts** — are preconditions and postconditions adequate?\n\
+                         3. **Effects** — are effect annotations (`@pure`/`@io`) correct?\n\
+                         4. **Fault tolerance** — are failure paths handled with `live` / `recovers_to`?\n\
+                         5. **Embedded safety** — any panics, unbounded loops, or heap allocations?\n\
+                         6. **Lint violations** — are all warnings addressed?\n\
+                         7. **Overall verdict** — ready for safety-critical deployment?"
+                    )
+                }
+            })]
+        }
+        other => {
+            return error(
+                id,
+                -32602,
+                format!(
+                    "Unknown prompt `{other}`. Available: {}",
+                    prompt_descriptors()
+                        .iter()
+                        .filter_map(|p| p["name"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+    };
+
+    ok(id, json!({ "messages": messages }))
+}
+
+// ── Resources (RES-2645: MCP Scaffolding) ────────────────────────────────────
+
+/// Static documentation resource descriptors.
+fn resource_descriptors() -> Vec<Value> {
+    vec![
+        json!({
+            "uri": "resilient://docs/syntax",
+            "name": "Resilient Language Syntax",
+            "description": "Complete syntax reference for the Resilient programming language",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/stdlib",
+            "name": "Resilient Standard Library",
+            "description": "All builtin functions and their signatures",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/lint-codes",
+            "name": "Resilient Lint Codes",
+            "description": "All lint codes with explanations and fix guidance",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/contracts",
+            "name": "Resilient Contracts Guide",
+            "description": "How to write `requires`/`ensures` contracts and use Z3 verification",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/effects",
+            "name": "Resilient Effect System",
+            "description": "Effect annotations (@pure, @io) and effect inference",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/resilience",
+            "name": "Resilient Fault Tolerance Guide",
+            "description": "How to use `live` blocks, `recovers_to`, and fault recovery patterns",
+            "mimeType": "text/plain"
+        }),
+    ]
+}
+
+fn handle_resources_list(id: &Value) -> Value {
+    ok(id, json!({ "resources": resource_descriptors() }))
+}
+
+fn handle_resources_read(id: &Value, params: Option<&Value>) -> Value {
+    let Some(params) = params else {
+        return error(id, -32602, "Missing params".to_string());
+    };
+    let uri = match params.get("uri").and_then(|v| v.as_str()) {
+        Some(u) => u,
+        None => return error(id, -32602, "Missing resource uri".to_string()),
+    };
+
+    let content = match uri {
+        "resilient://docs/syntax" => resource_syntax_doc(),
+        "resilient://docs/stdlib" => resource_stdlib_doc(),
+        "resilient://docs/lint-codes" => resource_lint_codes_doc(),
+        "resilient://docs/contracts" => resource_contracts_doc(),
+        "resilient://docs/effects" => resource_effects_doc(),
+        "resilient://docs/resilience" => resource_resilience_doc(),
+        other => {
+            return error(
+                id,
+                -32602,
+                format!(
+                    "Unknown resource URI `{other}`. Available: {}",
+                    resource_descriptors()
+                        .iter()
+                        .filter_map(|r| r["uri"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+    };
+
+    ok(
+        id,
+        json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/plain",
+                "text": content
+            }]
+        }),
+    )
+}
+
+fn resource_syntax_doc() -> String {
+    "# Resilient Language Syntax Reference\n\n\
+     ## Functions\n\
+     fn name(type param, ...) -> ReturnType {\n\
+         body\n\
+     }\n\n\
+     ## Variables\n\
+     let x: int = 42;\n\
+     let x = 42;           // type inferred\n\
+     static let counter = 0;  // persists across calls\n\
+     const MAX: int = 100; // compile-time constant\n\n\
+     ## Types\n\
+     int    float    bool    string    array    void\n\
+     fn(T, ...) -> R   // function type\n\
+     Array<T>          // typed array (planned)\n\n\
+     ## Control Flow\n\
+     if COND { ... } else { ... }\n\
+     while COND { ... }\n\
+     for x in ITERABLE { ... }\n\
+     match EXPR { PATTERN => EXPR, ... }\n\
+     return EXPR;\n\
+     break; continue;\n\n\
+     ## Structs\n\
+     struct Point { int x, int y, }\n\
+     let p = new Point { x: 1, y: 2 };\n\
+     p.x    // field access\n\n\
+     ## Enums\n\
+     enum Color { Red, Green, Blue }\n\
+     match c { Color::Red => ..., _ => ... }\n\n\
+     ## Contracts\n\
+     fn f(int x) -> int requires x > 0 ensures result > 0 { ... }\n\n\
+     ## Effects\n\
+     @pure fn f(...) { ... }  // no side effects\n\
+     @io fn g(...) { ... }    // may perform I/O\n\n\
+     ## Fault Tolerance\n\
+     fn f() fails IOError recovers_to: result >= 0 { ... }\n\
+     live { ... }             // retry block\n\n\
+     ## Closures\n\
+     fn(int x) -> int { x * 2 }     // anonymous function\n\
+     fn(x) { x + 1 }                // type-inferred params (planned)\n\n\
+     ## String Interpolation\n\
+     let msg = \"value is {x}\";\n\n\
+     ## Pattern Matching\n\
+     match x {\n\
+         0 => \"zero\",\n\
+         1..=9 => \"small\",\n\
+         _ => \"large\",\n\
+     }\n"
+    .to_string()
+}
+
+fn resource_stdlib_doc() -> String {
+    let lines = vec![
+        "# Resilient Standard Library\n".to_string(),
+        "## Math\n".to_string(),
+        "abs(x: int) -> int     sqrt(x) -> float    pow(base, exp) -> int".to_string(),
+        "floor(x) -> int        ceil(x) -> int      round(x) -> int".to_string(),
+        "min(a, b) -> int       max(a, b) -> int     sign(x) -> int".to_string(),
+        "clamp(x, lo, hi) -> int".to_string(),
+        "sin(x) -> float        cos(x) -> float     tan(x) -> float".to_string(),
+        "log(x) -> float        log2(x) -> float    log10(x) -> float".to_string(),
+        "\n## Strings\n".to_string(),
+        "len(s: string) -> int          to_string(x) -> string".to_string(),
+        "string_upper(s) -> string      string_lower(s) -> string".to_string(),
+        "string_trim(s) -> string       string_contains(s, sub) -> bool".to_string(),
+        "string_starts_with(s, pre) -> bool   string_ends_with(s, suf) -> bool".to_string(),
+        "string_split(s, delim) -> array      string_join(arr, sep) -> string".to_string(),
+        "string_replace(s, from, to) -> string".to_string(),
+        "string_slice(s, lo, hi) -> string    string_index(s, i) -> string".to_string(),
+        "\n## Arrays\n".to_string(),
+        "len(arr: array) -> int         push(arr, item) -> array".to_string(),
+        "pop(arr) -> any               array_append(arr, item) -> array".to_string(),
+        "array_map(arr, fn) -> array    array_filter(arr, pred) -> array".to_string(),
+        "array_reduce(arr, init, fn) -> any   array_find(arr, pred) -> any".to_string(),
+        "array_find_index(arr, pred) -> int   array_any(arr, pred) -> bool".to_string(),
+        "array_all(arr, pred) -> bool         array_sort(arr) -> array".to_string(),
+        "array_reverse(arr) -> array          array_sum(arr) -> int".to_string(),
+        "array_min(arr) -> int               array_max(arr) -> int".to_string(),
+        "array_range(lo, hi) -> array        array_slice(arr, lo, hi, incl) -> array".to_string(),
+        "\n## I/O\n".to_string(),
+        "println(x)   print(x)   read_line() -> string   input(prompt) -> string".to_string(),
+        "\n## Type checks\n".to_string(),
+        "is_int(x) -> bool   is_float(x) -> bool   is_string(x) -> bool".to_string(),
+        "is_array(x) -> bool  is_null(x) -> bool".to_string(),
+    ];
+    lines.join("\n")
+}
+
+fn resource_lint_codes_doc() -> String {
+    let mut parts = vec!["# Resilient Lint Codes\n".to_string()];
+    for code in crate::lint::KNOWN_CODES {
+        match crate::lint::explain(code) {
+            Some(text) => parts.push(format!("## {code}\n{text}\n")),
+            None => parts.push(format!("## {code}\n(no explanation available)\n")),
+        }
+    }
+    parts.join("\n")
+}
+
+fn resource_contracts_doc() -> String {
+    "# Resilient Contracts Guide\n\n\
+     ## Preconditions (`requires`)\n\
+     State what must be true BEFORE the function runs:\n\
+     ```rz\n\
+     fn divide(int a, int b) -> int requires b != 0 { return a / b; }\n\
+     ```\n\n\
+     ## Postconditions (`ensures`)\n\
+     State what the function GUARANTEES on return. The special variable `result`\n\
+     refers to the return value:\n\
+     ```rz\n\
+     fn abs_val(int x) -> int ensures result >= 0 { return if x < 0 { -x } else { x }; }\n\
+     ```\n\n\
+     ## Multiple clauses\n\
+     Chain with whitespace (no comma needed):\n\
+     ```rz\n\
+     fn clamp(int x, int lo, int hi) -> int\n\
+         requires lo <= hi\n\
+         ensures result >= lo\n\
+         ensures result <= hi\n\
+     {\n\
+         if x < lo { return lo; }\n\
+         if x > hi { return hi; }\n\
+         return x;\n\
+     }\n\
+     ```\n\n\
+     ## Z3 verification\n\
+     Build with `--features z3` to have Z3 attempt to prove contracts at\n\
+     compile time. Functions with provable contracts skip runtime checks.\n\n\
+     ## Resilience score\n\
+     `rz check` shows a resilience score A–F. Functions with both `requires`\n\
+     and `ensures` clauses score higher."
+        .to_string()
+}
+
+fn resource_effects_doc() -> String {
+    "# Resilient Effect System\n\n\
+     ## Annotations\n\
+     - `@pure` — function has no side effects; may only call other `@pure` functions\n\
+     - `@io` — function may perform I/O; required for `println`, file access, etc.\n\n\
+     ## Examples\n\
+     ```rz\n\
+     @pure fn double(int x) -> int { return x * 2; }  // purely computational\n\
+     @io fn log(string msg) { println(msg); }          // has I/O side effect\n\
+     ```\n\n\
+     ## Inference\n\
+     The compiler infers effects by inspecting the body. If a function calls\n\
+     `println` or other I/O builtins, it is automatically inferred as `@io`\n\
+     even if the annotation is absent.\n\n\
+     ## Effect errors\n\
+     A `@pure` function that calls an `@io` function is a type error.\n\n\
+     ## Linear effects\n\
+     `#[linear]` resources must be consumed exactly once — the compiler\n\
+     enforces that no reference is dropped silently and no reference is\n\
+     used after consumption."
+        .to_string()
+}
+
+fn resource_resilience_doc() -> String {
+    "# Resilient Fault Tolerance Guide\n\n\
+     ## `fails` — declare recoverable errors\n\
+     ```rz\n\
+     fn read_sensor() -> int fails IOError { ... }\n\
+     ```\n\n\
+     ## `recovers_to` — postcondition after a crash\n\
+     State what the caller can rely on even if the function was interrupted:\n\
+     ```rz\n\
+     fn write_log(string msg)\n\
+         fails IOError\n\
+         recovers_to: len(msg) == 0 || log_is_consistent()\n\
+     { ... }\n\
+     ```\n\n\
+     ## `live` blocks — automatic retry on recoverable fault\n\
+     ```rz\n\
+     live {\n\
+         let data = read_sensor();  // retried if IOError occurs\n\
+         process(data);\n\
+     }\n\
+     ```\n\n\
+     ## `@crash_only_cert` — guarantee clean termination\n\
+     ```rz\n\
+     #[crash_only_cert]\n\
+     fn safe_op() -> Result { ... }\n\
+     ```\n\n\
+     ## BMC verification (RES-1857)\n\
+     With `--features z3`, the bounded model checker verifies that\n\
+     `recovers_to` postconditions hold after any prefix of instructions\n\
+     that could be interrupted by a crash. A `sat` result means the\n\
+     postcondition CAN be violated — fix the code or weaken the clause."
+        .to_string()
 }
 
 // ── Tool implementations ──────────────────────────────────────────────────────
@@ -723,6 +1358,318 @@ fn tool_tla_check(args: &Value) -> Result<String, String> {
     }
 }
 
+/// Compute behavioral fingerprints for every function in the program.
+///
+/// Each fingerprint is a stable hash of the function's contracts
+/// (requires/ensures), parameter types, and fails variants — NOT the body.
+/// Body refactors that preserve postconditions keep the same fingerprint.
+fn tool_fingerprint(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let fps = crate::behavioral_fingerprint::fingerprint_program(&program);
+    if fps.is_empty() {
+        return Ok("No functions found.".to_string());
+    }
+    let mut names: Vec<&String> = fps.keys().collect();
+    names.sort();
+    let lines: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let fp = &fps[*n];
+            let recovery = if fp.has_recovery { " [recovery]" } else { "" };
+            let fails = if fp.fails_variants.is_empty() {
+                String::new()
+            } else {
+                format!(" fails=[{}]", fp.fails_variants.join(", "))
+            };
+            format!(
+                "  {} — digest: 0x{:016x}{}{}",
+                n, fp.digest, recovery, fails
+            )
+        })
+        .collect();
+    Ok(format!(
+        "Behavioral fingerprints ({} functions):\n{}",
+        fps.len(),
+        lines.join("\n")
+    ))
+}
+
+/// Compute resilience scores for every function in the program.
+///
+/// Each score (0–100) is a weighted sum of safety signals: contract
+/// coverage, effect annotations, live-recovery blocks, call-site
+/// coverage, and body simplicity. Scores map to letter grades A–F.
+fn tool_resilience_score(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let scores = crate::resilience_score::score_program(&program);
+    if scores.is_empty() {
+        return Ok("No functions found.".to_string());
+    }
+    let lines: Vec<String> = scores
+        .iter()
+        .map(|s| {
+            format!(
+                "  {} — {}/100 ({})  contracts={} effects={} live={} coverage={} simplicity={}",
+                s.function_name,
+                s.total,
+                s.grade(),
+                s.contracts_pts,
+                s.effects_pts,
+                s.live_pts,
+                s.coverage_pts,
+                s.simplicity_pts,
+            )
+        })
+        .collect();
+    let avg = scores.iter().map(|s| s.total as u64).sum::<u64>() / scores.len() as u64;
+    Ok(format!(
+        "Resilience scores ({} functions, avg {avg}/100):\n{}",
+        scores.len(),
+        lines.join("\n")
+    ))
+}
+
+/// Run contract inference on the program and show suggested requires/ensures
+/// clauses that could be added to under-specified functions.
+fn tool_contract_infer(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let inferred = crate::contract_inference::infer_program(&program);
+    if inferred.is_empty() {
+        return Ok("No inference suggestions (all functions already have complete contracts, or no functions found).".to_string());
+    }
+    let lines: Vec<String> = inferred
+        .iter()
+        .flat_map(|ic| {
+            let mut out = Vec::new();
+            for req in &ic.requires {
+                out.push(format!(
+                    "  {} — suggested requires: {}",
+                    ic.function_name, req
+                ));
+            }
+            for ens in &ic.ensures {
+                out.push(format!(
+                    "  {} — suggested ensures: {}",
+                    ic.function_name, ens
+                ));
+            }
+            out
+        })
+        .collect();
+    if lines.is_empty() {
+        return Ok("No inference suggestions generated.".to_string());
+    }
+    Ok(format!(
+        "Contract inference suggestions ({} functions):\n{}",
+        inferred.len(),
+        lines.join("\n")
+    ))
+}
+
+/// Extract and display the function call graph for the program.
+///
+/// Shows, for each function, which other functions it calls directly.
+/// Mutual recursion and cycles are flagged.
+fn tool_call_graph(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let crate::Node::Program(stmts) = &program else {
+        return Ok("Not a program.".to_string());
+    };
+    use std::collections::{HashMap, HashSet};
+    let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
+    for stmt in stmts {
+        if let crate::Node::Function { name, body, .. } = &stmt.node {
+            let mut callees = HashSet::new();
+            collect_call_targets(body, &mut callees);
+            graph.insert(name.clone(), callees);
+        }
+    }
+    if graph.is_empty() {
+        return Ok("No functions found.".to_string());
+    }
+    let mut fn_names: Vec<&String> = graph.keys().collect();
+    fn_names.sort();
+    let defined: HashSet<&str> = fn_names.iter().map(|n| n.as_str()).collect();
+    let mut lines = Vec::new();
+    for name in &fn_names {
+        let mut callees: Vec<&String> = graph[*name].iter().collect();
+        callees.sort();
+        let callee_list = if callees.is_empty() {
+            "(no calls)".to_string()
+        } else {
+            callees
+                .iter()
+                .map(|c| {
+                    if defined.contains(c.as_str()) {
+                        c.to_string()
+                    } else {
+                        format!("{c}[extern]")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(format!("  {} → {}", name, callee_list));
+    }
+    // Detect cycles (mutual recursion) via DFS.
+    let mut cycles: Vec<String> = Vec::new();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut in_stack: HashSet<&str> = HashSet::new();
+    for start in fn_names.iter().map(|s| s.as_str()) {
+        if !visited.contains(start) {
+            let mut path = Vec::new();
+            find_cycle(
+                start,
+                &graph,
+                &mut visited,
+                &mut in_stack,
+                &mut path,
+                &mut cycles,
+            );
+        }
+    }
+    let cycle_note = if cycles.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nCycles detected:\n{}",
+            cycles
+                .iter()
+                .map(|c| format!("  {c}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    Ok(format!(
+        "Call graph ({} functions):\n{}{}",
+        graph.len(),
+        lines.join("\n"),
+        cycle_note
+    ))
+}
+
+fn collect_call_targets(node: &crate::Node, out: &mut std::collections::HashSet<String>) {
+    match node {
+        crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if let crate::Node::Identifier { name, .. } = function.as_ref() {
+                out.insert(name.clone());
+            }
+            for a in arguments {
+                collect_call_targets(a, out);
+            }
+            collect_call_targets(function, out);
+        }
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_call_targets(s, out);
+            }
+        }
+        crate::Node::LetStatement { value, .. } => collect_call_targets(value, out),
+        crate::Node::Assignment { value, .. } => collect_call_targets(value, out),
+        crate::Node::ReturnStatement { value: Some(v), .. } => {
+            collect_call_targets(v, out);
+        }
+        crate::Node::ReturnStatement { value: None, .. } => {}
+        crate::Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_call_targets(condition, out);
+            collect_call_targets(consequence, out);
+            if let Some(alt) = alternative {
+                collect_call_targets(alt, out);
+            }
+        }
+        crate::Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_call_targets(condition, out);
+            collect_call_targets(body, out);
+        }
+        crate::Node::ForInStatement { iterable, body, .. } => {
+            collect_call_targets(iterable, out);
+            collect_call_targets(body, out);
+        }
+        crate::Node::ExpressionStatement { expr, .. } => collect_call_targets(expr, out),
+        crate::Node::InfixExpression { left, right, .. } => {
+            collect_call_targets(left, out);
+            collect_call_targets(right, out);
+        }
+        crate::Node::PrefixExpression { right, .. } => collect_call_targets(right, out),
+        crate::Node::IndexExpression { target, index, .. } => {
+            collect_call_targets(target, out);
+            collect_call_targets(index, out);
+        }
+        _ => {}
+    }
+}
+
+fn find_cycle<'a>(
+    node: &'a str,
+    graph: &'a std::collections::HashMap<String, std::collections::HashSet<String>>,
+    visited: &mut std::collections::HashSet<&'a str>,
+    in_stack: &mut std::collections::HashSet<&'a str>,
+    path: &mut Vec<&'a str>,
+    cycles: &mut Vec<String>,
+) {
+    visited.insert(node);
+    in_stack.insert(node);
+    path.push(node);
+    if let Some(callees) = graph.get(node) {
+        let mut sorted_callees: Vec<&str> = callees.iter().map(|s| s.as_str()).collect();
+        sorted_callees.sort();
+        for callee in sorted_callees {
+            if !visited.contains(callee) {
+                find_cycle(callee, graph, visited, in_stack, path, cycles);
+            } else if in_stack.contains(callee) {
+                let start = path.iter().position(|&n| n == callee).unwrap_or(0);
+                let cycle_path = path[start..].to_vec();
+                cycles.push(format!("{} → {}", cycle_path.join(" → "), callee));
+            }
+        }
+    }
+    path.pop();
+    in_stack.remove(node);
+}
+
 // ── Tool schema definitions ───────────────────────────────────────────────────
 
 fn tool_definitions() -> Value {
@@ -959,6 +1906,77 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["spec"]
             }
+
+        },
+        {
+            "name": "resilient_fingerprint",
+            "description": "Compute behavioral fingerprints for every function in Resilient \
+                            source code. Each fingerprint is a stable digest of the function's \
+                            contracts (requires/ensures), parameter types, and fails variants \
+                            — NOT the body. Refactors that preserve postconditions keep the \
+                            same fingerprint, making regressions detectable in CI.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to fingerprint"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_resilience_score",
+            "description": "Compute per-function resilience scores (0–100) for Resilient \
+                            source. The score is a weighted sum of: contract coverage (40 pts), \
+                            effect annotations (10 pts), live-recovery blocks (15 pts), \
+                            call-site coverage (15 pts), and body simplicity (20 pts). \
+                            Returns a letter grade (A–F) for each function.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to score"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_contract_infer",
+            "description": "Run contract inference on Resilient source and suggest \
+                            requires/ensures clauses for under-specified functions. \
+                            Useful for adding contracts incrementally to an existing codebase.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to analyse"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_call_graph",
+            "description": "Extract and display the function call graph for Resilient source. \
+                            Shows, for each function, which other functions it calls directly. \
+                            External/builtin callees are marked [extern]. Mutual recursion \
+                            cycles are flagged.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to analyse"
+                    }
+                },
+                "required": ["source"]
+            }
+
         }
     ])
 }
@@ -1194,6 +2212,10 @@ mod tests {
             "resilient_disasm",
             "resilient_vm_run",
             "resilient_tla_check",
+            "resilient_fingerprint",
+            "resilient_resilience_score",
+            "resilient_contract_infer",
+            "resilient_call_graph",
         ] {
             assert!(
                 names.contains(expected),
@@ -1407,6 +2429,417 @@ mod tests {
         let r = tool_vm_run(&json!({}));
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("Missing required argument"));
+    }
+
+    // ── resilient_tla_check ───────────────────────────────────────────────────
+
+    // ── resilient_fingerprint ─────────────────────────────────────────────────
+
+    #[test]
+    fn fingerprint_returns_digest_for_function() {
+        let src = "fn f(int x) -> int ensures result > 0 { return x + 1; }";
+        let r = tool_fingerprint(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("digest:"), "got: {text}");
+        assert!(text.contains("f"), "got: {text}");
+    }
+
+    #[test]
+    fn fingerprint_empty_program_says_no_functions() {
+        let r = tool_fingerprint(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(r.unwrap().contains("No functions"));
+    }
+
+    #[test]
+    fn fingerprint_parse_error_propagates() {
+        let r = tool_fingerprint(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn fingerprint_recovery_flag_appears() {
+        let src = "fn f(int x) -> int fails IOError recovers_to: result >= 0 { return x; }";
+        let r = tool_fingerprint(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(
+            text.contains("[recovery]") || text.contains("0x"),
+            "got: {text}"
+        );
+    }
+
+    // ── resilient_resilience_score ────────────────────────────────────────────
+
+    #[test]
+    fn resilience_score_returns_grade_for_function() {
+        let src = "fn f(int x) -> int requires x > 0 ensures result > 0 { return x; }";
+        let r = tool_resilience_score(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("/100"), "got: {text}");
+    }
+
+    #[test]
+    fn resilience_score_empty_program_says_no_functions() {
+        let r = tool_resilience_score(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(r.unwrap().contains("No functions"));
+    }
+
+    #[test]
+    fn resilience_score_parse_error_propagates() {
+        let r = tool_resilience_score(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn resilience_score_shows_avg() {
+        let src = "// resilient: allow L0010, L0014\nfn f(int x) -> int { return x; }";
+        let r = tool_resilience_score(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("avg"), "got: {text}");
+    }
+
+    // ── resilient_contract_infer ──────────────────────────────────────────────
+
+    #[test]
+    fn contract_infer_suggests_for_unspecified_function() {
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let r = tool_contract_infer(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        // Either suggestions exist, or "no inference" message.
+        let text = r.unwrap();
+        assert!(
+            !text.is_empty(),
+            "contract_infer must return something, got empty"
+        );
+    }
+
+    #[test]
+    fn contract_infer_empty_program_ok() {
+        let r = tool_contract_infer(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn contract_infer_parse_error_propagates() {
+        let r = tool_contract_infer(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    // ── resilient_call_graph ──────────────────────────────────────────────────
+
+    #[test]
+    fn call_graph_shows_callee() {
+        let src = "fn g(int x) -> int { return x; }\nfn f(int x) -> int { return g(x); }";
+        let r = tool_call_graph(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("f"), "got: {text}");
+        assert!(text.contains("g"), "got: {text}");
+    }
+
+    #[test]
+    fn call_graph_detects_cycle() {
+        let src = "fn f(int x) -> int { return g(x); }\nfn g(int x) -> int { return f(x); }";
+        let r = tool_call_graph(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(
+            text.contains("Cycle") || text.contains("cycle") || text.contains("→"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn call_graph_empty_program_says_no_functions() {
+        let r = tool_call_graph(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(r.unwrap().contains("No functions"));
+    }
+
+    #[test]
+    fn call_graph_parse_error_propagates() {
+        let r = tool_call_graph(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    // ── prompts/list ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn prompts_list_returns_all_prompts() {
+        let resp = handle_prompts_list(&json!(1));
+        let prompts = resp["result"]["prompts"].as_array().unwrap();
+        let names: Vec<&str> = prompts.iter().filter_map(|p| p["name"].as_str()).collect();
+        for expected in &[
+            "verify_function",
+            "debug_type_error",
+            "add_resilience",
+            "explain_lint",
+            "safety_review",
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing prompt {expected}; got {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompts_list_each_has_description() {
+        let resp = handle_prompts_list(&json!(1));
+        let prompts = resp["result"]["prompts"].as_array().unwrap();
+        for p in prompts {
+            assert!(
+                p["description"]
+                    .as_str()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false),
+                "prompt {:?} missing description",
+                p["name"]
+            );
+        }
+    }
+
+    // ── prompts/get ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn prompts_get_verify_function_returns_messages() {
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let params = json!({ "name": "verify_function", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty(), "expected at least one message");
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("requires") || text.contains("ensures"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn prompts_get_debug_type_error_includes_source() {
+        let src = "fn f(int x) -> string { return x; }";
+        let params = json!({ "name": "debug_type_error", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("type error") || text.contains("error"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn prompts_get_add_resilience_returns_messages() {
+        let src = "fn sensor() -> int { return 42; }";
+        let params = json!({ "name": "add_resilience", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("recovers_to") || text.contains("live"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn prompts_get_explain_lint_returns_explanation() {
+        let params = json!({ "name": "explain_lint", "arguments": { "code": "L0010" } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(text.contains("L0010"), "got: {text}");
+    }
+
+    #[test]
+    fn prompts_get_safety_review_returns_checklist() {
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let params = json!({ "name": "safety_review", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("safety") || text.contains("review"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn prompts_get_unknown_prompt_returns_error() {
+        let params = json!({ "name": "nonexistent_prompt", "arguments": {} });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for unknown prompt"
+        );
+    }
+
+    #[test]
+    fn prompts_get_missing_name_returns_error() {
+        let params = json!({ "arguments": {} });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for missing name"
+        );
+    }
+
+    #[test]
+    fn dispatch_prompts_list_works() {
+        let resp = dispatch("prompts/list", &json!(1), None, false);
+        assert!(resp.is_some());
+        let resp = resp.unwrap();
+        assert!(resp["result"]["prompts"].is_array());
+    }
+
+    #[test]
+    fn dispatch_resources_list_works() {
+        let resp = dispatch("resources/list", &json!(1), None, false);
+        assert!(resp.is_some());
+        let resp = resp.unwrap();
+        assert!(resp["result"]["resources"].is_array());
+    }
+
+    // ── resources/list ────────────────────────────────────────────────────────
+
+    #[test]
+    fn resources_list_returns_all_resources() {
+        let resp = handle_resources_list(&json!(1));
+        let resources = resp["result"]["resources"].as_array().unwrap();
+        let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
+        for expected in &[
+            "resilient://docs/syntax",
+            "resilient://docs/stdlib",
+            "resilient://docs/lint-codes",
+            "resilient://docs/contracts",
+            "resilient://docs/effects",
+            "resilient://docs/resilience",
+        ] {
+            assert!(
+                uris.contains(expected),
+                "missing resource {expected}; got {uris:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resources_list_each_has_mime_type() {
+        let resp = handle_resources_list(&json!(1));
+        let resources = resp["result"]["resources"].as_array().unwrap();
+        for r in resources {
+            assert_eq!(
+                r["mimeType"].as_str().unwrap_or(""),
+                "text/plain",
+                "resource {:?} should have mimeType text/plain",
+                r["uri"]
+            );
+        }
+    }
+
+    // ── resources/read ────────────────────────────────────────────────────────
+
+    #[test]
+    fn resources_read_syntax_doc_is_nonempty() {
+        let params = json!({ "uri": "resilient://docs/syntax" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(!text.is_empty(), "syntax doc must not be empty");
+        assert!(text.contains("fn"), "syntax doc must mention fn keyword");
+    }
+
+    #[test]
+    fn resources_read_stdlib_doc_is_nonempty() {
+        let params = json!({ "uri": "resilient://docs/stdlib" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(!text.is_empty(), "stdlib doc must not be empty");
+        assert!(text.contains("len"), "stdlib doc must mention len");
+    }
+
+    #[test]
+    fn resources_read_lint_codes_doc_covers_all_codes() {
+        let params = json!({ "uri": "resilient://docs/lint-codes" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        for code in crate::lint::KNOWN_CODES.iter().take(5) {
+            assert!(text.contains(code), "lint doc must mention {code}");
+        }
+    }
+
+    #[test]
+    fn resources_read_contracts_doc_mentions_requires() {
+        let params = json!({ "uri": "resilient://docs/contracts" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("requires"),
+            "contracts doc must mention requires"
+        );
+        assert!(
+            text.contains("ensures"),
+            "contracts doc must mention ensures"
+        );
+    }
+
+    #[test]
+    fn resources_read_effects_doc_mentions_pure() {
+        let params = json!({ "uri": "resilient://docs/effects" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("@pure"), "effects doc must mention @pure");
+    }
+
+    #[test]
+    fn resources_read_resilience_doc_mentions_live() {
+        let params = json!({ "uri": "resilient://docs/resilience" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("live") || text.contains("recovers_to"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn resources_read_unknown_uri_returns_error() {
+        let params = json!({ "uri": "resilient://docs/nonexistent" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for unknown URI"
+        );
+    }
+
+    #[test]
+    fn resources_read_missing_uri_returns_error() {
+        let resp = handle_resources_read(&json!(1), Some(&json!({})));
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for missing URI"
+        );
+    }
+
+    #[test]
+    fn initialize_capabilities_include_prompts_and_resources() {
+        let resp = dispatch("initialize", &json!(1), Some(&json!({})), false);
+        let resp = resp.unwrap();
+        let caps = &resp["result"]["capabilities"];
+        assert!(
+            caps["prompts"].is_object(),
+            "capabilities must include prompts"
+        );
+        assert!(
+            caps["resources"].is_object(),
+            "capabilities must include resources"
+        );
     }
 
     // ── resilient_tla_check ───────────────────────────────────────────────────

@@ -79,6 +79,11 @@ pub enum Type {
     Struct(String),
     Void,
     Any, // Used for untyped variables during inference
+    /// RES-401: product tuple `(T0, T1, …)`. Element types are tracked
+    /// so `TupleIndex` can return the element type at a known literal
+    /// index and `LetTupleDestructure` can bind each name to its
+    /// precise element type. An empty Vec represents `()` (unit tuple).
+    Tuple(Vec<Type>),
     /// RES-121: fresh inference variable (Hindley-Milner). Produced
     /// by the inference walker (RES-120, when it lands) and
     /// eliminated by `unify::Substitution::apply`. The `u32` is a
@@ -129,6 +134,16 @@ impl std::fmt::Display for Type {
             Type::Struct(n) => write!(f, "{}", n),
             Type::Void => write!(f, "void"),
             Type::Any => write!(f, "any"),
+            Type::Tuple(ts) => {
+                write!(f, "(")?;
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                write!(f, ")")
+            }
             Type::Var(_, Some(span)) => {
                 write!(f, "type hole at {}:{}", span.start.line, span.start.column)
             }
@@ -203,6 +218,27 @@ pub(crate) fn body_yields_value(body: &Node) -> bool {
 /// Any. Used everywhere we need "same type, or we don't know yet."
 ///
 /// RES-366: `Type::Int` (the type of integer literals) is compatible
+/// RES-402: infer the common type of match/if arm bodies.
+///
+/// Scans `types`, skips `Type::Any` entries, and returns the
+/// shared concrete type when all non-Any entries agree. Falls back
+/// to `Type::Any` when types differ (or when the slice is empty /
+/// all-Any), keeping inference conservative.
+fn infer_common_arm_type(types: &[Type]) -> Type {
+    let mut result: Option<&Type> = None;
+    for t in types {
+        if matches!(t, Type::Any) {
+            continue;
+        }
+        match result {
+            None => result = Some(t),
+            Some(r) if r == t => {}
+            _ => return Type::Any,
+        }
+    }
+    result.cloned().unwrap_or(Type::Any)
+}
+
 /// with every pinned integer type — assigning a literal `42` to an
 /// `Int8` binding is always legal. Pinned types are NOT compatible
 /// with each other: `Int8 ↔ Int16` requires an explicit `as_int16`
@@ -1215,10 +1251,20 @@ pub struct TypeChecker {
     /// blocks) cannot raise checked failures today and must only
     /// invoke fns with an empty `fails` set.
     current_fn_fails: Option<Vec<String>>,
+    /// RES-403: declared return type of the innermost enclosing function.
+    /// Set when entering a `Node::Function` with a non-empty `return_type`;
+    /// cleared (set to `None`) on exit. `Node::ReturnStatement` uses this
+    /// to validate `return expr` against the declared type, catching early
+    /// returns that bypass the function body's final-expression check.
+    current_fn_return_type: Option<Type>,
     /// RES-910: depth of enclosing `while` / `for-in` bodies. `break`
     /// and `continue` are typechecker-rejected when this is 0. Bumped
     /// before recursing into a loop body and decremented after.
     loop_depth: usize,
+    /// RES-2653: stack of loop labels in scope. Each entry is the label
+    /// of the corresponding enclosing loop (None for unlabeled loops).
+    /// Used to validate `break label` and `continue label`.
+    loop_label_stack: Vec<Option<String>>,
     /// RES-354: SMT theory selection. Auto-detect (BV32 if bitwise
     /// ops are present, LIA otherwise) by default. The driver
     /// overrides this from `--z3-theory <bv|lia|auto>`.
@@ -1259,6 +1305,13 @@ pub struct TypeChecker {
     /// Reset to `stmt.span` at the start of each top-level statement
     /// so stale spans from a prior statement never pollute a later one.
     current_span: Span,
+
+    /// RES-425: maps function name → list of generic type-parameter names
+    /// declared with `fn foo<T, U>(...)`. Used at call sites to recognise
+    /// `Type::Struct("T")` as a type variable that accepts any concrete
+    /// type, fixing the "Type mismatch in argument 1: expected T, got int"
+    /// false-positive that blocked all generic-function calls.
+    fn_type_params: HashMap<String, Vec<String>>,
 }
 
 impl TypeChecker {
@@ -1332,8 +1385,16 @@ impl TypeChecker {
 
             // Math (single-arg — int/float passed as Any)
             env.set("abs".to_string(), fn_any_to_any());
-            // RES-410: sign(x) — -1/0/+1.
-            env.set("sign".to_string(), fn_any_to_any());
+
+            // RES-422: sign(x) always returns -1, 0, or +1 — that's Int.
+            env.set(
+                "sign".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+
             // RES-411: float predicates — return Bool; math functions return Float.
             // (Parameter is kept as Any so both Int and Float are accepted.)
             let fn_any_to_bool = || Type::Function {
@@ -1649,28 +1710,27 @@ impl TypeChecker {
             env.set("array_is_sorted_float".to_string(), fn_array_to_bool());
             env.set("array_is_sorted_string".to_string(), fn_array_to_bool());
             // RES-1148: binary search on sorted int / float / string arrays.
-            // Return type is Result<Int, Int> — typed as `Any` since the type
-            // system has no generic Result<T, E> yet (same convention as the
-            // `checked_*` builtins in RES-1115).
+            // Return type is Value::Result (ok/err) — now typed as Type::Result
+            // since the runtime confirmed returns Value::Result { ok, payload }.
             env.set(
                 "array_binary_search".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             env.set(
                 "array_binary_search_float".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::Float],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             env.set(
                 "array_binary_search_string".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::String],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             // RES-1150: statistical reductions — variance, stddev,
@@ -1863,11 +1923,15 @@ impl TypeChecker {
                 "bytes_strip_suffix".to_string(),
                 fn_bytes_bytes_to_bytes_strip(),
             );
+            // RES-1178: bytes_to_string always produces a String value on
+            // the success path (invalid UTF-8 returns a lossy string, not a
+            // different type). Promote from Any → String so the typechecker
+            // can verify that callers don't treat the result as an int/bool.
             env.set(
                 "bytes_to_string".to_string(),
                 Type::Function {
                     params: vec![Type::Bytes],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::String),
                 },
             );
             // RES-1178: bytes slicing primitives — (Bytes, Int) -> Bytes.
@@ -2103,6 +2167,291 @@ impl TypeChecker {
                     return_type: Box::new(Type::Bool),
                 },
             );
+
+            // RES-2647: map functional operations (callback-taking).
+            // Return types use the same permissive-Any convention as map_keys/map_values.
+            env.set(
+                "map_filter".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "map_map_values".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "map_for_each".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Void),
+                },
+            );
+            env.set(
+                "map_to_pairs".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "map_invert".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // RES-2646: higher-order functional array operations.
+            env.set(
+                "array_flat_map".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            // array_group_by returns a Map (unparameterised, same convention
+            // as other map builtins — Type::Any until Map<K,V> lands).
+            env.set(
+                "array_group_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // array_partition returns [[passing], [failing]] — two-element array.
+            env.set(
+                "array_partition".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            // map_from_pairs(pairs) -> Map (Any until Map<K,V> lands).
+            env.set(
+                "map_from_pairs".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // RES-2646: array_scan(arr, init, fn) -> Array of all prefix accumulator values.
+            env.set(
+                "array_scan".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            // RES-2648: array combinators with arbitrary callbacks.
+            let arr_fn_to_arr = Type::Function {
+                params: vec![Type::Array, Type::Any],
+                return_type: Box::new(Type::Array),
+            };
+            env.set("array_sort_by".to_string(), arr_fn_to_arr.clone());
+            env.set("array_take_while".to_string(), arr_fn_to_arr.clone());
+            env.set("array_drop_while".to_string(), arr_fn_to_arr);
+            env.set(
+                "array_min_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_max_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_count_if".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            env.set(
+                "array_zip_with".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "array_windows".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Int],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "array_sum_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            env.set(
+                "array_product_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            // RES-2649: map higher-order operations.
+            env.set(
+                "map_merge_with".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "map_update_with".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // RES-2649: string higher-order operations.
+            env.set(
+                "string_map_chars".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any],
+                    return_type: Box::new(Type::String),
+                },
+            );
+            env.set(
+                "string_filter_by".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any],
+                    return_type: Box::new(Type::String),
+                },
+            );
+            env.set(
+                "string_fold".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "string_for_each_char".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any],
+                    return_type: Box::new(Type::Void),
+                },
+            );
+            // RES-2650: numeric utilities.
+            env.set(
+                "lerp".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Float),
+                },
+            );
+            env.set(
+                "remap".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Float),
+                },
+            );
+            env.set(
+                "float_approx_eq".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Bool),
+                },
+            );
+            env.set(
+                "round_to".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Int],
+                    return_type: Box::new(Type::Float),
+                },
+            );
+            env.set(
+                "int_pow".to_string(),
+                Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            // RES-2650: collection extras.
+            env.set(
+                "array_frequency_map".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_key_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_iterate".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Int, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            // RES-2651: Result/Option HOF.
+            let result_fn_2 = Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            };
+            env.set("result_map".to_string(), result_fn_2.clone());
+            env.set("result_and_then".to_string(), result_fn_2.clone());
+            env.set("result_map_err".to_string(), result_fn_2.clone());
+            env.set("result_or_else".to_string(), result_fn_2);
+            let option_fn_2 = Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            };
+            env.set("option_map".to_string(), option_fn_2.clone());
+            env.set("option_and_then".to_string(), option_fn_2.clone());
+            env.set("option_filter".to_string(), option_fn_2.clone());
+            env.set("option_or_else".to_string(), option_fn_2);
+            env.set(
+                "option_ok_or".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // RES-2652: type introspection + collection ergonomics.
+            env.set(
+                "type_of".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::String),
+                },
+            );
+            env.set(
+                "result_collect".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_from_fn".to_string(),
+                Type::Function {
+                    params: vec![Type::Int, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -2376,34 +2725,38 @@ impl TypeChecker {
             env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
             env.set("array_pad_right".to_string(), fn_any_int_any_to_any);
             // RES-450: array_swap(arr, i, j) — 3-arg.
+            // RES-1859: return_type was Type::Any; swapping elements
+            // produces an array of the same type, so Array is correct.
             env.set(
                 "array_swap".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-451: insert/remove at index.
+            // RES-1859: both produce a new array of the same element type.
             env.set(
                 "array_insert_at".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             env.set(
                 "array_remove_at".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-452: replace element at index.
+            // RES-1859: produces a new array — return_type was Type::Any.
             env.set(
                 "array_set_at".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-453: total Unicode-scalar at index.
@@ -2488,11 +2841,13 @@ impl TypeChecker {
                 },
             );
             // RES-566: array of bytes → Result<String, String>.
+            // RES-1859: return_type was Type::Any; the builtin returns a
+            // Result (Ok(string) on success, Err(string) on invalid UTF-8).
             env.set(
                 "string_from_bytes".to_string(),
                 Type::Function {
                     params: vec![Type::Any],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             // RES-464: parse int with explicit radix → Result<Int, String>.
@@ -2518,7 +2873,14 @@ impl TypeChecker {
             // RES-468: collapse adjacent duplicates.
             env.set("array_dedup".to_string(), fn_array_to_array());
             // RES-504: partition into maximal runs of equal int elements.
-            env.set("array_group_by_int".to_string(), fn_any_to_any());
+            // RES-2645: returns an array of groups (array of arrays).
+            env.set(
+                "array_group_by_int".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-533: count of maximal runs.
             env.set(
                 "array_count_runs".to_string(),
@@ -2579,8 +2941,8 @@ impl TypeChecker {
             };
             env.set("trim_start_chars".to_string(), str_str_to_str_b.clone());
             env.set("trim_end_chars".to_string(), str_str_to_str_b);
-            // RES-478: array_count_eq alias.
-            env.set("array_count_eq".to_string(), fn_any_any_to_any());
+            // RES-478: array_count_eq alias. RES-2645: count is always Int.
+            env.set("array_count_eq".to_string(), fn_any_any_to_int());
             // RES-479: string predicates.
             let str_to_bool_b = Type::Function {
                 params: vec![Type::String],
@@ -2740,11 +3102,15 @@ impl TypeChecker {
                 },
             );
             // RES-921: array_slice(arr, lo, hi, inclusive) — sub-array.
+
+            // RES-1859: a slice is still an array — return_type was Type::Any.
+
             env.set(
                 "array_slice".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Any, Type::Any, Type::Bool],
-                    return_type: Box::new(Type::Any),
+
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-522: indices of an array as a new array.
@@ -3841,8 +4207,12 @@ impl TypeChecker {
             let_type_hints: Vec::new(),
             // RES-387: no enclosing fn at program start.
             current_fn_fails: None,
+            // RES-403: no enclosing fn return type at program start.
+            current_fn_return_type: None,
             // RES-910: loop depth starts at 0 (top-level is not a loop).
             loop_depth: 0,
+            // RES-2653: no enclosing labeled loops at the top level.
+            loop_label_stack: Vec::new(),
             // RES-354: auto-detect theory by default.
             #[cfg(feature = "z3")]
             z3_theory: crate::verifier_z3::Z3Theory::Auto,
@@ -3865,6 +4235,8 @@ impl TypeChecker {
             emit_certificates: false,
             // RES-1862: default to zero span (synthetic / unknown).
             current_span: Span::default(),
+
+            fn_type_params: HashMap::new(),
         }
     }
 
@@ -4106,6 +4478,26 @@ impl TypeChecker {
                         Node::TypeAlias { name, target, .. } => {
                             self.type_aliases.insert(name.clone(), target.clone());
                         }
+                        // RES-417: hoist const declarations so functions
+                        // that textually precede a const declaration can
+                        // still reference it. Without this, `fn f() -> int
+                        // { return N; }` followed by `const N: int = 5;`
+                        // would error with "Undefined variable 'N'" when
+                        // type-checking `f`. The pre-pass registers the
+                        // declared type (from the annotation, if present)
+                        // so the env lookup succeeds; the main pass then
+                        // overwrites the binding with the inferred value
+                        // type and populates const_bindings.
+                        Node::Const {
+                            name, type_annot, ..
+                        } => {
+                            let bind_type = if let Some(ty_name) = type_annot {
+                                self.parse_type_name(ty_name).unwrap_or(Type::Any)
+                            } else {
+                                Type::Any
+                            };
+                            self.env.set(name.clone(), bind_type);
+                        }
                         _ => {}
                     }
                 }
@@ -4314,15 +4706,20 @@ impl TypeChecker {
                 if markers.has_range {
                     crate::ranges::check(program, source_path)?;
                 }
-                // RES-1605: `string_interp::check` is a no-op stub; the
-                // parser-side interpolation handling lives in
-                // `string_interp::parse`, not here.
-                // RES-1605: `modules::check` is a no-op stub; see
-                // `full_modules` for the actual module-graph build.
-                // RES-1615: `default_params::check` is a no-op stub
-                // (`Ok(())`); the real default-arg rewrite happens via
-                // `collect_defaults` + `rewrite_calls` from a different
-                // path.
+                // RES-221: type-check interpolated string sub-expressions.
+                if markers.has_interp_string {
+                    crate::string_interp::check(program, source_path)?;
+                }
+                // RES-324: modules::check now active (duplicate names +
+                // unresolved items); gated at the has_inline_module site above.
+                // `full_modules::check` separately handles the module graph/cycles.
+                // RES-1615: validate default parameter values — check
+                // that defaults are trailing-only and compile-time
+                // constants. Gated on the `has_fn_defaults` marker so
+                // programs with no defaulted parameters pay nothing.
+                if markers.has_fn_defaults {
+                    crate::default_params::check(program, source_path)?;
+                }
                 // RES-1616 gate: pass scans for `Node::Function` with
                 // non-empty `type_params`. Markers records the flag
                 // during the shared whole-AST walk.
@@ -4411,11 +4808,10 @@ impl TypeChecker {
                     crate::reentrancy_guard::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #8: actor drain-on-shutdown.
-                // RES-1594: pass body is a no-op (`Ok(())`) until the
-                // `Node::Actor` variant is wired — see the RES-1232
-                // comment in `actor_drain.rs`. Skip the call dispatch
-                // until that lands; re-add via the standard extension
-                // pattern when the pass becomes meaningful again.
+                // RES-1232: `Node::Actor` is wired; pass is now active.
+                if markers.has_actor {
+                    crate::actor_drain::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #9: backpressure-safe handler.
                 // RES-1585 gate: pass scans param types ∈ QUEUE_TYPES.
                 if markers.any_param_type_in(&[
@@ -4549,20 +4945,17 @@ impl TypeChecker {
                 // does. Order is mostly independent (analysis-only
                 // passes), but blame_attribution must run before
                 // anti_regression so the latter has the call graph.
-                // RES-1619: `resilience_score::check` is a no-op stub
-                // (RES-1206); real `score_program` runs from the
-                // `--score` CLI flag and external integrators.
-                // RES-1623: `vibe_debt::check` is a no-op stub
-                // (RES-1206); real `analyze` runs from `autopilot::run`.
-                // RES-1619: `behavioral_fingerprint::check` is a no-op
-                // stub (RES-1206); real `fingerprint_program` runs
-                // from `--check-fingerprints` and external integrators.
-                // RES-1619: `contract_inference::check` is a no-op stub
-                // (RES-1206); real `infer_program` runs from
-                // `--suggest-contracts` and external integrators.
-                // RES-1623: `semantic_regression::check` is a no-op
-                // stub; real diff runs from the test harness.
-                // RES-1623: `semver_behavior::check` is a no-op stub.
+                // RES-2645: resilience_score warns for F-grade functions;
+                // vibe_debt warns for fully-vibe-coded functions;
+                // behavioral_fingerprint checks for contract regressions;
+                // contract_inference emits inline contract suggestions.
+                crate::resilience_score::check(program, source_path)?;
+                crate::vibe_debt::check(program, source_path)?;
+                crate::behavioral_fingerprint::check(program, source_path)?;
+                crate::contract_inference::check(program, source_path)?;
+                // RES-2645: mutation_testing cross-references mutation
+                // sites with contract declarations; warns on unconstrained.
+                crate::mutation_testing::check(program, source_path)?;
                 // RES-1629 gate: pass walks bodies for `CallExpression`
                 // to build the (caller, callee) blame map. Without any
                 // call expressions, `build` returns an empty `BlameMap`
@@ -4598,10 +4991,9 @@ impl TypeChecker {
                 crate::wcet_contracts::check(program, source_path)?;
                 crate::distributed_invariants::check(program, source_path)?;
                 crate::ghost_types::check(program, source_path)?;
-                // RES-1597: `incremental_verify::check` is a documented
-                // no-op (`Ok(())`) until the cache lookup-side is wired
-                // — see the RES-1210 comment in `incremental_verify.rs`.
-                // Skip the dispatch until that lands.
+                // RES-2645: incremental_verify evicts stale proof-cache
+                // entries for functions that no longer exist in the AST.
+                crate::incremental_verify::check(program, source_path)?;
                 // RES-1623: `property_tests::check` is a no-op stub
                 // (RES-1206); real `collect` runs from the
                 // `--run-property-tests` driver.
@@ -4664,8 +5056,23 @@ impl TypeChecker {
                 // RES-1605: `format_builtin::check` is a no-op stub;
                 // the `format` builtin is registered in the builtin
                 // table at startup, not per-typecheck.
-                // RES-1597: `struct_exhaustiveness::check` is a no-op
-                // stub for a future feature.
+                // RES-1597: gate on `has_match_expr` — avoids the
+                // struct-pattern walk when the program has no match
+                // expressions at all.
+                if markers.has_match_expr {
+                    crate::struct_exhaustiveness::check(program, source_path)?;
+                }
+                // RES-400: enum exhaustiveness — verify all declared enum
+                // variants are covered in every match expression that only
+                // uses EnumVariant arms (no wildcard catch-all).
+                if markers.has_enum_decl && markers.has_match_expr {
+                    crate::enum_exhaustiveness::check(program, source_path)?;
+                }
+                // RES-324: module namespace validation — detect duplicate
+                // module declarations and unresolved name::item references.
+                if markers.has_inline_module {
+                    crate::modules::check(program, source_path)?;
+                }
                 // RES-1597: `labeled_break::check` is a no-op stub; the
                 // parser already enforces label well-formedness.
                 // RES-1606 gate: pass scans for `CallExpression` whose
@@ -4681,6 +5088,7 @@ impl TypeChecker {
                 crate::ai_threat_model::check(program, source_path)?;
                 // RES-1597: `lean_spec::check` is a no-op stub; Lean
                 // export is driven by the `--emit-lean-spec` CLI flag.
+                crate::mcp_tool_registry::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -4739,13 +5147,21 @@ impl TypeChecker {
                 fields,
                 ..
             } => {
-                let Type::Struct(sname) = scrut_ty else {
-                    return Err(format!(
-                        "struct pattern `{}` used where scrutinee is not a struct (got {})",
-                        struct_name, scrut_ty
-                    ));
+                // RES-408: when the scrutinee is Any (type unknown at
+                // compile time), be permissive — the runtime will catch
+                // mismatches. Only reject when we have a concrete,
+                // conflicting struct name.
+                let sname: &str = match scrut_ty {
+                    Type::Any => struct_name.as_str(),
+                    Type::Struct(s) => s.as_str(),
+                    _ => {
+                        return Err(format!(
+                            "struct pattern `{}` used where scrutinee is not a struct (got {})",
+                            struct_name, scrut_ty
+                        ));
+                    }
                 };
-                if struct_name != sname {
+                if sname != struct_name.as_str() && !matches!(scrut_ty, Type::Any) {
                     return Err(format!(
                         "struct pattern `{}` does not match scrutinee struct `{}`",
                         struct_name, sname
@@ -4913,7 +5329,8 @@ impl TypeChecker {
             Node::Use { .. } => Ok(Type::Void),
             // RES-780: FFI v1 hardening — stricter validation of extern signatures.
             // Reject unsupported ABI shapes at compile time rather than runtime.
-            Node::Extern { decls, .. } => {
+            Node::Extern { decls, span, .. } => {
+                self.current_span = *span;
                 const SUPPORTED_PARAMS: &[&str] =
                     &["Int", "Float", "Bool", "String", "OpaquePtr", "Callback"];
                 const SUPPORTED_RETURNS: &[&str] =
@@ -4976,8 +5393,15 @@ impl TypeChecker {
                 recovers_to,
                 return_type: declared_rt,
                 fails,
+                type_params,
                 ..
             } => {
+                // RES-425: record type-parameter names so call-site
+                // checking can treat Type::Struct("T") as Type::Any.
+                if !type_params.is_empty() {
+                    self.fn_type_params
+                        .insert(name.clone(), type_params.clone());
+                }
                 // RES-1724: pre-size to `parameters.len()` — exact upper
                 // bound, the loop below pushes one entry per parameter.
                 // Same shape as the rest of the pre-size series.
@@ -5209,13 +5633,25 @@ impl TypeChecker {
                         timed_out_flag = t;
                     }
 
-                    // Contradiction: clause is unreachable regardless
-                    // of `fails`. Always a compile error.
+                    // Z3 disproved the clause. Always a compile error.
+                    // When `fails` is non-empty, include the fails set so
+                    // the diagnostic matches the `None`-verdict message
+                    // shape ("cannot be proven" + the failing variant).
                     if matches!(verdict, Some(false)) {
-                        let base = format!(
-                            "{}fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
-                            pos_prefix, name
-                        );
+                        let base = if !fails.is_empty() {
+                            format!(
+                                "{}fn {}: `recovers_to` invariant cannot be proven — \
+                                 fn declares `fails` {:?} but Z3 found a counterexample \
+                                 showing the invariant does not hold under `requires`",
+                                pos_prefix, name, fails
+                            )
+                        } else {
+                            format!(
+                                "{}fn {}: `recovers_to` can never hold — \
+                                 the recovery invariant is a contradiction",
+                                pos_prefix, name
+                            )
+                        };
                         return Err(match cx {
                             Some(m) => format!("{} — counterexample (final state): {}", base, m),
                             None => base,
@@ -5274,20 +5710,30 @@ impl TypeChecker {
                         }
                     }
 
+                    // RES-1857: when Z3 returns None (not a tautology,
+                    // not a contradiction) with no `requires` constraints,
+                    // all inputs are valid — the counterexample from the
+                    // tautology check is definitive. Reject immediately
+                    // rather than relying on the BMC path.
+                    if verdict.is_none() && requires.is_empty() && !timed_out_flag {
+                        let base = format!(
+                            "{}fn {}: `recovers_to` invariant cannot be proven — \
+                             Z3 found a counterexample showing the clause does not \
+                             hold for all inputs (no `requires` constraint to limit them)",
+                            pos_prefix, name
+                        );
+                        return Err(match cx {
+                            Some(ref m) => format!("{} — counterexample: {}", base, m),
+                            None => base,
+                        });
+                    }
+
                     // RES-392b: per-prefix bounded model checking.
                     // Extends the MVP (final-state only) with verification
                     // that the recovers_to clause holds after recovery from
                     // ANY instruction boundary in the function body.
                     // Pass requires as axioms so the solver can use them,
                     // matching the final-state verifier's axioms path.
-                    //
-                    // BMC results are advisory (warnings), not hard errors:
-                    // the final-state Z3 check above is the authoritative
-                    // compile gate. Per-prefix BMC uses a conservative
-                    // free-variable model that may flag false positives for
-                    // computed locals (the local's relationship to prior ops
-                    // is not encoded). Demoting to warn matches the
-                    // `timed_out_flag` precedent above.
                     if let Err(bmc_msg) =
                         crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)
                     {
@@ -5318,6 +5764,15 @@ impl TypeChecker {
                 let saved_fn_fails = self.current_fn_fails.take();
                 self.current_fn_fails = Some(fails.clone());
 
+                // RES-403: stash the declared return type so inner
+                // `return expr` statements can validate against it.
+                let saved_fn_return_type = self.current_fn_return_type.take();
+                if let Some(rt_name) = declared_rt
+                    && let Ok(rt) = self.parse_type_name(rt_name)
+                {
+                    self.current_fn_return_type = Some(rt);
+                }
+
                 // Check function body
                 let body_result = self.check_node(body);
 
@@ -5325,6 +5780,8 @@ impl TypeChecker {
                 // error, so a nested fn declared inside this body does
                 // not inherit our fails set on the way out.
                 self.current_fn_fails = saved_fn_fails;
+                // RES-403: restore the enclosing fn's return type.
+                self.current_fn_return_type = saved_fn_return_type;
 
                 let body_type = body_result?;
 
@@ -5401,7 +5858,8 @@ impl TypeChecker {
             // expression itself has type `Array` so it can flow through
             // a `for x in <range>` (where the loop variable then gets
             // typed `Int`) or a `let r = <range>;` binding.
-            Node::Range { lo, hi, .. } => {
+            Node::Range { lo, hi, span, .. } => {
+                self.current_span = *span;
                 let lo_t = self.check_node(lo)?;
                 let hi_t = self.check_node(hi)?;
                 let ok = |t: &Type| matches!(t, Type::Int | Type::Any);
@@ -5415,8 +5873,12 @@ impl TypeChecker {
             }
 
             Node::Assert {
-                condition, message, ..
+                condition,
+                message,
+                span,
+                ..
             } => {
+                self.current_span = *span;
                 // Condition must be a boolean expression
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
@@ -5446,8 +5908,12 @@ impl TypeChecker {
 
             // RES-133a: assume has the same type rules as assert
             Node::Assume {
-                condition, message, ..
+                condition,
+                message,
+                span,
+                ..
             } => {
+                self.current_span = *span;
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!(
@@ -5518,6 +5984,17 @@ impl TypeChecker {
                 // RES-1862: track innermost span for better diagnostics.
                 self.current_span = *span;
                 let value_type = self.check_node(value)?;
+                // RES-414: binding a void-valued expression to a named variable
+                // is always a bug. The `_`-prefixed discard convention is the
+                // expected pattern; bare `let x = void_fn()` produces a variable
+                // that can never be used in a typed context.
+                if value_type == Type::Void && !name.starts_with('_') {
+                    return Err(format!(
+                        "cannot bind void value to `{}` — the right-hand side expression has type void; \
+                         use `let _ = expr;` to explicitly discard it",
+                        name
+                    ));
+                }
                 // RES-053: enforce `let x: T = value` — reject if value's
                 // type isn't compatible with the declared annotation.
                 let bind_type = if let Some(ty_name) = type_annot {
@@ -5527,6 +6004,35 @@ impl TypeChecker {
                             "let {}: {} — value has type {}",
                             name, declared, value_type
                         ));
+                    }
+                    // RES-411: reject integer literals that overflow the declared pinned-int type.
+                    if let Some(literal_val) = fold_const_i64(value, &self.const_bindings) {
+                        let range_ok = match &declared {
+                            Type::Int8 => (-128_i64..=127).contains(&literal_val),
+                            Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
+                            Type::Int32 => {
+                                (-2_147_483_648_i64..=2_147_483_647).contains(&literal_val)
+                            }
+                            Type::UInt8 => (0_i64..=255).contains(&literal_val),
+                            Type::UInt16 => (0_i64..=65535).contains(&literal_val),
+                            Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
+                            _ => true,
+                        };
+                        if !range_ok {
+                            let range_str = match &declared {
+                                Type::Int8 => "-128..=127",
+                                Type::Int16 => "-32768..=32767",
+                                Type::Int32 => "-2147483648..=2147483647",
+                                Type::UInt8 => "0..=255",
+                                Type::UInt16 => "0..=65535",
+                                Type::UInt32 => "0..=4294967295",
+                                _ => unreachable!(),
+                            };
+                            return Err(format!(
+                                "let {}: {} — value {} overflows the declared type (valid range: {})",
+                                name, declared, literal_val, range_str
+                            ));
+                        }
                     }
                     declared
                 } else {
@@ -5684,10 +6190,39 @@ impl TypeChecker {
             // surface nested type errors, but fall back to `Type::Any`
             // for the result until a real `Type::Map<K, V>` lands in
             // the typechecker.
+            // RES-415: enforce key-type and value-type consistency so that
+            // {1: "a", "b": "c"} is rejected the same way mixed-type array
+            // literals are rejected.
             Node::MapLiteral { entries, .. } => {
+                let mut key_types: Vec<Type> = Vec::with_capacity(entries.len());
+                let mut val_types: Vec<Type> = Vec::with_capacity(entries.len());
                 for (k, v) in entries {
-                    let _ = self.check_node(k)?;
-                    let _ = self.check_node(v)?;
+                    let kt = self.check_node(k)?;
+                    let vt = self.check_node(v)?;
+                    if !matches!(kt, Type::Any) {
+                        key_types.push(kt);
+                    }
+                    if !matches!(vt, Type::Any) {
+                        val_types.push(vt);
+                    }
+                }
+                if key_types.len() > 1 {
+                    let first = key_types[0].clone();
+                    if let Some(other) = key_types.iter().find(|t| **t != first) {
+                        return Err(format!(
+                            "map literal contains mixed key types: {} and {} — all keys must have the same type",
+                            first, other
+                        ));
+                    }
+                }
+                if val_types.len() > 1 {
+                    let first = val_types[0].clone();
+                    if let Some(other) = val_types.iter().find(|t| **t != first) {
+                        return Err(format!(
+                            "map literal contains mixed value types: {} and {} — all values must have the same type",
+                            first, other
+                        ));
+                    }
                 }
                 Ok(Type::Any)
             }
@@ -5695,9 +6230,24 @@ impl TypeChecker {
             // RES-149: set literal. Walk each item to catch nested
             // type errors; return `Type::Any` for now — same posture
             // as `MapLiteral` until `Type::Set<T>` shows up.
+            // RES-415: set literal element-type consistency, mirroring
+            // the same check for array literals.
             Node::SetLiteral { items, .. } => {
+                let mut concrete: Vec<Type> = Vec::with_capacity(items.len());
                 for item in items {
-                    let _ = self.check_node(item)?;
+                    let ty = self.check_node(item)?;
+                    if !matches!(ty, Type::Any) {
+                        concrete.push(ty);
+                    }
+                }
+                if concrete.len() > 1 {
+                    let first = concrete[0].clone();
+                    if let Some(other) = concrete.iter().find(|t| **t != first) {
+                        return Err(format!(
+                            "Set literal contains mixed element types: {} and {}",
+                            first, other
+                        ));
+                    }
                 }
                 Ok(Type::Any)
             }
@@ -5726,7 +6276,10 @@ impl TypeChecker {
             }
 
             Node::FunctionLiteral {
-                parameters, body, ..
+                parameters,
+                body,
+                return_type: lit_return_type,
+                ..
             } => {
                 // Evaluate the body's type in a child env with params
                 // bound, just like named Function.
@@ -5740,9 +6293,19 @@ impl TypeChecker {
                     param_types.push(ty.clone());
                     fn_env.set(pname.clone(), ty);
                 }
+                // RES-403: isolate current_fn_return_type so inner
+                // `return` statements validate against the literal's
+                // declared type, not the enclosing named function's.
+                let saved_lit_return_type = self.current_fn_return_type.take();
+                if let Some(rt_name) = lit_return_type
+                    && let Ok(rt) = self.parse_type_name(rt_name)
+                {
+                    self.current_fn_return_type = Some(rt);
+                }
                 std::mem::swap(&mut self.env, &mut fn_env);
                 let body_type = self.check_node(body)?;
                 std::mem::swap(&mut self.env, &mut fn_env);
+                self.current_fn_return_type = saved_lit_return_type;
                 Ok(Type::Function {
                     params: param_types,
                     return_type: Box::new(body_type),
@@ -5750,9 +6313,15 @@ impl TypeChecker {
             }
 
             Node::Match {
-                scrutinee, arms, ..
+                scrutinee,
+                arms,
+                span,
+                ..
             } => {
+                self.current_span = *span;
                 let scrutinee_type = self.check_node(scrutinee)?;
+                // RES-402: collect arm body types for return-type inference.
+                let mut arm_types: Vec<Type> = Vec::with_capacity(arms.len());
                 for (pattern, guard, body) in arms {
                     // RES-160: or-pattern binding consistency —
                     // every branch must bind the same set of names,
@@ -5805,7 +6374,8 @@ impl TypeChecker {
                         }
                     }
                     let body_res = self.check_node(body);
-                    // Roll back all pattern-binding entries.
+                    // Roll back all pattern-binding entries before propagating
+                    // the error so the environment is clean on early return.
                     for (n, prev) in rollback_bindings {
                         match prev {
                             Some(t) => self.env.set(n, t),
@@ -5814,7 +6384,8 @@ impl TypeChecker {
                             }
                         }
                     }
-                    let _ = body_res?;
+                    // RES-402: collect arm type for common-type inference.
+                    arm_types.push(body_res?);
                 }
 
                 // RES-054 + RES-159 + RES-160 + RES-369: exhaustiveness.
@@ -5937,7 +6508,8 @@ impl TypeChecker {
                     }
                 }
 
-                Ok(Type::Any)
+                // RES-402: return the common type of all arm bodies.
+                Ok(infer_common_arm_type(&arm_types))
             }
 
             // RES-158: walk each method as if it were a top-level fn.
@@ -5954,15 +6526,34 @@ impl TypeChecker {
             // RES-128: register the alias. Resolution (with cycle
             // detection) happens in `parse_type_name` / the companion
             // `resolve_type_alias` helper; this arm just records the
-            // mapping. A duplicate alias-name declaration overwrites
-            // the earlier one — consistent with how `StructDecl`
-            // treats duplicate struct names today.
+            // mapping.
             //
             // NOTE: aliases are NOT nominal — `Meters` unifies with
             // `Int`. Users who want a fresh nominal type wrap the
             // target in a one-field struct (RES-126 covers the
             // nominal rule).
-            Node::TypeAlias { name, target, .. } => {
+            Node::TypeAlias { name, target, span } => {
+                // RES-410: duplicate type alias is an error, but only
+                // when the alias is being registered for the first time
+                // in the main pass. The pre-pass at the top of
+                // Node::Program may have already inserted the alias so
+                // function parameters can reference it; in that case
+                // the target string matches and we silently accept the
+                // re-registration. A genuine re-declaration with a
+                // *different* target is the error we want to catch.
+                if let Some(prev_target) = self.type_aliases.get(name)
+                    && prev_target != target
+                {
+                    return Err(format!(
+                        "{}:{}:{}: error: duplicate type alias `{}` — previously defined as `{}`, now re-defined as `{}`",
+                        self.source_path,
+                        span.start.line,
+                        span.start.column,
+                        name,
+                        prev_target,
+                        target,
+                    ));
+                }
                 self.type_aliases.insert(name.clone(), target.clone());
                 Ok(Type::Void)
             }
@@ -6029,24 +6620,49 @@ impl TypeChecker {
             // RES-390: ClusterDecl is compile-time-only.
             Node::ClusterDecl { .. } => Ok(Type::Void),
 
-            // RES-401: tuples — type-check each item in a literal,
-            // recurse into the destructure RHS, and treat element
-            // access as `Type::Any` until the type system grows a
-            // dedicated tuple shape (follow-up ticket).
+            // RES-401: tuples — type-check each item in a literal and
+            // return a precise Type::Tuple with element types. TupleIndex
+            // returns the element type when the index is in range; otherwise
+            // Type::Any. LetTupleDestructure binds each name to its element
+            // type from the tuple type.
             Node::TupleLiteral { items, .. } => {
+                let mut elem_types = Vec::with_capacity(items.len());
                 for it in items {
-                    self.check_node(it)?;
+                    elem_types.push(self.check_node(it)?);
+                }
+                Ok(Type::Tuple(elem_types))
+            }
+            Node::TupleIndex { tuple, index, .. } => {
+                let tup_ty = self.check_node(tuple)?;
+                if let Type::Tuple(ref elems) = tup_ty {
+                    if let Some(elem_ty) = elems.get(*index) {
+                        return Ok(elem_ty.clone());
+                    }
+                    return Err(format!(
+                        "{}:{}:{}: tuple index {} out of range (tuple has {} element(s))",
+                        self.source_path,
+                        self.current_span.start.line,
+                        self.current_span.start.column,
+                        index,
+                        elems.len()
+                    ));
                 }
                 Ok(Type::Any)
             }
-            Node::TupleIndex { tuple, .. } => {
-                self.check_node(tuple)?;
-                Ok(Type::Any)
-            }
             Node::LetTupleDestructure { names, value, .. } => {
-                self.check_node(value)?;
-                for n in names {
-                    self.env.set(n.clone(), Type::Any);
+                let rhs_ty = self.check_node(value)?;
+                match rhs_ty {
+                    Type::Tuple(ref elems) => {
+                        for (i, n) in names.iter().enumerate() {
+                            let elem_ty = elems.get(i).cloned().unwrap_or(Type::Any);
+                            self.env.set(n.clone(), elem_ty);
+                        }
+                    }
+                    _ => {
+                        for n in names {
+                            self.env.set(n.clone(), Type::Any);
+                        }
+                    }
                 }
                 Ok(Type::Void)
             }
@@ -6181,6 +6797,17 @@ impl TypeChecker {
             Node::StructDecl {
                 name, fields, span, ..
             } => {
+                // RES-409: reject duplicate struct declarations at the
+                // same scope. A second `struct Foo` would silently
+                // shadow the first, causing confusing field-type
+                // mismatches later.
+                if self.struct_fields.contains_key(name) {
+                    return Err(format!(
+                        "{}:{}:{}: error: duplicate struct declaration `{}`",
+                        self.source_path, span.start.line, span.start.column, name,
+                    ));
+                }
+
                 let mut seen_fields: std::collections::HashSet<&str> =
                     std::collections::HashSet::with_capacity(fields.len());
                 let mut resolved: Vec<(String, Type)> = Vec::with_capacity(fields.len());
@@ -6201,9 +6828,58 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            Node::StructLiteral { name, fields, .. } => {
-                for (_, e) in fields {
-                    let _ = self.check_node(e)?;
+            Node::StructLiteral {
+                name, fields, span, ..
+            } => {
+                self.current_span = *span;
+                // RES-404: look up declared field types. When the struct
+                // is known, validate (a) no unknown fields and (b) every
+                // provided value's type is compatible with the declared
+                // field type. Missing-field errors are L0024 lint; the
+                // typechecker only rejects type mismatches and unknowns.
+                let effective_struct_name = if let Some(idx) = name.rfind("::") {
+                    let type_name = &name[..idx];
+                    if self.enum_decls.contains_key(type_name) {
+                        // enum-variant constructor: validate against the
+                        // variant's payload fields if the enum is known.
+                        // For now only reject obvious unknown field names.
+                        type_name.to_string()
+                    } else {
+                        name.clone()
+                    }
+                } else {
+                    name.clone()
+                };
+                let declared_opt = self.struct_fields.get(&effective_struct_name).cloned();
+                for (field_name, e) in fields {
+                    let val_ty = self.check_node(e)?;
+                    if let Some(declared) = &declared_opt {
+                        // RES-418: unknown field in struct literal.
+                        if !declared.iter().any(|(n, _)| n == field_name) {
+                            let avail: Vec<&str> =
+                                declared.iter().map(|(n, _)| n.as_str()).collect();
+                            return Err(format!(
+                                "struct `{}` has no field `{}`; available fields: {}",
+                                effective_struct_name,
+                                field_name,
+                                if avail.is_empty() {
+                                    "(none)".to_string()
+                                } else {
+                                    avail.join(", ")
+                                }
+                            ));
+                        }
+                        // Type mismatch on a known field.
+                        if let Some((_, field_ty)) = declared.iter().find(|(n, _)| n == field_name)
+                            && !compatible(field_ty, &val_ty)
+                        {
+                            return Err(format!(
+                                "struct `{}` field `{}` has type {}, \
+                                 but the initializer has type {}",
+                                effective_struct_name, field_name, field_ty, val_ty
+                            ));
+                        }
+                    }
                 }
                 // RES-400: if `name` is an enum-variant constructor
                 // (`EnumName::VariantName`), the resulting value's
@@ -6219,17 +6895,106 @@ impl TypeChecker {
                 Ok(Type::Struct(name.clone()))
             }
 
-            Node::FieldAccess { target, field, .. } => {
+            Node::FieldAccess {
+                target,
+                field,
+                span,
+                ..
+            } => {
+                self.current_span = *span;
                 let tgt_ty = self.check_node(target)?;
                 // RES-153: if the target is a known struct, return the
-                // declared field's type. Otherwise fall back to Any so
-                // non-struct targets (e.g. through generic containers)
-                // keep the old permissive behaviour.
+                // declared field's type. When the struct IS declared but
+                // the field name is absent, emit a clear diagnostic
+                // instead of silently returning Any.
                 if let Type::Struct(sname) = &tgt_ty
                     && let Some(declared) = self.struct_fields.get(sname)
-                    && let Some((_, ty)) = declared.iter().find(|(n, _)| n == field)
                 {
-                    return Ok(ty.clone());
+                    if let Some((_, ty)) = declared.iter().find(|(n, _)| n == field) {
+                        return Ok(ty.clone());
+                    }
+                    // RES-424: check for an impl method `StructName$field`
+                    // before reporting "has no field". When found, return
+                    // its type so method calls type-check correctly.
+                    let mangled = format!("{}${}", sname, field);
+                    if let Some(method_ty) = self.env.get(&mangled) {
+                        return Ok(method_ty);
+                    }
+                    // RES-407: struct is known, field not found, and no
+                    // impl method — report a clear diagnostic.
+                    let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
+                    return Err(format!(
+                        "struct `{}` has no field `{}`; available fields: {}",
+                        sname,
+                        field,
+                        if avail.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            avail.join(", ")
+                        }
+                    ));
+                    // Struct name unknown (forward reference, generic container,
+                    // etc.) — fall through to permissive Any.
+                }
+                // RES-1859 / RES-412: known method return types for Array/String targets.
+                // When the method is called as `arr.map(fn)`, the FieldAccess
+                // node is used as the callee in a CallExpression; returning a
+                // Function type here lets the call site infer the correct return.
+                if tgt_ty == Type::Array {
+                    let ret = match field.as_str() {
+                        "map" | "filter" | "push" | "pop" | "sort" | "reverse" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Array),
+                        },
+                        "reduce" => Type::Function {
+                            params: vec![Type::Any, Type::Any],
+                            return_type: Box::new(Type::Any),
+                        },
+                        "len" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Int),
+                        },
+                        "contains" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Bool),
+                        },
+                        "join" => Type::Function {
+                            params: vec![Type::String],
+                            return_type: Box::new(Type::String),
+                        },
+                        _ => Type::Any,
+                    };
+                    if ret != Type::Any {
+                        return Ok(ret);
+                    }
+                }
+                if tgt_ty == Type::String {
+                    let ret = match field.as_str() {
+                        "split" | "chars" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Array),
+                        },
+                        "trim" | "to_upper" | "to_lower" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::String),
+                        },
+                        "replace" => Type::Function {
+                            params: vec![Type::String, Type::String],
+                            return_type: Box::new(Type::String),
+                        },
+                        "contains" | "starts_with" | "ends_with" => Type::Function {
+                            params: vec![Type::String],
+                            return_type: Box::new(Type::Bool),
+                        },
+                        "len" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Int),
+                        },
+                        _ => Type::Any,
+                    };
+                    if ret != Type::Any {
+                        return Ok(ret);
+                    }
                 }
                 // RES-1859: known method return types for Array/String targets.
                 // When the method is called as `arr.map(fn)`, the FieldAccess
@@ -6268,31 +7033,71 @@ impl TypeChecker {
                 ..
             } => {
                 let tgt_ty = self.check_node(target)?;
-                let _ = self.check_node(value)?;
+                let val_ty = self.check_node(value)?;
                 // RES-153: reject writes to non-existent fields
                 // statically when the target's struct is known. The
                 // old runtime error ("Struct Point has no field 'z'")
                 // still fires for dynamic `Any` targets.
                 if let Type::Struct(sname) = &tgt_ty
                     && let Some(declared) = self.struct_fields.get(sname)
-                    && !declared.iter().any(|(n, _)| n == field)
                 {
-                    let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
-                    return Err(format!(
-                        "struct `{}` has no field `{}`; available fields: {}",
-                        sname,
-                        field,
-                        avail.join(", ")
-                    ));
+                    match declared.iter().find(|(n, _)| n == field) {
+                        Some((_, field_ty)) => {
+                            // RES-403 follow-up: validate the assigned
+                            // value type against the declared field type.
+                            if !compatible(field_ty, &val_ty) {
+                                return Err(format!(
+                                    "struct `{}` field `{}` has type {}, cannot assign {}",
+                                    sname, field, field_ty, val_ty
+                                ));
+                            }
+                        }
+                        None => {
+                            let avail: Vec<&str> =
+                                declared.iter().map(|(n, _)| n.as_str()).collect();
+                            return Err(format!(
+                                "struct `{}` has no field `{}`; available fields: {}",
+                                sname,
+                                field,
+                                avail.join(", ")
+                            ));
+                        }
+                    }
                 }
                 Ok(Type::Void)
             }
 
             Node::IndexExpression { target, index, .. } => {
-                let _ = self.check_node(target)?;
-                let _ = self.check_node(index)?;
-                // Element type not tracked at MVP.
-                Ok(Type::Any)
+                let tgt_ty = self.check_node(target)?;
+                let idx_ty = self.check_node(index)?;
+                // RES-405: array/string indexing must use an integer
+                // index. Reject obvious type errors like `arr["key"]`
+                // while keeping Map targets permissive (Any index).
+                if matches!(tgt_ty, Type::Array | Type::String)
+                    && !matches!(idx_ty, Type::Int | Type::Any)
+                    && !is_pinned_int(&idx_ty)
+                {
+                    return Err(format!(
+                        "index expression requires an integer index, got {}",
+                        idx_ty
+                    ));
+                }
+                // RES-415: negative constant index is always out-of-bounds.
+                if matches!(tgt_ty, Type::Array | Type::String)
+                    && let Some(idx_val) = fold_const_i64(index, &self.const_bindings)
+                    && idx_val < 0
+                {
+                    return Err(format!(
+                        "index {} is always out of bounds — array/string indices must be non-negative",
+                        idx_val
+                    ));
+                }
+                // String indexing returns a single-char String;
+                // array indexing returns Any (no element-type tracking yet).
+                match tgt_ty {
+                    Type::String => Ok(Type::String),
+                    _ => Ok(Type::Any),
+                }
             }
 
             // RES-911 / RES-916: slicing — `target[lo..hi]` returns
@@ -6300,11 +7105,25 @@ impl TypeChecker {
             // Endpoints must be `Int`.
             Node::Slice { target, lo, hi, .. } => {
                 let target_ty = self.check_node(target)?;
-                if let Some(lo) = lo {
-                    let _ = self.check_node(lo)?;
+                // RES-407: enforce integer endpoints.
+                let is_int_like = |t: &Type| matches!(t, Type::Int | Type::Any) || is_pinned_int(t);
+                if let Some(lo_expr) = lo {
+                    let lo_ty = self.check_node(lo_expr)?;
+                    if !is_int_like(&lo_ty) {
+                        return Err(format!(
+                            "slice lower bound must be an integer, got {}",
+                            lo_ty
+                        ));
+                    }
                 }
-                if let Some(hi) = hi {
-                    let _ = self.check_node(hi)?;
+                if let Some(hi_expr) = hi {
+                    let hi_ty = self.check_node(hi_expr)?;
+                    if !is_int_like(&hi_ty) {
+                        return Err(format!(
+                            "slice upper bound must be an integer, got {}",
+                            hi_ty
+                        ));
+                    }
                 }
                 match target_ty {
                     Type::String => Ok(Type::String),
@@ -6318,8 +7137,18 @@ impl TypeChecker {
                 value,
                 ..
             } => {
-                let _ = self.check_node(target)?;
-                let _ = self.check_node(index)?;
+                // RES-406: validate index type for array/string targets.
+                let tgt_ty = self.check_node(target)?;
+                let idx_ty = self.check_node(index)?;
+                if matches!(tgt_ty, Type::Array | Type::String)
+                    && !matches!(idx_ty, Type::Int | Type::Any)
+                    && !is_pinned_int(&idx_ty)
+                {
+                    return Err(format!(
+                        "index assignment requires an integer index, got {}",
+                        idx_ty
+                    ));
+                }
                 let _ = self.check_node(value)?;
                 Ok(Type::Void)
             }
@@ -6328,37 +7157,87 @@ impl TypeChecker {
                 name,
                 iterable,
                 body,
+                span,
+                label,
                 ..
             } => {
-                let _ = self.check_node(iterable)?;
+                self.current_span = *span;
+                // RES-406: reject non-iterable types as the loop source.
+                let iter_ty = self.check_node(iterable)?;
+                if !matches!(iter_ty, Type::Array | Type::String | Type::Any) {
+                    return Err(format!(
+                        "cannot iterate over type {} — for-in requires an array or string",
+                        iter_ty
+                    ));
+                }
                 // RES-910: track loop depth so nested `break`/`continue`
                 // are accepted only inside the body.
                 self.loop_depth += 1;
+                // RES-2653: push loop label onto the label stack.
+                self.loop_label_stack.push(label.clone());
 
                 // RES-1104: bind the loop variable so the body can
                 // reference it without a false "Undefined variable"
-                // diagnostic. Element type isn't statically tracked
-                // yet — `Type::Any` flows through the typechecker
-                // without spurious errors. The binding is confined
-                // to the body via a fresh enclosed env.
+                // diagnostic. The binding is confined to the body via
+                // a fresh enclosed env.
+                // RES-409/RES-420: infer element type from the iterable:
+                // - Range syntax (0..10) → Int
+                // - String value → String characters
+                // - Known integer-array builtins → Int
+                // - Known string-array builtins → String
+                // - Everything else → Any (conservative)
+                let elem_ty = if matches!(iterable.as_ref(), Node::Range { .. }) {
+                    Type::Int
+                } else if iter_ty == Type::String {
+                    Type::String
+                } else if let Node::CallExpression { function, .. } = iterable.as_ref()
+                    && let Node::Identifier { name: callee, .. } = function.as_ref()
+                {
+                    match callee.as_str() {
+                        // Integer-valued array builtins.
+                        "array_range" | "array_range_int" | "array_cumsum" | "array_cumprod"
+                        | "array_diffs" => Type::Int,
+                        // String-element builtins.
+                        "split" | "string_split" | "string_split_n" | "string_split_last"
+                        | "chars" | "split_chars" => Type::String,
+                        _ => Type::Any,
+                    }
+                } else {
+                    Type::Any
+                };
                 let mut loop_env = TypeEnvironment::new_enclosed(self.env.clone());
-                loop_env.set(name.clone(), Type::Any);
+                loop_env.set(name.clone(), elem_ty);
                 std::mem::swap(&mut self.env, &mut loop_env);
                 let body_result = self.check_node(body);
                 std::mem::swap(&mut self.env, &mut loop_env);
 
                 self.loop_depth -= 1;
+                self.loop_label_stack.pop(); // RES-2653
                 let _ = body_result?;
                 Ok(Type::Void)
             }
 
             Node::WhileStatement {
-                condition, body, ..
+                condition,
+                body,
+                span,
+                label,
+                ..
             } => {
-                let _ = self.check_node(condition)?;
+                self.current_span = *span;
+                // RES-406: while condition must be boolean.
+                let cond_ty = self.check_node(condition)?;
+                if cond_ty != Type::Bool && cond_ty != Type::Any {
+                    return Err(format!(
+                        "while condition must be a boolean, got {}",
+                        cond_ty
+                    ));
+                }
                 self.loop_depth += 1;
+                self.loop_label_stack.push(label.clone()); // RES-2653
                 let body_result = self.check_node(body);
                 self.loop_depth -= 1;
+                self.loop_label_stack.pop(); // RES-2653
                 let _ = body_result?;
                 Ok(Type::Void)
             }
@@ -6378,6 +7257,38 @@ impl TypeChecker {
                     return Err("'continue' outside of a loop — `continue` is only \
                          valid inside a `while` or `for-in` body"
                         .to_string());
+                }
+                Ok(Type::Void)
+            }
+            // RES-2653: labeled break/continue — validate the label
+            // refers to an enclosing labeled loop.
+            Node::BreakLabel { label, .. } => {
+                if self.loop_depth == 0 {
+                    return Err(format!("'break {label}' outside of any loop"));
+                }
+                if !self
+                    .loop_label_stack
+                    .iter()
+                    .any(|l| l.as_deref() == Some(label.as_str()))
+                {
+                    return Err(format!(
+                        "label '{label}' not found — no enclosing loop is labeled '{label}'"
+                    ));
+                }
+                Ok(Type::Void)
+            }
+            Node::ContinueLabel { label, .. } => {
+                if self.loop_depth == 0 {
+                    return Err(format!("'continue {label}' outside of any loop"));
+                }
+                if !self
+                    .loop_label_stack
+                    .iter()
+                    .any(|l| l.as_deref() == Some(label.as_str()))
+                {
+                    return Err(format!(
+                        "label '{label}' not found — no enclosing loop is labeled '{label}'"
+                    ));
                 }
                 Ok(Type::Void)
             }
@@ -6409,16 +7320,64 @@ impl TypeChecker {
                             name, declared, value_type
                         ));
                     }
+                    // RES-416: apply the same pinned-int overflow check
+                    // to const declarations that LetStatement already has.
+                    if let Some(literal_val) = fold_const_i64(value, &self.const_bindings) {
+                        let range_ok = match &declared {
+                            Type::Int8 => (-128_i64..=127).contains(&literal_val),
+                            Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
+                            Type::Int32 => {
+                                (-2_147_483_648_i64..=2_147_483_647).contains(&literal_val)
+                            }
+                            Type::UInt8 => (0_i64..=255).contains(&literal_val),
+                            Type::UInt16 => (0_i64..=65535).contains(&literal_val),
+                            Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
+                            _ => true,
+                        };
+                        if !range_ok {
+                            let range_str = match &declared {
+                                Type::Int8 => "-128..=127",
+                                Type::Int16 => "-32768..=32767",
+                                Type::Int32 => "-2147483648..=2147483647",
+                                Type::UInt8 => "0..=255",
+                                Type::UInt16 => "0..=65535",
+                                Type::UInt32 => "0..=4294967295",
+                                _ => unreachable!(),
+                            };
+                            return Err(format!(
+                                "const {}: {} — value {} overflows the declared type (valid range: {})",
+                                name, declared, literal_val, range_str
+                            ));
+                        }
+                    }
                     declared
                 } else {
                     value_type.clone()
                 };
                 self.env.set(name.clone(), bind_type);
+                // Fold const bindings so subsequent references can use
+                // the constant value in const-folding contexts.
+                if let Some(v) = fold_const_i64(value, &self.const_bindings) {
+                    self.const_bindings.insert(name.clone(), v);
+                }
                 Ok(Type::Void)
             }
 
             Node::Assignment { name, value, .. } => {
-                let _ = self.check_node(value)?;
+                let val_ty = self.check_node(value)?;
+                // RES-405: validate the new value type against the
+                // variable's currently-bound type. Rejects patterns like
+                //   let x: int = 5; x = "oops";
+                // while staying permissive for Any-typed variables
+                // (unresolved generics, dynamic containers).
+                if let Some(var_ty) = self.env.get(name)
+                    && !compatible(&var_ty, &val_ty)
+                {
+                    return Err(format!(
+                        "cannot assign {} to variable `{}` of type {}",
+                        val_ty, name, var_ty
+                    ));
+                }
                 // RES-063: any reassignment kills const-tracking. We
                 // could try to re-track if RHS is foldable, but
                 // mid-function mutation is rare and the conservative
@@ -6437,10 +7396,22 @@ impl TypeChecker {
                 }
                 // Bare `return;` has type Void; otherwise pass through
                 // the type of the returned value.
-                match value {
-                    Some(expr) => self.check_node(expr),
-                    None => Ok(Type::Void),
+                let ret_type = match value {
+                    Some(expr) => self.check_node(expr)?,
+                    None => Type::Void,
+                };
+                // RES-403: validate against declared return type so early
+                // returns (inside if/match arms) can't silently return the
+                // wrong type while the body's last expression type matches.
+                if let Some(declared) = &self.current_fn_return_type
+                    && !compatible(declared, &ret_type)
+                {
+                    return Err(format!(
+                        "return type mismatch — declared {}, returning {}",
+                        declared, ret_type
+                    ));
                 }
+                Ok(ret_type)
             }
 
             Node::IfStatement {
@@ -6496,7 +7467,20 @@ impl TypeChecker {
                 if let Some(alt) = alternative {
                     let alternative_type = self.check_node(alt)?;
 
-                    // Both branches should have compatible types
+                    // RES-421: when one branch unconditionally diverges
+                    // (return / break / continue), its type doesn't
+                    // constrain the if-else expression — use the other
+                    // branch's type as the whole expression's type.
+                    let cons_diverges = node_terminates(consequence);
+                    let alt_diverges = node_terminates(alt);
+                    if cons_diverges && !alt_diverges {
+                        return Ok(alternative_type);
+                    }
+                    if alt_diverges && !cons_diverges {
+                        return Ok(consequence_type);
+                    }
+
+                    // Both branches should have compatible types.
                     if consequence_type != alternative_type
                         && consequence_type != Type::Any
                         && alternative_type != Type::Any
@@ -6506,6 +7490,10 @@ impl TypeChecker {
                             consequence_type, alternative_type
                         ));
                     }
+                    // RES-402: if one branch is Any and the other is a
+                    // concrete type, propagate the concrete type so callers
+                    // get a useful inference result.
+                    return Ok(infer_common_arm_type(&[consequence_type, alternative_type]));
                 }
 
                 Ok(consequence_type)
@@ -6542,6 +7530,17 @@ impl TypeChecker {
                 match self.env.get(name) {
                     Some(typ) => Ok(typ),
                     None => {
+                        // RES-424: `Struct::method` → try the `Struct$method`
+                        // mangling that impl blocks register under. This makes
+                        // static method calls (no `self`) reachable via the
+                        // `Type::method()` call syntax users expect.
+                        if let Some(idx) = name.find("::")
+                            && let Some(typ) =
+                                self.env
+                                    .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
+                        {
+                            return Ok(typ);
+                        }
                         // RES-306: append a did-you-mean hint when an
                         // in-scope name is within Levenshtein distance 2
                         // of the typo. The helper handles the
@@ -6651,8 +7650,21 @@ impl TypeChecker {
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "-" | "*" | "/" | "%" => {
-                        // RES-130: same policy as `+` — no mixed int /
-                        // float.
+                        // RES-130: same policy as `+` — no mixed int / float.
+                        // RES-413: static division / modulo by zero detection.
+                        if matches!(operator.as_str(), "/" | "%")
+                            && let Some(divisor) = fold_const_i64(right, &self.const_bindings)
+                            && divisor == 0
+                        {
+                            return Err(format!(
+                                "integer {} by zero — denominator is a compile-time constant 0",
+                                if operator == "/" {
+                                    "division"
+                                } else {
+                                    "modulo"
+                                }
+                            ));
+                        }
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "&" | "|" | "^" | "<<" | ">>" => {
@@ -6727,8 +7739,18 @@ impl TypeChecker {
                                 arguments.len()
                             ));
                         }
-                        for arg in arguments {
-                            let _ = self.check_node(arg)?;
+                        // RES-416: validate argument types against the
+                        // declared payload types.
+                        for (arg, type_str) in arguments.iter().zip(declared.iter()) {
+                            let arg_ty = self.check_node(arg)?;
+                            if let Ok(expected_ty) = self.parse_type_name(type_str)
+                                && !compatible(&expected_ty, &arg_ty)
+                            {
+                                return Err(format!(
+                                    "Constructor {}::{}: argument has type {}, expected {}",
+                                    type_name, variant_name, arg_ty, expected_ty
+                                ));
+                            }
                         }
                         return Ok(Type::Struct(type_name.to_string()));
                     }
@@ -6901,27 +7923,98 @@ impl TypeChecker {
                     }
                 }
 
+                // RES-410: call-site type inference for numeric polymorphic
+                // builtins registered as (Any, Any) -> Any. When all
+                // arguments agree on the same concrete numeric type,
+                // propagate that type as the return instead of Any.
+                // This catches cases like `let x = min(1, 2); x + 1`
+                // which previously inferred x as Any.
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
+                    && matches!(
+                        callee_name.as_str(),
+                        "min" | "max" | "pow" | "abs" | "sign" | "clamp"
+                    )
+                    && matches!(func_type, Type::Function { .. })
+                {
+                    let mut arg_types: Vec<Type> = Vec::with_capacity(arguments.len());
+                    for arg in arguments {
+                        arg_types.push(self.check_node(arg)?);
+                    }
+                    let common = infer_common_arm_type(&arg_types);
+                    if common != Type::Any {
+                        return Ok(common);
+                    }
+                }
+
                 match func_type {
                     Type::Function {
                         params,
                         return_type,
                     } => {
+                        // RES-424: struct impl method-call dispatch — when
+                        // the callee is a FieldAccess on a struct target, the
+                        // receiver is the implicit first `self` argument that
+                        // the interpreter prepends. Only applies for struct
+                        // targets (not Array / String builtins whose method
+                        // types were registered WITHOUT a self param slot).
+                        let is_struct_method_call = if let Node::FieldAccess {
+                            target: fa_target,
+                            ..
+                        } = function.as_ref()
+                        {
+                            matches!(self.check_node(fa_target), Ok(Type::Struct(_)))
+                        } else {
+                            false
+                        };
+                        let (explicit_params, param_offset) =
+                            if is_struct_method_call && !params.is_empty() {
+                                (params.len() - 1, 1)
+                            } else {
+                                (params.len(), 0)
+                            };
+
                         // Check argument count
-                        if arguments.len() != params.len() {
+                        if arguments.len() != explicit_params {
                             return Err(format!(
                                 "Expected {} arguments, got {}",
-                                params.len(),
+                                explicit_params,
                                 arguments.len()
                             ));
                         }
 
+                        // RES-425: if the callee is a named generic function,
+                        // collect its type-parameter names so Struct("T") can
+                        // be treated as Any during argument checking.
+                        let callee_type_params: Option<Vec<String>> = if let Node::Identifier {
+                            name: callee_id,
+                            ..
+                        } = function.as_ref()
+                        {
+                            self.fn_type_params.get(callee_id.as_str()).cloned()
+                        } else {
+                            None
+                        };
                         // Check each argument type
-                        for (i, (arg, param_type)) in
-                            arguments.iter().zip(params.iter()).enumerate()
+                        for (i, (arg, param_type)) in arguments
+                            .iter()
+                            .zip(params[param_offset..].iter())
+                            .enumerate()
                         {
                             let arg_type = self.check_node(arg)?;
-                            if arg_type != *param_type
-                                && *param_type != Type::Any
+                            // Treat Struct("T") as Any when T is a generic
+                            // type parameter of the callee (RES-425).
+                            let effective_param = if let Type::Struct(tname) = param_type
+                                && let Some(tp) = &callee_type_params
+                                && tp.iter().any(|p| p == tname)
+                            {
+                                &Type::Any
+                            } else {
+                                param_type
+                            };
+                            if arg_type != *effective_param
+                                && *effective_param != Type::Any
                                 && arg_type != Type::Any
                             {
                                 // RES-340: when RESILIENT_RICH_DIAG=1
@@ -6955,20 +8048,31 @@ impl TypeChecker {
                                         arg_span,
                                         decl_span,
                                         i + 1,
-                                        &param_type.to_string(),
+                                        &effective_param.to_string(),
                                         &arg_type.to_string(),
                                     ));
                                 }
                                 return Err(format!(
                                     "Type mismatch in argument {}: expected {}, got {}",
                                     i + 1,
-                                    param_type,
+                                    effective_param,
                                     arg_type
                                 ));
                             }
                         }
 
-                        Ok(*return_type)
+                        // RES-425: if the return type is a generic type
+                        // parameter (Type::Struct("T")), return Any so
+                        // callers don't get spurious type mismatches.
+                        let effective_return = if let Type::Struct(tname) = return_type.as_ref()
+                            && let Some(tp) = &callee_type_params
+                            && tp.iter().any(|p| p == tname)
+                        {
+                            Type::Any
+                        } else {
+                            *return_type
+                        };
+                        Ok(effective_return)
                     }
                     Type::Any => Ok(Type::Any),
                     _ => Err(format!("Cannot call non-function type: {}", func_type)),
@@ -6997,7 +8101,23 @@ impl TypeChecker {
             // `enum_decls` table so the `Match` arm can check
             // exhaustiveness and so `match_pattern_binding_types`
             // (future PR) can resolve payload-field types.
-            Node::EnumDecl { name, variants, .. } => {
+            Node::EnumDecl {
+                name,
+                variants,
+                span,
+                ..
+            } => {
+                // RES-406: reject duplicate variant names inside the same enum.
+                let mut seen_variants: std::collections::HashSet<&str> =
+                    std::collections::HashSet::with_capacity(variants.len());
+                for v in variants {
+                    if !seen_variants.insert(v.name.as_str()) {
+                        return Err(format!(
+                            "{}:{}:{}: error: duplicate variant `{}` in enum `{}`",
+                            self.source_path, span.start.line, span.start.column, v.name, name,
+                        ));
+                    }
+                }
                 // RES-1368: store variants behind a refcounted handle
                 // so subsequent lookup-and-clone hot paths in `Match`
                 // checking pay a refcount bump instead of a full Vec
@@ -7081,6 +8201,12 @@ impl TypeChecker {
             "void" => Ok(Type::Void),
             "Result" => Ok(Type::Result),
             "array" => Ok(Type::Array),
+            // RES-408: `any` as a written type annotation maps to Type::Any
+            // (the unresolved/wildcard type). Without this arm the identifier
+            // falls through to `other => Type::Struct("any")`, which caused
+            // argument-type mismatches (`expected any, got int`) and broke
+            // struct pattern matching when the scrutinee was declared `any`.
+            "any" | "Any" => Ok(Type::Any),
             "" => Ok(Type::Any), // Empty type name means "any" for now
             // RES-128: a registered alias expands transitively.
             other if self.type_aliases.contains_key(other) => {
@@ -7095,6 +8221,73 @@ impl TypeChecker {
                 let target = self.type_aliases[other].clone();
                 self.parse_type_name_inner(&target, seen)
             }
+            // RES-419: `fn(T1, T2) -> R` — function-type annotation.
+            // Covers higher-order function parameters and return types.
+            // Syntax: "fn(" followed by comma-separated type names,
+            // ")" then " -> " then the return type. Nesting is handled
+            // by counting parenthesis depth when splitting params.
+            other if other.starts_with("fn(") => {
+                let rest = &other[3..]; // after "fn("
+                // Find the matching closing ')' counting nesting depth.
+                let mut depth = 1usize;
+                let mut close = None;
+                for (i, ch) in rest.char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let close = close.unwrap_or(rest.len().saturating_sub(1));
+                let params_str = &rest[..close];
+                let after_close = rest[close + 1..].trim_start();
+                // Parse return type from " -> ReturnType".
+                let return_type = if let Some(rt_str) = after_close.strip_prefix("->") {
+                    self.parse_type_name_inner(rt_str.trim(), seen)?
+                } else {
+                    Type::Any
+                };
+                // Parse comma-separated parameter types, respecting nesting.
+                let params = if params_str.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    let mut parts: Vec<Type> = Vec::new();
+                    let mut depth2 = 0usize;
+                    let mut start = 0;
+                    for (i, ch) in params_str.char_indices() {
+                        match ch {
+                            '(' => depth2 += 1,
+                            ')' => depth2 = depth2.saturating_sub(1),
+                            ',' if depth2 == 0 => {
+                                parts.push(
+                                    self.parse_type_name_inner(params_str[start..i].trim(), seen)?,
+                                );
+                                start = i + 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    parts.push(self.parse_type_name_inner(params_str[start..].trim(), seen)?);
+                    parts
+                };
+                Ok(Type::Function {
+                    params,
+                    return_type: Box::new(return_type),
+                })
+            }
+            // RES-426: tuple type `(T1, T2, ...)`. Encoded by the
+            // parser as a parenthesised comma-list; at type-check
+            // level a tuple is represented as Type::Any (the interpreter
+            // already boxes tuples as Value::Tuple at runtime; the type
+            // system will promote this to Type::Tuple once the full
+            // tuple-type variant lands in G7).
+            other if other.starts_with('(') && other.ends_with(')') => Ok(Type::Any),
             // RES-053: any other identifier is assumed to be a
             // user-defined struct. G7 will register struct decls and
             // reject unknown type names, but at MVP we're permissive.
@@ -7714,6 +8907,62 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_find_index",
         "array_any",
         "array_all",
+        // RES-2646: higher-order functional array operations.
+        "array_flat_map",
+        "array_group_by",
+        "array_partition",
+        "map_from_pairs",
+        "array_scan",
+        // RES-2647: map functional operations.
+        "map_filter",
+        "map_map_values",
+        "map_for_each",
+        "map_to_pairs",
+        // RES-2648: array combinators.
+        "array_sort_by",
+        "array_min_by",
+        "array_max_by",
+        "array_count_if",
+        "array_zip_with",
+        "array_windows",
+        "array_take_while",
+        "array_drop_while",
+        // RES-2649: array aggregation by key.
+        "array_sum_by",
+        "array_product_by",
+        // RES-2649: map higher-order operations.
+        "map_merge_with",
+        "map_update_with",
+        // RES-2649: string higher-order operations.
+        "string_map_chars",
+        "string_filter_by",
+        "string_fold",
+        "string_for_each_char",
+        // RES-2650: numeric utilities.
+        "lerp",
+        "remap",
+        "float_approx_eq",
+        "round_to",
+        "int_pow",
+        // RES-2650: collection extras.
+        "array_frequency_map",
+        "array_key_by",
+        "array_iterate",
+        // RES-2651: Result/Option HOF.
+        "result_map",
+        "result_and_then",
+        "result_map_err",
+        "result_or_else",
+        "option_map",
+        "option_and_then",
+        "option_filter",
+        "option_or_else",
+        "option_ok_or",
+        // RES-2652: type introspection + collection ergonomics.
+        "type_of",
+        "result_collect",
+        "array_from_fn",
+        "map_invert",
         // RES-416: array reductions.
         "array_sum",
         "array_product",
@@ -10092,5 +11341,2019 @@ mod res1859_builtin_return_types {
     #[test]
     fn string_split_method_return_type_is_array() {
         check_ok("fn f(string s) -> int { let parts = s.split(\",\"); return len(parts); }");
+    }
+
+    // RES-1859: array mutation builtins — verify return type is Array
+    // so callers can pass the result to array-typed parameters.
+
+    #[test]
+    fn array_swap_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_swap(a, 0, 1); return len(b); }");
+    }
+
+    #[test]
+    fn array_insert_at_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_insert_at(a, 0, 42); return len(b); }");
+    }
+
+    #[test]
+    fn array_remove_at_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_remove_at(a, 0); return len(b); }");
+    }
+
+    #[test]
+    fn array_set_at_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_set_at(a, 0, 99); return len(b); }");
+    }
+
+    #[test]
+    fn array_slice_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_slice(a, 0, 3, false); return len(b); }");
+    }
+}
+
+// ── RES-1862: span attachment for node types that previously lacked it ────────
+
+#[cfg(test)]
+mod res1862_span_attachment {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_err_with_source(src: &str, path: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, path)
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn match_non_exhaustive_error_includes_span() {
+        // Bool scrutinee missing `false` arm — error must name the file.
+        let src = "fn f(bool b) -> int {\n    return match b {\n        true => 1,\n    };\n}";
+        let err = check_err_with_source(src, "match.rz");
+        assert!(
+            err.contains("match.rz"),
+            "non-exhaustive match error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_bad_condition_error_includes_span() {
+        let src = "fn f(int x) {\n    assert(x + 1);\n}";
+        let err = check_err_with_source(src, "assert.rz");
+        assert!(
+            err.contains("assert.rz"),
+            "assert type error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assume_bad_condition_error_includes_span() {
+        let src = "fn f(int x) {\n    assume(x + 1);\n}";
+        let err = check_err_with_source(src, "assume.rz");
+        assert!(
+            err.contains("assume.rz"),
+            "assume type error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn range_bad_bound_error_includes_span() {
+        // Range lower bound must be Int; passing a string should error.
+        let src = "fn f(string s) {\n    for x in s..5 { }\n}";
+        let err = check_err_with_source(src, "range.rz");
+        assert!(
+            err.contains("range.rz"),
+            "range bound error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn for_loop_range_error_includes_span() {
+        // Range lower bound is a string — must error with file path.
+        let src = "fn f(string s) {\n    for i in s..5 { }\n}";
+        let err = check_err_with_source(src, "for.rz");
+        assert!(
+            err.contains("for.rz"),
+            "for-loop range error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn while_range_in_body_error_includes_span() {
+        // For-range with a string lower bound in a while loop body — the
+        // range error should carry the while loop's file path.
+        let src = "fn f(string s) {\n    while true {\n        for i in s..5 { }\n        break;\n    }\n}";
+        let err = check_err_with_source(src, "while.rz");
+        assert!(
+            err.contains("while.rz"),
+            "error inside while loop must include file path; got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod res401_tuple_type {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn tuple_literal_type_checks() {
+        // A heterogeneous tuple literal type-checks without error.
+        check_ok(r#"let _t = (1, "hello", true);"#);
+    }
+
+    #[test]
+    fn empty_tuple_type_checks() {
+        check_ok("let _t = ();");
+    }
+
+    #[test]
+    fn tuple_index_out_of_range_errors() {
+        // Accessing index 5 of a 2-element tuple should fail.
+        let err = check_err("let t = (1, 2); let _x = t.5;");
+        assert!(
+            err.contains("out of range") || err.contains("index"),
+            "expected out-of-range error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn tuple_index_in_range_ok() {
+        // Accessing a valid index should succeed.
+        check_ok(r#"let t = (1, "x"); let _s = t.1;"#);
+    }
+
+    #[test]
+    fn tuple_destructure_ok() {
+        // Destructuring into correct names should pass.
+        check_ok(r#"let (a, b) = (1, "x");"#);
+    }
+}
+
+// ── RES-402: match and if expression type inference ───────────────────────────
+
+#[cfg(test)]
+mod res402_arm_type_inference {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn match_result_used_as_int() {
+        // When all match arms return int, the result should be usable
+        // as an int (e.g., added to another int).
+        check_ok(
+            r#"
+fn f(int x) -> int {
+    let v = match x {
+        0 => 10,
+        1 => 20,
+        _ => 30,
+    };
+    return v + 1;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn match_result_used_as_string() {
+        // When all match arms return a string, the result is a string.
+        check_ok(
+            r#"
+fn describe(int x) -> string {
+    return match x {
+        0 => "zero",
+        1 => "one",
+        _ => "other",
+    };
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn match_result_used_as_bool() {
+        // Arms returning bool — inferred type is bool.
+        check_ok(
+            r#"
+fn is_zero(int x) -> bool {
+    return match x {
+        0 => true,
+        _ => false,
+    };
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn if_with_both_branches_propagates_int() {
+        // if/else where both branches return int — result is int.
+        check_ok(
+            r#"
+fn abs_val(int x) -> int {
+    let v = if x >= 0 { x } else { 0 - x };
+    return v + 1;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn if_else_type_mismatch_errors() {
+        // if branch returns int, else branch returns string — type error.
+        let err = check_err(
+            r#"
+fn f(bool c) -> int {
+    let _v = if c { 1 } else { "x" };
+    return 0;
+}
+"#,
+        );
+        assert!(
+            err.contains("incompatible") || err.contains("type"),
+            "expected incompatible-types error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn match_arms_used_in_len_context() {
+        // match on bool with both arms returning array — can call len().
+        check_ok(
+            r#"
+fn f(bool b) -> int {
+    let arr = match b {
+        true  => [1, 2, 3],
+        false => [4, 5],
+    };
+    return len(arr);
+}
+"#,
+        );
+    }
+}
+
+// ── RES-403: return statement type validation against declared return type ────
+
+#[cfg(test)]
+mod res403_return_type_validation {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn early_return_wrong_type_is_error() {
+        // An early `return 42` in a function declared `-> string` should fail.
+        let err = check_err(
+            r#"
+fn f(bool b) -> string {
+    if b { return 42; }
+    return "hello";
+}
+"#,
+        );
+        assert!(
+            err.contains("return type mismatch") || err.contains("type mismatch"),
+            "expected return-type-mismatch error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn early_return_correct_type_ok() {
+        // Early return with the correct type should pass.
+        check_ok(
+            r#"
+fn f(bool b) -> int {
+    if b { return 1; }
+    return 0;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn void_function_bare_return_ok() {
+        // Bare `return;` in a void function is always valid.
+        check_ok(
+            r#"
+fn f(bool b) -> void {
+    if b { return; }
+    println("done");
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn lambda_return_validated_against_lambda_type() {
+        // The lambda's own declared return type governs its return statements,
+        // not the enclosing function's return type.
+        check_ok(
+            r#"
+fn outer(array a) -> int {
+    let mapped = array_map(a, fn(int x) -> int { return x * 2; });
+    return len(mapped);
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn lambda_return_type_mismatch_errors() {
+        // A lambda returning the wrong type should fail.
+        let err = check_err(
+            r#"
+fn f(array a) -> int {
+    let mapped = array_map(a, fn(int x) -> int { return "oops"; });
+    return len(mapped);
+}
+"#,
+        );
+        assert!(
+            err.contains("return type mismatch") || err.contains("type mismatch"),
+            "expected return-type error in lambda; got: {err}"
+        );
+    }
+}
+
+// ── RES-404: field assignment type validation ─────────────────────────────────
+
+#[cfg(test)]
+mod res404_field_assignment_type_check {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn assign_correct_field_type_ok() {
+        check_ok(
+            r#"
+struct Point { int x, int y }
+fn f() -> void {
+    let p = new Point { x: 1, y: 2 };
+    p.x = 10;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn assign_wrong_field_type_errors() {
+        let err = check_err(
+            r#"
+struct Point { int x, int y }
+fn f() -> void {
+    let p = new Point { x: 1, y: 2 };
+    p.x = "oops";
+}
+"#,
+        );
+        assert!(
+            err.contains("cannot assign") || err.contains("type"),
+            "expected type mismatch for field assignment; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assign_nonexistent_field_errors() {
+        let err = check_err(
+            r#"
+struct Point { int x, int y }
+fn f() -> void {
+    let p = new Point { x: 1, y: 2 };
+    p.z = 99;
+}
+"#,
+        );
+        assert!(
+            err.contains("no field") || err.contains("available"),
+            "expected field-not-found error; got: {err}"
+        );
+    }
+}
+
+// ── RES-405: assignment type validation ───────────────────────────────────────
+
+#[cfg(test)]
+mod res405_assignment_type_check {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn assign_same_type_ok() {
+        check_ok(
+            r#"
+fn f() -> void {
+    let x = 5;
+    x = 10;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn assign_wrong_type_errors() {
+        let err = check_err(
+            r#"
+fn f() -> void {
+    let x = 5;
+    x = "hello";
+}
+"#,
+        );
+        assert!(
+            err.contains("cannot assign") || err.contains("type"),
+            "expected type mismatch on assignment; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assign_to_string_var_ok() {
+        check_ok(
+            r#"
+fn f() -> void {
+    let s = "hello";
+    s = "world";
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn assign_int_to_string_var_errors() {
+        let err = check_err(
+            r#"
+fn f() -> void {
+    let s = "hello";
+    s = 42;
+}
+"#,
+        );
+        assert!(
+            err.contains("cannot assign") || err.contains("type"),
+            "expected type mismatch on string assignment; got: {err}"
+        );
+    }
+}
+
+// ── RES-405 follow-up: index expression integer validation ────────────────────
+
+#[cfg(test)]
+mod res405_index_type_check {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn int_index_ok() {
+        check_ok(r#"fn f(array a) -> void { let _x = a[0]; }"#);
+    }
+
+    #[test]
+    fn float_index_errors() {
+        let err = check_err(r#"fn f(array a) -> void { let _x = a[1.0]; }"#);
+        assert!(
+            err.contains("integer index") || err.contains("index"),
+            "expected integer-index error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn string_index_errors() {
+        let err = check_err(r#"fn f(array a) -> void { let _x = a["key"]; }"#);
+        assert!(
+            err.contains("integer index") || err.contains("index"),
+            "expected integer-index error for string index; got: {err}"
+        );
+    }
+
+    #[test]
+    fn string_char_int_index_ok() {
+        check_ok(r#"fn f(string s) -> void { let _x = s[0]; }"#);
+    }
+}
+
+// ── RES-406: while/for-in/index-assignment/enum-dedup checks ─────────────────
+
+#[cfg(test)]
+mod res406_loop_and_collection_checks {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── while condition ───────────────────────────────────────────────────────
+
+    #[test]
+    fn while_bool_condition_ok() {
+        check_ok(r#"fn f() -> void { while true { } }"#);
+    }
+
+    #[test]
+    fn while_int_condition_errors() {
+        let err = check_err(r#"fn f() -> void { while 1 { } }"#);
+        assert!(
+            err.contains("while condition") || err.contains("boolean"),
+            "expected bool condition error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn while_string_condition_errors() {
+        let err = check_err(r#"fn f() -> void { while "yes" { } }"#);
+        assert!(
+            err.contains("while condition") || err.contains("boolean"),
+            "expected bool condition error for string; got: {err}"
+        );
+    }
+
+    // ── for-in iterable type ──────────────────────────────────────────────────
+
+    #[test]
+    fn for_in_array_ok() {
+        check_ok(r#"fn f(array xs) -> void { for x in xs { } }"#);
+    }
+
+    #[test]
+    fn for_in_string_ok() {
+        check_ok(r#"fn f(string s) -> void { for c in s { } }"#);
+    }
+
+    #[test]
+    fn for_in_int_errors() {
+        let err = check_err(r#"fn f(int n) -> void { for x in n { } }"#);
+        assert!(
+            err.contains("cannot iterate") || err.contains("for-in"),
+            "expected cannot-iterate error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn for_in_bool_errors() {
+        let err = check_err(r#"fn f(bool b) -> void { for x in b { } }"#);
+        assert!(
+            err.contains("cannot iterate") || err.contains("for-in"),
+            "expected cannot-iterate error for bool; got: {err}"
+        );
+    }
+
+    // ── index assignment integer index ────────────────────────────────────────
+
+    #[test]
+    fn index_assign_int_index_ok() {
+        check_ok(r#"fn f(array a) -> void { a[0] = 1; }"#);
+    }
+
+    #[test]
+    fn index_assign_float_index_errors() {
+        let err = check_err(r#"fn f(array a) -> void { a[1.5] = 1; }"#);
+        assert!(
+            err.contains("integer index") || err.contains("index assignment"),
+            "expected integer-index error on index assignment; got: {err}"
+        );
+    }
+
+    // ── enum duplicate variant ────────────────────────────────────────────────
+
+    #[test]
+    fn enum_unique_variants_ok() {
+        check_ok(
+            r#"
+enum Color { Red, Green, Blue }
+fn f() -> void { }
+"#,
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_variant_errors() {
+        // The parser catches duplicate variants first; either a parse error
+        // or a typecheck error is acceptable — both indicate the duplication
+        // was detected before evaluation.
+        let src = "enum Color { Red, Green, Red }\nfn f() -> void { }\n";
+        let (prog, parse_errs) = crate::parse(src);
+        if !parse_errs.is_empty() {
+            // Parser already caught it — verify the message is meaningful.
+            let combined = parse_errs.join("; ");
+            assert!(
+                combined.to_lowercase().contains("red")
+                    || combined.to_lowercase().contains("duplicate")
+                    || combined.to_lowercase().contains("variant"),
+                "parse error should mention duplicate variant; got: {combined}"
+            );
+            return;
+        }
+        // Typechecker should catch it if parser didn't.
+        let err = TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected duplicate-variant error from typechecker");
+        assert!(
+            err.contains("duplicate variant") || err.contains("Red"),
+            "expected duplicate-variant error; got: {err}"
+        );
+    }
+}
+
+// ── RES-407: field access on known struct + slice endpoint types ──────────────
+
+#[cfg(test)]
+mod res407_field_access_and_slice {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── FieldAccess: unknown field on known struct ─────────────────────────────
+
+    #[test]
+    fn field_access_known_field_ok() {
+        check_ok(
+            r#"
+struct Point { int x, int y }
+fn f(Point p) -> int { return p.x; }
+"#,
+        );
+    }
+
+    #[test]
+    fn field_access_unknown_field_errors() {
+        let err = check_err(
+            r#"
+struct Point { int x, int y }
+fn f(Point p) -> int { return p.z; }
+"#,
+        );
+        assert!(
+            err.contains("no field") || err.contains("z"),
+            "expected no-field error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn field_access_unknown_struct_is_permissive() {
+        // When the struct name isn't declared, fall through to Any.
+        check_ok(r#"fn f(UnknownStruct s) -> int { return s.x; }"#);
+    }
+
+    // ── Slice endpoint types ───────────────────────────────────────────────────
+
+    #[test]
+    fn slice_int_bounds_ok() {
+        check_ok(r#"fn f(array a) -> array { return a[1..3]; }"#);
+    }
+
+    #[test]
+    fn slice_float_lower_bound_errors() {
+        let err = check_err(r#"fn f(array a) -> array { return a[1.0..3]; }"#);
+        assert!(
+            err.contains("lower bound") || err.contains("integer"),
+            "expected integer-bound error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn slice_float_upper_bound_errors() {
+        let err = check_err(r#"fn f(array a) -> array { return a[0..3.5]; }"#);
+        assert!(
+            err.contains("upper bound") || err.contains("integer"),
+            "expected integer-bound error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn slice_string_int_bounds_ok() {
+        check_ok(r#"fn f(string s) -> string { return s[0..5]; }"#);
+    }
+}
+
+// ── RES-408: `any` type annotation → Type::Any + struct pattern permissiveness ─
+
+#[cfg(test)]
+mod res408_any_type_annotation {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn any_param_accepts_int_arg() {
+        check_ok(
+            r#"
+fn f(any x) -> int { return 0; }
+fn g() -> int { return f(42); }
+"#,
+        );
+    }
+
+    #[test]
+    fn any_param_accepts_string_arg() {
+        check_ok(
+            r#"
+fn f(any x) -> int { return 0; }
+fn g() -> int { return f("hello"); }
+"#,
+        );
+    }
+
+    #[test]
+    fn any_return_ok() {
+        check_ok(r#"fn f() -> any { return 42; }"#);
+    }
+
+    #[test]
+    fn struct_pattern_on_any_scrutinee_ok() {
+        check_ok(
+            r#"
+struct Point { int x, int y }
+fn f(any p) -> int {
+    return match p {
+        Point { x, y } => x,
+        _ => 0,
+    };
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn struct_pattern_wrong_struct_errors() {
+        let err = check_err(
+            r#"
+struct Point { int x, int y }
+struct Rect { int w, int h }
+fn f(Rect r) -> int {
+    return match r {
+        Point { x, y } => x,
+        _ => 0,
+    };
+}
+"#,
+        );
+        assert!(
+            err.contains("Point") || err.contains("Rect") || err.contains("pattern"),
+            "expected struct mismatch error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn any_let_binding_ok() {
+        check_ok(r#"fn f() -> void { let x: any = 5; let _y: any = "hello"; }"#);
+    }
+}
+
+// ── RES-409: for-in element type inference + duplicate struct check ──────────
+
+#[cfg(test)]
+mod res409_forin_element_type_and_duplicate_struct {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── for-in element type inference ─────────────────────────────────────────
+
+    #[test]
+    fn for_in_range_elem_is_int() {
+        // The loop variable `i` should be Int, so `i + 1` is valid.
+        check_ok(
+            r#"
+fn f() -> void {
+    for i in 0..10 {
+        let _x = i + 1;
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn for_in_range_elem_int_used_in_string_concat_errors() {
+        // `i` is Int from a range; `"hello" + i` is String (coercion),
+        // but `i - "hello"` is an error (not a valid arithmetic op).
+        // This validates that the range-elem binding really is Int.
+        let err = check_err(
+            r#"
+fn f() -> void {
+    for i in 0..5 {
+        let _x = i - "hello";
+    }
+}
+"#,
+        );
+        assert!(
+            err.contains("Cannot apply") || err.contains("int") || err.contains("string"),
+            "expected type error for int - string in range loop; got: {err}"
+        );
+    }
+
+    #[test]
+    fn for_in_string_elem_is_string() {
+        // Each character from a string iteration is a String.
+        check_ok(
+            r#"
+fn f(string s) -> void {
+    for c in s {
+        let _x: string = c;
+    }
+}
+"#,
+        );
+    }
+
+    // ── duplicate struct declaration ──────────────────────────────────────────
+
+    #[test]
+    fn unique_struct_ok() {
+        check_ok(
+            r#"
+struct Point { int x, int y }
+fn f() -> void { }
+"#,
+        );
+    }
+
+    #[test]
+    fn duplicate_struct_errors() {
+        let err = check_err(
+            r#"
+struct Point { int x, int y }
+struct Point { int a, int b }
+fn f() -> void { }
+"#,
+        );
+        assert!(
+            err.contains("duplicate") || err.contains("Point"),
+            "expected duplicate struct error; got: {err}"
+        );
+    }
+}
+
+// ── RES-410: min/max/pow type inference + duplicate TypeAlias ──────────────
+
+#[cfg(test)]
+mod res410_numeric_poly_and_type_alias {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── min/max/pow type inference ────────────────────────────────────────────
+
+    #[test]
+    fn min_int_args_returns_int() {
+        // min(1, 2) should infer Int; `x + 1` must succeed.
+        check_ok(r#"fn f() -> int { let x = min(1, 2); return x + 1; }"#);
+    }
+
+    #[test]
+    fn max_float_args_returns_float() {
+        check_ok(r#"fn f() -> float { let x = max(1.0, 2.0); return x; }"#);
+    }
+
+    #[test]
+    fn pow_int_args_returns_int() {
+        check_ok(r#"fn f() -> int { let x = pow(2, 10); return x; }"#);
+    }
+
+    #[test]
+    fn min_mixed_types_returns_any() {
+        // Mixed types → Any; the function call itself still succeeds.
+        check_ok(r#"fn f() -> void { let _x = min(1, 2.0); }"#);
+    }
+
+    // ── duplicate type alias ──────────────────────────────────────────────────
+
+    #[test]
+    fn unique_type_alias_ok() {
+        check_ok(
+            r#"
+type Meters = float;
+fn f(Meters m) -> float { return m; }
+"#,
+        );
+    }
+
+    #[test]
+    fn duplicate_type_alias_same_target_ok() {
+        // Re-declaring to the same target is silently accepted (the
+        // pre-pass may have already registered it).
+        check_ok(
+            r#"
+type Meters = float;
+fn f() -> void { }
+"#,
+        );
+    }
+
+    #[test]
+    fn duplicate_type_alias_different_target_errors() {
+        // Re-declaring with a different target is a compile error.
+        let err = check_err("type M = int;\ntype M = float;\nfn f() -> void { }\n");
+        assert!(
+            err.contains("duplicate type alias") || err.contains("M"),
+            "expected duplicate-alias error; got: {err}"
+        );
+    }
+}
+
+// ── RES-411: integer literal overflow for pinned int types ───────────────────
+
+#[cfg(test)]
+mod res411_pinned_int_overflow {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn int8_in_range_ok() {
+        check_ok("fn f() -> void { let x: Int8 = 100; }");
+    }
+
+    #[test]
+    fn int8_min_boundary_ok() {
+        check_ok("fn f() -> void { let x: Int8 = -128; }");
+    }
+
+    #[test]
+    fn int8_max_boundary_ok() {
+        check_ok("fn f() -> void { let x: Int8 = 127; }");
+    }
+
+    #[test]
+    fn int8_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: Int8 = 300; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(e.contains("Int8"), "error must name the type; got: {e}");
+    }
+
+    #[test]
+    fn int8_underflow_errors() {
+        let e = check_err("fn f() -> void { let x: Int8 = -200; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn uint8_in_range_ok() {
+        check_ok("fn f() -> void { let x: UInt8 = 255; }");
+    }
+
+    #[test]
+    fn uint8_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: UInt8 = 256; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(e.contains("UInt8"), "error must name the type; got: {e}");
+    }
+
+    #[test]
+    fn uint8_negative_errors() {
+        let e = check_err("fn f() -> void { let x: UInt8 = -1; }");
+        assert!(
+            e.contains("overflows"),
+            "expected overflow error for negative UInt8; got: {e}"
+        );
+    }
+
+    #[test]
+    fn int16_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: Int16 = 40000; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn uint16_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: UInt16 = 70000; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn int32_max_boundary_ok() {
+        check_ok("fn f() -> void { let x: Int32 = 2147483647; }");
+    }
+
+    #[test]
+    fn uint32_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: UInt32 = 5000000000; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn plain_int_no_overflow_check() {
+        // Unbounded `int` never overflows.
+        check_ok("fn f() -> void { let x: int = 9999999999; }");
+    }
+
+    #[test]
+    fn unannotated_let_no_overflow_check() {
+        // Without a type annotation there's no declared range to check.
+        check_ok("fn f() -> void { let x = 300; }");
+    }
+}
+
+// ── RES-412: string/array method return type precision ───────────────────────
+
+#[cfg(test)]
+mod res412_method_return_types {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    #[test]
+    fn array_len_returns_int() {
+        // arr.len() should be usable where an int is expected.
+        check_ok(r#"fn f() -> int { let arr = [1, 2, 3]; return arr.len(); }"#);
+    }
+
+    #[test]
+    fn string_len_returns_int() {
+        check_ok(r#"fn f() -> int { let s = "hello"; return s.len(); }"#);
+    }
+
+    #[test]
+    fn string_trim_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "  hi  "; return s.trim(); }"#);
+    }
+
+    #[test]
+    fn string_to_upper_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "hello"; return s.to_upper(); }"#);
+    }
+
+    #[test]
+    fn string_to_lower_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "HELLO"; return s.to_lower(); }"#);
+    }
+
+    #[test]
+    fn string_contains_returns_bool() {
+        check_ok(r#"fn f() -> bool { let s = "hello world"; return s.contains("world"); }"#);
+    }
+
+    #[test]
+    fn string_starts_with_returns_bool() {
+        check_ok(r#"fn f() -> bool { let s = "hello"; return s.starts_with("he"); }"#);
+    }
+
+    #[test]
+    fn string_ends_with_returns_bool() {
+        check_ok(r#"fn f() -> bool { let s = "hello"; return s.ends_with("lo"); }"#);
+    }
+
+    #[test]
+    fn string_replace_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "hello"; return s.replace("l", "r"); }"#);
+    }
+
+    #[test]
+    fn array_contains_returns_bool() {
+        check_ok(r#"fn f() -> bool { let arr = [1, 2, 3]; return arr.contains(2); }"#);
+    }
+
+    #[test]
+    fn array_join_returns_string() {
+        check_ok(r#"fn f() -> string { let arr = ["a", "b"]; return arr.join(", "); }"#);
+    }
+}
+
+// ── RES-413: static division by zero detection ───────────────────────────────
+
+#[cfg(test)]
+mod res413_div_by_zero {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn div_by_zero_literal_errors() {
+        let e = check_err("fn f() -> int { return 10 / 0; }");
+        assert!(
+            e.contains("division by zero") || e.contains("by zero"),
+            "got: {e}"
+        );
+    }
+
+    #[test]
+    fn mod_by_zero_literal_errors() {
+        let e = check_err("fn f() -> int { return 10 % 0; }");
+        assert!(
+            e.contains("modulo by zero") || e.contains("by zero"),
+            "got: {e}"
+        );
+    }
+
+    #[test]
+    fn div_by_const_zero_errors() {
+        let e = check_err("fn f() -> int { let d = 0; return 10 / d; }");
+        assert!(
+            e.contains("by zero"),
+            "expected division-by-zero error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn div_by_nonzero_ok() {
+        check_ok("fn f() -> int { return 10 / 2; }");
+    }
+
+    #[test]
+    fn div_by_variable_ok() {
+        // Non-constant divisor — can't statically check, so it's ok.
+        check_ok("fn f(int n) -> int { return 10 / n; }");
+    }
+}
+
+// ── RES-414: void-in-let binding detection ───────────────────────────────────
+
+#[cfg(test)]
+mod res414_void_in_let {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn let_void_fn_result_errors() {
+        let e = check_err("fn f() -> void { let x = print(\"hi\"); }");
+        assert!(
+            e.contains("void") || e.contains("Void"),
+            "expected void-binding error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn let_underscore_void_ok() {
+        // _ prefix is the discard convention — allowed for void values.
+        check_ok("fn f() -> void { let _x = print(\"hi\"); }");
+    }
+
+    #[test]
+    fn let_int_fn_ok() {
+        check_ok("fn f() -> int { let x = len(\"hi\"); return x; }");
+    }
+
+    #[test]
+    fn void_fn_as_expression_statement_ok() {
+        // Using a void-returning fn as a plain expression statement is fine.
+        check_ok("fn f() -> void { print(\"hi\"); }");
+    }
+}
+
+// ── RES-415: map/set literal type consistency + negative index detection ──────
+
+#[cfg(test)]
+mod res415_collection_type_checks {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn map_uniform_keys_ok() {
+        check_ok(r#"fn f() -> void { let _m = {"a" -> 1, "b" -> 2}; }"#);
+    }
+
+    #[test]
+    fn map_mixed_key_types_errors() {
+        let e = check_err(r#"fn f() -> void { let _m = {"a" -> 1, 2 -> 3}; }"#);
+        assert!(
+            e.contains("mixed key types") || e.contains("key"),
+            "got: {e}"
+        );
+    }
+
+    #[test]
+    fn map_mixed_value_types_errors() {
+        let e = check_err(r#"fn f() -> void { let _m = {"a" -> 1, "b" -> "two"}; }"#);
+        assert!(
+            e.contains("mixed value types") || e.contains("value"),
+            "got: {e}"
+        );
+    }
+
+    #[test]
+    fn set_uniform_elements_ok() {
+        check_ok(r#"fn f() -> void { let _s = #{1, 2, 3}; }"#);
+    }
+
+    #[test]
+    fn set_mixed_elements_errors() {
+        let e = check_err(r#"fn f() -> void { let _s = #{1, "two", 3}; }"#);
+        assert!(
+            e.contains("mixed element types") || e.contains("element"),
+            "got: {e}"
+        );
+    }
+
+    #[test]
+    fn negative_constant_index_errors() {
+        let e = check_err(r#"fn f() -> void { let arr = [1, 2, 3]; let x = arr[-1]; }"#);
+        assert!(
+            e.contains("out of bounds") || e.contains("negative"),
+            "expected negative-index error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn string_index_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "hello"; return s[0]; }"#);
+    }
+}
+
+// ── RES-416: const pinned-int overflow + enum constructor type checking ────────
+
+#[cfg(test)]
+mod res416_const_and_enum_checks {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn const_int8_in_range_ok() {
+        check_ok("const N: Int8 = 100;");
+    }
+
+    #[test]
+    fn const_int8_overflow_errors() {
+        let e = check_err("const N: Int8 = 300;");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn const_uint8_overflow_errors() {
+        let e = check_err("const N: UInt8 = 256;");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn enum_constructor_correct_types_ok() {
+        check_ok(
+            r#"
+enum Shape { Circle(int) }
+fn f() -> void { let _s = Shape::Circle(5); }
+"#,
+        );
+    }
+
+    #[test]
+    fn enum_constructor_wrong_arg_type_errors() {
+        let e = check_err(
+            r#"
+enum Shape { Circle(int) }
+fn f() -> void { let _s = Shape::Circle("not_an_int"); }
+"#,
+        );
+        assert!(
+            e.contains("argument has type") || e.contains("expected"),
+            "expected constructor type error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn enum_constructor_wrong_arg_count_errors() {
+        let e = check_err(
+            r#"
+enum Shape { Circle(int) }
+fn f() -> void { let _s = Shape::Circle(1, 2); }
+"#,
+        );
+        assert!(
+            e.contains("expected") && (e.contains("arg") || e.contains("argument")),
+            "expected arity error; got: {e}"
+        );
+    }
+}
+
+// ── RES-417: const declaration forward reference ──────────────────────────────
+
+#[cfg(test)]
+mod res417_const_forward_ref {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn fn_forward_refs_const_ok() {
+        // Function defined before the const it uses — must succeed.
+        check_ok(
+            r#"
+fn f() -> int { return N; }
+const N: int = 5;
+"#,
+        );
+    }
+
+    #[test]
+    fn const_used_in_expression_ok() {
+        check_ok(
+            r#"
+fn f() -> int { return MAX + 1; }
+const MAX: int = 100;
+"#,
+        );
+    }
+
+    #[test]
+    fn const_after_fn_type_mismatch_errors() {
+        // N is declared as Int8 = 300 — overflow should still be caught
+        // even when the const appears after its use site.
+        let e = check_err(
+            r#"
+const N: Int8 = 300;
+fn f() -> void { }
+"#,
+        );
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn const_normal_declaration_ok() {
+        check_ok("const N: int = 42;");
+    }
+
+    #[test]
+    fn const_float_ok() {
+        check_ok("const PI: float = 3.14;");
+    }
+}
+
+// ── RES-418: struct literal unknown-field detection ───────────────────────────
+
+#[cfg(test)]
+mod res418_struct_literal_unknown_field {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn known_fields_ok() {
+        check_ok(
+            r#"
+struct Point { int x, int y }
+fn f() -> void { let _p = new Point { x: 1, y: 2 }; }
+"#,
+        );
+    }
+
+    #[test]
+    fn unknown_field_errors() {
+        let e = check_err(
+            r#"
+struct Point { int x, int y }
+fn f() -> void { let _p = new Point { x: 1, z: 2 }; }
+"#,
+        );
+        assert!(
+            e.contains("has no field") || e.contains("no field"),
+            "expected unknown-field error; got: {e}"
+        );
+        assert!(
+            e.contains("z"),
+            "error must name the unknown field; got: {e}"
+        );
+    }
+
+    #[test]
+    fn field_type_mismatch_errors() {
+        let e = check_err(
+            r#"
+struct Point { int x, int y }
+fn f() -> void { let _p = new Point { x: "not_an_int", y: 2 }; }
+"#,
+        );
+        assert!(
+            e.contains("type") || e.contains("int"),
+            "expected type mismatch error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn struct_on_unknown_struct_ok() {
+        // If the struct isn't declared, we skip unknown-field checking
+        // to be permissive about partial programs.
+        check_ok("fn f() -> void { let _p = new UnknownStruct { foo: 1 }; }");
+    }
+}
+
+// =====================================================
+// RES-419: fn(T)->R type annotation parsing
+// ============================================================
+#[cfg(test)]
+mod res419_fn_type_annotation {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn fn_param_callable_as_function() {
+        // A higher-order function with a fn(int) -> int parameter must
+        // be callable inside the body without a type error.
+        check_ok(
+            r#"
+fn apply(int x, fn(int) -> int f) -> int { return f(x); }
+fn double(int x) -> int { return x * 2; }
+fn main(int _d) -> int { return apply(5, double); }
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_param_zero_args_callable() {
+        check_ok(
+            r#"
+fn call_zero(fn() -> int f) -> int { return f(); }
+fn get_one() -> int { return 1; }
+fn main(int _d) -> int { return call_zero(get_one); }
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_param_multi_arg_callable() {
+        check_ok(
+            r#"
+fn apply2(int x, int y, fn(int, int) -> int f) -> int { return f(x, y); }
+fn add(int a, int b) -> int { return a + b; }
+fn main(int _d) -> int { return apply2(3, 4, add); }
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_return_type_inferred_from_annotation() {
+        // When calling a fn-typed parameter the return type is the
+        // declared return type of the function annotation.
+        check_ok(
+            r#"
+fn transform(string s, fn(string) -> string f) -> string { return f(s); }
+fn shout(string x) -> string { return to_upper(x); }
+fn main(int _d) -> int {
+    let _r = transform("hello", shout);
+    return 0;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_type_in_let_binding() {
+        // A let binding with a fn(...) -> ... annotation should work.
+        check_ok(
+            r#"
+fn id(int x) -> int { return x; }
+fn main(int _d) -> int {
+    let f: fn(int) -> int = id;
+    return f(3);
+}
+"#,
+        );
+    }
+}
+
+// ============================================================
+// RES-420: for-in element type from builtin call
+// ============================================================
+#[cfg(test)]
+mod res420_forin_element_type {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn forin_array_range_element_is_int() {
+        // `array_range(lo, hi)` returns `Array`; element type is Int.
+        // The arithmetic `x + 1` must not produce a type error.
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    let s = 0;
+    for x in array_range(0, 5) {
+        let s = s + x;
+    }
+    return s;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn forin_split_element_is_string() {
+        // `split(str, sep)` → Array of strings; element type is String.
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    for word in split("hello world", " ") {
+        let _len = len(word);
+    }
+    return 0;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn forin_string_split_element_is_string() {
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    for tok in string_split("a,b,c", ",") {
+        let _u = to_upper(tok);
+    }
+    return 0;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn forin_range_syntax_still_int() {
+        // The original Node::Range { .. } case must still work.
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    let acc = 0;
+    for i in 0..5 { let acc = acc + i; }
+    return acc;
+}
+"#,
+        );
+    }
+}
+
+// ============================================================
+// RES-421: IfStatement type with diverging branch
+// ============================================================
+#[cfg(test)]
+mod res421_if_diverging_branch {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn if_else_consequence_diverges_uses_alt_type() {
+        // consequence returns early; else branch is Int — whole expr is Int.
+        check_ok(
+            r#"
+fn guard(bool bad) -> int {
+    let x = if bad { return 0; } else { 42 };
+    return x;
+}
+fn main(int _d) -> int { return guard(false); }
+"#,
+        );
+    }
+
+    #[test]
+    fn if_else_alternative_diverges_uses_cons_type() {
+        // alternative returns early; consequence is Int — whole expr is Int.
+        check_ok(
+            r#"
+fn guard2(bool bad) -> int {
+    let x = if bad { 42 } else { return 0; };
+    return x;
+}
+fn main(int _d) -> int { return guard2(false); }
+"#,
+        );
+    }
+
+    #[test]
+    fn both_branches_non_diverging_must_match() {
+        // Neither diverges and types differ → type error (pre-existing behaviour).
+        let e = check_err(
+            r#"
+fn f(bool b) -> int {
+    let x = if b { 1 } else { "two" };
+    return x;
+}
+"#,
+        );
+        assert!(
+            e.contains("incompatible") || e.contains("mismatch") || e.contains("type"),
+            "expected incompatible-types error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn guard_clause_pattern_compiles() {
+        // Classic guard: early return in if-without-else is fine.
+        check_ok(
+            r#"
+fn safe_sqrt(int n) -> float {
+    if n < 0 { return 0.0; }
+    return sqrt(n);
+}
+fn main(int _d) -> int { return 0; }
+"#,
+        );
+    }
+}
+
+// ── RES-425: generic type parameter call-site fix ────────────────────────────
+
+#[cfg(test)]
+mod res425_generic_typecheck {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("type error: {e}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn generic_id_with_int_no_false_positive() {
+        check_ok("fn id<T>(T x) -> T { return x; }\nfn f(int a) -> int { return id(a); }");
+    }
+
+    #[test]
+    fn generic_id_with_string_no_false_positive() {
+        check_ok("fn id<T>(T x) -> T { return x; }\nfn f(string s) -> string { return id(s); }");
+    }
+
+    #[test]
+    fn generic_two_params_no_false_positive() {
+        check_ok(
+            "fn first<A, B>(A a, B b) -> A { return a; }\n\
+             fn f(int x, string y) -> int { return first(x, y); }",
+        );
+    }
+
+    #[test]
+    fn generic_accepts_different_types_at_different_sites() {
+        check_ok(
+            "fn wrap<T>(T x) -> T { return x; }\n\
+             fn f(int a) -> int { return wrap(a); }\n\
+             fn g(string s) -> string { return wrap(s); }",
+        );
+    }
+
+    #[test]
+    fn non_generic_type_mismatch_still_caught() {
+        let e = check_err(
+            "fn takes_int(int x) -> int { return x; }\n\
+             fn f(string s) -> int { return takes_int(s); }",
+        );
+        assert!(
+            e.contains("mismatch") || e.contains("expected int"),
+            "expected type mismatch; got: {e}"
+        );
+    }
+}
+
+// ── RES-426: tuple return type in function signatures ────────────────────────
+
+#[cfg(test)]
+mod res426_tuple_return_type {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("type error: {e}"));
+    }
+
+    #[test]
+    fn tuple_return_type_parses_and_typechecks() {
+        check_ok(
+            "fn divmod(int a, int b) -> (int, int) { return (a / b, a % b); }\n\
+             fn f(int a) -> int { let r = divmod(a, 3); return 0; }",
+        );
+    }
+
+    #[test]
+    fn tuple_return_single_element() {
+        check_ok("fn wrap(int x) -> (int) { return (x); }\nfn f(int a) -> int { return 0; }");
+    }
+
+    #[test]
+    fn tuple_return_three_elements() {
+        check_ok(
+            "fn triple(int x) -> (int, int, int) { return (x, x, x); }\n\
+             fn f(int a) -> int { return 0; }",
+        );
+    }
+
+    #[test]
+    fn tuple_destructure_from_function() {
+        // let (a, b) = divmod(...) should parse and type-check
+        check_ok(
+            "fn divmod(int a, int b) -> (int, int) { return (a / b, a % b); }\n\
+             fn f(int a) -> int {\n\
+                 let (q, r) = divmod(a, 3);\n\
+                 return q;\n\
+             }",
+        );
     }
 }

@@ -13,6 +13,11 @@
 
 use crate::Node;
 use std::collections::HashMap;
+use std::sync::RwLock;
+
+/// Global snapshot baseline — populated on the first check() call;
+/// subsequent calls diff against it and report changed fingerprints.
+static SNAPSHOT_BASELINE: RwLock<Option<HashMap<String, Snapshot>>> = RwLock::new(None);
 
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -73,7 +78,49 @@ pub fn serialize(snapshots: &HashMap<String, Snapshot>) -> String {
     s
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+/// Install a snapshot map as the new baseline.
+pub fn install_snapshot_baseline(snapshots: HashMap<String, Snapshot>) {
+    if let Ok(mut g) = SNAPSHOT_BASELINE.write() {
+        *g = Some(snapshots);
+    }
+}
+
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // Fast-reject: skip programs with no function declarations.
+    let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
+    if !has_fn {
+        return Ok(());
+    }
+
+    let current = build_snapshots(program);
+    if current.is_empty() {
+        return Ok(());
+    }
+
+    // Compare against baseline and emit regressions.
+    let baseline = SNAPSHOT_BASELINE.read().ok().and_then(|g| g.clone());
+    if let Some(baseline) = baseline {
+        let changed = diff(&baseline, &current);
+        if !changed.is_empty() {
+            eprintln!(
+                "snapshot-regression: {} function(s) have changed behavioral \
+                 fingerprints: [{}]",
+                changed.len(),
+                changed.join(", ")
+            );
+            for name in &changed {
+                if let (Some(old), Some(new)) = (baseline.get(name), current.get(name)) {
+                    eprintln!(
+                        "snapshot-regression:   `{name}`: {} → {}",
+                        old.fingerprint_digest, new.fingerprint_digest
+                    );
+                }
+            }
+        }
+    }
+
+    // Install current snapshots as the new baseline.
+    install_snapshot_baseline(current);
     Ok(())
 }
 
@@ -110,5 +157,49 @@ mod tests {
         let src = "fn f(int x) -> int { return x; }\n";
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_installs_baseline_and_detects_regression() {
+        // Reset baseline.
+        install_snapshot_baseline(HashMap::new());
+        // First check: installs baseline.
+        let s1 = r#"fn f(int x) -> int ensures result > 0 { return x; }"#;
+        let (p1, _) = parse(s1);
+        assert!(check(&p1, "test").is_ok());
+
+        // Second check with different program: fingerprint changed.
+        let s2 = r#"fn f(int x) -> int { return x; }"#;
+        let (p2, _) = parse(s2);
+        assert!(check(&p2, "test").is_ok()); // still Ok — regressions are advisory warnings
+
+        // Directly verify the diff detects the change.
+        let snaps1 = build_snapshots(&p1);
+        let snaps2 = build_snapshots(&p2);
+        let changed = diff(&snaps1, &snaps2);
+        assert!(
+            !changed.is_empty(),
+            "removing ensures must change the fingerprint"
+        );
+        assert!(changed.contains(&"f".to_string()));
+    }
+
+    #[test]
+    fn no_regression_for_identical_compilation() {
+        install_snapshot_baseline(HashMap::new());
+        let src = r#"fn g(int x) -> int requires x > 0 { return x; }"#;
+        let (prog, _) = parse(src);
+        let snaps = build_snapshots(&prog);
+        let changed = diff(&snaps, &snaps);
+        assert!(
+            changed.is_empty(),
+            "identical snapshots must have no changes"
+        );
     }
 }

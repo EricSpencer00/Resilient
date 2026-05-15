@@ -1,0 +1,23 @@
+// RES-1857: BMC prefix span fixture — unprovable `recovers_to`.
+//
+// `register_write` has `recovers_to: x > 0` but no `requires` constraint.
+// Without a precondition, Z3 can find x = 0 as a counterexample to the
+// clause being universally true. The final-state Z3 check returns
+// Some(false) and the typechecker rejects the program (a compile error),
+// even without a `fails` annotation.
+//
+// This file is tested by `recovers_to_z3_obligation.rs` with
+// `--features z3` to verify that unprovable `recovers_to` clauses are
+// caught at compile time.
+fn register_write(int x) -> int
+    recovers_to: x > 0;
+{
+    let stepped = x + 1;
+    return stepped;
+}
+
+fn main() {
+    let v = register_write(5);
+    println(v);
+}
+main();

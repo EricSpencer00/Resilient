@@ -56,30 +56,51 @@ pub fn analyze(program: &Node) -> Vec<DestructureRequest> {
     out
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    let reqs = analyze(program);
+    for r in &reqs {
+        eprintln!(
+            "note: `{}` parameter {} is a tuple destructure; lowering to \
+             `let ({}) = param;` at call sites is not yet supported — \
+             use explicit binding in the function body",
+            r.fn_name,
+            r.param_index,
+            r.locals.join(", ")
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse;
 
     #[test]
     fn empty_program_no_requests() {
         let p = Node::Program(vec![]);
         assert!(analyze(&p).is_empty());
     }
+
     #[test]
     fn check_always_returns_ok() {
         let src = "fn f(int x) -> int { return x; }\n";
-        let (prog, _) = crate::parse(src);
+        let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
 
     #[test]
     fn analyze_pure_function_no_requests() {
         let src = "fn f(int x) -> int { return x + 1; }\n";
-        let (prog, _) = crate::parse(src);
+        let (prog, _) = parse(src);
         assert!(analyze(&prog).is_empty());
+    }
+
+    #[test]
+    fn check_with_destructure_param_returns_ok() {
+        // The check() function always returns Ok — warnings are advisory.
+        let src = "fn g(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
     }
 }

@@ -3404,6 +3404,8 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::ReturnStatement { span, .. }
         | Node::Break { span, .. }
         | Node::Continue { span, .. }
+        | Node::BreakLabel { span, .. }
+        | Node::ContinueLabel { span, .. }
         | Node::IfStatement { span, .. }
         | Node::WhileStatement { span, .. }
         | Node::ForInStatement { span, .. }

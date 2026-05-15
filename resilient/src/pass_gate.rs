@@ -130,11 +130,38 @@ pub(crate) struct Markers<'a> {
     /// `collect_actor_obligations` when the program has no actors.
     /// Also used by the `deadlock_freedom` gate (RES-1629).
     pub has_actor_decl: bool,
+    /// True if any `Node::Actor { .. }` (standalone actor block) appears.
+    /// Used by the `actor_drain` drain-before-shutdown pass (RES-1232).
+    pub has_actor: bool,
     /// True if any `Node::CallExpression` appears anywhere
     /// (regardless of whether the callee is an `Identifier` —
     /// method calls and indirect calls count too). Used by the
     /// `blame_attribution` gate (RES-1629).
     pub has_call_expression: bool,
+    /// True if any `Node::Function` or `Node::FunctionLiteral` has at
+    /// least one non-`None` entry in its `defaults` vector. Used by
+    /// the `default_params::check` gate (RES-1615) to skip the
+    /// trailing-only and const-default validation pass when no
+    /// defaulted parameters exist in the program.
+    pub has_fn_defaults: bool,
+    /// True if any `Node::Match` appears anywhere in the AST. Used by
+    /// the `struct_exhaustiveness` gate (RES-1597) to skip the
+    /// non-exhaustive struct match detection pass when the program
+    /// has no match expressions.
+    pub has_match_expr: bool,
+    /// True if any `Node::InterpolatedString` appears anywhere. Used
+    /// by the `string_interp::check` pass (RES-221) to skip the
+    /// sub-expression type-checking walk when no interpolated strings
+    /// are present.
+    pub has_interp_string: bool,
+    /// True if any `Node::EnumDecl` appears anywhere. Used by the
+    /// `enum_exhaustiveness::check` pass (RES-400) to skip the
+    /// exhaustiveness walk when the program declares no enums.
+    pub has_enum_decl: bool,
+    /// True if any `Node::ModuleDecl` appears at top-level. Used by
+    /// `modules::check` (RES-324) to skip the duplicate-name and
+    /// unresolved-item walk when the program has no inline modules.
+    pub has_inline_module: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -176,6 +203,7 @@ impl<'a> Markers<'a> {
                 name,
                 parameters,
                 type_params,
+                defaults,
                 pure,
                 effects,
                 ..
@@ -191,6 +219,9 @@ impl<'a> Markers<'a> {
                 }
                 if !type_params.is_empty() {
                     m.has_generic_fn = true;
+                }
+                if defaults.iter().any(|d| d.is_some()) {
+                    m.has_fn_defaults = true;
                 }
                 // RES-1671: purity marker. There are TWO parser paths
                 // that produce a pure fn:
@@ -238,6 +269,7 @@ impl<'a> Markers<'a> {
             }
             Node::ModuleDecl { .. } => {
                 m.has_module_decl = true;
+                m.has_inline_module = true;
             }
             Node::Use { .. } => {
                 m.has_use = true;
@@ -277,8 +309,20 @@ impl<'a> Markers<'a> {
                     m.has_actor_with_eventually = true;
                 }
             }
+            Node::Actor { .. } => {
+                m.has_actor = true;
+            }
             Node::WhileStatement { invariants, .. } if !invariants.is_empty() => {
                 m.has_while_with_invariants = true;
+            }
+            Node::Match { .. } => {
+                m.has_match_expr = true;
+            }
+            Node::InterpolatedString { .. } => {
+                m.has_interp_string = true;
+            }
+            Node::EnumDecl { .. } => {
+                m.has_enum_decl = true;
             }
             _ => {}
         });

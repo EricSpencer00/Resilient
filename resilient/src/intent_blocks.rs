@@ -18,6 +18,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct IntentSpec {
@@ -29,8 +30,7 @@ pub struct IntentSpec {
 
 pub fn collect() -> Vec<IntentSpec> {
     let attrs = crate::feature_attrs::find_kind("intent");
-    // RES-1754: pre-size to attrs.len() — exactly one push per
-    // attribute record, so this is an exact bound.
+    // RES-1754: pre-size to attrs.len() — exactly one push per attribute record.
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = IntentSpec {
@@ -67,28 +67,49 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    // RES-1517: collect function names directly into a `HashSet` and
-    // drop the intermediate `Vec<&Node>` pass. The previous shape
-    // walked `stmts` twice (filter, then filter_map) and then asked
-    // `Vec::contains` for every enforcer — O(M*N) for M enforcers and
-    // N functions. A HashSet lookup is O(1) per enforcer, and we walk
-    // `stmts` once. Pre-size to `stmts.len()` since the upper bound is
-    // every top-level statement being a function.
+
+    // RES-1517: collect function names and their contract status in one pass.
+    // `fn_contracts[name]` = true when the function has at least one
+    // `requires` or `ensures` clause.
     let mut fn_names: std::collections::HashSet<&str> =
         std::collections::HashSet::with_capacity(stmts.len());
+    let mut fn_contracts: HashMap<&str, bool> = HashMap::with_capacity(stmts.len());
     for s in stmts {
-        if let Node::Function { name, .. } = &s.node {
+        if let Node::Function {
+            name,
+            requires,
+            ensures,
+            ..
+        } = &s.node
+        {
             fn_names.insert(name.as_str());
+            fn_contracts.insert(name.as_str(), !requires.is_empty() || !ensures.is_empty());
         }
     }
 
     for intent in &intents {
+        let prop_label = intent.property.as_deref().unwrap_or(&intent.item_name);
+
         for enforcer in &intent.enforcers {
             if !fn_names.contains(enforcer.as_str()) {
                 eprintln!(
-                    "warning: intent on `{}` names enforcer `{}` which doesn't exist",
-                    intent.item_name, enforcer
+                    "warning: intent `{}` (property: \"{}\") names enforcer `{}` \
+                     which doesn't exist in the program",
+                    intent.item_name, prop_label, enforcer
                 );
+            } else {
+                let has_contracts = fn_contracts
+                    .get(enforcer.as_str())
+                    .copied()
+                    .unwrap_or(false);
+                if !has_contracts {
+                    eprintln!(
+                        "warning: intent `{}` (property: \"{}\") enforcer `{}` \
+                         has no `requires` or `ensures` clauses — the intent \
+                         has no verifiable contract to back it",
+                        intent.item_name, prop_label, enforcer
+                    );
+                }
             }
         }
     }
@@ -121,6 +142,7 @@ mod tests {
         );
         crate::feature_attrs::reset();
     }
+
     #[test]
     fn collect_empty_when_no_attrs() {
         let _g = crate::feature_attrs::lock_for_test();
@@ -134,6 +156,44 @@ mod tests {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_when_enforcer_has_contract() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "SafeDiv",
+            crate::feature_attrs::AttrRecord {
+                name: "intent".into(),
+                args: r#"property = "no div by zero", enforced_by = "divide""#.into(),
+                line: 0,
+            },
+        );
+        let src = "fn divide(int a, int b) -> int requires b != 0 { return a / b; }\n";
+        let (prog, _) = crate::parse(src);
+        // check always returns Ok (warnings only) but the enforcer has a contract
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_even_when_enforcer_missing_contract() {
+        // check() always returns Ok; the gap is reported as a warning only.
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Safe",
+            crate::feature_attrs::AttrRecord {
+                name: "intent".into(),
+                args: r#"property = "safe", enforced_by = "naked""#.into(),
+                line: 0,
+            },
+        );
+        let src = "fn naked(int x) -> int { return x; }\n";
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();

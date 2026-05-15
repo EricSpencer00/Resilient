@@ -15,6 +15,14 @@ mod alignment_helpers;
 // RES-1160: argmax / argmin for float and string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_argminmax;
+mod array_combinators;
+mod array_functional;
+mod collection_extras;
+mod map_functional;
+mod numeric_utils;
+mod result_option_hof;
+mod string_hof;
+mod type_builtins;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -110,6 +118,11 @@ mod lsp_server;
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_server;
+
+/// RES-2645: MCP external-tool bridge registry — generic scaffolding for
+/// connecting external verification/analysis tools as MCP tool providers.
+pub mod mcp_tool_registry;
+
 // TLA+ bridge: `rz tla check <file.tla>` shells out to TLC and surfaces
 // results in Resilient's diagnostic format.  CLI-only (no wasm32).
 pub mod output_sink;
@@ -500,10 +513,13 @@ mod autopilot;
 mod behavioral_fingerprint;
 mod blame_attribution;
 mod causal_trace;
+mod combinatorics;
+mod complex_numbers;
 mod const_fn;
 mod contract_inference;
 mod coverage_warnings;
 mod crash_only_cert;
+mod data_utils;
 mod deadlock_freedom;
 mod default_trait_methods;
 mod dependent_arrays;
@@ -513,26 +529,33 @@ mod feature_attrs;
 mod fmt_validation;
 mod format_builtin;
 mod full_modules;
+mod functional_hof;
 mod ghost_types;
+mod graph_algorithms;
 mod hw_state_machine;
 mod incremental_verify;
 mod info_flow;
 mod intent_blocks;
 mod iterator_protocol;
+mod json_builtins;
 mod labeled_break;
 mod lean_spec;
+mod linear_algebra;
 mod lock_priority;
 mod macros;
 mod mmio_regmap;
 mod mutation_testing;
 mod no_alloc_cert;
 mod no_panic_cert;
+mod number_theory;
 mod package_manager;
 mod param_destructuring;
+mod statistics;
 // RES-1585: shared top-level marker pre-scan for the typechecker
 // `<EXTENSION_PASSES>` block. One walk collects fn names + parameter
 // types; per-pass call sites consult it to skip ~15 attribute-only
 // passes whose markers are absent in the input program.
+mod enum_exhaustiveness;
 mod pass_gate;
 mod phantom_types;
 mod power_contracts;
@@ -2229,6 +2252,19 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-2653: `break label;` — exit the loop with the given label.
+    BreakLabel {
+        label: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-2653: `continue label;` — skip to the next iteration of the
+    /// loop with the given label.
+    ContinueLabel {
+        label: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     IfStatement {
         condition: Box<Node>,
         consequence: Box<Node>,
@@ -2252,6 +2288,8 @@ enum Node {
         invariants: Vec<Node>,
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-2653: optional loop label for labeled break/continue.
+        label: Option<String>,
     },
     /// RES-037: `for NAME in EXPR { BODY }`. `EXPR` must evaluate to an
     /// array; `NAME` is bound to each element in order.
@@ -2267,6 +2305,8 @@ enum Node {
         invariants: Vec<Node>,
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-2653: optional loop label for labeled break/continue.
+        label: Option<String>,
     },
     /// RES-087: converted from tuple form so it can carry a span
     /// matching the wrapped expression's starting token.
@@ -3205,6 +3245,37 @@ impl Parser {
                     tok
                 ));
                 None
+            }
+            // RES-2653: labeled loop — `label: while COND { ... }` or
+            // `label: for X in Y { ... }`. The label is an ordinary
+            // identifier followed by `:`. We peek two tokens ahead to
+            // distinguish from an expression statement like `foo:` (which
+            // would be invalid anyway).
+            Token::Identifier(_) if self.peek_token == Token::Colon => {
+                // peek_token is `:`. We need to look one further token
+                // ahead to see if it's `while` or `for`. Do a speculative
+                // read: save state, advance, check, then restore or
+                // continue. Since the parser doesn't support arbitrary
+                // lookahead natively, we check the next-next token by
+                // saving current state and peeking.
+                // Strategy: read the identifier, consume `:`, then parse
+                // the labeled loop.
+                let label = match &self.current_token {
+                    Token::Identifier(n) => n.clone(),
+                    _ => unreachable!(),
+                };
+                // Advance past identifier and `:` to see what follows.
+                self.next_token(); // now on `:`
+                self.next_token(); // now on `while` or `for` (or something else)
+                match &self.current_token {
+                    Token::While => Some(self.parse_labeled_while_statement(label)),
+                    Token::For => Some(self.parse_labeled_for_in_statement(label)),
+                    _ => {
+                        // Not a labeled loop — error recovery: just try to
+                        // parse as an expression statement from here.
+                        self.parse_expression_statement()
+                    }
+                }
             }
             // RES-390: contextual keywords `actor` / `cluster`. Both
             // are recognised only at the top of a statement when
@@ -4500,12 +4571,12 @@ impl Parser {
     }
 
     /// RES-128: parse `type <Name> = <Target>;` at top level. Emits
-    /// a `Node::TypeAlias`. The target is parsed as a single
-    /// identifier — tuple / generic alias targets are an RES-129
-    /// follow-up. A missing `=`, a non-identifier on either side, or
-    /// a missing `;` gets a clean diagnostic but doesn't stop the
-    /// parser — we still emit the node so later passes don't null-
-    /// pointer on missing metadata.
+    /// a `Node::TypeAlias`. The target is parsed via
+    /// `parse_type_annotation`, so complex targets like
+    /// `fn(int) -> int`, `Array<T>`, and `&T` are all supported.
+    /// A missing `=`, unparseable target, or missing `;` gets a clean
+    /// diagnostic; the node is still emitted so later passes don't
+    /// null-pointer on missing metadata.
     fn parse_type_alias(&mut self) -> Node {
         let kw_span = self.span_at_current();
         self.next_token(); // skip `type`
@@ -4526,17 +4597,11 @@ impl Parser {
             self.next_token(); // skip '='
         }
 
-        let target = match &self.current_token {
-            Token::Identifier(t) => t.clone(),
-            other => {
-                self.record_error(format!(
-                    "Expected target type name after 'type {} =', found {}",
-                    name, other
-                ));
-                String::new()
-            }
-        };
-        self.next_token(); // skip target
+        // RES-423: use parse_type_annotation so fn(...)->R, Array<T>,
+        // reference types, etc. are all valid alias targets.
+        let target = self
+            .parse_type_annotation(&format!("in 'type {} = ...'", name))
+            .unwrap_or_default();
 
         // Trailing `;` — optional (mirrors LetStatement's semicolon
         // handling so copy-paste doesn't trip users up).
@@ -4980,6 +5045,38 @@ impl Parser {
                     None => "->".to_string(),
                 };
                 Some(format!("fn({}) {} {}", params.join(", "), arrow_str, ret))
+            }
+            // RES-426: tuple type annotation `(T1, T2, ...)`.
+            // Encoded as the string `"(T1, T2)"` in the single-string
+            // type slot. `parse_type_name_inner` handles the
+            // parenthesised case by recognising the leading `(`.
+            Token::LeftParen => {
+                self.next_token(); // skip `(`
+                let mut elem_types: Vec<String> = Vec::with_capacity(2);
+                while self.current_token != Token::RightParen && self.current_token != Token::Eof {
+                    let elem = self.parse_type_annotation(ctx)?;
+                    elem_types.push(elem);
+                    if self.current_token == Token::Comma {
+                        self.next_token();
+                    } else if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ',' or ')' in tuple type {}, found {}",
+                            ctx, tok
+                        ));
+                        return None;
+                    }
+                }
+                if self.current_token != Token::RightParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ')' to close tuple type {}, found {}",
+                        ctx, tok
+                    ));
+                    return None;
+                }
+                self.next_token(); // skip `)`
+                Some(format!("({})", elem_types.join(", ")))
             }
             _ => {
                 let tok = self.current_token.clone();
@@ -5429,6 +5526,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
         self.next_token(); // skip 'in'
@@ -5469,6 +5567,7 @@ impl Parser {
                 }),
                 invariants,
                 span: stmt_span,
+                label: None,
             };
         }
         let body = self.parse_block_statement();
@@ -5478,6 +5577,7 @@ impl Parser {
             body: Box::new(body),
             invariants,
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -5565,6 +5665,7 @@ impl Parser {
                 }),
                 invariants,
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -5600,6 +5701,7 @@ impl Parser {
             body: Box::new(body_block),
             invariants,
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -5706,6 +5808,7 @@ impl Parser {
                 }),
                 invariants,
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -5715,6 +5818,7 @@ impl Parser {
             body: Box::new(body),
             invariants,
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -6655,26 +6759,97 @@ impl Parser {
         }
     }
 
-    /// RES-910: parse `break;`. The keyword may be followed by an
-    /// optional `;`, mirroring `return;` syntax. The typechecker is
-    /// what enforces "must be inside a loop".
+    /// RES-910: parse `break;` or `break label;` (RES-2653).
+    /// The typechecker enforces "must be inside a loop".
     fn parse_break_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // skip `break`
+        // RES-2653: `break label;` — if current token is an identifier
+        // (not a semicolon or EOF), treat it as a label name.
+        if let Token::Identifier(label) = &self.current_token.clone() {
+            let label = label.clone();
+            // Consume the label identifier.
+            if self.peek_token == Token::Semicolon {
+                self.next_token(); // move to `;`
+            }
+            return Node::BreakLabel {
+                label,
+                span: stmt_span,
+            };
+        }
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Node::Break { span: stmt_span }
     }
 
-    /// RES-910: parse `continue;`. Same shape as `break`.
+    /// RES-910: parse `continue;` or `continue label;` (RES-2653).
     fn parse_continue_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // skip `continue`
+        // RES-2653: `continue label;` — if current token is an identifier.
+        if let Token::Identifier(label) = &self.current_token.clone() {
+            let label = label.clone();
+            if self.peek_token == Token::Semicolon {
+                self.next_token();
+            }
+            return Node::ContinueLabel {
+                label,
+                span: stmt_span,
+            };
+        }
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Node::Continue { span: stmt_span }
+    }
+
+    /// RES-2653: parse `label: while COND { BODY }`.
+    /// Caller has already consumed `label` identifier and `:` and `while`.
+    /// On entry, `current_token` is `while`.
+    fn parse_labeled_while_statement(&mut self, label: String) -> Node {
+        // Delegate to the existing while parser, then patch label in.
+        let node = self.parse_while_statement();
+        match node {
+            Node::WhileStatement {
+                condition,
+                body,
+                invariants,
+                span,
+                ..
+            } => Node::WhileStatement {
+                condition,
+                body,
+                invariants,
+                span,
+                label: Some(label),
+            },
+            other => other,
+        }
+    }
+
+    /// RES-2653: parse `label: for X in ITER { BODY }`.
+    /// On entry, `current_token` is `for`.
+    fn parse_labeled_for_in_statement(&mut self, label: String) -> Node {
+        let node = self.parse_for_in_statement();
+        match node {
+            Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                invariants,
+                span,
+                ..
+            } => Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                invariants,
+                span,
+                label: Some(label),
+            },
+            other => other,
+        }
     }
 
     /// RES-914: parse `while let <pattern> = <scrutinee> { body }` and
@@ -6711,6 +6886,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
         self.next_token(); // skip `=`
@@ -6738,6 +6914,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -6774,6 +6951,7 @@ impl Parser {
             body: Box::new(loop_body),
             invariants: Vec::new(),
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -6799,6 +6977,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -6811,6 +6990,7 @@ impl Parser {
             body: Box::new(body),
             invariants: Vec::new(),
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -9335,6 +9515,7 @@ impl Parser {
             // the original source-level loops carry them.
             invariants: Vec::new(),
             span: default(),
+            label: None,
         };
 
         // let _r = [];
@@ -9716,6 +9897,12 @@ enum Value {
     /// rule as `Break`; the loop evaluator consumes it and starts the
     /// next iteration instead of exiting.
     Continue,
+    /// RES-2653: labeled `break label;` sentinel — propagates through inner
+    /// loops (which only intercept `Value::Break`) until the loop whose
+    /// `label` matches consumes it.
+    BreakLabel(String),
+    /// RES-2653: labeled `continue label;` sentinel — same propagation rule.
+    ContinueLabel(String),
     Void,
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
     /// the hashable primitives (`Int`, `String`, `Bool`) — anything
@@ -9911,6 +10098,8 @@ impl std::fmt::Debug for Value {
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Break => write!(f, "Break"),
             Value::Continue => write!(f, "Continue"),
+            Value::BreakLabel(l) => write!(f, "BreakLabel({l})"),
+            Value::ContinueLabel(l) => write!(f, "ContinueLabel({l})"),
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
@@ -10011,6 +10200,8 @@ impl std::fmt::Display for Value {
             Value::Return(v) => write!(f, "{}", v),
             Value::Break => write!(f, "<break>"),
             Value::Continue => write!(f, "<continue>"),
+            Value::BreakLabel(l) => write!(f, "<break {l}>"),
+            Value::ContinueLabel(l) => write!(f, "<continue {l}>"),
             Value::Void => write!(f, "void"),
             Value::Map(m) => {
                 // RES-148: iterate keys in sorted order so Display is
@@ -11592,6 +11783,259 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("rotate_left", crate::int_rotate::builtin_rotate_left),
     ("rotate_right", crate::int_rotate::builtin_rotate_right),
     ("signum", crate::int_rotate::builtin_signum),
+    // RES-2646: map construction from key-value pairs.
+    (
+        "map_from_pairs",
+        crate::array_functional::builtin_map_from_pairs,
+    ),
+    // RES-2647: map functional operations (pure — no callback).
+    ("map_to_pairs", crate::map_functional::builtin_map_to_pairs),
+    ("map_invert", crate::map_functional::builtin_map_invert),
+    // RES-2648: array combinators (pure — no callback).
+    (
+        "array_windows",
+        crate::array_combinators::builtin_array_windows,
+    ),
+    // RES-2650: numeric utilities (all pure).
+    ("lerp", crate::numeric_utils::builtin_lerp),
+    ("remap", crate::numeric_utils::builtin_remap),
+    (
+        "float_approx_eq",
+        crate::numeric_utils::builtin_float_approx_eq,
+    ),
+    ("round_to", crate::numeric_utils::builtin_round_to),
+    ("int_pow", crate::numeric_utils::builtin_int_pow),
+    // RES-2650: collection extras (pure).
+    (
+        "array_frequency_map",
+        crate::collection_extras::builtin_array_frequency_map,
+    ),
+    // RES-2651: Option/Result HOF (pure).
+    (
+        "option_ok_or",
+        crate::result_option_hof::builtin_option_ok_or,
+    ),
+    // RES-2652: type introspection + result_collect (pure).
+    ("type_of", crate::type_builtins::builtin_type_of),
+    (
+        "result_collect",
+        crate::type_builtins::builtin_result_collect,
+    ),
+    // RES-2655: number theory builtins (pure).
+    ("prime_factors", crate::number_theory::builtin_prime_factors),
+    ("primes_up_to", crate::number_theory::builtin_primes_up_to),
+    ("euler_totient", crate::number_theory::builtin_euler_totient),
+    ("divisors", crate::number_theory::builtin_divisors),
+    ("is_perfect", crate::number_theory::builtin_is_perfect),
+    ("digit_sum", crate::number_theory::builtin_digit_sum),
+    ("digital_root", crate::number_theory::builtin_digital_root),
+    (
+        "collatz_length",
+        crate::number_theory::builtin_collatz_length,
+    ),
+    ("is_fibonacci", crate::number_theory::builtin_is_fibonacci),
+    ("int_log", crate::number_theory::builtin_int_log),
+    ("count_digits", crate::number_theory::builtin_count_digits),
+    ("int_to_digits", crate::number_theory::builtin_int_to_digits),
+    (
+        "int_from_digits",
+        crate::number_theory::builtin_int_from_digits,
+    ),
+    // RES-2656: functional HOFs — identity is pure; rest need interpreter (inline dispatch).
+    ("identity", crate::functional_hof::builtin_identity),
+    // RES-2657: JSON serialization/deserialization (pure).
+    ("to_json", crate::json_builtins::builtin_to_json),
+    ("from_json", crate::json_builtins::builtin_from_json),
+    // RES-2658: linear algebra — vector and matrix operations (pure).
+    ("vec_add", crate::linear_algebra::builtin_vec_add),
+    ("vec_sub", crate::linear_algebra::builtin_vec_sub),
+    ("vec_scale", crate::linear_algebra::builtin_vec_scale),
+    ("vec_dot", crate::linear_algebra::builtin_vec_dot),
+    ("vec_norm", crate::linear_algebra::builtin_vec_norm),
+    (
+        "vec_normalize",
+        crate::linear_algebra::builtin_vec_normalize,
+    ),
+    ("vec_cross", crate::linear_algebra::builtin_vec_cross),
+    ("vec_lerp", crate::linear_algebra::builtin_vec_lerp),
+    ("mat_mul", crate::linear_algebra::builtin_mat_mul),
+    ("mat_add", crate::linear_algebra::builtin_mat_add),
+    ("mat_scale", crate::linear_algebra::builtin_mat_scale),
+    (
+        "mat_transpose",
+        crate::linear_algebra::builtin_mat_transpose,
+    ),
+    ("mat_identity", crate::linear_algebra::builtin_mat_identity),
+    ("mat_trace", crate::linear_algebra::builtin_mat_trace),
+    // RES-2654: combinatorics and discrete collection operations (pure).
+    (
+        "array_cartesian_product",
+        crate::combinatorics::builtin_array_cartesian_product,
+    ),
+    (
+        "array_combinations",
+        crate::combinatorics::builtin_array_combinations,
+    ),
+    (
+        "array_permutations",
+        crate::combinatorics::builtin_array_permutations,
+    ),
+    (
+        "array_powerset",
+        crate::combinatorics::builtin_array_powerset,
+    ),
+    (
+        "array_transpose",
+        crate::combinatorics::builtin_array_transpose,
+    ),
+    (
+        "array_cartesian_product_n",
+        crate::combinatorics::builtin_array_cartesian_product_n,
+    ),
+    // RES-2659: graph algorithm builtins (pure — no callbacks).
+    ("graph_bfs", crate::graph_algorithms::builtin_graph_bfs),
+    ("graph_dfs", crate::graph_algorithms::builtin_graph_dfs),
+    (
+        "graph_has_path",
+        crate::graph_algorithms::builtin_graph_has_path,
+    ),
+    (
+        "graph_topological_sort",
+        crate::graph_algorithms::builtin_graph_topological_sort,
+    ),
+    (
+        "graph_connected_components",
+        crate::graph_algorithms::builtin_graph_connected_components,
+    ),
+    (
+        "graph_num_components",
+        crate::graph_algorithms::builtin_graph_num_components,
+    ),
+    (
+        "graph_out_degrees",
+        crate::graph_algorithms::builtin_graph_out_degrees,
+    ),
+    (
+        "graph_in_degrees",
+        crate::graph_algorithms::builtin_graph_in_degrees,
+    ),
+    (
+        "graph_reverse",
+        crate::graph_algorithms::builtin_graph_reverse,
+    ),
+    (
+        "graph_is_dag",
+        crate::graph_algorithms::builtin_graph_is_dag,
+    ),
+    (
+        "graph_reachable",
+        crate::graph_algorithms::builtin_graph_reachable,
+    ),
+    (
+        "graph_dijkstra",
+        crate::graph_algorithms::builtin_graph_dijkstra,
+    ),
+    // RES-2660: extended statistics and matrix decomposition builtins.
+    (
+        "stats_covariance",
+        crate::statistics::builtin_stats_covariance,
+    ),
+    (
+        "stats_correlation",
+        crate::statistics::builtin_stats_correlation,
+    ),
+    (
+        "stats_percentile",
+        crate::statistics::builtin_stats_percentile,
+    ),
+    ("stats_zscore", crate::statistics::builtin_stats_zscore),
+    (
+        "stats_normalize",
+        crate::statistics::builtin_stats_normalize,
+    ),
+    (
+        "stats_histogram",
+        crate::statistics::builtin_stats_histogram,
+    ),
+    (
+        "stats_linear_regression",
+        crate::statistics::builtin_stats_linear_regression,
+    ),
+    (
+        "stats_moving_average",
+        crate::statistics::builtin_stats_moving_average,
+    ),
+    (
+        "stats_weighted_mean",
+        crate::statistics::builtin_stats_weighted_mean,
+    ),
+    (
+        "stats_geometric_mean",
+        crate::statistics::builtin_stats_geometric_mean,
+    ),
+    (
+        "stats_harmonic_mean",
+        crate::statistics::builtin_stats_harmonic_mean,
+    ),
+    ("stats_mode_int", crate::statistics::builtin_stats_mode_int),
+    ("stats_iqr", crate::statistics::builtin_stats_iqr),
+    ("mat_det", crate::statistics::builtin_mat_det),
+    ("mat_inv", crate::statistics::builtin_mat_inv),
+    ("mat_solve", crate::statistics::builtin_mat_solve),
+    (
+        "mat_norm_frobenius",
+        crate::statistics::builtin_mat_norm_frobenius,
+    ),
+    ("mat_rank", crate::statistics::builtin_mat_rank),
+    ("mat_lu", crate::statistics::builtin_mat_lu),
+    // RES-2661: complex number builtins (representation: Array<float> [re, im]).
+    ("complex", crate::complex_numbers::builtin_complex),
+    ("complex_real", crate::complex_numbers::builtin_complex_real),
+    ("complex_imag", crate::complex_numbers::builtin_complex_imag),
+    ("complex_add", crate::complex_numbers::builtin_complex_add),
+    ("complex_sub", crate::complex_numbers::builtin_complex_sub),
+    ("complex_mul", crate::complex_numbers::builtin_complex_mul),
+    ("complex_div", crate::complex_numbers::builtin_complex_div),
+    ("complex_abs", crate::complex_numbers::builtin_complex_abs),
+    ("complex_arg", crate::complex_numbers::builtin_complex_arg),
+    ("complex_conj", crate::complex_numbers::builtin_complex_conj),
+    (
+        "complex_norm_sq",
+        crate::complex_numbers::builtin_complex_norm_sq,
+    ),
+    ("complex_exp", crate::complex_numbers::builtin_complex_exp),
+    ("complex_ln", crate::complex_numbers::builtin_complex_ln),
+    (
+        "complex_pow_real",
+        crate::complex_numbers::builtin_complex_pow_real,
+    ),
+    ("complex_sqrt", crate::complex_numbers::builtin_complex_sqrt),
+    ("complex_sin", crate::complex_numbers::builtin_complex_sin),
+    ("complex_cos", crate::complex_numbers::builtin_complex_cos),
+    (
+        "complex_from_polar",
+        crate::complex_numbers::builtin_complex_from_polar,
+    ),
+    // RES-2662: data utilities — linspace, CSV, table formatting, RLE.
+    ("linspace", crate::data_utils::builtin_linspace),
+    ("logspace", crate::data_utils::builtin_logspace),
+    ("arange", crate::data_utils::builtin_arange),
+    ("csv_parse", crate::data_utils::builtin_csv_parse),
+    ("csv_parse_tsv", crate::data_utils::builtin_csv_parse_tsv),
+    ("csv_format", crate::data_utils::builtin_csv_format),
+    ("csv_format_tsv", crate::data_utils::builtin_csv_format_tsv),
+    ("table_format", crate::data_utils::builtin_table_format),
+    ("format_float", crate::data_utils::builtin_format_float),
+    (
+        "format_int_width",
+        crate::data_utils::builtin_format_int_width,
+    ),
+    (
+        "format_float_sci",
+        crate::data_utils::builtin_format_float_sci,
+    ),
+    ("rle_encode", crate::data_utils::builtin_rle_encode),
+    ("rle_decode", crate::data_utils::builtin_rle_decode),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -21987,18 +22431,23 @@ impl Interpreter {
             // loop evaluator consumes it.
             Node::Break { .. } => Ok(Value::Break),
             Node::Continue { .. } => Ok(Value::Continue),
+            // RES-2653: labeled break/continue sentinels.
+            Node::BreakLabel { label, .. } => Ok(Value::BreakLabel(label.clone())),
+            Node::ContinueLabel { label, .. } => Ok(Value::ContinueLabel(label.clone())),
             Node::ForInStatement {
                 name,
                 iterable,
                 body,
                 invariants,
                 span,
-            } => self.eval_for_in(name, iterable, body, invariants, span),
+                label,
+            } => self.eval_for_in(name, iterable, body, invariants, span, label.as_deref()),
             Node::WhileStatement {
                 condition,
                 body,
                 invariants,
                 span,
+                label,
             } => {
                 // Cap iterations as a safety net so a buggy loop can't
                 // freeze the interpreter. 1M is big enough for
@@ -22035,6 +22484,20 @@ impl Interpreter {
                     if matches!(result, Value::Break) {
                         break;
                     }
+                    // RES-2653: labeled break — consume only if the label
+                    // matches this loop; otherwise propagate upward.
+                    if let Value::BreakLabel(ref lbl) = result {
+                        if label.as_deref() == Some(lbl.as_str()) {
+                            break;
+                        }
+                        return Ok(result);
+                    }
+                    // RES-2653: labeled continue — propagate if label doesn't match.
+                    if let Value::ContinueLabel(ref lbl) = result
+                        && label.as_deref() != Some(lbl.as_str())
+                    {
+                        return Ok(result);
+                    }
                     // Value::Continue is intentionally ignored here —
                     // the loop simply proceeds to its next condition
                     // check.
@@ -22066,6 +22529,17 @@ impl Interpreter {
                 } else if let Some(value) = self.env.get(name) {
                     Ok(value)
                 } else if let Some(value) = self.statics.borrow().get(name).cloned() {
+                    Ok(value)
+                } else if let Some(idx) = name.find("::")
+                    && let Some(value) =
+                        self.env
+                            .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
+                {
+                    // RES-424: `Struct::method()` syntax bridges to the
+                    // `Struct$method` mangled name impl methods are stored
+                    // under. This makes static method calls (impl methods
+                    // with no `self`) callable without knowing the internal
+                    // mangling convention.
                     Ok(value)
                 } else {
                     // RES-487: hint at close builtin matches via the
@@ -22561,6 +23035,167 @@ impl Interpreter {
                                 }
                             }
                         }
+
+                        // RES-2646: array_flat_map / array_group_by / array_partition.
+                        // These need interpreter access (apply_function) so they
+                        // are dispatched inline like array_map / array_filter.
+                        "array_flat_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_flat_map(self, &args);
+                        }
+                        "array_group_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_group_by(self, &args);
+                        }
+                        "array_partition" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_partition(self, &args);
+                        }
+                        // RES-2647: map functional operations with callbacks.
+                        "map_filter" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_filter(self, &args);
+                        }
+                        "map_map_values" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_map_values(self, &args);
+                        }
+                        "map_for_each" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_for_each(self, &args);
+                        }
+                        "array_scan" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_scan(self, &args);
+                        }
+                        // RES-2648: array combinators with callbacks.
+                        "array_sort_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_sort_by(self, &args);
+                        }
+                        "array_min_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_min_by(self, &args);
+                        }
+                        "array_max_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_max_by(self, &args);
+                        }
+                        "array_count_if" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_count_if(self, &args);
+                        }
+                        "array_zip_with" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_zip_with(self, &args);
+                        }
+                        "array_take_while" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_take_while(self, &args);
+                        }
+                        "array_drop_while" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_drop_while(self, &args);
+                        }
+                        "array_sum_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_sum_by(self, &args);
+                        }
+                        "array_product_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_product_by(self, &args);
+                        }
+                        // RES-2649: map higher-order operations with callbacks.
+                        "map_merge_with" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_merge_with(self, &args);
+                        }
+                        "map_update_with" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_update_with(self, &args);
+                        }
+                        // RES-2649: string higher-order operations.
+                        "string_map_chars" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_map_chars(self, &args);
+                        }
+                        "string_filter_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_filter_by(self, &args);
+                        }
+                        "string_fold" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_fold(self, &args);
+                        }
+                        "string_for_each_char" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_for_each_char(self, &args);
+                        }
+                        // RES-2650: collection extras with callbacks.
+                        "array_key_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::collection_extras::builtin_array_key_by(self, &args);
+                        }
+                        "array_iterate" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::collection_extras::builtin_array_iterate(self, &args);
+                        }
+                        // RES-2651: Result/Option higher-order operations.
+                        "result_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_map(self, &args);
+                        }
+                        "result_and_then" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_and_then(self, &args);
+                        }
+                        "result_map_err" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_map_err(self, &args);
+                        }
+                        "result_or_else" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_or_else(self, &args);
+                        }
+                        "option_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_map(self, &args);
+                        }
+                        "option_and_then" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_and_then(self, &args);
+                        }
+                        "option_filter" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_filter(self, &args);
+                        }
+                        "option_or_else" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_or_else(self, &args);
+                        }
+                        // RES-2652: array_from_fn (needs interpreter).
+                        "array_from_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::type_builtins::builtin_array_from_fn(self, &args);
+                        }
+                        // RES-2656: functional HOFs (need interpreter for callbacks).
+                        "array_zip_with_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_zip_with_fn(self, &args);
+                        }
+                        "array_scan_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_scan_fn(self, &args);
+                        }
+                        "array_flat_map_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_flat_map_fn(self, &args);
+                        }
+                        "array_apply_n" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_apply_n(self, &args);
+                        }
+
                         _ => {}
                     }
                 }
@@ -23018,6 +23653,31 @@ impl Interpreter {
                     (Value::Array(_), other) => {
                         Err(format!("Array index must be int, got {}", other))
                     }
+                    // RES-427: string / int / bool subscript access on
+                    // Map literals (`m["key"]`, `m[42]`).
+                    (Value::Map(mut m), key_val) => {
+                        let mk = MapKey::from_value(&key_val)
+                            .map_err(|e| format!("Invalid map key: {e}"))?;
+                        m.remove(&mk)
+                            .ok_or_else(|| format!("Key not found in map: {}", key_val))
+                    }
+                    // RES-427: string subscript on a string yields a
+                    // one-character substring (`s["0"]` is not useful; the
+                    // useful form is integer subscript `s[i]`).
+                    (Value::String(s), Value::Int(i)) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let len = chars.len() as i64;
+                        let resolved = if i < 0 { i + len } else { i };
+                        if resolved < 0 || resolved >= len {
+                            Err(format!(
+                                "String index {} out of bounds for length {}",
+                                i,
+                                chars.len()
+                            ))
+                        } else {
+                            Ok(Value::String(chars[resolved as usize].to_string()))
+                        }
+                    }
                     (other, _) => Err(format!("Cannot index {:?}", other)),
                 }
             }
@@ -23154,17 +23814,8 @@ impl Interpreter {
                 let path_exprs = indices_rev;
 
                 // Evaluate the RHS first so any side effects there
-                // happen before we start mutating the array.
+                // happen before we start mutating the collection.
                 let new_val = self.eval(value)?;
-                // Then evaluate every index expression in source order.
-                let mut path_indices: Vec<i64> = Vec::with_capacity(path_exprs.len());
-                for idx_expr in &path_exprs {
-                    let idx_val = self.eval(idx_expr)?;
-                    let Value::Int(i) = idx_val else {
-                        return Err(format!("Array index must be int, got {}", idx_val));
-                    };
-                    path_indices.push(i);
-                }
 
                 // Read–modify–write. `env.get` returns a clone, so the
                 // mutation is local until we `reassign` the new root
@@ -23174,15 +23825,39 @@ impl Interpreter {
                     .env
                     .get(&root_name)
                     .ok_or_else(|| format!("Identifier not found: {}", root_name))?;
-                let Value::Array(mut items) = root else {
-                    return Err(format!(
-                        "Cannot index-assign into non-array '{}'",
-                        root_name
-                    ));
-                };
-                replace_at_path(&mut items, &path_indices, new_val)?;
-                let _ = self.env.reassign(&root_name, Value::Array(items));
-                Ok(Value::Void)
+
+                match root {
+                    // RES-427: Map index assignment via MapKey (string / int / bool keys).
+                    Value::Map(mut m) => {
+                        if path_exprs.len() != 1 {
+                            return Err("Nested map index assignment not yet supported".to_string());
+                        }
+                        let idx_val = self.eval(path_exprs[0])?;
+                        let mk = MapKey::from_value(&idx_val)
+                            .map_err(|e| format!("Invalid map key: {e}"))?;
+                        m.insert(mk, new_val);
+                        let _ = self.env.reassign(&root_name, Value::Map(m));
+                        Ok(Value::Void)
+                    }
+                    // Array index assignment (existing behaviour).
+                    Value::Array(mut items) => {
+                        let mut path_indices: Vec<i64> = Vec::with_capacity(path_exprs.len());
+                        for idx_expr in &path_exprs {
+                            let idx_val = self.eval(idx_expr)?;
+                            let Value::Int(i) = idx_val else {
+                                return Err(format!("Array index must be int, got {}", idx_val));
+                            };
+                            path_indices.push(i);
+                        }
+                        replace_at_path(&mut items, &path_indices, new_val)?;
+                        let _ = self.env.reassign(&root_name, Value::Array(items));
+                        Ok(Value::Void)
+                    }
+                    other => Err(format!(
+                        "Cannot index-assign into '{}' (has type {})",
+                        root_name, other
+                    )),
+                }
             }
             // RES-325: a `NamedArg` outside an enclosing call site is
             // an internal error — the parser only emits these inside
@@ -23408,6 +24083,7 @@ impl Interpreter {
         body: &Node,
         invariants: &[Node],
         span: &span::Span,
+        label: Option<&str>,
     ) -> RResult<Value> {
         // RES-1085: wrap the iteration in a fresh enclosed environment so
         // the loop binding `name` shadows the outer scope rather than
@@ -23415,7 +24091,7 @@ impl Interpreter {
         // 0..3 {} println(i);` prints 2 instead of 100.
         let inner_env = Environment::new_enclosed(self.env.clone());
         let saved_env = std::mem::replace(&mut self.env, inner_env);
-        let result = self.eval_for_in_in_scope(name, iterable, body, invariants, span);
+        let result = self.eval_for_in_in_scope(name, iterable, body, invariants, span, label);
         self.env = saved_env;
         result
     }
@@ -23431,6 +24107,7 @@ impl Interpreter {
         body: &Node,
         invariants: &[Node],
         span: &span::Span,
+        label: Option<&str>,
     ) -> RResult<Value> {
         // RES-222: extract body-level invariants once.
         let body_invs = crate::loop_invariants::collect_body_invariants(body);
@@ -23464,6 +24141,18 @@ impl Interpreter {
                 if matches!(result, Value::Break) {
                     return Ok(Value::Void);
                 }
+                // RES-2653: labeled break/continue.
+                if let Value::BreakLabel(ref lbl) = result {
+                    if label == Some(lbl.as_str()) {
+                        return Ok(Value::Void);
+                    }
+                    return Ok(result);
+                }
+                if let Value::ContinueLabel(ref lbl) = result
+                    && label != Some(lbl.as_str())
+                {
+                    return Ok(result);
+                }
             }
             return Ok(Value::Void);
         }
@@ -23485,6 +24174,18 @@ impl Interpreter {
             // fast-path above.
             if matches!(result, Value::Break) {
                 return Ok(Value::Void);
+            }
+            // RES-2653: labeled break/continue.
+            if let Value::BreakLabel(ref lbl) = result {
+                if label == Some(lbl.as_str()) {
+                    return Ok(Value::Void);
+                }
+                return Ok(result);
+            }
+            if let Value::ContinueLabel(ref lbl) = result
+                && label != Some(lbl.as_str())
+            {
+                return Ok(result);
             }
         }
         Ok(Value::Void)
@@ -23583,7 +24284,14 @@ impl Interpreter {
                     // RES-910: Break/Continue propagate through blocks
                     // just like Return — the enclosing While/ForIn
                     // evaluator consumes them.
-                    if matches!(result, Value::Return(_) | Value::Break | Value::Continue) {
+                    if matches!(
+                        result,
+                        Value::Return(_)
+                            | Value::Break
+                            | Value::Continue
+                            | Value::BreakLabel(_)
+                            | Value::ContinueLabel(_)
+                    ) {
                         self.env = saved;
                         return Ok(result);
                     }
@@ -56501,5 +57209,65 @@ mod array_callback_tests {
             "expected true, got: {}",
             r.stdout
         );
+    }
+}
+
+// RES-427: map index read and write via subscript syntax m[key]
+#[cfg(test)]
+mod res427_map_index_tests {
+    use super::*;
+
+    fn run(src: &str) -> RunResult {
+        run_program(src)
+    }
+
+    #[test]
+    fn map_index_read_string_key() {
+        let r = run(r#"let m = {"a" -> 1, "b" -> 2};
+println(m["a"]);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('1'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_read_int_key() {
+        let r = run(r#"let m = {1 -> "one", 2 -> "two"};
+println(m[1]);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("one"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_write_string_key() {
+        let r = run(r#"let m = {"x" -> 10};
+m["x"] = 99;
+println(m["x"]);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("99"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_write_new_key() {
+        let r = run(r#"let m = {"a" -> 1};
+m["b"] = 42;
+println(m["b"]);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("42"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_write_int_key() {
+        let r = run(r#"let m = {0 -> "zero"};
+m[0] = "changed";
+println(m[0]);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("changed"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_missing_key_errors() {
+        let r = run(r#"let m = {"a" -> 1};
+println(m["z"]);"#);
+        assert!(!r.ok, "expected error for missing key");
     }
 }

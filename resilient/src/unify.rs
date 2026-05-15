@@ -141,6 +141,8 @@ impl Substitution {
                 params: params.iter().map(|p| self.apply(p)).collect(),
                 return_type: Box::new(self.apply(return_type)),
             },
+            // RES-401: tuple element types may contain Var nodes.
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.apply(t)).collect()),
             // Primitive and opaque variants have no sub-types.
             Type::Int
             | Type::Int8
@@ -218,6 +220,16 @@ impl Substitution {
                 }
                 self.unify(&r1, &r2)
             }
+            // RES-401: tuples unify element-wise.
+            (Type::Tuple(a), Type::Tuple(b)) => {
+                if a.len() != b.len() {
+                    return Err(UnifyError::ArityMismatch(a.len(), b.len()));
+                }
+                for (l, r) in a.iter().zip(b.iter()) {
+                    self.unify(l, r)?;
+                }
+                Ok(())
+            }
             (a, b) => Err(UnifyError::Mismatch(a, b)),
         }
     }
@@ -281,6 +293,8 @@ impl Substitution {
                 params,
                 return_type,
             } => params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, return_type),
+            // RES-401: check element types of tuples.
+            Type::Tuple(ts) => ts.iter().any(|t| self.occurs(v, t)),
             _ => false,
         }
     }

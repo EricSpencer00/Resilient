@@ -303,7 +303,44 @@ pub fn list_emittable(program: &Node) -> Vec<String> {
     out
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // Fast-reject: skip programs with no functions.
+    let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
+    if !has_fn {
+        return Ok(());
+    }
+    let emittable = list_emittable(program);
+    if emittable.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "lean-spec: {} function(s) can be lowered to Lean 4 formal specs: [{}]",
+        emittable.len(),
+        emittable.join(", ")
+    );
+    // Emit a per-function note for functions with contracts so the
+    // user knows formal theorem generation is available.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    for s in stmts {
+        if let Node::Function {
+            name,
+            requires,
+            ensures,
+            ..
+        } = &s.node
+        {
+            if emittable.contains(name) && (!requires.is_empty() || !ensures.is_empty()) {
+                eprintln!(
+                    "lean-spec:   `{name}` has {} requires + {} ensures clause(s) — \
+                     use `rz emit-lean {name}` to generate the theorem",
+                    requires.len(),
+                    ensures.len()
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -386,5 +423,34 @@ mod tests {
         let (prog, _) = parse(src);
         let r = try_emit_for_fn(&prog, "two");
         assert!(r.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_emittable_function() {
+        let src = r#"fn add(int a, int b) -> int { return a + b; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_non_emittable_function() {
+        let src = r#"fn loop_fn(int x) -> int { while x > 0 { x = x - 1; } return x; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_emits_for_fn_with_contracts() {
+        // check() always returns Ok — this verifies it doesn't panic for
+        // a function with both requires and ensures.
+        let src = r#"fn safe(int x) -> int requires x > 0 ensures result > 0 { return x; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
     }
 }

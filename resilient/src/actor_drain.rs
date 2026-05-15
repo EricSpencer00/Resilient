@@ -19,11 +19,7 @@
 #![allow(
     clippy::collapsible_if,
     clippy::doc_lazy_continuation,
-    clippy::single_match,
-    // RES-1232: helpers are unreachable while `check` is a no-op
-    // pending the `Node::Actor` variant landing. Same shape as the
-    // dead-pass cleanups in RES-1202 / RES-1206.
-    dead_code
+    clippy::single_match
 )]
 
 use crate::Node;
@@ -31,24 +27,14 @@ use crate::Node;
 const STOP_HANDLERS: &[&str] = &["shutdown", "terminate", "on_stop", "stop"];
 const DRAIN_HANDLERS: &[&str] = &["drain", "flush", "drain_mailbox"];
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1232: dead pass — `actor_name_of` always returns `None`
-    // until `Node::Actor { name, .. }` is wired (see the comment on
-    // `actor_name_of` below). Consequently `collect_handler_names`
-    // always returns `None`, `check_actor` always early-returns, and
-    // the per-stmt walk emits no diagnostics for any program. Skip
-    // it entirely instead of doing N closure dispatches for nothing.
-    //
-    // Same shape as RES-1202 (`region_inference::infer`'s
-    // discarded-walk no-op) and RES-1206 (the five
-    // analysis-result-discarded passes). When the `Node::Actor`
-    // variant lands and `actor_name_of` starts returning `Some`,
-    // restore the walk:
-    //
-    //     let Node::Program(stmts) = program else { return Ok(()); };
-    //     for stmt in stmts {
-    //         check_actor(&stmt.node);
-    //     }
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1232: `Node::Actor { name, handlers, .. }` is wired; activate the walk.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    for stmt in stmts {
+        check_actor(&stmt.node);
+    }
     Ok(())
 }
 
@@ -78,24 +64,20 @@ fn check_actor(node: &Node) {
 /// child with a `name`-bearing variant under the actor body.
 fn collect_handler_names(node: &Node) -> Option<(String, Vec<String>)> {
     let actor_name = actor_name_of(node)?;
-    let mut handlers = Vec::new();
-    crate::uniqueness_walk::visit(node, &mut |n| {
-        if let Node::Function { name, .. } = n {
-            handlers.push(name.clone());
-        }
-    });
-    Some((actor_name, handlers))
+    if let Node::Actor { handlers, .. } = node {
+        let names = handlers.iter().map(|h| h.name.clone()).collect();
+        Some((actor_name, names))
+    } else {
+        None
+    }
 }
 
 fn actor_name_of(node: &Node) -> Option<String> {
-    // We don't statically know the precise enum shape of the Actor node
-    // across the codebase, so we use a string-based heuristic: any node
-    // formatted by the debug formatter with `Actor { name: "..." }` style.
-    // Production hardening would match `Node::Actor { name, .. }` directly
-    // once that variant lands; for now we return None so the pass is a
-    // no-op on programs without actors and quietly skips the rest.
-    let _ = node;
-    None
+    if let Node::Actor { name, .. } = node {
+        Some(name.clone())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

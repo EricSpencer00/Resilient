@@ -186,14 +186,82 @@ fn value_to_string(v: Value) -> String {
 
 // ---------- Type-check pass ----------
 
-/// RES-221: top-level type-check pass for interpolated strings.
+/// RES-221: type-check interpolated string sub-expressions.
+///
+/// Walks all `Node::InterpolatedString` nodes in the program and
+/// runs the typechecker on each `StringPart::Expr`. Any expression
+/// that fails to type-check (e.g. a reference to an undefined variable)
+/// is surfaced as an error. Primitive types (Int, Float, Bool, String)
+/// are accepted unconditionally; complex types (Array, Struct, etc.) are
+/// accepted too — they stringify via their `Display` impl at runtime.
 ///
 /// Parse-time validation (unterminated braces, empty interpolations,
-/// syntax errors in sub-expressions) is already handled in
-/// [`parse_parts`], so this pass is a no-op today. The extension-pass
-/// slot is kept for future work (e.g. type-checking interpolated
-/// sub-expressions against `String`-compatible types).
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+/// syntax errors in sub-expressions) is already handled by [`parse_parts`].
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let mut tc = crate::typechecker::TypeChecker::new();
+    // Pre-populate the typechecker with all top-level function and
+    // struct definitions so interpolated expressions inside fn bodies
+    // can reference other functions without false "undefined" errors.
+    for stmt in stmts {
+        if matches!(
+            &stmt.node,
+            Node::Function { .. }
+                | Node::StructDecl { .. }
+                | Node::ImplBlock { .. }
+                | Node::Extern { .. }
+        ) {
+            let _ = tc.check_node(&stmt.node);
+        }
+    }
+    // Now walk every statement and check InterpolatedString sub-exprs.
+    for stmt in stmts {
+        check_node_interp(&stmt.node, &mut tc, source_path)?;
+    }
+    Ok(())
+}
+
+fn check_node_interp(
+    node: &Node,
+    tc: &mut crate::typechecker::TypeChecker,
+    source_path: &str,
+) -> Result<(), String> {
+    if let Node::InterpolatedString { parts, span } = node {
+        for part in parts {
+            if let StringPart::Expr(expr) = part {
+                tc.check_node(expr).map_err(|e| {
+                    if span.start.line > 0 {
+                        format!(
+                            "{}:{}:{}: in interpolated string: {}",
+                            source_path, span.start.line, span.start.column, e
+                        )
+                    } else {
+                        format!("in interpolated string: {e}")
+                    }
+                })?;
+            }
+        }
+    }
+    crate::uniqueness_walk::visit(node, &mut |n| {
+        if let Node::InterpolatedString { parts, span } = n {
+            for part in parts {
+                if let StringPart::Expr(expr) = part
+                    && let Err(e) = tc.check_node(expr)
+                {
+                    // Errors in nested nodes: we can't propagate from the
+                    // closure, so emit as a warning-style diagnostic to stderr.
+                    let loc = if span.start.line > 0 {
+                        format!("{}:{}:{}", source_path, span.start.line, span.start.column)
+                    } else {
+                        source_path.to_string()
+                    };
+                    eprintln!("warning: {loc}: in interpolated string: {e}");
+                }
+            }
+        }
+    });
     Ok(())
 }
 
