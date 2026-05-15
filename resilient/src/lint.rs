@@ -113,7 +113,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0051", // comparison of two string literals — always evaluates to a constant
     "L0052", // negation of a boolean literal in a condition (`!true` or `!false`)
     "L0053", // array index is a literal that is out of bounds for the literal array
+    "L0054", // empty `while` loop body — the iteration has no effect
     "L0055", // redundant boolean `!=` check: `x != true` or `x != false`
+    "L0056", // `for x in []` — iterating over an empty literal array, body never executes
     "L0057", // x + 0 or 0 + x — redundant addition of zero
     "L0058", // x - 0 — redundant subtraction of zero
     "L0059", // x * 1 or 1 * x — redundant multiplication by one
@@ -727,6 +729,20 @@ pub fn explain(code: &str) -> Option<&'static str> {
              the index with a bounds check.\n\
              Suppress: // resilient: allow L0053",
         ),
+        "L0054" => Some(
+            "L0054 — empty `while` loop body\n\
+             \n\
+             A `while` loop with an empty body (`while cond {}`) iterates until\n\
+             the condition becomes false but performs no work. This is either a\n\
+             placeholder left in by mistake or a busy-wait loop that should be\n\
+             replaced with a proper sleep/yield mechanism.\n\
+             \n\
+             Example (bad): while !ready() {}\n\
+             \n\
+             Fix: add the intended body, or replace with an appropriate yield\n\
+             mechanism.\n\
+             Suppress: // resilient: allow L0054",
+        ),
         "L0055" => Some(
             "L0055 — redundant boolean `!=` check\n\
              \n\
@@ -738,6 +754,18 @@ pub fn explain(code: &str) -> Option<&'static str> {
              \n\
              Fix: replace `x != true` with `!x` and `x != false` with `x`.\n\
              Suppress: // resilient: allow L0055",
+        ),
+        "L0056" => Some(
+            "L0056 — `for x in []` — iterating over an empty literal array\n\
+             \n\
+             When a `for`-in loop iterates over an empty array literal `[]`,\n\
+             the loop body is never executed. This is almost certainly a mistake:\n\
+             either the array was meant to contain elements, or the loop is dead.\n\
+             \n\
+             Example (bad): for x in [] { process(x); }\n\
+             \n\
+             Fix: populate the array, or remove the loop.\n\
+             Suppress: // resilient: allow L0056",
         ),
         "L0057" => Some(
             "L0057 — redundant addition of zero (`x + 0` / `0 + x`)\n\
@@ -958,6 +986,8 @@ struct LintTriggers {
     has_break_continue: bool,
     /// L0067–L0070: any `&&` / `||` infix where one operand is a boolean literal.
     has_bool_logic_with_literal: bool,
+    /// L0056: any `for`-in whose iterable is an empty array literal.
+    has_empty_array_for: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -1077,9 +1107,13 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_while_true = true;
             }
         }
-        Node::ForInStatement { .. } => {
+        Node::ForInStatement { iterable, .. } => {
             t.has_loop = true;
             t.has_for_in_stmt = true;
+            // L0056: iterable is an empty array literal `[]`.
+            if matches!(iterable.as_ref(), Node::ArrayLiteral { items, .. } if items.is_empty()) {
+                t.has_empty_array_for = true;
+            }
         }
         Node::Assert { .. } => t.has_assert_stmt = true,
         Node::IfStatement {
@@ -1262,6 +1296,12 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_for_in_stmt {
         run_l0046_empty_for_body(program, &mut out);
+    }
+    if t.has_empty_array_for {
+        run_l0056_for_over_empty_array(program, &mut out);
+    }
+    if t.has_while_stmt {
+        run_l0054_empty_while_body(program, &mut out);
     }
     if t.has_assert_stmt {
         run_l0047_vacuous_assert(program, &mut out);
@@ -6033,6 +6073,54 @@ fn walk_l0066(node: &Node, out: &mut Vec<Lint>) {
     recurse_children(node, &mut |child| walk_l0066(child, out));
 }
 
+// ---- L0054: empty `while` loop body ----
+
+fn run_l0054_empty_while_body(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0054(program, out);
+}
+
+fn walk_l0054(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::WhileStatement { body, span, .. } = node
+        && let Node::Block { stmts, .. } = body.as_ref()
+        && stmts.is_empty()
+    {
+        out.push(Lint {
+            code: "L0054".into(),
+            severity: Severity::Warning,
+            message: "empty `while` loop body — the loop iterates but does nothing; \
+                      add the missing body or replace with a yield mechanism"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0054(child, out));
+}
+
+// ---- L0056: `for x in []` — iterating over empty literal array ----
+
+fn run_l0056_for_over_empty_array(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0056(program, out);
+}
+
+fn walk_l0056(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::ForInStatement { iterable, span, .. } = node
+        && let Node::ArrayLiteral { items, .. } = iterable.as_ref()
+        && items.is_empty()
+    {
+        out.push(Lint {
+            code: "L0056".into(),
+            severity: Severity::Warning,
+            message: "`for` loop iterates over an empty array literal `[]` — \
+                      the loop body is never executed; populate the array or remove the loop"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0056(child, out));
+}
+
 // ---- L0067: `x && true` / `true && x` — AND with true is identity ----
 
 fn run_l0067_and_true(program: &Node, out: &mut Vec<Lint>) {
@@ -8528,6 +8616,26 @@ mod tests {
         );
     }
 
+    // ---- L0054: empty while loop body ----
+
+    #[test]
+    fn l0054_fires_on_empty_while_body() {
+        let src = r#"fn f(bool ready) { while ready {} }"#;
+        assert!(
+            codes(src).contains(&"L0054".to_string()),
+            "L0054 must fire for empty while body"
+        );
+    }
+
+    #[test]
+    fn l0054_silent_when_while_has_body() {
+        let src = r#"fn f(int x) { while x > 0 { x = x - 1; } }"#;
+        assert!(
+            !codes(src).contains(&"L0054".to_string()),
+            "L0054 must not fire when while body is non-empty"
+        );
+    }
+
     // ---- L0055: redundant boolean `!=` check (complements L0023 which handles `==`) ----
 
     #[test]
@@ -8564,6 +8672,26 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0055".to_string()),
             "L0055 must not fire for integer `!=`"
+        );
+    }
+
+    // ---- L0056: for over empty array literal ----
+
+    #[test]
+    fn l0056_fires_on_for_over_empty_array() {
+        let src = r#"fn f(int x) { for item in [] { return item; } }"#;
+        assert!(
+            codes(src).contains(&"L0056".to_string()),
+            "L0056 must fire when iterating over empty array literal"
+        );
+    }
+
+    #[test]
+    fn l0056_silent_on_for_over_non_empty_array() {
+        let src = r#"fn f(int x) { for item in [1, 2, 3] { return item; } }"#;
+        assert!(
+            !codes(src).contains(&"L0056".to_string()),
+            "L0056 must not fire when array has elements"
         );
     }
 
