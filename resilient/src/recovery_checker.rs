@@ -246,3 +246,46 @@ fn extract_identifier(node: &Node) -> Option<&str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn no_live_block_returns_ok() {
+        let src = "fn f(int x) -> int { return x + 1; }\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "check must return Ok for programs with no live blocks"
+        );
+    }
+
+    #[test]
+    fn live_block_with_simple_arithmetic_passes() {
+        let src = "fn f(int x) -> int {\n    live {\n        let y = x + 1;\n        return y;\n    }\n}\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "live block with pure arithmetic should pass (V1 only warns)"
+        );
+    }
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn live_block_with_extern_call_still_returns_ok() {
+        // V1: only warns, does not return Err
+        let src = "extern { fn malloc(int n) -> int; }\nfn f(int x) -> int {\n    live { return malloc(x); }\n}\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "V1 checker emits warnings but always returns Ok"
+        );
+    }
+}

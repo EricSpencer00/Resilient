@@ -171,3 +171,86 @@ pub fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Node, parse};
+
+    #[test]
+    fn check_accepts_valid_int_base() {
+        let src = "newtype Meters = Int;\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "Int is a valid newtype base type"
+        );
+    }
+
+    #[test]
+    fn check_accepts_all_valid_base_types() {
+        for base in &["Int", "Float", "String", "Bool"] {
+            let src = format!("newtype MyType = {};\n", base);
+            let (prog, _) = parse(&src);
+            assert!(
+                check(&prog, "test").is_ok(),
+                "{base} must be accepted as a newtype base"
+            );
+        }
+    }
+
+    #[test]
+    fn check_rejects_invalid_base_type() {
+        let src = "newtype Bad = Array;\n";
+        let (prog, _) = parse(src);
+        let result = check(&prog, "test");
+        assert!(result.is_err(), "Array is not a valid newtype base type");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Bad") && msg.contains("Array"),
+            "error must mention the newtype name and invalid base: {msg}"
+        );
+    }
+
+    #[test]
+    fn lower_program_no_newtypes_is_noop() {
+        let src = "fn f(int x) -> int { return x; }\nf(5);\n";
+        let (mut prog, _) = parse(src);
+        let before = format!("{prog:?}");
+        lower_program(&mut prog);
+        let after = format!("{prog:?}");
+        assert_eq!(
+            before, after,
+            "lower_program must not modify programs without newtype declarations"
+        );
+    }
+
+    #[test]
+    fn lower_program_rewrites_constructor_call() {
+        let src = "newtype Meters = Int;\nlet d = Meters(42);\n";
+        let (mut prog, _) = parse(src);
+        lower_program(&mut prog);
+        // After lowering, the LetStatement's value should be a NewtypeConstruct.
+        let Node::Program(stmts) = &prog else {
+            panic!("expected Program root");
+        };
+        let has_construct = stmts.iter().any(|s| {
+            if let Node::LetStatement { value, .. } = &s.node {
+                matches!(value.as_ref(), Node::NewtypeConstruct { type_name, .. } if type_name == "Meters")
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_construct,
+            "lower_program must rewrite Meters(42) inside let binding into NewtypeConstruct"
+        );
+    }
+
+    #[test]
+    fn check_ok_with_no_newtypes() {
+        let src = "fn f(int x) -> int { return x; }\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+}
