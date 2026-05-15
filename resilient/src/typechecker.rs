@@ -1374,8 +1374,14 @@ impl TypeChecker {
 
             // Math (single-arg — int/float passed as Any)
             env.set("abs".to_string(), fn_any_to_any());
-            // RES-410: sign(x) — -1/0/+1.
-            env.set("sign".to_string(), fn_any_to_any());
+            // RES-422: sign(x) always returns -1, 0, or +1 — that's Int.
+            env.set(
+                "sign".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
             // RES-411: float predicates — return Bool; math functions return Float.
             // (Parameter is kept as Any so both Int and Float are accepted.)
             let fn_any_to_bool = || Type::Function {
@@ -6787,14 +6793,28 @@ impl TypeChecker {
                 // reference it without a false "Undefined variable"
                 // diagnostic. The binding is confined to the body via
                 // a fresh enclosed env.
-                // RES-409: infer the element type from the iterable:
-                // - Range (0..10) → Int elements
-                // - String → String characters
+                // RES-409/RES-420: infer element type from the iterable:
+                // - Range syntax (0..10) → Int
+                // - String value → String characters
+                // - Known integer-array builtins → Int
+                // - Known string-array builtins → String
                 // - Everything else → Any (conservative)
                 let elem_ty = if matches!(iterable.as_ref(), Node::Range { .. }) {
                     Type::Int
                 } else if iter_ty == Type::String {
                     Type::String
+                } else if let Node::CallExpression { function, .. } = iterable.as_ref()
+                    && let Node::Identifier { name: callee, .. } = function.as_ref()
+                {
+                    match callee.as_str() {
+                        // Integer-valued array builtins.
+                        "array_range" | "array_range_int" | "array_cumsum"
+                        | "array_cumprod" | "array_diffs" => Type::Int,
+                        // String-element builtins.
+                        "split" | "string_split" | "string_split_n"
+                        | "string_split_last" | "chars" | "split_chars" => Type::String,
+                        _ => Type::Any,
+                    }
                 } else {
                     Type::Any
                 };
@@ -7019,6 +7039,19 @@ impl TypeChecker {
 
                 if let Some(alt) = alternative {
                     let alternative_type = self.check_node(alt)?;
+
+                    // RES-421: when one branch unconditionally diverges
+                    // (return / break / continue), its type doesn't
+                    // constrain the if-else expression — use the other
+                    // branch's type as the whole expression's type.
+                    let cons_diverges = node_terminates(consequence);
+                    let alt_diverges = node_terminates(alt);
+                    if cons_diverges && !alt_diverges {
+                        return Ok(alternative_type);
+                    }
+                    if alt_diverges && !cons_diverges {
+                        return Ok(consequence_type);
+                    }
 
                     // Both branches should have compatible types.
                     if consequence_type != alternative_type
@@ -7685,6 +7718,66 @@ impl TypeChecker {
                 seen.push(other.to_string());
                 let target = self.type_aliases[other].clone();
                 self.parse_type_name_inner(&target, seen)
+            }
+            // RES-419: `fn(T1, T2) -> R` — function-type annotation.
+            // Covers higher-order function parameters and return types.
+            // Syntax: "fn(" followed by comma-separated type names,
+            // ")" then " -> " then the return type. Nesting is handled
+            // by counting parenthesis depth when splitting params.
+            other if other.starts_with("fn(") => {
+                let rest = &other[3..]; // after "fn("
+                // Find the matching closing ')' counting nesting depth.
+                let mut depth = 1usize;
+                let mut close = None;
+                for (i, ch) in rest.char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let close = close.unwrap_or(rest.len().saturating_sub(1));
+                let params_str = &rest[..close];
+                let after_close = rest[close + 1..].trim_start();
+                // Parse return type from " -> ReturnType".
+                let return_type = if let Some(rt_str) = after_close.strip_prefix("->") {
+                    self.parse_type_name_inner(rt_str.trim(), seen)?
+                } else {
+                    Type::Any
+                };
+                // Parse comma-separated parameter types, respecting nesting.
+                let params = if params_str.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    let mut parts: Vec<Type> = Vec::new();
+                    let mut depth2 = 0usize;
+                    let mut start = 0;
+                    for (i, ch) in params_str.char_indices() {
+                        match ch {
+                            '(' => depth2 += 1,
+                            ')' => depth2 = depth2.saturating_sub(1),
+                            ',' if depth2 == 0 => {
+                                parts.push(
+                                    self.parse_type_name_inner(params_str[start..i].trim(), seen)?,
+                                );
+                                start = i + 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    parts.push(self.parse_type_name_inner(params_str[start..].trim(), seen)?);
+                    parts
+                };
+                Ok(Type::Function {
+                    params,
+                    return_type: Box::new(return_type),
+                })
             }
             // RES-053: any other identifier is assumed to be a
             // user-defined struct. G7 will register struct decls and
@@ -12258,5 +12351,245 @@ fn f() -> void { let _p = new Point { x: "not_an_int", y: 2 }; }
         // If the struct isn't declared, we skip unknown-field checking
         // to be permissive about partial programs.
         check_ok("fn f() -> void { let _p = new UnknownStruct { foo: 1 }; }");
+    }
+}
+
+// ============================================================
+// RES-419: fn(T)->R type annotation parsing
+// ============================================================
+#[cfg(test)]
+mod res419_fn_type_annotation {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn fn_param_callable_as_function() {
+        // A higher-order function with a fn(int) -> int parameter must
+        // be callable inside the body without a type error.
+        check_ok(
+            r#"
+fn apply(int x, fn(int) -> int f) -> int { return f(x); }
+fn double(int x) -> int { return x * 2; }
+fn main(int _d) -> int { return apply(5, double); }
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_param_zero_args_callable() {
+        check_ok(
+            r#"
+fn call_zero(fn() -> int f) -> int { return f(); }
+fn get_one() -> int { return 1; }
+fn main(int _d) -> int { return call_zero(get_one); }
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_param_multi_arg_callable() {
+        check_ok(
+            r#"
+fn apply2(int x, int y, fn(int, int) -> int f) -> int { return f(x, y); }
+fn add(int a, int b) -> int { return a + b; }
+fn main(int _d) -> int { return apply2(3, 4, add); }
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_return_type_inferred_from_annotation() {
+        // When calling a fn-typed parameter the return type is the
+        // declared return type of the function annotation.
+        check_ok(
+            r#"
+fn transform(string s, fn(string) -> string f) -> string { return f(s); }
+fn shout(string x) -> string { return to_upper(x); }
+fn main(int _d) -> int {
+    let _r = transform("hello", shout);
+    return 0;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn fn_type_in_let_binding() {
+        // A let binding with a fn(...) -> ... annotation should work.
+        check_ok(
+            r#"
+fn id(int x) -> int { return x; }
+fn main(int _d) -> int {
+    let f: fn(int) -> int = id;
+    return f(3);
+}
+"#,
+        );
+    }
+}
+
+// ============================================================
+// RES-420: for-in element type from builtin call
+// ============================================================
+#[cfg(test)]
+mod res420_forin_element_type {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn forin_array_range_element_is_int() {
+        // `array_range(lo, hi)` returns `Array`; element type is Int.
+        // The arithmetic `x + 1` must not produce a type error.
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    let s = 0;
+    for x in array_range(0, 5) {
+        let s = s + x;
+    }
+    return s;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn forin_split_element_is_string() {
+        // `split(str, sep)` → Array of strings; element type is String.
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    for word in split("hello world", " ") {
+        let _len = len(word);
+    }
+    return 0;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn forin_string_split_element_is_string() {
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    for tok in string_split("a,b,c", ",") {
+        let _u = to_upper(tok);
+    }
+    return 0;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn forin_range_syntax_still_int() {
+        // The original Node::Range { .. } case must still work.
+        check_ok(
+            r#"
+fn main(int _d) -> int {
+    let acc = 0;
+    for i in 0..5 { let acc = acc + i; }
+    return acc;
+}
+"#,
+        );
+    }
+}
+
+// ============================================================
+// RES-421: IfStatement type with diverging branch
+// ============================================================
+#[cfg(test)]
+mod res421_if_diverging_branch {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn if_else_consequence_diverges_uses_alt_type() {
+        // consequence returns early; else branch is Int — whole expr is Int.
+        check_ok(
+            r#"
+fn guard(bool bad) -> int {
+    let x = if bad { return 0; } else { 42 };
+    return x;
+}
+fn main(int _d) -> int { return guard(false); }
+"#,
+        );
+    }
+
+    #[test]
+    fn if_else_alternative_diverges_uses_cons_type() {
+        // alternative returns early; consequence is Int — whole expr is Int.
+        check_ok(
+            r#"
+fn guard2(bool bad) -> int {
+    let x = if bad { 42 } else { return 0; };
+    return x;
+}
+fn main(int _d) -> int { return guard2(false); }
+"#,
+        );
+    }
+
+    #[test]
+    fn both_branches_non_diverging_must_match() {
+        // Neither diverges and types differ → type error (pre-existing behaviour).
+        let e = check_err(
+            r#"
+fn f(bool b) -> int {
+    let x = if b { 1 } else { "two" };
+    return x;
+}
+"#,
+        );
+        assert!(
+            e.contains("incompatible") || e.contains("mismatch") || e.contains("type"),
+            "expected incompatible-types error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn guard_clause_pattern_compiles() {
+        // Classic guard: early return in if-without-else is fine.
+        check_ok(
+            r#"
+fn safe_sqrt(int n) -> float {
+    if n < 0 { return 0.0; }
+    return sqrt(n);
+}
+fn main(int _d) -> int { return 0; }
+"#,
+        );
     }
 }
