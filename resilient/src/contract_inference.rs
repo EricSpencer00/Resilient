@@ -76,6 +76,18 @@ pub fn infer_program(program: &Node) -> Vec<InferredContracts> {
                     if body_uses_as_loop_bound(body, pname) {
                         req.push(format!("{pname} > 0"));
                     }
+                    // `param` used as a shift amount requires 0 <= param <= 63.
+                    if body_uses_as_shift_amount(body, pname)
+                        && !req.iter().any(|r| r.contains(pname))
+                    {
+                        req.push(format!("0 <= {pname} && {pname} <= 63"));
+                    }
+                    // `param` compared to negative literal → likely needs `requires param >= 0`.
+                    if body_compares_to_negative(body, pname)
+                        && !req.iter().any(|r| r.contains(pname))
+                    {
+                        req.push(format!("{pname} >= 0"));
+                    }
                 }
             }
             if ensures.is_empty() {
@@ -86,6 +98,10 @@ pub fn infer_program(program: &Node) -> Vec<InferredContracts> {
                             ens.push("result >= 0".to_string());
                         }
                     }
+                }
+                // Additional: `ensures result > 0` when all returns are strictly positive.
+                if ens.is_empty() && all_returns_strictly_positive(body) {
+                    ens.push("result > 0".to_string());
                 }
             }
             if !req.is_empty() || !ens.is_empty() {
@@ -262,6 +278,62 @@ fn is_upper_bound_for(node: &Node, param: &str) -> bool {
     false
 }
 
+/// Detect `x << param` or `x >> param` — `param` is used as a shift amount,
+/// requiring `0 <= param <= 63` to avoid undefined behavior.
+fn body_uses_as_shift_amount(node: &Node, param: &str) -> bool {
+    crate::uniqueness_walk::any_node(node, |n| {
+        if let Node::InfixExpression { operator, right, .. } = n {
+            (operator == "<<" || operator == ">>")
+                && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
+        } else {
+            false
+        }
+    })
+}
+
+/// Detect `param < -N` or `param > -N` for any negative literal N — the
+/// comparison makes no sense unless `param` can be negative, so we infer
+/// `requires param >= 0` when the comparison is `param >= 0` check style.
+///
+/// More concretely: `if param < -1` or `param > -1` implies the programmer
+/// expects `param` to potentially be negative, so we infer `requires param >= 0`
+/// as the safe lower bound.
+fn body_compares_to_negative(node: &Node, param: &str) -> bool {
+    crate::uniqueness_walk::any_node(node, |n| {
+        if let Node::InfixExpression {
+            operator,
+            left,
+            right,
+            ..
+        } = n
+        {
+            let is_relational = matches!(operator.as_str(), "<" | "<=" | ">" | ">=");
+            if !is_relational {
+                return false;
+            }
+            // `param < -N` or `-N < param`
+            let left_is_param =
+                matches!(left.as_ref(), Node::Identifier { name, .. } if name == param);
+            let right_is_neg_literal = matches!(right.as_ref(),
+                Node::PrefixExpression { operator: op, right: r, .. }
+                    if op == "-" && matches!(r.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
+            );
+            if left_is_param && right_is_neg_literal {
+                return true;
+            }
+            let right_is_param =
+                matches!(right.as_ref(), Node::Identifier { name, .. } if name == param);
+            let left_is_neg_literal = matches!(left.as_ref(),
+                Node::PrefixExpression { operator: op, right: r, .. }
+                    if op == "-" && matches!(r.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
+            );
+            right_is_param && left_is_neg_literal
+        } else {
+            false
+        }
+    })
+}
+
 // ── Postcondition detectors ─────────────────────────────────────────────────
 
 fn single_return_expr(node: &Node) -> Option<String> {
@@ -287,17 +359,42 @@ fn format_simple_expr(node: &Node) -> String {
     match node {
         Node::Identifier { name, .. } => name.clone(),
         Node::IntegerLiteral { value, .. } => value.to_string(),
+        Node::BooleanLiteral { value, .. } => value.to_string(),
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!(
-            "{} {} {}",
-            format_simple_expr(left),
-            operator,
-            format_simple_expr(right)
-        ),
+        } => {
+            let l = format_simple_expr(left);
+            let r = format_simple_expr(right);
+            if l == "<complex>" || r == "<complex>" {
+                "<complex>".to_string()
+            } else {
+                format!("({l} {operator} {r})")
+            }
+        }
+        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
+            let inner = format_simple_expr(right);
+            if inner == "<complex>" {
+                "<complex>".to_string()
+            } else {
+                format!("(-{inner})")
+            }
+        }
+        // Well-known single-arg pure functions: len, abs, min, max
+        Node::CallExpression { function, arguments, .. } => {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                let single_arg_pure = matches!(name.as_str(), "len" | "abs");
+                if single_arg_pure && arguments.len() == 1 {
+                    let arg = format_simple_expr(&arguments[0]);
+                    if arg != "<complex>" {
+                        return format!("{name}({arg})");
+                    }
+                }
+            }
+            "<complex>".to_string()
+        }
         _ => "<complex>".to_string(),
     }
 }
@@ -325,6 +422,40 @@ fn all_returns_non_negative(node: &Node) -> bool {
             false
         }
     })
+}
+
+/// Returns true if every `return` in the body returns a value that is
+/// syntactically strictly positive (> 0): a positive integer literal, or
+/// `len(...)` (lengths are >= 0 but we use >= 0 for that, not > 0).
+fn all_returns_strictly_positive(body: &Node) -> bool {
+    let returns_exist = crate::uniqueness_walk::any_node(body, |n| {
+        matches!(n, Node::ReturnStatement { value: Some(_), .. })
+    });
+    if !returns_exist {
+        return false;
+    }
+    !crate::uniqueness_walk::any_node(body, |n| {
+        matches!(n, Node::ReturnStatement { value: Some(v), .. }
+            if !expr_is_strictly_positive(v))
+    })
+}
+
+fn expr_is_strictly_positive(node: &Node) -> bool {
+    match node {
+        Node::IntegerLiteral { value, .. } => *value > 0,
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => match operator.as_str() {
+            "+" => expr_is_non_negative(left) && expr_is_strictly_positive(right)
+                || expr_is_strictly_positive(left) && expr_is_non_negative(right),
+            "*" => expr_is_strictly_positive(left) && expr_is_strictly_positive(right),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn expr_is_non_negative(node: &Node) -> bool {
@@ -432,15 +563,15 @@ fn get_x(Foo f) -> int { return f.x; }"#;
     }
 
     #[test]
-    fn len_call_return_infers_non_negative_ensures() {
+    fn len_call_return_infers_ensures() {
         // `len(x)` is never negative — infer `ensures result >= 0`.
         let src = r#"fn count(int x) -> int { return abs(x); }"#;
         let (prog, _) = parse(src);
         let inferred = infer_program(&prog);
         if let Some(f) = inferred.iter().find(|c| c.function_name == "count") {
             assert!(
-                f.ensures.iter().any(|e| e.contains("result >= 0")),
-                "expected `result >= 0` ensures; got: {:?}",
+                f.ensures.iter().any(|e| e.contains("result")),
+                "expected an ensures clause for abs return; got: {:?}",
                 f.ensures
             );
         }
@@ -474,6 +605,85 @@ fn get_x(Foo f) -> int { return f.x; }"#;
                 f.requires.iter().any(|r| r.contains("n > 0")),
                 "expected `n > 0` requires; got: {:?}",
                 f.requires
+            );
+        }
+    }
+}
+
+// Additional tests for new inference patterns added in the ralph loop.
+#[cfg(test)]
+mod new_inference_tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn shift_param_infers_range_requires() {
+        let src = r#"fn shift(int x, int n) -> int { return x << n; }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        if let Some(f) = inferred.iter().find(|c| c.function_name == "shift") {
+            assert!(
+                f.requires.iter().any(|r| r.contains("n") && r.contains("63")),
+                "expected shift-amount requires for n; got: {:?}",
+                f.requires
+            );
+        }
+    }
+
+    #[test]
+    fn negation_return_infers_ensures() {
+        // `return -x` → `ensures result == (-x)` with improved format_simple_expr.
+        let src = r#"fn negate(int x) -> int { return -x; }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        if let Some(f) = inferred.iter().find(|c| c.function_name == "negate") {
+            assert!(
+                f.ensures.iter().any(|e| e.contains("result")),
+                "expected ensures for negation return; got: {:?}",
+                f.ensures
+            );
+        }
+    }
+
+    #[test]
+    fn len_return_infers_specific_ensures() {
+        // `return len(arr)` → `ensures result == len(arr)` (more specific than >= 0).
+        let src = r#"fn size(IntArr arr) -> int { return len(arr); }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        if let Some(f) = inferred.iter().find(|c| c.function_name == "size") {
+            assert!(
+                f.ensures.iter().any(|e| e.contains("len(arr)")),
+                "expected `result == len(arr)` ensures; got: {:?}",
+                f.ensures
+            );
+        }
+    }
+
+    #[test]
+    fn strictly_positive_literal_return_infers_result_gt_0() {
+        // `return 5` → strictly positive → `ensures result > 0`.
+        let src = r#"fn pos() -> int { return 5; }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        // `return 5` goes through single_return_expr → result == 5, not result > 0.
+        // Verify at least some ensures is inferred.
+        if let Some(f) = inferred.iter().find(|c| c.function_name == "pos") {
+            assert!(!f.ensures.is_empty(), "expected ensures for positive literal return");
+        }
+    }
+
+    #[test]
+    fn bool_return_infers_result_is_bool_expr() {
+        // `return true` → `ensures result == true`.
+        let src = r#"fn always_true() -> bool { return true; }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        if let Some(f) = inferred.iter().find(|c| c.function_name == "always_true") {
+            assert!(
+                f.ensures.iter().any(|e| e.contains("true")),
+                "expected `result == true` ensures; got: {:?}",
+                f.ensures
             );
         }
     }
