@@ -532,6 +532,7 @@ mod incremental_verify;
 mod info_flow;
 mod intent_blocks;
 mod iterator_protocol;
+mod json_builtins;
 mod labeled_break;
 mod lean_spec;
 mod lock_priority;
@@ -11835,6 +11836,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ),
     // RES-2656: functional HOFs — identity is pure; rest need interpreter (inline dispatch).
     ("identity", crate::functional_hof::builtin_identity),
+    // RES-2657: JSON serialization/deserialization (pure).
+    ("to_json", crate::json_builtins::builtin_to_json),
+    ("from_json", crate::json_builtins::builtin_from_json),
     // RES-2654: combinatorics and discrete collection operations (pure).
     (
         "array_cartesian_product",
