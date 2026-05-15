@@ -512,6 +512,7 @@ mod behavioral_fingerprint;
 mod blame_attribution;
 mod causal_trace;
 mod combinatorics;
+mod complex_numbers;
 mod const_fn;
 mod contract_inference;
 mod coverage_warnings;
@@ -11984,6 +11985,34 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ),
     ("mat_rank", crate::statistics::builtin_mat_rank),
     ("mat_lu", crate::statistics::builtin_mat_lu),
+    // RES-2661: complex number builtins (representation: Array<float> [re, im]).
+    ("complex", crate::complex_numbers::builtin_complex),
+    ("complex_real", crate::complex_numbers::builtin_complex_real),
+    ("complex_imag", crate::complex_numbers::builtin_complex_imag),
+    ("complex_add", crate::complex_numbers::builtin_complex_add),
+    ("complex_sub", crate::complex_numbers::builtin_complex_sub),
+    ("complex_mul", crate::complex_numbers::builtin_complex_mul),
+    ("complex_div", crate::complex_numbers::builtin_complex_div),
+    ("complex_abs", crate::complex_numbers::builtin_complex_abs),
+    ("complex_arg", crate::complex_numbers::builtin_complex_arg),
+    ("complex_conj", crate::complex_numbers::builtin_complex_conj),
+    (
+        "complex_norm_sq",
+        crate::complex_numbers::builtin_complex_norm_sq,
+    ),
+    ("complex_exp", crate::complex_numbers::builtin_complex_exp),
+    ("complex_ln", crate::complex_numbers::builtin_complex_ln),
+    (
+        "complex_pow_real",
+        crate::complex_numbers::builtin_complex_pow_real,
+    ),
+    ("complex_sqrt", crate::complex_numbers::builtin_complex_sqrt),
+    ("complex_sin", crate::complex_numbers::builtin_complex_sin),
+    ("complex_cos", crate::complex_numbers::builtin_complex_cos),
+    (
+        "complex_from_polar",
+        crate::complex_numbers::builtin_complex_from_polar,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
