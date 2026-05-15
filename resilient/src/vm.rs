@@ -444,8 +444,17 @@ fn run_inner(
                 stack.push(v);
             }
             Op::Add => {
-                let (a, b) = pop_two_ints(&mut stack, "Add")?;
-                stack.push(Value::Int(overflow_mode.add(a, b, "Add")?));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        stack.push(Value::Int(overflow_mode.add(x, y, "Add")?));
+                    }
+                    (Value::String(s1), Value::String(s2)) => {
+                        stack.push(Value::String(s1 + &s2));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Add")),
+                }
             }
             Op::Sub => {
                 let (a, b) = pop_two_ints(&mut stack, "Sub")?;
@@ -1274,10 +1283,19 @@ fn h_const(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 
 #[inline(never)]
 fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Add")?;
-    state
-        .stack
-        .push(Value::Int(state.overflow_mode.add(a, b, "Add")?));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            state
+                .stack
+                .push(Value::Int(state.overflow_mode.add(x, y, "Add")?));
+        }
+        (Value::String(s1), Value::String(s2)) => {
+            state.stack.push(Value::String(s1 + &s2));
+        }
+        _ => return Err(VmError::TypeMismatch("Add")),
+    }
     Ok(Step::Continue)
 }
 
@@ -3299,5 +3317,86 @@ mod tests {
                 idx
             );
         }
+    }
+
+    fn assert_string(v: Result<Value, VmError>, expected: &str) {
+        match v {
+            Ok(Value::String(s)) => {
+                assert_eq!(
+                    s, expected,
+                    "string mismatch: expected {expected:?}, got {s:?}"
+                )
+            }
+            Ok(other) => panic!("expected String({expected:?}), got {other:?}"),
+            Err(e) => panic!("expected String({expected:?}), got VmError: {e}"),
+        }
+    }
+
+    // ── String concat (Op::Add extended) ─────────────────────────────────────
+
+    #[test]
+    fn add_string_string_concatenates() {
+        let src = r#"let s = "hello" + " world"; s"#;
+        assert_string(compile_run(src), "hello world");
+    }
+
+    #[test]
+    fn add_int_string_is_type_error() {
+        use crate::bytecode::{Chunk, Program};
+        let mut chunk = Chunk::new();
+        let i = chunk.add_constant(Value::Int(1)).unwrap();
+        let s = chunk.add_constant(Value::String("x".to_string())).unwrap();
+        chunk.emit(Op::Const(i), 1);
+        chunk.emit(Op::Const(s), 1);
+        chunk.emit(Op::Add, 1);
+        chunk.emit(Op::Return, 1);
+        let prog = Program {
+            main: chunk,
+            functions: vec![],
+        };
+        let err = run(&prog).unwrap_err();
+        assert!(
+            err.to_string().contains("type mismatch") || err.to_string().contains("Add"),
+            "expected type-mismatch error, got: {err}"
+        );
+    }
+
+    // ── Interpolated string (compiler + VM) ──────────────────────────────────
+
+    #[test]
+    fn interp_string_literal_only_parts() {
+        // A string with no interpolations is a plain StringLiteral, not
+        // InterpolatedString, but compile_run still handles it.
+        assert_string(compile_run(r#""hello world""#), "hello world");
+    }
+
+    #[test]
+    fn interp_string_single_var() {
+        let src = r#"let name = "Alice"; "Hello, {name}!""#;
+        assert_string(compile_run(src), "Hello, Alice!");
+    }
+
+    #[test]
+    fn interp_string_arithmetic_expr() {
+        let src = r#"let x = 6; let y = 7; "The answer is {x * y}.""#;
+        assert_string(compile_run(src), "The answer is 42.");
+    }
+
+    #[test]
+    fn interp_string_multiple_placeholders() {
+        let src = r#"let a = 1; let b = 2; "{a} + {b} = {a + b}""#;
+        assert_string(compile_run(src), "1 + 2 = 3");
+    }
+
+    #[test]
+    fn interp_string_integer_conversion() {
+        let src = r#"let n = 42; "n = {n}""#;
+        assert_string(compile_run(src), "n = 42");
+    }
+
+    #[test]
+    fn interp_string_bool_conversion() {
+        let src = r#"let flag = true; "flag = {flag}""#;
+        assert_string(compile_run(src), "flag = true");
     }
 }

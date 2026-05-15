@@ -1389,6 +1389,42 @@ fn compile_expr(
             );
             Ok(())
         }
+        // RES-221: interpolated string `"hello {name}!"` — lower to
+        // `to_string()` calls on each expr part, then fold all parts
+        // (literals are inlined as string constants) with `Op::Add`.
+        //
+        // Lowering: push N string values, then emit N-1 Add ops.
+        // Empty interpolation (no parts) emits a single `""` constant.
+        Node::InterpolatedString { parts, .. } => {
+            if parts.is_empty() {
+                let idx = chunk.add_string_constant("")?;
+                chunk.emit(Op::Const(idx), line);
+                return Ok(());
+            }
+            let to_string_idx = chunk.add_string_constant("to_string")?;
+            for part in parts {
+                match part {
+                    crate::string_interp::StringPart::Literal(s) => {
+                        let idx = chunk.add_string_constant(s)?;
+                        chunk.emit(Op::Const(idx), line);
+                    }
+                    crate::string_interp::StringPart::Expr(expr) => {
+                        compile_expr(expr, chunk, locals, fn_index, ffi_index, line)?;
+                        chunk.emit(
+                            Op::CallBuiltin {
+                                name_const: to_string_idx,
+                                arity: 1,
+                            },
+                            line,
+                        );
+                    }
+                }
+            }
+            for _ in 1..parts.len() {
+                chunk.emit(Op::Add, line);
+            }
+            Ok(())
+        }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
