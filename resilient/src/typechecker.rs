@@ -1284,6 +1284,22 @@ impl TypeChecker {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Any),
             };
+            let fn_any_to_int = || Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            };
+            let fn_any_any_to_bool = || Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Bool),
+            };
+            let fn_any_any_to_int = || Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Int),
+            };
+            let fn_any_any_to_array = || Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Array),
+            };
             let fn_any_to_result = || Type::Function {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Result),
@@ -2021,11 +2037,11 @@ impl TypeChecker {
             );
             env.set("array_reverse".to_string(), fn_array_to_array());
             // RES-416: integer-array reductions.
-            env.set("array_sum".to_string(), fn_any_to_any());
-            env.set("array_product".to_string(), fn_any_to_any());
+            env.set("array_sum".to_string(), fn_any_to_int());
+            env.set("array_product".to_string(), fn_any_to_int());
             // RES-417: array min/max.
-            env.set("array_min".to_string(), fn_any_to_any());
-            env.set("array_max".to_string(), fn_any_to_any());
+            env.set("array_min".to_string(), fn_any_to_int());
+            env.set("array_max".to_string(), fn_any_to_int());
             // RES-543: empty-safe min/max with fallback default.
             let arr_int_to_int = Type::Function {
                 params: vec![Type::Any, Type::Int],
@@ -2169,15 +2185,15 @@ impl TypeChecker {
                 },
             );
             // RES-418: element search.
-            env.set("array_contains".to_string(), fn_any_any_to_any());
-            env.set("array_index_of".to_string(), fn_any_any_to_any());
+            env.set("array_contains".to_string(), fn_any_any_to_bool());
+            env.set("array_index_of".to_string(), fn_any_any_to_int());
             // RES-544: every index where element equals x.
-            env.set("array_index_of_all".to_string(), fn_any_any_to_any());
+            env.set("array_index_of_all".to_string(), fn_any_any_to_array());
             // RES-541: set-like operations on arrays.
-            env.set("array_intersect".to_string(), fn_any_any_to_any());
-            env.set("array_diff".to_string(), fn_any_any_to_any());
+            env.set("array_intersect".to_string(), fn_any_any_to_array());
+            env.set("array_diff".to_string(), fn_any_any_to_array());
             // RES-542: order-preserving global-dedup union.
-            env.set("array_union".to_string(), fn_any_any_to_any());
+            env.set("array_union".to_string(), fn_any_any_to_array());
             // RES-419: Unicode-scalar ↔ char conversions.
             env.set(
                 "chr".to_string(),
@@ -2210,7 +2226,7 @@ impl TypeChecker {
                 },
             );
             // RES-420: concatenate two arrays.
-            env.set("array_concat".to_string(), fn_any_any_to_any());
+            env.set("array_concat".to_string(), fn_any_any_to_array());
             // RES-515: three-way concatenation.
             env.set(
                 "array_concat3".to_string(),
@@ -2220,13 +2236,13 @@ impl TypeChecker {
                 },
             );
             // RES-421: take/drop first n.
-            env.set("array_take".to_string(), fn_any_any_to_any());
-            env.set("array_drop".to_string(), fn_any_any_to_any());
+            env.set("array_take".to_string(), fn_any_any_to_array());
+            env.set("array_drop".to_string(), fn_any_any_to_array());
             // RES-537: take/drop trailing n elements.
-            env.set("array_take_last".to_string(), fn_any_any_to_any());
-            env.set("array_drop_last".to_string(), fn_any_any_to_any());
+            env.set("array_take_last".to_string(), fn_any_any_to_array());
+            env.set("array_drop_last".to_string(), fn_any_any_to_array());
             // RES-514: pick every nth element.
-            env.set("array_step".to_string(), fn_any_any_to_any());
+            env.set("array_step".to_string(), fn_any_any_to_array());
             // RES-422: integer sort ascending.
             env.set("array_sort".to_string(), fn_array_to_array());
             // RES-443: integer sort descending.
@@ -2234,10 +2250,10 @@ impl TypeChecker {
             // RES-444: Fisher-Yates shuffle (impure: uses RNG).
             env.set("array_shuffle".to_string(), fn_array_to_array());
             // RES-445: array prefix/suffix predicates.
-            env.set("array_starts_with".to_string(), fn_any_any_to_any());
-            env.set("array_ends_with".to_string(), fn_any_any_to_any());
+            env.set("array_starts_with".to_string(), fn_any_any_to_bool());
+            env.set("array_ends_with".to_string(), fn_any_any_to_bool());
             // RES-446: all match indices.
-            env.set("string_find_all".to_string(), fn_any_any_to_any());
+            env.set("string_find_all".to_string(), fn_any_any_to_array());
             // RES-546: first byte index of substring, -1 if missing.
             env.set(
                 "string_find".to_string(),
@@ -2340,10 +2356,10 @@ impl TypeChecker {
                 },
             );
             // RES-455: sliding windows.
-            env.set("array_window".to_string(), fn_any_any_to_any());
+            env.set("array_window".to_string(), fn_any_any_to_array());
             // RES-456: rotation.
-            env.set("array_rotate_left".to_string(), fn_any_any_to_any());
-            env.set("array_rotate_right".to_string(), fn_any_any_to_any());
+            env.set("array_rotate_left".to_string(), fn_any_any_to_array());
+            env.set("array_rotate_right".to_string(), fn_any_any_to_array());
             // RES-457: capitalize.
             env.set(
                 "string_capitalize".to_string(),
@@ -2353,7 +2369,7 @@ impl TypeChecker {
                 },
             );
             // RES-458: array_cycle.
-            env.set("array_cycle".to_string(), fn_any_any_to_any());
+            env.set("array_cycle".to_string(), fn_any_any_to_array());
             // RES-459: ASCII-class string predicates.
             let str_to_bool = Type::Function {
                 params: vec![Type::String],
@@ -2429,9 +2445,9 @@ impl TypeChecker {
                 },
             );
             // RES-466: remove first matching element.
-            env.set("array_remove".to_string(), fn_any_any_to_any());
+            env.set("array_remove".to_string(), fn_any_any_to_array());
             // RES-467: remove all matching elements.
-            env.set("array_remove_all".to_string(), fn_any_any_to_any());
+            env.set("array_remove_all".to_string(), fn_any_any_to_array());
             // RES-468: collapse adjacent duplicates.
             env.set("array_dedup".to_string(), fn_array_to_array());
             // RES-504: partition into maximal runs of equal int elements.
@@ -2445,8 +2461,8 @@ impl TypeChecker {
                 },
             );
             // RES-469: scalar all/any equality predicates.
-            env.set("array_all_eq".to_string(), fn_any_any_to_any());
-            env.set("array_any_eq".to_string(), fn_any_any_to_any());
+            env.set("array_all_eq".to_string(), fn_any_any_to_bool());
+            env.set("array_any_eq".to_string(), fn_any_any_to_bool());
             // RES-471: prefix/suffix strippers.
             let str_str_to_str = Type::Function {
                 params: vec![Type::String, Type::String],
@@ -2455,7 +2471,7 @@ impl TypeChecker {
             env.set("string_strip_prefix".to_string(), str_str_to_str.clone());
             env.set("string_strip_suffix".to_string(), str_str_to_str);
             // RES-472: element-wise array equality.
-            env.set("array_eq".to_string(), fn_any_any_to_any());
+            env.set("array_eq".to_string(), fn_any_any_to_bool());
             // RES-473: ternary numeric min/max.
             let any3_to_any = Type::Function {
                 params: vec![Type::Any, Type::Any, Type::Any],
@@ -2464,7 +2480,7 @@ impl TypeChecker {
             env.set("min3".to_string(), any3_to_any.clone());
             env.set("max3".to_string(), any3_to_any);
             // RES-474: array_ne.
-            env.set("array_ne".to_string(), fn_any_any_to_any());
+            env.set("array_ne".to_string(), fn_any_any_to_bool());
             // RES-475: fixed-op integer fold.
             env.set(
                 "array_fold_int".to_string(),
@@ -2603,7 +2619,7 @@ impl TypeChecker {
             // RES-426: first-occurrence dedupe.
             env.set("array_unique".to_string(), fn_array_to_array());
             // RES-427: count element occurrences.
-            env.set("array_count".to_string(), fn_any_any_to_any());
+            env.set("array_count".to_string(), fn_any_any_to_int());
             // RES-428: array first/last accessors.
             env.set("array_first".to_string(), fn_any_to_any());
             env.set("array_last".to_string(), fn_any_to_any());
@@ -2639,7 +2655,7 @@ impl TypeChecker {
                 },
             );
             // RES-430: pair elements as tuples; truncate to shorter array.
-            env.set("array_zip".to_string(), fn_any_any_to_any());
+            env.set("array_zip".to_string(), fn_any_any_to_array());
             // RES-531: split an array of 2-tuples into two parallel arrays.
             env.set("array_unzip".to_string(), fn_any_to_any());
             // RES-431: integer range [start, end).
@@ -2653,7 +2669,7 @@ impl TypeChecker {
             // RES-522: indices of an array as a new array.
             env.set("array_indices".to_string(), fn_array_to_array());
             // RES-432: array of n copies.
-            env.set("array_repeat".to_string(), fn_any_any_to_any());
+            env.set("array_repeat".to_string(), fn_any_any_to_array());
             // RES-433: split string into single-char strings.
             env.set("string_chars".to_string(), fn_string_to_array());
             // RES-434: split string into lines (LF, CRLF).
@@ -2693,7 +2709,7 @@ impl TypeChecker {
                 },
             );
             // RES-435: split array into fixed-size chunks.
-            env.set("array_chunk".to_string(), fn_any_any_to_any());
+            env.set("array_chunk".to_string(), fn_any_any_to_array());
             // RES-436: non-overlapping substring count.
             env.set(
                 "string_count".to_string(),
@@ -2736,9 +2752,9 @@ impl TypeChecker {
                 },
             );
             // RES-437: insert separator between adjacent elements.
-            env.set("array_intersperse".to_string(), fn_any_any_to_any());
+            env.set("array_intersperse".to_string(), fn_any_any_to_array());
             // RES-516: alternate elements from two arrays.
-            env.set("array_interleave".to_string(), fn_any_any_to_any());
+            env.set("array_interleave".to_string(), fn_any_any_to_array());
             // RES-438: one-sided trimmers.
             env.set(
                 "trim_start".to_string(),
@@ -2755,7 +2771,7 @@ impl TypeChecker {
                 },
             );
             // RES-439: bisect array at index → tuple.
-            env.set("array_split_at".to_string(), fn_any_any_to_any());
+            env.set("array_split_at".to_string(), fn_any_any_to_array());
             // RES-440: integer bitwise ops — strict (Int) -> Int / (Int, Int) -> Int.
             let int_int_to_int = Type::Function {
                 params: vec![Type::Int, Type::Int],

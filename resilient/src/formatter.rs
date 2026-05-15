@@ -1783,4 +1783,111 @@ struct Point {
         let twice = Formatter::format(&prog2);
         assert_eq!(once, twice, "extern block formatting is not idempotent");
     }
+
+    #[test]
+    fn fmt_match_expression() {
+        let src = r#"fn f(int x) -> string { let r = match x { 0 => "zero", 1 => "one", _ => "other", }; return r; }"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("match x"), "match must appear: {out}");
+        assert!(out.contains("0 =>"), "arm 0 must appear: {out}");
+        assert!(out.contains("_ =>"), "wildcard arm must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_array_and_map_literals() {
+        let src = r#"let arr = [1, 2, 3]; let m = {"a" -> 1, "b" -> 2};"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains('['), "array bracket must appear: {out}");
+        assert!(out.contains(']'), "array close must appear: {out}");
+        assert!(out.contains("->"), "map arrow must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_while_and_for_loops() {
+        let src =
+            "fn f(int n) { let i = 0; while i < n { i = i + 1; } for x in [1, 2] { let y = x; } }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("while i < n"), "while must appear: {out}");
+        assert!(out.contains("for x in"), "for must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_interpolated_string() {
+        let src = r#"let s = "hello {name}";"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(
+            !out.is_empty(),
+            "formatted interpolated string must be non-empty"
+        );
+    }
+
+    #[test]
+    fn fmt_newtype_decl() {
+        let src = "newtype Meters = int; let x = Meters(5);";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(
+            out.contains("newtype Meters"),
+            "newtype decl must appear: {out}"
+        );
+    }
+
+    #[test]
+    fn fmt_enum_decl() {
+        let src = "enum Color { Red, Green, Blue }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("enum Color"), "enum must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_try_catch() {
+        let src = "fn f(int x) -> int { try { return x; } catch e { return 0; } }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(
+            out.contains("try {") || out.contains("try{"),
+            "try must appear: {out}"
+        );
+        assert!(out.contains("catch"), "catch must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_quantifier_forall() {
+        let src = "let ok = forall x in 0..10: x >= 0;";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("forall"), "forall must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_prefix_and_infix() {
+        let src = "fn f(int x, int y) -> bool { return !x && y > 0; }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains('!'), "prefix ! must appear: {out}");
+        assert!(out.contains("&&"), "&& must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_tuple_literal_and_index() {
+        let src = "let t = (1, 2, 3); let x = t.0;";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("(1"), "tuple must appear: {out}");
+    }
 }
