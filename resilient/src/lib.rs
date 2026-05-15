@@ -106,9 +106,17 @@ mod inline;
 mod jit_backend;
 #[cfg(feature = "lsp")]
 mod lsp_server;
+// MCP server: exposes the Resilient compiler as MCP tools over stdio.
+// CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
+#[cfg(not(target_arch = "wasm32"))]
+mod mcp_server;
+// TLA+ bridge: `rz tla check <file.tla>` shells out to TLC and surfaces
+// results in Resilient's diagnostic format.  CLI-only (no wasm32).
 pub mod output_sink;
 mod peephole;
 mod span;
+#[cfg(not(target_arch = "wasm32"))]
+mod tla_bridge;
 // RES-400: sum-type declarations. PR 1 lands the parser scaffold for
 // payload-less variants. Subsequent PRs extend with payloads,
 // constructor expressions, exhaustive `match`, and the typechecker
@@ -3091,7 +3099,13 @@ impl Parser {
                 }
                 break;
             }
-            self.next_token();
+            // RES-1860: do NOT advance if synchronize_top_level already
+            // parked the cursor on the first token of the next declaration
+            // (e.g. `fn`). Advancing here would consume that token and cause
+            // the next iteration to miss the declaration entirely.
+            if !parser_recovery::starts_top_level_item(&self.current_token) {
+                self.next_token();
+            }
         }
 
         Node::Program(program)
@@ -10682,6 +10696,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("pop", builtin_pop),
     ("slice", builtin_slice),
     ("split", builtin_split),
+    // RES-1859: explicit-name alias.
+    ("string_split", builtin_split),
     // RES-535: split with a maximum number-of-splits limit.
     ("string_split_n", builtin_string_split_n),
     // RES-545: split on the last occurrence of the separator.
@@ -10929,6 +10945,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_unzip", builtin_array_unzip),
     // RES-431: generate [start, start+1, ..., end-1].
     ("array_range", builtin_array_range),
+    // RES-921: slice(arr, lo, hi, inclusive) — sub-array / sub-string.
+    ("array_slice", builtin_array_slice),
     // RES-522: generate [0, 1, ..., len(arr)-1] for the given array.
     ("array_indices", builtin_array_indices),
     // RES-432: array of n copies of elem.
@@ -11052,6 +11070,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("unwrap_option", builtin_unwrap_option),
     ("option_unwrap", builtin_option_unwrap),
     ("option_unwrap_or", builtin_option_unwrap_or),
+    // RES-932: tuple type predicate — distinguishes Value::Tuple from arrays.
+    ("is_tuple", builtin_is_tuple),
     // RES-143: file I/O. Std-only; the `resilient-runtime` crate has
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
@@ -13028,6 +13048,14 @@ fn builtin_none(args: &[Value]) -> RResult<Value> {
 }
 
 /// RES-363: `is_some(o)` — true iff `o` is a present Option.
+fn builtin_is_tuple(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Tuple(_)] => Ok(Value::Bool(true)),
+        [_] => Ok(Value::Bool(false)),
+        _ => Err(format!("is_tuple: expected 1 argument, got {}", args.len())),
+    }
+}
+
 fn builtin_is_some(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
@@ -14562,6 +14590,67 @@ fn builtin_array_range(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_range: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-921: `array_slice(arr, lo, hi, inclusive)` — extract a contiguous
+/// sub-array. Mirrors the `Node::Slice` interpreter semantics.
+/// `lo` is 0-based; negative indices count from the end.
+/// `hi == -1` means "up to end" (the compiler's absent-upper-bound sentinel).
+/// Positive `hi` is exclusive unless `inclusive` is `true`.
+/// Indices outside `[0, len)` are clamped silently.
+fn builtin_array_slice(args: &[Value]) -> RResult<Value> {
+    match args {
+        [
+            Value::Array(items),
+            Value::Int(lo_raw),
+            Value::Int(hi_raw),
+            Value::Bool(inclusive),
+        ] => {
+            let len = items.len() as i64;
+            let normalize = |v: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v } };
+            let lo_i = normalize(*lo_raw);
+            // -1 sentinel means "end of array"
+            let hi_i = if *hi_raw == -1 {
+                len
+            } else {
+                let h = normalize(*hi_raw);
+                if *inclusive { h + 1 } else { h }
+            };
+            let lo_u = (lo_i.clamp(0, len)) as usize;
+            let hi_u = (hi_i.clamp(0, len)) as usize;
+            if lo_u >= hi_u {
+                return Ok(Value::Array(Vec::new()));
+            }
+            Ok(Value::Array(items[lo_u..hi_u].to_vec()))
+        }
+        [
+            Value::String(s),
+            Value::Int(lo_raw),
+            Value::Int(hi_raw),
+            Value::Bool(inclusive),
+        ] => {
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len() as i64;
+            let normalize = |v: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v } };
+            let lo_i = normalize(*lo_raw);
+            let hi_i = if *hi_raw == -1 {
+                len
+            } else {
+                let h = normalize(*hi_raw);
+                if *inclusive { h + 1 } else { h }
+            };
+            let lo_u = (lo_i.clamp(0, len)) as usize;
+            let hi_u = (hi_i.clamp(0, len)) as usize;
+            if lo_u >= hi_u {
+                return Ok(Value::String(String::new()));
+            }
+            Ok(Value::String(chars[lo_u..hi_u].iter().collect()))
+        }
+        _ => Err(format!(
+            "array_slice: expected (array|string, int, int, bool), got {} args",
             args.len()
         )),
     }
@@ -18882,7 +18971,12 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::Int(s.chars().count() as i64)),
         [Value::Array(items)] => Ok(Value::Int(items.len() as i64)),
-        [other] => Err(format!("len: expected string or array, got {}", other)),
+        // RES-932: tuple length for tuple-pattern matching in the bytecode VM.
+        [Value::Tuple(items)] => Ok(Value::Int(items.len() as i64)),
+        [other] => Err(format!(
+            "len: expected string, array, or tuple, got {}",
+            other
+        )),
         _ => Err(format!("len: expected 1 argument, got {}", args.len())),
     }
 }
@@ -21540,6 +21634,34 @@ fn struct_fields_strict_eq(l: &[(String, Value)], r: &[(String, Value)]) -> bool
     true
 }
 
+/// Scalar total-order comparison for primitive `Value` kinds. Returns
+/// `None` for compound or incomparable types.
+fn values_cmp(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (Value::Int(l), Value::Int(r)) => Some(l.cmp(r)),
+        (Value::Float(l), Value::Float(r)) => l.partial_cmp(r),
+        (Value::String(l), Value::String(r)) => Some(l.cmp(r)),
+        (Value::Bool(l), Value::Bool(r)) => Some(l.cmp(r)),
+        _ => None,
+    }
+}
+
+/// Lexicographic comparison of two struct field-value lists, following
+/// declaration order. Used by `#[derive(PartialOrd)]` dispatch.
+fn struct_fields_lexicographic_cmp(
+    l: &[(String, Value)],
+    r: &[(String, Value)],
+) -> Result<std::cmp::Ordering, String> {
+    for ((lname, lv), (_, rv)) in l.iter().zip(r.iter()) {
+        let cmp =
+            values_cmp(lv, rv).ok_or_else(|| format!("field `{}` is not orderable", lname))?;
+        if cmp != std::cmp::Ordering::Equal {
+            return Ok(cmp);
+        }
+    }
+    Ok(l.len().cmp(&r.len()))
+}
+
 impl Interpreter {
     fn new() -> Self {
         // RES-1453: share the populated builtin Environment across
@@ -22240,6 +22362,206 @@ impl Interpreter {
                         // No matching method on this struct — fall
                         // through to the regular `FieldAccess` eval
                         // (which will itself raise a clean error).
+                    }
+                }
+                // RES-1859: standalone array_map / array_filter / array_reduce
+                // must be handled inline — they accept user callbacks that
+                // require the stateful `apply_function` path.
+                if let Node::Identifier { name: fn_name, .. } = function.as_ref() {
+                    match fn_name.as_str() {
+                        "array_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), callback] => {
+                                    let items = items.clone();
+                                    let callback = callback.clone();
+                                    let mut out = Vec::with_capacity(items.len());
+                                    for item in items {
+                                        out.push(
+                                            self.apply_function(callback.clone(), vec![item])?,
+                                        );
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_map: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        "array_filter" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), predicate] => {
+                                    let items = items.clone();
+                                    let predicate = predicate.clone();
+                                    let mut out = Vec::new();
+                                    for item in items {
+                                        match self
+                                            .apply_function(predicate.clone(), vec![item.clone()])?
+                                        {
+                                            Value::Bool(true) => out.push(item),
+                                            Value::Bool(false) => {}
+                                            other => {
+                                                return Err(format!(
+                                                    "array_filter: predicate must return bool, got {}",
+                                                    other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_filter: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        "array_reduce" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), init, callback] => {
+                                    let items = items.clone();
+                                    let callback = callback.clone();
+                                    let mut acc = init.clone();
+                                    for item in items {
+                                        acc =
+                                            self.apply_function(callback.clone(), vec![acc, item])?;
+                                    }
+                                    return Ok(acc);
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_reduce: expected (array, init, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        // RES-507: array_find(arr, fn) → first element where fn returns true, or null.
+                        "array_find" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), predicate] => {
+                                    let items = items.clone();
+                                    let predicate = predicate.clone();
+                                    for item in items {
+                                        match self
+                                            .apply_function(predicate.clone(), vec![item.clone()])?
+                                        {
+                                            Value::Bool(true) => {
+                                                return Ok(Value::Option(Some(Box::new(item))));
+                                            }
+                                            Value::Bool(false) => {}
+                                            other => {
+                                                return Err(format!(
+                                                    "array_find: predicate must return bool, got {other}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Option(None));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_find: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        // RES-507: array_find_index(arr, fn) → index of first match, or -1.
+                        "array_find_index" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), predicate] => {
+                                    let items = items.clone();
+                                    let predicate = predicate.clone();
+                                    for (i, item) in items.into_iter().enumerate() {
+                                        match self.apply_function(predicate.clone(), vec![item])? {
+                                            Value::Bool(true) => {
+                                                return Ok(Value::Int(i as i64));
+                                            }
+                                            Value::Bool(false) => {}
+                                            other => {
+                                                return Err(format!(
+                                                    "array_find_index: predicate must return bool, got {other}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Int(-1));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_find_index: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        // RES-507: array_any(arr, fn) → true iff any element satisfies fn.
+                        "array_any" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), predicate] => {
+                                    let items = items.clone();
+                                    let predicate = predicate.clone();
+                                    for item in items {
+                                        match self.apply_function(predicate.clone(), vec![item])? {
+                                            Value::Bool(true) => return Ok(Value::Bool(true)),
+                                            Value::Bool(false) => {}
+                                            other => {
+                                                return Err(format!(
+                                                    "array_any: predicate must return bool, got {other}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Bool(false));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_any: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        // RES-507: array_all(arr, fn) → true iff every element satisfies fn.
+                        "array_all" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), predicate] => {
+                                    let items = items.clone();
+                                    let predicate = predicate.clone();
+                                    for item in items {
+                                        match self.apply_function(predicate.clone(), vec![item])? {
+                                            Value::Bool(true) => {}
+                                            Value::Bool(false) => return Ok(Value::Bool(false)),
+                                            other => {
+                                                return Err(format!(
+                                                    "array_all: predicate must return bool, got {other}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Bool(true));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_all: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 let func = self.eval(function)?;
@@ -23854,6 +24176,33 @@ impl Interpreter {
             return Ok(Value::Bool(result));
         }
 
+        // PartialOrd for structs that carry `#[derive(PartialOrd)]`:
+        // compare lexicographically by declaration-order fields.
+        if matches!(operator, "<" | ">" | "<=" | ">=")
+            && let (
+                Value::Struct {
+                    name: ln,
+                    fields: lf,
+                },
+                Value::Struct {
+                    name: rn,
+                    fields: rf,
+                },
+            ) = (&left, &right)
+            && ln == rn
+            && crate::derives::derives_trait(ln.as_str(), "PartialOrd")
+        {
+            let cmp = struct_fields_lexicographic_cmp(lf, rf)?;
+            let result = match operator {
+                "<" => cmp == std::cmp::Ordering::Less,
+                ">" => cmp == std::cmp::Ordering::Greater,
+                "<=" => cmp != std::cmp::Ordering::Greater,
+                ">=" => cmp != std::cmp::Ordering::Less,
+                _ => unreachable!(),
+            };
+            return Ok(Value::Bool(result));
+        }
+
         match (left.clone(), right.clone()) {
             (Value::Int(l), Value::Int(r)) => self.eval_integer_infix_expression(operator, l, r),
             (Value::Float(l), Value::Float(r)) => self.eval_float_infix_expression(operator, l, r),
@@ -24749,6 +25098,8 @@ fn start_repl() -> RustylineResult<()> {
                 crate::default_params::lower_program(&mut program);
                 // RES-319: rewrite newtype constructor calls before eval.
                 crate::newtypes::lower_program(&mut program);
+                // Expand textual macros declared with `#[macro(...)]`.
+                crate::macros::lower_program(&mut program);
 
                 // Run type checker if enabled
                 if type_check_enabled {
@@ -24921,6 +25272,31 @@ fn render_with_caret(src: &str, err: &str, level: &str) -> String {
         }
     }
     err.to_string()
+}
+
+/// Extract `(line, column, message)` from a compiler error string of
+/// the form `"line:col: message"` or `"path:line:col: message"`.
+/// Returns `(0, 0, err)` when the pattern doesn't match.
+fn parse_error_location(err: &str) -> (u32, u32, String) {
+    // Try bare `<line>:<col>: <msg>` form.
+    let mut it = err.splitn(3, ':');
+    if let (Some(ls), Some(cs), Some(rest)) = (it.next(), it.next(), it.next())
+        && let (Ok(line), Ok(col)) = (ls.trim().parse::<u32>(), cs.trim().parse::<u32>())
+    {
+        return (line, col, rest.trim().to_string());
+    }
+    // Try `<path>:<line>:<col>: <msg>` form — find the first colon after
+    // which two consecutive unsigned integers follow.
+    for (i, _) in err.match_indices(':') {
+        let tail = &err[i + 1..];
+        let mut parts = tail.splitn(3, ':');
+        if let (Some(ls), Some(cs), Some(msg)) = (parts.next(), parts.next(), parts.next())
+            && let (Ok(line), Ok(col)) = (ls.trim().parse::<u32>(), cs.trim().parse::<u32>())
+        {
+            return (line, col, msg.trim().to_string());
+        }
+    }
+    (0, 0, err.to_string())
 }
 
 /// RES-112: scan `src` through the default routing (hand-rolled or
@@ -25130,7 +25506,38 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     crate::default_params::lower_program(&mut program);
     // RES-319: rewrite newtype constructor calls before eval.
     crate::newtypes::lower_program(&mut program);
+    crate::macros::lower_program(&mut program);
     (program, errs)
+}
+
+/// Macro expansion helper: parse a single expression string into a `Node`.
+///
+/// The source is wrapped in a synthetic function body so the existing
+/// program parser can handle it; the first statement from the body is
+/// returned. Returns `None` when the source has parse errors or is empty.
+///
+/// Used by `macros::lower_program` to parse textual expansion results
+/// back into AST nodes.
+pub(crate) fn parse_single_expression(src: &str) -> Option<Node> {
+    let wrapped = format!("fn __mexp__() {{ {} }}", src);
+    let lexer = Lexer::new(&wrapped);
+    let mut parser = Parser::new(lexer);
+    let program = parser.parse_program();
+    if !parser.errors.is_empty() {
+        return None;
+    }
+    if let Node::Program(stmts) = program
+        && let Some(spanned) = stmts.into_iter().next()
+        && let Node::Function { body, .. } = spanned.node
+        && let Node::Block { stmts, .. } = *body
+    {
+        // Unwrap ExpressionStatement wrapper if present.
+        return stmts.into_iter().next().map(|n| match n {
+            Node::ExpressionStatement { expr, .. } => *expr,
+            other => other,
+        });
+    }
+    None
 }
 
 /// RES-391: a parsed reference-type annotation. The parser encodes
@@ -26110,6 +26517,8 @@ fn execute_file(
     crate::default_params::lower_program(&mut program);
     // RES-319: rewrite newtype constructor calls before eval.
     crate::newtypes::lower_program(&mut program);
+    // Expand textual macros declared with `#[macro(...)]`.
+    crate::macros::lower_program(&mut program);
 
     // RES-391: syntactic non-aliasing check over reference-type
     // parameters. Runs unconditionally — a borrow-check violation is
@@ -27255,14 +27664,42 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
         return None;
     }
 
+    // Fast path: `rz lint --explain LXXXX` prints explanation and exits.
+    if args.get(2).map(|s| s.as_str()) == Some("--explain") {
+        let code = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        match lint::explain(code) {
+            Some(text) => {
+                println!("{text}");
+                return Some(0);
+            }
+            None if code.is_empty() => {
+                eprintln!(
+                    "Usage: rz lint --explain LXXXX\nKnown codes: {}",
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+            None => {
+                eprintln!(
+                    "Unknown lint code `{code}`. Known: {}",
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+        }
+    }
+
     let mut file: Option<PathBuf> = None;
     let mut deny: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut allow: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut safety_critical = false;
+    let mut emit_diagnostics_json = false;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
-        if a == "--safety-critical" {
+        if a == "--emit-diagnostics-json" {
+            emit_diagnostics_json = true;
+        } else if a == "--safety-critical" {
             safety_critical = true;
         } else if a == "--deny" {
             i += 1;
@@ -27374,15 +27811,39 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
 
     let mut any_warn = false;
     let mut any_error = false;
+    if emit_diagnostics_json {
+        // RES-emit-diag-json: machine-readable JSON array for IDE consumers.
+        let path_str = path.to_string_lossy();
+        let json_diags: Vec<serde_json::Value> = lints
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "severity": l.severity.to_string(),
+                    "code": l.code,
+                    "line": l.line,
+                    "column": l.column,
+                    "message": l.message,
+                    "file": path_str.as_ref(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+        );
+    } else {
+        for l in &lints {
+            println!("{}", lint::format_lint(l, path.to_string_lossy().as_ref()));
+        }
+        if lints.is_empty() {
+            println!("\x1B[32mlint: no diagnostics\x1B[0m");
+        }
+    }
     for l in &lints {
-        println!("{}", lint::format_lint(l, path.to_string_lossy().as_ref()));
         match l.severity {
             lint::Severity::Warning => any_warn = true,
             lint::Severity::Error => any_error = true,
         }
-    }
-    if lints.is_empty() {
-        println!("\x1B[32mlint: no diagnostics\x1B[0m");
     }
 
     if any_error {
@@ -27410,6 +27871,7 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     let mut file: Option<PathBuf> = None;
     let mut quiet = false;
     let mut safety_critical = false;
+    let mut emit_diagnostics_json = false;
     let mut verifier_timeout_ms: u32 = 5000;
     // RES-354: theory selection (z3-gated; default Auto).
     #[cfg(feature = "z3")]
@@ -27419,6 +27881,8 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
         let a = &args[i];
         if a == "--quiet" || a == "-q" {
             quiet = true;
+        } else if a == "--emit-diagnostics-json" {
+            emit_diagnostics_json = true;
         } else if a == "--safety-critical" {
             safety_critical = true;
         } else if a == "--verifier-timeout-ms" {
@@ -27507,7 +27971,29 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     // Parse.
     let (mut program, parse_errs) = parse(&src);
     if !parse_errs.is_empty() {
-        if !quiet {
+        if emit_diagnostics_json {
+            let path_str = path.to_string_lossy();
+            let json_diags: Vec<serde_json::Value> = parse_errs
+                .iter()
+                .map(|e| {
+                    // Parse errors carry "line:col: message" prefix; extract
+                    // line/col so the JSON schema stays consistent.
+                    let (line, col, msg) = parse_error_location(e);
+                    serde_json::json!({
+                        "severity": "error",
+                        "code": "parse",
+                        "line": line,
+                        "column": col,
+                        "message": msg,
+                        "file": path_str.as_ref(),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+            );
+        } else if !quiet {
             for e in &parse_errs {
                 eprintln!("{}", render_with_caret(&src, e, "parse error"));
             }
@@ -27569,7 +28055,8 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     let mut tc = tc_base.with_z3_theory(z3_theory);
     #[cfg(not(feature = "z3"))]
     let mut tc = tc_base;
-    match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
+    let path_str = path.to_string_lossy();
+    match tc.check_program_with_source(&program, path_str.as_ref()) {
         Ok(_) => {
             // RES-390: distributed-invariant verification runs
             // AFTER successful typechecking — we only try to
@@ -27582,7 +28069,25 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
             {
                 let diags = cluster_verifier::verify_program(&program, verifier_timeout_ms);
                 if !diags.is_empty() {
-                    if !quiet {
+                    if emit_diagnostics_json {
+                        let json_diags: Vec<serde_json::Value> = diags
+                            .iter()
+                            .map(|d| {
+                                serde_json::json!({
+                                    "severity": "error",
+                                    "code": "cluster",
+                                    "line": d.span.start.line,
+                                    "column": d.span.start.column,
+                                    "message": format!("[{}/{}.{}] {}", d.cluster, d.actor, d.handler, d.message),
+                                    "file": path_str.as_ref(),
+                                })
+                            })
+                            .collect();
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+                        );
+                    } else if !quiet {
                         for d in &diags {
                             let header = format!(
                                 "{}:{}:{}: cluster-invariant error: [{}/{}.{}] {}",
@@ -27603,13 +28108,29 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                     return Some(1);
                 }
             }
-            if !quiet {
+            if emit_diagnostics_json {
+                println!("[]");
+            } else if !quiet {
                 println!("{}: ok", path.display());
             }
             Some(0)
         }
         Err(e) => {
-            if !quiet {
+            if emit_diagnostics_json {
+                let (line, col, msg) = parse_error_location(&e);
+                let json_diags = serde_json::json!([{
+                    "severity": "error",
+                    "code": "typecheck",
+                    "line": line,
+                    "column": col,
+                    "message": msg,
+                    "file": path_str.as_ref(),
+                }]);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+                );
+            } else if !quiet {
                 eprintln!("{}", e);
                 eprintln!("{}", render_with_caret(&src, &e, "error"));
             }
@@ -27730,6 +28251,10 @@ COMMON FLAGS:\n\
         --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
+        --mcp                    Run the MCP server on stdio\n\
+                                 Exposes compiler tools (parse/typecheck/run/\n\
+                                 lint/format/verify) to AI assistants via the\n\
+                                 Model Context Protocol (2024-11-05)\n\
         --no-cache               Disable the incremental compilation cache\n\
                                  for this run (RES-355)\n\
         --feature NAME           Activate a `#[cfg(feature=\"NAME\")]` flag\n\
@@ -27744,6 +28269,7 @@ SUBCOMMANDS:\n\
     pkg <verb>          Package manager operations (RES-205)\n\
     fmt <file>          Canonical source formatter\n\
     lint <file>         Run the starter lints\n\
+    tla check <file>    TLA+ model checking via TLC\n\
     verify-cert <dir>   Verify an RES-071 certificate directory\n\
     verify-all <dir>    Re-check every obligation in a manifest\n\
 \n\
@@ -27850,6 +28376,13 @@ pub fn run_cli() {
         std::process::exit(0);
     }
 
+    // TLA+ bridge: `rz tla check <file.tla>` — shells out to TLC and
+    // surfaces results in Resilient's diagnostic format.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(code) = tla_bridge::dispatch_tla_subcommand(&args) {
+        std::process::exit(code);
+    }
+
     // RES-205: intercept `pkg` subcommands before the normal flow.
     // Must run before the global --help check so that
     // `resilient pkg --help` reaches print_pkg_help() instead of
@@ -27935,6 +28468,7 @@ pub fn run_cli() {
     let mut use_vm = false;
     let mut use_jit = false;
     let mut lsp_mode = false;
+    let mut mcp_mode = false;
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
     let mut dump_tokens = false;
@@ -28095,6 +28629,11 @@ pub fn run_cli() {
                 // functional when built with `--features lsp`; the
                 // non-feature path prints a helpful message and exits.
                 lsp_mode = true;
+            } else if arg == "--mcp" {
+                // MCP server: expose compiler tools over Model Context
+                // Protocol (NDJSON JSON-RPC 2.0 on stdio). Always
+                // available on native builds; not available on wasm32.
+                mcp_mode = true;
             } else if arg == "--dump-tokens" {
                 // RES-112: print the lexer's token stream and exit.
                 // Accepts both the hand-rolled scanner (default) and
@@ -28679,6 +29218,22 @@ pub fn run_cli() {
         }
     }
 
+    // MCP mode: serve the Model Context Protocol on stdio.
+    // Always available on native builds (no feature gate required —
+    // the server only uses serde_json which is already an unconditional dep).
+    if mcp_mode {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            mcp_server::run();
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            eprintln!("--mcp is not available on wasm32 builds.");
+            std::process::exit(1);
+        }
+    }
+
     // Start the enhanced REPL if no file was provided. RES-026:
     // pass through --examples-dir so the `examples` command can list
     // real files instead of the hardcoded snippets.
@@ -29195,6 +29750,8 @@ mod tests {
         crate::default_params::lower_program(&mut program);
         // RES-319: rewrite newtype constructor calls before eval.
         crate::newtypes::lower_program(&mut program);
+        // Expand textual macros declared with `#[macro(...)]`.
+        crate::macros::lower_program(&mut program);
         (program, errs)
     }
 
@@ -30931,6 +31488,105 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 60), // 10+20+30
             other => panic!("expected Int(60), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `array_map(arr, fn)` standalone builtin returns Array.
+    #[test]
+    fn res1859_array_map_standalone() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3];\n\
+                let doubled = array_map(arr, fn(int x) -> int { return x * 2; });\n\
+                return doubled[0] + doubled[2];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 2 + 6), // 2 + 6 = 8
+            other => panic!("expected Int(8), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `array_filter(arr, pred)` standalone builtin returns Array.
+    #[test]
+    fn res1859_array_filter_standalone() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3, 4, 5];\n\
+                let evens = array_filter(arr, fn(int x) -> bool { return x % 2 == 0; });\n\
+                return evens[0] + evens[1];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 6), // 2 + 4
+            other => panic!("expected Int(6), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `array_reduce(arr, init, fn)` standalone builtin.
+    #[test]
+    fn res1859_array_reduce_standalone() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3, 4, 5];\n\
+                return array_reduce(arr, 0, fn(int acc, int x) -> int { return acc + x; });\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 15),
+            other => panic!("expected Int(15), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `string_split(s, delim)` returns Array.
+    #[test]
+    fn res1859_string_split_standalone() {
+        let src = "string_split(\"a,b,c\", \",\");";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(v[0], Value::String(ref s) if s == "a"));
+                assert!(matches!(v[1], Value::String(ref s) if s == "b"));
+                assert!(matches!(v[2], Value::String(ref s) if s == "c"));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    /// RES-1859: typechecker infers Array return type for arr.map(fn).
+    #[test]
+    fn res1859_method_map_typed_context() {
+        // Passing the result to len() which expects an array-typed arg
+        // via fn_any_to_int — no type error should occur.
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [10, 20, 30];\n\
+                let mapped = arr.map(fn(int x) -> int { return x + 1; });\n\
+                return len(mapped);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
         }
     }
 
@@ -40314,6 +40970,52 @@ mod tests {
             Node::Program(stmts) => assert_eq!(stmts.len(), 2),
             other => panic!("expected Program, got {:?}", other),
         }
+    }
+
+    /// RES-1860: parse error in one function must not cascade into the
+    /// next function declaration.  Before the fix, `synchronize_top_level`
+    /// would stop on `fn` but the trailing `next_token()` consumed it,
+    /// causing the next function to be misidentified as an expression.
+    #[test]
+    fn res1860_errors_in_separate_fns_are_independent() {
+        let src = concat!(
+            "fn bad1(int x) -> int { return ???; }\n",
+            "fn good(int x) -> int { return x + 1; }\n",
+            "fn bad2(int x) -> int { return ???; }\n",
+            "fn good2(int x) -> int { return x * 2; }\n",
+        );
+        let (program, errors) = parse(src);
+        // Two bad functions → ≥2 errors (lexer may split `???` into
+        // multiple diagnostics, but the good functions must be parsed
+        // cleanly and appear in the AST).
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for ??? syntax, got none"
+        );
+        // Crucially: both good functions appear in the program AST.
+        let fn_names: Vec<String> = match &program {
+            Node::Program(stmts) => stmts
+                .iter()
+                .filter_map(|s| {
+                    if let Node::Function { name, .. } = &s.node {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => vec![],
+        };
+        assert!(
+            fn_names.contains(&"good".to_string()),
+            "good fn missing from AST; parsed fns: {:?}",
+            fn_names
+        );
+        assert!(
+            fn_names.contains(&"good2".to_string()),
+            "good2 fn missing from AST; parsed fns: {:?}",
+            fn_names
+        );
     }
 
     #[test]
@@ -55684,5 +56386,120 @@ mod stdlib_batch_tests_res_936_to_945 {
     fn map_get_or_rejects_non_map() {
         let e = builtin_map_get_or(&[Value::Int(1), Value::Int(0), Value::Int(0)]).unwrap_err();
         assert!(e.contains("first argument must be a Map"), "err was: {}", e);
+    }
+}
+
+// RES-507: tests for array_find / array_find_index / array_any / array_all
+#[cfg(test)]
+mod array_callback_tests {
+    use super::*;
+
+    fn run(src: &str) -> RunResult {
+        run_program(src)
+    }
+
+    #[test]
+    fn array_find_returns_first_match() {
+        let r = run("let arr = [1, 2, 3, 4, 5];\n\
+             let found = array_find(arr, fn(int x) -> bool { return x > 3; });\n\
+             println(found);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('4'), "expected 4, got: {}", r.stdout);
+    }
+
+    #[test]
+    fn array_find_returns_none_when_no_match() {
+        let r = run("let arr = [1, 2, 3];\n\
+             let found = array_find(arr, fn(int x) -> bool { return x > 10; });\n\
+             println(found);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("None") || r.stdout.contains("null"),
+            "expected None/null, got: {}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn array_find_index_returns_index() {
+        let r = run("let arr = [10, 20, 30, 40];\n\
+             let idx = array_find_index(arr, fn(int x) -> bool { return x >= 30; });\n\
+             println(idx);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('2'), "expected 2, got: {}", r.stdout);
+    }
+
+    #[test]
+    fn array_find_index_returns_neg1_when_no_match() {
+        let r = run("let arr = [1, 2, 3];\n\
+             let idx = array_find_index(arr, fn(int x) -> bool { return x > 100; });\n\
+             println(idx);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("-1"), "expected -1, got: {}", r.stdout);
+    }
+
+    #[test]
+    fn array_any_true_when_some_match() {
+        let r = run("let arr = [1, 2, 3];\n\
+             let result = array_any(arr, fn(int x) -> bool { return x == 2; });\n\
+             println(result);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("true"),
+            "expected true, got: {}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn array_any_false_when_none_match() {
+        let r = run("let arr = [1, 2, 3];\n\
+             let result = array_any(arr, fn(int x) -> bool { return x > 10; });\n\
+             println(result);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("false"),
+            "expected false, got: {}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn array_all_true_when_all_match() {
+        let r = run("let arr = [2, 4, 6];\n\
+             let result = array_all(arr, fn(int x) -> bool { return x % 2 == 0; });\n\
+             println(result);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("true"),
+            "expected true, got: {}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn array_all_false_when_some_fail() {
+        let r = run("let arr = [2, 3, 6];\n\
+             let result = array_all(arr, fn(int x) -> bool { return x % 2 == 0; });\n\
+             println(result);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("false"),
+            "expected false, got: {}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn array_all_vacuously_true_on_empty() {
+        let r = run("let arr = [];\n\
+             let result = array_all(arr, fn(int x) -> bool { return false; });\n\
+             println(result);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("true"),
+            "expected true, got: {}",
+            r.stdout
+        );
     }
 }

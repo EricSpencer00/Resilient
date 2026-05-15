@@ -78,6 +78,16 @@ pub enum VmError {
     /// Carries a static label naming the offending op (`"Add"`, `"Sub"`,
     /// `"Mul"`, `"Neg"`, `"IncLocal"`) so diagnostics are precise.
     IntegerOverflow(&'static str),
+    /// Shift amount is outside the valid range 0..63.
+    /// Matches the tree-walker interpreter's `"shift amount out of range: N"` error.
+    ShiftOutOfRange(i64),
+    /// RES-break-continue: `assert cond[, msg];` fired at runtime
+    /// (the condition was false). Carries the user-supplied or
+    /// auto-generated failure message.
+    AssertionFailed(String),
+    /// RES-169c: `LoadUpvalue(idx)` with `idx` outside the current
+    /// frame's upvalue slab.
+    UpvalueOutOfBounds(u16),
 }
 
 impl VmError {
@@ -119,6 +129,15 @@ impl std::fmt::Display for VmError {
             }
             VmError::IntegerOverflow(what) => {
                 write!(f, "vm: integer overflow in {}", what)
+            }
+            VmError::ShiftOutOfRange(n) => {
+                write!(f, "shift amount out of range: {}", n)
+            }
+            VmError::AssertionFailed(msg) => {
+                write!(f, "ASSERTION ERROR: {}", msg)
+            }
+            VmError::UpvalueOutOfBounds(idx) => {
+                write!(f, "vm: upvalue index {} out of bounds", idx)
             }
         }
     }
@@ -281,6 +300,9 @@ struct CallFrame {
     /// Base offset into the shared `locals` slab. LoadLocal(idx)
     /// resolves to `locals[locals_base + idx]`.
     locals_base: usize,
+    /// RES-169c: captured values for this closure frame. Empty for
+    /// regular (non-closure) calls; `LoadUpvalue(i)` indexes here.
+    upvalues: Box<[Value]>,
 }
 
 /// RES-329: dispatch strategy. The default match-based loop and the
@@ -385,6 +407,7 @@ fn run_inner(
         chunk_idx: usize::MAX, // main
         pc: 0,
         locals_base: 0,
+        upvalues: Box::default(),
     });
 
     loop {
@@ -431,8 +454,17 @@ fn run_inner(
                 stack.push(v);
             }
             Op::Add => {
-                let (a, b) = pop_two_ints(&mut stack, "Add")?;
-                stack.push(Value::Int(overflow_mode.add(a, b, "Add")?));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        stack.push(Value::Int(overflow_mode.add(x, y, "Add")?));
+                    }
+                    (Value::String(s1), Value::String(s2)) => {
+                        stack.push(Value::String(s1 + &s2));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Add")),
+                }
             }
             Op::Sub => {
                 let (a, b) = pop_two_ints(&mut stack, "Sub")?;
@@ -512,6 +544,7 @@ fn run_inner(
                     chunk_idx: idx as usize,
                     pc: 0,
                     locals_base: base,
+                    upvalues: Box::default(),
                 });
             }
             Op::ReturnFromCall => {
@@ -656,11 +689,60 @@ fn run_inner(
             // today it's a wiring bug, not user-facing. Return
             // Unsupported with a self-describing descriptor so the
             // at-line wrapper still works.
-            Op::MakeClosure { .. } => {
-                return Err(VmError::Unsupported("MakeClosure"));
+            Op::MakeClosure {
+                fn_idx,
+                upvalue_count,
+            } => {
+                if stack.len() < upvalue_count as usize {
+                    return Err(VmError::EmptyStack);
+                }
+                let split = stack.len() - upvalue_count as usize;
+                let captured: Box<[Value]> =
+                    stack.drain(split..).collect::<Vec<_>>().into_boxed_slice();
+                stack.push(Value::Closure {
+                    fn_idx,
+                    upvalues: captured,
+                });
             }
-            Op::LoadUpvalue(_) => {
-                return Err(VmError::Unsupported("LoadUpvalue"));
+            Op::LoadUpvalue(idx) => {
+                let frame_idx = frames.len() - 1;
+                let v = frames[frame_idx]
+                    .upvalues
+                    .get(idx as usize)
+                    .ok_or(VmError::UpvalueOutOfBounds(idx))?
+                    .clone();
+                stack.push(v);
+            }
+            Op::CallClosure { arity } => {
+                if stack.len() < arity as usize + 1 {
+                    return Err(VmError::EmptyStack);
+                }
+                if frames.len() >= MAX_CALL_DEPTH {
+                    return Err(VmError::CallStackOverflow);
+                }
+                let split = stack.len() - arity as usize;
+                let args: Vec<Value> = stack.drain(split..).collect();
+                let closure = stack.pop().ok_or(VmError::EmptyStack)?;
+                let (fn_idx, captured) = match closure {
+                    Value::Closure { fn_idx, upvalues } => (fn_idx, upvalues),
+                    _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
+                };
+                let func = program
+                    .functions
+                    .get(fn_idx as usize)
+                    .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+                let base = locals.len();
+                locals.resize(base + func.local_count as usize, Value::Void);
+                for (i, v) in args.into_iter().enumerate() {
+                    locals[base + i] = v;
+                }
+                frames.push(CallFrame {
+                    chunk_idx: fn_idx as usize,
+                    pc: 0,
+                    locals_base: base,
+                    upvalues: captured,
+                });
+                continue;
             }
             #[cfg(feature = "ffi")]
             Op::CallForeign(idx) => {
@@ -744,31 +826,97 @@ fn run_inner(
                 let items: Vec<Value> = stack.drain(split_at..).collect();
                 stack.push(Value::Array(items));
             }
+            // RES-401: same convention as MakeArray — drain `len` values.
+            Op::MakeTuple { len } => {
+                let n = len as usize;
+                if stack.len() < n {
+                    return Err(VmError::EmptyStack);
+                }
+                let split_at = stack.len() - n;
+                let items: Vec<Value> = stack.drain(split_at..).collect();
+                stack.push(Value::Tuple(items));
+            }
+            // RES-375/RES-363: `expr?` — try-unwrap.
+            Op::TryUnwrap => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                match v {
+                    Value::Result { ok: true, payload } => {
+                        stack.push(*payload);
+                    }
+                    Value::Option(Some(inner)) => {
+                        stack.push(*inner);
+                    }
+                    Value::Result { ok: false, payload } => {
+                        let ret = Value::Result { ok: false, payload };
+                        let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                        if frames.is_empty() {
+                            return Ok(ret);
+                        }
+                        locals.truncate(popped.locals_base);
+                        stack.push(ret);
+                    }
+                    Value::Option(None) => {
+                        let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                        if frames.is_empty() {
+                            return Ok(Value::Option(None));
+                        }
+                        locals.truncate(popped.locals_base);
+                        stack.push(Value::Option(None));
+                    }
+                    _ => {
+                        return Err(VmError::TypeMismatch(
+                            "TryUnwrap: expected Result or Option",
+                        ));
+                    }
+                }
+            }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
-                let arr_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let target = stack.pop().ok_or(VmError::EmptyStack)?;
                 let Value::Int(idx) = idx_val else {
                     return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
                 };
-                let Value::Array(mut items) = arr_val else {
-                    return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
-                };
-                if idx < 0 || (idx as usize) >= items.len() {
-                    return Err(VmError::ArrayIndexOutOfBounds {
-                        index: idx,
-                        len: items.len(),
-                    });
+                match target {
+                    Value::Array(mut items) => {
+                        if idx < 0 || (idx as usize) >= items.len() {
+                            return Err(VmError::ArrayIndexOutOfBounds {
+                                index: idx,
+                                len: items.len(),
+                            });
+                        }
+                        // RES-1437: swap_remove is O(1); the clone from
+                        // LoadLocal means the original local is unaffected.
+                        stack.push(items.swap_remove(idx as usize));
+                    }
+                    // RES-401: tuple indexing reuses LoadIndex. The
+                    // element is moved out of the owned Vec.
+                    Value::Tuple(mut items) => {
+                        if idx < 0 || (idx as usize) >= items.len() {
+                            return Err(VmError::ArrayIndexOutOfBounds {
+                                index: idx,
+                                len: items.len(),
+                            });
+                        }
+                        stack.push(items.swap_remove(idx as usize));
+                    }
+                    // RES-334b: string character indexing for `for c in "hello"`.
+                    // Returns the character at the given code-point index as a
+                    // single-character string.  Negative or out-of-range indices
+                    // surface the same ArrayIndexOutOfBounds error that arrays use
+                    // so callers see a uniform error shape.
+                    Value::String(s) => {
+                        let len = s.chars().count();
+                        if idx < 0 || (idx as usize) >= len {
+                            return Err(VmError::ArrayIndexOutOfBounds { index: idx, len });
+                        }
+                        let ch = s
+                            .chars()
+                            .nth(idx as usize)
+                            .expect("index already bounds-checked");
+                        stack.push(Value::String(ch.to_string()));
+                    }
+                    _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
                 }
-                // RES-1437: `items` is owned (destructured from
-                // `Value::Array`). The popped array is the clone
-                // emitted by `LoadLocal` — the original local still
-                // holds the array, so consuming this stack copy is
-                // correct. Use `swap_remove` to move the element out
-                // (O(1)); the remaining `items` drops at end of scope
-                // as before. Saves one `Value::clone` per array index
-                // dispatch — significant for arrays of Strings or
-                // nested Arrays. Mirrors RES-1436 (tree-walker).
-                stack.push(items.swap_remove(idx as usize));
             }
             // RES-407: emitted only when `bounds_check::check_array_bounds`
             // discharged the bounds obligation for this site. Skips the
@@ -902,6 +1050,39 @@ fn run_inner(
                     fields,
                 });
             }
+            Op::Band => {
+                let (a, b) = pop_two_ints(&mut stack, "Band")?;
+                stack.push(Value::Int(a & b));
+            }
+            Op::Bor => {
+                let (a, b) = pop_two_ints(&mut stack, "Bor")?;
+                stack.push(Value::Int(a | b));
+            }
+            Op::Bxor => {
+                let (a, b) = pop_two_ints(&mut stack, "Bxor")?;
+                stack.push(Value::Int(a ^ b));
+            }
+            Op::Shl => {
+                let (a, b) = pop_two_ints(&mut stack, "Shl")?;
+                if !(0..64).contains(&b) {
+                    return Err(VmError::ShiftOutOfRange(b));
+                }
+                stack.push(Value::Int(a << b));
+            }
+            Op::Shr => {
+                let (a, b) = pop_two_ints(&mut stack, "Shr")?;
+                if !(0..64).contains(&b) {
+                    return Err(VmError::ShiftOutOfRange(b));
+                }
+                stack.push(Value::Int(a >> b));
+            }
+            Op::AssertFail => {
+                let msg = match stack.pop().ok_or(VmError::EmptyStack)? {
+                    Value::String(s) => s,
+                    other => format!("assertion failed: {}", other),
+                };
+                return Err(VmError::AssertionFailed(msg));
+            }
         }
     }
 }
@@ -1026,7 +1207,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 /// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
 /// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
 /// grow together.
-const OP_KIND_COUNT: usize = 32;
+const OP_KIND_COUNT: usize = 38;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -1073,6 +1254,15 @@ fn op_to_index(op: Op) -> usize {
         Op::StructLiteral { .. } => OP_KIND_STRUCT_LITERAL,
         Op::GetField { .. } => OP_KIND_GET_FIELD,
         Op::SetField { .. } => OP_KIND_SET_FIELD,
+        Op::Band => OP_KIND_BAND,
+        Op::Bor => OP_KIND_BOR,
+        Op::Bxor => OP_KIND_BXOR,
+        Op::Shl => OP_KIND_SHL,
+        Op::Shr => OP_KIND_SHR,
+        Op::AssertFail => OP_KIND_ASSERT_FAIL,
+        Op::MakeTuple { .. } => OP_KIND_MAKE_TUPLE,
+        Op::CallClosure { .. } => OP_KIND_CALL_CLOSURE,
+        Op::TryUnwrap => OP_KIND_TRY_UNWRAP,
     }
 }
 
@@ -1080,7 +1270,16 @@ const OP_KIND_LOAD_INDEX_UNCHECKED: usize = 31;
 const OP_KIND_STRUCT_LITERAL: usize = 32;
 const OP_KIND_GET_FIELD: usize = 33;
 const OP_KIND_SET_FIELD: usize = 34;
-const HANDLER_TABLE_LEN: usize = 35;
+const OP_KIND_BAND: usize = 35;
+const OP_KIND_BOR: usize = 36;
+const OP_KIND_BXOR: usize = 37;
+const OP_KIND_SHL: usize = 38;
+const OP_KIND_SHR: usize = 39;
+const OP_KIND_ASSERT_FAIL: usize = 40;
+const OP_KIND_MAKE_TUPLE: usize = 41;
+const OP_KIND_CALL_CLOSURE: usize = 42;
+const OP_KIND_TRY_UNWRAP: usize = 43;
+const HANDLER_TABLE_LEN: usize = 44;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1121,6 +1320,15 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_STRUCT_LITERAL] = h_struct_literal;
     table[OP_KIND_GET_FIELD] = h_get_field;
     table[OP_KIND_SET_FIELD] = h_set_field;
+    table[OP_KIND_BAND] = h_band;
+    table[OP_KIND_BOR] = h_bor;
+    table[OP_KIND_BXOR] = h_bxor;
+    table[OP_KIND_SHL] = h_shl;
+    table[OP_KIND_SHR] = h_shr;
+    table[OP_KIND_ASSERT_FAIL] = h_assert_fail;
+    table[OP_KIND_MAKE_TUPLE] = h_make_tuple;
+    table[OP_KIND_CALL_CLOSURE] = h_call_closure;
+    table[OP_KIND_TRY_UNWRAP] = h_try_unwrap;
     table
 };
 
@@ -1147,6 +1355,7 @@ fn run_direct(
         chunk_idx: usize::MAX,
         pc: 0,
         locals_base: 0,
+        upvalues: Box::default(),
     });
 
     loop {
@@ -1210,10 +1419,19 @@ fn h_const(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 
 #[inline(never)]
 fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Add")?;
-    state
-        .stack
-        .push(Value::Int(state.overflow_mode.add(a, b, "Add")?));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            state
+                .stack
+                .push(Value::Int(state.overflow_mode.add(x, y, "Add")?));
+        }
+        (Value::String(s1), Value::String(s2)) => {
+            state.stack.push(Value::String(s1 + &s2));
+        }
+        _ => return Err(VmError::TypeMismatch("Add")),
+    }
     Ok(Step::Continue)
 }
 
@@ -1327,6 +1545,7 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         chunk_idx: idx as usize,
         pc: 0,
         locals_base: base,
+        upvalues: Box::default(),
     });
     Ok(Step::Continue)
 }
@@ -1479,13 +1698,82 @@ fn h_return(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 }
 
 #[inline(never)]
-fn h_make_closure(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    Err(VmError::Unsupported("MakeClosure"))
+fn h_make_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::MakeClosure {
+        fn_idx,
+        upvalue_count,
+    } = op
+    else {
+        unreachable!()
+    };
+    if state.stack.len() < upvalue_count as usize {
+        return Err(VmError::EmptyStack);
+    }
+    let split = state.stack.len() - upvalue_count as usize;
+    let captured: Box<[Value]> = state
+        .stack
+        .drain(split..)
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    state.stack.push(Value::Closure {
+        fn_idx,
+        upvalues: captured,
+    });
+    Ok(Step::Continue)
 }
 
 #[inline(never)]
-fn h_load_upvalue(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    Err(VmError::Unsupported("LoadUpvalue"))
+fn h_load_upvalue(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::LoadUpvalue(idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    let v = state.frames[frame_idx]
+        .upvalues
+        .get(idx as usize)
+        .ok_or(VmError::UpvalueOutOfBounds(idx))?
+        .clone();
+    state.stack.push(v);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::CallClosure { arity } = op else {
+        unreachable!()
+    };
+    if state.stack.len() < arity as usize + 1 {
+        return Err(VmError::EmptyStack);
+    }
+    if state.frames.len() >= MAX_CALL_DEPTH {
+        return Err(VmError::CallStackOverflow);
+    }
+    let split = state.stack.len() - arity as usize;
+    let args: Vec<Value> = state.stack.drain(split..).collect();
+    let closure = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let (fn_idx, captured) = match closure {
+        Value::Closure { fn_idx, upvalues } => (fn_idx, upvalues),
+        _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
+    };
+    let func = state
+        .program
+        .functions
+        .get(fn_idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    let base = state.locals.len();
+    state
+        .locals
+        .resize(base + func.local_count as usize, Value::Void);
+    for (i, v) in args.into_iter().enumerate() {
+        state.locals[base + i] = v;
+    }
+    state.frames.push(CallFrame {
+        chunk_idx: fn_idx as usize,
+        pc: 0,
+        locals_base: base,
+        upvalues: captured,
+    });
+    Ok(Step::Continue)
 }
 
 #[inline(never)]
@@ -1530,12 +1818,15 @@ fn h_make_array(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 #[inline(never)]
 fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let idx_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let arr_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let target = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let Value::Int(idx) = idx_val else {
         return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
     };
-    let Value::Array(mut items) = arr_val else {
-        return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
+    // RES-401: also handle Value::Tuple here (mirrors run_inner change).
+    let (mut items, is_tuple) = match target {
+        Value::Array(v) => (v, false),
+        Value::Tuple(v) => (v, true),
+        _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
     };
     if idx < 0 || (idx as usize) >= items.len() {
         return Err(VmError::ArrayIndexOutOfBounds {
@@ -1543,6 +1834,7 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             len: items.len(),
         });
     }
+    let _ = is_tuple; // both branches use swap_remove
     // RES-1437: swap_remove instead of clone — see the match-dispatch
     // LoadIndex arm in run_inner for the full justification.
     state.stack.push(items.swap_remove(idx as usize));
@@ -1759,6 +2051,112 @@ fn h_set_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     Ok(Step::Continue)
 }
 
+#[inline(never)]
+fn h_band(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Band")?;
+    state.stack.push(Value::Int(a & b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_bor(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Bor")?;
+    state.stack.push(Value::Int(a | b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_bxor(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Bxor")?;
+    state.stack.push(Value::Int(a ^ b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_shl(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Shl")?;
+    if !(0..64).contains(&b) {
+        return Err(VmError::ShiftOutOfRange(b));
+    }
+    state.stack.push(Value::Int(a << b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_shr(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Shr")?;
+    if !(0..64).contains(&b) {
+        return Err(VmError::ShiftOutOfRange(b));
+    }
+    state.stack.push(Value::Int(a >> b));
+    Ok(Step::Continue)
+}
+
+fn h_assert_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let msg = match state.stack.pop().ok_or(VmError::EmptyStack)? {
+        Value::String(s) => s,
+        other => format!("assertion failed: {}", other),
+    };
+    Err(VmError::AssertionFailed(msg))
+}
+
+#[inline(never)]
+fn h_make_tuple(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::MakeTuple { len } = op else {
+        return Err(VmError::Unsupported("h_make_tuple: wrong op"));
+    };
+    let n = len as usize;
+    if state.stack.len() < n {
+        return Err(VmError::EmptyStack);
+    }
+    let split_at = state.stack.len() - n;
+    let items: Vec<Value> = state.stack.drain(split_at..).collect();
+    state.stack.push(Value::Tuple(items));
+    Ok(Step::Continue)
+}
+
+// RES-375/RES-363: try-unwrap handler for the direct-threaded path.
+// Mirrors the run_inner Op::TryUnwrap arm exactly.
+#[inline(never)]
+fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    if !matches!(op, Op::TryUnwrap) {
+        return Err(VmError::Unsupported("h_try_unwrap: wrong op"));
+    }
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match v {
+        Value::Result { ok: true, payload } => {
+            state.stack.push(*payload);
+            Ok(Step::Continue)
+        }
+        Value::Option(Some(inner)) => {
+            state.stack.push(*inner);
+            Ok(Step::Continue)
+        }
+        Value::Result { ok: false, payload } => {
+            let ret = Value::Result { ok: false, payload };
+            let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            if state.frames.is_empty() {
+                return Ok(Step::Halt(ret));
+            }
+            state.locals.truncate(popped.locals_base);
+            state.stack.push(ret);
+            Ok(Step::Continue)
+        }
+        Value::Option(None) => {
+            let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            if state.frames.is_empty() {
+                return Ok(Step::Halt(Value::Option(None)));
+            }
+            state.locals.truncate(popped.locals_base);
+            state.stack.push(Value::Option(None));
+            Ok(Step::Continue)
+        }
+        _ => Err(VmError::TypeMismatch(
+            "TryUnwrap: expected Result or Option",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1916,6 +2314,67 @@ mod tests {
         // Body uses a local beyond the param slots.
         let src = "fn work(int n) { let doubled = n + n; return doubled + 1; } work(5);";
         assert_int(compile_run(src).unwrap(), 11);
+    }
+
+    // ---------- bitwise op tests ----------
+
+    #[test]
+    fn bitwise_and() {
+        assert_int(compile_run("15 & 10;").unwrap(), 10);
+    }
+
+    #[test]
+    fn bitwise_or() {
+        assert_int(compile_run("5 | 10;").unwrap(), 15);
+    }
+
+    #[test]
+    fn bitwise_xor() {
+        assert_int(compile_run("15 ^ 5;").unwrap(), 10);
+    }
+
+    #[test]
+    fn bitwise_shift_left() {
+        assert_int(compile_run("1 << 4;").unwrap(), 16);
+    }
+
+    #[test]
+    fn bitwise_shift_right() {
+        assert_int(compile_run("256 >> 3;").unwrap(), 32);
+    }
+
+    #[test]
+    fn bitwise_ops_in_function() {
+        let src = "fn mask(int x) -> int { return (x & 0xFF) | 0x100; } mask(255);";
+        assert_int(compile_run(src).unwrap(), 0x1FF);
+    }
+
+    #[test]
+    fn shl_out_of_range_is_error() {
+        // Shift amount 64 is out of the valid range 0..63; both the
+        // interpreter and the VM must return an error (not silently mask).
+        let err = compile_run("1 << 64;").unwrap_err();
+        assert!(
+            matches!(err.kind(), VmError::ShiftOutOfRange(64)),
+            "expected ShiftOutOfRange(64), got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn shr_negative_amount_is_error() {
+        let err = compile_run("1 >> -1;").unwrap_err();
+        assert!(
+            matches!(err.kind(), VmError::ShiftOutOfRange(-1)),
+            "expected ShiftOutOfRange(-1), got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn shl_boundary_63_is_valid() {
+        // 1 << 63 is the minimum i64 value; within the valid range.
+        assert_int(compile_run("1 << 63;").unwrap(), i64::MIN);
     }
 
     #[test]
@@ -2175,35 +2634,54 @@ mod tests {
         assert_int(compile_run(src).unwrap(), 55);
     }
 
-    // ---------- RES-169a: skeleton closure-opcode dispatch ----------
+    // ---------- RES-169c: closure opcodes are fully implemented ----------
 
     #[test]
-    fn res169a_make_closure_dispatch_returns_unsupported() {
-        // MakeClosure is laid down as a skeleton in RES-169a; the
-        // compiler never emits it yet, so if it shows up in a
-        // chunk that's a wiring bug. The dispatch arm reports that
-        // cleanly via `VmError::Unsupported("MakeClosure")`.
-        let p = const_program(
-            &[],
-            &[Op::MakeClosure {
-                fn_idx: 0,
-                upvalue_count: 0,
+    fn res169c_make_closure_produces_closure_value() {
+        // MakeClosure with 0 upvalues should push a Closure value onto
+        // the stack. We add a dummy function at index 0 so FunctionOutOfBounds
+        // doesn't fire when CallClosure tries to look it up.
+        use crate::bytecode::Function;
+        let mut main = Chunk::new();
+        main.code.push(Op::MakeClosure {
+            fn_idx: 0,
+            upvalue_count: 0,
+        });
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        main.line_info.push(1);
+        let mut body = Chunk::new();
+        body.code.push(Op::Return);
+        body.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "f".into(),
+                arity: 0,
+                local_count: 0,
+                chunk: body,
             }],
-        );
-        let err = run(&p).unwrap_err();
-        match err.kind() {
-            VmError::Unsupported(what) => assert_eq!(*what, "MakeClosure"),
-            other => panic!("expected Unsupported(MakeClosure), got {:?}", other),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let v = run(&p).unwrap();
+        match v {
+            Value::Closure { fn_idx, upvalues } => {
+                assert_eq!(fn_idx, 0);
+                assert_eq!(upvalues.len(), 0);
+            }
+            other => panic!("expected Closure, got {:?}", other),
         }
     }
 
     #[test]
-    fn res169a_load_upvalue_dispatch_returns_unsupported() {
-        let p = const_program(&[], &[Op::LoadUpvalue(0)]);
+    fn res169c_load_upvalue_out_of_bounds_errors() {
+        // LoadUpvalue(5) on a frame with 0 upvalues → UpvalueOutOfBounds
+        let p = const_program(&[], &[Op::LoadUpvalue(5)]);
         let err = run(&p).unwrap_err();
         match err.kind() {
-            VmError::Unsupported(what) => assert_eq!(*what, "LoadUpvalue"),
-            other => panic!("expected Unsupported(LoadUpvalue), got {:?}", other),
+            VmError::UpvalueOutOfBounds(idx) => assert_eq!(*idx, 5),
+            other => panic!("expected UpvalueOutOfBounds(5), got {:?}", other),
         }
     }
 
@@ -2237,6 +2715,44 @@ mod tests {
             &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
         );
         assert_int(run(&p).unwrap(), 42);
+    }
+
+    // ---------- RES-169d: FunctionLiteral + indirect call (closures from source) ----------
+
+    #[test]
+    fn res169d_function_literal_basic_call() {
+        // let double = fn(int x) { return x * 2; }; double(5);
+        let src = "let double = fn(int x) { return x * 2; }; double(5);";
+        assert_int(compile_run(src).unwrap(), 10);
+    }
+
+    #[test]
+    fn res169d_function_literal_captures_outer_variable() {
+        // let n = 10; let adder = fn(int x) { return x + n; }; adder(5);
+        let src = "let n = 10; let adder = fn(int x) { return x + n; }; adder(5);";
+        assert_int(compile_run(src).unwrap(), 15);
+    }
+
+    #[test]
+    fn res169d_function_literal_no_args() {
+        // let get_42 = fn() { return 42; }; get_42();
+        let src = "let get_42 = fn() { return 42; }; get_42();";
+        assert_int(compile_run(src).unwrap(), 42);
+    }
+
+    #[test]
+    fn res169d_function_literal_capture_multiple_vars() {
+        // let a = 3; let b = 4; let sum = fn() { return a + b; }; sum();
+        let src = "let a = 3; let b = 4; let sum_fn = fn() { return a + b; }; sum_fn();";
+        assert_int(compile_run(src).unwrap(), 7);
+    }
+
+    #[test]
+    fn res169d_closure_immediate_call() {
+        // Immediately-called function literal: fn(int x) { return x * 3; }(7)
+        // is not yet parser-supported, but we can inline it via let.
+        let src = "let mul3 = fn(int x) { return x * 3; }; mul3(7);";
+        assert_int(compile_run(src).unwrap(), 21);
     }
 
     // ---------- RES-171a: array ops ----------
@@ -2452,16 +2968,45 @@ mod tests {
     }
 
     #[test]
-    fn res171a_compile_rejects_nested_index_assignment() {
-        // a[i][j] = v is RES-171c — today we emit a clean error.
-        let (program, _) = crate::parse("let a = [[1,2],[3,4]]; a[0][1] = 99; return 0;");
-        let err = crate::compiler::compile(&program).unwrap_err();
-        match err {
-            crate::bytecode::CompileError::Unsupported(msg) => {
-                assert!(msg.contains("nested"), "unexpected msg: {}", msg);
-            }
-            other => panic!("expected Unsupported, got {:?}", other),
+    fn res334b_load_index_on_string_returns_char() {
+        // RES-334b: `s[i]` on a string value returns the i-th character.
+        let v = compile_run(r#"let s = "hello"; return s[1];"#).unwrap();
+        match v {
+            crate::Value::String(c) => assert_eq!(c, "e"),
+            other => panic!("expected String, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn res334b_load_index_on_string_oob_errors() {
+        let err = compile_run(r#"let s = "hi"; return s[5];"#).unwrap_err();
+        assert!(
+            err.to_string().contains("out of bounds"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn res171c_nested_index_assignment_compiles_and_runs() {
+        // RES-171c: a[i][j] = v now compiles and runs correctly.
+        // After `a[0][1] = 99`, a[0] should be [1, 99].
+        let v = compile_run("let a = [[1,2],[3,4]]; a[0][1] = 99; return a[0][1];").unwrap();
+        assert_int(v, 99);
+    }
+
+    #[test]
+    fn res171c_nested_index_assignment_three_levels() {
+        // a[0][0][0] = 7 updates the innermost element.
+        let v = compile_run("let a = [[[1,2],[3,4]]]; a[0][0][0] = 7; return a[0][0][0];").unwrap();
+        assert_int(v, 7);
+    }
+
+    #[test]
+    fn res171c_nested_index_assignment_preserves_other_elements() {
+        // Updating a[1][0] must not disturb a[0].
+        let v = compile_run("let a = [[10,20],[30,40]]; a[1][0] = 99; return a[0][0];").unwrap();
+        assert_int(v, 10);
     }
 
     #[test]
@@ -3035,18 +3580,35 @@ mod tests {
     }
 
     #[test]
-    fn res329_direct_unsupported_closures_surface_cleanly() {
-        let p = const_program(
-            &[],
-            &[Op::MakeClosure {
-                fn_idx: 0,
-                upvalue_count: 0,
+    fn res329_direct_make_closure_works() {
+        // MakeClosure in the direct-threaded path should produce a Closure value.
+        use crate::bytecode::Function;
+        let mut main = Chunk::new();
+        main.code.push(Op::MakeClosure {
+            fn_idx: 0,
+            upvalue_count: 0,
+        });
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        main.line_info.push(1);
+        let mut body = Chunk::new();
+        body.code.push(Op::Return);
+        body.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "f".into(),
+                arity: 0,
+                local_count: 0,
+                chunk: body,
             }],
-        );
-        let err = run_with(&p, OverflowMode::Wrap, Dispatch::Direct).unwrap_err();
-        match err.kind() {
-            VmError::Unsupported(what) => assert_eq!(*what, "MakeClosure"),
-            other => panic!("expected Unsupported(MakeClosure), got {:?}", other),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let v = run_with(&p, OverflowMode::Wrap, Dispatch::Direct).unwrap();
+        match v {
+            Value::Closure { fn_idx, .. } => assert_eq!(fn_idx, 0),
+            other => panic!("expected Closure, got {:?}", other),
         }
     }
 
@@ -3100,6 +3662,14 @@ mod tests {
             },
             Op::GetField { name_const: 0 },
             Op::SetField { name_const: 0 },
+            Op::Band,
+            Op::Bor,
+            Op::Bxor,
+            Op::Shl,
+            Op::Shr,
+            Op::AssertFail,
+            Op::MakeTuple { len: 0 },
+            Op::CallClosure { arity: 0 },
         ];
         for op in samples {
             let idx = op_to_index(*op);
@@ -3120,5 +3690,344 @@ mod tests {
                 idx
             );
         }
+    }
+
+    fn assert_string(v: Result<Value, VmError>, expected: &str) {
+        match v {
+            Ok(Value::String(s)) => {
+                assert_eq!(
+                    s, expected,
+                    "string mismatch: expected {expected:?}, got {s:?}"
+                )
+            }
+            Ok(other) => panic!("expected String({expected:?}), got {other:?}"),
+            Err(e) => panic!("expected String({expected:?}), got VmError: {e}"),
+        }
+    }
+
+    // ── String concat (Op::Add extended) ─────────────────────────────────────
+
+    #[test]
+    fn add_string_string_concatenates() {
+        let src = r#"let s = "hello" + " world"; s"#;
+        assert_string(compile_run(src), "hello world");
+    }
+
+    #[test]
+    fn add_int_string_is_type_error() {
+        use crate::bytecode::{Chunk, Program};
+        let mut chunk = Chunk::new();
+        let i = chunk.add_constant(Value::Int(1)).unwrap();
+        let s = chunk.add_constant(Value::String("x".to_string())).unwrap();
+        chunk.emit(Op::Const(i), 1);
+        chunk.emit(Op::Const(s), 1);
+        chunk.emit(Op::Add, 1);
+        chunk.emit(Op::Return, 1);
+        let prog = Program {
+            main: chunk,
+            functions: vec![],
+        };
+        let err = run(&prog).unwrap_err();
+        assert!(
+            err.to_string().contains("type mismatch") || err.to_string().contains("Add"),
+            "expected type-mismatch error, got: {err}"
+        );
+    }
+
+    // ── Interpolated string (compiler + VM) ──────────────────────────────────
+
+    #[test]
+    fn interp_string_literal_only_parts() {
+        // A string with no interpolations is a plain StringLiteral, not
+        // InterpolatedString, but compile_run still handles it.
+        assert_string(compile_run(r#""hello world""#), "hello world");
+    }
+
+    #[test]
+    fn interp_string_single_var() {
+        let src = r#"let name = "Alice"; "Hello, {name}!""#;
+        assert_string(compile_run(src), "Hello, Alice!");
+    }
+
+    #[test]
+    fn interp_string_arithmetic_expr() {
+        let src = r#"let x = 6; let y = 7; "The answer is {x * y}.""#;
+        assert_string(compile_run(src), "The answer is 42.");
+    }
+
+    #[test]
+    fn interp_string_multiple_placeholders() {
+        let src = r#"let a = 1; let b = 2; "{a} + {b} = {a + b}""#;
+        assert_string(compile_run(src), "1 + 2 = 3");
+    }
+
+    #[test]
+    fn interp_string_integer_conversion() {
+        let src = r#"let n = 42; "n = {n}""#;
+        assert_string(compile_run(src), "n = 42");
+    }
+
+    #[test]
+    fn interp_string_bool_conversion() {
+        let src = r#"let flag = true; "flag = {flag}""#;
+        assert_string(compile_run(src), "flag = true");
+    }
+
+    // ── Tuple support (Op::MakeTuple + extended LoadIndex) ────────────────────
+
+    #[test]
+    fn tuple_literal_produces_tuple_value() {
+        let src = "(1, 2, 3)";
+        let r = compile_run(src);
+        assert!(
+            matches!(r, Ok(Value::Tuple(_))),
+            "expected Tuple, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn tuple_index_accesses_element() {
+        let src = "let t = (10, 20, 30); t.1";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(20))), "expected 20, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_index_zero() {
+        let src = "let t = (42, 99); t.0";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(42))), "expected 42, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_destructure_binds_all_names() {
+        let src = "let (a, b, c) = (1, 2, 3); a + b + c";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(6))), "expected 6, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_destructure_two_elements() {
+        let src = "let (x, y) = (10, 20); x * y";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(200))), "expected 200, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_empty_is_unit() {
+        let src = "()";
+        let r = compile_run(src);
+        assert!(
+            matches!(r, Ok(Value::Tuple(ref v)) if v.is_empty()),
+            "expected empty Tuple, got {r:?}"
+        );
+    }
+
+    // ── RES-163: match expression lowering ──────────────────────────────────
+
+    #[test]
+    fn match_wildcard_arm_always_matches() {
+        let r = compile_run("fn f(int x) -> int { return match x { _ => 99 }; } f(42)");
+        assert!(matches!(r, Ok(Value::Int(99))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_literal_arm_exact_hit() {
+        let r = compile_run("fn f(int x) -> int { return match x { 5 => 100, _ => 0 }; } f(5)");
+        assert!(matches!(r, Ok(Value::Int(100))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_literal_arm_miss_falls_to_wildcard() {
+        let r = compile_run("fn f(int x) -> int { return match x { 5 => 100, _ => 0 }; } f(7)");
+        assert!(matches!(r, Ok(Value::Int(0))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_identifier_binding_is_visible_in_body() {
+        let r = compile_run("fn f(int x) -> int { return match x { n => n * 2 }; } f(6)");
+        assert!(matches!(r, Ok(Value::Int(12))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_multiple_literal_arms_select_correctly() {
+        let src = r#"
+            fn grade(int n) -> int {
+                return match n {
+                    1 => 10,
+                    2 => 20,
+                    3 => 30,
+                    _ => 0
+                };
+            }
+            grade(2)
+        "#;
+        assert!(matches!(compile_run(src), Ok(Value::Int(20))));
+    }
+
+    #[test]
+    fn match_no_arm_matched_yields_void() {
+        // A match with only literal arms that all miss → fallthrough = Void.
+        let r = compile_run("match 99 { 1 => 1 }");
+        assert!(matches!(r, Ok(Value::Void)), "got {r:?}");
+    }
+
+    #[test]
+    fn match_guard_skips_arm_when_false() {
+        let src = r#"
+            fn f(int x) -> int {
+                return match x {
+                    n if n > 10 => 1,
+                    _ => 0
+                };
+            }
+            f(5)
+        "#;
+        assert!(matches!(compile_run(src), Ok(Value::Int(0))));
+    }
+
+    #[test]
+    fn match_guard_accepts_arm_when_true() {
+        let src = r#"
+            fn f(int x) -> int {
+                return match x {
+                    n if n > 10 => 1,
+                    _ => 0
+                };
+            }
+            f(15)
+        "#;
+        assert!(matches!(compile_run(src), Ok(Value::Int(1))));
+    }
+
+    // ── RES-155: struct destructuring in let ─────────────────────────────────
+
+    #[test]
+    fn let_destructure_struct_binds_field() {
+        let src = r#"
+            struct Point { int x, int y }
+            let p = new Point { x: 10, y: 20 };
+            let Point { x, y } = p;
+            x + y
+        "#;
+        assert!(
+            matches!(compile_run(src), Ok(Value::Int(30))),
+            "got {:?}",
+            compile_run(src)
+        );
+    }
+
+    #[test]
+    fn let_destructure_struct_renamed_field() {
+        let src = r#"
+            struct Vec2 { int x, int y }
+            let v = new Vec2 { x: 3, y: 4 };
+            let Vec2 { x: a, y: b } = v;
+            a * a + b * b
+        "#;
+        assert!(
+            matches!(compile_run(src), Ok(Value::Int(25))),
+            "got {:?}",
+            compile_run(src)
+        );
+    }
+
+    #[test]
+    fn let_destructure_struct_in_fn() {
+        let src = r#"
+            struct Pair { int first, int second }
+            fn sum_pair(Pair p) -> int {
+                let Pair { first, second } = p;
+                return first + second;
+            }
+            sum_pair(new Pair { first: 7, second: 8 })
+        "#;
+        assert!(
+            matches!(compile_run(src), Ok(Value::Int(15))),
+            "got {:?}",
+            compile_run(src)
+        );
+    }
+
+    // ── RES-148/149: map and set literals ────────────────────────────────────
+
+    #[test]
+    fn map_literal_empty_is_map() {
+        let r = compile_run("{}");
+        assert!(matches!(r, Ok(Value::Map(_))), "expected Map, got {r:?}");
+    }
+
+    #[test]
+    fn map_literal_with_entries_has_correct_len() {
+        let r = compile_run(r#"let m = {"a" -> 1, "b" -> 2}; map_len(m)"#);
+        assert!(matches!(r, Ok(Value::Int(2))), "got {r:?}");
+    }
+
+    #[test]
+    fn map_literal_lookup_by_key() {
+        let r = compile_run(r#"let m = {"hello" -> 42}; map_contains_key(m, "hello")"#);
+        assert!(matches!(r, Ok(Value::Bool(true))), "got {r:?}");
+    }
+
+    #[test]
+    fn set_literal_empty_is_set() {
+        let r = compile_run("#{}");
+        assert!(matches!(r, Ok(Value::Set(_))), "expected Set, got {r:?}");
+    }
+
+    #[test]
+    fn set_literal_with_items_has_correct_len() {
+        let r = compile_run("let s = #{1, 2, 3}; set_len(s)");
+        assert!(matches!(r, Ok(Value::Int(3))), "got {r:?}");
+    }
+
+    #[test]
+    fn set_literal_membership_check() {
+        let r = compile_run("let s = #{10, 20, 30}; set_has(s, 20)");
+        assert!(matches!(r, Ok(Value::Bool(true))), "got {r:?}");
+    }
+
+    // ---- RES-375/RES-923/RES-932: match patterns for Some/None/Ok/Err/Tuple ----
+
+    #[test]
+    fn match_some_pattern_extracts_value() {
+        // Match arm bodies are expressions; Some(42) calls the Some builtin.
+        let v =
+            compile_run("let o = Some(42); return match o { Some(x) => x, None => -1 };").unwrap();
+        assert_int(v, 42);
+    }
+
+    #[test]
+    fn match_none_pattern_fires_on_absent_option() {
+        // None() is the zero-arg builtin that creates an absent Option.
+        let v =
+            compile_run("let o = None(); return match o { Some(x) => x, None => -1 };").unwrap();
+        assert_int(v, -1);
+    }
+
+    #[test]
+    fn match_ok_pattern_extracts_payload() {
+        let v = compile_run("let r = Ok(7); return match r { Ok(v) => v, Err(e) => -1 };").unwrap();
+        assert_int(v, 7);
+    }
+
+    #[test]
+    fn match_err_pattern_extracts_payload() {
+        let v =
+            compile_run("let r = Err(99); return match r { Ok(v) => v, Err(e) => e };").unwrap();
+        assert_int(v, 99);
+    }
+
+    #[test]
+    fn match_tuple_pattern_binds_elements() {
+        let v = compile_run("let t = (10, 20); return match t { (a, b) => a + b };").unwrap();
+        assert_int(v, 30);
+    }
+
+    #[test]
+    fn match_tuple_pattern_wrong_length_falls_through() {
+        // A 3-tuple doesn't match (a, b) — falls through to Wildcard.
+        let v = compile_run("let t = (1, 2, 3); return match t { (a, b) => 0, _ => 1 };").unwrap();
+        assert_int(v, 1);
     }
 }

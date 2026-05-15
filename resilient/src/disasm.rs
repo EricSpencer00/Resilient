@@ -219,6 +219,15 @@ fn write_op(
                 write!(out, "      ; field = {}", v)?;
             }
         }
+        Op::Band => write!(out, "Band")?,
+        Op::Bor => write!(out, "Bor")?,
+        Op::Bxor => write!(out, "Bxor")?,
+        Op::Shl => write!(out, "Shl")?,
+        Op::Shr => write!(out, "Shr")?,
+        Op::AssertFail => write!(out, "AssertFail")?,
+        Op::MakeTuple { len } => write!(out, "MakeTuple {}", len)?,
+        Op::CallClosure { arity } => write!(out, "CallClosure arity={}", arity)?,
+        Op::TryUnwrap => write!(out, "TryUnwrap")?,
     }
     Ok(())
 }

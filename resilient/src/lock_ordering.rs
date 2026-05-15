@@ -136,3 +136,22 @@ fn collect_pairs(fn_name: &str, body: &Node, pairs: &mut HashMap<(String, String
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn program_without_trigger_returns_ok() {
+        let src = "fn f(int x) -> int { return x + 1; }\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+}

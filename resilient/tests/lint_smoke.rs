@@ -26,9 +26,10 @@ fn tmp_file(tag: &str, body: &str) -> PathBuf {
 #[test]
 fn lint_exits_zero_on_clean_program() {
     // RES-397: `// source:` comment satisfies L0012 spec-provenance lint.
+    // Call `f` at top level so L0014 (unused function) does not fire.
     let src = tmp_file(
         "clean",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -95,9 +96,10 @@ fn lint_deny_escalates_to_error_exit_two() {
 fn lint_allow_flag_suppresses_code() {
     // RES-397: `// source:` comment satisfies L0012; `--allow L0001`
     // silences the unused-let warning, leaving a clean lint.
+    // Call `f` so L0014 does not fire alongside L0001.
     let src = tmp_file(
         "allow",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -210,10 +212,10 @@ fn lint_l0011_fires_on_unused_let_with_rustc_message() {
 #[test]
 fn lint_l0011_silent_for_underscore_prefix() {
     // `_temp` is exempt — file is clean, exit 0.
-    // RES-397: `// source:` satisfies L0012.
+    // RES-397: `// source:` satisfies L0012. Call `f` to silence L0014.
     let src = tmp_file(
         "l0011_underscore",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let _temp = 42;\n    return a;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let _temp = 42;\n    return a;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -232,9 +234,10 @@ fn lint_l0011_silent_for_underscore_prefix() {
 #[test]
 fn lint_l0011_silent_when_let_is_used() {
     // Used `let` is clean. RES-397: `// source:` satisfies L0012.
+    // Call `f` to silence L0014 (unused function).
     let src = tmp_file(
         "l0011_used",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -300,5 +303,172 @@ fn lint_handles_multiple_codes_per_invocation() {
     // L0001 + L0005 still warnings.
     assert!(stdout.contains("warning[L0001]"), "stdout: {stdout}");
     assert!(stdout.contains("warning[L0005]"), "stdout: {stdout}");
+    let _ = std::fs::remove_file(&src);
+}
+
+// ---------- L0015: constant expression integer overflow ----------
+
+#[test]
+fn lint_l0015_fires_on_overflow() {
+    // i64::MAX + 1 overflows.
+    let src = tmp_file(
+        "l0015_overflow",
+        "fn f() -> int { return 9223372036854775807 + 1; }\nf();\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("warning[L0015]"),
+        "expected warning[L0015] in stdout, got: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 for L0015 warning, got {:?}",
+        out.status
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_l0015_silent_for_valid_arithmetic() {
+    // 100 + 200 does not overflow — should exit 0.
+    // RES-397: `// source:` satisfies L0012. Call `f` to silence L0014.
+    let src = tmp_file(
+        "l0015_clean",
+        "// source: test fixture\nfn f() -> int requires true { return 100 + 200; }\nf();\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    assert!(
+        out.status.success(),
+        "expected exit 0 for non-overflowing arithmetic, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+// ---------- L0016: constant boolean condition ----------
+
+#[test]
+fn lint_l0016_fires_on_literal_true() {
+    let src = tmp_file("l0016_true", "fn f() { if true { let _x = 1; } }\nf();\n");
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("warning[L0016]"),
+        "expected warning[L0016] in stdout, got: {stdout}"
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_l0016_silent_for_variable_condition() {
+    // RES-397: `// source:` satisfies L0012. Call `f` to silence L0014.
+    let src = tmp_file(
+        "l0016_var",
+        "// source: test fixture\nfn f(int x) -> int requires x > 0 { if x > 0 { return 1; } return 0; }\nf(1);\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    assert!(
+        out.status.success(),
+        "expected exit 0 for variable condition, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+// ---------- --emit-diagnostics-json flag ----------
+
+#[test]
+fn lint_emit_diagnostics_json_produces_valid_json_array() {
+    let src = tmp_file(
+        "json_output",
+        "fn f(int a) {\n    let unused = 42;\n    return a;\n}\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .arg("--emit-diagnostics-json")
+        .output()
+        .expect("spawn lint --emit-diagnostics-json");
+    // Should exit 1 (warning) or 0; not 2 (error) for basic warnings.
+    assert_ne!(
+        out.status.code(),
+        Some(2),
+        "expected non-error exit, got {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Output must be a valid JSON array.
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
+    assert!(parsed.is_ok(), "expected valid JSON array, got: {stdout}");
+    let arr = parsed.unwrap();
+    assert!(
+        arr.is_array(),
+        "expected JSON array at top level, got: {stdout}"
+    );
+    // Each element must have severity, code, line, column, message, file fields.
+    for diag in arr.as_array().unwrap() {
+        assert!(
+            diag.get("severity").is_some(),
+            "missing severity field: {diag}"
+        );
+        assert!(diag.get("code").is_some(), "missing code field: {diag}");
+        assert!(diag.get("line").is_some(), "missing line field: {diag}");
+        assert!(diag.get("column").is_some(), "missing column field: {diag}");
+        assert!(
+            diag.get("message").is_some(),
+            "missing message field: {diag}"
+        );
+        assert!(diag.get("file").is_some(), "missing file field: {diag}");
+    }
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_emit_diagnostics_json_empty_for_clean_file() {
+    // Clean file with source: comment, requires, and top-level call.
+    let src = tmp_file(
+        "json_clean",
+        "// source: test fixture\nfn f(int a) requires a > 0 { let used = a + 1; return used; }\nf(1);\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .arg("--emit-diagnostics-json")
+        .output()
+        .expect("spawn lint --emit-diagnostics-json clean");
+    assert!(
+        out.status.success(),
+        "expected exit 0 for clean file with JSON flag, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let arr: serde_json::Value =
+        serde_json::from_str(&stdout).expect("expected valid JSON even for clean file");
+    assert_eq!(
+        arr.as_array().map(|a| a.len()),
+        Some(0),
+        "expected empty JSON array for clean file, got: {stdout}"
+    );
     let _ = std::fs::remove_file(&src);
 }

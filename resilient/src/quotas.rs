@@ -193,3 +193,77 @@ fn type_name(v: &Value) -> &'static str {
         _ => "<value>",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(name: &str, limit: i64) -> Value {
+        builtin_quota_set(&[Value::String(name.into()), Value::Int(limit)]).unwrap()
+    }
+
+    fn charge(name: &str, amount: i64) -> bool {
+        match builtin_quota_charge(&[Value::String(name.into()), Value::Int(amount)]).unwrap() {
+            Value::Bool(b) => b,
+            _ => panic!("expected Bool"),
+        }
+    }
+
+    fn remaining(name: &str) -> i64 {
+        match builtin_quota_remaining(&[Value::String(name.into())]).unwrap() {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        }
+    }
+
+    #[test]
+    fn quota_set_and_charge_basic() {
+        set("test_basic", 10);
+        assert!(charge("test_basic", 5), "first charge must succeed");
+        assert_eq!(remaining("test_basic"), 5);
+        assert!(
+            charge("test_basic", 5),
+            "charge that hits exactly the limit must succeed"
+        );
+        assert_eq!(remaining("test_basic"), 0);
+        assert!(!charge("test_basic", 1), "charge past limit must fail");
+        assert_eq!(
+            remaining("test_basic"),
+            0,
+            "failed charge must not change counter"
+        );
+    }
+
+    #[test]
+    fn quota_remaining_unknown_returns_minus_one() {
+        assert_eq!(remaining("nonexistent_quota_xyz"), -1);
+    }
+
+    #[test]
+    fn quota_set_wrong_arity_errors() {
+        let result = builtin_quota_set(&[Value::String("q".into())]);
+        assert!(result.is_err(), "wrong arity must return Err");
+    }
+
+    #[test]
+    fn quota_charge_wrong_arity_errors() {
+        let result = builtin_quota_charge(&[]);
+        assert!(result.is_err(), "wrong arity must return Err");
+    }
+
+    #[test]
+    fn quota_reset_clears_used_count() {
+        set("test_reset", 5);
+        charge("test_reset", 3);
+        let prior = match builtin_quota_reset(&[Value::String("test_reset".into())]).unwrap() {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        };
+        assert_eq!(prior, 3, "reset must return prior used count");
+        assert_eq!(
+            remaining("test_reset"),
+            5,
+            "after reset, remaining == limit"
+        );
+    }
+}

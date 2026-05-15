@@ -485,21 +485,81 @@ pub(crate) fn infer_identifier_type(program: &Node, target: &str) -> Option<Stri
                 }
             }
             Node::Function {
-                name, parameters, ..
+                name,
+                parameters,
+                return_type,
+                body,
+                ..
             } => {
                 if name == target {
-                    return Some("fn".to_string());
+                    // RES-181b: surface full function signature on hover.
+                    let params = parameters
+                        .iter()
+                        .map(|(ty, pname)| format!("{ty} {pname}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret = return_type
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| format!(" -> {s}"))
+                        .unwrap_or_default();
+                    return Some(format!("fn {name}({params}){ret}"));
                 }
+                // Search parameters.
                 for (ty, pname) in parameters {
                     if pname == target {
                         return Some(ty.clone());
                     }
+                }
+                // RES-181b: search local let bindings inside the function body.
+                if let Some(ty) = search_let_in_body(body, target) {
+                    return Some(ty);
                 }
             }
             _ => {}
         }
     }
     None
+}
+
+/// RES-181b: recursively search a function body (Block / nested
+/// statements) for a `LetStatement` binding matching `target`.
+/// Returns the declared type annotation, or the inferred literal
+/// type when no annotation is present.
+fn search_let_in_body(node: &Node, target: &str) -> Option<String> {
+    match node {
+        Node::LetStatement {
+            name,
+            value,
+            type_annot,
+            ..
+        } if name == target => Some(
+            type_annot
+                .clone()
+                .unwrap_or_else(|| infer_literal_type(value).to_string()),
+        ),
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                if let Some(ty) = search_let_in_body(stmt, target) {
+                    return Some(ty);
+                }
+            }
+            None
+        }
+        Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => search_let_in_body(consequence, target).or_else(|| {
+            alternative
+                .as_ref()
+                .and_then(|a| search_let_in_body(a, target))
+        }),
+        Node::WhileStatement { body, .. } | Node::ForInStatement { body, .. } => {
+            search_let_in_body(body, target)
+        }
+        _ => None,
+    }
 }
 
 /// RES-302: classify a literal `Node` into the same surface-type
@@ -3912,5 +3972,40 @@ fn main(int n) {\n\
         let (program, errs) = parse("let x = 1;");
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         assert!(infer_identifier_type(&program, "q").is_none());
+    }
+
+    #[test]
+    fn res181b_fn_name_hover_shows_signature() {
+        // Hovering on a function name shows the full signature.
+        let (program, errs) = parse("fn add(int x, int y) -> int { return x; }\nadd(1, 2);");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let ty = infer_identifier_type(&program, "add");
+        assert_eq!(ty, Some("fn add(int x, int y) -> int".into()));
+    }
+
+    #[test]
+    fn res181b_fn_no_return_type_omits_arrow() {
+        let (program, errs) = parse("fn greet() { }\ngreet();");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let ty = infer_identifier_type(&program, "greet");
+        assert_eq!(ty, Some("fn greet()".into()));
+    }
+
+    #[test]
+    fn res181b_local_let_in_fn_body_found() {
+        // Hovering on a local let binding inside a function body.
+        let (program, errs) = parse("fn f() { let total: int = 0; return total; }\nf();");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let ty = infer_identifier_type(&program, "total");
+        assert_eq!(ty, Some("int".into()));
+    }
+
+    #[test]
+    fn res181b_local_let_inferred_from_literal() {
+        // No type annotation — infer from the literal.
+        let (program, errs) = parse("fn f() { let msg = \"hello\"; }\nf();");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let ty = infer_identifier_type(&program, "msg");
+        assert_eq!(ty, Some("String".into()));
     }
 }

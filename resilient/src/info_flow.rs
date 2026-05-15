@@ -54,6 +54,13 @@ pub fn check_program(program: &Node) -> Vec<String> {
         .map(|(k, _)| k.as_str())
         .collect();
 
+    // RES-1527: skip the program walk when no public fn exists — the
+    // leak diagnostic only fires inside public-tagged fn bodies, so
+    // without any public fn the walk produces nothing.
+    if public_fns.is_empty() {
+        return errors;
+    }
+
     let Node::Program(stmts) = program else {
         return errors;
     };
@@ -154,6 +161,25 @@ mod tests {
         "#;
         let (prog, _) = parse(src);
         assert!(!check_program(&prog).is_empty());
+        crate::feature_attrs::reset();
+    }
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_program_no_attrs_returns_empty() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check_program(&prog).is_empty());
         crate::feature_attrs::reset();
     }
 }

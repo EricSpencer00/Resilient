@@ -146,4 +146,35 @@ mod tests {
         assert!(r.is_err(), "expected runtime call to ghost fn to error");
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn no_ghost_attrs_check_returns_ok() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn ghost_fn_not_called_by_runtime_is_ok() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "spec_helper",
+            crate::feature_attrs::AttrRecord {
+                name: "ghost".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn spec_helper(int x) -> bool { return true; }
+            fn runtime(int x) -> int { return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }

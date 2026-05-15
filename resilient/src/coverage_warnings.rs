@@ -135,4 +135,22 @@ mod tests {
         let w = analyze(&prog);
         assert!(!w.is_empty());
     }
+
+    #[test]
+    fn no_warnings_for_pure_function() {
+        let src = "fn g(int x) -> int { return x + 1; }\n";
+        let (prog, _) = parse(src);
+        let w = analyze(&prog);
+        assert!(
+            w.is_empty(),
+            "pure function should generate no coverage warnings"
+        );
+    }
+
+    #[test]
+    fn empty_program_has_no_warnings() {
+        let (prog, _) = parse("");
+        let w = analyze(&prog);
+        assert!(w.is_empty());
+    }
 }

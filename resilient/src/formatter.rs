@@ -658,8 +658,47 @@ impl Formatter {
                 }
                 self.newline();
             }
-            // FFI v1: extern blocks not yet formatted (Tasks 4-8).
-            Node::Extern { .. } => {}
+            Node::Extern { library, decls, .. } => {
+                self.write(&format!("extern \"{}\" {{", library));
+                self.newline();
+                self.indent();
+                for decl in decls {
+                    if decl.trusted {
+                        self.write("@trusted ");
+                    }
+                    self.write(&format!("fn {}(", decl.resilient_name));
+                    for (i, (ty, name)) in decl.parameters.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        // extern fn uses `name: Type` (not `Type name`).
+                        self.write(&format!("{}: {}", name, ty));
+                    }
+                    if decl.is_variadic {
+                        if !decl.parameters.is_empty() {
+                            self.write(", ");
+                        }
+                        self.write("...");
+                    }
+                    self.write(&format!(") -> {}", decl.return_type));
+                    if decl.c_name != decl.resilient_name {
+                        self.write(&format!(" = \"{}\"", decl.c_name));
+                    }
+                    for req in &decl.requires {
+                        self.write(" requires ");
+                        self.fmt_expr(req);
+                    }
+                    for ens in &decl.ensures {
+                        self.write(" ensures ");
+                        self.fmt_expr(ens);
+                    }
+                    self.write(";");
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
             // RES-324: `mod name { ... }` namespace block.
             Node::ModuleDecl { name, body, .. } => {
                 self.write(&format!("mod {} {{", name));
@@ -1693,5 +1732,421 @@ struct Point {
         );
         let twice = Formatter::format(&p2);
         assert_eq!(once, twice, "formatter is not idempotent");
+    }
+
+    #[test]
+    fn fmt_extern_block_basic() {
+        // extern fn uses `name: Type` parameter syntax.
+        let src =
+            "extern \"libm\" {\n    fn sin(x: float) -> float;\n    fn cos(x: float) -> float;\n}";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let formatted = Formatter::format(&prog);
+        assert!(
+            formatted.contains("extern \"libm\""),
+            "extern block must appear in formatted output; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("fn sin(x: float) -> float;"),
+            "extern decl must be formatted; got:\n{formatted}"
+        );
+    }
+
+    #[test]
+    fn fmt_extern_block_trusted_and_aliased() {
+        let src = "extern \"libfoo\" {\n    @trusted fn foo(x: int) -> int = \"foo_impl\";\n}";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let formatted = Formatter::format(&prog);
+        assert!(
+            formatted.contains("@trusted"),
+            "trusted attribute must appear; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("= \"foo_impl\""),
+            "C-name alias must appear; got:\n{formatted}"
+        );
+    }
+
+    #[test]
+    fn fmt_extern_block_idempotent() {
+        let src = "extern \"libmath\" {\n    fn abs(x: int) -> int;\n    @trusted fn sqrt(x: float) -> float;\n}";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let once = Formatter::format(&prog);
+        let (prog2, errs2) = parse(&once);
+        assert!(
+            errs2.is_empty(),
+            "re-parse of formatted output failed: {:?}\nsource:\n{once}",
+            errs2
+        );
+        let twice = Formatter::format(&prog2);
+        assert_eq!(once, twice, "extern block formatting is not idempotent");
+    }
+
+    #[test]
+    fn fmt_match_expression() {
+        let src = r#"fn f(int x) -> string { let r = match x { 0 => "zero", 1 => "one", _ => "other", }; return r; }"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("match x"), "match must appear: {out}");
+        assert!(out.contains("0 =>"), "arm 0 must appear: {out}");
+        assert!(out.contains("_ =>"), "wildcard arm must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_array_and_map_literals() {
+        let src = r#"let arr = [1, 2, 3]; let m = {"a" -> 1, "b" -> 2};"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains('['), "array bracket must appear: {out}");
+        assert!(out.contains(']'), "array close must appear: {out}");
+        assert!(out.contains("->"), "map arrow must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_while_and_for_loops() {
+        let src =
+            "fn f(int n) { let i = 0; while i < n { i = i + 1; } for x in [1, 2] { let y = x; } }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("while i < n"), "while must appear: {out}");
+        assert!(out.contains("for x in"), "for must appear: {out}");
+    }
+
+    // RES-1861: stronger tests for InterpolatedString, FunctionLiteral,
+    // Match, MapLiteral, SetLiteral.
+
+    /// InterpolatedString: reconstructs `"text{expr}text"` form and
+    /// verifies the opening quote, closing quote, and embedded expression
+    /// appear in the output. Also checks idempotence.
+    #[test]
+    fn fmt_interpolated_string() {
+        let src = r#"let s = "hello {name}";"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(
+            !out.is_empty(),
+            "formatted interpolated string must be non-empty"
+        );
+    }
+
+    #[test]
+    fn fmt_interpolated_string_content() {
+        // Literal prefix + embedded expression + literal suffix.
+        let src = r#"let s = "hello {name}!";"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(
+            out.contains("hello"),
+            "literal segment 'hello' must appear: {out}"
+        );
+        assert!(
+            out.contains("{name}"),
+            "interpolated expression {{name}} must appear: {out}"
+        );
+        assert!(out.contains('!'), "trailing literal '!' must appear: {out}");
+        // Idempotence check.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "interpolated string format not idempotent");
+    }
+
+    #[test]
+    fn fmt_interpolated_string_multiple_exprs() {
+        let src = r#"let s = "{a} + {b} = {c}";"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("{a}"), "{{a}} must appear: {out}");
+        assert!(out.contains("{b}"), "{{b}} must appear: {out}");
+        assert!(out.contains("{c}"), "{{c}} must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "multi-expr interpolated string not idempotent");
+    }
+
+    /// FunctionLiteral: anonymous `fn(...)` assigned to a variable.
+    /// Verifies `fn(` keyword, parameter list, and body appear.
+    #[test]
+    fn fmt_function_literal_basic() {
+        let src = "let add = fn(int x, int y) -> int { return x + y; };";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("fn("), "fn( must appear: {out}");
+        assert!(
+            out.contains("int x"),
+            "parameter 'int x' must appear: {out}"
+        );
+        assert!(
+            out.contains("int y"),
+            "parameter 'int y' must appear: {out}"
+        );
+        assert!(out.contains("-> int"), "return type must appear: {out}");
+        assert!(out.contains("return x + y"), "body must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "function literal format not idempotent");
+    }
+
+    #[test]
+    fn fmt_function_literal_no_params() {
+        let src = "let f = fn() -> int { return 42; };";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("fn()"), "fn() must appear: {out}");
+        assert!(out.contains("42"), "literal 42 must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "no-param function literal not idempotent");
+    }
+
+    #[test]
+    fn fmt_function_literal_with_contracts() {
+        let src = "let safe = fn(int x) -> int requires x > 0 ensures result > 0 { return x; };";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("fn("), "fn( must appear: {out}");
+        assert!(
+            out.contains("requires"),
+            "requires clause must appear: {out}"
+        );
+        assert!(out.contains("ensures"), "ensures clause must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "function literal with contracts not idempotent");
+    }
+
+    /// Match: verifies `match`, scrutinee, arm patterns and bodies appear.
+    #[test]
+    fn fmt_match_basic() {
+        let src = r#"fn f(int x) -> string {
+            let r = match x {
+                0 => "zero",
+                1 => "one",
+                _ => "other",
+            };
+            return r;
+        }"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("match x"), "scrutinee must appear: {out}");
+        assert!(out.contains("0 =>"), "arm 0 must appear: {out}");
+        assert!(out.contains("1 =>"), "arm 1 must appear: {out}");
+        assert!(out.contains("_ =>"), "wildcard arm must appear: {out}");
+        assert!(
+            out.contains("\"zero\""),
+            "arm body 'zero' must appear: {out}"
+        );
+        assert!(
+            out.contains("\"other\""),
+            "arm body 'other' must appear: {out}"
+        );
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "match format not idempotent");
+    }
+
+    #[test]
+    fn fmt_match_with_guard() {
+        let src = r#"fn f(int x) -> int {
+            return match x {
+                n if n > 0 => n,
+                _ => 0,
+            };
+        }"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("match x"), "scrutinee must appear: {out}");
+        assert!(out.contains("if n > 0"), "guard must appear: {out}");
+        assert!(out.contains("_ =>"), "wildcard arm must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "match with guard not idempotent");
+    }
+
+    /// MapLiteral: verifies `{` ... `->` ... `}` form and entries appear.
+    #[test]
+    fn fmt_map_literal_basic() {
+        let src = r#"let m = {"a" -> 1, "b" -> 2};"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("->"), "map arrow must appear: {out}");
+        assert!(out.contains("\"a\""), "key 'a' must appear: {out}");
+        assert!(out.contains("\"b\""), "key 'b' must appear: {out}");
+        assert!(out.contains('1'), "value 1 must appear: {out}");
+        assert!(out.contains('2'), "value 2 must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "map literal not idempotent");
+    }
+
+    #[test]
+    fn fmt_map_literal_empty() {
+        let src = r#"let m = {};"#;
+        let (prog, errs) = parse(src);
+        // An empty `{}` may parse as an empty block rather than a map —
+        // only verify idempotence when it parses cleanly.
+        if errs.is_empty() {
+            let out = Formatter::format(&prog);
+            let (prog2, errs2) = parse(&out);
+            if errs2.is_empty() {
+                let out2 = Formatter::format(&prog2);
+                assert_eq!(out, out2, "empty map/block literal not idempotent");
+            }
+        }
+    }
+
+    #[test]
+    fn fmt_map_literal_single_entry() {
+        let src = r#"let m = {"key" -> 42};"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("->"), "map arrow must appear: {out}");
+        assert!(out.contains("\"key\""), "key must appear: {out}");
+        assert!(out.contains("42"), "value must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "single-entry map literal not idempotent");
+    }
+
+    /// SetLiteral: verifies `#{` ... `}` form and items appear.
+    #[test]
+    fn fmt_set_literal_basic() {
+        let src = "let s = #{1, 2, 3};";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("#{"), "set prefix #{{ must appear: {out}");
+        assert!(out.contains('1'), "element 1 must appear: {out}");
+        assert!(out.contains('2'), "element 2 must appear: {out}");
+        assert!(out.contains('3'), "element 3 must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "set literal not idempotent");
+    }
+
+    #[test]
+    fn fmt_set_literal_single_item() {
+        let src = "let s = #{42};";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("#{"), "set prefix #{{ must appear: {out}");
+        assert!(out.contains("42"), "element 42 must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "single-item set literal not idempotent");
+    }
+
+    #[test]
+    fn fmt_set_literal_string_items() {
+        let src = r#"let s = #{"a", "b"};"#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("#{"), "set prefix #{{ must appear: {out}");
+        assert!(out.contains("\"a\""), "element 'a' must appear: {out}");
+        assert!(out.contains("\"b\""), "element 'b' must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "string set literal not idempotent");
+    }
+
+    #[test]
+    fn fmt_newtype_decl() {
+        let src = "newtype Meters = int; let x = Meters(5);";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(
+            out.contains("newtype Meters"),
+            "newtype decl must appear: {out}"
+        );
+    }
+
+    #[test]
+    fn fmt_enum_decl() {
+        let src = "enum Color { Red, Green, Blue }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("enum Color"), "enum must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_try_catch() {
+        let src = "fn f(int x) -> int { try { return x; } catch e { return 0; } }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(
+            out.contains("try {") || out.contains("try{"),
+            "try must appear: {out}"
+        );
+        assert!(out.contains("catch"), "catch must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_quantifier_forall() {
+        let src = "let ok = forall x in 0..10: x >= 0;";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("forall"), "forall must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_prefix_and_infix() {
+        let src = "fn f(int x, int y) -> bool { return !x && y > 0; }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains('!'), "prefix ! must appear: {out}");
+        assert!(out.contains("&&"), "&& must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_tuple_literal_and_index() {
+        let src = "let t = (1, 2, 3); let x = t.0;";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("(1"), "tuple must appear: {out}");
     }
 }

@@ -21,14 +21,34 @@
 /// insertion into diagnostics. Returns an empty Vec if `target` is
 /// shorter than 3 chars or no candidate is close enough.
 pub fn suggest<'a>(target: &str, candidates: impl Iterator<Item = &'a str>) -> Vec<String> {
-    if target.chars().count() < 3 {
+    let target_len = target.chars().count();
+    if target_len < 3 {
         return Vec::new();
     }
 
+    // RES-1513: two savings over the previous shape:
+    // 1. Length-diff short-circuit: |len(a) − len(b)| is a tight lower
+    //    bound on edit distance. Skip the O(n×m) DP when the bound
+    //    already exceeds 2.
+    // 2. Filter-before-alloc: the previous code mapped every candidate to
+    //    `(levenshtein, c.to_string())` before filtering by distance —
+    //    allocating a String per pool entry even when the distance filter
+    //    rejects it. `filter_map` delays the `.to_string()` clone until
+    //    after the distance check, so rejected candidates never allocate.
     let mut scored: Vec<(usize, String)> = candidates
         .filter(|c| !c.is_empty() && *c != target)
-        .map(|c| (levenshtein(target, c), c.to_string()))
-        .filter(|(d, _)| *d <= 2)
+        .filter(|c| {
+            let c_len = c.chars().count();
+            target_len.abs_diff(c_len) <= 2
+        })
+        .filter_map(|c| {
+            let d = levenshtein(target, c);
+            if d <= 2 {
+                Some((d, c.to_string()))
+            } else {
+                None
+            }
+        })
         .collect();
 
     // Stable sort: distance asc, then name asc. Dedup by name in case

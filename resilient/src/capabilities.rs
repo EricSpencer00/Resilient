@@ -131,3 +131,68 @@ fn type_name(v: &Value) -> &'static str {
         _ => "<value>",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mint_and_check_capability() {
+        let token = match builtin_mint_cap(&[Value::String("test_res".into())]).unwrap() {
+            Value::String(t) => t,
+            v => panic!("expected String token, got {v:?}"),
+        };
+        let valid = builtin_check_cap(&[
+            Value::String("test_res".into()),
+            Value::String(token.clone()),
+        ])
+        .unwrap();
+        assert!(
+            matches!(valid, Value::Bool(true)),
+            "check_cap with valid token must return true"
+        );
+        let invalid = builtin_check_cap(&[
+            Value::String("test_res".into()),
+            Value::String("wrong_token".into()),
+        ])
+        .unwrap();
+        assert!(
+            matches!(invalid, Value::Bool(false)),
+            "check_cap with invalid token must return false"
+        );
+    }
+
+    #[test]
+    fn revoke_removes_capability() {
+        builtin_mint_cap(&[Value::String("revoke_me".into())]).unwrap();
+        let removed = builtin_revoke_cap(&[Value::String("revoke_me".into())]).unwrap();
+        assert!(
+            matches!(removed, Value::Bool(true)),
+            "revoke must return true for existing cap"
+        );
+        let second_revoke = builtin_revoke_cap(&[Value::String("revoke_me".into())]).unwrap();
+        assert!(
+            matches!(second_revoke, Value::Bool(false)),
+            "revoking again must return false — already gone"
+        );
+    }
+
+    #[test]
+    fn mint_cap_wrong_arity_errors() {
+        let result = builtin_mint_cap(&[]);
+        assert!(result.is_err(), "wrong arity must return Err");
+    }
+
+    #[test]
+    fn check_cap_unknown_name_returns_false() {
+        let result = builtin_check_cap(&[
+            Value::String("never_minted_xyz".into()),
+            Value::String("token".into()),
+        ])
+        .unwrap();
+        assert!(
+            matches!(result, Value::Bool(false)),
+            "unknown cap must return false"
+        );
+    }
+}

@@ -127,3 +127,40 @@ impl<'a> AssumeChecker<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn no_assume_returns_ok() {
+        let src = "let x = 42;\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn assume_true_does_not_warn() {
+        let src = "assume(true);\nlet x = 1;\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn assume_false_followed_by_stmt_returns_ok() {
+        // V1 only emits a warning via eprintln — always returns Ok.
+        let src = "assume(false);\nlet x = 1;\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "assume_false checker only warns in V1, never returns Err"
+        );
+    }
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+}

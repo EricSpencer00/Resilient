@@ -123,4 +123,70 @@ mod tests {
         assert_eq!(s[0].length_var, "M+N");
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn collect_returns_empty_without_attribute() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let s = collect();
+        assert!(
+            s.is_empty(),
+            "collect() must return empty vec when no #[dependent] attributes exist"
+        );
+    }
+
+    #[test]
+    fn install_and_lookup_round_trip() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "zip",
+            crate::feature_attrs::AttrRecord {
+                name: "dependent".into(),
+                args: r#"length = "N""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        let spec = lookup("zip").expect("zip must be found after install");
+        assert_eq!(spec.item_name, "zip");
+        assert_eq!(spec.length_var, "N");
+        assert!(
+            lookup("nonexistent").is_none(),
+            "lookup must return None for unknown function"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "check() must return Ok when no #[dependent] attributes exist"
+        );
+    }
+
+    #[test]
+    fn missing_length_key_is_ignored() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad",
+            crate::feature_attrs::AttrRecord {
+                name: "dependent".into(),
+                args: r#"size = "N""#.into(),
+                line: 0,
+            },
+        );
+        let s = collect();
+        assert!(
+            s.is_empty(),
+            "attribute without `length` key must be ignored; got {s:?}"
+        );
+        crate::feature_attrs::reset();
+    }
 }

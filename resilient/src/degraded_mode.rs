@@ -96,3 +96,31 @@ fn calls_recovery_anywhere(node: &Node) -> bool {
         _ => false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn program_without_critical_call_returns_ok() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn critical_prefixes_include_assert_critical() {
+        assert!(
+            CRITICAL_PREFIXES
+                .iter()
+                .any(|p| p.contains("assert_critical"))
+        );
+        assert!(RECOVERY_PREFIXES.iter().any(|p| p.contains("degraded_")));
+    }
+}

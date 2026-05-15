@@ -87,6 +87,37 @@ pub fn lookup(name: &str) -> Option<RefinementSpec> {
 /// `self`, an operator (`>`, `<`, `>=`, `<=`, `==`, `!=`), and an
 /// integer literal. Anything more complex falls back to "satisfied"
 /// and the Z3 path takes over (downstream PR).
+/// Evaluate a refinement predicate directly from a `RefinementSpec`,
+/// without consulting the global REFINEMENTS registry. Used by the
+/// compile-time obligation checker so it can work off a local spec_map.
+pub(crate) fn evaluate_int_predicate(value: i64, spec: &RefinementSpec) -> Result<i64, String> {
+    let p = spec.predicate.trim();
+    let mut parts = p.split_whitespace();
+    let lhs = parts.next().unwrap_or("self");
+    let op = parts.next().unwrap_or("==");
+    let rhs: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    if lhs != "self" {
+        return Ok(value);
+    }
+    let ok = match op {
+        ">" => value > rhs,
+        "<" => value < rhs,
+        ">=" => value >= rhs,
+        "<=" => value <= rhs,
+        "==" => value == rhs,
+        "!=" => value != rhs,
+        _ => true,
+    };
+    if ok {
+        Ok(value)
+    } else {
+        Err(format!(
+            "refinement `{}` violated: {} {} {} is false",
+            spec.name, value, op, rhs
+        ))
+    }
+}
+
 pub fn refine_int(value: i64, refinement_name: &str) -> Result<i64, String> {
     let spec = match lookup(refinement_name) {
         Some(s) => s,
@@ -119,7 +150,7 @@ pub fn refine_int(value: i64, refinement_name: &str) -> Result<i64, String> {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1302: skip the `install` call when the current program
     // declares no `#[refinement]` attributes. The `install` helper
     // *replaces* the process-global `REFINEMENTS` vector — calling
@@ -145,13 +176,106 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
     if specs.is_empty() {
         return Ok(());
     }
+    // Build a name-indexed map for O(1) annotation lookups before
+    // install() moves the Vec.
+    let spec_map: std::collections::HashMap<String, RefinementSpec> =
+        specs.iter().map(|s| (s.name.clone(), s.clone())).collect();
     install(specs);
+    // Compile-time predicate verification: scan for `let x: Refined = CONST`
+    // bindings and reject those whose constant value violates the predicate.
+    check_let_obligations(program, source_path, &spec_map)
+}
+
+/// Walk the program and emit a compile-time error for any `let` binding
+/// whose type annotation is a refinement type and whose RHS is an integer
+/// literal that violates the refinement predicate.
+///
+/// For non-literal RHS values this pass is a no-op — runtime `refine_int`
+/// guards enforce the predicate at execution time; Z3-backed static
+/// verification of symbolic values is a downstream PR.
+fn check_let_obligations(
+    program: &Node,
+    source_path: &str,
+    specs: &std::collections::HashMap<String, RefinementSpec>,
+) -> Result<(), String> {
+    // Walk only the top-level function bodies — LetStatements inside
+    // function bodies are the primary refinement obligation sites.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    for stmt in stmts {
+        check_node_obligations(&stmt.node, source_path, specs)?;
+    }
+    Ok(())
+}
+
+fn check_node_obligations(
+    node: &Node,
+    source_path: &str,
+    specs: &std::collections::HashMap<String, RefinementSpec>,
+) -> Result<(), String> {
+    match node {
+        Node::LetStatement {
+            name,
+            type_annot: Some(ty_name),
+            value,
+            span,
+            ..
+        } => {
+            if let Some(spec) = specs.get(ty_name.as_str()) {
+                // Only check constant integer literals for now.
+                if let Node::IntegerLiteral { value: int_val, .. } = value.as_ref() {
+                    if let Err(msg) = evaluate_int_predicate(*int_val, spec) {
+                        let line = span.start.line;
+                        return Err(format!(
+                            "{}:{}: refinement error: let `{}`: {}",
+                            source_path, line, name, msg
+                        ));
+                    }
+                }
+                // Recurse into the value expression.
+                check_node_obligations(value, source_path, specs)?;
+            }
+        }
+        Node::Function { body, .. } => check_node_obligations(body, source_path, specs)?,
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                check_node_obligations(s, source_path, specs)?;
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            check_node_obligations(expr, source_path, specs)?;
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            check_node_obligations(condition, source_path, specs)?;
+            check_node_obligations(consequence, source_path, specs)?;
+            if let Some(alt) = alternative {
+                check_node_obligations(alt, source_path, specs)?;
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            check_node_obligations(condition, source_path, specs)?;
+            check_node_obligations(body, source_path, specs)?;
+        }
+        Node::ReturnStatement { value: Some(v), .. } => {
+            check_node_obligations(v, source_path, specs)?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::span;
 
     #[test]
     fn collects_refinement_spec() {
@@ -192,5 +316,80 @@ mod tests {
         crate::feature_attrs::reset();
         install(vec![]);
         assert_eq!(refine_int(42, "DoesntExist").ok(), Some(42));
+    }
+
+    // ── compile-time obligation checks ─────────────────────────────────────
+
+    fn make_spec_map(
+        name: &str,
+        predicate: &str,
+    ) -> std::collections::HashMap<String, RefinementSpec> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            name.to_string(),
+            RefinementSpec {
+                name: name.to_string(),
+                base: "int".to_string(),
+                predicate: predicate.to_string(),
+            },
+        );
+        m
+    }
+
+    fn make_let(ty_name: &str, int_val: i64) -> Node {
+        let let_node = Node::LetStatement {
+            name: "x".into(),
+            value: Box::new(Node::IntegerLiteral {
+                value: int_val,
+                span: Default::default(),
+            }),
+            type_annot: Some(ty_name.to_string()),
+            span: Default::default(),
+        };
+        // Wrap in a Block so the traversal descends into it.
+        let block = Node::Block {
+            stmts: vec![let_node],
+            span: Default::default(),
+        };
+        // Wrap in a Program statement directly to avoid constructing
+        // the full Node::Function with its many required fields.
+        Node::Program(vec![span::Spanned::new(block, Default::default())])
+    }
+
+    #[test]
+    fn check_let_obligation_passes_for_valid_value() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let specs = make_spec_map("Positive", "self > 0");
+        let program = make_let("Positive", 5);
+        assert!(check_let_obligations(&program, "test.rz", &specs).is_ok());
+    }
+
+    #[test]
+    fn check_let_obligation_fails_for_invalid_value() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let specs = make_spec_map("Positive", "self > 0");
+        let program = make_let("Positive", -1);
+        let result = check_let_obligations(&program, "test.rz", &specs);
+        assert!(result.is_err(), "expected error, got Ok");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("refinement error"), "unexpected msg: {}", msg);
+        assert!(msg.contains("Positive"), "missing type name: {}", msg);
+    }
+
+    #[test]
+    fn check_let_obligation_ignores_unknown_type_annotations() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let specs = make_spec_map("Positive", "self > 0");
+        // `let x: MyStruct = 0` — MyStruct is not a refinement type, should pass.
+        let program = make_let("MyStruct", 0);
+        assert!(check_let_obligations(&program, "test.rz", &specs).is_ok());
+    }
+
+    #[test]
+    fn check_empty_program_is_noop() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let specs = make_spec_map("Positive", "self > 0");
+        let program = Node::Program(vec![]);
+        assert!(check_let_obligations(&program, "test.rz", &specs).is_ok());
     }
 }

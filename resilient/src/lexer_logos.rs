@@ -836,3 +836,117 @@ fn convert(t: Tok) -> Token {
         Tok::BlockComment => unreachable!("block_comment callback skips its variant"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Token;
+
+    #[test]
+    fn tokenizes_integer_literal() {
+        let tokens: Vec<_> = tokenize("42").into_iter().map(|(t, _)| t).collect();
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::IntLiteral(42))),
+            "must tokenize 42 as IntLiteral(42): {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn tokenizes_identifier() {
+        let tokens: Vec<_> = tokenize("foo").into_iter().map(|(t, _)| t).collect();
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::Identifier(s) if s == "foo")),
+            "must tokenize 'foo' as Identifier: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn tokenizes_keywords() {
+        let tokens: Vec<_> = tokenize("fn let return if else while for in")
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            tokens.iter().any(|t| *t == Token::Fn),
+            "fn keyword: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| *t == Token::Let),
+            "let keyword: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| *t == Token::Return),
+            "return keyword: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn tokenizes_operators() {
+        let tokens: Vec<_> = tokenize("+ - * / == != < > <= >=")
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(tokens.iter().any(|t| *t == Token::Plus), "plus: {tokens:?}");
+        assert!(
+            tokens.iter().any(|t| *t == Token::Minus),
+            "minus: {tokens:?}"
+        );
+        assert!(tokens.iter().any(|t| *t == Token::Star), "star: {tokens:?}");
+    }
+
+    #[test]
+    fn tokenizes_string_literal() {
+        let tokens: Vec<_> = tokenize(r#""hello""#).into_iter().map(|(t, _)| t).collect();
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::StringLiteral(s) if s == "hello")),
+            "must tokenize string literal: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn tokenizes_float_literal() {
+        let tokens: Vec<_> = tokenize("3.14").into_iter().map(|(t, _)| t).collect();
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::FloatLiteral(_))),
+            "must tokenize 3.14 as FloatLiteral: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn skips_line_comments() {
+        let tokens: Vec<_> = tokenize("// comment\nlet x = 1;")
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| matches!(t, Token::Identifier(s) if s == "comment")),
+            "comment must be skipped: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| *t == Token::Let),
+            "let after comment: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn tokenizes_hex_integer() {
+        let tokens: Vec<_> = tokenize("0xFF").into_iter().map(|(t, _)| t).collect();
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::IntLiteral(255))),
+            "0xFF must tokenize as 255: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn spans_carry_line_info() {
+        let pairs = tokenize("let x = 1;");
+        let first = &pairs[0];
+        assert_eq!(first.1.start.line, 1, "first token must be on line 1");
+    }
+}

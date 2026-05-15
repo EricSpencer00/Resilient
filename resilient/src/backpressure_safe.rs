@@ -81,3 +81,27 @@ fn has_strategy(body: &Node) -> bool {
         _ => false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn program_without_handler_fn_returns_ok() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn strategy_fns_include_drop_oldest() {
+        assert!(STRATEGY_FNS.contains(&"drop_oldest"));
+        assert!(FULLNESS_FNS.contains(&"mailbox_full"));
+    }
+}

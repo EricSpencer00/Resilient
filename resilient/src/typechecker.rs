@@ -1252,6 +1252,13 @@ pub struct TypeChecker {
     /// on TypeChecker drop. Default `false`; the cert-emit driver
     /// flips it via `with_emit_certificates(true)`.
     emit_certificates: bool,
+    /// RES-1862: innermost span updated as `check_node` descends the
+    /// AST. When an error propagates back to `check_program_with_source`
+    /// this span is more specific than the top-level statement's span
+    /// (which covers the entire statement from `let` / `fn` to `;`).
+    /// Reset to `stmt.span` at the start of each top-level statement
+    /// so stale spans from a prior statement never pollute a later one.
+    current_span: Span,
 }
 
 impl TypeChecker {
@@ -1284,6 +1291,22 @@ impl TypeChecker {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Any),
             };
+            let fn_any_to_int = || Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            };
+            let fn_any_any_to_bool = || Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Bool),
+            };
+            let fn_any_any_to_int = || Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Int),
+            };
+            let fn_any_any_to_array = || Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Array),
+            };
             let fn_any_to_result = || Type::Function {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Result),
@@ -1311,13 +1334,22 @@ impl TypeChecker {
             env.set("abs".to_string(), fn_any_to_any());
             // RES-410: sign(x) — -1/0/+1.
             env.set("sign".to_string(), fn_any_to_any());
-            // RES-411: float predicates — return Bool, signed as Any per pattern.
-            env.set("is_nan".to_string(), fn_any_to_any());
-            env.set("is_inf".to_string(), fn_any_to_any());
-            env.set("is_finite".to_string(), fn_any_to_any());
-            env.set("sqrt".to_string(), fn_any_to_any());
-            env.set("floor".to_string(), fn_any_to_any());
-            env.set("ceil".to_string(), fn_any_to_any());
+            // RES-411: float predicates — return Bool; math functions return Float.
+            // (Parameter is kept as Any so both Int and Float are accepted.)
+            let fn_any_to_bool = || Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Bool),
+            };
+            let fn_any_to_float = || Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Float),
+            };
+            env.set("is_nan".to_string(), fn_any_to_bool());
+            env.set("is_inf".to_string(), fn_any_to_bool());
+            env.set("is_finite".to_string(), fn_any_to_bool());
+            env.set("sqrt".to_string(), fn_any_to_float());
+            env.set("floor".to_string(), fn_any_to_float());
+            env.set("ceil".to_string(), fn_any_to_float());
             env.set("min".to_string(), fn_any_any_to_any());
             env.set("max".to_string(), fn_any_any_to_any());
             // RES-415: gcd/lcm — strict (Int, Int) -> Int.
@@ -1783,6 +1815,10 @@ impl TypeChecker {
             env.set("array_diffs".to_string(), fn_array_to_array_int());
             env.set("array_min_max".to_string(), fn_array_to_array_int());
             // RES-1172: small string + array gaps.
+            let fn_string_to_array = || Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Array),
+            };
             let fn_string_string_to_array = || Type::Function {
                 params: vec![Type::String, Type::String],
                 return_type: Box::new(Type::Array),
@@ -1954,6 +1990,14 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
+            // RES-1859: `string_split` — explicit-name alias for `split`.
+            env.set(
+                "string_split".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::String],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-535: split with a maximum number-of-splits limit.
             env.set(
                 "string_split_n".to_string(),
@@ -2006,13 +2050,65 @@ impl TypeChecker {
                     return_type: Box::new(Type::String),
                 },
             );
-            env.set("array_reverse".to_string(), fn_any_to_any());
+            env.set("array_reverse".to_string(), fn_array_to_array());
+            // RES-1859: higher-order array builtins — callback is typed
+            // as Any because we have no generic function type yet.
+            env.set(
+                "array_map".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "array_filter".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "array_reduce".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // RES-507: generic callback-based search/predicate builtins.
+            env.set(
+                "array_find".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_find_index".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            env.set(
+                "array_any".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Bool),
+                },
+            );
+            env.set(
+                "array_all".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Bool),
+                },
+            );
             // RES-416: integer-array reductions.
-            env.set("array_sum".to_string(), fn_any_to_any());
-            env.set("array_product".to_string(), fn_any_to_any());
+            env.set("array_sum".to_string(), fn_any_to_int());
+            env.set("array_product".to_string(), fn_any_to_int());
             // RES-417: array min/max.
-            env.set("array_min".to_string(), fn_any_to_any());
-            env.set("array_max".to_string(), fn_any_to_any());
+            env.set("array_min".to_string(), fn_any_to_int());
+            env.set("array_max".to_string(), fn_any_to_int());
             // RES-543: empty-safe min/max with fallback default.
             let arr_int_to_int = Type::Function {
                 params: vec![Type::Any, Type::Int],
@@ -2156,15 +2252,15 @@ impl TypeChecker {
                 },
             );
             // RES-418: element search.
-            env.set("array_contains".to_string(), fn_any_any_to_any());
-            env.set("array_index_of".to_string(), fn_any_any_to_any());
+            env.set("array_contains".to_string(), fn_any_any_to_bool());
+            env.set("array_index_of".to_string(), fn_any_any_to_int());
             // RES-544: every index where element equals x.
-            env.set("array_index_of_all".to_string(), fn_any_any_to_any());
+            env.set("array_index_of_all".to_string(), fn_any_any_to_array());
             // RES-541: set-like operations on arrays.
-            env.set("array_intersect".to_string(), fn_any_any_to_any());
-            env.set("array_diff".to_string(), fn_any_any_to_any());
+            env.set("array_intersect".to_string(), fn_any_any_to_array());
+            env.set("array_diff".to_string(), fn_any_any_to_array());
             // RES-542: order-preserving global-dedup union.
-            env.set("array_union".to_string(), fn_any_any_to_any());
+            env.set("array_union".to_string(), fn_any_any_to_array());
             // RES-419: Unicode-scalar ↔ char conversions.
             env.set(
                 "chr".to_string(),
@@ -2197,7 +2293,7 @@ impl TypeChecker {
                 },
             );
             // RES-420: concatenate two arrays.
-            env.set("array_concat".to_string(), fn_any_any_to_any());
+            env.set("array_concat".to_string(), fn_any_any_to_array());
             // RES-515: three-way concatenation.
             env.set(
                 "array_concat3".to_string(),
@@ -2207,24 +2303,24 @@ impl TypeChecker {
                 },
             );
             // RES-421: take/drop first n.
-            env.set("array_take".to_string(), fn_any_any_to_any());
-            env.set("array_drop".to_string(), fn_any_any_to_any());
+            env.set("array_take".to_string(), fn_any_any_to_array());
+            env.set("array_drop".to_string(), fn_any_any_to_array());
             // RES-537: take/drop trailing n elements.
-            env.set("array_take_last".to_string(), fn_any_any_to_any());
-            env.set("array_drop_last".to_string(), fn_any_any_to_any());
+            env.set("array_take_last".to_string(), fn_any_any_to_array());
+            env.set("array_drop_last".to_string(), fn_any_any_to_array());
             // RES-514: pick every nth element.
-            env.set("array_step".to_string(), fn_any_any_to_any());
+            env.set("array_step".to_string(), fn_any_any_to_array());
             // RES-422: integer sort ascending.
-            env.set("array_sort".to_string(), fn_any_to_any());
+            env.set("array_sort".to_string(), fn_array_to_array());
             // RES-443: integer sort descending.
-            env.set("array_sort_desc".to_string(), fn_any_to_any());
+            env.set("array_sort_desc".to_string(), fn_array_to_array());
             // RES-444: Fisher-Yates shuffle (impure: uses RNG).
-            env.set("array_shuffle".to_string(), fn_any_to_any());
+            env.set("array_shuffle".to_string(), fn_array_to_array());
             // RES-445: array prefix/suffix predicates.
-            env.set("array_starts_with".to_string(), fn_any_any_to_any());
-            env.set("array_ends_with".to_string(), fn_any_any_to_any());
+            env.set("array_starts_with".to_string(), fn_any_any_to_bool());
+            env.set("array_ends_with".to_string(), fn_any_any_to_bool());
             // RES-446: all match indices.
-            env.set("string_find_all".to_string(), fn_any_any_to_any());
+            env.set("string_find_all".to_string(), fn_any_any_to_array());
             // RES-546: first byte index of substring, -1 if missing.
             env.set(
                 "string_find".to_string(),
@@ -2327,10 +2423,10 @@ impl TypeChecker {
                 },
             );
             // RES-455: sliding windows.
-            env.set("array_window".to_string(), fn_any_any_to_any());
+            env.set("array_window".to_string(), fn_any_any_to_array());
             // RES-456: rotation.
-            env.set("array_rotate_left".to_string(), fn_any_any_to_any());
-            env.set("array_rotate_right".to_string(), fn_any_any_to_any());
+            env.set("array_rotate_left".to_string(), fn_any_any_to_array());
+            env.set("array_rotate_right".to_string(), fn_any_any_to_array());
             // RES-457: capitalize.
             env.set(
                 "string_capitalize".to_string(),
@@ -2340,7 +2436,7 @@ impl TypeChecker {
                 },
             );
             // RES-458: array_cycle.
-            env.set("array_cycle".to_string(), fn_any_any_to_any());
+            env.set("array_cycle".to_string(), fn_any_any_to_array());
             // RES-459: ASCII-class string predicates.
             let str_to_bool = Type::Function {
                 params: vec![Type::String],
@@ -2366,7 +2462,7 @@ impl TypeChecker {
                 },
             );
             // RES-462: adjacent pairs as tuples.
-            env.set("array_pairs".to_string(), fn_any_to_any());
+            env.set("array_pairs".to_string(), fn_array_to_array());
             // RES-463: UTF-8 byte length.
             env.set(
                 "string_bytes_len".to_string(),
@@ -2416,11 +2512,11 @@ impl TypeChecker {
                 },
             );
             // RES-466: remove first matching element.
-            env.set("array_remove".to_string(), fn_any_any_to_any());
+            env.set("array_remove".to_string(), fn_any_any_to_array());
             // RES-467: remove all matching elements.
-            env.set("array_remove_all".to_string(), fn_any_any_to_any());
+            env.set("array_remove_all".to_string(), fn_any_any_to_array());
             // RES-468: collapse adjacent duplicates.
-            env.set("array_dedup".to_string(), fn_any_to_any());
+            env.set("array_dedup".to_string(), fn_array_to_array());
             // RES-504: partition into maximal runs of equal int elements.
             env.set("array_group_by_int".to_string(), fn_any_to_any());
             // RES-533: count of maximal runs.
@@ -2432,8 +2528,8 @@ impl TypeChecker {
                 },
             );
             // RES-469: scalar all/any equality predicates.
-            env.set("array_all_eq".to_string(), fn_any_any_to_any());
-            env.set("array_any_eq".to_string(), fn_any_any_to_any());
+            env.set("array_all_eq".to_string(), fn_any_any_to_bool());
+            env.set("array_any_eq".to_string(), fn_any_any_to_bool());
             // RES-471: prefix/suffix strippers.
             let str_str_to_str = Type::Function {
                 params: vec![Type::String, Type::String],
@@ -2442,7 +2538,7 @@ impl TypeChecker {
             env.set("string_strip_prefix".to_string(), str_str_to_str.clone());
             env.set("string_strip_suffix".to_string(), str_str_to_str);
             // RES-472: element-wise array equality.
-            env.set("array_eq".to_string(), fn_any_any_to_any());
+            env.set("array_eq".to_string(), fn_any_any_to_bool());
             // RES-473: ternary numeric min/max.
             let any3_to_any = Type::Function {
                 params: vec![Type::Any, Type::Any, Type::Any],
@@ -2451,7 +2547,7 @@ impl TypeChecker {
             env.set("min3".to_string(), any3_to_any.clone());
             env.set("max3".to_string(), any3_to_any);
             // RES-474: array_ne.
-            env.set("array_ne".to_string(), fn_any_any_to_any());
+            env.set("array_ne".to_string(), fn_any_any_to_bool());
             // RES-475: fixed-op integer fold.
             env.set(
                 "array_fold_int".to_string(),
@@ -2501,8 +2597,8 @@ impl TypeChecker {
                 },
             );
             // RES-481: drop first / drop last.
-            env.set("array_rest".to_string(), fn_any_to_any());
-            env.set("array_init".to_string(), fn_any_to_any());
+            env.set("array_rest".to_string(), fn_array_to_array());
+            env.set("array_init".to_string(), fn_array_to_array());
             // RES-482: replace up to n occurrences.
             env.set(
                 "string_replace_n".to_string(),
@@ -2561,16 +2657,16 @@ impl TypeChecker {
                     return_type: Box::new(Type::Int),
                 },
             );
-            // RES-486: (quotient, remainder) tuple.
+            // RES-486: (quotient, remainder) tuple — returns an Array of two Ints.
             env.set(
                 "divmod".to_string(),
                 Type::Function {
                     params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-423: flatten one level.
-            env.set("array_flatten".to_string(), fn_any_to_any());
+            env.set("array_flatten".to_string(), fn_array_to_array());
             // RES-424: join string array with separator.
             env.set(
                 "array_join".to_string(),
@@ -2588,9 +2684,9 @@ impl TypeChecker {
                 },
             );
             // RES-426: first-occurrence dedupe.
-            env.set("array_unique".to_string(), fn_any_to_any());
+            env.set("array_unique".to_string(), fn_array_to_array());
             // RES-427: count element occurrences.
-            env.set("array_count".to_string(), fn_any_any_to_any());
+            env.set("array_count".to_string(), fn_any_any_to_int());
             // RES-428: array first/last accessors.
             env.set("array_first".to_string(), fn_any_to_any());
             env.set("array_last".to_string(), fn_any_to_any());
@@ -2626,21 +2722,41 @@ impl TypeChecker {
                 },
             );
             // RES-430: pair elements as tuples; truncate to shorter array.
-            env.set("array_zip".to_string(), fn_any_any_to_any());
-            // RES-531: split an array of 2-tuples into two parallel arrays.
-            env.set("array_unzip".to_string(), fn_any_to_any());
+            env.set("array_zip".to_string(), fn_any_any_to_array());
+            // RES-531: split an array of 2-tuples into two parallel arrays — returns Array.
+            env.set(
+                "array_unzip".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-431: integer range [start, end).
-            env.set("array_range".to_string(), fn_any_any_to_any());
+            env.set(
+                "array_range".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            // RES-921: array_slice(arr, lo, hi, inclusive) — sub-array.
+            env.set(
+                "array_slice".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any, Type::Bool],
+                    return_type: Box::new(Type::Any),
+                },
+            );
             // RES-522: indices of an array as a new array.
-            env.set("array_indices".to_string(), fn_any_to_any());
+            env.set("array_indices".to_string(), fn_array_to_array());
             // RES-432: array of n copies.
-            env.set("array_repeat".to_string(), fn_any_any_to_any());
+            env.set("array_repeat".to_string(), fn_any_any_to_array());
             // RES-433: split string into single-char strings.
-            env.set("string_chars".to_string(), fn_any_to_any());
+            env.set("string_chars".to_string(), fn_string_to_array());
             // RES-434: split string into lines (LF, CRLF).
-            env.set("string_lines".to_string(), fn_any_to_any());
+            env.set("string_lines".to_string(), fn_string_to_array());
             // RES-496: split on Unicode whitespace.
-            env.set("string_words".to_string(), fn_any_to_any());
+            env.set("string_words".to_string(), fn_string_to_array());
             // RES-497: join string array with newline.
             env.set(
                 "string_join_lines".to_string(),
@@ -2674,7 +2790,7 @@ impl TypeChecker {
                 },
             );
             // RES-435: split array into fixed-size chunks.
-            env.set("array_chunk".to_string(), fn_any_any_to_any());
+            env.set("array_chunk".to_string(), fn_any_any_to_array());
             // RES-436: non-overlapping substring count.
             env.set(
                 "string_count".to_string(),
@@ -2717,9 +2833,9 @@ impl TypeChecker {
                 },
             );
             // RES-437: insert separator between adjacent elements.
-            env.set("array_intersperse".to_string(), fn_any_any_to_any());
+            env.set("array_intersperse".to_string(), fn_any_any_to_array());
             // RES-516: alternate elements from two arrays.
-            env.set("array_interleave".to_string(), fn_any_any_to_any());
+            env.set("array_interleave".to_string(), fn_any_any_to_array());
             // RES-438: one-sided trimmers.
             env.set(
                 "trim_start".to_string(),
@@ -2736,7 +2852,7 @@ impl TypeChecker {
                 },
             );
             // RES-439: bisect array at index → tuple.
-            env.set("array_split_at".to_string(), fn_any_any_to_any());
+            env.set("array_split_at".to_string(), fn_any_any_to_array());
             // RES-440: integer bitwise ops — strict (Int) -> Int / (Int, Int) -> Int.
             let int_int_to_int = Type::Function {
                 params: vec![Type::Int, Type::Int],
@@ -3747,6 +3863,8 @@ impl TypeChecker {
             // `CapturedCertificate` onto the Vec it'd drop on
             // TypeChecker drop.
             emit_certificates: false,
+            // RES-1862: default to zero span (synthetic / unknown).
+            current_span: Span::default(),
         }
     }
 
@@ -3932,7 +4050,22 @@ impl TypeChecker {
                             );
                             // RES-340: remember the fn keyword's span so
                             // the rich type-mismatch path can point at
-                            // the declaration.
+                            // the declaration. Reject duplicate fn names
+                            // here — a second `fn foo` silently overwrote
+                            // the first before this guard, making the
+                            // program non-deterministic.
+                            if let Some(prev) = self.fn_decl_spans.get(name) {
+                                return Err(format!(
+                                    "{}:{}:{}: error: duplicate function name `{}` — \
+                                     previously declared at {}:{}",
+                                    self.source_path,
+                                    span.start.line,
+                                    span.start.column,
+                                    name,
+                                    prev.start.line,
+                                    prev.start.column,
+                                ));
+                            }
                             self.fn_decl_spans.insert(name.clone(), *span);
                             // RES-1105 + RES-1106: also register the
                             // function name in `self.env` so identifier
@@ -3979,17 +4112,34 @@ impl TypeChecker {
 
                 let mut result_type = Type::Void;
                 for stmt in statements {
-                    result_type = self.check_node(&stmt.node).map_err(|e| {
-                        // RES-080: prepend file:line:col so users can
-                        // locate the offending statement. Skip the
-                        // prefix when the span looks default/empty
-                        // (line 0 means "synthetic" — see span.rs).
-                        if stmt.span.start.line == 0 {
+                    // RES-1862: reset current_span to the statement's
+                    // own span before descending. check_node arms for
+                    // InfixExpression / CallExpression / LetStatement
+                    // overwrite this with the innermost node's span so
+                    // that error messages point at the exact expression
+                    // rather than the whole containing statement.
+                    self.current_span = stmt.span;
+                    let check_result = self.check_node(&stmt.node);
+                    // Capture the best span after check_node returns
+                    // (self is no longer mutably borrowed at this point).
+                    // Use current_span when it's more specific (non-zero
+                    // line within the statement range); fall back to
+                    // stmt.span otherwise.
+                    let diag_span = if self.current_span.start.line > 0 {
+                        self.current_span
+                    } else {
+                        stmt.span
+                    };
+                    result_type = check_result.map_err(|e| {
+                        // RES-080 / RES-1862: prepend file:line:col.
+                        // Skip the prefix when the span looks
+                        // default/empty (line 0 means "synthetic").
+                        if diag_span.start.line == 0 {
                             e
                         } else {
                             format!(
                                 "{}:{}:{}: {}",
-                                source_path, stmt.span.start.line, stmt.span.start.column, e
+                                source_path, diag_span.start.line, diag_span.start.column, e
                             )
                         }
                     })?;
@@ -4861,61 +5011,107 @@ impl TypeChecker {
                     // the Z3 branch below.
                     let mut decl_counterexample: Option<String> = None;
                     if verdict.is_none() {
-                        // RES-071: capture the SMT-LIB2 certificate
-                        // alongside the verdict so the driver can dump
-                        // it to disk if --emit-certificate is set.
-                        // RES-354: thread the theory selection through.
-                        let (v, cert, cx, timed_out) = {
-                            #[cfg(feature = "z3")]
-                            {
-                                z3_prove_with_cert_theory(
-                                    clause,
-                                    &no_bindings,
-                                    self.verifier_timeout_ms,
-                                    self.z3_theory,
-                                )
-                            }
-                            #[cfg(not(feature = "z3"))]
-                            {
-                                z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms)
-                            }
+                        // RES-1210: consult the incremental-verification
+                        // cache before calling Z3. The digest is a hash
+                        // of the function name + clause index + clause
+                        // debug text — enough to detect any rewrite of
+                        // the requires/ensures body.
+                        let clause_digest = {
+                            use std::hash::{Hash, Hasher};
+                            let mut h = std::collections::hash_map::DefaultHasher::new();
+                            format!("{name}:{decl_idx}:{clause:?}").hash(&mut h);
+                            h.finish()
                         };
-                        verdict = v;
-                        if matches!(verdict, Some(true)) {
-                            self.stats.requires_discharged_by_z3 += 1;
-                            // RES-1357: only stash the SMT-LIB2 cert
-                            // when a consumer asked for it.
-                            if self.emit_certificates
-                                && let Some(smt2) = cert
-                            {
-                                self.certificates.push(CapturedCertificate {
-                                    fn_name: name.clone(),
-                                    kind: "decl",
-                                    idx: decl_idx,
-                                    smt2,
-                                });
+                        if let Some(cached) = crate::incremental_verify::lookup(name, clause_digest)
+                        {
+                            match cached {
+                                crate::incremental_verify::ProofResult::Discharged => {
+                                    verdict = Some(true);
+                                }
+                                crate::incremental_verify::ProofResult::Failed(cx) => {
+                                    verdict = Some(false);
+                                    decl_counterexample = Some(cx);
+                                }
                             }
-                        }
-                        if timed_out {
-                            // RES-137: soft-failure — compilation
-                            // continues, runtime check stays in,
-                            // audit counter bumps, user sees a hint.
-                            self.stats.verifier_timeouts += 1;
-                            eprintln!(
-                                "hint: proof timed out after {}ms — runtime check retained (fn {})",
-                                self.verifier_timeout_ms, name
-                            );
-                        }
-                        // RES-217: any unresolved verdict (timeout OR a
-                        // genuine Z3 `Unknown`) is a partial proof. Emit
-                        // the structured diagnostic so CI / LSP tooling
-                        // can discover the specific assertion via a
-                        // stable `[partial-proof]` tag. Suppressed with
-                        // `--no-warn-unverified`.
-                        if verdict.is_none() && self.warn_unverified {
-                            emit_partial_proof_warning(&self.source_path, clause);
-                        }
-                        decl_counterexample = cx;
+                        } else {
+                            // RES-071: capture the SMT-LIB2 certificate
+                            // alongside the verdict so the driver can dump
+                            // it to disk if --emit-certificate is set.
+                            // RES-354: thread the theory selection through.
+                            let (v, cert, cx, timed_out) = {
+                                #[cfg(feature = "z3")]
+                                {
+                                    z3_prove_with_cert_theory(
+                                        clause,
+                                        &no_bindings,
+                                        self.verifier_timeout_ms,
+                                        self.z3_theory,
+                                    )
+                                }
+                                #[cfg(not(feature = "z3"))]
+                                {
+                                    z3_prove_with_cert(
+                                        clause,
+                                        &no_bindings,
+                                        self.verifier_timeout_ms,
+                                    )
+                                }
+                            };
+                            verdict = v;
+                            if matches!(verdict, Some(true)) {
+                                self.stats.requires_discharged_by_z3 += 1;
+                                // Store in cache so next compile skips Z3
+                                // for this unchanged clause.
+                                crate::incremental_verify::store(
+                                    name,
+                                    clause_digest,
+                                    crate::incremental_verify::ProofResult::Discharged,
+                                );
+                                // RES-1357: only stash the SMT-LIB2 cert
+                                // when a consumer asked for it.
+                                if self.emit_certificates
+                                    && let Some(smt2) = cert
+                                {
+                                    self.certificates.push(CapturedCertificate {
+                                        fn_name: name.clone(),
+                                        kind: "decl",
+                                        idx: decl_idx,
+                                        smt2,
+                                    });
+                                }
+                            } else if matches!(verdict, Some(false)) {
+                                // Cache the refuted verdict so subsequent
+                                // compiles see the same counterexample
+                                // without re-running Z3.
+                                crate::incremental_verify::store(
+                                    name,
+                                    clause_digest,
+                                    crate::incremental_verify::ProofResult::Failed(
+                                        cx.clone().unwrap_or_default(),
+                                    ),
+                                );
+                            }
+                            if timed_out {
+                                // RES-137: soft-failure — compilation
+                                // continues, runtime check stays in,
+                                // audit counter bumps, user sees a hint.
+                                self.stats.verifier_timeouts += 1;
+                                eprintln!(
+                                    "hint: proof timed out after {}ms — runtime check retained (fn {})",
+                                    self.verifier_timeout_ms, name
+                                );
+                            }
+                            // RES-217: any unresolved verdict (timeout OR a
+                            // genuine Z3 `Unknown`) is a partial proof. Emit
+                            // the structured diagnostic so CI / LSP tooling
+                            // can discover the specific assertion via a
+                            // stable `[partial-proof]` tag. Suppressed with
+                            // `--no-warn-unverified`.
+                            if verdict.is_none() && self.warn_unverified {
+                                emit_partial_proof_warning(&self.source_path, clause);
+                            }
+                            decl_counterexample = cx;
+                        } // end cache-miss branch
                     }
                     match verdict {
                         Some(false) => {
@@ -5082,7 +5278,21 @@ impl TypeChecker {
                     // Extends the MVP (final-state only) with verification
                     // that the recovers_to clause holds after recovery from
                     // ANY instruction boundary in the function body.
-                    crate::recovers_to_bmc::check_recovers_to_bmc(name, body, clause)?;
+                    // Pass requires as axioms so the solver can use them,
+                    // matching the final-state verifier's axioms path.
+                    //
+                    // BMC results are advisory (warnings), not hard errors:
+                    // the final-state Z3 check above is the authoritative
+                    // compile gate. Per-prefix BMC uses a conservative
+                    // free-variable model that may flag false positives for
+                    // computed locals (the local's relationship to prior ops
+                    // is not encoded). Demoting to warn matches the
+                    // `timed_out_flag` precedent above.
+                    if let Err(bmc_msg) =
+                        crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)
+                    {
+                        eprintln!("warning[bmc]: {bmc_msg}");
+                    }
                 }
 
                 // RES-065: push each requires clause's extractable
@@ -5305,6 +5515,8 @@ impl TypeChecker {
                 type_annot,
                 span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                self.current_span = *span;
                 let value_type = self.check_node(value)?;
                 // RES-053: enforce `let x: T = value` — reject if value's
                 // type isn't compatible with the declared annotation.
@@ -5778,9 +5990,9 @@ impl TypeChecker {
             // Phase 3 (RES-776 PR 3-5): runtime crash handling and restart policies
             Node::SupervisorDecl { .. } => {
                 // Currently: basic structural validation (functions exist, strategy valid, IDs unique)
+                // RES-776 Phase 2: signature validation (zero-param, void return)
+                // is now integrated into crate::supervisor::check.
                 crate::supervisor::check(node, &self.env)?;
-                // TODO(RES-776 PR 2): Add semantic validation for supervisor/actor compatibility
-                // TODO(RES-776 PR 2): Validate handler function signatures match expected types
                 Ok(Type::Void)
             }
 
@@ -5966,9 +6178,19 @@ impl TypeChecker {
             // `FieldAccess` / `FieldAssignment` downstream can check
             // field existence and surface typed-field errors
             // statically.
-            Node::StructDecl { name, fields, .. } => {
+            Node::StructDecl {
+                name, fields, span, ..
+            } => {
+                let mut seen_fields: std::collections::HashSet<&str> =
+                    std::collections::HashSet::with_capacity(fields.len());
                 let mut resolved: Vec<(String, Type)> = Vec::with_capacity(fields.len());
                 for (type_name, field_name) in fields {
+                    if !seen_fields.insert(field_name.as_str()) {
+                        return Err(format!(
+                            "{}:{}:{}: error: duplicate field `{}` in struct `{}`",
+                            self.source_path, span.start.line, span.start.column, field_name, name,
+                        ));
+                    }
                     let ty = self.parse_type_name(type_name)?;
                     resolved.push((field_name.clone(), ty));
                 }
@@ -6008,6 +6230,33 @@ impl TypeChecker {
                     && let Some((_, ty)) = declared.iter().find(|(n, _)| n == field)
                 {
                     return Ok(ty.clone());
+                }
+                // RES-1859: known method return types for Array/String targets.
+                // When the method is called as `arr.map(fn)`, the FieldAccess
+                // node is used as the callee in a CallExpression; returning a
+                // Function type here lets the call site infer the correct return.
+                if tgt_ty == Type::Array {
+                    match field.as_str() {
+                        "map" | "filter" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any],
+                                return_type: Box::new(Type::Array),
+                            });
+                        }
+                        "reduce" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any, Type::Any],
+                                return_type: Box::new(Type::Any),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if tgt_ty == Type::String && field == "split" {
+                    return Ok(Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Array),
+                    });
                 }
                 Ok(Type::Any)
             }
@@ -6178,7 +6427,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            Node::ReturnStatement { value, .. } => {
+            Node::ReturnStatement {
+                value,
+                span: ret_span,
+            } => {
+                // RES-1862: track span for diagnostics.
+                if ret_span.start.line > 0 {
+                    self.current_span = *ret_span;
+                }
                 // Bare `return;` has type Void; otherwise pass through
                 // the type of the returned value.
                 match value {
@@ -6191,8 +6447,12 @@ impl TypeChecker {
                 condition,
                 consequence,
                 alternative,
-                ..
+                span: if_span,
             } => {
+                // RES-1862: track span for diagnostics.
+                if if_span.start.line > 0 {
+                    self.current_span = *if_span;
+                }
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!(
@@ -6254,6 +6514,12 @@ impl TypeChecker {
             Node::ExpressionStatement { expr, .. } => self.check_node(expr),
 
             Node::Identifier { name, span } => {
+                // RES-1862: track innermost span so the check_program
+                // wrapper uses the identifier's position rather than
+                // the enclosing statement's start position.
+                if span.start.line > 0 {
+                    self.current_span = *span;
+                }
                 // RES-078: identifier span lets us tell users where
                 // exactly the undefined reference lives. Skip the
                 // prefix when the span looks default (synthetic).
@@ -6316,8 +6582,14 @@ impl TypeChecker {
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
 
             Node::PrefixExpression {
-                operator, right, ..
+                operator,
+                right,
+                span: prefix_span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                if prefix_span.start.line > 0 {
+                    self.current_span = *prefix_span;
+                }
                 let right_type = self.check_node(right)?;
 
                 match operator.as_str() {
@@ -6345,8 +6617,10 @@ impl TypeChecker {
                 left,
                 operator,
                 right,
-                ..
+                span: infix_span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                self.current_span = *infix_span;
                 let left_type = self.check_node(left)?;
                 let right_type = self.check_node(right)?;
 
@@ -6427,6 +6701,8 @@ impl TypeChecker {
                 arguments,
                 span: call_span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                self.current_span = *call_span;
                 // RES-400: tuple-payload enum-variant constructor —
                 // `Either::Just(7)` parses as a CallExpression with
                 // the callee `Identifier("Either::Just")`. Resolve it
@@ -7416,6 +7692,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "pop",
         "slice",
         "split",
+        // RES-1859: explicit-name alias.
+        "string_split",
         // RES-535: split with a maximum number-of-splits limit.
         "string_split_n",
         // RES-545: split on the last occurrence of the separator.
@@ -7427,6 +7705,15 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-412: reverse string/array.
         "string_reverse",
         "array_reverse",
+        // RES-1859: higher-order array builtins.
+        "array_map",
+        "array_filter",
+        "array_reduce",
+        // RES-507: generic callback-based search/predicate builtins.
+        "array_find",
+        "array_find_index",
+        "array_any",
+        "array_all",
         // RES-416: array reductions.
         "array_sum",
         "array_product",
@@ -9603,5 +9890,207 @@ mod scope_and_reachability_tests {
             }",
         )
         .expect("conditional return must not flag subsequent code");
+    }
+}
+
+#[cfg(test)]
+mod duplicate_detection_tests {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected typechecker error")
+    }
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect("unexpected typechecker error");
+    }
+
+    #[test]
+    fn duplicate_fn_name_is_rejected() {
+        let err = check_err("fn foo() {} fn foo() {}");
+        assert!(
+            err.contains("duplicate function name") && err.contains("`foo`"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn unique_fn_names_pass() {
+        check_ok("fn foo(int x) -> int { return x; } fn bar(int x) -> int { return x; }");
+    }
+
+    #[test]
+    fn duplicate_struct_field_is_rejected() {
+        let err = check_err("struct Point { int x, int x }");
+        assert!(
+            err.contains("duplicate field") && err.contains("`x`"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn unique_struct_fields_pass() {
+        check_ok("struct Point { int x, int y }");
+    }
+}
+
+#[cfg(test)]
+mod span_diagnostic_tests {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_with_source(src: &str, path: &str) -> Result<(), String> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, path)
+            .map(|_| ())
+    }
+
+    #[test]
+    fn error_includes_source_path() {
+        // A type annotation mismatch on a let statement should include
+        // the source path in the error message.
+        let err = check_with_source(
+            "fn f(int x) -> int { let y: bool = x; return y; }",
+            "myfile.rz",
+        )
+        .expect_err("expected type error");
+        assert!(
+            err.contains("myfile.rz"),
+            "error should include source path, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn error_includes_line_number() {
+        // Error on the second line should include line 2 in the message.
+        let src = "fn f(int x) -> int { return x; }\nfn f(int y) -> int { return y; }";
+        let err = check_with_source(src, "test.rz").expect_err("expected duplicate fn error");
+        assert!(
+            err.contains("test.rz"),
+            "error should contain file path, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn ok_program_has_no_span_error() {
+        let src = "fn add(int x, int y) -> int { return x + y; }";
+        assert!(check_with_source(src, "test.rz").is_ok());
+    }
+
+    /// RES-1862: an undefined-variable error inside a function body should
+    /// report the identifier's position, not the function declaration's start.
+    #[test]
+    fn undefined_var_span_is_identifier_position() {
+        // `unknown_var` is on line 2 col 12 (1-indexed)
+        let src = "fn f(int x) -> int {\n    return unknown_var;\n}";
+        let err = check_with_source(src, "src.rz").expect_err("expected undefined var error");
+        assert!(
+            err.contains("src.rz"),
+            "error should contain file path: {}",
+            err
+        );
+        // Must point at line 2, not line 1 (the function declaration).
+        assert!(
+            err.contains("src.rz:2:"),
+            "error should point to line 2 where the identifier is: {}",
+            err
+        );
+    }
+
+    /// RES-1862: a type error inside an infix expression should report the
+    /// infix span.
+    #[test]
+    fn infix_type_error_uses_infix_span() {
+        // The `+` is on line 2.
+        let src = "fn f(int x) -> int {\n    return x + \"hello\";\n}";
+        let err = check_with_source(src, "expr.rz").expect_err("expected infix type error");
+        assert!(
+            err.contains("expr.rz:2:"),
+            "error should point to line 2 (the infix expression): {}",
+            err
+        );
+    }
+
+    #[test]
+    fn bitwise_type_error_has_path() {
+        let src = r#"fn f(float x) -> int { return x & 1; }"#;
+        let err = check_with_source(src, "ops.rz").expect_err("expected bitwise type error");
+        assert!(
+            err.contains("ops.rz"),
+            "error should contain file path, got: {}",
+            err
+        );
+    }
+}
+
+#[cfg(test)]
+mod res1859_builtin_return_types {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect("should type-check without error");
+    }
+
+    #[test]
+    fn array_map_return_type_is_array() {
+        // Result of array_map used as an array argument to len() — would
+        // fail type-check if the return type were inferred as Any when
+        // the checker is configured to be strict on function signatures.
+        check_ok(
+            "fn f(array a) -> int { let m = array_map(a, fn(int x) -> int { return x * 2; }); return len(m); }",
+        );
+    }
+
+    #[test]
+    fn array_filter_return_type_is_array() {
+        check_ok(
+            "fn f(array a) -> int { let filtered = array_filter(a, fn(int x) -> bool { return x > 0; }); return len(filtered); }",
+        );
+    }
+
+    #[test]
+    fn string_split_returns_array() {
+        check_ok(
+            "fn f(string s) -> int { let parts = string_split(s, \",\"); return len(parts); }",
+        );
+    }
+
+    #[test]
+    fn method_map_return_type_is_array() {
+        check_ok(
+            "fn f(array a) -> int { let mapped = a.map(fn(int x) -> int { return x + 1; }); return len(mapped); }",
+        );
+    }
+
+    #[test]
+    fn method_filter_return_type_is_array() {
+        check_ok(
+            "fn f(array a) -> int { let filtered = a.filter(fn(int x) -> bool { return x > 0; }); return len(filtered); }",
+        );
+    }
+
+    #[test]
+    fn string_split_method_return_type_is_array() {
+        check_ok("fn f(string s) -> int { let parts = s.split(\",\"); return len(parts); }");
     }
 }

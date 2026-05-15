@@ -138,3 +138,46 @@ fn type_name(v: &Value) -> &'static str {
         _ => "<value>",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tag_and_untag_roundtrip() {
+        let tagged = builtin_tag(&[Value::Int(42), Value::String("sensor_A".into())]).unwrap();
+        let result = builtin_untag(&[tagged, Value::String("sensor_A".into())]).unwrap();
+        assert!(
+            matches!(result, Value::Result { ok: true, .. }),
+            "untag with matching source must return ok=true result"
+        );
+    }
+
+    #[test]
+    fn untag_wrong_source_returns_err_result() {
+        let tagged = builtin_tag(&[Value::Int(99), Value::String("sensor_A".into())]).unwrap();
+        let result = builtin_untag(&[tagged, Value::String("sensor_B".into())]).unwrap();
+        assert!(
+            matches!(result, Value::Result { ok: false, .. }),
+            "untag with mismatched source must return ok=false result"
+        );
+    }
+
+    #[test]
+    fn tag_of_returns_source_string() {
+        let tagged = builtin_tag(&[Value::Int(7), Value::String("gps".into())]).unwrap();
+        let result = builtin_tag_of(&[tagged]).unwrap();
+        // tag_of wraps the string in a Result value with ok=true.
+        assert!(
+            matches!(&result, Value::Result { ok: true, payload }
+                if matches!(payload.as_ref(), Value::String(s) if s == "gps")),
+            "tag_of must return ok=true Result containing the source string"
+        );
+    }
+
+    #[test]
+    fn tag_wrong_arity_errors() {
+        let result = builtin_tag(&[Value::Int(1)]);
+        assert!(result.is_err(), "wrong arity must return Err");
+    }
+}

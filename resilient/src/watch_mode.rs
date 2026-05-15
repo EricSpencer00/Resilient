@@ -131,3 +131,26 @@ fn timestamp_now() -> String {
     let h = (secs / 3600) % 24;
     format!("{:02}:{:02}:{:02}", h, m, s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timestamp_now_has_expected_format() {
+        let ts = timestamp_now();
+        let parts: Vec<&str> = ts.split(':').collect();
+        assert_eq!(parts.len(), 3, "timestamp must be HH:MM:SS format");
+        for part in &parts {
+            assert_eq!(part.len(), 2, "each part must be zero-padded to 2 digits");
+            assert!(part.parse::<u64>().is_ok(), "each part must be numeric");
+        }
+    }
+
+    #[test]
+    fn is_non_interactive_returns_bool() {
+        // Just verify it can be called without panic — the return value
+        // depends on environment variables set by the test runner.
+        let _ = is_non_interactive();
+    }
+}

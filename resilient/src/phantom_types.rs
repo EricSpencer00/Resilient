@@ -98,29 +98,71 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn record_phantom(type_name: &str, units: &str) {
+        crate::feature_attrs::record(
+            type_name,
+            crate::feature_attrs::AttrRecord {
+                name: "phantom".into(),
+                args: format!(r#"units = "{units}""#),
+                line: 0,
+            },
+        );
+    }
+
     #[test]
     fn matching_units_compatible() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        crate::feature_attrs::record(
-            "Meters",
-            crate::feature_attrs::AttrRecord {
-                name: "phantom".into(),
-                args: r#"units = "Meters""#.into(),
-                line: 0,
-            },
-        );
-        crate::feature_attrs::record(
-            "Seconds",
-            crate::feature_attrs::AttrRecord {
-                name: "phantom".into(),
-                args: r#"units = "Seconds""#.into(),
-                line: 0,
-            },
-        );
+        record_phantom("Meters", "Meters");
+        record_phantom("Seconds", "Seconds");
         install(collect());
         assert!(compatible("Meters", "Meters"));
         assert!(!compatible("Meters", "Seconds"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn unregistered_types_defer_to_base_typechecker() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        install(collect());
+        assert!(
+            compatible("Unknown", "AlsoUnknown"),
+            "unregistered type pairs must return true to defer to the base typechecker"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn same_units_across_different_types_are_compatible() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_phantom("Kelvin", "Temperature");
+        record_phantom("Celsius", "Temperature");
+        record_phantom("Amps", "Current");
+        install(collect());
+        assert!(
+            compatible("Kelvin", "Kelvin"),
+            "same type must be compatible"
+        );
+        assert!(
+            compatible("Kelvin", "Celsius"),
+            "same units must be compatible across types"
+        );
+        assert!(
+            !compatible("Kelvin", "Amps"),
+            "different units must not be compatible"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
 }

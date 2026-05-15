@@ -101,3 +101,33 @@ fn body_feeds_any(body: &Node, params: &[&str]) -> bool {
 fn is_param(node: &Node, params: &[&str]) -> bool {
     matches!(node, Node::Identifier { name, .. } if params.contains(&name.as_str()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn no_watchdog_param_skips_check() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn watchdog_unfed_returns_ok_v1() {
+        // V1 emits a warning but always returns Ok.
+        let src = "fn handle(Watchdog wd) { let x = 1; }\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "V1 checker only warns, never returns Err"
+        );
+    }
+}

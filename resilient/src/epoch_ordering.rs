@@ -70,3 +70,28 @@ fn epoch_of(name: &str) -> Option<u32> {
     let tail = &name[idx + "_epoch".len()..];
     tail.parse::<u32>().ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn program_without_epoch_calls_returns_ok() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn epoch_of_parses_suffix() {
+        assert_eq!(epoch_of("migrate_epoch1"), Some(1));
+        assert_eq!(epoch_of("migrate_epoch42"), Some(42));
+        assert_eq!(epoch_of("no_epoch"), None);
+    }
+}

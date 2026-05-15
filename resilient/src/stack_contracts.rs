@@ -135,4 +135,60 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn no_attribute_skips_check() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        // No stack attribute registered — even a deeply nested function passes.
+        let src = "fn deep(int x) { return deep(deep(deep(x))); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn budget_exceeded_returns_error() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        // Budget: 64 bytes (= 1 frame). Any call nests at least 2 frames.
+        crate::feature_attrs::record(
+            "tight",
+            crate::feature_attrs::AttrRecord {
+                name: "stack".into(),
+                args: r#"bytes = "64""#.into(),
+                line: 0,
+            },
+        );
+        // Two nested calls → depth 2 → 128 bytes > 64 budget.
+        let src = "fn helper(int x) { return x; }\nfn tight(int x) { return helper(helper(x)); }\n";
+        let (prog, _) = parse(src);
+        let result = check(&prog, "test");
+        assert!(result.is_err(), "expected budget-exceeded error, got Ok");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("tight") && msg.contains("exceeded"),
+            "error message should mention function name and 'exceeded': {msg}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn unknown_function_name_is_silent() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "missing_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "stack".into(),
+                args: r#"bytes = "64""#.into(),
+                line: 0,
+            },
+        );
+        // The function `missing_fn` is not defined in the source.
+        let src = "fn other(int x) { return x; }\n";
+        let (prog, _) = parse(src);
+        // Should not error — function body not found means no depth estimate.
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }

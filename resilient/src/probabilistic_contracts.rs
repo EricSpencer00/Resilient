@@ -125,4 +125,19 @@ mod tests {
         assert!((rate - 0.9).abs() < 1e-6);
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn empirical_rate_returns_none_for_unregistered_fn() {
+        assert!(empirical_rate("totally_unknown_fn_99").is_none());
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }

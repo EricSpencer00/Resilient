@@ -694,6 +694,19 @@ pub fn reset_cache_stats() {
     Z3_CACHE_STATS.with(|s| s.set(Z3CacheStats::default()));
 }
 
+/// RES-1857: solve a raw SMT-LIB2 obligation string through the shared
+/// thread-local Z3 context. Returns `z3::SatResult`:
+/// - `Unsat`   → all models satisfy the constraint (safe).
+/// - `Sat`     → a counterexample exists (violation found).
+/// - `Unknown` → Z3 timed out or could not decide.
+pub fn check_smtlib2(obligation: &str) -> z3::SatResult {
+    Z3_CTX.with(|ctx| {
+        let solver = z3::Solver::new(ctx);
+        solver.from_string(obligation.to_owned());
+        solver.check()
+    })
+}
+
 /// RES-1706: identity hasher for `u64` cache keys. The key is already
 /// a high-quality hash from `hash_node_spanless` + SipHash via
 /// `DefaultHasher`; re-hashing it inside the cache HashMap is

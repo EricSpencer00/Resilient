@@ -106,4 +106,62 @@ mod tests {
         assert!(!is_recursive("Other"));
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn collect_returns_empty_without_attribute() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let set = collect();
+        assert!(
+            set.is_empty(),
+            "collect() must return empty set when no #[recursive] attributes exist"
+        );
+    }
+
+    #[test]
+    fn is_recursive_false_before_install() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        // Install an empty set — is_recursive should return false for any name.
+        install(collect());
+        assert!(
+            !is_recursive("AnyType"),
+            "is_recursive must be false when no types are registered"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "check() must return Ok when no #[recursive] attributes exist"
+        );
+    }
+
+    #[test]
+    fn multiple_recursive_types_all_registered() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        for name in &["Node", "Tree", "List"] {
+            crate::feature_attrs::record(
+                name,
+                crate::feature_attrs::AttrRecord {
+                    name: "recursive".into(),
+                    args: String::new(),
+                    line: 0,
+                },
+            );
+        }
+        install(collect());
+        assert!(is_recursive("Node"));
+        assert!(is_recursive("Tree"));
+        assert!(is_recursive("List"));
+        assert!(!is_recursive("Array"));
+        crate::feature_attrs::reset();
+    }
 }

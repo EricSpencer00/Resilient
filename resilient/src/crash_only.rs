@@ -65,3 +65,28 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn program_without_crash_fn_returns_ok() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn crash_with_matching_recover_returns_ok() {
+        let src = "fn crash_network() { return 0; }\nfn recover_network() { return 0; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+}

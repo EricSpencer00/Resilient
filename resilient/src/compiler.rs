@@ -15,6 +15,42 @@ use crate::bytecode::{Chunk, CompileError, Function, Op, Program};
 use crate::{Node, Value};
 use std::collections::HashMap;
 
+/// Tracks break/continue patch sites accumulated while compiling a loop body.
+///
+/// Created fresh for each While/ForIn loop. Nested loops create their own
+/// inner LoopState, shadowing the outer one, so `break`/`continue` always
+/// target the *innermost* enclosing loop — matching the tree-walker's
+/// `Value::Break`/`Value::Continue` bubble-up semantics.
+struct LoopState {
+    /// PC of the back-edge target. For `while` this is the condition check;
+    /// for `for-in` it's the index-increment code (set after body compilation
+    /// via `set_continue_target`).
+    continue_target: usize,
+    /// `Jump(0)` instruction indices emitted for `break` that need to be
+    /// patched to the loop-exit PC once the loop is fully compiled.
+    break_patches: Vec<usize>,
+    /// `Jump(0)` instruction indices emitted for `continue` that need to be
+    /// patched to `continue_target`. Used by `for-in` loops, where the target
+    /// is not yet known when the body is compiled.
+    continue_patches: Vec<usize>,
+}
+
+impl LoopState {
+    fn new(continue_target: usize) -> Self {
+        LoopState {
+            continue_target,
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+        }
+    }
+
+    /// Retroactively fix up all `continue` patch sites — called by `for-in`
+    /// after the index-increment code is in place.
+    fn set_continue_target(&mut self, target: usize) {
+        self.continue_target = target;
+    }
+}
+
 /// Compile a parsed program into a bytecode `Program` ready for the VM.
 ///
 /// Steps:
@@ -177,7 +213,10 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     &mut next_local,
                     &fn_index,
                     &ffi_index,
+                    &mut functions,
+                    &mut next_fn_idx,
                     line,
+                    None,
                 )?;
             }
             chunk.emit(Op::ReturnFromCall, 0);
@@ -253,7 +292,10 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             &mut main_next_local,
             &fn_index,
             &ffi_index,
+            &mut functions,
+            &mut next_fn_idx,
             line,
+            None,
         )?;
     }
     main.emit(Op::Return, 0);
@@ -288,6 +330,10 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
 /// statements leak their value onto the operand stack, which `Return`
 /// picks up as the program result — useful for the RES-076 smoke
 /// test that parses `2 + 3 * 4;`.
+///
+/// `loop_state` is `Some` when this statement is nested inside a loop
+/// body and carries the break/continue patch sites for that loop.
+#[allow(clippy::too_many_arguments)]
 fn compile_stmt(
     node: &Node,
     chunk: &mut Chunk,
@@ -295,11 +341,24 @@ fn compile_stmt(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
+    loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -309,8 +368,52 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
+        // RES-401: `let (a, b, c) = expr;` in top-level (main chunk).
+        Node::LetTupleDestructure { names, value, .. } => {
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let tmp_idx = *next_local;
+            *next_local += 1;
+            chunk.emit(Op::StoreLocal(tmp_idx), line);
+            for (i, name) in names.iter().enumerate() {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let slot = *next_local;
+                *next_local += 1;
+                locals.insert(name.clone(), slot);
+                chunk.emit(Op::LoadLocal(tmp_idx), line);
+                let idx_const = chunk.add_constant(Value::Int(i as i64))?;
+                chunk.emit(Op::Const(idx_const), line);
+                chunk.emit(Op::LoadIndex, line);
+                chunk.emit(Op::StoreLocal(slot), line);
+            }
+            Ok(())
+        }
         Node::ReturnStatement { value: Some(v), .. } => {
-            compile_expr(v, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                v,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::Return, line);
             Ok(())
         }
@@ -318,68 +421,73 @@ fn compile_stmt(
             chunk.emit(Op::Return, line);
             Ok(())
         }
-        Node::ExpressionStatement { expr: inner, .. } => {
-            compile_expr(inner, chunk, locals, fn_index, ffi_index, line)
-        }
+        Node::ExpressionStatement { expr: inner, .. } => compile_expr(
+            inner,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         Node::IfStatement { .. }
         | Node::WhileStatement { .. }
         | Node::ForInStatement { .. }
-        | Node::Block { .. } => {
-            compile_control_flow(node, chunk, locals, next_local, fn_index, ffi_index, line)
-        }
+        | Node::Block { .. } => compile_control_flow(
+            node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
+        ),
         Node::Assignment { name, value, .. } => {
             // RES-083: re-bind an existing local. Compile the RHS,
             // StoreLocal to the known slot. Unknown name is an error.
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
-        // RES-171a: `a[i] = v;` where `a` is a bare Identifier.
-        // Lowered as:
-        //   LoadLocal(a), <i>, <v>, StoreIndex, StoreLocal(a)
-        // The Array on top of the stack after StoreIndex IS the
-        // mutated one (the VM dispatch pushes it back), so writing
-        // it through `StoreLocal` commits the update.
-        //
-        // Nested `a[i][j] = v` is RES-171c; here we explicitly
-        // reject non-Identifier targets so the compile error is
-        // descriptive rather than a silent miscompile.
+        // RES-171a/RES-171c: `a[i] = v` and `a[i0][i1]...[iN] = v`.
+        // Depth-1 lowering: LoadLocal(a), <i>, <v>, StoreIndex, StoreLocal(a).
+        // Depth-N lowering: temp-local staging through compile_index_assignment.
         Node::IndexAssignment {
             target,
             index,
             value,
             ..
-        } => {
-            // RES-1430: borrow the target Identifier name as `&str`
-            // for the HashMap lookup. The previous shape eagerly
-            // cloned the name to an owned `String` (`name.clone()`),
-            // then cloned it AGAIN on the error path
-            // (`local_name.clone()` inside `ok_or_else`). With
-            // `locals.get(&str)` taking advantage of `Borrow<str>`,
-            // we hold the borrow through the lookup and only allocate
-            // the owned `String` on the rare UnknownIdentifier error
-            // path. Same pattern as RES-1419 (compile_expr CallExpression).
-            let local_name: &str = match target.as_ref() {
-                Node::Identifier { name, .. } => name.as_str(),
-                _ => {
-                    return Err(CompileError::Unsupported(
-                        "nested index assignment (RES-171c)",
-                    ));
-                }
-            };
-            let slot = *locals
-                .get(local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
-            chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
-            chunk.emit(Op::StoreIndex, line);
-            chunk.emit(Op::StoreLocal(slot), line);
-            Ok(())
-        }
+        } => compile_index_assignment(
+            target,
+            index,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         // RES-335: `p.field = v;` where `p` is a bare Identifier.
         // Lowered as:
         //   LoadLocal(p), <v>, SetField { field }, StoreLocal(p)
@@ -407,7 +515,17 @@ fn compile_stmt(
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::SetField {
@@ -418,6 +536,48 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
+        // RES-break-continue: `break;` exits the innermost loop. Emit a
+        // forward Jump(0) placeholder and register its PC in the
+        // enclosing loop's break_patches list for back-patching once
+        // the loop-exit PC is known.
+        Node::Break { .. } => {
+            let ls = loop_state.ok_or(CompileError::Unsupported("break outside loop"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.break_patches.push(patch);
+            Ok(())
+        }
+        // RES-break-continue: `continue;` restarts the innermost loop.
+        // For while loops the target is already known (the condition
+        // check); for for-in loops the target is the index increment,
+        // set after body compilation. Either way we emit Jump(0) and
+        // let patch_loop_exits handle it.
+        Node::Continue { .. } => {
+            let ls = loop_state.ok_or(CompileError::Unsupported("continue outside loop"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.continue_patches.push(patch);
+            Ok(())
+        }
+        // RES-break-continue: `assert cond[, msg];` — evaluate the
+        // condition; if falsy push the message and fail. Lowered as:
+        //   <cond>
+        //   JumpIfTrue(past_fail)
+        //   Const(msg)
+        //   AssertFail
+        // past_fail:
+        Node::Assert {
+            condition, message, ..
+        } => compile_assert(
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         Node::Function { .. } | Node::Extern { .. } => {
             // Top-level fn/extern decls already handled in passes 1/2.
             // Skipping here would be a no-op, but we should never see
@@ -428,14 +588,196 @@ fn compile_stmt(
         // verifier constructs. The bytecode backend emits nothing
         // for them — the interpreter also treats them as no-ops.
         Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(()),
+        // RES-155: `let StructName { field, other_field: local } = expr;`
+        // Compile the value, store in a temp slot, then emit
+        // GetField + StoreLocal for each (field_name, local_name) pair.
+        Node::LetDestructureStruct { fields, value, .. } => compile_let_destructure_struct(
+            fields,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // RES-384b: `static let NAME = EXPR;` — the VM has no separate
+        // statics store; compile as a regular local binding. The
+        // "initialize only once" semantic is not preserved in bytecode
+        // (single-execution model), but the value is accessible by name.
+        Node::StaticLet { name, value, .. } => {
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let idx = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), idx);
+            chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        // RES-361: `const NAME = EXPR;` is pre-evaluated by the const_eval
+        // pass before bytecode compilation. Nothing to emit at runtime.
+        Node::Const { .. } => Ok(()),
+        // RES-139: `live { body }` — compile the body once.
+        // Retry / backoff / invariant semantics are verification-only and
+        // are not emitted in the bytecode backend.
+        Node::LiveBlock { body, .. } => compile_stmt(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
+        ),
+        // Verification-only constructs: emit nothing at runtime.
+        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // Type-level / declaration-only constructs: no runtime bytecode.
+        // All type information is handled at parse/typecheck time.
+        Node::StructDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::TraitDecl { .. }
+        | Node::ImplBlock { .. }
+        | Node::TypeAlias { .. }
+        | Node::NewtypeDecl { .. }
+        | Node::RegionDecl { .. }
+        | Node::SupervisorDecl { .. }
+        | Node::ModuleDecl { .. }
+        | Node::Use { .. }
+        | Node::UnsafeBlock { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
+}
+
+/// Shared assert-lowering logic used by both `compile_stmt` and
+/// `compile_stmt_in_fn`. Emits:
+///   `<cond>; JumpIfTrue(past_fail); Const(msg); AssertFail`
+#[allow(clippy::too_many_arguments)]
+fn compile_assert(
+    condition: &Node,
+    message: &Option<Box<Node>>,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_expr(
+        condition,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    let jt = chunk.emit(Op::JumpIfTrue(0), line);
+    // Push the failure message string.
+    let msg_str = if let Some(msg_node) = message {
+        // If the message is a string literal we can embed it directly;
+        // otherwise fall back to a generic message (complex expressions
+        // aren't evaluated at compile time).
+        match msg_node.as_ref() {
+            Node::StringLiteral { value: s, .. } => s.clone(),
+            _ => "assertion failed".to_string(),
+        }
+    } else {
+        "assertion failed".to_string()
+    };
+    let msg_idx = chunk.add_string_constant(&msg_str)?;
+    chunk.emit(Op::Const(msg_idx), line);
+    chunk.emit(Op::AssertFail, line);
+    let past_fail = chunk.code.len();
+    chunk.patch_jump(jt, past_fail)?;
+    Ok(())
+}
+
+/// RES-155: `let StructName { f1, f2: local } = expr;` lowering.
+/// Evaluates the RHS once into a temp slot, then for each
+/// `(field_name, local_name)` pair emits `LoadLocal(tmp) + GetField +
+/// StoreLocal(new_slot)`. After this, `local_name` is accessible in
+/// subsequent code via `LoadLocal`.
+#[allow(clippy::too_many_arguments)]
+fn compile_let_destructure_struct(
+    fields: &[(String, String)],
+    value: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_expr(
+        value,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    if *next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let tmp_idx = *next_local;
+    *next_local += 1;
+    chunk.emit(Op::StoreLocal(tmp_idx), line);
+    for (field_name, local_name) in fields {
+        if *next_local == u16::MAX {
+            return Err(CompileError::TooManyLocals);
+        }
+        let slot = *next_local;
+        *next_local += 1;
+        locals.insert(local_name.clone(), slot);
+        chunk.emit(Op::LoadLocal(tmp_idx), line);
+        let fname_idx = chunk.add_string_constant(field_name)?;
+        chunk.emit(
+            Op::GetField {
+                name_const: fname_idx,
+            },
+            line,
+        );
+        chunk.emit(Op::StoreLocal(slot), line);
+    }
+    Ok(())
 }
 
 /// RES-083: compile if/while/block statements that share the same
 /// locals environment as the enclosing scope. `Block` is flattened:
 /// its inner statements are compiled inline (no new scope frame yet
 /// — matches the tree walker's semantics).
+///
+/// `loop_state` threads break/continue patch sites from the innermost
+/// enclosing loop down through Block and IfStatement arms; WhileStatement
+/// and ForInStatement create a fresh inner `LoopState` and do not
+/// propagate the outer one into the loop body.
+#[allow(clippy::too_many_arguments)]
 fn compile_control_flow(
     node: &Node,
     chunk: &mut Chunk,
@@ -443,12 +785,29 @@ fn compile_control_flow(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
+    mut loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::Block { stmts, .. } => {
+            // Reborrow loop_state for each stmt sequentially.
+            let mut ls = loop_state;
             for s in stmts {
-                compile_stmt(s, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                let ls_ref = ls.as_deref_mut();
+                compile_stmt(
+                    s,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    ls_ref,
+                )?;
             }
             Ok(())
         }
@@ -459,10 +818,20 @@ fn compile_control_flow(
             ..
         } => {
             // cond
-            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             // JumpIfFalse to else-or-end (placeholder 0 offset)
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            // consequence
+            // consequence — pass loop_state so inner break/continue work
             compile_stmt(
                 consequence,
                 chunk,
@@ -470,7 +839,10 @@ fn compile_control_flow(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
+                loop_state.as_deref_mut(),
             )?;
             if let Some(alt) = alternative {
                 // Unconditional jump past the else branch
@@ -478,7 +850,18 @@ fn compile_control_flow(
                 // JumpIfFalse lands here (start of else)
                 let else_target = chunk.code.len();
                 chunk.patch_jump(jif, else_target)?;
-                compile_stmt(alt, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                compile_stmt(
+                    alt,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    loop_state,
+                )?;
                 // And the skip-over-else lands here (end)
                 let end = chunk.code.len();
                 chunk.patch_jump(jmp_end, end)?;
@@ -493,15 +876,47 @@ fn compile_control_flow(
             condition, body, ..
         } => {
             let loop_start = chunk.code.len();
-            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_stmt(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            // Create a fresh inner LoopState — break/continue target THIS loop,
+            // not any outer loop.
+            let mut inner = LoopState::new(loop_start);
+            compile_stmt(
+                body,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                Some(&mut inner),
+            )?;
             // Unconditional loop back to cond
             let jmp = chunk.emit(Op::Jump(0), line);
             chunk.patch_jump(jmp, loop_start)?;
             // JumpIfFalse lands after the loop
             let end = chunk.code.len();
             chunk.patch_jump(jif, end)?;
+            // Patch all break sites to the exit PC.
+            for p in inner.break_patches {
+                chunk.patch_jump(p, end)?;
+            }
+            // Patch all continue sites to the loop condition check.
+            for p in inner.continue_patches {
+                chunk.patch_jump(p, loop_start)?;
+            }
             Ok(())
         }
         Node::ForInStatement {
@@ -510,7 +925,17 @@ fn compile_control_flow(
             body,
             ..
         } => compile_for_in(
-            name, iterable, body, chunk, locals, next_local, fn_index, ffi_index, line,
+            name,
+            iterable,
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
             /* in_fn */ false,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
@@ -521,6 +946,10 @@ fn compile_control_flow(
 /// except `return EXPR;` emits `ReturnFromCall` instead of `Return`
 /// — a bare `return` at program scope halts the VM; one inside a
 /// function returns to the caller.
+///
+/// `loop_state` threads break/continue patch sites from the enclosing
+/// loop; same semantics as `compile_stmt`.
+#[allow(clippy::too_many_arguments)]
 fn compile_stmt_in_fn(
     node: &Node,
     chunk: &mut Chunk,
@@ -528,11 +957,24 @@ fn compile_stmt_in_fn(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
+    loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -542,8 +984,52 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
+        // RES-401: `let (a, b, c) = expr;` inside a function body.
+        Node::LetTupleDestructure { names, value, .. } => {
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let tmp_idx = *next_local;
+            *next_local += 1;
+            chunk.emit(Op::StoreLocal(tmp_idx), line);
+            for (i, name) in names.iter().enumerate() {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let slot = *next_local;
+                *next_local += 1;
+                locals.insert(name.clone(), slot);
+                chunk.emit(Op::LoadLocal(tmp_idx), line);
+                let idx_const = chunk.add_constant(Value::Int(i as i64))?;
+                chunk.emit(Op::Const(idx_const), line);
+                chunk.emit(Op::LoadIndex, line);
+                chunk.emit(Op::StoreLocal(slot), line);
+            }
+            Ok(())
+        }
         Node::ReturnStatement { value: Some(v), .. } => {
-            compile_expr(v, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                v,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
@@ -555,55 +1041,70 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
-        Node::ExpressionStatement { expr: inner, .. } => {
-            compile_expr(inner, chunk, locals, fn_index, ffi_index, line)
-        }
+        Node::ExpressionStatement { expr: inner, .. } => compile_expr(
+            inner,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         Node::IfStatement { .. }
         | Node::WhileStatement { .. }
         | Node::ForInStatement { .. }
-        | Node::Block { .. } => {
-            compile_control_flow_in_fn(node, chunk, locals, next_local, fn_index, ffi_index, line)
-        }
+        | Node::Block { .. } => compile_control_flow_in_fn(
+            node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
+        ),
         Node::Assignment { name, value, .. } => {
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
-        // RES-171a: same shape as the main-chunk IndexAssignment
-        // arm. Duplicated on purpose because `compile_stmt` and
-        // `compile_stmt_in_fn` are separate matches (one emits
-        // `Return`, the other `ReturnFromCall`); extracting a
-        // shared helper is overkill for RES-171a but a candidate
-        // cleanup when RES-171c expands this path.
+        // RES-171a/RES-171c: `a[i] = v` and `a[i0][i1]...[iN] = v`.
+        // Shares the compile_index_assignment helper with compile_stmt.
         Node::IndexAssignment {
             target,
             index,
             value,
             ..
-        } => {
-            // RES-1430: borrow target name as &str — see comment on
-            // the compile_stmt IndexAssignment arm.
-            let local_name: &str = match target.as_ref() {
-                Node::Identifier { name, .. } => name.as_str(),
-                _ => {
-                    return Err(CompileError::Unsupported(
-                        "nested index assignment (RES-171c)",
-                    ));
-                }
-            };
-            let slot = *locals
-                .get(local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
-            chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
-            chunk.emit(Op::StoreIndex, line);
-            chunk.emit(Op::StoreLocal(slot), line);
-            Ok(())
-        }
+        } => compile_index_assignment(
+            target,
+            index,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         // RES-335: `p.field = v;` inside a fn body. Mirrors the
         // `compile_stmt` arm above; duplicated because the two
         // dispatchers handle `return` differently.
@@ -627,7 +1128,17 @@ fn compile_stmt_in_fn(
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::SetField {
@@ -638,6 +1149,99 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
+        Node::Break { .. } => {
+            let ls = loop_state.ok_or(CompileError::Unsupported("break outside loop"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.break_patches.push(patch);
+            Ok(())
+        }
+        Node::Continue { .. } => {
+            let ls = loop_state.ok_or(CompileError::Unsupported("continue outside loop"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.continue_patches.push(patch);
+            Ok(())
+        }
+        Node::Assert {
+            condition, message, ..
+        } => compile_assert(
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // RES-155: struct destructuring inside a function body.
+        Node::LetDestructureStruct { fields, value, .. } => compile_let_destructure_struct(
+            fields,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // RES-384b: `static let NAME = EXPR;` inside a fn body — same
+        // treatment as the top-level arm: compile as a regular local.
+        Node::StaticLet { name, value, .. } => {
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let idx = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), idx);
+            chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        // RES-361: const decl inside fn body — pre-evaluated, no emission.
+        Node::Const { .. } => Ok(()),
+        // RES-139: `live { body }` inside fn body — compile body once.
+        Node::LiveBlock { body, .. } => compile_stmt_in_fn(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
+        ),
+        // Verification-only constructs: emit nothing at runtime.
+        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // Type-level / declaration-only constructs: no runtime bytecode.
+        Node::StructDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::TraitDecl { .. }
+        | Node::ImplBlock { .. }
+        | Node::TypeAlias { .. }
+        | Node::NewtypeDecl { .. }
+        | Node::RegionDecl { .. }
+        | Node::ActorDecl { .. }
+        | Node::ClusterDecl { .. }
+        | Node::SupervisorDecl { .. }
+        | Node::ModuleDecl { .. }
+        | Node::Use { .. }
+        | Node::UnsafeBlock { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -645,6 +1249,7 @@ fn compile_stmt_in_fn(
 /// Same as `compile_control_flow` but routes nested statements
 /// through `compile_stmt_in_fn` so `return` inside a branch emits
 /// `ReturnFromCall`. This is the version used by function bodies.
+#[allow(clippy::too_many_arguments)]
 fn compile_control_flow_in_fn(
     node: &Node,
     chunk: &mut Chunk,
@@ -652,12 +1257,28 @@ fn compile_control_flow_in_fn(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
+    mut loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::Block { stmts, .. } => {
+            let mut ls = loop_state;
             for s in stmts {
-                compile_stmt_in_fn(s, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                let ls_ref = ls.as_deref_mut();
+                compile_stmt_in_fn(
+                    s,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    ls_ref,
+                )?;
             }
             Ok(())
         }
@@ -667,7 +1288,17 @@ fn compile_control_flow_in_fn(
             alternative,
             ..
         } => {
-            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             compile_stmt_in_fn(
                 consequence,
@@ -676,13 +1307,27 @@ fn compile_control_flow_in_fn(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
+                loop_state.as_deref_mut(),
             )?;
             if let Some(alt) = alternative {
                 let jmp_end = chunk.emit(Op::Jump(0), line);
                 let else_target = chunk.code.len();
                 chunk.patch_jump(jif, else_target)?;
-                compile_stmt_in_fn(alt, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                compile_stmt_in_fn(
+                    alt,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    loop_state,
+                )?;
                 let end = chunk.code.len();
                 chunk.patch_jump(jmp_end, end)?;
             } else {
@@ -695,13 +1340,41 @@ fn compile_control_flow_in_fn(
             condition, body, ..
         } => {
             let loop_start = chunk.code.len();
-            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_stmt_in_fn(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            let mut inner = LoopState::new(loop_start);
+            compile_stmt_in_fn(
+                body,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                Some(&mut inner),
+            )?;
             let jmp = chunk.emit(Op::Jump(0), line);
             chunk.patch_jump(jmp, loop_start)?;
             let end = chunk.code.len();
             chunk.patch_jump(jif, end)?;
+            for p in inner.break_patches {
+                chunk.patch_jump(p, end)?;
+            }
+            for p in inner.continue_patches {
+                chunk.patch_jump(p, loop_start)?;
+            }
             Ok(())
         }
         Node::ForInStatement {
@@ -710,9 +1383,35 @@ fn compile_control_flow_in_fn(
             body,
             ..
         } => compile_for_in(
-            name, iterable, body, chunk, locals, next_local, fn_index, ffi_index, line,
+            name,
+            iterable,
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
             /* in_fn */ true,
         ),
+        // Type-level / declaration-only constructs: no runtime bytecode.
+        Node::StructDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::TraitDecl { .. }
+        | Node::ImplBlock { .. }
+        | Node::TypeAlias { .. }
+        | Node::NewtypeDecl { .. }
+        | Node::RegionDecl { .. }
+        | Node::ActorDecl { .. }
+        | Node::ClusterDecl { .. }
+        | Node::SupervisorDecl { .. }
+        | Node::ModuleDecl { .. }
+        | Node::Use { .. }
+        | Node::UnsafeBlock { .. }
+        | Node::Assume { .. }
+        | Node::InvariantStatement { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -772,6 +1471,8 @@ fn compile_for_in(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
     in_fn: bool,
 ) -> Result<(), CompileError> {
@@ -808,14 +1509,24 @@ fn compile_for_in(
     locals.insert(name.to_string(), name_slot);
 
     // 1. Evaluate iterable, store in arr_slot.
-    compile_expr(iterable, chunk, locals, fn_index, ffi_index, line)?;
+    compile_expr(
+        iterable,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
     chunk.emit(Op::StoreLocal(arr_slot), line);
 
     // 2. Compute length via the canonical `len` builtin and
-    //    store in len_slot. Calling the builtin keeps us aligned
-    //    with the tree walker's iteration semantics — `len` on
-    //    a non-array surfaces a typed error rather than a silent
-    //    miscompile.
+    //    store in len_slot. `len` handles arrays, strings, and
+    //    any other iterable — the VM's LoadIndex was extended
+    //    (RES-334b) to support strings so `for c in "hello"` and
+    //    `for i in 0..10` (via array_range) both work uniformly.
     let len_name_const = chunk.add_string_constant("len")?;
     chunk.emit(Op::LoadLocal(arr_slot), line);
     chunk.emit(
@@ -845,16 +1556,42 @@ fn compile_for_in(
     chunk.emit(Op::LoadIndex, line);
     chunk.emit(Op::StoreLocal(name_slot), line);
 
-    // 6. Body. Routed to the same dispatcher as the surrounding
-    //    scope so a top-level `return` halts the VM and a fn-body
-    //    `return` emits ReturnFromCall.
+    // 6. Body. A fresh LoopState collects break/continue patch sites.
+    //    `continue` in a for-in loop skips to the index increment (step 7),
+    //    whose PC is not yet known — continue_patches are back-patched below.
+    let mut inner = LoopState::new(0); // continue_target set after body
     if in_fn {
-        compile_stmt_in_fn(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
+        compile_stmt_in_fn(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            Some(&mut inner),
+        )?;
     } else {
-        compile_stmt(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
+        compile_stmt(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            Some(&mut inner),
+        )?;
     }
 
     // 7. idx = idx + 1 (peephole folds this to IncLocal).
+    // This is the `continue` target for this loop — record the PC before
+    // emitting the increment so `continue` skips to here.
+    let continue_target = chunk.code.len();
     chunk.emit(Op::LoadLocal(idx_slot), line);
     let one_const = chunk.add_constant(Value::Int(1))?;
     chunk.emit(Op::Const(one_const), line);
@@ -866,6 +1603,14 @@ fn compile_for_in(
     chunk.patch_jump(jmp, loop_start)?;
     let end = chunk.code.len();
     chunk.patch_jump(jif, end)?;
+
+    // Patch break → exit, continue → idx increment.
+    for p in inner.break_patches {
+        chunk.patch_jump(p, end)?;
+    }
+    for p in inner.continue_patches {
+        chunk.patch_jump(p, continue_target)?;
+    }
 
     // Restore the loop variable's outer binding. The hidden
     // iterator slots stay in `locals` so a later for-loop in
@@ -882,12 +1627,197 @@ fn compile_for_in(
     Ok(())
 }
 
+/// RES-171c: compile `a[i0][i1]...[iN] = v` for any nesting depth.
+///
+/// Extracts (root_name, indices[]) from the assignment chain, allocates
+/// N-1 hidden temp locals, and emits load/mutate/writeback sequences
+/// so all intermediate arrays are updated in value-semantics order.
+///
+/// For depth=1 this degenerates to the simple `LoadLocal / StoreIndex /
+/// StoreLocal` triple (no temps needed).
+#[allow(clippy::too_many_arguments)]
+fn compile_index_assignment(
+    target: &Node,
+    outermost_index: &Node,
+    value: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    // Walk target chain to collect indices in root-to-leaf order.
+    let mut indices_rev: Vec<&Node> = vec![outermost_index];
+    let mut cursor: &Node = target;
+    let root_name = loop {
+        match cursor {
+            Node::Identifier { name, .. } => break name.as_str(),
+            Node::IndexExpression {
+                target: inner_t,
+                index: inner_i,
+                ..
+            } => {
+                indices_rev.push(inner_i.as_ref());
+                cursor = inner_t.as_ref();
+            }
+            _ => {
+                return Err(CompileError::Unsupported(
+                    "non-identifier target in index assignment",
+                ));
+            }
+        }
+    };
+    indices_rev.reverse();
+    let indices: Vec<&Node> = indices_rev;
+    let depth = indices.len(); // >= 1
+
+    let root_slot = *locals
+        .get(root_name)
+        .ok_or_else(|| CompileError::UnknownIdentifier(root_name.to_string()))?;
+
+    if depth == 1 {
+        // Fast path: `a[i] = v`.
+        chunk.emit(Op::LoadLocal(root_slot), line);
+        compile_expr(
+            indices[0],
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        compile_expr(
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        chunk.emit(Op::StoreIndex, line);
+        chunk.emit(Op::StoreLocal(root_slot), line);
+        return Ok(());
+    }
+
+    // Depth >= 2: allocate N-1 temp locals.
+    let n_temps = depth - 1;
+    if (*next_local as usize) + n_temps > u16::MAX as usize {
+        return Err(CompileError::TooManyLocals);
+    }
+    let temp_base = *next_local;
+    *next_local += n_temps as u16;
+    let temp_keys: Vec<String> = (0..n_temps)
+        .map(|k| format!("$nested_idx@{}", temp_base + k as u16))
+        .collect();
+    for (k, key) in temp_keys.iter().enumerate() {
+        locals.insert(key.clone(), temp_base + k as u16);
+    }
+
+    // Phase 1: load each intermediate level into its temp.
+    // $t0 = root[i0], $t1 = $t0[i1], ..., $t(N-2) = $t(N-3)[i(N-2)]
+    for (k, idx_node) in indices.iter().enumerate().take(n_temps) {
+        let src_slot = if k == 0 {
+            root_slot
+        } else {
+            temp_base + (k as u16 - 1)
+        };
+        chunk.emit(Op::LoadLocal(src_slot), line);
+        compile_expr(
+            idx_node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        chunk.emit(Op::LoadIndex, line);
+        chunk.emit(Op::StoreLocal(temp_base + k as u16), line);
+    }
+
+    // Phase 2: mutate the deepest temp.
+    // $t(N-2)[i(N-1)] = v
+    let deepest_temp = temp_base + (n_temps as u16 - 1);
+    chunk.emit(Op::LoadLocal(deepest_temp), line);
+    compile_expr(
+        indices[depth - 1],
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    compile_expr(
+        value,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    chunk.emit(Op::StoreIndex, line);
+    chunk.emit(Op::StoreLocal(deepest_temp), line);
+
+    // Phase 3: write back up the chain.
+    // $t(k-1)[i(k)] = $t(k), down to root[i0] = $t0
+    for k in (0..n_temps).rev() {
+        let dst_slot = if k == 0 {
+            root_slot
+        } else {
+            temp_base + (k as u16 - 1)
+        };
+        chunk.emit(Op::LoadLocal(dst_slot), line);
+        compile_expr(
+            indices[k],
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        chunk.emit(Op::LoadLocal(temp_base + k as u16), line);
+        chunk.emit(Op::StoreIndex, line);
+        chunk.emit(Op::StoreLocal(dst_slot), line);
+    }
+
+    // Clean up temp keys from locals map.
+    for key in &temp_keys {
+        locals.remove(key);
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_expr(
     node: &Node,
     chunk: &mut Chunk,
     locals: &HashMap<String, u16>,
+    next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
@@ -928,7 +1858,17 @@ fn compile_expr(
         Node::PrefixExpression {
             operator, right, ..
         } if operator == "-" => {
-            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::Neg, line);
             Ok(())
         }
@@ -936,7 +1876,17 @@ fn compile_expr(
         Node::PrefixExpression {
             operator, right, ..
         } if operator == "!" => {
-            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::Not, line);
             Ok(())
         }
@@ -947,9 +1897,29 @@ fn compile_expr(
             right,
             ..
         } if operator == "&&" => {
-            compile_expr(left, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                left,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // false branch
             let false_target = chunk.code.len();
@@ -967,12 +1937,32 @@ fn compile_expr(
             right,
             ..
         } if operator == "||" => {
-            compile_expr(left, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                left,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             // Negate lhs so JumpIfFalse skips to "true" when lhs is truthy.
             chunk.emit(Op::Not, line);
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             // lhs was falsy → evaluate rhs
-            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // true branch
             let true_target = chunk.code.len();
@@ -989,8 +1979,28 @@ fn compile_expr(
             right,
             ..
         } => {
-            compile_expr(left, chunk, locals, fn_index, ffi_index, line)?;
-            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                left,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let op = match operator.as_str() {
                 "+" => Op::Add,
                 "-" => Op::Sub,
@@ -1004,6 +2014,12 @@ fn compile_expr(
                 "<=" => Op::Le,
                 ">" => Op::Gt,
                 ">=" => Op::Ge,
+                // Bitwise ops (integer-only; typechecker enforces operand types).
+                "&" => Op::Band,
+                "|" => Op::Bor,
+                "^" => Op::Bxor,
+                "<<" => Op::Shl,
+                ">>" => Op::Shr,
                 _ => return Err(CompileError::Unsupported("non-arithmetic operator")),
             };
             chunk.emit(op, line);
@@ -1035,14 +2051,52 @@ fn compile_expr(
             // `compile_expr(arg, ...)` calls borrow disjoint
             // sub-nodes of `arguments`, so the borrow checker is
             // happy.
+            // Support indirect calls: if callee is a local variable (not a named
+            // fn/ffi) holding a closure, push it and emit CallClosure { arity }.
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                let is_named =
+                    fn_index.contains_key(name.as_str()) || ffi_index.contains_key(name.as_str());
+                if let (false, Some(&slot)) = (is_named, locals.get(name.as_str())) {
+                    chunk.emit(Op::LoadLocal(slot), line);
+                    let arity = arguments.len();
+                    for arg in arguments {
+                        compile_expr(
+                            arg,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                        )?;
+                    }
+                    if arity > u8::MAX as usize {
+                        return Err(CompileError::Unsupported("too many args in indirect call"));
+                    }
+                    chunk.emit(Op::CallClosure { arity: arity as u8 }, line);
+                    return Ok(());
+                }
+            }
             let callee_name: &str = match function.as_ref() {
                 Node::Identifier { name, .. } => name.as_str(),
-                _ => return Err(CompileError::Unsupported("indirect call")),
+                _ => return Err(CompileError::Unsupported("indirect call on non-identifier")),
             };
             // FFI v2: foreign call takes priority over user-defined functions.
             if let Some(&idx) = ffi_index.get(callee_name) {
                 for arg in arguments {
-                    compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                 }
                 chunk.emit(Op::CallForeign(idx), line);
                 return Ok(());
@@ -1052,7 +2106,17 @@ fn compile_expr(
                 // Push args left-to-right so the VM can pop them in reverse
                 // and assign to locals 0..arity in source order.
                 for arg in arguments {
-                    compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                 }
                 chunk.emit(Op::Call(callee_idx), line);
                 return Ok(());
@@ -1069,7 +2133,17 @@ fn compile_expr(
                 }
                 let name_const = chunk.add_string_constant(callee_name)?;
                 for arg in arguments {
-                    compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                 }
                 chunk.emit(
                     Op::CallBuiltin {
@@ -1090,7 +2164,17 @@ fn compile_expr(
                 return Err(CompileError::Unsupported("array literal with >65535 items"));
             }
             for item in items {
-                compile_expr(item, chunk, locals, fn_index, ffi_index, line)?;
+                compile_expr(
+                    item,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
             }
             chunk.emit(
                 Op::MakeArray {
@@ -1117,8 +2201,28 @@ fn compile_expr(
             index,
             span,
         } => {
-            compile_expr(target, chunk, locals, fn_index, ffi_index, line)?;
-            compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                target,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                index,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let op = if crate::bounds_check::is_proven_site(*span) {
                 Op::LoadIndexUnchecked
             } else {
@@ -1139,7 +2243,17 @@ fn compile_expr(
             for (field_name, field_expr) in fields {
                 let fname_idx = chunk.add_string_constant(field_name)?;
                 chunk.emit(Op::Const(fname_idx), line);
-                compile_expr(field_expr, chunk, locals, fn_index, ffi_index, line)?;
+                compile_expr(
+                    field_expr,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
             }
             chunk.emit(
                 Op::StructLiteral {
@@ -1155,7 +2269,17 @@ fn compile_expr(
         // `compile_expr(target)` re-enters this arm for inner
         // `FieldAccess` nodes.
         Node::FieldAccess { target, field, .. } => {
-            compile_expr(target, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(
+                target,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::GetField {
@@ -1165,7 +2289,1102 @@ fn compile_expr(
             );
             Ok(())
         }
+        // RES-401: `(a, b, c)` tuple literal — compile each item left-
+        // to-right then emit `MakeTuple { len }` to pack them.
+        Node::TupleLiteral { items, .. } => {
+            if items.len() > u16::MAX as usize {
+                return Err(CompileError::Unsupported("tuple literal with >65535 items"));
+            }
+            for item in items {
+                compile_expr(
+                    item,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
+            }
+            chunk.emit(
+                Op::MakeTuple {
+                    len: items.len() as u16,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-401: `tuple.N` — compile the tuple, push the index as an
+        // integer constant, emit `LoadIndex` (which handles both arrays
+        // and tuples in the VM). The typechecker ensures `index` is
+        // within the declared tuple length.
+        Node::TupleIndex { tuple, index, .. } => {
+            compile_expr(
+                tuple,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let idx_const = chunk.add_constant(Value::Int(*index as i64))?;
+            chunk.emit(Op::Const(idx_const), line);
+            chunk.emit(Op::LoadIndex, line);
+            Ok(())
+        }
+        // RES-221: interpolated string `"hello {name}!"` — lower to
+        // `to_string()` calls on each expr part, then fold all parts
+        // (literals are inlined as string constants) with `Op::Add`.
+        //
+        // Lowering: push N string values, then emit N-1 Add ops.
+        // Empty interpolation (no parts) emits a single `""` constant.
+        Node::InterpolatedString { parts, .. } => {
+            if parts.is_empty() {
+                let idx = chunk.add_string_constant("")?;
+                chunk.emit(Op::Const(idx), line);
+                return Ok(());
+            }
+            let to_string_idx = chunk.add_string_constant("to_string")?;
+            for part in parts {
+                match part {
+                    crate::string_interp::StringPart::Literal(s) => {
+                        let idx = chunk.add_string_constant(s)?;
+                        chunk.emit(Op::Const(idx), line);
+                    }
+                    crate::string_interp::StringPart::Expr(expr) => {
+                        compile_expr(
+                            expr,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                        )?;
+                        chunk.emit(
+                            Op::CallBuiltin {
+                                name_const: to_string_idx,
+                                arity: 1,
+                            },
+                            line,
+                        );
+                    }
+                }
+            }
+            for _ in 1..parts.len() {
+                chunk.emit(Op::Add, line);
+            }
+            Ok(())
+        }
+        // RES-163: `match scrutinee { pat => body, ... }` — lower to
+        // a sequence of pattern checks followed by JumpIfFalse / Jump
+        // instructions. Supports: Wildcard, Literal, Identifier,
+        // Range, Or (literal branches only), Bind. Complex patterns
+        // (Struct, Enum, Some/None/Ok/Err, Tuple) return Unsupported.
+        Node::Match {
+            scrutinee, arms, ..
+        } => compile_match_expr(
+            scrutinee,
+            arms,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // RES-148: `{ k1: v1, k2: v2 }` map literal. Lowered to a
+        // `map_new()` call followed by N `map_insert(map, k, v)` calls.
+        // All three builtins are in the BUILTINS table so the VM's
+        // CallBuiltin dispatch can reach them without new opcodes.
+        Node::MapLiteral { entries, .. } => {
+            let map_new_idx = chunk.add_string_constant("map_new")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: map_new_idx,
+                    arity: 0,
+                },
+                line,
+            );
+            if !entries.is_empty() {
+                let map_insert_idx = chunk.add_string_constant("map_insert")?;
+                for (k, v) in entries {
+                    compile_expr(
+                        k,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                    compile_expr(
+                        v,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                    chunk.emit(
+                        Op::CallBuiltin {
+                            name_const: map_insert_idx,
+                            arity: 3,
+                        },
+                        line,
+                    );
+                }
+            }
+            Ok(())
+        }
+        // RES-149: `#{v1, v2, v3}` set literal. Lowered to a
+        // `set_new()` call followed by N `set_insert(set, item)` calls.
+        Node::SetLiteral { items, .. } => {
+            let set_new_idx = chunk.add_string_constant("set_new")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: set_new_idx,
+                    arity: 0,
+                },
+                line,
+            );
+            if !items.is_empty() {
+                let set_insert_idx = chunk.add_string_constant("set_insert")?;
+                for item in items {
+                    compile_expr(
+                        item,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                    chunk.emit(
+                        Op::CallBuiltin {
+                            name_const: set_insert_idx,
+                            arity: 2,
+                        },
+                        line,
+                    );
+                }
+            }
+            Ok(())
+        }
+        // RES-169d: `fn(params) { body }` anonymous function literal.
+        // Compiles the body as a new Function entry, collects free variables
+        // (capture-by-value), and emits MakeClosure.
+        Node::FunctionLiteral {
+            parameters, body, ..
+        } => {
+            if parameters.len() > u8::MAX as usize {
+                return Err(CompileError::Unsupported("fn literal with >255 params"));
+            }
+            if *next_fn_idx == u16::MAX {
+                return Err(CompileError::Unsupported("too many functions (>65535)"));
+            }
+            let fn_idx = *next_fn_idx;
+            *next_fn_idx += 1;
+
+            // Determine the set of free variables: identifiers in the body that
+            // are not the literal's own parameters and are bound in the *outer*
+            // locals map. Collect in insertion order for a deterministic capture
+            // sequence (needed so LoadUpvalue(i) indices are stable).
+            let param_names: std::collections::HashSet<&str> =
+                parameters.iter().map(|(_, n)| n.as_str()).collect();
+            let mut captured: Vec<(u16, String)> = Vec::new(); // (outer slot, name)
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            collect_free_vars(body, &param_names, locals, &mut captured, &mut seen);
+
+            // Build the closure's local map: params at 0..arity, then upvalues
+            // accessible via LoadUpvalue. The body chunk uses LoadUpvalue(i) for
+            // captured names, resolved by the inner compilation below.
+            let arity = parameters.len() as u8;
+            let upvalue_count = captured.len();
+
+            // Build the body chunk for the new Function entry.
+            let mut fn_chunk = Chunk::with_capacity(64);
+            let mut fn_locals: HashMap<String, u16> =
+                HashMap::with_capacity(parameters.len().saturating_mul(2).max(8));
+            let mut fn_next_local: u16 = 0;
+            for (_, pname) in parameters {
+                fn_locals.insert(pname.clone(), fn_next_local);
+                fn_next_local += 1;
+            }
+            // Upvalues are accessed via Op::LoadUpvalue, not locals — we don't
+            // add them to fn_locals. The body's compile_expr will see identifiers
+            // missing from fn_locals and look them up as … well, currently we
+            // need to NOT add them as locals so the compiled body references them
+            // as upvalues. But compile_expr currently handles identifiers only
+            // via locals lookup. We add a sentinel: give each captured name a
+            // special "upvalue" pseudo-slot by injecting it into fn_locals with a
+            // flag we then post-process. Instead, we compile the body with the
+            // captured names in fn_locals, then rewrite those LoadLocal ops into
+            // LoadUpvalue ops after the fact.
+            //
+            // Simpler approach: insert captured names into fn_locals at slots
+            // >= fn_next_local (reachable area), compile, then rewrite those
+            // LoadLocal(slot) ops to LoadUpvalue(upvalue_index). The upvalue
+            // indices are 0-based and correspond to the capture order.
+            let upvalue_base = fn_next_local; // first "upvalue" local slot
+            for (i, (_, name)) in captured.iter().enumerate() {
+                fn_locals.insert(name.clone(), upvalue_base + i as u16);
+            }
+
+            // Compile the body statements.
+            let inner_stmts = match body.as_ref() {
+                Node::Block { stmts: b, .. } => b.as_slice(),
+                single => std::slice::from_ref(single),
+            };
+            for stmt in inner_stmts {
+                let stmt_line = node_line(stmt).unwrap_or(line);
+                compile_stmt_in_fn(
+                    stmt,
+                    &mut fn_chunk,
+                    &mut fn_locals,
+                    &mut fn_next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    stmt_line,
+                    None,
+                )?;
+            }
+            fn_chunk.emit(Op::ReturnFromCall, 0);
+
+            // Rewrite LoadLocal(upvalue_base + i) → LoadUpvalue(i).
+            // Any slot in [upvalue_base, upvalue_base + upvalue_count) was
+            // injected for a capture. Rewrite those slots in-place.
+            for op in &mut fn_chunk.code {
+                // `if let … { if … }` form is intentional: stable Rust doesn't
+                // have let_chains, so suppress the collapsible_if lint here.
+                #[allow(clippy::collapsible_if)]
+                if let Op::LoadLocal(slot) = op {
+                    if *slot >= upvalue_base
+                        && (*slot as usize) < upvalue_base as usize + upvalue_count
+                    {
+                        *op = Op::LoadUpvalue(*slot - upvalue_base);
+                    }
+                }
+            }
+
+            let local_count = fn_next_local;
+            // Insert at fn_idx (pre-allocated index). fns may have grown via
+            // nested FunctionLiterals; we need to push a placeholder then
+            // overwrite it, OR we always push at end (and fn_idx == fns.len()
+            // at the time we called *next_fn_idx += 1). Since nested closures
+            // also increment next_fn_idx, fn_idx may not equal fns.len() by
+            // the time we reach here. Use a placeholder-then-overwrite strategy:
+            // extend fns to at least fn_idx+1 with placeholders.
+            while fns.len() <= fn_idx as usize {
+                fns.push(Function {
+                    name: "<closure_placeholder>".into(),
+                    arity: 0,
+                    chunk: Chunk::with_capacity(0),
+                    local_count: 0,
+                });
+            }
+            fns[fn_idx as usize] = Function {
+                name: "<closure>".into(),
+                arity,
+                chunk: fn_chunk,
+                local_count,
+            };
+
+            // Emit: push each captured value onto the stack, then MakeClosure.
+            for (outer_slot, _) in &captured {
+                chunk.emit(Op::LoadLocal(*outer_slot), line);
+            }
+            chunk.emit(
+                Op::MakeClosure {
+                    fn_idx,
+                    upvalue_count: upvalue_count as u8,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-152: `b"..."` bytes literal — stored as a Value::Bytes constant.
+        Node::BytesLiteral { value, .. } => {
+            let idx = chunk.add_constant(Value::Bytes(value.clone()))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
+        // RES-291: `lo..hi` / `lo..=hi` range expression.
+        // Lowered to `array_range(lo, hi)` for exclusive ranges, or
+        // `array_range(lo, hi + 1)` for inclusive ranges (emit hi, Const(1), Add).
+        Node::Range {
+            lo, hi, inclusive, ..
+        } => {
+            compile_expr(
+                lo,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                hi,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *inclusive {
+                // hi_incl = hi + 1
+                let one_idx = chunk.add_constant(Value::Int(1))?;
+                chunk.emit(Op::Const(one_idx), line);
+                chunk.emit(Op::Add, line);
+            }
+            let name_idx = chunk.add_string_constant("array_range")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: name_idx,
+                    arity: 2,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-921: `target[lo..hi]` / `target[lo..=hi]` slice expression.
+        // Lowered to `array_slice(target, lo, hi, inclusive)`.
+        // `lo = None` is represented as `Value::Int(0)`;
+        // `hi = None` is represented as `Value::Int(-1)` (sentinel: end of array).
+        Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            ..
+        } => {
+            compile_expr(
+                target,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            match lo {
+                Some(lo_expr) => compile_expr(
+                    lo_expr,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?,
+                None => {
+                    let idx = chunk.add_constant(Value::Int(0))?;
+                    chunk.emit(Op::Const(idx), line);
+                }
+            }
+            match hi {
+                Some(hi_expr) => compile_expr(
+                    hi_expr,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?,
+                None => {
+                    // -1 sentinel = "up to end of array"
+                    let idx = chunk.add_constant(Value::Int(-1))?;
+                    chunk.emit(Op::Const(idx), line);
+                }
+            }
+            let incl_idx = chunk.add_constant(Value::Bool(*inclusive))?;
+            chunk.emit(Op::Const(incl_idx), line);
+            let name_idx = chunk.add_string_constant("array_slice")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: name_idx,
+                    arity: 4,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-1857/RES-duration: DurationLiteral is a nanoseconds constant.
+        // The nanos value is already computed by the parser; emit it as an Int.
+        Node::DurationLiteral { nanos, .. } => {
+            let idx = chunk.add_constant(Value::Int(*nanos as i64))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
+        // RES-newtypes: NewtypeConstruct wraps a value in a one-field struct.
+        // The interpreter creates `Struct { name, fields: [("__value", inner)] }`;
+        // we replicate that by emitting a string-const for "__value", compiling
+        // the inner expression, then emitting StructLiteral with field_count=1.
+        Node::NewtypeConstruct {
+            type_name, value, ..
+        } => {
+            let name_const = chunk.add_string_constant(type_name)?;
+            let field_name_idx = chunk.add_string_constant("__value")?;
+            chunk.emit(Op::Const(field_name_idx), line);
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(
+                Op::StructLiteral {
+                    name_const,
+                    field_count: 1,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-375: TryExpression (`expr?`) — compile the inner expression,
+        // then emit TryUnwrap which either leaves the unwrapped value on the
+        // stack or triggers an early return from the current function.
+        Node::TryExpression { expr: inner, .. } => {
+            compile_expr(
+                inner,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(Op::TryUnwrap, line);
+            Ok(())
+        }
+        // RES-325: NamedArg — the name is a type-check annotation only;
+        // for bytecode purposes just compile the value.
+        Node::NamedArg { value, .. } => compile_expr(
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
+    }
+}
+
+/// Walk `node` collecting identifiers that are free in the expression (not
+/// in `param_names`) and bound in `outer_locals`. Results go into `out` in
+/// first-seen order; `seen` tracks which names we've already added.
+fn collect_free_vars(
+    node: &Node,
+    param_names: &std::collections::HashSet<&str>,
+    outer_locals: &HashMap<String, u16>,
+    out: &mut Vec<(u16, String)>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match node {
+        Node::Identifier { name, .. }
+            if !param_names.contains(name.as_str())
+                && !seen.contains(name)
+                && outer_locals.contains_key(name) =>
+        {
+            let slot = outer_locals[name];
+            seen.insert(name.clone());
+            out.push((slot, name.clone()));
+        }
+        Node::Identifier { .. } => {}
+        // Recurse into all child nodes.
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_free_vars(s, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::LetStatement { value, .. } => {
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            collect_free_vars(left, param_names, outer_locals, out, seen);
+            collect_free_vars(right, param_names, outer_locals, out, seen);
+        }
+        Node::PrefixExpression { right, .. } => {
+            collect_free_vars(right, param_names, outer_locals, out, seen);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            collect_free_vars(function, param_names, outer_locals, out, seen);
+            for a in arguments {
+                collect_free_vars(a, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_free_vars(condition, param_names, outer_locals, out, seen);
+            collect_free_vars(consequence, param_names, outer_locals, out, seen);
+            if let Some(alt) = alternative {
+                collect_free_vars(alt, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::ReturnStatement { value: Some(v), .. } => {
+            collect_free_vars(v, param_names, outer_locals, out, seen);
+        }
+        Node::ReturnStatement { .. } => {}
+        Node::ExpressionStatement { expr, .. } => {
+            collect_free_vars(expr, param_names, outer_locals, out, seen);
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_free_vars(condition, param_names, outer_locals, out, seen);
+            collect_free_vars(body, param_names, outer_locals, out, seen);
+        }
+        // Leaf nodes (literals, etc.) have no free vars.
+        _ => {}
+    }
+}
+
+// ── Match expression lowering ─────────────────────────────────────────────────
+
+/// Compile a `match` expression. The scrutinee is evaluated once and
+/// stored in a hidden temp local; each arm is compiled as a
+/// pattern-check + optional-guard + body sequence with jump routing.
+#[allow(clippy::too_many_arguments)]
+fn compile_match_expr(
+    scrutinee: &Node,
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    chunk: &mut Chunk,
+    locals: &HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_expr(
+        scrutinee,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    if *next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let scrutinee_slot = *next_local;
+    *next_local += 1;
+    chunk.emit(Op::StoreLocal(scrutinee_slot), line);
+
+    let mut after_match_patches: Vec<usize> = Vec::new();
+
+    for (pattern, guard, body) in arms {
+        // Each arm gets its own mutable locals copy so bindings don't
+        // leak across arms. The clone is cheap (typically ≤ 16 entries).
+        let mut arm_locals = locals.clone();
+        let next_local_snap = *next_local;
+
+        let mut next_arm_patches: Vec<usize> = Vec::new();
+        compile_pattern_check(
+            pattern,
+            scrutinee_slot,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            &mut next_arm_patches,
+        )?;
+
+        if let Some(guard_expr) = guard {
+            compile_expr(
+                guard_expr,
+                chunk,
+                &arm_locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+
+        compile_expr(
+            body,
+            chunk,
+            &arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+
+        let after_p = chunk.emit(Op::Jump(0), line);
+        after_match_patches.push(after_p);
+
+        let next_arm_pc = chunk.code.len();
+        for p in next_arm_patches {
+            chunk.patch_jump(p, next_arm_pc)?;
+        }
+
+        // Reclaim temp slots used by this arm's bindings.
+        *next_local = next_local_snap;
+    }
+
+    // Fallthrough (no arm matched) → Void.
+    let void_idx = chunk.add_constant(Value::Void)?;
+    chunk.emit(Op::Const(void_idx), line);
+
+    let after_match_pc = chunk.code.len();
+    for p in after_match_patches {
+        chunk.patch_jump(p, after_match_pc)?;
+    }
+    Ok(())
+}
+
+/// Emit code that checks whether the current scrutinee (in `scrutinee_slot`)
+/// matches `pattern`. On failure, a `JumpIfFalse(0)` placeholder is appended
+/// to `next_arm_patches` (caller patches it to the next arm). On success, any
+/// name bindings are added to `locals`.
+///
+/// Supported: Wildcard, Literal, Identifier, Range, Or (literal branches),
+/// Bind(name, inner). Complex structural patterns return `Unsupported`.
+#[allow(clippy::too_many_arguments)]
+fn compile_pattern_check(
+    pattern: &crate::Pattern,
+    scrutinee_slot: u16,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    next_arm_patches: &mut Vec<usize>,
+) -> Result<(), CompileError> {
+    use crate::Pattern;
+    match pattern {
+        Pattern::Wildcard => {
+            // Always matches — no code.
+        }
+        Pattern::Literal(lit_node) => {
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            compile_expr(
+                lit_node,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(Op::Eq, line);
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+        Pattern::Identifier(name) => {
+            // Bind the scrutinee value to `name`; always matches.
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let slot = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), slot);
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(Op::StoreLocal(slot), line);
+        }
+        Pattern::Range { lo, hi, inclusive } => {
+            // lo <= scrutinee
+            let lo_idx = chunk.add_constant(Value::Int(*lo))?;
+            chunk.emit(Op::Const(lo_idx), line);
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(Op::Le, line);
+            let p1 = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p1);
+            // scrutinee <= hi  (or < hi)
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            let hi_idx = chunk.add_constant(Value::Int(*hi))?;
+            chunk.emit(Op::Const(hi_idx), line);
+            if *inclusive {
+                chunk.emit(Op::Le, line);
+            } else {
+                chunk.emit(Op::Lt, line);
+            }
+            let p2 = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p2);
+        }
+        Pattern::Bind(name, inner) => {
+            // Check inner pattern first; then bind `name` if it matched.
+            compile_pattern_check(
+                inner,
+                scrutinee_slot,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                next_arm_patches,
+            )?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let slot = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), slot);
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(Op::StoreLocal(slot), line);
+        }
+        Pattern::Or(branches) => {
+            // Only support Or over Literal / Wildcard branches (no bindings).
+            if branches.iter().any(pattern_has_bindings) {
+                return Err(CompileError::Unsupported(
+                    "Or pattern with identifier bindings",
+                ));
+            }
+            // For each branch except the last: check; on match, jump to
+            // or_matched. For the last: check; on fail, fall to next_arm.
+            let mut or_matched_patches: Vec<usize> = Vec::new();
+            for (i, branch) in branches.iter().enumerate() {
+                let is_last = i == branches.len() - 1;
+                if is_last {
+                    // Last branch: normal "fail → next arm" check.
+                    compile_pattern_check(
+                        branch,
+                        scrutinee_slot,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                        next_arm_patches,
+                    )?;
+                } else {
+                    // Non-last: emit check that jumps to or_matched on
+                    // success. We invert: collect a "fail" patch from the
+                    // check, emit Jump(or_matched), then patch the fail
+                    // to skip the jump (i.e., continue to the next branch).
+                    let mut branch_fail: Vec<usize> = Vec::new();
+                    compile_pattern_check(
+                        branch,
+                        scrutinee_slot,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                        &mut branch_fail,
+                    )?;
+                    // Branch matched if no JumpIfFalse was taken.
+                    let matched_p = chunk.emit(Op::Jump(0), line);
+                    or_matched_patches.push(matched_p);
+                    // Patch branch_fail to here (next branch check).
+                    let next_branch_pc = chunk.code.len();
+                    for p in branch_fail {
+                        chunk.patch_jump(p, next_branch_pc)?;
+                    }
+                }
+            }
+            // or_matched: all or_matched_patches land here.
+            let or_matched_pc = chunk.code.len();
+            for p in or_matched_patches {
+                chunk.patch_jump(p, or_matched_pc)?;
+            }
+        }
+        // RES-375: `None` — checks that scrutinee is an absent Option.
+        Pattern::None => {
+            let n = chunk.add_string_constant("is_none")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+        // RES-375: `Some(inner)` — checks is_some, then extracts and matches inner.
+        Pattern::Some(inner_pat) => {
+            // 1. is_some(scrutinee) check.
+            let is_some_n = chunk.add_string_constant("is_some")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_some_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            // 2. Extract inner: option_unwrap(scrutinee).
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let inner_slot = *next_local;
+            *next_local += 1;
+            let uw_n = chunk.add_string_constant("option_unwrap")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: uw_n,
+                    arity: 1,
+                },
+                line,
+            );
+            chunk.emit(Op::StoreLocal(inner_slot), line);
+            // 3. Check inner pattern.
+            compile_pattern_check(
+                inner_pat,
+                inner_slot,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                next_arm_patches,
+            )?;
+        }
+        // RES-923: `Ok(inner)` — checks is_ok, then extracts and matches inner.
+        Pattern::Ok(inner_pat) => {
+            let is_ok_n = chunk.add_string_constant("is_ok")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_ok_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let inner_slot = *next_local;
+            *next_local += 1;
+            let uw_n = chunk.add_string_constant("unwrap")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: uw_n,
+                    arity: 1,
+                },
+                line,
+            );
+            chunk.emit(Op::StoreLocal(inner_slot), line);
+            compile_pattern_check(
+                inner_pat,
+                inner_slot,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                next_arm_patches,
+            )?;
+        }
+        // RES-923: `Err(inner)` — checks is_err, then extracts and matches inner.
+        Pattern::Err(inner_pat) => {
+            let is_err_n = chunk.add_string_constant("is_err")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_err_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let inner_slot = *next_local;
+            *next_local += 1;
+            let uwe_n = chunk.add_string_constant("unwrap_err")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: uwe_n,
+                    arity: 1,
+                },
+                line,
+            );
+            chunk.emit(Op::StoreLocal(inner_slot), line);
+            compile_pattern_check(
+                inner_pat,
+                inner_slot,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                next_arm_patches,
+            )?;
+        }
+        // RES-932: `(p0, p1, ...)` — checks type, checks length, checks elements.
+        Pattern::Tuple(sub_pats) => {
+            // 1. Confirm the scrutinee is actually a Tuple (not an Array).
+            let is_tup_n = chunk.add_string_constant("is_tuple")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_tup_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p_type = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p_type);
+            // 2. Check length via `len` builtin.
+            let len_n = chunk.add_string_constant("len")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: len_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let expected_len = chunk.add_constant(Value::Int(sub_pats.len() as i64))?;
+            chunk.emit(Op::Const(expected_len), line);
+            chunk.emit(Op::Eq, line);
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            // Check each element.
+            for (i, sub_pat) in sub_pats.iter().enumerate() {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let elem_slot = *next_local;
+                *next_local += 1;
+                let i_idx = chunk.add_constant(Value::Int(i as i64))?;
+                chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+                chunk.emit(Op::Const(i_idx), line);
+                chunk.emit(Op::LoadIndex, line);
+                chunk.emit(Op::StoreLocal(elem_slot), line);
+                compile_pattern_check(
+                    sub_pat,
+                    elem_slot,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    next_arm_patches,
+                )?;
+            }
+        }
+        _ => {
+            return Err(CompileError::Unsupported("complex match pattern"));
+        }
+    }
+    Ok(())
+}
+
+/// Returns true if the pattern introduces any identifier bindings.
+fn pattern_has_bindings(p: &crate::Pattern) -> bool {
+    use crate::Pattern;
+    match p {
+        Pattern::Identifier(_) | Pattern::Bind(_, _) => true,
+        Pattern::Or(branches) => branches.iter().any(pattern_has_bindings),
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } | Pattern::None => false,
+        Pattern::Struct { fields, .. } => fields.iter().any(|(_, p)| pattern_has_bindings(p)),
+        Pattern::Tuple(ps) => ps.iter().any(pattern_has_bindings),
+        Pattern::TupleStruct { fields, .. } => fields.iter().any(pattern_has_bindings),
+        Pattern::Some(inner) | Pattern::Ok(inner) | Pattern::Err(inner) => {
+            pattern_has_bindings(inner)
+        }
+        Pattern::EnumVariant { payload, .. } => match payload {
+            crate::EnumPatternPayload::None => false,
+            crate::EnumPatternPayload::Named(fields) => {
+                fields.iter().any(|(_, p)| pattern_has_bindings(p))
+            }
+            crate::EnumPatternPayload::Tuple(ps) => ps.iter().any(pattern_has_bindings),
+        },
     }
 }
 
@@ -1324,6 +3543,18 @@ fn node_kind(n: &Node) -> &'static str {
         Node::StructLiteral { .. } => "StructLiteral",
         Node::FieldAccess { .. } => "FieldAccess",
         Node::FieldAssignment { .. } => "FieldAssignment",
+        Node::BytesLiteral { .. } => "BytesLiteral",
+        Node::Range { .. } => "Range",
+        Node::Slice { .. } => "Slice",
+        Node::LetTupleDestructure { .. } => "LetTupleDestructure",
+        Node::LetDestructureStruct { .. } => "LetDestructureStruct",
+        Node::TupleLiteral { .. } => "TupleLiteral",
+        Node::TupleIndex { .. } => "TupleIndex",
+        Node::MapLiteral { .. } => "MapLiteral",
+        Node::SetLiteral { .. } => "SetLiteral",
+        Node::Match { .. } => "Match",
+        Node::FunctionLiteral { .. } => "FunctionLiteral",
+        Node::InterpolatedString { .. } => "InterpolatedString",
         _ => "<other>",
     }
 }
@@ -1616,14 +3847,15 @@ mod tests {
 
     #[test]
     fn compile_unsupported_construct_is_clean_error() {
-        // RES-334: for-in is now compiled to bytecode; `match` takes
-        // over as the canary for "unsupported construct" until that
-        // ships too. The original comment instructed updating this
-        // when for-in landed.
+        // RES-163: basic match (literal/wildcard arms) is now compiled.
+        // Structural patterns (struct destructuring) are still unsupported.
+        // Use a struct pattern as the "unsupported construct" canary until
+        // struct-pattern lowering ships.
         let p = parse_one(
-            r#"fn classify(int x) -> int {
-                return match x {
-                    1 => 100,
+            r#"struct Point { int x, int y }
+            fn classify(Point p) -> int {
+                return match p {
+                    Point { x: 0, y: 0 } => 1,
                     _ => 0,
                 };
             }"#,
@@ -1793,6 +4025,23 @@ mod tests {
             "expected at least two zero-initialised index slots in nested for-in: got {:?}",
             zero_init_slots
         );
+    }
+
+    // ---------- RES-334b: string + range iteration ----------
+
+    #[test]
+    fn res334b_for_in_string_compiles() {
+        // `for c in "hi"` must compile without errors.
+        let p = parse_one(r#"let s = "hi"; let n = 0; for c in s { n = n + 1; } return n;"#);
+        compile(&p).expect("for-in over string compiles");
+    }
+
+    #[test]
+    fn res334b_for_in_range_compiles() {
+        // `for i in 0..3` must compile — the range is lowered to
+        // array_range(0, 3) by compile_expr.
+        let p = parse_one("let n = 0; for i in 0..3 { n = n + i; } return n;");
+        compile(&p).expect("for-in over range compiles");
     }
 
     // ---------- RES-081 tests ----------
@@ -2139,5 +4388,496 @@ fn get(int i) -> int {
             checked >= 1,
             "expected at least one checked LoadIndex for dynamic xs[i]"
         );
+    }
+
+    // ── RES-break-continue: break / continue / assert compilation ──
+
+    fn vm_run(src: &str) -> crate::vm::VmError {
+        let prog = parse_one(src);
+        match compile(&prog) {
+            Err(e) => panic!("compile error: {:?}", e),
+            Ok(p) => match crate::vm::run(&p) {
+                Ok(v) => panic!("expected error, got {:?}", v),
+                Err(e) => e,
+            },
+        }
+    }
+
+    fn vm_ok(src: &str) -> Value {
+        let prog = parse_one(src);
+        let p = compile(&prog).expect("compiles");
+        crate::vm::run(&p).expect("runs")
+    }
+
+    #[test]
+    fn break_exits_while_loop() {
+        // Loop would run forever without break; it exits after 3 iterations.
+        let src = r#"
+let i = 0;
+while true {
+    i = i + 1;
+    if i == 3 {
+        break;
+    }
+}
+i;
+"#;
+        match vm_ok(src) {
+            Value::Int(3) => {}
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn continue_skips_body_tail_in_while_loop() {
+        // Accumulate only even numbers 0..10.
+        let src = r#"
+let i = 0;
+let sum = 0;
+while i < 10 {
+    i = i + 1;
+    if i % 2 != 0 {
+        continue;
+    }
+    sum = sum + i;
+}
+sum;
+"#;
+        // Even numbers 2+4+6+8+10 = 30
+        match vm_ok(src) {
+            Value::Int(30) => {}
+            other => panic!("expected Int(30), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn break_in_fn_while_loop() {
+        let src = r#"
+fn first_ge(int target) -> int {
+    let i = 0;
+    while true {
+        i = i + 1;
+        if i >= target {
+            break;
+        }
+    }
+    return i;
+}
+first_ge(5);
+"#;
+        match vm_ok(src) {
+            Value::Int(5) => {}
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn break_in_for_in_loop() {
+        let src = r#"
+let arr = [10, 20, 30, 40, 50];
+let found = 0;
+for x in arr {
+    if x == 30 {
+        found = x;
+        break;
+    }
+}
+found;
+"#;
+        match vm_ok(src) {
+            Value::Int(30) => {}
+            other => panic!("expected Int(30), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn continue_in_for_in_loop_skips_element() {
+        let src = r#"
+let arr = [1, 2, 3, 4, 5];
+let sum = 0;
+for x in arr {
+    if x == 3 {
+        continue;
+    }
+    sum = sum + x;
+}
+sum;
+"#;
+        // 1+2+4+5 = 12 (skipped 3)
+        match vm_ok(src) {
+            Value::Int(12) => {}
+            other => panic!("expected Int(12), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assert_passes_when_condition_true() {
+        let src = r#"
+let x = 5;
+assert(x > 0);
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(5) => {}
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assert_fails_when_condition_false() {
+        let src = r#"
+let x = -1;
+assert(x > 0);
+x;
+"#;
+        let err = vm_run(src);
+        assert!(
+            matches!(err.kind(), crate::vm::VmError::AssertionFailed(_)),
+            "expected AssertionFailed, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn assert_with_custom_message() {
+        let src = r#"
+assert(false, "custom failure message");
+"#;
+        let err = vm_run(src);
+        match err.kind() {
+            crate::vm::VmError::AssertionFailed(msg) => {
+                assert!(
+                    msg.contains("custom failure message"),
+                    "expected custom message in {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected AssertionFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assert_in_fn_body_passes() {
+        let src = r#"
+fn check(int n) -> int {
+    assert(n >= 0);
+    return n * 2;
+}
+check(7);
+"#;
+        match vm_ok(src) {
+            Value::Int(14) => {}
+            other => panic!("expected Int(14), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assert_in_fn_body_fails() {
+        let src = r#"
+fn check(int n) -> int {
+    assert(n >= 0, "n must be non-negative");
+    return n;
+}
+check(-1);
+"#;
+        let err = vm_run(src);
+        assert!(
+            matches!(err.kind(), crate::vm::VmError::AssertionFailed(_)),
+            "expected AssertionFailed, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn break_outside_loop_is_compile_error() {
+        let src = "break;";
+        let prog = parse_one(src);
+        assert!(
+            compile(&prog).is_err(),
+            "expected compile error for break outside loop"
+        );
+    }
+
+    #[test]
+    fn continue_outside_loop_is_compile_error() {
+        let src = "continue;";
+        let prog = parse_one(src);
+        assert!(
+            compile(&prog).is_err(),
+            "expected compile error for continue outside loop"
+        );
+    }
+
+    #[test]
+    fn nested_break_targets_inner_loop() {
+        // The inner break should exit only the inner while; outer loop counts to 3.
+        let src = r#"
+let outer = 0;
+while outer < 3 {
+    let inner = 0;
+    while true {
+        inner = inner + 1;
+        if inner == 2 {
+            break;
+        }
+    }
+    outer = outer + 1;
+}
+outer;
+"#;
+        match vm_ok(src) {
+            Value::Int(3) => {}
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    // ---------- RES-384b / RES-291 / RES-921 / RES-152: new compile coverage ----------
+
+    #[test]
+    fn static_let_compiles_as_local() {
+        let src = "static let x = 42; x;";
+        match vm_ok(src) {
+            Value::Int(42) => {}
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn const_decl_is_noop_in_vm() {
+        // `const` is pre-evaluated; the bytecode should compile cleanly.
+        let p = parse_one("const LIMIT = 10;");
+        assert!(compile(&p).is_ok(), "const decl must compile");
+    }
+
+    #[test]
+    fn live_block_body_executes() {
+        // `live { ... }` compiles as a plain block in the VM.
+        let src = r#"
+let x = 0;
+live {
+    x = 5;
+}
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(5) => {}
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assume_and_invariant_are_noops() {
+        // Verification-only constructs compile to no ops — program still runs.
+        let src = r#"
+let x = 3;
+assume(x > 0, "x must be positive");
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(3) => {}
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bytes_literal_compiles_to_bytes_value() {
+        let p = parse_one(r#"b"hello";"#);
+        let prog = compile(&p).expect("bytes literal must compile");
+        assert!(
+            prog.main
+                .constants
+                .iter()
+                .any(|c| matches!(c, Value::Bytes(_))),
+            "constant pool must contain a Bytes constant"
+        );
+    }
+
+    #[test]
+    fn range_expr_exclusive_produces_array() {
+        let src = "let r = 0..3; r;";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(v[0], Value::Int(0)));
+                assert!(matches!(v[1], Value::Int(1)));
+                assert!(matches!(v[2], Value::Int(2)));
+            }
+            other => panic!("expected Array([0,1,2]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_expr_inclusive_produces_array() {
+        let src = "let r = 1..=3; r;";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(v[0], Value::Int(1)));
+                assert!(matches!(v[2], Value::Int(3)));
+            }
+            other => panic!("expected Array([1,2,3]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn slice_expr_basic() {
+        let src = "let a = [10, 20, 30, 40]; a[1..3];";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 2);
+                assert!(matches!(v[0], Value::Int(20)));
+                assert!(matches!(v[1], Value::Int(30)));
+            }
+            other => panic!("expected [20,30], got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn slice_expr_inclusive() {
+        let src = "let a = [10, 20, 30, 40]; a[1..=2];";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 2);
+                assert!(matches!(v[0], Value::Int(20)));
+                assert!(matches!(v[1], Value::Int(30)));
+            }
+            other => panic!("expected [20,30], got {:?}", other),
+        }
+    }
+
+    // ── DurationLiteral ──────────────────────────────────────────────────────
+
+    #[test]
+    fn duration_literal_compiles_in_live_block() {
+        // DurationLiteral appears as the `deadline` of a `live within`
+        // block. The bytecode compiler ignores the deadline and compiles
+        // the body; the live block should run without Unsupported errors.
+        match vm_ok("live within 100ms { 42; } 42;") {
+            Value::Int(42) => {}
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    // ── NewtypeConstruct ─────────────────────────────────────────────────────
+
+    #[test]
+    fn newtype_construct_wraps_value() {
+        // lower_program rewrites Meters(42) → NewtypeConstruct; the bytecode
+        // compiler must not return Unsupported. Result is a Struct.
+        let mut p = parse_one("newtype Meters = Int; let x = Meters(42); x;");
+        crate::newtypes::lower_program(&mut p);
+        let prog = compile(&p).expect("NewtypeConstruct must compile");
+        let v = crate::vm::run(&prog).expect("NewtypeConstruct must run");
+        assert!(
+            matches!(v, Value::Struct { .. }),
+            "expected Struct from newtype constructor, got {:?}",
+            v
+        );
+    }
+
+    // ── TryExpression (bytecode VM path) ─────────────────────────────────────
+
+    #[test]
+    fn try_unwrap_ok_result_via_vm() {
+        // Build a tiny program directly in bytecode: push `Result{ok:true,
+        // payload:Int(42)}`, emit TryUnwrap, emit Return. The VM must
+        // leave Int(42) on the stack.
+        use crate::bytecode::{Chunk, Op, Program};
+        let mut main = Chunk::new();
+        // Const 0 → Value::Result { ok: true, payload: Box(Int(42)) }
+        main.constants.push(Value::Result {
+            ok: true,
+            payload: Box::new(Value::Int(42)),
+        });
+        main.code.push(Op::Const(0));
+        main.line_info.push(1);
+        main.code.push(Op::TryUnwrap);
+        main.line_info.push(1);
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        let prog = Program {
+            main,
+            functions: Vec::new(),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Int(42) => {}
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_unwrap_some_option_via_vm() {
+        use crate::bytecode::{Chunk, Op, Program};
+        let mut main = Chunk::new();
+        main.constants
+            .push(Value::Option(Some(Box::new(Value::Int(7)))));
+        main.code.push(Op::Const(0));
+        main.line_info.push(1);
+        main.code.push(Op::TryUnwrap);
+        main.line_info.push(1);
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        let prog = Program {
+            main,
+            functions: Vec::new(),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Int(7) => {}
+            other => panic!("expected Int(7), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_unwrap_err_result_early_returns() {
+        // TryUnwrap on Err early-returns to the caller. When in main
+        // (frames.len()==1 after pop), the VM halts with the Err value.
+        use crate::bytecode::{Chunk, Op, Program};
+        let mut main = Chunk::new();
+        main.constants.push(Value::Result {
+            ok: false,
+            payload: Box::new(Value::Int(99)),
+        });
+        main.code.push(Op::Const(0));
+        main.line_info.push(1);
+        main.code.push(Op::TryUnwrap);
+        main.line_info.push(1);
+        // This Return is unreachable; TryUnwrap halts via early-return.
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        let prog = Program {
+            main,
+            functions: Vec::new(),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Result { ok: false, payload } => {
+                assert!(
+                    matches!(*payload, Value::Int(99)),
+                    "expected Int(99) payload, got {:?}",
+                    payload
+                );
+            }
+            other => panic!("expected Err(99), got {:?}", other),
+        }
+    }
+
+    // ── NamedArg ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn named_arg_compiles_without_unsupported() {
+        // NamedArg nodes appear at call sites with labelled arguments.
+        // The bytecode compiler must not return Unsupported for them.
+        // Compile `add(a: 3, b: 4)` — only the values matter.
+        let p = parse_one("fn add(int a, int b) -> int { return a + b; } add(a: 3, b: 4);");
+        let prog = compile(&p).expect("NamedArg must compile");
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Int(7) => {}
+            other => panic!("expected Int(7), got {:?}", other),
+        }
     }
 }

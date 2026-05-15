@@ -184,4 +184,16 @@ mod tests {
         let g = build(&prog);
         assert!(detect_cycles(&g).is_empty());
     }
+
+    #[test]
+    fn empty_program_check_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn detect_cycles_on_empty_graph_returns_empty() {
+        let empty = ActorGraph::default();
+        assert!(detect_cycles(&empty).is_empty());
+    }
 }

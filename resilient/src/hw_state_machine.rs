@@ -135,4 +135,18 @@ mod tests {
         assert!(transition("USB", "Configured", "configure").is_err());
         crate::feature_attrs::reset();
     }
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn initial_state_returns_none_for_unknown_peripheral() {
+        assert!(initial_state("UnknownPeripheral99").is_none());
+    }
 }

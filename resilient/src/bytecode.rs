@@ -107,6 +107,13 @@ pub enum Op {
     /// wire the actual slab; today the dispatch arm returns
     /// `VmError::Unsupported`.
     LoadUpvalue(u16),
+    /// RES-169c: call a closure value sitting below `arity` arguments
+    /// on the operand stack. Stack layout before this op:
+    ///   `[..., closure, arg0, arg1, …, argArity-1]`
+    /// Pops `arity` args (reverse order → source order in the new
+    /// frame's locals), then pops the closure, creates a new
+    /// `CallFrame` with the closure's `fn_idx` and `upvalues` slab.
+    CallClosure { arity: u8 },
     /// RES-384: self-tail-call in tail position. Reuses the current
     /// `CallFrame` instead of pushing a new one, keeping call-stack
     /// depth O(1) for tail-recursive functions. The callee MUST be
@@ -184,6 +191,39 @@ pub enum Op {
     /// `SetField`) can commit the update to the binding. Name is
     /// `chunk.constants[name_const]` (a `Value::String`).
     SetField { name_const: u16 },
+    /// Bitwise AND: pop two ints, push `lhs & rhs`.
+    Band,
+    /// Bitwise OR: pop two ints, push `lhs | rhs`.
+    Bor,
+    /// Bitwise XOR: pop two ints, push `lhs ^ rhs`.
+    Bxor,
+    /// Bitwise left-shift: pop two ints, push `lhs << (rhs & 63)`.
+    Shl,
+    /// Bitwise right-shift (arithmetic): pop two ints, push `lhs >> (rhs & 63)`.
+    Shr,
+    /// RES-break-continue: pop a `Value::String` message from the operand
+    /// stack and return `VmError::AssertionFailed(msg)`. Emitted by the
+    /// bytecode compiler for `assert cond[, msg];` when the condition
+    /// evaluates to false at runtime. The message constant is pushed by
+    /// a preceding `Const` instruction; the JumpIfTrue before it skips
+    /// the fail sequence entirely when the condition holds.
+    AssertFail,
+    /// RES-401: pop `len` values off the operand stack (rightmost first,
+    /// same convention as `MakeArray`) and wrap them in a
+    /// `Value::Tuple(Vec<Value>)`. Emitted for `(a, b, c)` tuple literals.
+    MakeTuple { len: u16 },
+    /// RES-375/RES-363: pop TOS and unwrap it.
+    ///
+    /// - `Result { ok: true, payload }` → push `*payload`, continue.
+    /// - `Option(Some(v))` → push `*v`, continue.
+    /// - `Result { ok: false, payload }` → early return from the current
+    ///   function frame with `Result { ok: false, payload }` as the value.
+    /// - `Option(None)` → early return from the current function frame
+    ///   with `Option(None)` as the value.
+    /// - Any other type → `VmError::TypeMismatch`.
+    ///
+    /// Emitted for `expr?` (`Node::TryExpression`) nodes.
+    TryUnwrap,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
@@ -282,8 +322,10 @@ impl Chunk {
             Op::Jump(o) => *o = offset,
             Op::JumpIfFalse(o) => *o = offset,
             Op::JumpIfTrue(o) => *o = offset,
-            other => {
-                panic!("patch_jump called on non-jump op: {:?}", other);
+            _ => {
+                return Err(CompileError::InternalError(
+                    "patch_jump called on non-jump op",
+                ));
             }
         }
         Ok(())
@@ -548,6 +590,27 @@ mod tests {
             "sizeof(Op) = {} bytes; closure opcodes should not inflate this",
             std::mem::size_of::<Op>()
         );
+    }
+
+    #[test]
+    fn patch_jump_on_non_jump_op_returns_err() {
+        // `patch_jump` must return an error, not panic, when called on
+        // a non-jump opcode. This guards the internal invariant that the
+        // compiler only patches indices it previously recorded from emit().
+        let mut c = Chunk::new();
+        c.emit(Op::Add, 1); // index 0 — not a jump op
+        let result = c.patch_jump(0, 1);
+        assert!(result.is_err(), "patch_jump on non-jump op must return Err");
+    }
+
+    #[test]
+    fn patch_jump_on_jump_if_false_succeeds() {
+        let mut c = Chunk::new();
+        let jif = c.emit(Op::JumpIfFalse(0), 1);
+        c.emit(Op::Add, 2);
+        c.emit(Op::Return, 3);
+        assert!(c.patch_jump(jif, 2).is_ok());
+        assert!(matches!(c.code[jif], Op::JumpIfFalse(1)));
     }
 
     #[test]

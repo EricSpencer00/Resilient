@@ -95,4 +95,20 @@ mod tests {
         let json = serialize(&a);
         assert!(json.contains(r#""f""#));
     }
+
+    #[test]
+    fn diff_returns_empty_for_identical_snapshots() {
+        let src = r#"fn f(int x) -> int { return x; }"#;
+        let (prog, _) = parse(src);
+        let a = build_snapshots(&prog);
+        let b = build_snapshots(&prog);
+        assert!(diff(&a, &b).is_empty());
+    }
+
+    #[test]
+    fn check_always_returns_ok() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

@@ -16,10 +16,25 @@
 //! 5. `Const(k==1); Mul`                    → drop both (×1 identity)
 //! 6. `Const(k==0); Mul`                    → drop both + push Const(0)
 //!    (only when preceding op is a pure load: LoadLocal or Const)
-//!
-//! Strength-reduction rules for power-of-two constants (Mul→Shl,
-//! Div→Shr, Mod→BitAnd) are deferred: the opcodes Shl, Shr, and
-//! BitAnd do not yet exist in bytecode.rs.
+//! 7. `Const(k==0); Bor`                    → drop both (x | 0 == x)
+//! 8. `Const(k==0); Bxor`                   → drop both (x ^ 0 == x)
+//! 9. `Const(k==0); Shl`                    → drop both (x << 0 == x)
+//! 10. `Const(k==0); Shr`                   → drop both (x >> 0 == x)
+//! 11. `Const(k==-1); Band`                 → drop both (x & -1 == x)
+//! 12. `<pure-load>; Const(k==0); Band`     → drop pure load + push Const(0)
+//!     (x & 0 == 0 for any x)
+//! 13. `<pure-load>; Const(k==-1); Bor`    → drop pure load + push Const(-1)
+//!     (x | -1 == -1 for any x — -1 is the absorbing element for Bor)
+//! 14. `Const(k==0); Sub`                   → drop both (x - 0 == x, identity)
+//! 15. `Const(k==1); Div`                   → drop both (x / 1 == x, identity)
+//! 16. `Not; Not`                            → drop both (!!b == b, idempotent)
+//! 17. `Neg; Neg`                            → drop both (--x == x, double int-neg identity)
+//! 18. `Not; JumpIfTrue(off)`               → `JumpIfFalse(off)` (mirror of Rule 4)
+//! 19. `LoadLocal(n); StoreLocal(n)`        → drop both (self-load-store is a no-op)
+//! 20. `Const(true); JumpIfTrue(off)`       → `Jump(off)` (branch always taken)
+//! 21. `Const(false); JumpIfFalse(off)`     → `Jump(off)` (branch always taken)
+//! 22. `Const(true); JumpIfFalse(off)`      → drop both (branch never taken)
+//! 23. `Const(false); JumpIfTrue(off)`      → drop both (branch never taken)
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -148,6 +163,139 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             };
             new_code.push(Op::Const(zero_k));
             new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 7 — drop `Const(0); Bor` (x | 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bor) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 8 — drop `Const(0); Bxor` (x ^ 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bxor) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 9 — drop `Const(0); Shl` (x << 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shl) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 10 — drop `Const(0); Shr` (x >> 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shr) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 11 — drop `Const(-1); Band` (x & -1 == x, -1 has all
+        // bits set so AND is identity).
+        if rule_band_neg_one_identity(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 12 — `<pure-load>; Const(0); Band` → `Const(0)`.
+        // Mirrors rule_mul_zero: any value AND'd with 0 is 0.
+        if rule_band_zero(chunk, i, &targets, &new_code) {
+            new_code.pop();
+            new_line_info.pop();
+            let Op::Const(zero_k) = chunk.code[i] else {
+                unreachable!()
+            };
+            new_code.push(Op::Const(zero_k));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 13 — `<pure-load>; Const(-1); Bor` → `Const(-1)`.
+        // -1 (all bits set) is the absorbing element for Bor: x | -1 == -1.
+        if rule_bor_neg_one(chunk, i, &targets, &new_code) {
+            new_code.pop();
+            new_line_info.pop();
+            let Op::Const(neg1_k) = chunk.code[i] else {
+                unreachable!()
+            };
+            new_code.push(Op::Const(neg1_k));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 14 — drop `Const(k==0); Sub` (x - 0 == x, identity).
+        if rule_sub_zero_identity(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 15 — drop `Const(k==1); Div` (x / 1 == x, identity).
+        if rule_div_one_identity(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 16 — drop `Not; Not` (!!b == b, double negation identity).
+        if rule_double_not(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 17 — drop `Neg; Neg` (--x == x, double integer negation identity).
+        if rule_double_neg(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 18 — fold `Not; JumpIfTrue(off)` → `JumpIfFalse(off)`.
+        // Mirror of Rule 4. A `JumpIfTrue` that would fire on `!b` is
+        // equivalent to a `JumpIfFalse` on `b` directly.
+        if let Some(off) = rule_not_jit_to_jif(chunk, i, &targets) {
+            new_code.push(Op::JumpIfFalse(off));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 19 — drop `LoadLocal(n); StoreLocal(n)` (self-assign no-op).
+        // Loading a local and immediately storing it back is a no-op: the
+        // local is unchanged and the stack depth is preserved.
+        if rule_load_store_self(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 20 — `Const(true); JumpIfTrue(off)` → `Jump(off)`.
+        // The condition is always true so the branch is always taken.
+        if let Some(off) = rule_const_branch_always(chunk, i, &targets, true, Op::JumpIfTrue(0)) {
+            new_code.push(Op::Jump(off));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 21 — `Const(false); JumpIfFalse(off)` → `Jump(off)`.
+        // The condition is always false so the branch is always taken.
+        if let Some(off) = rule_const_branch_always(chunk, i, &targets, false, Op::JumpIfFalse(0)) {
+            new_code.push(Op::Jump(off));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 22 — `Const(true); JumpIfFalse(off)` → drop both.
+        // The condition is always true so a JumpIfFalse never fires.
+        if rule_const_branch_never(chunk, i, &targets, true, Op::JumpIfFalse(0)) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 23 — `Const(false); JumpIfTrue(off)` → drop both.
+        // The condition is always false so a JumpIfTrue never fires.
+        if rule_const_branch_never(chunk, i, &targets, false, Op::JumpIfTrue(0)) {
             optimized_any = true;
             i += 2;
             continue;
@@ -391,6 +539,300 @@ pub(crate) fn rule_mul_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code:
     }
     // The preceding emitted op must be a pure (side-effect-free) load.
     matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+}
+
+/// Rules 7–10: drop `Const(k==0); <op>` when `op` is a bitwise op
+/// whose right-operand-is-zero case is an identity: `x | 0 == x`,
+/// `x ^ 0 == x`, `x << 0 == x`, `x >> 0 == x`.
+///
+/// Skips if `op` is a jump target.
+pub(crate) fn rule_bitwise_zero_identity(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    op: Op,
+) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if chunk.code[i + 1] != op {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 11: drop `Const(k==-1); Band` — AND with all-ones is identity
+/// (`x & -1 == x` in two's-complement i64).
+///
+/// Skips if `Band` is a jump target.
+pub(crate) fn rule_band_neg_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Band) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(-1))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 12: fold `<pure-load>; Const(k==0); Band` → `Const(0)`.
+/// `x & 0 == 0` for any x; mirrors `rule_mul_zero`.
+///
+/// Skips if `Band` is a jump target.
+pub(crate) fn rule_band_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code: &[Op]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Band) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+}
+
+/// Rule 13: fold `<pure-load>; Const(k==-1); Bor` → `Const(-1)`.
+/// `x | -1 == -1` for any x (-1 is all bits set, the absorbing element).
+/// Mirrors `rule_band_zero` in structure.
+///
+/// Skips if `Bor` is a jump target.
+pub(crate) fn rule_bor_neg_one(chunk: &Chunk, i: usize, targets: &[bool], new_code: &[Op]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Bor) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(-1))) {
+        return false;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+}
+
+/// Rule 14: drop `Const(k==0); Sub` — subtracting zero is a no-op.
+/// `x - 0 == x` for all integer `x`.  Skips if `Sub` is a jump target.
+pub(crate) fn rule_sub_zero_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Sub) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 15: drop `Const(k==1); Div` — dividing by one is a no-op.
+/// `x / 1 == x` for all integer `x`.  Skips if `Div` is a jump target.
+/// NOTE: does NOT fire for `-1` — that negates rather than preserving.
+pub(crate) fn rule_div_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Div) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(1))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 16: drop `Not; Not` — double boolean negation is identity.
+/// `!!b == b` for all booleans `b`.  Skips if the second `Not` is a jump
+/// target.
+pub(crate) fn rule_double_not(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    if !matches!(chunk.code[i], Op::Not) {
+        return false;
+    }
+    if !matches!(chunk.code[i + 1], Op::Not) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 17: drop `Neg; Neg` — double integer negation is identity.
+/// `--x == x` for all integers `x`.  Skips if the second `Neg` is a
+/// jump target.
+pub(crate) fn rule_double_neg(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    if !matches!(chunk.code[i], Op::Neg) {
+        return false;
+    }
+    if !matches!(chunk.code[i + 1], Op::Neg) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 18: fold `Not; JumpIfTrue(off)` → `JumpIfFalse(off)`.
+/// Mirror of Rule 4. Jumping on the negation of a value inverts the
+/// branch polarity. Skips if `JumpIfTrue` is a jump target.
+pub(crate) fn rule_not_jit_to_jif(chunk: &Chunk, i: usize, targets: &[bool]) -> Option<i16> {
+    if i + 1 >= chunk.code.len() {
+        return None;
+    }
+    if !matches!(chunk.code[i], Op::Not) {
+        return None;
+    }
+    let Op::JumpIfTrue(off) = chunk.code[i + 1] else {
+        return None;
+    };
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return None;
+    }
+    Some(off)
+}
+
+/// Rule 19: drop `LoadLocal(n); StoreLocal(n)` — loading a local and
+/// immediately storing it back is a no-op.  Both the local value and
+/// the stack depth are unchanged.
+///
+/// Skips if EITHER op is a jump target: dropping the pair changes
+/// which instruction occupies those PCs, stranding any jump that aimed
+/// at either position.
+pub(crate) fn rule_load_store_self(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::LoadLocal(n) = chunk.code[i] else {
+        return false;
+    };
+    let Op::StoreLocal(m) = chunk.code[i + 1] else {
+        return false;
+    };
+    if n != m {
+        return false;
+    }
+    // Skip if either position is a jump target (dropping the pair
+    // would strand any jump aimed at PC i or PC i+1).
+    if *targets.get(i).unwrap_or(&false) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rules 20–21: `Const(lit); JumpIfXxx(off)` → `Jump(off)` — the
+/// condition is a literal that always fires the branch.
+///
+/// `bool_val` is the literal value to match (`true` for Rule 20,
+/// `false` for Rule 21). `branch_op` is the opcode discriminant
+/// (only the variant matters; the embedded offset is ignored for
+/// matching).
+///
+/// Returns `Some(off)` — the offset to embed in the replacement
+/// `Jump`. Returns `None` if the pattern doesn't match or the branch
+/// op is a jump target.
+pub(crate) fn rule_const_branch_always(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    bool_val: bool,
+    branch_op: Op,
+) -> Option<i16> {
+    if i + 1 >= chunk.code.len() {
+        return None;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return None;
+    };
+    // Check the branch op variant matches (ignore embedded offset).
+    let op = chunk.code[i + 1];
+    let off = match (branch_op, op) {
+        (Op::JumpIfTrue(_), Op::JumpIfTrue(o)) => o,
+        (Op::JumpIfFalse(_), Op::JumpIfFalse(o)) => o,
+        _ => return None,
+    };
+    if !matches!(
+        chunk.constants.get(k as usize),
+        Some(Value::Bool(v)) if *v == bool_val
+    ) {
+        return None;
+    }
+    // The branch op is consumed; it must not be a jump target.
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return None;
+    }
+    Some(off)
+}
+
+/// Rules 22–23: `Const(lit); JumpIfXxx(off)` → drop both — the
+/// condition is a literal that never fires the branch (always
+/// falls through).
+///
+/// `bool_val` is the literal value to match. `branch_op` is the
+/// opcode discriminant whose complement condition is being checked
+/// (`true; JumpIfFalse` → never jumps; `false; JumpIfTrue` → never
+/// jumps). Skips if either position is a jump target.
+pub(crate) fn rule_const_branch_never(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    bool_val: bool,
+    branch_op: Op,
+) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    // Check the branch op variant matches.
+    if !matches!(
+        (branch_op, chunk.code[i + 1]),
+        (Op::JumpIfFalse(_), Op::JumpIfFalse(_)) | (Op::JumpIfTrue(_), Op::JumpIfTrue(_))
+    ) {
+        return false;
+    }
+    if !matches!(
+        chunk.constants.get(k as usize),
+        Some(Value::Bool(v)) if *v == bool_val
+    ) {
+        return false;
+    }
+    // Both positions are being dropped; neither can be a jump target.
+    if *targets.get(i).unwrap_or(&false) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
 }
 
 #[cfg(test)]
@@ -788,5 +1230,556 @@ mod tests {
             );
         }
         assert_eq!(chunk.line_info.len(), chunk.code.len());
+    }
+
+    // ---------- Rules 7-10: bitwise zero identity (|, ^, <<, >>) ----------
+
+    #[test]
+    fn rule7_bor_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bor));
+    }
+
+    #[test]
+    fn rule7_bor_zero_identity_drops_both_ops() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor, Op::Return],
+            vec![Value::Int(0)],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 1);
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule8_bxor_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bxor], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bxor));
+    }
+
+    #[test]
+    fn rule9_shl_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Shl], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Shl));
+    }
+
+    #[test]
+    fn rule10_shr_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Shr], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Shr));
+    }
+
+    #[test]
+    fn rule_bitwise_zero_identity_skips_nonzero_const() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(1)], &[1, 1]);
+        assert!(!rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bor));
+    }
+
+    #[test]
+    fn rule_bitwise_zero_identity_skips_when_op_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_bitwise_zero_identity(&chunk, 0, &targets, Op::Bor));
+    }
+
+    // ---------- Rule 11: Band with -1 (all-ones identity) ----------
+
+    #[test]
+    fn rule11_band_neg_one_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(-1)], &[1, 1]);
+        assert!(rule_band_neg_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule11_band_neg_one_drops_both_ops() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Band, Op::Return],
+            vec![Value::Int(-1)],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 1);
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule11_band_neg_one_skips_when_const_is_zero() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
+        assert!(!rule_band_neg_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    // ---------- Rule 12: Band with 0 → 0 ----------
+
+    #[test]
+    fn rule12_band_zero_folds_with_preceding_load() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Band, Op::Return],
+            vec![Value::Int(42), Value::Int(0)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert!(matches!(chunk.constants[k as usize], Value::Int(0)));
+    }
+
+    #[test]
+    fn rule12_band_zero_predicate_fires_with_pure_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(rule_band_zero(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule12_band_zero_predicate_skips_without_pure_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
+        // Preceding op is Band (not a pure load)
+        let new_code = vec![Op::Band];
+        assert!(!rule_band_zero(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    // ---------- Rule 13: <pure-load>; Const(-1); Bor → Const(-1) ----------
+
+    #[test]
+    fn rule13_bor_neg_one_predicate_fires_with_pure_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(-1)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(rule_bor_neg_one(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule13_bor_neg_one_predicate_skips_non_neg_one() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(!rule_bor_neg_one(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule13_bor_neg_one_folds_in_full_pass() {
+        // LoadLocal(0) pushes x; Const(-1); Bor → Const(-1).
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Bor, Op::Return],
+            vec![Value::Int(42), Value::Int(-1)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2, "code: {:?}", chunk.code);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert!(matches!(chunk.constants[k as usize], Value::Int(-1)));
+    }
+
+    #[test]
+    fn rule13_bor_neg_one_predicate_skips_when_bor_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(-1)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        let mut targets = vec![false; 3];
+        targets[1] = true;
+        assert!(!rule_bor_neg_one(&chunk, 0, &targets, &new_code));
+    }
+
+    // ---------- Rule 14: Const(0); Sub → identity ----------
+
+    #[test]
+    fn rule14_sub_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_sub_zero_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule14_sub_zero_identity_skips_nonzero() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(1)], &[1, 1]);
+        assert!(!rule_sub_zero_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule14_sub_zero_identity_skips_when_sub_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(0)], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_sub_zero_identity(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule14_sub_zero_drops_both_in_full_pass() {
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Sub, Op::Return],
+            vec![Value::Int(0)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    // ---------- Rule 15: Const(1); Div → identity ----------
+
+    #[test]
+    fn rule15_div_one_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(1)], &[1, 1]);
+        assert!(rule_div_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule15_div_one_identity_skips_neg_one() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(-1)], &[1, 1]);
+        assert!(!rule_div_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule15_div_one_identity_skips_when_div_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(1)], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_div_one_identity(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule15_div_one_drops_both_in_full_pass() {
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Div, Op::Return],
+            vec![Value::Int(1)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    // ---------- Rule 16: Not; Not → identity ----------
+
+    #[test]
+    fn rule16_double_not_fires() {
+        let chunk = mk_chunk(&[Op::Not, Op::Not], vec![], &[1, 1]);
+        assert!(rule_double_not(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule16_double_not_skips_when_second_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Not, Op::Not], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_double_not(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule16_double_not_skips_single_not() {
+        let chunk = mk_chunk(&[Op::Not, Op::Return], vec![], &[1, 1]);
+        assert!(!rule_double_not(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule16_double_not_drops_both_in_full_pass() {
+        // LoadLocal(0); Not; Not; Return → LoadLocal(0); Return
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Not, Op::Not, Op::Return],
+            vec![],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    // ---------- Rule 17: Neg; Neg → identity ----------
+
+    #[test]
+    fn rule17_double_neg_fires() {
+        let chunk = mk_chunk(&[Op::Neg, Op::Neg], vec![], &[1, 1]);
+        assert!(rule_double_neg(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule17_double_neg_skips_when_second_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Neg, Op::Neg], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_double_neg(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule17_double_neg_skips_single_neg() {
+        let chunk = mk_chunk(&[Op::Neg, Op::Return], vec![], &[1, 1]);
+        assert!(!rule_double_neg(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule17_double_neg_drops_both_in_full_pass() {
+        // LoadLocal(0); Neg; Neg; Return → LoadLocal(0); Return
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Neg, Op::Neg, Op::Return],
+            vec![],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    #[test]
+    fn rule17_skips_not_neg_pair() {
+        // `Not; Neg` is NOT a double-neg pattern — must not fold.
+        let mut chunk = mk_chunk(&[Op::Not, Op::Neg, Op::Return], vec![], &[1, 1, 1]);
+        let before = chunk.code.clone();
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, before);
+    }
+
+    // ---------- Rule 18: Not; JumpIfTrue → JumpIfFalse ----------
+
+    #[test]
+    fn rule18_not_jit_to_jif_fires() {
+        let chunk = mk_chunk(&[Op::Not, Op::JumpIfTrue(3)], vec![], &[1, 1]);
+        assert_eq!(rule_not_jit_to_jif(&chunk, 0, &[false; 3]), Some(3));
+    }
+
+    #[test]
+    fn rule18_not_jit_to_jif_skips_when_jit_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Not, Op::JumpIfTrue(3)], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert_eq!(rule_not_jit_to_jif(&chunk, 0, &targets), None);
+    }
+
+    #[test]
+    fn rule18_not_jit_to_jif_skips_non_jit() {
+        // `Not; JumpIfFalse` is Rule 4, not Rule 18.
+        let chunk = mk_chunk(&[Op::Not, Op::JumpIfFalse(3)], vec![], &[1, 1]);
+        assert_eq!(rule_not_jit_to_jif(&chunk, 0, &[false; 3]), None);
+    }
+
+    #[test]
+    fn rule18_folds_in_full_pass() {
+        // Not; JumpIfTrue(1); Const(0); Return
+        // → JumpIfFalse(?); Const(0); Return
+        // Old PCs: 0=Not, 1=JumpIfTrue(1), 2=Const(0), 3=Return
+        // JumpIfTrue(1) target = 1+1+1 = 3 = Return
+        // After fold: 0=JumpIfFalse(?), 1=Const(0), 2=Return
+        // new_target(2) - (0+1) = 1, so JumpIfFalse(1)
+        let mut chunk = mk_chunk(
+            &[Op::Not, Op::JumpIfTrue(1), Op::Const(0), Op::Return],
+            vec![Value::Int(1)],
+            &[1, 1, 2, 3],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 3);
+        match chunk.code[0] {
+            Op::JumpIfFalse(o) => assert_eq!(o, 1, "jump must land on Return"),
+            other => panic!("expected JumpIfFalse, got {:?}", other),
+        }
+    }
+
+    // ---------- Rule 19: LoadLocal(n); StoreLocal(n) → no-op ----------
+
+    #[test]
+    fn rule19_load_store_self_fires_on_same_index() {
+        let chunk = mk_chunk(&[Op::LoadLocal(3), Op::StoreLocal(3)], vec![], &[1, 1]);
+        assert!(rule_load_store_self(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule19_load_store_self_skips_different_indices() {
+        let chunk = mk_chunk(&[Op::LoadLocal(3), Op::StoreLocal(4)], vec![], &[1, 1]);
+        assert!(!rule_load_store_self(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule19_load_store_self_skips_when_load_is_jump_target() {
+        let chunk = mk_chunk(&[Op::LoadLocal(0), Op::StoreLocal(0)], vec![], &[1, 1]);
+        let targets = [true, false, false];
+        assert!(!rule_load_store_self(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule19_load_store_self_skips_when_store_is_jump_target() {
+        let chunk = mk_chunk(&[Op::LoadLocal(0), Op::StoreLocal(0)], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_load_store_self(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule19_drops_self_load_store_in_full_pass() {
+        // Const(0); LoadLocal(0); StoreLocal(0); Return
+        // → Const(0); Return  (self-assign is a no-op)
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::LoadLocal(0),
+                Op::StoreLocal(0),
+                Op::Return,
+            ],
+            vec![Value::Int(42)],
+            &[1, 2, 2, 3],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::Const(0), Op::Return]);
+    }
+
+    #[test]
+    fn rule19_skips_load_store_different_local() {
+        // LoadLocal(0); StoreLocal(1) is NOT a self-store — must not fold.
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::StoreLocal(1), Op::Return],
+            vec![],
+            &[1, 1, 2],
+        );
+        let before = chunk.code.clone();
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, before);
+    }
+
+    // ---------- Rules 20-23: constant branch folding ----------
+
+    #[test]
+    fn rule20_const_true_jit_becomes_jump() {
+        // Const(true); JumpIfTrue(3); ... → Jump(3); ...
+        // The branch is always taken when the condition is literal true.
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(3), Op::Return],
+            vec![Value::Bool(true)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        // After fold: [Jump(?), Return] — 2 ops. Jump's offset must
+        // point to the same target as the original JumpIfTrue.
+        assert_eq!(
+            chunk.code.len(),
+            2,
+            "expected Jump + Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Jump(_)));
+        assert!(matches!(chunk.code[1], Op::Return));
+    }
+
+    #[test]
+    fn rule21_const_false_jif_becomes_jump() {
+        // Const(false); JumpIfFalse(3); ... → Jump(3); ...
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfFalse(3), Op::Return],
+            vec![Value::Bool(false)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code.len(),
+            2,
+            "expected Jump + Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Jump(_)));
+    }
+
+    #[test]
+    fn rule22_const_true_jif_drops_both() {
+        // Const(true); JumpIfFalse(3); Return → Return (branch never taken).
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfFalse(3), Op::Return],
+            vec![Value::Bool(true)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code.len(),
+            1,
+            "expected only Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule23_const_false_jit_drops_both() {
+        // Const(false); JumpIfTrue(3); Return → Return (branch never taken).
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(3), Op::Return],
+            vec![Value::Bool(false)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code.len(),
+            1,
+            "expected only Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule22_skips_when_const_is_jump_target() {
+        // If the Const itself is a jump target, dropping it would break
+        // jumps that aim at it. The fold must skip.
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfFalse(3)],
+            vec![Value::Bool(true)],
+            &[1, 1],
+        );
+        // Mark position 0 (the Const) as a jump target.
+        let targets = [true, false, false];
+        assert!(!rule_const_branch_never(
+            &chunk,
+            0,
+            &targets,
+            true,
+            Op::JumpIfFalse(0)
+        ));
+    }
+
+    #[test]
+    fn rule20_predicate_skips_when_branch_is_jump_target() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(3)],
+            vec![Value::Bool(true)],
+            &[1, 1],
+        );
+        let targets = [false, true, false];
+        assert_eq!(
+            rule_const_branch_always(&chunk, 0, &targets, true, Op::JumpIfTrue(0)),
+            None
+        );
+    }
+
+    #[test]
+    fn rule20_skips_when_const_is_not_bool() {
+        // Const(42) is not a bool — must not fold to Jump.
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(1)],
+            vec![Value::Int(42)],
+            &[1, 1],
+        );
+        assert_eq!(
+            rule_const_branch_always(&chunk, 0, &[false; 3], true, Op::JumpIfTrue(0)),
+            None
+        );
+    }
+
+    #[test]
+    fn const_branch_fold_relinks_jump_across_dropped_window() {
+        // Build:
+        //   0: Const(true)
+        //   1: JumpIfFalse(+2)   → target = PC 4 (Return)
+        //   2: LoadLocal(0)
+        //   3: Neg
+        //   4: Return
+        //
+        // Rule 22 drops Const(true)+JumpIfFalse (never fires).
+        // After fold:
+        //   0: LoadLocal(0)
+        //   1: Neg
+        //   2: Return
+        //
+        // No jump in the result; just verify no crash and code length.
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::JumpIfFalse(2),
+                Op::LoadLocal(0),
+                Op::Neg,
+                Op::Return,
+            ],
+            vec![Value::Bool(true)],
+            &[1, 1, 2, 2, 3],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 3);
+        assert!(matches!(chunk.code[0], Op::LoadLocal(0)));
+        assert!(matches!(chunk.code[1], Op::Neg));
+        assert!(matches!(chunk.code[2], Op::Return));
     }
 }

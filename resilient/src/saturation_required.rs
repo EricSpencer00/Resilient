@@ -74,3 +74,27 @@ fn uses_saturating_call(node: &Node) -> bool {
             )
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn program_without_saturating_name_returns_ok() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn sat_fns_include_saturating_add() {
+        assert!(SAT_FNS.contains(&"saturating_add"));
+        assert!(SAT_NAME_SUFFIXES.contains(&"_pwm"));
+    }
+}
