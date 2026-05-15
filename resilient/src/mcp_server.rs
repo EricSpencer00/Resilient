@@ -158,6 +158,10 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
         "resilient_explain_lint" => tool_explain_lint(args),
         "resilient_symbols" => tool_symbols(args),
         "resilient_hover" => tool_hover(args),
+        "resilient_compile" => tool_compile(args),
+        "resilient_disasm" => tool_disasm(args),
+        "resilient_vm_run" => tool_vm_run(args),
+        "resilient_tla_check" => tool_tla_check(args),
         other => Err(format!("Unknown tool: {other}")),
     };
 
@@ -573,6 +577,149 @@ fn hover_infer_type(node: &crate::Node, target: &str) -> Option<String> {
     }
 }
 
+/// Compile Resilient source to bytecode and return a summary.
+fn tool_compile(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let compiled = crate::compiler::compile(&program)
+        .map_err(|e| format!("Compile error:\n{e}"))?;
+
+    let total_instructions: usize = compiled.main.code.len()
+        + compiled.functions.iter().map(|f| f.chunk.code.len()).sum::<usize>();
+    let fn_count = compiled.functions.len();
+
+    let fn_lines: Vec<String> = compiled
+        .functions
+        .iter()
+        .map(|f| format!("  fn {} — {} instructions", f.name, f.chunk.code.len()))
+        .collect();
+    let fn_section = if fn_lines.is_empty() {
+        String::new()
+    } else {
+        format!("\nFunctions:\n{}", fn_lines.join("\n"))
+    };
+
+    Ok(format!(
+        "OK — compiled to bytecode.\n\
+         Main chunk: {} instructions\n\
+         Functions: {fn_count}{fn_section}\n\
+         Total instructions: {total_instructions}",
+        compiled.main.code.len(),
+    ))
+}
+
+/// Compile Resilient source and return the full bytecode disassembly.
+fn tool_disasm(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let compiled = crate::compiler::compile(&program)
+        .map_err(|e| format!("Compile error:\n{e}"))?;
+
+    let mut out = String::new();
+    crate::disasm::disassemble(&compiled, &mut out)
+        .map_err(|e| format!("Disassembly error: {e}"))?;
+    Ok(out)
+}
+
+/// Compile Resilient source and execute it through the bytecode VM,
+/// capturing stdout. Returns the captured output and the final value.
+fn tool_vm_run(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let compiled = crate::compiler::compile(&program)
+        .map_err(|e| format!("Compile error:\n{e}"))?;
+
+    let (vm_result, captured) =
+        crate::output_sink::with_captured_output(|| crate::vm::run(&compiled));
+
+    match vm_result {
+        Ok(value) => {
+            let mut out = String::new();
+            if !captured.is_empty() {
+                out.push_str("Output:\n");
+                out.push_str(&captured);
+            }
+            let val_str = format!("{value:?}");
+            if val_str != "Void" {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("Result: {val_str}"));
+            }
+            if out.is_empty() {
+                out.push_str("OK — program exited with no output.");
+            }
+            Ok(out)
+        }
+        Err(e) => {
+            let mut msg = String::new();
+            if !captured.is_empty() {
+                msg.push_str("Output before error:\n");
+                msg.push_str(&captured);
+                msg.push('\n');
+            }
+            msg.push_str(&format!("VM error: {e}"));
+            Err(msg)
+        }
+    }
+}
+
+/// Run TLC model checking on an inline TLA+ specification.
+///
+/// The spec content is written to a temporary `.tla` file, then
+/// `tla_bridge::check_tla_file` shells out to TLC and surfaces diagnostics.
+fn tool_tla_check(args: &Value) -> Result<String, String> {
+    let spec = args
+        .get("spec")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required argument: spec (string — TLA+ specification source)".to_string())?;
+    let tlc_jar = args.get("tlc_jar").and_then(|v| v.as_str());
+
+    // Write the spec to a temporary file so TLC can read it.
+    let tmp_dir = std::env::temp_dir();
+    let tmp_file = tmp_dir.join("__resilient_mcp_spec.tla");
+    std::fs::write(&tmp_file, spec)
+        .map_err(|e| format!("Failed to write temporary TLA+ file: {e}"))?;
+
+    let result = crate::tla_bridge::check_tla_file(&tmp_file, tlc_jar);
+    let _ = std::fs::remove_file(&tmp_file);
+
+    let outcome_label = match result.outcome {
+        crate::tla_bridge::TlaOutcome::Clean => "CLEAN",
+        crate::tla_bridge::TlaOutcome::Violated => "VIOLATED",
+        crate::tla_bridge::TlaOutcome::ParseError => "PARSE ERROR",
+    };
+
+    let diag_text = result.diagnostics.join("\n");
+    let summary = format!("TLC outcome: {outcome_label}\n{diag_text}");
+
+    match result.outcome {
+        crate::tla_bridge::TlaOutcome::Clean => Ok(summary),
+        _ => Err(summary),
+    }
+}
+
 // ── Tool schema definitions ───────────────────────────────────────────────────
 
 fn tool_definitions() -> Value {
@@ -736,6 +883,78 @@ fn tool_definitions() -> Value {
                     }
                 },
                 "required": ["source", "offset"]
+            }
+        },
+        {
+            "name": "resilient_compile",
+            "description": "Compile Resilient source code to bytecode and return a summary \
+                            of the compiled output: main chunk instruction count, function \
+                            count with per-function instruction counts, and total instruction \
+                            count. Useful for understanding the shape of generated code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to compile"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_disasm",
+            "description": "Compile Resilient source code and return the full human-readable \
+                            bytecode disassembly. Shows every opcode, its operands, and \
+                            source line annotations. Useful for debugging compiler output \
+                            and understanding the generated bytecode.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to disassemble"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_vm_run",
+            "description": "Compile Resilient source code and execute it through the \
+                            register-based bytecode VM (not the tree-walker interpreter). \
+                            Returns captured stdout and the final value. Useful for \
+                            testing bytecode compiler correctness and VM behaviour.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to compile and run via the VM"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_tla_check",
+            "description": "Run TLC model checking on an inline TLA+ specification. \
+                            The spec is written to a temporary file and checked with TLC. \
+                            Returns Resilient-format diagnostics. Requires Java and \
+                            tla2tools.jar (discoverable via RESILIENT_TLC_JAR env var or PATH).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "spec": {
+                        "type": "string",
+                        "description": "TLA+ specification source (full module content)"
+                    },
+                    "tlc_jar": {
+                        "type": "string",
+                        "description": "Optional path to tla2tools.jar (overrides RESILIENT_TLC_JAR)"
+                    }
+                },
+                "required": ["spec"]
             }
         }
     ])
@@ -968,6 +1187,10 @@ mod tests {
             "resilient_explain_lint",
             "resilient_symbols",
             "resilient_hover",
+            "resilient_compile",
+            "resilient_disasm",
+            "resilient_vm_run",
+            "resilient_tla_check",
         ] {
             assert!(
                 names.contains(expected),
@@ -1084,5 +1307,127 @@ mod tests {
         let src = "fn f(int x) -> int { x }";
         let r = hover(src, src.find('(').unwrap());
         assert!(r.is_err());
+    }
+
+    // ── resilient_compile ─────────────────────────────────────────────────────
+
+    #[test]
+    fn compile_returns_summary() {
+        let src = "fn add(int a, int b) -> int { a + b }";
+        let r = tool_compile(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("OK"), "got: {text}");
+        assert!(text.contains("instruction"), "got: {text}");
+    }
+
+    #[test]
+    fn compile_parse_error_propagates() {
+        let r = tool_compile(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn compile_missing_source_returns_error() {
+        let r = tool_compile(&json!({}));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Missing required argument"));
+    }
+
+    #[test]
+    fn compile_shows_function_count() {
+        let src = "fn f(int x) -> int { x }\nfn g(int y) -> int { y }";
+        let r = tool_compile(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("Functions: 2"), "got: {text}");
+    }
+
+    // ── resilient_disasm ──────────────────────────────────────────────────────
+
+    #[test]
+    fn disasm_returns_bytecode_text() {
+        let src = "let x = 42";
+        let r = tool_disasm(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(!text.is_empty(), "disasm output should not be empty");
+    }
+
+    #[test]
+    fn disasm_contains_const_opcode() {
+        let src = "let x = 1 + 2";
+        let r = tool_disasm(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        // The disassembly should mention at least one `Const` instruction.
+        assert!(
+            text.contains("Const") || text.contains("const"),
+            "expected Const in disasm, got: {text}"
+        );
+    }
+
+    #[test]
+    fn disasm_parse_error_propagates() {
+        let r = tool_disasm(&json!({ "source": "fn {{{" }));
+        assert!(r.is_err());
+    }
+
+    // ── resilient_vm_run ──────────────────────────────────────────────────────
+
+    #[test]
+    fn vm_run_hello_world() {
+        let src = r#"println("hello vm")"#;
+        let r = tool_vm_run(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("hello vm"), "got: {text}");
+    }
+
+    #[test]
+    fn vm_run_arithmetic() {
+        let src = "println(3 + 4)";
+        let r = tool_vm_run(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(r.unwrap().contains('7'));
+    }
+
+    #[test]
+    fn vm_run_div_zero_is_error() {
+        let src = "let x = 1 / 0";
+        let r = tool_vm_run(&json!({ "source": src }));
+        assert!(r.is_err(), "expected VM error for division by zero");
+    }
+
+    #[test]
+    fn vm_run_missing_source_returns_error() {
+        let r = tool_vm_run(&json!({}));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Missing required argument"));
+    }
+
+    // ── resilient_tla_check ───────────────────────────────────────────────────
+
+    #[test]
+    fn tla_check_missing_spec_returns_error() {
+        let r = tool_tla_check(&json!({}));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Missing required argument"));
+    }
+
+    #[test]
+    fn tla_check_with_nonexistent_jar_returns_error() {
+        // No TLC available → should return an error diagnostic, not panic.
+        let spec = "---- MODULE Spec ----\nINIT TRUE\nNEXT TRUE\n====\n";
+        let r = tool_tla_check(&json!({
+            "spec": spec,
+            "tlc_jar": "/nonexistent/tla2tools.jar"
+        }));
+        assert!(r.is_err());
+        let msg = r.unwrap_err();
+        assert!(
+            msg.contains("error") || msg.contains("not found"),
+            "got: {msg}"
+        );
     }
 }
