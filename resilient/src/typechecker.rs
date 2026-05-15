@@ -6520,8 +6520,18 @@ impl TypeChecker {
                 value,
                 ..
             } => {
-                let _ = self.check_node(target)?;
-                let _ = self.check_node(index)?;
+                // RES-406: validate index type for array/string targets.
+                let tgt_ty = self.check_node(target)?;
+                let idx_ty = self.check_node(index)?;
+                if matches!(tgt_ty, Type::Array | Type::String)
+                    && !matches!(idx_ty, Type::Int | Type::Any)
+                    && !is_pinned_int(&idx_ty)
+                {
+                    return Err(format!(
+                        "index assignment requires an integer index, got {}",
+                        idx_ty
+                    ));
+                }
                 let _ = self.check_node(value)?;
                 Ok(Type::Void)
             }
@@ -6534,7 +6544,14 @@ impl TypeChecker {
                 ..
             } => {
                 self.current_span = *span;
-                let _ = self.check_node(iterable)?;
+                // RES-406: reject non-iterable types as the loop source.
+                let iter_ty = self.check_node(iterable)?;
+                if !matches!(iter_ty, Type::Array | Type::String | Type::Any) {
+                    return Err(format!(
+                        "cannot iterate over type {} — for-in requires an array or string",
+                        iter_ty
+                    ));
+                }
                 // RES-910: track loop depth so nested `break`/`continue`
                 // are accepted only inside the body.
                 self.loop_depth += 1;
@@ -6560,7 +6577,14 @@ impl TypeChecker {
                 condition, body, span, ..
             } => {
                 self.current_span = *span;
-                let _ = self.check_node(condition)?;
+                // RES-406: while condition must be boolean.
+                let cond_ty = self.check_node(condition)?;
+                if cond_ty != Type::Bool && cond_ty != Type::Any {
+                    return Err(format!(
+                        "while condition must be a boolean, got {}",
+                        cond_ty
+                    ));
+                }
                 self.loop_depth += 1;
                 let body_result = self.check_node(body);
                 self.loop_depth -= 1;
@@ -7231,7 +7255,22 @@ impl TypeChecker {
             // `enum_decls` table so the `Match` arm can check
             // exhaustiveness and so `match_pattern_binding_types`
             // (future PR) can resolve payload-field types.
-            Node::EnumDecl { name, variants, .. } => {
+            Node::EnumDecl { name, variants, span, .. } => {
+                // RES-406: reject duplicate variant names inside the same enum.
+                let mut seen_variants: std::collections::HashSet<&str> =
+                    std::collections::HashSet::with_capacity(variants.len());
+                for v in variants {
+                    if !seen_variants.insert(v.name.as_str()) {
+                        return Err(format!(
+                            "{}:{}:{}: error: duplicate variant `{}` in enum `{}`",
+                            self.source_path,
+                            span.start.line,
+                            span.start.column,
+                            v.name,
+                            name,
+                        ));
+                    }
+                }
                 // RES-1368: store variants behind a refcounted handle
                 // so subsequent lookup-and-clone hot paths in `Match`
                 // checking pay a refcount bump instead of a full Vec
@@ -10876,5 +10915,138 @@ mod res405_index_type_check {
     #[test]
     fn string_char_int_index_ok() {
         check_ok(r#"fn f(string s) -> void { let _x = s[0]; }"#);
+    }
+}
+
+// ── RES-406: while/for-in/index-assignment/enum-dedup checks ─────────────────
+
+#[cfg(test)]
+mod res406_loop_and_collection_checks {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── while condition ───────────────────────────────────────────────────────
+
+    #[test]
+    fn while_bool_condition_ok() {
+        check_ok(r#"fn f() -> void { while true { } }"#);
+    }
+
+    #[test]
+    fn while_int_condition_errors() {
+        let err = check_err(r#"fn f() -> void { while 1 { } }"#);
+        assert!(
+            err.contains("while condition") || err.contains("boolean"),
+            "expected bool condition error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn while_string_condition_errors() {
+        let err = check_err(r#"fn f() -> void { while "yes" { } }"#);
+        assert!(
+            err.contains("while condition") || err.contains("boolean"),
+            "expected bool condition error for string; got: {err}"
+        );
+    }
+
+    // ── for-in iterable type ──────────────────────────────────────────────────
+
+    #[test]
+    fn for_in_array_ok() {
+        check_ok(r#"fn f(array xs) -> void { for x in xs { } }"#);
+    }
+
+    #[test]
+    fn for_in_string_ok() {
+        check_ok(r#"fn f(string s) -> void { for c in s { } }"#);
+    }
+
+    #[test]
+    fn for_in_int_errors() {
+        let err = check_err(r#"fn f(int n) -> void { for x in n { } }"#);
+        assert!(
+            err.contains("cannot iterate") || err.contains("for-in"),
+            "expected cannot-iterate error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn for_in_bool_errors() {
+        let err = check_err(r#"fn f(bool b) -> void { for x in b { } }"#);
+        assert!(
+            err.contains("cannot iterate") || err.contains("for-in"),
+            "expected cannot-iterate error for bool; got: {err}"
+        );
+    }
+
+    // ── index assignment integer index ────────────────────────────────────────
+
+    #[test]
+    fn index_assign_int_index_ok() {
+        check_ok(r#"fn f(array a) -> void { a[0] = 1; }"#);
+    }
+
+    #[test]
+    fn index_assign_float_index_errors() {
+        let err = check_err(r#"fn f(array a) -> void { a[1.5] = 1; }"#);
+        assert!(
+            err.contains("integer index") || err.contains("index assignment"),
+            "expected integer-index error on index assignment; got: {err}"
+        );
+    }
+
+    // ── enum duplicate variant ────────────────────────────────────────────────
+
+    #[test]
+    fn enum_unique_variants_ok() {
+        check_ok(r#"
+enum Color { Red, Green, Blue }
+fn f() -> void { }
+"#);
+    }
+
+    #[test]
+    fn enum_duplicate_variant_errors() {
+        // The parser catches duplicate variants first; either a parse error
+        // or a typecheck error is acceptable — both indicate the duplication
+        // was detected before evaluation.
+        let src = "enum Color { Red, Green, Red }\nfn f() -> void { }\n";
+        let (prog, parse_errs) = crate::parse(src);
+        if !parse_errs.is_empty() {
+            // Parser already caught it — verify the message is meaningful.
+            let combined = parse_errs.join("; ");
+            assert!(
+                combined.to_lowercase().contains("red")
+                    || combined.to_lowercase().contains("duplicate")
+                    || combined.to_lowercase().contains("variant"),
+                "parse error should mention duplicate variant; got: {combined}"
+            );
+            return;
+        }
+        // Typechecker should catch it if parser didn't.
+        let err = TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected duplicate-variant error from typechecker");
+        assert!(
+            err.contains("duplicate variant") || err.contains("Red"),
+            "expected duplicate-variant error; got: {err}"
+        );
     }
 }
