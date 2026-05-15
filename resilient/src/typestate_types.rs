@@ -145,4 +145,79 @@ mod tests {
         assert!(validate_call("File", "Closed", "close").is_err());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn invalid_method_in_valid_state_is_rejected() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Lock",
+            crate::feature_attrs::AttrRecord {
+                name: "typestate".into(),
+                args: r#"states = "Locked Unlocked", transitions = "Locked:unlock->Unlocked Unlocked:lock->Locked""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        // Valid transitions
+        assert_eq!(
+            validate_call("Lock", "Locked", "unlock").unwrap(),
+            "Unlocked"
+        );
+        assert_eq!(validate_call("Lock", "Unlocked", "lock").unwrap(), "Locked");
+        // Invalid: calling `lock` on already-locked is undefined
+        assert!(validate_call("Lock", "Locked", "lock").is_err());
+        // Invalid: calling `unlock` on already-unlocked is undefined
+        assert!(validate_call("Lock", "Unlocked", "unlock").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn three_state_machine_full_cycle() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Connection",
+            crate::feature_attrs::AttrRecord {
+                name: "typestate".into(),
+                args: r#"states = "Idle Active Closed", transitions = "Idle:connect->Active Active:send->Active Active:disconnect->Closed""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        // Walk the full state machine path
+        let s1 = validate_call("Connection", "Idle", "connect").unwrap();
+        assert_eq!(s1, "Active");
+        let s2 = validate_call("Connection", "Active", "send").unwrap();
+        assert_eq!(s2, "Active");
+        let s3 = validate_call("Connection", "Active", "disconnect").unwrap();
+        assert_eq!(s3, "Closed");
+        // Can't connect again after closing
+        assert!(validate_call("Connection", "Closed", "connect").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn unknown_struct_returns_error() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        install(collect());
+        let result = validate_call("Nonexistent", "SomeState", "someMethod");
+        assert!(result.is_err(), "unknown struct must return an error");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Nonexistent"),
+            "error must name the unknown struct: {msg}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }
