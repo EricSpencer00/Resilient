@@ -6330,6 +6330,16 @@ impl TypeChecker {
             Node::StructDecl {
                 name, fields, span, ..
             } => {
+                // RES-409: reject duplicate struct declarations at the
+                // same scope. A second `struct Foo` would silently
+                // shadow the first, causing confusing field-type
+                // mismatches later.
+                if self.struct_fields.contains_key(name) {
+                    return Err(format!(
+                        "{}:{}:{}: error: duplicate struct declaration `{}`",
+                        self.source_path, span.start.line, span.start.column, name,
+                    ));
+                }
                 let mut seen_fields: std::collections::HashSet<&str> =
                     std::collections::HashSet::with_capacity(fields.len());
                 let mut resolved: Vec<(String, Type)> = Vec::with_capacity(fields.len());
@@ -6597,12 +6607,21 @@ impl TypeChecker {
 
                 // RES-1104: bind the loop variable so the body can
                 // reference it without a false "Undefined variable"
-                // diagnostic. Element type isn't statically tracked
-                // yet — `Type::Any` flows through the typechecker
-                // without spurious errors. The binding is confined
-                // to the body via a fresh enclosed env.
+                // diagnostic. The binding is confined to the body via
+                // a fresh enclosed env.
+                // RES-409: infer the element type from the iterable:
+                // - Range (0..10) → Int elements
+                // - String → String characters
+                // - Everything else → Any (conservative)
+                let elem_ty = if matches!(iterable.as_ref(), Node::Range { .. }) {
+                    Type::Int
+                } else if iter_ty == Type::String {
+                    Type::String
+                } else {
+                    Type::Any
+                };
                 let mut loop_env = TypeEnvironment::new_enclosed(self.env.clone());
-                loop_env.set(name.clone(), Type::Any);
+                loop_env.set(name.clone(), elem_ty);
                 std::mem::swap(&mut self.env, &mut loop_env);
                 let body_result = self.check_node(body);
                 std::mem::swap(&mut self.env, &mut loop_env);
@@ -11256,5 +11275,96 @@ fn f(Rect r) -> int {
     #[test]
     fn any_let_binding_ok() {
         check_ok(r#"fn f() -> void { let x: any = 5; let _y: any = "hello"; }"#);
+    }
+}
+
+// ── RES-409: for-in element type inference + duplicate struct check ──────────
+
+#[cfg(test)]
+mod res409_forin_element_type_and_duplicate_struct {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── for-in element type inference ─────────────────────────────────────────
+
+    #[test]
+    fn for_in_range_elem_is_int() {
+        // The loop variable `i` should be Int, so `i + 1` is valid.
+        check_ok(r#"
+fn f() -> void {
+    for i in 0..10 {
+        let _x = i + 1;
+    }
+}
+"#);
+    }
+
+    #[test]
+    fn for_in_range_elem_int_used_in_string_concat_errors() {
+        // `i` is Int from a range; `"hello" + i` is String (coercion),
+        // but `i - "hello"` is an error (not a valid arithmetic op).
+        // This validates that the range-elem binding really is Int.
+        let err = check_err(r#"
+fn f() -> void {
+    for i in 0..5 {
+        let _x = i - "hello";
+    }
+}
+"#);
+        assert!(
+            err.contains("Cannot apply") || err.contains("int") || err.contains("string"),
+            "expected type error for int - string in range loop; got: {err}"
+        );
+    }
+
+    #[test]
+    fn for_in_string_elem_is_string() {
+        // Each character from a string iteration is a String.
+        check_ok(r#"
+fn f(string s) -> void {
+    for c in s {
+        let _x: string = c;
+    }
+}
+"#);
+    }
+
+    // ── duplicate struct declaration ──────────────────────────────────────────
+
+    #[test]
+    fn unique_struct_ok() {
+        check_ok(r#"
+struct Point { int x, int y }
+fn f() -> void { }
+"#);
+    }
+
+    #[test]
+    fn duplicate_struct_errors() {
+        let err = check_err(r#"
+struct Point { int x, int y }
+struct Point { int a, int b }
+fn f() -> void { }
+"#);
+        assert!(
+            err.contains("duplicate") || err.contains("Point"),
+            "expected duplicate struct error; got: {err}"
+        );
     }
 }
