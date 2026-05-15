@@ -2,7 +2,8 @@
 //!
 //! Implements the [Model Context Protocol](https://modelcontextprotocol.io)
 //! over stdio (newline-delimited JSON-RPC 2.0), exposing the Resilient
-//! compiler pipeline as tools that AI assistants can invoke directly.
+//! compiler pipeline as tools, prompts, and resources that AI assistants
+//! can use directly.
 //!
 //! ## Activation
 //!
@@ -25,6 +26,26 @@
 //! | `resilient_format` | Format / pretty-print source |
 //! | `resilient_check` | Full pipeline (parse + typecheck + lint) |
 //! | `resilient_verify` | Z3 contract verification (requires `--features z3`) |
+//!
+//! ## Prompts exposed (RES-2645 MCP Scaffolding)
+//!
+//! | Prompt | Description |
+//! |---|---|
+//! | `verify_function` | Guided workflow: add contracts + verify with Z3 |
+//! | `debug_type_error` | Guided workflow: interpret and fix a type error |
+//! | `add_resilience` | Guided workflow: add `recovers_to` + `live` blocks |
+//! | `explain_lint` | Guided workflow: understand and fix a lint warning |
+//! | `safety_review` | Guided workflow: full safety-critical review |
+//!
+//! ## Resources exposed (RES-2645 MCP Scaffolding)
+//!
+//! | Resource | Description |
+//! |---|---|
+//! | `resilient://docs/syntax` | Full language syntax reference |
+//! | `resilient://docs/stdlib` | Standard library function reference |
+//! | `resilient://docs/lint-codes` | All lint codes with explanations |
+//! | `resilient://docs/contracts` | Contract (`requires`/`ensures`) guide |
+//! | `resilient://docs/effects` | Effect system (`@pure`, `@io`) guide |
 //!
 //! ## Protocol
 //!
@@ -109,6 +130,11 @@ fn dispatch(
         }
         "tools/list" => Some(handle_tools_list(id)),
         "tools/call" => Some(handle_tools_call(id, params)),
+        // RES-2645: MCP Scaffolding — prompts and resources support.
+        "prompts/list" => Some(handle_prompts_list(id)),
+        "prompts/get" => Some(handle_prompts_get(id, params)),
+        "resources/list" => Some(handle_resources_list(id)),
+        "resources/read" => Some(handle_resources_read(id, params)),
         // Gracefully ignore unknown notifications; error on unknown requests.
         _ if is_notification => None,
         _ => Some(error(id, -32601, format!("Method not found: {method}"))),
@@ -123,7 +149,12 @@ fn handle_initialize(id: &Value, _params: Option<&Value>) -> Value {
         json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {
-                "tools": {}
+                "tools": {},
+                // RES-2645: advertise prompts and resources so MCP clients
+                // (Claude Desktop, Cursor, etc.) discover guided workflows
+                // and documentation without manual configuration.
+                "prompts": {},
+                "resources": {}
             },
             "serverInfo": {
                 "name": "resilient",
@@ -218,6 +249,571 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
             }),
         ),
     }
+}
+
+// ── Prompts (RES-2645: MCP Scaffolding) ──────────────────────────────────────
+
+/// Guided workflow prompt descriptors surfaced via `prompts/list`.
+fn prompt_descriptors() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "verify_function",
+            "description": "Guided workflow: add `requires`/`ensures` contracts to a Resilient function and verify them with Z3.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code containing the function(s) to verify",
+                    "required": true
+                },
+                {
+                    "name": "function_name",
+                    "description": "Name of the specific function to focus on (optional; omit to review all)",
+                    "required": false
+                }
+            ]
+        }),
+        json!({
+            "name": "debug_type_error",
+            "description": "Guided workflow: interpret a Resilient type error message and suggest a fix.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code that produces the type error",
+                    "required": true
+                },
+                {
+                    "name": "error_message",
+                    "description": "The type error message from the compiler (optional; will be inferred by running the typechecker)",
+                    "required": false
+                }
+            ]
+        }),
+        json!({
+            "name": "add_resilience",
+            "description": "Guided workflow: add fault tolerance to a Resilient function using `recovers_to` postconditions and `live` retry blocks.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code to harden",
+                    "required": true
+                }
+            ]
+        }),
+        json!({
+            "name": "explain_lint",
+            "description": "Guided workflow: explain a Resilient lint warning and suggest how to fix it.",
+            "arguments": [
+                {
+                    "name": "code",
+                    "description": "Lint code to explain (e.g. L0010, L0038)",
+                    "required": true
+                },
+                {
+                    "name": "source",
+                    "description": "Source snippet that triggered the warning (optional)",
+                    "required": false
+                }
+            ]
+        }),
+        json!({
+            "name": "safety_review",
+            "description": "Guided workflow: full safety-critical code review — checks contracts, effects, lint, type safety, and resilience score.",
+            "arguments": [
+                {
+                    "name": "source",
+                    "description": "Resilient source code to review",
+                    "required": true
+                }
+            ]
+        }),
+    ]
+}
+
+fn handle_prompts_list(id: &Value) -> Value {
+    ok(id, json!({ "prompts": prompt_descriptors() }))
+}
+
+fn handle_prompts_get(id: &Value, params: Option<&Value>) -> Value {
+    let Some(params) = params else {
+        return error(id, -32602, "Missing params".to_string());
+    };
+    let name = match params.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error(id, -32602, "Missing prompt name".to_string()),
+    };
+    let args = params.get("arguments").unwrap_or(&Value::Null);
+
+    let messages = match name {
+        "verify_function" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let fn_name = args.get("function_name").and_then(|v| v.as_str());
+            let focus = fn_name
+                .map(|f| format!("Focus on function `{f}`."))
+                .unwrap_or_default();
+            let check_result = if src.is_empty() {
+                "(no source provided)".to_string()
+            } else {
+                match tool_check(&json!({ "source": src })) {
+                    Ok(msg) => format!("Compiler: {msg}"),
+                    Err(msg) => format!("Compiler errors:\n{msg}"),
+                }
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please help me add formal contracts (`requires`/`ensures`) to the \
+                         following Resilient program and verify them with Z3. {focus}\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Current compiler output:\n{check_result}\n\n\
+                         Steps:\n\
+                         1. Identify preconditions (what must hold for the function to work correctly)\n\
+                         2. Identify postconditions (what the function guarantees)\n\
+                         3. Suggest `requires` and `ensures` clauses\n\
+                         4. Explain what Z3 can prove and what it cannot"
+                    )
+                }
+            })]
+        }
+        "debug_type_error" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let provided_error = args.get("error_message").and_then(|v| v.as_str());
+            let error_text = provided_error.map(|e| e.to_string()).unwrap_or_else(|| {
+                if src.is_empty() {
+                    "(no source provided)".to_string()
+                } else {
+                    match tool_typecheck(&json!({ "source": src })) {
+                        Ok(_) => "(no type errors found)".to_string(),
+                        Err(msg) => msg,
+                    }
+                }
+            });
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "I have a Resilient type error I need help understanding and fixing.\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Error:\n```\n{error_text}\n```\n\n\
+                         Please:\n\
+                         1. Explain what the error means in plain language\n\
+                         2. Identify the root cause in the source\n\
+                         3. Show a corrected version of the code\n\
+                         4. Explain why the fix works"
+                    )
+                }
+            })]
+        }
+        "add_resilience" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let score_result = if src.is_empty() {
+                "(no source provided)".to_string()
+            } else {
+                match tool_resilience_score(&json!({ "source": src })) {
+                    Ok(msg) => msg,
+                    Err(msg) => msg,
+                }
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please help me add fault tolerance to this Resilient program.\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Current resilience score:\n{score_result}\n\n\
+                         Resilient fault-tolerance features:\n\
+                         - `fails ErrorType` — declare what errors the function can raise\n\
+                         - `recovers_to: EXPR` — postcondition that holds after any crash\n\
+                         - `live {{ ... }}` — retry block that re-executes on recoverable faults\n\
+                         - `@crash_only_cert` — certify the function only returns Ok or Err\n\n\
+                         Please:\n\
+                         1. Identify which functions handle recoverable failures\n\
+                         2. Suggest `fails`/`recovers_to` annotations\n\
+                         3. Show `live` block patterns where retries make sense\n\
+                         4. Explain the recovery semantics for each suggestion"
+                    )
+                }
+            })]
+        }
+        "explain_lint" => {
+            let code = args.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            let source_snippet = args
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let explanation = match tool_explain_lint(&json!({ "code": code })) {
+                Ok(text) => text,
+                Err(msg) => format!("Error: {msg}"),
+            };
+            let snippet_section = if source_snippet.is_empty() {
+                String::new()
+            } else {
+                format!("\n\nCode that triggered the warning:\n```rz\n{source_snippet}\n```")
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please help me understand and fix Resilient lint warning `{code}`.\n\n\
+                         Official explanation:\n{explanation}{snippet_section}\n\n\
+                         Please:\n\
+                         1. Explain WHY this is flagged as a warning\n\
+                         2. Show a concrete example of the bad pattern\n\
+                         3. Show the corrected version\n\
+                         4. Explain when (if ever) you might want to suppress it with `// resilient: allow {code}`"
+                    )
+                }
+            })]
+        }
+        "safety_review" => {
+            let src = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let (check_out, score_out, lint_out) = if src.is_empty() {
+                (
+                    "(no source provided)".to_string(),
+                    "(no source provided)".to_string(),
+                    "(no source provided)".to_string(),
+                )
+            } else {
+                let check = match tool_check(&json!({ "source": src })) {
+                    Ok(m) => m,
+                    Err(m) => m,
+                };
+                let score = match tool_resilience_score(&json!({ "source": src })) {
+                    Ok(m) => m,
+                    Err(m) => m,
+                };
+                let lint = match tool_lint(&json!({ "source": src })) {
+                    Ok(m) => m,
+                    Err(m) => m,
+                };
+                (check, score, lint)
+            };
+            vec![json!({
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!(
+                        "Please perform a full safety-critical code review of this Resilient program.\n\n\
+                         Source:\n```rz\n{src}\n```\n\n\
+                         Compiler check: {check_out}\n\
+                         Resilience score: {score_out}\n\
+                         Lint output: {lint_out}\n\n\
+                         Please review:\n\
+                         1. **Type safety** — are all types correct and no `Any` escapes?\n\
+                         2. **Contracts** — are preconditions and postconditions adequate?\n\
+                         3. **Effects** — are effect annotations (`@pure`/`@io`) correct?\n\
+                         4. **Fault tolerance** — are failure paths handled with `live` / `recovers_to`?\n\
+                         5. **Embedded safety** — any panics, unbounded loops, or heap allocations?\n\
+                         6. **Lint violations** — are all warnings addressed?\n\
+                         7. **Overall verdict** — ready for safety-critical deployment?"
+                    )
+                }
+            })]
+        }
+        other => {
+            return error(
+                id,
+                -32602,
+                format!(
+                    "Unknown prompt `{other}`. Available: {}",
+                    prompt_descriptors()
+                        .iter()
+                        .filter_map(|p| p["name"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+    };
+
+    ok(id, json!({ "messages": messages }))
+}
+
+// ── Resources (RES-2645: MCP Scaffolding) ────────────────────────────────────
+
+/// Static documentation resource descriptors.
+fn resource_descriptors() -> Vec<Value> {
+    vec![
+        json!({
+            "uri": "resilient://docs/syntax",
+            "name": "Resilient Language Syntax",
+            "description": "Complete syntax reference for the Resilient programming language",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/stdlib",
+            "name": "Resilient Standard Library",
+            "description": "All builtin functions and their signatures",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/lint-codes",
+            "name": "Resilient Lint Codes",
+            "description": "All lint codes with explanations and fix guidance",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/contracts",
+            "name": "Resilient Contracts Guide",
+            "description": "How to write `requires`/`ensures` contracts and use Z3 verification",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/effects",
+            "name": "Resilient Effect System",
+            "description": "Effect annotations (@pure, @io) and effect inference",
+            "mimeType": "text/plain"
+        }),
+        json!({
+            "uri": "resilient://docs/resilience",
+            "name": "Resilient Fault Tolerance Guide",
+            "description": "How to use `live` blocks, `recovers_to`, and fault recovery patterns",
+            "mimeType": "text/plain"
+        }),
+    ]
+}
+
+fn handle_resources_list(id: &Value) -> Value {
+    ok(id, json!({ "resources": resource_descriptors() }))
+}
+
+fn handle_resources_read(id: &Value, params: Option<&Value>) -> Value {
+    let Some(params) = params else {
+        return error(id, -32602, "Missing params".to_string());
+    };
+    let uri = match params.get("uri").and_then(|v| v.as_str()) {
+        Some(u) => u,
+        None => return error(id, -32602, "Missing resource uri".to_string()),
+    };
+
+    let content = match uri {
+        "resilient://docs/syntax" => resource_syntax_doc(),
+        "resilient://docs/stdlib" => resource_stdlib_doc(),
+        "resilient://docs/lint-codes" => resource_lint_codes_doc(),
+        "resilient://docs/contracts" => resource_contracts_doc(),
+        "resilient://docs/effects" => resource_effects_doc(),
+        "resilient://docs/resilience" => resource_resilience_doc(),
+        other => {
+            return error(
+                id,
+                -32602,
+                format!(
+                    "Unknown resource URI `{other}`. Available: {}",
+                    resource_descriptors()
+                        .iter()
+                        .filter_map(|r| r["uri"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+    };
+
+    ok(
+        id,
+        json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/plain",
+                "text": content
+            }]
+        }),
+    )
+}
+
+fn resource_syntax_doc() -> String {
+    "# Resilient Language Syntax Reference\n\n\
+     ## Functions\n\
+     fn name(type param, ...) -> ReturnType {\n\
+         body\n\
+     }\n\n\
+     ## Variables\n\
+     let x: int = 42;\n\
+     let x = 42;           // type inferred\n\
+     static let counter = 0;  // persists across calls\n\
+     const MAX: int = 100; // compile-time constant\n\n\
+     ## Types\n\
+     int    float    bool    string    array    void\n\
+     fn(T, ...) -> R   // function type\n\
+     Array<T>          // typed array (planned)\n\n\
+     ## Control Flow\n\
+     if COND { ... } else { ... }\n\
+     while COND { ... }\n\
+     for x in ITERABLE { ... }\n\
+     match EXPR { PATTERN => EXPR, ... }\n\
+     return EXPR;\n\
+     break; continue;\n\n\
+     ## Structs\n\
+     struct Point { int x, int y, }\n\
+     let p = new Point { x: 1, y: 2 };\n\
+     p.x    // field access\n\n\
+     ## Enums\n\
+     enum Color { Red, Green, Blue }\n\
+     match c { Color::Red => ..., _ => ... }\n\n\
+     ## Contracts\n\
+     fn f(int x) -> int requires x > 0 ensures result > 0 { ... }\n\n\
+     ## Effects\n\
+     @pure fn f(...) { ... }  // no side effects\n\
+     @io fn g(...) { ... }    // may perform I/O\n\n\
+     ## Fault Tolerance\n\
+     fn f() fails IOError recovers_to: result >= 0 { ... }\n\
+     live { ... }             // retry block\n\n\
+     ## Closures\n\
+     fn(int x) -> int { x * 2 }     // anonymous function\n\
+     fn(x) { x + 1 }                // type-inferred params (planned)\n\n\
+     ## String Interpolation\n\
+     let msg = \"value is {x}\";\n\n\
+     ## Pattern Matching\n\
+     match x {\n\
+         0 => \"zero\",\n\
+         1..=9 => \"small\",\n\
+         _ => \"large\",\n\
+     }\n"
+        .to_string()
+}
+
+fn resource_stdlib_doc() -> String {
+    let lines = vec![
+        "# Resilient Standard Library\n".to_string(),
+        "## Math\n".to_string(),
+        "abs(x: int) -> int     sqrt(x) -> float    pow(base, exp) -> int".to_string(),
+        "floor(x) -> int        ceil(x) -> int      round(x) -> int".to_string(),
+        "min(a, b) -> int       max(a, b) -> int     sign(x) -> int".to_string(),
+        "clamp(x, lo, hi) -> int".to_string(),
+        "sin(x) -> float        cos(x) -> float     tan(x) -> float".to_string(),
+        "log(x) -> float        log2(x) -> float    log10(x) -> float".to_string(),
+        "\n## Strings\n".to_string(),
+        "len(s: string) -> int          to_string(x) -> string".to_string(),
+        "string_upper(s) -> string      string_lower(s) -> string".to_string(),
+        "string_trim(s) -> string       string_contains(s, sub) -> bool".to_string(),
+        "string_starts_with(s, pre) -> bool   string_ends_with(s, suf) -> bool".to_string(),
+        "string_split(s, delim) -> array      string_join(arr, sep) -> string".to_string(),
+        "string_replace(s, from, to) -> string".to_string(),
+        "string_slice(s, lo, hi) -> string    string_index(s, i) -> string".to_string(),
+        "\n## Arrays\n".to_string(),
+        "len(arr: array) -> int         push(arr, item) -> array".to_string(),
+        "pop(arr) -> any               array_append(arr, item) -> array".to_string(),
+        "array_map(arr, fn) -> array    array_filter(arr, pred) -> array".to_string(),
+        "array_reduce(arr, init, fn) -> any   array_find(arr, pred) -> any".to_string(),
+        "array_find_index(arr, pred) -> int   array_any(arr, pred) -> bool".to_string(),
+        "array_all(arr, pred) -> bool         array_sort(arr) -> array".to_string(),
+        "array_reverse(arr) -> array          array_sum(arr) -> int".to_string(),
+        "array_min(arr) -> int               array_max(arr) -> int".to_string(),
+        "array_range(lo, hi) -> array        array_slice(arr, lo, hi, incl) -> array".to_string(),
+        "\n## I/O\n".to_string(),
+        "println(x)   print(x)   read_line() -> string   input(prompt) -> string".to_string(),
+        "\n## Type checks\n".to_string(),
+        "is_int(x) -> bool   is_float(x) -> bool   is_string(x) -> bool".to_string(),
+        "is_array(x) -> bool  is_null(x) -> bool".to_string(),
+    ];
+    lines.join("\n")
+}
+
+fn resource_lint_codes_doc() -> String {
+    let mut parts = vec!["# Resilient Lint Codes\n".to_string()];
+    for code in crate::lint::KNOWN_CODES {
+        match crate::lint::explain(code) {
+            Some(text) => parts.push(format!("## {code}\n{text}\n")),
+            None => parts.push(format!("## {code}\n(no explanation available)\n")),
+        }
+    }
+    parts.join("\n")
+}
+
+fn resource_contracts_doc() -> String {
+    "# Resilient Contracts Guide\n\n\
+     ## Preconditions (`requires`)\n\
+     State what must be true BEFORE the function runs:\n\
+     ```rz\n\
+     fn divide(int a, int b) -> int requires b != 0 { return a / b; }\n\
+     ```\n\n\
+     ## Postconditions (`ensures`)\n\
+     State what the function GUARANTEES on return. The special variable `result`\n\
+     refers to the return value:\n\
+     ```rz\n\
+     fn abs_val(int x) -> int ensures result >= 0 { return if x < 0 { -x } else { x }; }\n\
+     ```\n\n\
+     ## Multiple clauses\n\
+     Chain with whitespace (no comma needed):\n\
+     ```rz\n\
+     fn clamp(int x, int lo, int hi) -> int\n\
+         requires lo <= hi\n\
+         ensures result >= lo\n\
+         ensures result <= hi\n\
+     {\n\
+         if x < lo { return lo; }\n\
+         if x > hi { return hi; }\n\
+         return x;\n\
+     }\n\
+     ```\n\n\
+     ## Z3 verification\n\
+     Build with `--features z3` to have Z3 attempt to prove contracts at\n\
+     compile time. Functions with provable contracts skip runtime checks.\n\n\
+     ## Resilience score\n\
+     `rz check` shows a resilience score A–F. Functions with both `requires`\n\
+     and `ensures` clauses score higher."
+        .to_string()
+}
+
+fn resource_effects_doc() -> String {
+    "# Resilient Effect System\n\n\
+     ## Annotations\n\
+     - `@pure` — function has no side effects; may only call other `@pure` functions\n\
+     - `@io` — function may perform I/O; required for `println`, file access, etc.\n\n\
+     ## Examples\n\
+     ```rz\n\
+     @pure fn double(int x) -> int { return x * 2; }  // purely computational\n\
+     @io fn log(string msg) { println(msg); }          // has I/O side effect\n\
+     ```\n\n\
+     ## Inference\n\
+     The compiler infers effects by inspecting the body. If a function calls\n\
+     `println` or other I/O builtins, it is automatically inferred as `@io`\n\
+     even if the annotation is absent.\n\n\
+     ## Effect errors\n\
+     A `@pure` function that calls an `@io` function is a type error.\n\n\
+     ## Linear effects\n\
+     `#[linear]` resources must be consumed exactly once — the compiler\n\
+     enforces that no reference is dropped silently and no reference is\n\
+     used after consumption."
+        .to_string()
+}
+
+fn resource_resilience_doc() -> String {
+    "# Resilient Fault Tolerance Guide\n\n\
+     ## `fails` — declare recoverable errors\n\
+     ```rz\n\
+     fn read_sensor() -> int fails IOError { ... }\n\
+     ```\n\n\
+     ## `recovers_to` — postcondition after a crash\n\
+     State what the caller can rely on even if the function was interrupted:\n\
+     ```rz\n\
+     fn write_log(string msg)\n\
+         fails IOError\n\
+         recovers_to: len(msg) == 0 || log_is_consistent()\n\
+     { ... }\n\
+     ```\n\n\
+     ## `live` blocks — automatic retry on recoverable fault\n\
+     ```rz\n\
+     live {\n\
+         let data = read_sensor();  // retried if IOError occurs\n\
+         process(data);\n\
+     }\n\
+     ```\n\n\
+     ## `@crash_only_cert` — guarantee clean termination\n\
+     ```rz\n\
+     #[crash_only_cert]\n\
+     fn safe_op() -> Result { ... }\n\
+     ```\n\n\
+     ## BMC verification (RES-1857)\n\
+     With `--features z3`, the bounded model checker verifies that\n\
+     `recovers_to` postconditions hold after any prefix of instructions\n\
+     that could be interrupted by a crash. A `sat` result means the\n\
+     postcondition CAN be violated — fix the code or weaken the clause."
+        .to_string()
 }
 
 // ── Tool implementations ──────────────────────────────────────────────────────
@@ -1934,6 +2530,233 @@ mod tests {
     fn call_graph_parse_error_propagates() {
         let r = tool_call_graph(&json!({ "source": "fn {{{{" }));
         assert!(r.is_err());
+    }
+
+    // ── prompts/list ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn prompts_list_returns_all_prompts() {
+        let resp = handle_prompts_list(&json!(1));
+        let prompts = resp["result"]["prompts"].as_array().unwrap();
+        let names: Vec<&str> = prompts.iter().filter_map(|p| p["name"].as_str()).collect();
+        for expected in &[
+            "verify_function",
+            "debug_type_error",
+            "add_resilience",
+            "explain_lint",
+            "safety_review",
+        ] {
+            assert!(names.contains(expected), "missing prompt {expected}; got {names:?}");
+        }
+    }
+
+    #[test]
+    fn prompts_list_each_has_description() {
+        let resp = handle_prompts_list(&json!(1));
+        let prompts = resp["result"]["prompts"].as_array().unwrap();
+        for p in prompts {
+            assert!(
+                p["description"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+                "prompt {:?} missing description",
+                p["name"]
+            );
+        }
+    }
+
+    // ── prompts/get ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn prompts_get_verify_function_returns_messages() {
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let params = json!({ "name": "verify_function", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty(), "expected at least one message");
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(text.contains("requires") || text.contains("ensures"), "got: {text}");
+    }
+
+    #[test]
+    fn prompts_get_debug_type_error_includes_source() {
+        let src = "fn f(int x) -> string { return x; }";
+        let params = json!({ "name": "debug_type_error", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(text.contains("type error") || text.contains("error"), "got: {text}");
+    }
+
+    #[test]
+    fn prompts_get_add_resilience_returns_messages() {
+        let src = "fn sensor() -> int { return 42; }";
+        let params = json!({ "name": "add_resilience", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(text.contains("recovers_to") || text.contains("live"), "got: {text}");
+    }
+
+    #[test]
+    fn prompts_get_explain_lint_returns_explanation() {
+        let params = json!({ "name": "explain_lint", "arguments": { "code": "L0010" } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(text.contains("L0010"), "got: {text}");
+    }
+
+    #[test]
+    fn prompts_get_safety_review_returns_checklist() {
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let params = json!({ "name": "safety_review", "arguments": { "source": src } });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        let messages = resp["result"]["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        let text = messages[0]["content"]["text"].as_str().unwrap_or("");
+        assert!(text.contains("safety") || text.contains("review"), "got: {text}");
+    }
+
+    #[test]
+    fn prompts_get_unknown_prompt_returns_error() {
+        let params = json!({ "name": "nonexistent_prompt", "arguments": {} });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        assert!(resp.get("error").is_some(), "expected error for unknown prompt");
+    }
+
+    #[test]
+    fn prompts_get_missing_name_returns_error() {
+        let params = json!({ "arguments": {} });
+        let resp = handle_prompts_get(&json!(1), Some(&params));
+        assert!(resp.get("error").is_some(), "expected error for missing name");
+    }
+
+    #[test]
+    fn dispatch_prompts_list_works() {
+        let resp = dispatch("prompts/list", &json!(1), None, false);
+        assert!(resp.is_some());
+        let resp = resp.unwrap();
+        assert!(resp["result"]["prompts"].is_array());
+    }
+
+    #[test]
+    fn dispatch_resources_list_works() {
+        let resp = dispatch("resources/list", &json!(1), None, false);
+        assert!(resp.is_some());
+        let resp = resp.unwrap();
+        assert!(resp["result"]["resources"].is_array());
+    }
+
+    // ── resources/list ────────────────────────────────────────────────────────
+
+    #[test]
+    fn resources_list_returns_all_resources() {
+        let resp = handle_resources_list(&json!(1));
+        let resources = resp["result"]["resources"].as_array().unwrap();
+        let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
+        for expected in &[
+            "resilient://docs/syntax",
+            "resilient://docs/stdlib",
+            "resilient://docs/lint-codes",
+            "resilient://docs/contracts",
+            "resilient://docs/effects",
+            "resilient://docs/resilience",
+        ] {
+            assert!(uris.contains(expected), "missing resource {expected}; got {uris:?}");
+        }
+    }
+
+    #[test]
+    fn resources_list_each_has_mime_type() {
+        let resp = handle_resources_list(&json!(1));
+        let resources = resp["result"]["resources"].as_array().unwrap();
+        for r in resources {
+            assert_eq!(
+                r["mimeType"].as_str().unwrap_or(""),
+                "text/plain",
+                "resource {:?} should have mimeType text/plain",
+                r["uri"]
+            );
+        }
+    }
+
+    // ── resources/read ────────────────────────────────────────────────────────
+
+    #[test]
+    fn resources_read_syntax_doc_is_nonempty() {
+        let params = json!({ "uri": "resilient://docs/syntax" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(!text.is_empty(), "syntax doc must not be empty");
+        assert!(text.contains("fn"), "syntax doc must mention fn keyword");
+    }
+
+    #[test]
+    fn resources_read_stdlib_doc_is_nonempty() {
+        let params = json!({ "uri": "resilient://docs/stdlib" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(!text.is_empty(), "stdlib doc must not be empty");
+        assert!(text.contains("len"), "stdlib doc must mention len");
+    }
+
+    #[test]
+    fn resources_read_lint_codes_doc_covers_all_codes() {
+        let params = json!({ "uri": "resilient://docs/lint-codes" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        for code in crate::lint::KNOWN_CODES.iter().take(5) {
+            assert!(text.contains(code), "lint doc must mention {code}");
+        }
+    }
+
+    #[test]
+    fn resources_read_contracts_doc_mentions_requires() {
+        let params = json!({ "uri": "resilient://docs/contracts" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("requires"), "contracts doc must mention requires");
+        assert!(text.contains("ensures"), "contracts doc must mention ensures");
+    }
+
+    #[test]
+    fn resources_read_effects_doc_mentions_pure() {
+        let params = json!({ "uri": "resilient://docs/effects" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("@pure"), "effects doc must mention @pure");
+    }
+
+    #[test]
+    fn resources_read_resilience_doc_mentions_live() {
+        let params = json!({ "uri": "resilient://docs/resilience" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("live") || text.contains("recovers_to"), "got: {text}");
+    }
+
+    #[test]
+    fn resources_read_unknown_uri_returns_error() {
+        let params = json!({ "uri": "resilient://docs/nonexistent" });
+        let resp = handle_resources_read(&json!(1), Some(&params));
+        assert!(resp.get("error").is_some(), "expected error for unknown URI");
+    }
+
+    #[test]
+    fn resources_read_missing_uri_returns_error() {
+        let resp = handle_resources_read(&json!(1), Some(&json!({})));
+        assert!(resp.get("error").is_some(), "expected error for missing URI");
+    }
+
+    #[test]
+    fn initialize_capabilities_include_prompts_and_resources() {
+        let resp = dispatch("initialize", &json!(1), Some(&json!({})), false);
+        let resp = resp.unwrap();
+        let caps = &resp["result"]["capabilities"];
+        assert!(caps["prompts"].is_object(), "capabilities must include prompts");
+        assert!(caps["resources"].is_object(), "capabilities must include resources");
     }
 
     // ── resilient_tla_check ───────────────────────────────────────────────────
