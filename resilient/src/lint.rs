@@ -100,6 +100,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0038", // RES-1863: panic!() call outside of #[cfg(test)] context
     "L0039", // RES-1863: unreachable code after call to @noreturn-annotated function
     "L0040", // RES-1863: magic number in safety-critical computation (unnamed non-trivial literal)
+    "L0041", // redundant `else` block when the `if` arm always returns
+    "L0042", // dead code after `return` statement in same block
+    "L0043", // `let` binding shadows an existing binding with the same name
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -522,6 +525,38 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: extract the literal into a named constant (`let THRESHOLD = 42;`).\n\
              Suppress: // resilient: allow L0040",
         ),
+        "L0041" => Some(
+            "L0041 — redundant `else` after `return`\n\
+             \n\
+             An `if` branch ends with a `return` statement, making the following `else`\n\
+             block structurally redundant — its body is only reached when the condition\n\
+             is false, and the early return already ensures that. The `else` can be\n\
+             removed and the else-body dedented to improve readability.\n\
+             \n\
+             Fix: remove the `else { ... }` wrapper and dedent the else-body.\n\
+             Suppress: // resilient: allow L0041",
+        ),
+        "L0042" => Some(
+            "L0042 — dead code after `return`\n\
+             \n\
+             A `return` statement is followed by one or more statements in the same\n\
+             block. Those statements can never be executed. This often indicates a\n\
+             logic error (missing `if` condition) or copy-paste residue.\n\
+             \n\
+             Fix: remove the dead statements, or wrap them in a conditional.\n\
+             Suppress: // resilient: allow L0042",
+        ),
+        "L0043" => Some(
+            "L0043 — shadowed binding\n\
+             \n\
+             A `let` binding introduces a name that already exists in the same scope\n\
+             (either a function parameter or a prior `let` in the same block). The\n\
+             new binding silently hides the original, which can make code difficult to\n\
+             reason about and is a frequent source of unintended aliasing bugs.\n\
+             \n\
+             Fix: rename one of the bindings.\n\
+             Suppress: // resilient: allow L0043",
+        ),
         _ => None,
     }
 }
@@ -582,6 +617,10 @@ struct LintTriggers {
     has_noreturn_call: bool,
     /// L0040: an arithmetic infix expression with an integer literal exists.
     has_arith_int_literal: bool,
+    /// L0041/L0042: any IfStatement with an alternative or any ReturnStatement in a block.
+    has_return_in_block: bool,
+    /// L0043: any LetStatement present (potential shadowing).
+    has_let_binding: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -607,7 +646,10 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             }
         }
         Node::Function { .. } => t.has_function = true,
-        Node::LetStatement { .. } => t.has_let = true,
+        Node::LetStatement { .. } => {
+            t.has_let = true;
+            t.has_let_binding = true;
+        }
         Node::Block { stmts, .. } => {
             t.has_block = true;
             // L0017 trigger: a let inside a block (potential shadowing site).
@@ -667,6 +709,7 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         }
         Node::StringLiteral { .. } => t.has_string_literal = true,
         Node::Assignment { .. } => t.has_assignment = true,
+        Node::ReturnStatement { .. } => t.has_return_in_block = true,
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -801,6 +844,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_function && t.has_arith_int_literal && t.has_integer_literal {
         run_l0040_magic_number(program, &mut out);
+    }
+    if t.has_return_in_block && t.has_if_with_else {
+        run_l0041_redundant_else(program, &mut out);
+    }
+    if t.has_return_in_block && t.has_block {
+        run_l0042_dead_code_after_return(program, &mut out);
+    }
+    if t.has_let_binding && t.has_function {
+        run_l0043_shadowed_binding(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -4596,6 +4648,157 @@ fn walk_l0040_arith(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0041: redundant `else` when the `if` arm always returns
+// ============================================================
+//
+// Fires on:
+//   if cond { return x; } else { ... }
+//
+// When the consequence block always returns (ReturnStatement or
+// expression-tail), the `else` branch is unreachable from above —
+// any code in `else` could be written at the same indentation level
+// without an `else`. This is a stricter cousin of L0022 and shares
+// the `l0018_all_paths_return` helper.
+//
+// L0022 fires on all `if/else` nodes where the consequence returns;
+// L0041 is distinct in naming and wording but also uses that predicate.
+// We keep them as separate codes so users can silence one without
+// silencing the other.
+
+fn run_l0041_redundant_else(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0041(program, out);
+}
+
+fn walk_l0041(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        consequence,
+        alternative: Some(_alt),
+        span,
+        ..
+    } = node
+        && l0018_all_paths_return(consequence)
+    {
+        out.push(Lint {
+            code: "L0041".into(),
+            severity: Severity::Warning,
+            message: "`else` block is redundant — the `if` arm always returns; \
+                      de-nest the body and drop the `else`"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0041(child, out));
+}
+
+// ============================================================
+// L0042: dead code after `return` in the same block
+// ============================================================
+//
+// Fires on blocks where a `ReturnStatement` is followed by one or
+// more statements. Those trailing statements can never execute.
+//
+// Unlike L0007 (unreachable_code, which fires on the *second*
+// statement after a return), L0042 fires on the `return` statement
+// itself (pointing at the culprit, not the victim). The code range
+// is the same node; having two codes lets users suppress one without
+// silencing the other.
+
+fn run_l0042_dead_code_after_return(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0042(program, out);
+}
+
+fn walk_l0042(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Block { stmts, .. } = node {
+        for (i, stmt) in stmts.iter().enumerate() {
+            if matches!(stmt, Node::ReturnStatement { .. }) && i + 1 < stmts.len() {
+                let (line, column) = node_span(stmt)
+                    .map(|s| (s.start.line as u32, s.start.column as u32))
+                    .unwrap_or((0, 0));
+                out.push(Lint {
+                    code: "L0042".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "statements after `return` in the same block are dead code ({} unreachable statement{})",
+                        stmts.len() - i - 1,
+                        if stmts.len() - i - 1 == 1 { "" } else { "s" },
+                    ),
+                    line,
+                    column,
+                });
+                break; // only one diagnostic per block
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0042(child, out));
+}
+
+// ============================================================
+// L0043: `let` binding shadows an existing binding or parameter
+// ============================================================
+//
+// Fires when a `let` declaration inside a function introduces a name
+// that is already bound by:
+//   (a) a function parameter, OR
+//   (b) a prior `let` in the same lexical scope chain.
+//
+// We track a single flat name set per function body (no scope nesting)
+// because the common beginner mistake is re-declaring the same variable
+// name in the same function. Detecting inter-scope shadowing would
+// require full scope-chain tracking — out of scope for a lint pass.
+// The typechecker's L0017 already fires on nested-block shadows.
+
+fn run_l0043_shadowed_binding(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0043_top(program, out);
+}
+
+fn walk_l0043_top(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Function {
+        parameters, body, ..
+    } = node
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (_ty, name) in parameters {
+            seen.insert(name.clone());
+        }
+        walk_l0043_block(body, &mut seen, out);
+    }
+    recurse_children(node, &mut |child| walk_l0043_top(child, out));
+}
+
+fn walk_l0043_block(
+    node: &Node,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<Lint>,
+) {
+    match node {
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                walk_l0043_block(stmt, seen, out);
+            }
+        }
+        Node::LetStatement { name, span, .. } => {
+            if seen.contains(name) {
+                out.push(Lint {
+                    code: "L0043".into(),
+                    severity: Severity::Warning,
+                    message: format!("`let {name}` shadows an existing binding with the same name"),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            } else {
+                seen.insert(name.clone());
+            }
+        }
+        // Don't recurse into nested function definitions — they have their own scope.
+        Node::Function { .. } => {}
+        _ => {
+            recurse_children(node, &mut |child| walk_l0043_block(child, seen, out));
+        }
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -6529,6 +6732,99 @@ mod tests {
             codes(src).contains(&"L0040".to_string()),
             "L0040 must fire for magic number 100; got {:?}",
             codes(src)
+        );
+    }
+
+    // ---------- L0041: redundant `else` after `if` that always returns ----------
+
+    #[test]
+    fn l0041_fires_when_if_always_returns_and_else_present() {
+        let src = "fn f(int x) -> int {\n  if x > 0 { return 1; } else { return 0; }\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0041".to_string()),
+            "L0041 must fire when if-consequence always returns and else is present; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0041_silent_when_if_does_not_always_return() {
+        // consequence doesn't always return — L0041 must not fire
+        let src = "fn f(int x) -> int {\n  if x > 0 { let y = 1; } else { return 0; }\n  return 42;\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0041".to_string()),
+            "L0041 must not fire when consequence doesn't always return"
+        );
+    }
+
+    #[test]
+    fn l0041_silent_when_no_else_branch() {
+        let src = "fn f(int x) -> int {\n  if x > 0 { return 1; }\n  return 0;\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0041".to_string()),
+            "L0041 must not fire when there is no else branch"
+        );
+    }
+
+    // ---------- L0042: dead code after `return` in same block ----------
+
+    #[test]
+    fn l0042_fires_on_statements_after_return() {
+        let src = "fn f(int x) -> int {\n  return 1;\n  let y = 2;\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0042".to_string()),
+            "L0042 must fire when statements follow a return; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0042_silent_when_return_is_last() {
+        let src = "fn f(int x) -> int { return x + 1; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0042".to_string()),
+            "L0042 must not fire when return is the last statement"
+        );
+    }
+
+    #[test]
+    fn l0042_silent_with_no_return() {
+        let src = "fn f(int x) -> int { let y = x + 1; y }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0042".to_string()),
+            "L0042 must not fire when no return statement is present"
+        );
+    }
+
+    // ---------- L0043: `let` binding shadows parameter or earlier `let` ----------
+
+    #[test]
+    fn l0043_fires_when_let_shadows_parameter() {
+        let src = "fn f(int x) -> int {\n  let x = 42;\n  return x;\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0043".to_string()),
+            "L0043 must fire when let shadows a parameter; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0043_fires_when_let_shadows_earlier_let() {
+        let src = "fn f(int n) -> int {\n  let y = 1;\n  let y = 2;\n  return y;\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0043".to_string()),
+            "L0043 must fire when let re-declares the same name; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0043_silent_for_distinct_names() {
+        let src =
+            "fn f(int x) -> int {\n  let y = x + 1;\n  let z = y + 1;\n  return z;\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0043".to_string()),
+            "L0043 must not fire for distinct binding names"
         );
     }
 }

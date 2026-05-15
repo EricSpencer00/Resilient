@@ -16,10 +16,13 @@
 //! 5. `Const(k==1); Mul`                    → drop both (×1 identity)
 //! 6. `Const(k==0); Mul`                    → drop both + push Const(0)
 //!    (only when preceding op is a pure load: LoadLocal or Const)
-//!
-//! Strength-reduction rules for power-of-two constants (Mul→Shl,
-//! Div→Shr, Mod→BitAnd) are deferred: the opcodes Shl, Shr, and
-//! BitAnd do not yet exist in bytecode.rs.
+//! 7. `Const(k==0); Bor`                    → drop both (x | 0 == x)
+//! 8. `Const(k==0); Bxor`                   → drop both (x ^ 0 == x)
+//! 9. `Const(k==0); Shl`                    → drop both (x << 0 == x)
+//! 10. `Const(k==0); Shr`                   → drop both (x >> 0 == x)
+//! 11. `Const(k==-1); Band`                 → drop both (x & -1 == x)
+//! 12. `<pure-load>; Const(k==0); Band`     → drop pure load + push Const(0)
+//!     (x & 0 == 0 for any x)
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -143,6 +146,51 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             new_line_info.pop();
             // Push Const(0) — reuse the same constant-pool index we already
             // have in the pattern (the zero constant at chunk.code[i]).
+            let Op::Const(zero_k) = chunk.code[i] else {
+                unreachable!()
+            };
+            new_code.push(Op::Const(zero_k));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 7 — drop `Const(0); Bor` (x | 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bor) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 8 — drop `Const(0); Bxor` (x ^ 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bxor) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 9 — drop `Const(0); Shl` (x << 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shl) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 10 — drop `Const(0); Shr` (x >> 0 == x, identity).
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shr) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 11 — drop `Const(-1); Band` (x & -1 == x, -1 has all
+        // bits set so AND is identity).
+        if rule_band_neg_one_identity(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 12 — `<pure-load>; Const(0); Band` → `Const(0)`.
+        // Mirrors rule_mul_zero: any value AND'd with 0 is 0.
+        if rule_band_zero(chunk, i, &targets, &new_code) {
+            new_code.pop();
+            new_line_info.pop();
             let Op::Const(zero_k) = chunk.code[i] else {
                 unreachable!()
             };
@@ -390,6 +438,75 @@ pub(crate) fn rule_mul_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code:
         return false;
     }
     // The preceding emitted op must be a pure (side-effect-free) load.
+    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+}
+
+/// Rules 7–10: drop `Const(k==0); <op>` when `op` is a bitwise op
+/// whose right-operand-is-zero case is an identity: `x | 0 == x`,
+/// `x ^ 0 == x`, `x << 0 == x`, `x >> 0 == x`.
+///
+/// Skips if `op` is a jump target.
+pub(crate) fn rule_bitwise_zero_identity(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    op: Op,
+) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if chunk.code[i + 1] != op {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 11: drop `Const(k==-1); Band` — AND with all-ones is identity
+/// (`x & -1 == x` in two's-complement i64).
+///
+/// Skips if `Band` is a jump target.
+pub(crate) fn rule_band_neg_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Band) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(-1))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 12: fold `<pure-load>; Const(k==0); Band` → `Const(0)`.
+/// `x & 0 == 0` for any x; mirrors `rule_mul_zero`.
+///
+/// Skips if `Band` is a jump target.
+pub(crate) fn rule_band_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code: &[Op]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Band) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
     matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
 }
 
@@ -788,5 +905,114 @@ mod tests {
             );
         }
         assert_eq!(chunk.line_info.len(), chunk.code.len());
+    }
+
+    // ---------- Rules 7-10: bitwise zero identity (|, ^, <<, >>) ----------
+
+    #[test]
+    fn rule7_bor_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bor));
+    }
+
+    #[test]
+    fn rule7_bor_zero_identity_drops_both_ops() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor, Op::Return],
+            vec![Value::Int(0)],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 1);
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule8_bxor_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bxor], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bxor));
+    }
+
+    #[test]
+    fn rule9_shl_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Shl], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Shl));
+    }
+
+    #[test]
+    fn rule10_shr_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Shr], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Shr));
+    }
+
+    #[test]
+    fn rule_bitwise_zero_identity_skips_nonzero_const() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(1)], &[1, 1]);
+        assert!(!rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bor));
+    }
+
+    #[test]
+    fn rule_bitwise_zero_identity_skips_when_op_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_bitwise_zero_identity(&chunk, 0, &targets, Op::Bor));
+    }
+
+    // ---------- Rule 11: Band with -1 (all-ones identity) ----------
+
+    #[test]
+    fn rule11_band_neg_one_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(-1)], &[1, 1]);
+        assert!(rule_band_neg_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule11_band_neg_one_drops_both_ops() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Band, Op::Return],
+            vec![Value::Int(-1)],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 1);
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule11_band_neg_one_skips_when_const_is_zero() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
+        assert!(!rule_band_neg_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    // ---------- Rule 12: Band with 0 → 0 ----------
+
+    #[test]
+    fn rule12_band_zero_folds_with_preceding_load() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Band, Op::Return],
+            vec![Value::Int(42), Value::Int(0)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert!(matches!(chunk.constants[k as usize], Value::Int(0)));
+    }
+
+    #[test]
+    fn rule12_band_zero_predicate_fires_with_pure_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(rule_band_zero(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule12_band_zero_predicate_skips_without_pure_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
+        // Preceding op is Band (not a pure load)
+        let new_code = vec![Op::Band];
+        assert!(!rule_band_zero(&chunk, 0, &[false; 3], &new_code));
     }
 }

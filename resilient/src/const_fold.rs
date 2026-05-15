@@ -356,13 +356,17 @@ pub(crate) fn try_fold_binop(chunk: &Chunk, i: usize, targets: &[bool]) -> Optio
         // when both sides are bool literals (`true == false`).
         (Value::Bool(a), Value::Bool(b), Op::Eq) => Value::Bool(a == b),
         (Value::Bool(a), Value::Bool(b), Op::Neq) => Value::Bool(a != b),
-        // Bitwise ops — integer only; shift amounts are masked to 0..63
-        // matching the VM's `a << (b & 63)` semantics.
+        // Bitwise ops — integer only.
+        // Shifts with out-of-range amounts (< 0 or >= 64) are NOT folded;
+        // they must produce a runtime error matching the VM and interpreter.
         (Value::Int(a), Value::Int(b), Op::Band) => Value::Int(a & b),
         (Value::Int(a), Value::Int(b), Op::Bor) => Value::Int(a | b),
         (Value::Int(a), Value::Int(b), Op::Bxor) => Value::Int(a ^ b),
-        (Value::Int(a), Value::Int(b), Op::Shl) => Value::Int(a << (b & 63)),
-        (Value::Int(a), Value::Int(b), Op::Shr) => Value::Int(a >> (b & 63)),
+        (Value::Int(a), Value::Int(b), Op::Shl) if (0..64).contains(b) => Value::Int(a << b),
+        (Value::Int(a), Value::Int(b), Op::Shr) if (0..64).contains(b) => Value::Int(a >> b),
+        (Value::Int(_), Value::Int(_), Op::Shl) | (Value::Int(_), Value::Int(_), Op::Shr) => {
+            return None;
+        }
         _ => return None,
     };
     Some((folded, chunk.line_info[i]))

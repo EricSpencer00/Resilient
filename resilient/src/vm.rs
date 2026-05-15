@@ -78,6 +78,9 @@ pub enum VmError {
     /// Carries a static label naming the offending op (`"Add"`, `"Sub"`,
     /// `"Mul"`, `"Neg"`, `"IncLocal"`) so diagnostics are precise.
     IntegerOverflow(&'static str),
+    /// Shift amount is outside the valid range 0..63.
+    /// Matches the tree-walker interpreter's `"shift amount out of range: N"` error.
+    ShiftOutOfRange(i64),
 }
 
 impl VmError {
@@ -119,6 +122,9 @@ impl std::fmt::Display for VmError {
             }
             VmError::IntegerOverflow(what) => {
                 write!(f, "vm: integer overflow in {}", what)
+            }
+            VmError::ShiftOutOfRange(n) => {
+                write!(f, "shift amount out of range: {}", n)
             }
         }
     }
@@ -916,11 +922,17 @@ fn run_inner(
             }
             Op::Shl => {
                 let (a, b) = pop_two_ints(&mut stack, "Shl")?;
-                stack.push(Value::Int(a << (b & 63)));
+                if !(0..64).contains(&b) {
+                    return Err(VmError::ShiftOutOfRange(b));
+                }
+                stack.push(Value::Int(a << b));
             }
             Op::Shr => {
                 let (a, b) = pop_two_ints(&mut stack, "Shr")?;
-                stack.push(Value::Int(a >> (b & 63)));
+                if !(0..64).contains(&b) {
+                    return Err(VmError::ShiftOutOfRange(b));
+                }
+                stack.push(Value::Int(a >> b));
             }
         }
     }
@@ -1818,14 +1830,20 @@ fn h_bxor(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 #[inline(never)]
 fn h_shl(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let (a, b) = pop_two_ints(&mut state.stack, "Shl")?;
-    state.stack.push(Value::Int(a << (b & 63)));
+    if !(0..64).contains(&b) {
+        return Err(VmError::ShiftOutOfRange(b));
+    }
+    state.stack.push(Value::Int(a << b));
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_shr(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let (a, b) = pop_two_ints(&mut state.stack, "Shr")?;
-    state.stack.push(Value::Int(a >> (b & 63)));
+    if !(0..64).contains(&b) {
+        return Err(VmError::ShiftOutOfRange(b));
+    }
+    state.stack.push(Value::Int(a >> b));
     Ok(Step::Continue)
 }
 
