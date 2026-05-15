@@ -130,6 +130,8 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0068", // `x && false` / `false && x` — AND with false always yields false
     "L0069", // `x || true` / `true || x` — OR with true always yields true
     "L0070", // `x || false` / `false || x` — OR with false is the identity; simplify to `x`
+    "L0071", // function has more than 5 parameters — consider grouping into a struct
+    "L0072", // for-loop variable is never used in the loop body — dead iteration variable
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -897,6 +899,28 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: replace `x || false` with `x`.\n\
              Suppress: // resilient: allow L0070",
         ),
+        "L0071" => Some(
+            "L0071 — function has more than 5 parameters\n\
+             \n\
+             Functions with many parameters are harder to call correctly, harder to read,\n\
+             and easier to misorder. In safety-critical code, argument confusion is a\n\
+             common source of bugs.\n\
+             \n\
+             Fix: group related parameters into a struct and pass the struct instead.\n\
+             Suppress: // resilient: allow L0071",
+        ),
+        "L0072" => Some(
+            "L0072 — for-loop variable is never used in the body\n\
+             \n\
+             A `for x in collection { ... }` loop declares the iteration variable `x`\n\
+             but never reads it inside the body. The variable name is dead, and the\n\
+             intent is unclear. This often indicates a copy-paste error or a missing use.\n\
+             \n\
+             Example (bad): for x in items { total = total + 1; }  // x unused\n\
+             \n\
+             Fix: use `x` in the body, or rename it to `_` to signal intentional discard.\n\
+             Suppress: // resilient: allow L0072",
+        ),
         _ => None,
     }
 }
@@ -988,6 +1012,10 @@ struct LintTriggers {
     has_bool_logic_with_literal: bool,
     /// L0056: any `for`-in whose iterable is an empty array literal.
     has_empty_array_for: bool,
+    /// L0071: any function with more than 5 parameters.
+    has_many_param_fn: bool,
+    /// L0072: any `for`-in statement with a named loop variable.
+    has_for_in_with_var: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -1070,7 +1098,12 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_negated_bool_literal = true;
             }
         }
-        Node::Function { .. } => t.has_function = true,
+        Node::Function { parameters, .. } => {
+            t.has_function = true;
+            if parameters.len() > 5 {
+                t.has_many_param_fn = true;
+            }
+        }
         Node::LetStatement { .. } => {
             t.has_let = true;
             t.has_let_binding = true;
@@ -1107,12 +1140,16 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_while_true = true;
             }
         }
-        Node::ForInStatement { iterable, .. } => {
+        Node::ForInStatement { iterable, name, .. } => {
             t.has_loop = true;
             t.has_for_in_stmt = true;
             // L0056: iterable is an empty array literal `[]`.
             if matches!(iterable.as_ref(), Node::ArrayLiteral { items, .. } if items.is_empty()) {
                 t.has_empty_array_for = true;
+            }
+            // L0072: named loop variable (parser currently rejects `_`).
+            if !name.is_empty() {
+                t.has_for_in_with_var = true;
             }
         }
         Node::Assert { .. } => t.has_assert_stmt = true,
@@ -1352,6 +1389,12 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
         run_l0068_and_false(program, &mut out);
         run_l0069_or_true(program, &mut out);
         run_l0070_or_false(program, &mut out);
+    }
+    if t.has_many_param_fn {
+        run_l0071_too_many_params(program, &mut out);
+    }
+    if t.has_for_in_with_var {
+        run_l0072_unused_for_var(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -6073,6 +6116,64 @@ fn walk_l0066(node: &Node, out: &mut Vec<Lint>) {
     recurse_children(node, &mut |child| walk_l0066(child, out));
 }
 
+// ---- L0071: function with more than 5 parameters ----
+
+const MAX_PARAM_COUNT: usize = 5;
+
+fn run_l0071_too_many_params(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0071(program, out);
+}
+
+fn walk_l0071(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Function { name, parameters, span, .. } = node
+        && parameters.len() > MAX_PARAM_COUNT
+    {
+        out.push(Lint {
+            code: "L0071".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "function `{name}` has {} parameters (limit: {MAX_PARAM_COUNT}) — \
+                 consider grouping related parameters into a struct",
+                parameters.len()
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0071(child, out));
+}
+
+// ---- L0072: for-loop variable never used in body ----
+
+fn run_l0072_unused_for_var(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0072(program, out);
+}
+
+fn walk_l0072(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::ForInStatement { name, body, span, .. } = node
+        && !name.is_empty()
+        && !ident_used_in(body, name)
+    {
+        out.push(Lint {
+            code: "L0072".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "for-loop variable `{name}` is never used in the loop body — \
+                 use `_` to signal intentional discard, or use the variable"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0072(child, out));
+}
+
+fn ident_used_in(node: &Node, target: &str) -> bool {
+    crate::uniqueness_walk::any_node(node, |n| {
+        matches!(n, Node::Identifier { name, .. } if name == target)
+    })
+}
+
 // ---- L0054: empty `while` loop body ----
 
 fn run_l0054_empty_while_body(program: &Node, out: &mut Vec<Lint>) {
@@ -8613,6 +8714,56 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0053".to_string()),
             "L0053 must not fire on valid index 0"
+        );
+    }
+
+    // ---- L0071: too many parameters ----
+
+    #[test]
+    fn l0071_fires_on_six_parameters() {
+        let src = r#"fn f(int a, int b, int c, int d, int e, int g) { return a; }"#;
+        assert!(
+            codes(src).contains(&"L0071".to_string()),
+            "L0071 must fire for 6 parameters"
+        );
+    }
+
+    #[test]
+    fn l0071_silent_on_five_parameters() {
+        let src = r#"fn f(int a, int b, int c, int d, int e) { return a; }"#;
+        assert!(
+            !codes(src).contains(&"L0071".to_string()),
+            "L0071 must not fire for exactly 5 parameters"
+        );
+    }
+
+    // ---- L0072: unused for-loop variable ----
+
+    #[test]
+    fn l0072_fires_on_unused_for_var() {
+        let src = r#"fn f(IntArr xs) { for x in xs { return 1; } }"#;
+        assert!(
+            codes(src).contains(&"L0072".to_string()),
+            "L0072 must fire when for-loop variable `x` is never used"
+        );
+    }
+
+    #[test]
+    fn l0072_silent_when_for_var_is_used() {
+        let src = r#"fn f(IntArr xs) { for x in xs { return x; } }"#;
+        assert!(
+            !codes(src).contains(&"L0072".to_string()),
+            "L0072 must not fire when for-loop variable is used"
+        );
+    }
+
+    #[test]
+    fn l0072_silent_on_nested_use() {
+        // The loop var `item` is used inside a nested if — still counts as used.
+        let src = r#"fn f(IntArr xs) { for item in xs { if item > 0 { return item; } } }"#;
+        assert!(
+            !codes(src).contains(&"L0072".to_string()),
+            "L0072 must not fire when for-loop variable is used in nested expr"
         );
     }
 
