@@ -5,9 +5,9 @@ description: "fn add(int a, int b) {\n    return a + b;\n}\nfn main(int _d) {\n 
 expression: output
 ---
 Running type checker...
-Type error: <tmp>.rs:5:16: Expected 2 arguments, got 1
-<tmp>.rs:5:16: Expected 2 arguments, got 1
+Type error: <tmp>.rs:5:15: Expected 2 arguments, got 1
+<tmp>.rs:5:15: Expected 2 arguments, got 1
 Type error: Expected 2 arguments, got 1
        return add(1);
-                  ^
-Error: Type check failed: <tmp>.rs:5:16: Expected 2 arguments, got 1
+                 ^
+Error: Type check failed: <tmp>.rs:5:15: Expected 2 arguments, got 1
