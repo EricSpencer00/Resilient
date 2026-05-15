@@ -11070,6 +11070,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("unwrap_option", builtin_unwrap_option),
     ("option_unwrap", builtin_option_unwrap),
     ("option_unwrap_or", builtin_option_unwrap_or),
+    // RES-932: tuple type predicate — distinguishes Value::Tuple from arrays.
+    ("is_tuple", builtin_is_tuple),
     // RES-143: file I/O. Std-only; the `resilient-runtime` crate has
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
@@ -13046,6 +13048,14 @@ fn builtin_none(args: &[Value]) -> RResult<Value> {
 }
 
 /// RES-363: `is_some(o)` — true iff `o` is a present Option.
+fn builtin_is_tuple(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Tuple(_)] => Ok(Value::Bool(true)),
+        [_] => Ok(Value::Bool(false)),
+        _ => Err(format!("is_tuple: expected 1 argument, got {}", args.len())),
+    }
+}
+
 fn builtin_is_some(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
@@ -18961,7 +18971,12 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::Int(s.chars().count() as i64)),
         [Value::Array(items)] => Ok(Value::Int(items.len() as i64)),
-        [other] => Err(format!("len: expected string or array, got {}", other)),
+        // RES-932: tuple length for tuple-pattern matching in the bytecode VM.
+        [Value::Tuple(items)] => Ok(Value::Int(items.len() as i64)),
+        [other] => Err(format!(
+            "len: expected string, array, or tuple, got {}",
+            other
+        )),
         _ => Err(format!("len: expected 1 argument, got {}", args.len())),
     }
 }

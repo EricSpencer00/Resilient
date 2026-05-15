@@ -3159,6 +3159,205 @@ fn compile_pattern_check(
                 chunk.patch_jump(p, or_matched_pc)?;
             }
         }
+        // RES-375: `None` — checks that scrutinee is an absent Option.
+        Pattern::None => {
+            let n = chunk.add_string_constant("is_none")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+        // RES-375: `Some(inner)` — checks is_some, then extracts and matches inner.
+        Pattern::Some(inner_pat) => {
+            // 1. is_some(scrutinee) check.
+            let is_some_n = chunk.add_string_constant("is_some")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_some_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            // 2. Extract inner: option_unwrap(scrutinee).
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let inner_slot = *next_local;
+            *next_local += 1;
+            let uw_n = chunk.add_string_constant("option_unwrap")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: uw_n,
+                    arity: 1,
+                },
+                line,
+            );
+            chunk.emit(Op::StoreLocal(inner_slot), line);
+            // 3. Check inner pattern.
+            compile_pattern_check(
+                inner_pat,
+                inner_slot,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                next_arm_patches,
+            )?;
+        }
+        // RES-923: `Ok(inner)` — checks is_ok, then extracts and matches inner.
+        Pattern::Ok(inner_pat) => {
+            let is_ok_n = chunk.add_string_constant("is_ok")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_ok_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let inner_slot = *next_local;
+            *next_local += 1;
+            let uw_n = chunk.add_string_constant("unwrap")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: uw_n,
+                    arity: 1,
+                },
+                line,
+            );
+            chunk.emit(Op::StoreLocal(inner_slot), line);
+            compile_pattern_check(
+                inner_pat,
+                inner_slot,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                next_arm_patches,
+            )?;
+        }
+        // RES-923: `Err(inner)` — checks is_err, then extracts and matches inner.
+        Pattern::Err(inner_pat) => {
+            let is_err_n = chunk.add_string_constant("is_err")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_err_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let inner_slot = *next_local;
+            *next_local += 1;
+            let uwe_n = chunk.add_string_constant("unwrap_err")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: uwe_n,
+                    arity: 1,
+                },
+                line,
+            );
+            chunk.emit(Op::StoreLocal(inner_slot), line);
+            compile_pattern_check(
+                inner_pat,
+                inner_slot,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+                next_arm_patches,
+            )?;
+        }
+        // RES-932: `(p0, p1, ...)` — checks type, checks length, checks elements.
+        Pattern::Tuple(sub_pats) => {
+            // 1. Confirm the scrutinee is actually a Tuple (not an Array).
+            let is_tup_n = chunk.add_string_constant("is_tuple")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: is_tup_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let p_type = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p_type);
+            // 2. Check length via `len` builtin.
+            let len_n = chunk.add_string_constant("len")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: len_n,
+                    arity: 1,
+                },
+                line,
+            );
+            let expected_len = chunk.add_constant(Value::Int(sub_pats.len() as i64))?;
+            chunk.emit(Op::Const(expected_len), line);
+            chunk.emit(Op::Eq, line);
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            // Check each element.
+            for (i, sub_pat) in sub_pats.iter().enumerate() {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let elem_slot = *next_local;
+                *next_local += 1;
+                let i_idx = chunk.add_constant(Value::Int(i as i64))?;
+                chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+                chunk.emit(Op::Const(i_idx), line);
+                chunk.emit(Op::LoadIndex, line);
+                chunk.emit(Op::StoreLocal(elem_slot), line);
+                compile_pattern_check(
+                    sub_pat,
+                    elem_slot,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    next_arm_patches,
+                )?;
+            }
+        }
         _ => {
             return Err(CompileError::Unsupported("complex match pattern"));
         }

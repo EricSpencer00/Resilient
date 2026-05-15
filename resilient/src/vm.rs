@@ -3986,4 +3986,48 @@ mod tests {
         let r = compile_run("let s = #{10, 20, 30}; set_has(s, 20)");
         assert!(matches!(r, Ok(Value::Bool(true))), "got {r:?}");
     }
+
+    // ---- RES-375/RES-923/RES-932: match patterns for Some/None/Ok/Err/Tuple ----
+
+    #[test]
+    fn match_some_pattern_extracts_value() {
+        // Match arm bodies are expressions; Some(42) calls the Some builtin.
+        let v =
+            compile_run("let o = Some(42); return match o { Some(x) => x, None => -1 };").unwrap();
+        assert_int(v, 42);
+    }
+
+    #[test]
+    fn match_none_pattern_fires_on_absent_option() {
+        // None() is the zero-arg builtin that creates an absent Option.
+        let v =
+            compile_run("let o = None(); return match o { Some(x) => x, None => -1 };").unwrap();
+        assert_int(v, -1);
+    }
+
+    #[test]
+    fn match_ok_pattern_extracts_payload() {
+        let v = compile_run("let r = Ok(7); return match r { Ok(v) => v, Err(e) => -1 };").unwrap();
+        assert_int(v, 7);
+    }
+
+    #[test]
+    fn match_err_pattern_extracts_payload() {
+        let v =
+            compile_run("let r = Err(99); return match r { Ok(v) => v, Err(e) => e };").unwrap();
+        assert_int(v, 99);
+    }
+
+    #[test]
+    fn match_tuple_pattern_binds_elements() {
+        let v = compile_run("let t = (10, 20); return match t { (a, b) => a + b };").unwrap();
+        assert_int(v, 30);
+    }
+
+    #[test]
+    fn match_tuple_pattern_wrong_length_falls_through() {
+        // A 3-tuple doesn't match (a, b) — falls through to Wildcard.
+        let v = compile_run("let t = (1, 2, 3); return match t { (a, b) => 0, _ => 1 };").unwrap();
+        assert_int(v, 1);
+    }
 }

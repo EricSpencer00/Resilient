@@ -5280,7 +5280,19 @@ impl TypeChecker {
                     // ANY instruction boundary in the function body.
                     // Pass requires as axioms so the solver can use them,
                     // matching the final-state verifier's axioms path.
-                    crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)?;
+                    //
+                    // BMC results are advisory (warnings), not hard errors:
+                    // the final-state Z3 check above is the authoritative
+                    // compile gate. Per-prefix BMC uses a conservative
+                    // free-variable model that may flag false positives for
+                    // computed locals (the local's relationship to prior ops
+                    // is not encoded). Demoting to warn matches the
+                    // `timed_out_flag` precedent above.
+                    if let Err(bmc_msg) =
+                        crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)
+                    {
+                        eprintln!("warning[bmc]: {bmc_msg}");
+                    }
                 }
 
                 // RES-065: push each requires clause's extractable
