@@ -114,6 +114,12 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0052", // negation of a boolean literal in a condition (`!true` or `!false`)
     "L0053", // array index is a literal that is out of bounds for the literal array
     "L0055", // redundant boolean `!=` check: `x != true` or `x != false`
+    "L0057", // x + 0 or 0 + x — redundant addition of zero
+    "L0058", // x - 0 — redundant subtraction of zero
+    "L0059", // x * 1 or 1 * x — redundant multiplication by one
+    "L0060", // x / 1 — redundant division by one
+    "L0061", // x << 0 / x >> 0 — shift by zero is a no-op
+    "L0062", // x < x / x > x always false; x <= x / x >= x always true
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -725,6 +731,57 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: replace `x != true` with `!x` and `x != false` with `x`.\n\
              Suppress: // resilient: allow L0055",
         ),
+        "L0057" => Some(
+            "L0057 — redundant addition of zero (`x + 0` / `0 + x`)\n\
+             \n\
+             Adding zero to a value is a no-op. The expression simplifies to `x`.\n\
+             \n\
+             Fix: remove the `+ 0` / `0 +` operand.\n\
+             Suppress: // resilient: allow L0057",
+        ),
+        "L0058" => Some(
+            "L0058 — redundant subtraction of zero (`x - 0`)\n\
+             \n\
+             Subtracting zero from a value is a no-op. The expression simplifies to `x`.\n\
+             \n\
+             Fix: remove the `- 0` operand.\n\
+             Suppress: // resilient: allow L0058",
+        ),
+        "L0059" => Some(
+            "L0059 — redundant multiplication by one (`x * 1` / `1 * x`)\n\
+             \n\
+             Multiplying a value by one is a no-op. The expression simplifies to `x`.\n\
+             \n\
+             Fix: remove the `* 1` / `1 *` operand.\n\
+             Suppress: // resilient: allow L0059",
+        ),
+        "L0060" => Some(
+            "L0060 — redundant division by one (`x / 1`)\n\
+             \n\
+             Dividing a value by one is a no-op. The expression simplifies to `x`.\n\
+             \n\
+             Fix: remove the `/ 1` operand.\n\
+             Suppress: // resilient: allow L0060",
+        ),
+        "L0061" => Some(
+            "L0061 — shift by zero is a no-op (`x << 0` / `x >> 0`)\n\
+             \n\
+             Shifting a value by zero bits leaves it unchanged. The expression simplifies to `x`.\n\
+             \n\
+             Fix: remove the shift or use the intended shift amount.\n\
+             Suppress: // resilient: allow L0061",
+        ),
+        "L0062" => Some(
+            "L0062 — tautological inequality comparison with self\n\
+             \n\
+             Comparing a value to itself with `<`, `>`, `<=`, or `>=` always produces\n\
+             a constant result: `x < x` and `x > x` are always `false`; `x <= x` and\n\
+             `x >= x` are always `true`. Extends L0003 (which covers `==`/`!=`) to\n\
+             the inequality operators.\n\
+             \n\
+             Fix: replace one operand with the intended value.\n\
+             Suppress: // resilient: allow L0062",
+        ),
         _ => None,
     }
 }
@@ -808,6 +865,8 @@ struct LintTriggers {
     has_array_literal_index: bool,
     /// L0055: any `!=` infix where one operand is a boolean literal.
     has_bool_neq_cmp: bool,
+    /// L0057–L0061: infix expression with an integer literal that is 0 or 1 as an operand.
+    has_arith_identity: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -865,6 +924,13 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                     || matches!(right.as_ref(), Node::BooleanLiteral { .. }))
             {
                 t.has_bool_neq_cmp = true;
+            }
+            // L0057-L0061: arithmetic identity operands (0 or 1 as literal).
+            if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "<<" | ">>")
+                && (matches!(left.as_ref(), Node::IntegerLiteral { value: 0 | 1, .. })
+                    || matches!(right.as_ref(), Node::IntegerLiteral { value: 0 | 1, .. }))
+            {
+                t.has_arith_identity = true;
             }
         }
         Node::PrefixExpression {
@@ -1121,6 +1187,16 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_bool_neq_cmp {
         run_l0055_redundant_bool_neq(program, &mut out);
+    }
+    if t.has_arith_identity {
+        run_l0057_add_zero(program, &mut out);
+        run_l0058_sub_zero(program, &mut out);
+        run_l0059_mul_one(program, &mut out);
+        run_l0060_div_one(program, &mut out);
+        run_l0061_shift_zero(program, &mut out);
+    }
+    if t.has_infix {
+        run_l0062_inequality_with_self(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -5501,6 +5577,194 @@ fn walk_l0055(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0057 — redundant addition of zero (`x + 0` / `0 + x`)
+// ============================================================
+
+fn run_l0057_add_zero(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0057(program, out);
+}
+
+fn walk_l0057(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+    } = node
+        && operator == "+"
+        && (matches!(left.as_ref(), Node::IntegerLiteral { value: 0, .. })
+            || matches!(right.as_ref(), Node::IntegerLiteral { value: 0, .. }))
+    {
+        out.push(Lint {
+            code: "L0057".into(),
+            severity: Severity::Warning,
+            message: "redundant addition of zero — simplify to `x`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0057(child, out));
+}
+
+// ============================================================
+// L0058 — redundant subtraction of zero (`x - 0`)
+// ============================================================
+
+fn run_l0058_sub_zero(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0058(program, out);
+}
+
+fn walk_l0058(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        right,
+        span,
+        ..
+    } = node
+        && operator == "-"
+        && matches!(right.as_ref(), Node::IntegerLiteral { value: 0, .. })
+    {
+        out.push(Lint {
+            code: "L0058".into(),
+            severity: Severity::Warning,
+            message: "redundant subtraction of zero — simplify to `x`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0058(child, out));
+}
+
+// ============================================================
+// L0059 — redundant multiplication by one (`x * 1` / `1 * x`)
+// ============================================================
+
+fn run_l0059_mul_one(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0059(program, out);
+}
+
+fn walk_l0059(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+    } = node
+        && operator == "*"
+        && (matches!(left.as_ref(), Node::IntegerLiteral { value: 1, .. })
+            || matches!(right.as_ref(), Node::IntegerLiteral { value: 1, .. }))
+    {
+        out.push(Lint {
+            code: "L0059".into(),
+            severity: Severity::Warning,
+            message: "redundant multiplication by one — simplify to `x`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0059(child, out));
+}
+
+// ============================================================
+// L0060 — redundant division by one (`x / 1`)
+// ============================================================
+
+fn run_l0060_div_one(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0060(program, out);
+}
+
+fn walk_l0060(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        right,
+        span,
+        ..
+    } = node
+        && operator == "/"
+        && matches!(right.as_ref(), Node::IntegerLiteral { value: 1, .. })
+    {
+        out.push(Lint {
+            code: "L0060".into(),
+            severity: Severity::Warning,
+            message: "redundant division by one — simplify to `x`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0060(child, out));
+}
+
+// ============================================================
+// L0061 — shift by zero is a no-op (`x << 0` / `x >> 0`)
+// ============================================================
+
+fn run_l0061_shift_zero(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0061(program, out);
+}
+
+fn walk_l0061(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        right,
+        span,
+        ..
+    } = node
+        && (operator == "<<" || operator == ">>")
+        && matches!(right.as_ref(), Node::IntegerLiteral { value: 0, .. })
+    {
+        out.push(Lint {
+            code: "L0061".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "shifting by zero (`{operator} 0`) is a no-op — simplify to `x`"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0061(child, out));
+}
+
+// ============================================================
+// L0062 — tautological inequality comparison with self
+// (`x < x` / `x > x` always false; `x <= x` / `x >= x` always true)
+// ============================================================
+
+fn run_l0062_inequality_with_self(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0062(program, out);
+}
+
+fn walk_l0062(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+    } = node
+        && matches!(operator.as_str(), "<" | ">" | "<=" | ">=")
+        && let Node::Identifier { name: lname, .. } = left.as_ref()
+        && let Node::Identifier { name: rname, .. } = right.as_ref()
+        && lname == rname
+    {
+        let result = if operator == "<" || operator == ">" {
+            "always false"
+        } else {
+            "always true"
+        };
+        out.push(Lint {
+            code: "L0062".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "`{lname} {operator} {lname}` is {result} — tautological self-comparison"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0062(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -7939,6 +8203,180 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0055".to_string()),
             "L0055 must not fire for integer `!=`"
+        );
+    }
+
+    // ---- L0057: redundant addition of zero ----
+
+    #[test]
+    fn l0057_fires_on_add_zero_rhs() {
+        let src = "fn f(int x) -> int { let y = x + 0; return y; }";
+        assert!(
+            codes(src).contains(&"L0057".to_string()),
+            "L0057 must fire for `x + 0`"
+        );
+    }
+
+    #[test]
+    fn l0057_fires_on_add_zero_lhs() {
+        let src = "fn f(int x) -> int { let y = 0 + x; return y; }";
+        assert!(
+            codes(src).contains(&"L0057".to_string()),
+            "L0057 must fire for `0 + x`"
+        );
+    }
+
+    #[test]
+    fn l0057_silent_on_nonzero_add() {
+        let src = "fn f(int x) -> int { let y = x + 1; return y; }";
+        assert!(
+            !codes(src).contains(&"L0057".to_string()),
+            "L0057 must not fire for `x + 1`"
+        );
+    }
+
+    // ---- L0058: redundant subtraction of zero ----
+
+    #[test]
+    fn l0058_fires_on_sub_zero() {
+        let src = "fn f(int x) -> int { let y = x - 0; return y; }";
+        assert!(
+            codes(src).contains(&"L0058".to_string()),
+            "L0058 must fire for `x - 0`"
+        );
+    }
+
+    #[test]
+    fn l0058_silent_on_nonzero_sub() {
+        let src = "fn f(int x) -> int { let y = x - 1; return y; }";
+        assert!(
+            !codes(src).contains(&"L0058".to_string()),
+            "L0058 must not fire for `x - 1`"
+        );
+    }
+
+    // ---- L0059: redundant multiplication by one ----
+
+    #[test]
+    fn l0059_fires_on_mul_one_rhs() {
+        let src = "fn f(int x) -> int { let y = x * 1; return y; }";
+        assert!(
+            codes(src).contains(&"L0059".to_string()),
+            "L0059 must fire for `x * 1`"
+        );
+    }
+
+    #[test]
+    fn l0059_fires_on_mul_one_lhs() {
+        let src = "fn f(int x) -> int { let y = 1 * x; return y; }";
+        assert!(
+            codes(src).contains(&"L0059".to_string()),
+            "L0059 must fire for `1 * x`"
+        );
+    }
+
+    #[test]
+    fn l0059_silent_on_mul_two() {
+        let src = "fn f(int x) -> int { let y = x * 2; return y; }";
+        assert!(
+            !codes(src).contains(&"L0059".to_string()),
+            "L0059 must not fire for `x * 2`"
+        );
+    }
+
+    // ---- L0060: redundant division by one ----
+
+    #[test]
+    fn l0060_fires_on_div_one() {
+        let src = "fn f(int x) -> int { let y = x / 1; return y; }";
+        assert!(
+            codes(src).contains(&"L0060".to_string()),
+            "L0060 must fire for `x / 1`"
+        );
+    }
+
+    #[test]
+    fn l0060_silent_on_div_two() {
+        let src = "fn f(int x) -> int { let y = x / 2; return y; }";
+        assert!(
+            !codes(src).contains(&"L0060".to_string()),
+            "L0060 must not fire for `x / 2`"
+        );
+    }
+
+    // ---- L0061: shift by zero is a no-op ----
+
+    #[test]
+    fn l0061_fires_on_shl_zero() {
+        let src = "fn f(int x) -> int { let y = x << 0; return y; }";
+        assert!(
+            codes(src).contains(&"L0061".to_string()),
+            "L0061 must fire for `x << 0`"
+        );
+    }
+
+    #[test]
+    fn l0061_fires_on_shr_zero() {
+        let src = "fn f(int x) -> int { let y = x >> 0; return y; }";
+        assert!(
+            codes(src).contains(&"L0061".to_string()),
+            "L0061 must fire for `x >> 0`"
+        );
+    }
+
+    #[test]
+    fn l0061_silent_on_nonzero_shift() {
+        let src = "fn f(int x) -> int { let y = x << 1; return y; }";
+        assert!(
+            !codes(src).contains(&"L0061".to_string()),
+            "L0061 must not fire for `x << 1`"
+        );
+    }
+
+    // ---- L0062: tautological inequality comparison with self ----
+
+    #[test]
+    fn l0062_fires_on_lt_self() {
+        let src = "fn f(int x) -> bool { return x < x; }";
+        assert!(
+            codes(src).contains(&"L0062".to_string()),
+            "L0062 must fire for `x < x`"
+        );
+    }
+
+    #[test]
+    fn l0062_fires_on_gt_self() {
+        let src = "fn f(int x) -> bool { return x > x; }";
+        assert!(
+            codes(src).contains(&"L0062".to_string()),
+            "L0062 must fire for `x > x`"
+        );
+    }
+
+    #[test]
+    fn l0062_fires_on_lte_self() {
+        let src = "fn f(int x) -> bool { return x <= x; }";
+        assert!(
+            codes(src).contains(&"L0062".to_string()),
+            "L0062 must fire for `x <= x`"
+        );
+    }
+
+    #[test]
+    fn l0062_fires_on_gte_self() {
+        let src = "fn f(int x) -> bool { return x >= x; }";
+        assert!(
+            codes(src).contains(&"L0062".to_string()),
+            "L0062 must fire for `x >= x`"
+        );
+    }
+
+    #[test]
+    fn l0062_silent_on_distinct_operands() {
+        let src = "fn f(int x, int y) -> bool { return x < y; }";
+        assert!(
+            !codes(src).contains(&"L0062".to_string()),
+            "L0062 must not fire for `x < y` (distinct operands)"
         );
     }
 }
