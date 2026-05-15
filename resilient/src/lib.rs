@@ -16,6 +16,7 @@ mod alignment_helpers;
 // Pure leaf builtins; module-isolated.
 mod array_argminmax;
 mod array_functional;
+mod array_combinators;
 mod map_functional;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
@@ -11632,6 +11633,11 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-2647: map functional operations (pure — no callback).
     ("map_to_pairs", crate::map_functional::builtin_map_to_pairs),
     ("map_invert", crate::map_functional::builtin_map_invert),
+    // RES-2648: array combinators (pure — no callback).
+    (
+        "array_windows",
+        crate::array_combinators::builtin_array_windows,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -22643,6 +22649,35 @@ impl Interpreter {
                         "array_scan" => {
                             let args = self.eval_expressions(arguments)?;
                             return crate::array_functional::builtin_array_scan(self, &args);
+                        }
+                        // RES-2648: array combinators with callbacks.
+                        "array_sort_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_sort_by(self, &args);
+                        }
+                        "array_min_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_min_by(self, &args);
+                        }
+                        "array_max_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_max_by(self, &args);
+                        }
+                        "array_count_if" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_count_if(self, &args);
+                        }
+                        "array_zip_with" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_zip_with(self, &args);
+                        }
+                        "array_take_while" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_take_while(self, &args);
+                        }
+                        "array_drop_while" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_drop_while(self, &args);
                         }
                         _ => {}
                     }

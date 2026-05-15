@@ -2238,6 +2238,49 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
+            // RES-2648: array combinators with arbitrary callbacks.
+            let arr_fn_to_arr = Type::Function {
+                params: vec![Type::Array, Type::Any],
+                return_type: Box::new(Type::Array),
+            };
+            env.set("array_sort_by".to_string(), arr_fn_to_arr.clone());
+            env.set("array_take_while".to_string(), arr_fn_to_arr.clone());
+            env.set("array_drop_while".to_string(), arr_fn_to_arr);
+            env.set(
+                "array_min_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_max_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_count_if".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            env.set(
+                "array_zip_with".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "array_windows".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Int],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -8580,6 +8623,15 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "map_map_values",
         "map_for_each",
         "map_to_pairs",
+        // RES-2648: array combinators.
+        "array_sort_by",
+        "array_min_by",
+        "array_max_by",
+        "array_count_if",
+        "array_zip_with",
+        "array_windows",
+        "array_take_while",
+        "array_drop_while",
         "map_invert",
         // RES-416: array reductions.
         "array_sum",
