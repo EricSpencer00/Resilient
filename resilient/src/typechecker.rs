@@ -5278,7 +5278,9 @@ impl TypeChecker {
                     // Extends the MVP (final-state only) with verification
                     // that the recovers_to clause holds after recovery from
                     // ANY instruction boundary in the function body.
-                    crate::recovers_to_bmc::check_recovers_to_bmc(name, body, clause)?;
+                    // Pass requires as axioms so the solver can use them,
+                    // matching the final-state verifier's axioms path.
+                    crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)?;
                 }
 
                 // RES-065: push each requires clause's extractable

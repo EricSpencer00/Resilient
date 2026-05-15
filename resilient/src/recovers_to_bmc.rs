@@ -392,14 +392,19 @@ fn collect_identifiers(node: &Node, out: &mut Vec<String>) {
 /// ```
 pub(crate) fn generate_prefix_obligation(
     prefix_id: usize,
-    requires_constraint: &str,
+    requires_clauses: &[Node],
     recovers_clause: &Node,
 ) -> String {
     let recovers_smt = node_to_smtlib2(recovers_clause);
 
-    // Collect identifiers so we can emit declarations.
+    // Collect identifiers from both recovers clause and requires clauses.
     let mut ids = Vec::new();
     collect_identifiers(recovers_clause, &mut ids);
+    for req in requires_clauses {
+        collect_identifiers(req, &mut ids);
+    }
+    ids.sort();
+    ids.dedup();
 
     let mut buf = String::with_capacity(256);
     buf.push_str(&format!(
@@ -412,9 +417,14 @@ pub(crate) fn generate_prefix_obligation(
         buf.push_str(&format!("(declare-const {id} Int)\n"));
     }
 
-    // Assert the requires/precondition (if any).
-    if !requires_constraint.is_empty() && requires_constraint != "true" {
-        buf.push_str(&format!("(assert {requires_constraint})\n"));
+    // Assert each requires clause as a precondition axiom. The recovery
+    // point is only reached after the requires check passes, so the
+    // solver is allowed to assume them (same as the final-state verifier).
+    for req in requires_clauses {
+        let req_smt = node_to_smtlib2(req);
+        if !req_smt.is_empty() && req_smt != "true" {
+            buf.push_str(&format!("(assert {req_smt})\n"));
+        }
     }
 
     // Assert the NEGATION of the recovers_to postcondition.
@@ -431,7 +441,8 @@ pub(crate) fn generate_prefix_obligation(
 ///
 /// Phase 1: CFG construction (statement-level boundaries for if/else,
 /// while, for, return, match).
-/// Phase 2: SMT-LIB2 obligation generation.
+/// Phase 2: SMT-LIB2 obligation generation (requires clauses admitted as
+/// axioms, matching the final-state verifier's `z3_prove_with_axioms` path).
 /// Phase 3 (RES-1857, `--features z3`): invoke Z3 solver; on SAT emit a
 /// diagnostic with the failing prefix's source span.
 ///
@@ -440,18 +451,14 @@ pub(crate) fn generate_prefix_obligation(
 pub(crate) fn check_recovers_to_bmc(
     fn_name: &str,
     fn_body: &Node,
+    requires_clauses: &[Node],
     recovers_clause: &Node,
 ) -> Result<(), String> {
     let cfg = ControlFlowGraph::from_body(fn_body);
     let prefixes = cfg.enumerate_prefixes();
 
     for (prefix_id, span) in &prefixes {
-        // Pass "" so generate_prefix_obligation skips the requires
-        // assertion — "init_<fn>" is not a valid SMT-LIB2 term and
-        // caused Z3's from_string to fail, leaving the solver with no
-        // assertions and returning Sat (false alarm). Connecting the
-        // actual requires clause to SMT-LIB2 form is tracked separately.
-        let obligation = generate_prefix_obligation(*prefix_id, "", recovers_clause);
+        let obligation = generate_prefix_obligation(*prefix_id, requires_clauses, recovers_clause);
         // RES-1857 Phase 3: invoke Z3 on the obligation string.
         solve_bmc_obligation(fn_name, *prefix_id, span, &obligation)?;
     }
@@ -582,7 +589,7 @@ mod tests {
             value: true,
             span: Span::default(),
         };
-        let result = check_recovers_to_bmc("f", &body, &clause);
+        let result = check_recovers_to_bmc("f", &body, &[], &clause);
         assert!(result.is_ok(), "stub must return Ok: {:?}", result);
     }
 
@@ -684,7 +691,8 @@ mod tests {
             }),
             span: Span::default(),
         };
-        let obligation = generate_prefix_obligation(0, "init_poll_sensor", &clause);
+        // No requires clauses for this test — checking just the recovers_to negation.
+        let obligation = generate_prefix_obligation(0, &[], &clause);
         assert!(
             obligation.contains("(assert (not (> reading 100)))"),
             "obligation must negate the recovers_to clause; got:\n{obligation}"
@@ -706,12 +714,51 @@ mod tests {
     }
 
     #[test]
+    fn generate_prefix_obligation_with_requires_adds_axiom() {
+        // Verify that requires clauses are emitted as assertions before
+        // the negated recovers_to postcondition.
+        let requires = Node::InfixExpression {
+            left: Box::new(Node::Identifier {
+                name: "reading".to_string(),
+                span: Span::default(),
+            }),
+            operator: ">=".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        let clause = Node::InfixExpression {
+            left: Box::new(Node::Identifier {
+                name: "reading".to_string(),
+                span: Span::default(),
+            }),
+            operator: ">".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 100,
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        let obligation = generate_prefix_obligation(0, &[requires], &clause);
+        assert!(
+            obligation.contains("(assert (>= reading 0))"),
+            "obligation must include requires axiom; got:\n{obligation}"
+        );
+        assert!(
+            obligation.contains("(assert (not (> reading 100)))"),
+            "obligation must negate recovers_to; got:\n{obligation}"
+        );
+    }
+
+    #[test]
     fn generate_prefix_obligation_has_comment_header() {
         let clause = Node::BooleanLiteral {
             value: true,
             span: Span::default(),
         };
-        let obligation = generate_prefix_obligation(3, "init_f", &clause);
+        let obligation = generate_prefix_obligation(3, &[], &clause);
         assert!(
             obligation.contains("; RES-392b: per-prefix obligation for prefix 3"),
             "obligation must contain comment header; got:\n{obligation}"
