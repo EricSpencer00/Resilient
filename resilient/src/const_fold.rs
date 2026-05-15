@@ -33,6 +33,14 @@
 //! | Pattern | Result |
 //! |---|---|
 //! | `Const(s); CallBuiltin { name="len", arity=1 }` | `Const(s.chars().count())` |
+//! | `Const(i); CallBuiltin { name="abs", arity=1 }` | `Const(i.saturating_abs())` |
+//!
+//! Pure-builtin folds (3 ops → 1):
+//!
+//! | Pattern | Result |
+//! |---|---|
+//! | `Const(a); Const(b); CallBuiltin { name="min", arity=2 }` | `Const(a.min(b))` |
+//! | `Const(a); Const(b); CallBuiltin { name="max", arity=2 }` | `Const(a.max(b))` |
 //!
 //! ## Semantic fidelity
 //!
@@ -53,8 +61,11 @@
 //!   (multi-op), so the simple `Const; CallBuiltin` window does not
 //!   match. No correctness concern: the unfolded form runs fine in
 //!   the VM.
+//! - `abs` uses `saturating_abs()`: `i64::MIN.saturating_abs() == i64::MAX`,
+//!   which matches the interpreter's runtime behaviour (it calls
+//!   `i64::saturating_abs` for the builtin, not panicking wrapping_neg).
 //! - Non-pure builtins (`println`, anything I/O-touching) are never
-//!   folded — only `len` is on the allow-list.
+//!   folded — only `len`, `abs`, `min`, `max` are on the allow-list.
 //!
 //! ## Jump-target safety
 //!
@@ -174,7 +185,7 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
     while i < chunk.code.len() {
         old_to_new[i] = new_code.len();
 
-        // Three-op windows first (binary ops). These shadow the
+        // Three-op windows first (binary ops, binary builtins). These shadow the
         // two-op windows: a `Const Const Add` shouldn't be split
         // into a `Const + Const Add` two-op match.
         if let Some((value, line)) = try_fold_binop(chunk, i, &targets) {
@@ -194,8 +205,20 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
             folded_any = true;
             continue;
         }
+        if let Some((value, line)) = try_fold_binary_builtin(chunk, i, &targets) {
+            let k = chunk.add_constant(value).map_err(|_| {
+                FoldError::InternalError("constant pool overflow during binary-builtin fold")
+            })?;
+            old_to_new[i + 1] = new_code.len();
+            old_to_new[i + 2] = new_code.len();
+            new_code.push(Op::Const(k));
+            new_line_info.push(line);
+            i += 3;
+            folded_any = true;
+            continue;
+        }
 
-        // Two-op windows (unary ops, len-of-literal).
+        // Two-op windows (unary ops, len-of-literal, abs-of-literal).
         if let Some((value, line)) = try_fold_unop(chunk, i, &targets) {
             let k = chunk
                 .add_constant(value)
@@ -212,6 +235,17 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
             let k = chunk
                 .add_constant(value)
                 .map_err(|_| FoldError::InternalError("constant pool overflow during len fold"))?;
+            old_to_new[i + 1] = new_code.len();
+            new_code.push(Op::Const(k));
+            new_line_info.push(line);
+            i += 2;
+            folded_any = true;
+            continue;
+        }
+        if let Some((value, line)) = try_fold_unary_builtin(chunk, i, &targets) {
+            let k = chunk.add_constant(value).map_err(|_| {
+                FoldError::InternalError("constant pool overflow during unary-builtin fold")
+            })?;
             old_to_new[i + 1] = new_code.len();
             new_code.push(Op::Const(k));
             new_line_info.push(line);
@@ -429,6 +463,81 @@ pub(crate) fn try_fold_len(chunk: &Chunk, i: usize, targets: &[bool]) -> Option<
         return None;
     };
     Some((Value::Int(s.chars().count() as i64), chunk.line_info[i]))
+}
+
+/// Try to fold `Const(int); CallBuiltin { name, arity=1 }` for pure
+/// integer unary builtins.  Currently folds `abs`.
+///
+/// `abs` uses `saturating_abs()` to match the interpreter's runtime
+/// behaviour — `i64::MIN.saturating_abs() == i64::MAX` — avoiding a
+/// panic that the folded code would silently suppress.
+pub(crate) fn try_fold_unary_builtin(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+) -> Option<(Value, u32)> {
+    if i + 1 >= chunk.code.len() {
+        return None;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return None;
+    };
+    let Op::CallBuiltin { name_const, arity } = chunk.code[i + 1] else {
+        return None;
+    };
+    if arity != 1 {
+        return None;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return None;
+    }
+    let name = chunk.constants.get(name_const as usize)?;
+    let Value::String(name_str) = name else {
+        return None;
+    };
+    let arg = chunk.constants.get(k as usize)?;
+    match (name_str.as_str(), arg) {
+        ("abs", Value::Int(n)) => Some((Value::Int(n.saturating_abs()), chunk.line_info[i])),
+        _ => None,
+    }
+}
+
+/// Try to fold `Const(a); Const(b); CallBuiltin { name, arity=2 }` for
+/// pure integer binary builtins.  Currently folds `min` and `max`.
+pub(crate) fn try_fold_binary_builtin(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+) -> Option<(Value, u32)> {
+    if i + 2 >= chunk.code.len() {
+        return None;
+    }
+    let Op::Const(k0) = chunk.code[i] else {
+        return None;
+    };
+    let Op::Const(k1) = chunk.code[i + 1] else {
+        return None;
+    };
+    let Op::CallBuiltin { name_const, arity } = chunk.code[i + 2] else {
+        return None;
+    };
+    if arity != 2 {
+        return None;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) || *targets.get(i + 2).unwrap_or(&false) {
+        return None;
+    }
+    let name = chunk.constants.get(name_const as usize)?;
+    let Value::String(name_str) = name else {
+        return None;
+    };
+    let lhs = chunk.constants.get(k0 as usize)?;
+    let rhs = chunk.constants.get(k1 as usize)?;
+    match (name_str.as_str(), lhs, rhs) {
+        ("min", Value::Int(a), Value::Int(b)) => Some((Value::Int(*a.min(b)), chunk.line_info[i])),
+        ("max", Value::Int(a), Value::Int(b)) => Some((Value::Int(*a.max(b)), chunk.line_info[i])),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1028,5 +1137,261 @@ mod tests {
             "out-of-range Shl must not be folded; code: {:?}",
             chunk.code
         );
+    }
+
+    // ---------- abs unary builtin fold ----------
+
+    #[test]
+    fn folds_abs_positive_int() {
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::CallBuiltin {
+                    name_const: 1,
+                    arity: 1,
+                },
+                Op::Return,
+            ],
+            vec![Value::Int(42), Value::String("abs".to_string())],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 42);
+    }
+
+    #[test]
+    fn folds_abs_negative_int() {
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::CallBuiltin {
+                    name_const: 1,
+                    arity: 1,
+                },
+                Op::Return,
+            ],
+            vec![Value::Int(-7), Value::String("abs".to_string())],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 7);
+    }
+
+    #[test]
+    fn folds_abs_zero() {
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::CallBuiltin {
+                    name_const: 1,
+                    arity: 1,
+                },
+                Op::Return,
+            ],
+            vec![Value::Int(0), Value::String("abs".to_string())],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 0);
+    }
+
+    #[test]
+    fn folds_abs_of_i64_min_saturates() {
+        // i64::MIN.abs() would overflow; saturating_abs returns i64::MAX.
+        // The fold must use saturating_abs to match interpreter behavior.
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::CallBuiltin {
+                    name_const: 1,
+                    arity: 1,
+                },
+                Op::Return,
+            ],
+            vec![Value::Int(i64::MIN), Value::String("abs".to_string())],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), i64::MAX);
+    }
+
+    #[test]
+    fn does_not_fold_abs_of_non_int() {
+        // abs("hello") is a type error — leave for runtime, don't fold.
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::CallBuiltin {
+                    name_const: 1,
+                    arity: 1,
+                },
+                Op::Return,
+            ],
+            vec![
+                Value::String("hello".to_string()),
+                Value::String("abs".to_string()),
+            ],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 3);
+        assert!(matches!(chunk.code[1], Op::CallBuiltin { .. }));
+    }
+
+    // ---------- min / max binary builtin folds ----------
+
+    #[test]
+    fn folds_min_picks_smaller() {
+        // min(10, 3) == 3
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::CallBuiltin {
+                    name_const: 2,
+                    arity: 2,
+                },
+                Op::Return,
+            ],
+            vec![
+                Value::Int(10),
+                Value::Int(3),
+                Value::String("min".to_string()),
+            ],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 3);
+    }
+
+    #[test]
+    fn folds_max_picks_larger() {
+        // max(10, 3) == 10
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::CallBuiltin {
+                    name_const: 2,
+                    arity: 2,
+                },
+                Op::Return,
+            ],
+            vec![
+                Value::Int(10),
+                Value::Int(3),
+                Value::String("max".to_string()),
+            ],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 10);
+    }
+
+    #[test]
+    fn folds_min_equal_args() {
+        // min(5, 5) == 5
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::CallBuiltin {
+                    name_const: 2,
+                    arity: 2,
+                },
+                Op::Return,
+            ],
+            vec![
+                Value::Int(5),
+                Value::Int(5),
+                Value::String("min".to_string()),
+            ],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 5);
+    }
+
+    #[test]
+    fn does_not_fold_min_of_non_int() {
+        // min("a", "b") — string comparison is not defined in the VM builtin
+        // for min; leave for runtime / type-check to raise an error.
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::CallBuiltin {
+                    name_const: 2,
+                    arity: 2,
+                },
+                Op::Return,
+            ],
+            vec![
+                Value::String("a".to_string()),
+                Value::String("b".to_string()),
+                Value::String("min".to_string()),
+            ],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 4);
+        assert!(matches!(chunk.code[2], Op::CallBuiltin { .. }));
+    }
+
+    #[test]
+    fn binary_builtin_jump_safety_interior_target_not_folded() {
+        // Jump at PC=0 targets PC=2 (Const(1)), which is an interior
+        // position of the Const(0); Const(1); CallBuiltin window starting
+        // at i=1. The fold must be skipped.
+        let mut chunk = mk_chunk(
+            &[
+                Op::Jump(1),
+                Op::Const(0),
+                Op::Const(1),
+                Op::CallBuiltin {
+                    name_const: 2,
+                    arity: 2,
+                },
+                Op::Return,
+            ],
+            vec![
+                Value::Int(10),
+                Value::Int(3),
+                Value::String("min".to_string()),
+            ],
+            &[1, 1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        // The CallBuiltin must still be present.
+        assert_eq!(chunk.code.len(), 5);
+        assert!(matches!(chunk.code[3], Op::CallBuiltin { .. }));
     }
 }
