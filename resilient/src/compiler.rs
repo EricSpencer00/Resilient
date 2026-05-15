@@ -352,6 +352,30 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
+        // RES-401: `let (a, b, c) = expr;` in top-level (main chunk).
+        Node::LetTupleDestructure { names, value, .. } => {
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let tmp_idx = *next_local;
+            *next_local += 1;
+            chunk.emit(Op::StoreLocal(tmp_idx), line);
+            for (i, name) in names.iter().enumerate() {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let slot = *next_local;
+                *next_local += 1;
+                locals.insert(name.clone(), slot);
+                chunk.emit(Op::LoadLocal(tmp_idx), line);
+                let idx_const = chunk.add_constant(Value::Int(i as i64))?;
+                chunk.emit(Op::Const(idx_const), line);
+                chunk.emit(Op::LoadIndex, line);
+                chunk.emit(Op::StoreLocal(slot), line);
+            }
+            Ok(())
+        }
         Node::ReturnStatement { value: Some(v), .. } => {
             compile_expr(v, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::Return, line);
@@ -688,6 +712,30 @@ fn compile_stmt_in_fn(
             *next_local += 1;
             locals.insert(name.clone(), idx);
             chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        // RES-401: `let (a, b, c) = expr;` inside a function body.
+        Node::LetTupleDestructure { names, value, .. } => {
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let tmp_idx = *next_local;
+            *next_local += 1;
+            chunk.emit(Op::StoreLocal(tmp_idx), line);
+            for (i, name) in names.iter().enumerate() {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let slot = *next_local;
+                *next_local += 1;
+                locals.insert(name.clone(), slot);
+                chunk.emit(Op::LoadLocal(tmp_idx), line);
+                let idx_const = chunk.add_constant(Value::Int(i as i64))?;
+                chunk.emit(Op::Const(idx_const), line);
+                chunk.emit(Op::LoadIndex, line);
+                chunk.emit(Op::StoreLocal(slot), line);
+            }
             Ok(())
         }
         Node::ReturnStatement { value: Some(v), .. } => {
@@ -1387,6 +1435,34 @@ fn compile_expr(
                 },
                 line,
             );
+            Ok(())
+        }
+        // RES-401: `(a, b, c)` tuple literal — compile each item left-
+        // to-right then emit `MakeTuple { len }` to pack them.
+        Node::TupleLiteral { items, .. } => {
+            if items.len() > u16::MAX as usize {
+                return Err(CompileError::Unsupported("tuple literal with >65535 items"));
+            }
+            for item in items {
+                compile_expr(item, chunk, locals, fn_index, ffi_index, line)?;
+            }
+            chunk.emit(
+                Op::MakeTuple {
+                    len: items.len() as u16,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-401: `tuple.N` — compile the tuple, push the index as an
+        // integer constant, emit `LoadIndex` (which handles both arrays
+        // and tuples in the VM). The typechecker ensures `index` is
+        // within the declared tuple length.
+        Node::TupleIndex { tuple, index, .. } => {
+            compile_expr(tuple, chunk, locals, fn_index, ffi_index, line)?;
+            let idx_const = chunk.add_constant(Value::Int(*index as i64))?;
+            chunk.emit(Op::Const(idx_const), line);
+            chunk.emit(Op::LoadIndex, line);
             Ok(())
         }
         // RES-221: interpolated string `"hello {name}!"` — lower to

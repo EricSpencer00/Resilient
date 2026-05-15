@@ -201,6 +201,10 @@ pub enum Op {
     /// a preceding `Const` instruction; the JumpIfTrue before it skips
     /// the fail sequence entirely when the condition holds.
     AssertFail,
+    /// RES-401: pop `len` values off the operand stack (rightmost first,
+    /// same convention as `MakeArray`) and wrap them in a
+    /// `Value::Tuple(Vec<Value>)`. Emitted for `(a, b, c)` tuple literals.
+    MakeTuple { len: u16 },
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;

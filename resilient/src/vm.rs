@@ -766,31 +766,47 @@ fn run_inner(
                 let items: Vec<Value> = stack.drain(split_at..).collect();
                 stack.push(Value::Array(items));
             }
+            // RES-401: same convention as MakeArray — drain `len` values.
+            Op::MakeTuple { len } => {
+                let n = len as usize;
+                if stack.len() < n {
+                    return Err(VmError::EmptyStack);
+                }
+                let split_at = stack.len() - n;
+                let items: Vec<Value> = stack.drain(split_at..).collect();
+                stack.push(Value::Tuple(items));
+            }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
-                let arr_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let target = stack.pop().ok_or(VmError::EmptyStack)?;
                 let Value::Int(idx) = idx_val else {
                     return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
                 };
-                let Value::Array(mut items) = arr_val else {
-                    return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
-                };
-                if idx < 0 || (idx as usize) >= items.len() {
-                    return Err(VmError::ArrayIndexOutOfBounds {
-                        index: idx,
-                        len: items.len(),
-                    });
+                match target {
+                    Value::Array(mut items) => {
+                        if idx < 0 || (idx as usize) >= items.len() {
+                            return Err(VmError::ArrayIndexOutOfBounds {
+                                index: idx,
+                                len: items.len(),
+                            });
+                        }
+                        // RES-1437: swap_remove is O(1); the clone from
+                        // LoadLocal means the original local is unaffected.
+                        stack.push(items.swap_remove(idx as usize));
+                    }
+                    // RES-401: tuple indexing reuses LoadIndex. The
+                    // element is moved out of the owned Vec.
+                    Value::Tuple(mut items) => {
+                        if idx < 0 || (idx as usize) >= items.len() {
+                            return Err(VmError::ArrayIndexOutOfBounds {
+                                index: idx,
+                                len: items.len(),
+                            });
+                        }
+                        stack.push(items.swap_remove(idx as usize));
+                    }
+                    _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
                 }
-                // RES-1437: `items` is owned (destructured from
-                // `Value::Array`). The popped array is the clone
-                // emitted by `LoadLocal` — the original local still
-                // holds the array, so consuming this stack copy is
-                // correct. Use `swap_remove` to move the element out
-                // (O(1)); the remaining `items` drops at end of scope
-                // as before. Saves one `Value::clone` per array index
-                // dispatch — significant for arrays of Strings or
-                // nested Arrays. Mirrors RES-1436 (tree-walker).
-                stack.push(items.swap_remove(idx as usize));
             }
             // RES-407: emitted only when `bounds_check::check_array_bounds`
             // discharged the bounds obligation for this site. Skips the
@@ -1134,6 +1150,7 @@ fn op_to_index(op: Op) -> usize {
         Op::Shl => OP_KIND_SHL,
         Op::Shr => OP_KIND_SHR,
         Op::AssertFail => OP_KIND_ASSERT_FAIL,
+        Op::MakeTuple { .. } => OP_KIND_MAKE_TUPLE,
     }
 }
 
@@ -1147,7 +1164,8 @@ const OP_KIND_BXOR: usize = 37;
 const OP_KIND_SHL: usize = 38;
 const OP_KIND_SHR: usize = 39;
 const OP_KIND_ASSERT_FAIL: usize = 40;
-const HANDLER_TABLE_LEN: usize = 41;
+const OP_KIND_MAKE_TUPLE: usize = 41;
+const HANDLER_TABLE_LEN: usize = 42;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1194,6 +1212,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_SHL] = h_shl;
     table[OP_KIND_SHR] = h_shr;
     table[OP_KIND_ASSERT_FAIL] = h_assert_fail;
+    table[OP_KIND_MAKE_TUPLE] = h_make_tuple;
     table
 };
 
@@ -1612,12 +1631,15 @@ fn h_make_array(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 #[inline(never)]
 fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let idx_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let arr_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let target = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let Value::Int(idx) = idx_val else {
         return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
     };
-    let Value::Array(mut items) = arr_val else {
-        return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
+    // RES-401: also handle Value::Tuple here (mirrors run_inner change).
+    let (mut items, is_tuple) = match target {
+        Value::Array(v) => (v, false),
+        Value::Tuple(v) => (v, true),
+        _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
     };
     if idx < 0 || (idx as usize) >= items.len() {
         return Err(VmError::ArrayIndexOutOfBounds {
@@ -1625,6 +1647,7 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             len: items.len(),
         });
     }
+    let _ = is_tuple; // both branches use swap_remove
     // RES-1437: swap_remove instead of clone — see the match-dispatch
     // LoadIndex arm in run_inner for the full justification.
     state.stack.push(items.swap_remove(idx as usize));
@@ -1888,6 +1911,21 @@ fn h_assert_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         other => format!("assertion failed: {}", other),
     };
     Err(VmError::AssertionFailed(msg))
+}
+
+#[inline(never)]
+fn h_make_tuple(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::MakeTuple { len } = op else {
+        return Err(VmError::Unsupported("h_make_tuple: wrong op"));
+    };
+    let n = len as usize;
+    if state.stack.len() < n {
+        return Err(VmError::EmptyStack);
+    }
+    let split_at = state.stack.len() - n;
+    let items: Vec<Value> = state.stack.drain(split_at..).collect();
+    state.stack.push(Value::Tuple(items));
+    Ok(Step::Continue)
 }
 
 #[cfg(test)]
@@ -3297,6 +3335,8 @@ mod tests {
             Op::Bxor,
             Op::Shl,
             Op::Shr,
+            Op::AssertFail,
+            Op::MakeTuple { len: 0 },
         ];
         for op in samples {
             let idx = op_to_index(*op);
@@ -3398,5 +3438,55 @@ mod tests {
     fn interp_string_bool_conversion() {
         let src = r#"let flag = true; "flag = {flag}""#;
         assert_string(compile_run(src), "flag = true");
+    }
+
+    // ── Tuple support (Op::MakeTuple + extended LoadIndex) ────────────────────
+
+    #[test]
+    fn tuple_literal_produces_tuple_value() {
+        let src = "(1, 2, 3)";
+        let r = compile_run(src);
+        assert!(
+            matches!(r, Ok(Value::Tuple(_))),
+            "expected Tuple, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn tuple_index_accesses_element() {
+        let src = "let t = (10, 20, 30); t.1";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(20))), "expected 20, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_index_zero() {
+        let src = "let t = (42, 99); t.0";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(42))), "expected 42, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_destructure_binds_all_names() {
+        let src = "let (a, b, c) = (1, 2, 3); a + b + c";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(6))), "expected 6, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_destructure_two_elements() {
+        let src = "let (x, y) = (10, 20); x * y";
+        let r = compile_run(src);
+        assert!(matches!(r, Ok(Value::Int(200))), "expected 200, got {r:?}");
+    }
+
+    #[test]
+    fn tuple_empty_is_unit() {
+        let src = "()";
+        let r = compile_run(src);
+        assert!(
+            matches!(r, Ok(Value::Tuple(ref v)) if v.is_empty()),
+            "expected empty Tuple, got {r:?}"
+        );
     }
 }
