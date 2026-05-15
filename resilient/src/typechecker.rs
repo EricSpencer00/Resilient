@@ -1990,6 +1990,14 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
+            // RES-1859: `string_split` — explicit-name alias for `split`.
+            env.set(
+                "string_split".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::String],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-535: split with a maximum number-of-splits limit.
             env.set(
                 "string_split_n".to_string(),
@@ -2043,6 +2051,29 @@ impl TypeChecker {
                 },
             );
             env.set("array_reverse".to_string(), fn_array_to_array());
+            // RES-1859: higher-order array builtins — callback is typed
+            // as Any because we have no generic function type yet.
+            env.set(
+                "array_map".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "array_filter".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "array_reduce".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -6149,6 +6180,33 @@ impl TypeChecker {
                 {
                     return Ok(ty.clone());
                 }
+                // RES-1859: known method return types for Array/String targets.
+                // When the method is called as `arr.map(fn)`, the FieldAccess
+                // node is used as the callee in a CallExpression; returning a
+                // Function type here lets the call site infer the correct return.
+                if tgt_ty == Type::Array {
+                    match field.as_str() {
+                        "map" | "filter" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any],
+                                return_type: Box::new(Type::Array),
+                            });
+                        }
+                        "reduce" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any, Type::Any],
+                                return_type: Box::new(Type::Any),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if tgt_ty == Type::String && field == "split" {
+                    return Ok(Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Array),
+                    });
+                }
                 Ok(Type::Any)
             }
 
@@ -7560,6 +7618,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "pop",
         "slice",
         "split",
+        // RES-1859: explicit-name alias.
+        "string_split",
         // RES-535: split with a maximum number-of-splits limit.
         "string_split_n",
         // RES-545: split on the last occurrence of the separator.
@@ -7571,6 +7631,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-412: reverse string/array.
         "string_reverse",
         "array_reverse",
+        // RES-1859: higher-order array builtins.
+        "array_map",
+        "array_filter",
+        "array_reduce",
         // RES-416: array reductions.
         "array_sum",
         "array_product",
@@ -9858,5 +9922,62 @@ mod span_diagnostic_tests {
             "error should contain file path, got: {}",
             err
         );
+    }
+}
+
+#[cfg(test)]
+mod res1859_builtin_return_types {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect("should type-check without error");
+    }
+
+    #[test]
+    fn array_map_return_type_is_array() {
+        // Result of array_map used as an array argument to len() — would
+        // fail type-check if the return type were inferred as Any when
+        // the checker is configured to be strict on function signatures.
+        check_ok(
+            "fn f(array a) -> int { let m = array_map(a, fn(int x) -> int { return x * 2; }); return len(m); }",
+        );
+    }
+
+    #[test]
+    fn array_filter_return_type_is_array() {
+        check_ok(
+            "fn f(array a) -> int { let filtered = array_filter(a, fn(int x) -> bool { return x > 0; }); return len(filtered); }",
+        );
+    }
+
+    #[test]
+    fn string_split_returns_array() {
+        check_ok(
+            "fn f(string s) -> int { let parts = string_split(s, \",\"); return len(parts); }",
+        );
+    }
+
+    #[test]
+    fn method_map_return_type_is_array() {
+        check_ok(
+            "fn f(array a) -> int { let mapped = a.map(fn(int x) -> int { return x + 1; }); return len(mapped); }",
+        );
+    }
+
+    #[test]
+    fn method_filter_return_type_is_array() {
+        check_ok(
+            "fn f(array a) -> int { let filtered = a.filter(fn(int x) -> bool { return x > 0; }); return len(filtered); }",
+        );
+    }
+
+    #[test]
+    fn string_split_method_return_type_is_array() {
+        check_ok("fn f(string s) -> int { let parts = s.split(\",\"); return len(parts); }");
     }
 }

@@ -10690,6 +10690,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("pop", builtin_pop),
     ("slice", builtin_slice),
     ("split", builtin_split),
+    // RES-1859: explicit-name alias.
+    ("string_split", builtin_split),
     // RES-535: split with a maximum number-of-splits limit.
     ("string_split_n", builtin_string_split_n),
     // RES-545: split on the last occurrence of the separator.
@@ -22278,6 +22280,88 @@ impl Interpreter {
                         // (which will itself raise a clean error).
                     }
                 }
+                // RES-1859: standalone array_map / array_filter / array_reduce
+                // must be handled inline — they accept user callbacks that
+                // require the stateful `apply_function` path.
+                if let Node::Identifier { name: fn_name, .. } = function.as_ref() {
+                    match fn_name.as_str() {
+                        "array_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), callback] => {
+                                    let items = items.clone();
+                                    let callback = callback.clone();
+                                    let mut out = Vec::with_capacity(items.len());
+                                    for item in items {
+                                        out.push(
+                                            self.apply_function(callback.clone(), vec![item])?,
+                                        );
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_map: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        "array_filter" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), predicate] => {
+                                    let items = items.clone();
+                                    let predicate = predicate.clone();
+                                    let mut out = Vec::new();
+                                    for item in items {
+                                        match self
+                                            .apply_function(predicate.clone(), vec![item.clone()])?
+                                        {
+                                            Value::Bool(true) => out.push(item),
+                                            Value::Bool(false) => {}
+                                            other => {
+                                                return Err(format!(
+                                                    "array_filter: predicate must return bool, got {}",
+                                                    other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_filter: expected (array, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        "array_reduce" => {
+                            let args = self.eval_expressions(arguments)?;
+                            match args.as_slice() {
+                                [Value::Array(items), init, callback] => {
+                                    let items = items.clone();
+                                    let callback = callback.clone();
+                                    let mut acc = init.clone();
+                                    for item in items {
+                                        acc =
+                                            self.apply_function(callback.clone(), vec![acc, item])?;
+                                    }
+                                    return Ok(acc);
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "array_reduce: expected (array, init, fn), got {} args",
+                                        other.len()
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(func, args)
@@ -31202,6 +31286,105 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 60), // 10+20+30
             other => panic!("expected Int(60), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `array_map(arr, fn)` standalone builtin returns Array.
+    #[test]
+    fn res1859_array_map_standalone() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3];\n\
+                let doubled = array_map(arr, fn(int x) -> int { return x * 2; });\n\
+                return doubled[0] + doubled[2];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 2 + 6), // 2 + 6 = 8
+            other => panic!("expected Int(8), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `array_filter(arr, pred)` standalone builtin returns Array.
+    #[test]
+    fn res1859_array_filter_standalone() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3, 4, 5];\n\
+                let evens = array_filter(arr, fn(int x) -> bool { return x % 2 == 0; });\n\
+                return evens[0] + evens[1];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 6), // 2 + 4
+            other => panic!("expected Int(6), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `array_reduce(arr, init, fn)` standalone builtin.
+    #[test]
+    fn res1859_array_reduce_standalone() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3, 4, 5];\n\
+                return array_reduce(arr, 0, fn(int acc, int x) -> int { return acc + x; });\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 15),
+            other => panic!("expected Int(15), got {:?}", other),
+        }
+    }
+
+    /// RES-1859: `string_split(s, delim)` returns Array.
+    #[test]
+    fn res1859_string_split_standalone() {
+        let src = "string_split(\"a,b,c\", \",\");";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(v[0], Value::String(ref s) if s == "a"));
+                assert!(matches!(v[1], Value::String(ref s) if s == "b"));
+                assert!(matches!(v[2], Value::String(ref s) if s == "c"));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    /// RES-1859: typechecker infers Array return type for arr.map(fn).
+    #[test]
+    fn res1859_method_map_typed_context() {
+        // Passing the result to len() which expects an array-typed arg
+        // via fn_any_to_int — no type error should occur.
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [10, 20, 30];\n\
+                let mapped = arr.map(fn(int x) -> int { return x + 1; });\n\
+                return len(mapped);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
         }
     }
 
