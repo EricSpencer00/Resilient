@@ -16,6 +16,7 @@ mod alignment_helpers;
 // Pure leaf builtins; module-isolated.
 mod array_argminmax;
 mod array_functional;
+mod map_functional;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -11628,6 +11629,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "map_from_pairs",
         crate::array_functional::builtin_map_from_pairs,
     ),
+    // RES-2647: map functional operations (pure — no callback).
+    ("map_to_pairs", crate::map_functional::builtin_map_to_pairs),
+    ("map_invert", crate::map_functional::builtin_map_invert),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -22622,6 +22626,23 @@ impl Interpreter {
                         "array_partition" => {
                             let args = self.eval_expressions(arguments)?;
                             return crate::array_functional::builtin_array_partition(self, &args);
+                        }
+                        // RES-2647: map functional operations with callbacks.
+                        "map_filter" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_filter(self, &args);
+                        }
+                        "map_map_values" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_map_values(self, &args);
+                        }
+                        "map_for_each" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_for_each(self, &args);
+                        }
+                        "array_scan" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_scan(self, &args);
                         }
                         _ => {}
                     }

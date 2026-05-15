@@ -8,6 +8,8 @@
 //!   a boolean predicate `fn(elem) -> bool`.
 //! * `map_from_pairs(pairs)` — build a Map from an Array of 2-element
 //!   Arrays `[[key, val], ...]`.
+//! * `array_scan(arr, init, fn)` — like `array_reduce` but returns all
+//!   intermediate accumulator values (including the initial value).
 
 use crate::{Interpreter, MapKey, Value};
 
@@ -200,6 +202,41 @@ pub(crate) fn builtin_map_from_pairs(args: &[Value]) -> RResult<Value> {
     }
 
     Ok(Value::Map(map))
+}
+
+/// `array_scan(arr, init, fn) -> Array`
+///
+/// Like `array_reduce` but returns every intermediate accumulator value as an
+/// Array, starting with `init`. The result has `len(arr) + 1` elements:
+/// `[init, fn(init, arr[0]), fn(prev, arr[1]), ...]`.
+///
+/// ```text
+/// let running_sum = array_scan([1,2,3,4], 0, fn(int acc, int x) -> int { return acc + x; });
+/// // running_sum == [0, 1, 3, 6, 10]
+/// ```
+pub(crate) fn builtin_array_scan(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> RResult<Value> {
+    let (arr, init, f) = match args {
+        [Value::Array(a), init, f] => (a.clone(), init.clone(), f.clone()),
+        [a, _, _] => return Err(format!("array_scan: first argument must be an Array, got {a}")),
+        _ => {
+            return Err(format!(
+                "array_scan: expected 3 arguments (array, init, fn), got {}",
+                args.len()
+            ))
+        }
+    };
+
+    let mut out = Vec::with_capacity(arr.len() + 1);
+    let mut acc = init;
+    out.push(acc.clone());
+    for elem in arr {
+        acc = interp.apply_function(f.clone(), vec![acc, elem])?;
+        out.push(acc.clone());
+    }
+    Ok(Value::Array(out))
 }
 
 #[cfg(test)]

@@ -2160,6 +2160,43 @@ impl TypeChecker {
                     return_type: Box::new(Type::Bool),
                 },
             );
+            // RES-2647: map functional operations (callback-taking).
+            // Return types use the same permissive-Any convention as map_keys/map_values.
+            env.set(
+                "map_filter".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "map_map_values".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "map_for_each".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Void),
+                },
+            );
+            env.set(
+                "map_to_pairs".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            env.set(
+                "map_invert".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
             // RES-2646: higher-order functional array operations.
             env.set(
                 "array_flat_map".to_string(),
@@ -2191,6 +2228,14 @@ impl TypeChecker {
                 Type::Function {
                     params: vec![Type::Array],
                     return_type: Box::new(Type::Any),
+                },
+            );
+            // RES-2646: array_scan(arr, init, fn) -> Array of all prefix accumulator values.
+            env.set(
+                "array_scan".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-416: integer-array reductions.
@@ -8529,6 +8574,13 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_group_by",
         "array_partition",
         "map_from_pairs",
+        "array_scan",
+        // RES-2647: map functional operations.
+        "map_filter",
+        "map_map_values",
+        "map_for_each",
+        "map_to_pairs",
+        "map_invert",
         // RES-416: array reductions.
         "array_sum",
         "array_product",
