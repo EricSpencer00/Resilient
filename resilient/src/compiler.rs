@@ -528,6 +528,12 @@ fn compile_stmt(
         // verifier constructs. The bytecode backend emits nothing
         // for them — the interpreter also treats them as no-ops.
         Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(()),
+        // RES-155: `let StructName { field, other_field: local } = expr;`
+        // Compile the value, store in a temp slot, then emit
+        // GetField + StoreLocal for each (field_name, local_name) pair.
+        Node::LetDestructureStruct { fields, value, .. } => compile_let_destructure_struct(
+            fields, value, chunk, locals, next_local, fn_index, ffi_index, line,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -567,6 +573,49 @@ fn compile_assert(
     chunk.emit(Op::AssertFail, line);
     let past_fail = chunk.code.len();
     chunk.patch_jump(jt, past_fail)?;
+    Ok(())
+}
+
+/// RES-155: `let StructName { f1, f2: local } = expr;` lowering.
+/// Evaluates the RHS once into a temp slot, then for each
+/// `(field_name, local_name)` pair emits `LoadLocal(tmp) + GetField +
+/// StoreLocal(new_slot)`. After this, `local_name` is accessible in
+/// subsequent code via `LoadLocal`.
+#[allow(clippy::too_many_arguments)]
+fn compile_let_destructure_struct(
+    fields: &[(String, String)],
+    value: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+    if *next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let tmp_idx = *next_local;
+    *next_local += 1;
+    chunk.emit(Op::StoreLocal(tmp_idx), line);
+    for (field_name, local_name) in fields {
+        if *next_local == u16::MAX {
+            return Err(CompileError::TooManyLocals);
+        }
+        let slot = *next_local;
+        *next_local += 1;
+        locals.insert(local_name.clone(), slot);
+        chunk.emit(Op::LoadLocal(tmp_idx), line);
+        let fname_idx = chunk.add_string_constant(field_name)?;
+        chunk.emit(
+            Op::GetField {
+                name_const: fname_idx,
+            },
+            line,
+        );
+        chunk.emit(Op::StoreLocal(slot), line);
+    }
     Ok(())
 }
 
@@ -860,6 +909,10 @@ fn compile_stmt_in_fn(
             condition, message, ..
         } => compile_assert(
             condition, message, chunk, locals, next_local, fn_index, ffi_index, line,
+        ),
+        // RES-155: struct destructuring inside a function body.
+        Node::LetDestructureStruct { fields, value, .. } => compile_let_destructure_struct(
+            fields, value, chunk, locals, next_local, fn_index, ffi_index, line,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -1532,6 +1585,61 @@ fn compile_expr(
         } => compile_match_expr(
             scrutinee, arms, chunk, locals, next_local, fn_index, ffi_index, line,
         ),
+        // RES-148: `{ k1: v1, k2: v2 }` map literal. Lowered to a
+        // `map_new()` call followed by N `map_insert(map, k, v)` calls.
+        // All three builtins are in the BUILTINS table so the VM's
+        // CallBuiltin dispatch can reach them without new opcodes.
+        Node::MapLiteral { entries, .. } => {
+            let map_new_idx = chunk.add_string_constant("map_new")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: map_new_idx,
+                    arity: 0,
+                },
+                line,
+            );
+            if !entries.is_empty() {
+                let map_insert_idx = chunk.add_string_constant("map_insert")?;
+                for (k, v) in entries {
+                    compile_expr(k, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    compile_expr(v, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    chunk.emit(
+                        Op::CallBuiltin {
+                            name_const: map_insert_idx,
+                            arity: 3,
+                        },
+                        line,
+                    );
+                }
+            }
+            Ok(())
+        }
+        // RES-149: `#{v1, v2, v3}` set literal. Lowered to a
+        // `set_new()` call followed by N `set_insert(set, item)` calls.
+        Node::SetLiteral { items, .. } => {
+            let set_new_idx = chunk.add_string_constant("set_new")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: set_new_idx,
+                    arity: 0,
+                },
+                line,
+            );
+            if !items.is_empty() {
+                let set_insert_idx = chunk.add_string_constant("set_insert")?;
+                for item in items {
+                    compile_expr(item, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    chunk.emit(
+                        Op::CallBuiltin {
+                            name_const: set_insert_idx,
+                            arity: 2,
+                        },
+                        line,
+                    );
+                }
+            }
+            Ok(())
+        }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }

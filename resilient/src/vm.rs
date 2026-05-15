@@ -3566,4 +3566,91 @@ mod tests {
         "#;
         assert!(matches!(compile_run(src), Ok(Value::Int(1))));
     }
+
+    // ── RES-155: struct destructuring in let ─────────────────────────────────
+
+    #[test]
+    fn let_destructure_struct_binds_field() {
+        let src = r#"
+            struct Point { int x, int y }
+            let p = new Point { x: 10, y: 20 };
+            let Point { x, y } = p;
+            x + y
+        "#;
+        assert!(
+            matches!(compile_run(src), Ok(Value::Int(30))),
+            "got {:?}",
+            compile_run(src)
+        );
+    }
+
+    #[test]
+    fn let_destructure_struct_renamed_field() {
+        let src = r#"
+            struct Vec2 { int x, int y }
+            let v = new Vec2 { x: 3, y: 4 };
+            let Vec2 { x: a, y: b } = v;
+            a * a + b * b
+        "#;
+        assert!(
+            matches!(compile_run(src), Ok(Value::Int(25))),
+            "got {:?}",
+            compile_run(src)
+        );
+    }
+
+    #[test]
+    fn let_destructure_struct_in_fn() {
+        let src = r#"
+            struct Pair { int first, int second }
+            fn sum_pair(Pair p) -> int {
+                let Pair { first, second } = p;
+                return first + second;
+            }
+            sum_pair(new Pair { first: 7, second: 8 })
+        "#;
+        assert!(
+            matches!(compile_run(src), Ok(Value::Int(15))),
+            "got {:?}",
+            compile_run(src)
+        );
+    }
+
+    // ── RES-148/149: map and set literals ────────────────────────────────────
+
+    #[test]
+    fn map_literal_empty_is_map() {
+        let r = compile_run("{}");
+        assert!(matches!(r, Ok(Value::Map(_))), "expected Map, got {r:?}");
+    }
+
+    #[test]
+    fn map_literal_with_entries_has_correct_len() {
+        let r = compile_run(r#"let m = {"a" -> 1, "b" -> 2}; map_len(m)"#);
+        assert!(matches!(r, Ok(Value::Int(2))), "got {r:?}");
+    }
+
+    #[test]
+    fn map_literal_lookup_by_key() {
+        let r = compile_run(r#"let m = {"hello" -> 42}; map_contains_key(m, "hello")"#);
+        assert!(matches!(r, Ok(Value::Bool(true))), "got {r:?}");
+    }
+
+    #[test]
+    fn set_literal_empty_is_set() {
+        let r = compile_run("#{}");
+        assert!(matches!(r, Ok(Value::Set(_))), "expected Set, got {r:?}");
+    }
+
+    #[test]
+    fn set_literal_with_items_has_correct_len() {
+        let r = compile_run("let s = #{1, 2, 3}; set_len(s)");
+        assert!(matches!(r, Ok(Value::Int(3))), "got {r:?}");
+    }
+
+    #[test]
+    fn set_literal_membership_check() {
+        let r = compile_run("let s = #{10, 20, 30}; set_has(s, 20)");
+        assert!(matches!(r, Ok(Value::Bool(true))), "got {r:?}");
+    }
 }
