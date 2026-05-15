@@ -1,14 +1,14 @@
-// RES-1857: BMC prefix span fixture.
+// RES-1857: BMC prefix span fixture — unprovable `recovers_to`.
 //
-// `register_write` has a `recovers_to` clause but no `requires`
-// constraint, so Z3 can find x = 0 as a counterexample at every
-// prefix boundary. Without a `fails` annotation the final-state
-// failure is advisory (no hard compile error), but the per-prefix
-// BMC (Phase 3) still emits a `warning[bmc]` naming the instruction
-// boundary and the function.
+// `register_write` has `recovers_to: x > 0` but no `requires` constraint.
+// Without a precondition, Z3 can find x = 0 as a counterexample to the
+// clause being universally true. The final-state Z3 check returns
+// Some(false) and the typechecker rejects the program (a compile error),
+// even without a `fails` annotation.
 //
 // This file is tested by `recovers_to_z3_obligation.rs` with
-// `--features z3` to verify the BMC diagnostic format.
+// `--features z3` to verify that unprovable `recovers_to` clauses are
+// caught at compile time.
 fn register_write(int x) -> int
     recovers_to: x > 0;
 {

@@ -131,41 +131,38 @@ fn recovers_to_unhandled_destructive_is_rejected() {
     );
 }
 
-/// RES-1857 Phase 3: per-prefix BMC emits `warning[bmc]` with the
-/// instruction boundary number and the function name in the message.
+/// RES-1857 Phase 3: unprovable `recovers_to` without `requires` is
+/// rejected at compile time.
 ///
 /// `recovers_to_bmc_prefix_warns.rz` declares `recovers_to: x > 0`
-/// with no `requires` constraint and no `fails` set. The final-state
-/// check cannot prove `x > 0` (x is unconstrained), but without a
-/// non-empty `fails` set the missing proof is advisory, not a hard
-/// error. The per-prefix BMC (Phase 3) still runs and finds SAT at
-/// every prefix boundary, emitting `warning[bmc]` for each one.
+/// with no `requires` constraint and no `fails` set. Z3 finds x = 0
+/// as a counterexample to the clause being universally true, returning
+/// `Some(false)`. The typechecker's final-state check treats `Some(false)`
+/// as a hard compile error regardless of whether `fails` is set, so the
+/// program is rejected with a diagnostic naming `recovers_to`.
 #[test]
-fn bmc_prefix_warns_on_unconstrained_recovers_to() {
+fn unprovable_recovers_to_without_requires_is_rejected() {
     let output = typecheck("recovers_to_bmc_prefix_warns.rz");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let combined = format!("{}{}", stdout, stderr);
 
     assert!(
-        output.status.success(),
-        "expected typecheck to pass (no fails set → advisory only); \
-         combined output:\n{}",
+        !output.status.success(),
+        "expected typecheck to FAIL — unprovable recovers_to without requires \
+         must be a compile error; combined output:\n{}",
         combined
     );
     assert!(
-        combined.contains("warning[bmc]"),
-        "expected BMC prefix warning in output; combined:\n{}",
+        combined.contains("recovers_to"),
+        "error must mention `recovers_to`; combined:\n{}",
         combined
     );
+    // Z3 found a counterexample (x = 0 violates x > 0).
+    // Either the "counterexample" or "never hold" message confirms Z3 ran.
     assert!(
-        combined.contains("instruction boundary"),
-        "BMC warning must name the instruction boundary; combined:\n{}",
-        combined
-    );
-    assert!(
-        combined.contains("register_write"),
-        "BMC warning must name the function; combined:\n{}",
+        combined.contains("counterexample") || combined.contains("never hold"),
+        "error must contain Z3 counterexample info; combined:\n{}",
         combined
     );
 }
