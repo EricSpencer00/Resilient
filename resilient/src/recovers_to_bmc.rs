@@ -13,8 +13,6 @@
 
 use crate::{Node, Span};
 use std::collections::HashMap;
-#[cfg(feature = "z3")]
-extern crate z3;
 
 /// Represents a control-flow node in the function's CFG.
 #[derive(Debug, Clone)]
@@ -474,12 +472,13 @@ fn solve_bmc_obligation(
     span: &Span,
     obligation: &str,
 ) -> Result<(), String> {
+    use z3::SatResult;
     match crate::verifier_z3::check_smtlib2(obligation) {
-        z3::SatResult::Unsat => {
+        SatResult::Unsat => {
             // Postcondition holds at this prefix — safe.
             Ok(())
         }
-        z3::SatResult::Sat => {
+        SatResult::Sat => {
             // Z3 found a state where recovers_to can be violated.
             let line = span.start.line;
             let col = span.start.col;
@@ -494,7 +493,7 @@ fn solve_bmc_obligation(
                  (RES-392b BMC counterexample)"
             ))
         }
-        z3::SatResult::Unknown => {
+        SatResult::Unknown => {
             // Z3 timed out or returned unknown — emit a warning but
             // don't block compilation (same pattern as existing
             // `partial-proof` warnings in typechecker.rs).
