@@ -213,6 +213,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     &mut next_local,
                     &fn_index,
                     &ffi_index,
+                    &mut functions,
+                    &mut next_fn_idx,
                     line,
                     None,
                 )?;
@@ -290,6 +292,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             &mut main_next_local,
             &fn_index,
             &ffi_index,
+            &mut functions,
+            &mut next_fn_idx,
             line,
             None,
         )?;
@@ -337,12 +341,24 @@ fn compile_stmt(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
     loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -354,7 +370,17 @@ fn compile_stmt(
         }
         // RES-401: `let (a, b, c) = expr;` in top-level (main chunk).
         Node::LetTupleDestructure { names, value, .. } => {
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -377,7 +403,17 @@ fn compile_stmt(
             Ok(())
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            compile_expr(v, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                v,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::Return, line);
             Ok(())
         }
@@ -385,19 +421,46 @@ fn compile_stmt(
             chunk.emit(Op::Return, line);
             Ok(())
         }
-        Node::ExpressionStatement { expr: inner, .. } => {
-            compile_expr(inner, chunk, locals, next_local, fn_index, ffi_index, line)
-        }
+        Node::ExpressionStatement { expr: inner, .. } => compile_expr(
+            inner,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         Node::IfStatement { .. }
         | Node::WhileStatement { .. }
         | Node::ForInStatement { .. }
         | Node::Block { .. } => compile_control_flow(
-            node, chunk, locals, next_local, fn_index, ffi_index, line, loop_state,
+            node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
         ),
         Node::Assignment { name, value, .. } => {
             // RES-083: re-bind an existing local. Compile the RHS,
             // StoreLocal to the known slot. Unknown name is an error.
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
@@ -441,8 +504,28 @@ fn compile_stmt(
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(index, chunk, locals, next_local, fn_index, ffi_index, line)?;
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                index,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::StoreIndex, line);
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
@@ -474,7 +557,17 @@ fn compile_stmt(
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::SetField {
@@ -516,7 +609,16 @@ fn compile_stmt(
         Node::Assert {
             condition, message, ..
         } => compile_assert(
-            condition, message, chunk, locals, next_local, fn_index, ffi_index, line,
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
         ),
         Node::Function { .. } | Node::Extern { .. } => {
             // Top-level fn/extern decls already handled in passes 1/2.
@@ -532,7 +634,16 @@ fn compile_stmt(
         // Compile the value, store in a temp slot, then emit
         // GetField + StoreLocal for each (field_name, local_name) pair.
         Node::LetDestructureStruct { fields, value, .. } => compile_let_destructure_struct(
-            fields, value, chunk, locals, next_local, fn_index, ffi_index, line,
+            fields,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -550,10 +661,20 @@ fn compile_assert(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
 ) -> Result<(), CompileError> {
     compile_expr(
-        condition, chunk, locals, next_local, fn_index, ffi_index, line,
+        condition,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
     )?;
     let jt = chunk.emit(Op::JumpIfTrue(0), line);
     // Push the failure message string.
@@ -590,9 +711,21 @@ fn compile_let_destructure_struct(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
 ) -> Result<(), CompileError> {
-    compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+    compile_expr(
+        value,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
     if *next_local == u16::MAX {
         return Err(CompileError::TooManyLocals);
     }
@@ -636,6 +769,8 @@ fn compile_control_flow(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
     mut loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
@@ -646,7 +781,16 @@ fn compile_control_flow(
             for s in stmts {
                 let ls_ref = ls.as_deref_mut();
                 compile_stmt(
-                    s, chunk, locals, next_local, fn_index, ffi_index, line, ls_ref,
+                    s,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    ls_ref,
                 )?;
             }
             Ok(())
@@ -659,7 +803,15 @@ fn compile_control_flow(
         } => {
             // cond
             compile_expr(
-                condition, chunk, locals, next_local, fn_index, ffi_index, line,
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
             )?;
             // JumpIfFalse to else-or-end (placeholder 0 offset)
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
@@ -671,6 +823,8 @@ fn compile_control_flow(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
                 loop_state.as_deref_mut(),
             )?;
@@ -681,7 +835,16 @@ fn compile_control_flow(
                 let else_target = chunk.code.len();
                 chunk.patch_jump(jif, else_target)?;
                 compile_stmt(
-                    alt, chunk, locals, next_local, fn_index, ffi_index, line, loop_state,
+                    alt,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    loop_state,
                 )?;
                 // And the skip-over-else lands here (end)
                 let end = chunk.code.len();
@@ -698,7 +861,15 @@ fn compile_control_flow(
         } => {
             let loop_start = chunk.code.len();
             compile_expr(
-                condition, chunk, locals, next_local, fn_index, ffi_index, line,
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
             )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             // Create a fresh inner LoopState — break/continue target THIS loop,
@@ -711,6 +882,8 @@ fn compile_control_flow(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
                 Some(&mut inner),
             )?;
@@ -736,7 +909,17 @@ fn compile_control_flow(
             body,
             ..
         } => compile_for_in(
-            name, iterable, body, chunk, locals, next_local, fn_index, ffi_index, line,
+            name,
+            iterable,
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
             /* in_fn */ false,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
@@ -758,12 +941,24 @@ fn compile_stmt_in_fn(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
     loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -775,7 +970,17 @@ fn compile_stmt_in_fn(
         }
         // RES-401: `let (a, b, c) = expr;` inside a function body.
         Node::LetTupleDestructure { names, value, .. } => {
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -798,7 +1003,17 @@ fn compile_stmt_in_fn(
             Ok(())
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            compile_expr(v, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                v,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
@@ -810,17 +1025,44 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
-        Node::ExpressionStatement { expr: inner, .. } => {
-            compile_expr(inner, chunk, locals, next_local, fn_index, ffi_index, line)
-        }
+        Node::ExpressionStatement { expr: inner, .. } => compile_expr(
+            inner,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         Node::IfStatement { .. }
         | Node::WhileStatement { .. }
         | Node::ForInStatement { .. }
         | Node::Block { .. } => compile_control_flow_in_fn(
-            node, chunk, locals, next_local, fn_index, ffi_index, line, loop_state,
+            node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
         ),
         Node::Assignment { name, value, .. } => {
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
@@ -853,8 +1095,28 @@ fn compile_stmt_in_fn(
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(index, chunk, locals, next_local, fn_index, ffi_index, line)?;
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                index,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::StoreIndex, line);
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
@@ -882,7 +1144,17 @@ fn compile_stmt_in_fn(
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(value, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::SetField {
@@ -908,11 +1180,29 @@ fn compile_stmt_in_fn(
         Node::Assert {
             condition, message, ..
         } => compile_assert(
-            condition, message, chunk, locals, next_local, fn_index, ffi_index, line,
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
         ),
         // RES-155: struct destructuring inside a function body.
         Node::LetDestructureStruct { fields, value, .. } => compile_let_destructure_struct(
-            fields, value, chunk, locals, next_local, fn_index, ffi_index, line,
+            fields,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -929,6 +1219,8 @@ fn compile_control_flow_in_fn(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
     mut loop_state: Option<&mut LoopState>,
 ) -> Result<(), CompileError> {
@@ -938,7 +1230,16 @@ fn compile_control_flow_in_fn(
             for s in stmts {
                 let ls_ref = ls.as_deref_mut();
                 compile_stmt_in_fn(
-                    s, chunk, locals, next_local, fn_index, ffi_index, line, ls_ref,
+                    s,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    ls_ref,
                 )?;
             }
             Ok(())
@@ -950,7 +1251,15 @@ fn compile_control_flow_in_fn(
             ..
         } => {
             compile_expr(
-                condition, chunk, locals, next_local, fn_index, ffi_index, line,
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
             )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             compile_stmt_in_fn(
@@ -960,6 +1269,8 @@ fn compile_control_flow_in_fn(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
                 loop_state.as_deref_mut(),
             )?;
@@ -968,7 +1279,16 @@ fn compile_control_flow_in_fn(
                 let else_target = chunk.code.len();
                 chunk.patch_jump(jif, else_target)?;
                 compile_stmt_in_fn(
-                    alt, chunk, locals, next_local, fn_index, ffi_index, line, loop_state,
+                    alt,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    loop_state,
                 )?;
                 let end = chunk.code.len();
                 chunk.patch_jump(jmp_end, end)?;
@@ -983,7 +1303,15 @@ fn compile_control_flow_in_fn(
         } => {
             let loop_start = chunk.code.len();
             compile_expr(
-                condition, chunk, locals, next_local, fn_index, ffi_index, line,
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
             )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             let mut inner = LoopState::new(loop_start);
@@ -994,6 +1322,8 @@ fn compile_control_flow_in_fn(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
                 Some(&mut inner),
             )?;
@@ -1015,7 +1345,17 @@ fn compile_control_flow_in_fn(
             body,
             ..
         } => compile_for_in(
-            name, iterable, body, chunk, locals, next_local, fn_index, ffi_index, line,
+            name,
+            iterable,
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
             /* in_fn */ true,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
@@ -1077,6 +1417,8 @@ fn compile_for_in(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
     in_fn: bool,
 ) -> Result<(), CompileError> {
@@ -1114,7 +1456,15 @@ fn compile_for_in(
 
     // 1. Evaluate iterable, store in arr_slot.
     compile_expr(
-        iterable, chunk, locals, next_local, fn_index, ffi_index, line,
+        iterable,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
     )?;
     chunk.emit(Op::StoreLocal(arr_slot), line);
 
@@ -1164,6 +1514,8 @@ fn compile_for_in(
             next_local,
             fn_index,
             ffi_index,
+            fns,
+            next_fn_idx,
             line,
             Some(&mut inner),
         )?;
@@ -1175,6 +1527,8 @@ fn compile_for_in(
             next_local,
             fn_index,
             ffi_index,
+            fns,
+            next_fn_idx,
             line,
             Some(&mut inner),
         )?;
@@ -1219,6 +1573,7 @@ fn compile_for_in(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_expr(
     node: &Node,
     chunk: &mut Chunk,
@@ -1226,6 +1581,8 @@ fn compile_expr(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
@@ -1266,7 +1623,17 @@ fn compile_expr(
         Node::PrefixExpression {
             operator, right, ..
         } if operator == "-" => {
-            compile_expr(right, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::Neg, line);
             Ok(())
         }
@@ -1274,7 +1641,17 @@ fn compile_expr(
         Node::PrefixExpression {
             operator, right, ..
         } if operator == "!" => {
-            compile_expr(right, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             chunk.emit(Op::Not, line);
             Ok(())
         }
@@ -1285,9 +1662,29 @@ fn compile_expr(
             right,
             ..
         } if operator == "&&" => {
-            compile_expr(left, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                left,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_expr(right, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // false branch
             let false_target = chunk.code.len();
@@ -1305,12 +1702,32 @@ fn compile_expr(
             right,
             ..
         } if operator == "||" => {
-            compile_expr(left, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                left,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             // Negate lhs so JumpIfFalse skips to "true" when lhs is truthy.
             chunk.emit(Op::Not, line);
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             // lhs was falsy → evaluate rhs
-            compile_expr(right, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // true branch
             let true_target = chunk.code.len();
@@ -1327,8 +1744,28 @@ fn compile_expr(
             right,
             ..
         } => {
-            compile_expr(left, chunk, locals, next_local, fn_index, ffi_index, line)?;
-            compile_expr(right, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                left,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let op = match operator.as_str() {
                 "+" => Op::Add,
                 "-" => Op::Sub,
@@ -1379,14 +1816,52 @@ fn compile_expr(
             // `compile_expr(arg, ...)` calls borrow disjoint
             // sub-nodes of `arguments`, so the borrow checker is
             // happy.
+            // Support indirect calls: if callee is a local variable (not a named
+            // fn/ffi) holding a closure, push it and emit CallClosure { arity }.
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                let is_named =
+                    fn_index.contains_key(name.as_str()) || ffi_index.contains_key(name.as_str());
+                if let (false, Some(&slot)) = (is_named, locals.get(name.as_str())) {
+                    chunk.emit(Op::LoadLocal(slot), line);
+                    let arity = arguments.len();
+                    for arg in arguments {
+                        compile_expr(
+                            arg,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                        )?;
+                    }
+                    if arity > u8::MAX as usize {
+                        return Err(CompileError::Unsupported("too many args in indirect call"));
+                    }
+                    chunk.emit(Op::CallClosure { arity: arity as u8 }, line);
+                    return Ok(());
+                }
+            }
             let callee_name: &str = match function.as_ref() {
                 Node::Identifier { name, .. } => name.as_str(),
-                _ => return Err(CompileError::Unsupported("indirect call")),
+                _ => return Err(CompileError::Unsupported("indirect call on non-identifier")),
             };
             // FFI v2: foreign call takes priority over user-defined functions.
             if let Some(&idx) = ffi_index.get(callee_name) {
                 for arg in arguments {
-                    compile_expr(arg, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                 }
                 chunk.emit(Op::CallForeign(idx), line);
                 return Ok(());
@@ -1396,7 +1871,17 @@ fn compile_expr(
                 // Push args left-to-right so the VM can pop them in reverse
                 // and assign to locals 0..arity in source order.
                 for arg in arguments {
-                    compile_expr(arg, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                 }
                 chunk.emit(Op::Call(callee_idx), line);
                 return Ok(());
@@ -1413,7 +1898,17 @@ fn compile_expr(
                 }
                 let name_const = chunk.add_string_constant(callee_name)?;
                 for arg in arguments {
-                    compile_expr(arg, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                 }
                 chunk.emit(
                     Op::CallBuiltin {
@@ -1434,7 +1929,17 @@ fn compile_expr(
                 return Err(CompileError::Unsupported("array literal with >65535 items"));
             }
             for item in items {
-                compile_expr(item, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                compile_expr(
+                    item,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
             }
             chunk.emit(
                 Op::MakeArray {
@@ -1461,8 +1966,28 @@ fn compile_expr(
             index,
             span,
         } => {
-            compile_expr(target, chunk, locals, next_local, fn_index, ffi_index, line)?;
-            compile_expr(index, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                target,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                index,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let op = if crate::bounds_check::is_proven_site(*span) {
                 Op::LoadIndexUnchecked
             } else {
@@ -1484,7 +2009,15 @@ fn compile_expr(
                 let fname_idx = chunk.add_string_constant(field_name)?;
                 chunk.emit(Op::Const(fname_idx), line);
                 compile_expr(
-                    field_expr, chunk, locals, next_local, fn_index, ffi_index, line,
+                    field_expr,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
                 )?;
             }
             chunk.emit(
@@ -1501,7 +2034,17 @@ fn compile_expr(
         // `compile_expr(target)` re-enters this arm for inner
         // `FieldAccess` nodes.
         Node::FieldAccess { target, field, .. } => {
-            compile_expr(target, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                target,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::GetField {
@@ -1518,7 +2061,17 @@ fn compile_expr(
                 return Err(CompileError::Unsupported("tuple literal with >65535 items"));
             }
             for item in items {
-                compile_expr(item, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                compile_expr(
+                    item,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
             }
             chunk.emit(
                 Op::MakeTuple {
@@ -1533,7 +2086,17 @@ fn compile_expr(
         // and tuples in the VM). The typechecker ensures `index` is
         // within the declared tuple length.
         Node::TupleIndex { tuple, index, .. } => {
-            compile_expr(tuple, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_expr(
+                tuple,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             let idx_const = chunk.add_constant(Value::Int(*index as i64))?;
             chunk.emit(Op::Const(idx_const), line);
             chunk.emit(Op::LoadIndex, line);
@@ -1559,7 +2122,17 @@ fn compile_expr(
                         chunk.emit(Op::Const(idx), line);
                     }
                     crate::string_interp::StringPart::Expr(expr) => {
-                        compile_expr(expr, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                        compile_expr(
+                            expr,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                        )?;
                         chunk.emit(
                             Op::CallBuiltin {
                                 name_const: to_string_idx,
@@ -1583,7 +2156,16 @@ fn compile_expr(
         Node::Match {
             scrutinee, arms, ..
         } => compile_match_expr(
-            scrutinee, arms, chunk, locals, next_local, fn_index, ffi_index, line,
+            scrutinee,
+            arms,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
         ),
         // RES-148: `{ k1: v1, k2: v2 }` map literal. Lowered to a
         // `map_new()` call followed by N `map_insert(map, k, v)` calls.
@@ -1601,8 +2183,28 @@ fn compile_expr(
             if !entries.is_empty() {
                 let map_insert_idx = chunk.add_string_constant("map_insert")?;
                 for (k, v) in entries {
-                    compile_expr(k, chunk, locals, next_local, fn_index, ffi_index, line)?;
-                    compile_expr(v, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        k,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                    compile_expr(
+                        v,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                     chunk.emit(
                         Op::CallBuiltin {
                             name_const: map_insert_idx,
@@ -1628,7 +2230,17 @@ fn compile_expr(
             if !items.is_empty() {
                 let set_insert_idx = chunk.add_string_constant("set_insert")?;
                 for item in items {
-                    compile_expr(item, chunk, locals, next_local, fn_index, ffi_index, line)?;
+                    compile_expr(
+                        item,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
                     chunk.emit(
                         Op::CallBuiltin {
                             name_const: set_insert_idx,
@@ -1640,7 +2252,218 @@ fn compile_expr(
             }
             Ok(())
         }
+        // RES-169d: `fn(params) { body }` anonymous function literal.
+        // Compiles the body as a new Function entry, collects free variables
+        // (capture-by-value), and emits MakeClosure.
+        Node::FunctionLiteral {
+            parameters, body, ..
+        } => {
+            if parameters.len() > u8::MAX as usize {
+                return Err(CompileError::Unsupported("fn literal with >255 params"));
+            }
+            if *next_fn_idx == u16::MAX {
+                return Err(CompileError::Unsupported("too many functions (>65535)"));
+            }
+            let fn_idx = *next_fn_idx;
+            *next_fn_idx += 1;
+
+            // Determine the set of free variables: identifiers in the body that
+            // are not the literal's own parameters and are bound in the *outer*
+            // locals map. Collect in insertion order for a deterministic capture
+            // sequence (needed so LoadUpvalue(i) indices are stable).
+            let param_names: std::collections::HashSet<&str> =
+                parameters.iter().map(|(_, n)| n.as_str()).collect();
+            let mut captured: Vec<(u16, String)> = Vec::new(); // (outer slot, name)
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            collect_free_vars(body, &param_names, locals, &mut captured, &mut seen);
+
+            // Build the closure's local map: params at 0..arity, then upvalues
+            // accessible via LoadUpvalue. The body chunk uses LoadUpvalue(i) for
+            // captured names, resolved by the inner compilation below.
+            let arity = parameters.len() as u8;
+            let upvalue_count = captured.len();
+
+            // Build the body chunk for the new Function entry.
+            let mut fn_chunk = Chunk::with_capacity(64);
+            let mut fn_locals: HashMap<String, u16> =
+                HashMap::with_capacity(parameters.len().saturating_mul(2).max(8));
+            let mut fn_next_local: u16 = 0;
+            for (_, pname) in parameters {
+                fn_locals.insert(pname.clone(), fn_next_local);
+                fn_next_local += 1;
+            }
+            // Upvalues are accessed via Op::LoadUpvalue, not locals — we don't
+            // add them to fn_locals. The body's compile_expr will see identifiers
+            // missing from fn_locals and look them up as … well, currently we
+            // need to NOT add them as locals so the compiled body references them
+            // as upvalues. But compile_expr currently handles identifiers only
+            // via locals lookup. We add a sentinel: give each captured name a
+            // special "upvalue" pseudo-slot by injecting it into fn_locals with a
+            // flag we then post-process. Instead, we compile the body with the
+            // captured names in fn_locals, then rewrite those LoadLocal ops into
+            // LoadUpvalue ops after the fact.
+            //
+            // Simpler approach: insert captured names into fn_locals at slots
+            // >= fn_next_local (reachable area), compile, then rewrite those
+            // LoadLocal(slot) ops to LoadUpvalue(upvalue_index). The upvalue
+            // indices are 0-based and correspond to the capture order.
+            let upvalue_base = fn_next_local; // first "upvalue" local slot
+            for (i, (_, name)) in captured.iter().enumerate() {
+                fn_locals.insert(name.clone(), upvalue_base + i as u16);
+            }
+
+            // Compile the body statements.
+            let inner_stmts = match body.as_ref() {
+                Node::Block { stmts: b, .. } => b.as_slice(),
+                single => std::slice::from_ref(single),
+            };
+            for stmt in inner_stmts {
+                let stmt_line = node_line(stmt).unwrap_or(line);
+                compile_stmt_in_fn(
+                    stmt,
+                    &mut fn_chunk,
+                    &mut fn_locals,
+                    &mut fn_next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    stmt_line,
+                    None,
+                )?;
+            }
+            fn_chunk.emit(Op::ReturnFromCall, 0);
+
+            // Rewrite LoadLocal(upvalue_base + i) → LoadUpvalue(i).
+            // Any slot in [upvalue_base, upvalue_base + upvalue_count) was
+            // injected for a capture. Rewrite those slots in-place.
+            for op in &mut fn_chunk.code {
+                // `if let … { if … }` form is intentional: stable Rust doesn't
+                // have let_chains, so suppress the collapsible_if lint here.
+                #[allow(clippy::collapsible_if)]
+                if let Op::LoadLocal(slot) = op {
+                    if *slot >= upvalue_base
+                        && (*slot as usize) < upvalue_base as usize + upvalue_count
+                    {
+                        *op = Op::LoadUpvalue(*slot - upvalue_base);
+                    }
+                }
+            }
+
+            let local_count = fn_next_local;
+            // Insert at fn_idx (pre-allocated index). fns may have grown via
+            // nested FunctionLiterals; we need to push a placeholder then
+            // overwrite it, OR we always push at end (and fn_idx == fns.len()
+            // at the time we called *next_fn_idx += 1). Since nested closures
+            // also increment next_fn_idx, fn_idx may not equal fns.len() by
+            // the time we reach here. Use a placeholder-then-overwrite strategy:
+            // extend fns to at least fn_idx+1 with placeholders.
+            while fns.len() <= fn_idx as usize {
+                fns.push(Function {
+                    name: "<closure_placeholder>".into(),
+                    arity: 0,
+                    chunk: Chunk::with_capacity(0),
+                    local_count: 0,
+                });
+            }
+            fns[fn_idx as usize] = Function {
+                name: "<closure>".into(),
+                arity,
+                chunk: fn_chunk,
+                local_count,
+            };
+
+            // Emit: push each captured value onto the stack, then MakeClosure.
+            for (outer_slot, _) in &captured {
+                chunk.emit(Op::LoadLocal(*outer_slot), line);
+            }
+            chunk.emit(
+                Op::MakeClosure {
+                    fn_idx,
+                    upvalue_count: upvalue_count as u8,
+                },
+                line,
+            );
+            Ok(())
+        }
         other => Err(CompileError::Unsupported(node_kind(other))),
+    }
+}
+
+/// Walk `node` collecting identifiers that are free in the expression (not
+/// in `param_names`) and bound in `outer_locals`. Results go into `out` in
+/// first-seen order; `seen` tracks which names we've already added.
+fn collect_free_vars(
+    node: &Node,
+    param_names: &std::collections::HashSet<&str>,
+    outer_locals: &HashMap<String, u16>,
+    out: &mut Vec<(u16, String)>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match node {
+        Node::Identifier { name, .. }
+            if !param_names.contains(name.as_str())
+                && !seen.contains(name)
+                && outer_locals.contains_key(name) =>
+        {
+            let slot = outer_locals[name];
+            seen.insert(name.clone());
+            out.push((slot, name.clone()));
+        }
+        Node::Identifier { .. } => {}
+        // Recurse into all child nodes.
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_free_vars(s, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::LetStatement { value, .. } => {
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            collect_free_vars(left, param_names, outer_locals, out, seen);
+            collect_free_vars(right, param_names, outer_locals, out, seen);
+        }
+        Node::PrefixExpression { right, .. } => {
+            collect_free_vars(right, param_names, outer_locals, out, seen);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            collect_free_vars(function, param_names, outer_locals, out, seen);
+            for a in arguments {
+                collect_free_vars(a, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_free_vars(condition, param_names, outer_locals, out, seen);
+            collect_free_vars(consequence, param_names, outer_locals, out, seen);
+            if let Some(alt) = alternative {
+                collect_free_vars(alt, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::ReturnStatement { value: Some(v), .. } => {
+            collect_free_vars(v, param_names, outer_locals, out, seen);
+        }
+        Node::ReturnStatement { .. } => {}
+        Node::ExpressionStatement { expr, .. } => {
+            collect_free_vars(expr, param_names, outer_locals, out, seen);
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_free_vars(condition, param_names, outer_locals, out, seen);
+            collect_free_vars(body, param_names, outer_locals, out, seen);
+        }
+        // Leaf nodes (literals, etc.) have no free vars.
+        _ => {}
     }
 }
 
@@ -1658,10 +2481,20 @@ fn compile_match_expr(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
 ) -> Result<(), CompileError> {
     compile_expr(
-        scrutinee, chunk, locals, next_local, fn_index, ffi_index, line,
+        scrutinee,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
     )?;
     if *next_local == u16::MAX {
         return Err(CompileError::TooManyLocals);
@@ -1687,6 +2520,8 @@ fn compile_match_expr(
             next_local,
             fn_index,
             ffi_index,
+            fns,
+            next_fn_idx,
             line,
             &mut next_arm_patches,
         )?;
@@ -1699,6 +2534,8 @@ fn compile_match_expr(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
             )?;
             let p = chunk.emit(Op::JumpIfFalse(0), line);
@@ -1712,6 +2549,8 @@ fn compile_match_expr(
             next_local,
             fn_index,
             ffi_index,
+            fns,
+            next_fn_idx,
             line,
         )?;
 
@@ -1754,6 +2593,8 @@ fn compile_pattern_check(
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
     line: u32,
     next_arm_patches: &mut Vec<usize>,
 ) -> Result<(), CompileError> {
@@ -1765,7 +2606,15 @@ fn compile_pattern_check(
         Pattern::Literal(lit_node) => {
             chunk.emit(Op::LoadLocal(scrutinee_slot), line);
             compile_expr(
-                lit_node, chunk, locals, next_local, fn_index, ffi_index, line,
+                lit_node,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
             )?;
             chunk.emit(Op::Eq, line);
             let p = chunk.emit(Op::JumpIfFalse(0), line);
@@ -1812,6 +2661,8 @@ fn compile_pattern_check(
                 next_local,
                 fn_index,
                 ffi_index,
+                fns,
+                next_fn_idx,
                 line,
                 next_arm_patches,
             )?;
@@ -1846,6 +2697,8 @@ fn compile_pattern_check(
                         next_local,
                         fn_index,
                         ffi_index,
+                        fns,
+                        next_fn_idx,
                         line,
                         next_arm_patches,
                     )?;
@@ -1863,6 +2716,8 @@ fn compile_pattern_check(
                         next_local,
                         fn_index,
                         ffi_index,
+                        fns,
+                        next_fn_idx,
                         line,
                         &mut branch_fail,
                     )?;

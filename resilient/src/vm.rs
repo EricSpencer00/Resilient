@@ -2622,6 +2622,44 @@ mod tests {
         assert_int(run(&p).unwrap(), 42);
     }
 
+    // ---------- RES-169d: FunctionLiteral + indirect call (closures from source) ----------
+
+    #[test]
+    fn res169d_function_literal_basic_call() {
+        // let double = fn(int x) { return x * 2; }; double(5);
+        let src = "let double = fn(int x) { return x * 2; }; double(5);";
+        assert_int(compile_run(src).unwrap(), 10);
+    }
+
+    #[test]
+    fn res169d_function_literal_captures_outer_variable() {
+        // let n = 10; let adder = fn(int x) { return x + n; }; adder(5);
+        let src = "let n = 10; let adder = fn(int x) { return x + n; }; adder(5);";
+        assert_int(compile_run(src).unwrap(), 15);
+    }
+
+    #[test]
+    fn res169d_function_literal_no_args() {
+        // let get_42 = fn() { return 42; }; get_42();
+        let src = "let get_42 = fn() { return 42; }; get_42();";
+        assert_int(compile_run(src).unwrap(), 42);
+    }
+
+    #[test]
+    fn res169d_function_literal_capture_multiple_vars() {
+        // let a = 3; let b = 4; let sum = fn() { return a + b; }; sum();
+        let src = "let a = 3; let b = 4; let sum_fn = fn() { return a + b; }; sum_fn();";
+        assert_int(compile_run(src).unwrap(), 7);
+    }
+
+    #[test]
+    fn res169d_closure_immediate_call() {
+        // Immediately-called function literal: fn(int x) { return x * 3; }(7)
+        // is not yet parser-supported, but we can inline it via let.
+        let src = "let mul3 = fn(int x) { return x * 3; }; mul3(7);";
+        assert_int(compile_run(src).unwrap(), 21);
+    }
+
     // ---------- RES-171a: array ops ----------
 
     fn assert_int_array(actual: Value, expected: &[i64]) {
