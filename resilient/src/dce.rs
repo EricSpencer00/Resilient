@@ -433,7 +433,12 @@ mod tests {
         // so they are correctly identified as dead and removed.
         let mut chunk = chunk_from_ops(vec![Op::Return, Op::Jump(0), Op::Add]);
         eliminate(&mut chunk);
-        assert_eq!(chunk.code.len(), 1, "unreachable ops should be removed: {:?}", chunk.code);
+        assert_eq!(
+            chunk.code.len(),
+            1,
+            "unreachable ops should be removed: {:?}",
+            chunk.code
+        );
         assert_eq!(chunk.code[0], Op::Return);
     }
 
@@ -492,10 +497,10 @@ mod tests {
         // [4] Return
         let mut chunk = Chunk::new();
         chunk.emit(Op::JumpIfFalse(2), 1); // [0] → PC 3
-        chunk.emit(Op::Return, 1);         // [1]
-        chunk.emit(Op::Neg, 1);            // [2] dead
-        chunk.emit(Op::Mul, 1);            // [3] reachable (jump from [0])
-        chunk.emit(Op::Return, 1);         // [4] reachable (fall-through from [3])
+        chunk.emit(Op::Return, 1); // [1]
+        chunk.emit(Op::Neg, 1); // [2] dead
+        chunk.emit(Op::Mul, 1); // [3] reachable (jump from [0])
+        chunk.emit(Op::Return, 1); // [4] reachable (fall-through from [3])
         eliminate(&mut chunk);
         // After removing PC 2 (Neg): [JumpIfFalse, Return, Mul, Return]
         assert_eq!(chunk.code.len(), 4, "code: {:?}", chunk.code);
@@ -506,7 +511,11 @@ mod tests {
         // Jump at new pc=0 should now target new pc=2 (Mul):
         // new_target = 2, offset = 2 - (0+1) = 1.
         if let Op::JumpIfFalse(off) = chunk.code[0] {
-            assert_eq!(1 + off as isize, 2, "JumpIfFalse should target Mul at index 2");
+            assert_eq!(
+                1 + off as isize,
+                2,
+                "JumpIfFalse should target Mul at index 2"
+            );
         }
     }
 
