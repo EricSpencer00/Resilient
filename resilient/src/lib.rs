@@ -19,6 +19,8 @@ mod array_functional;
 mod array_combinators;
 mod map_functional;
 mod string_hof;
+mod numeric_utils;
+mod collection_extras;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -11639,6 +11641,20 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "array_windows",
         crate::array_combinators::builtin_array_windows,
     ),
+    // RES-2650: numeric utilities (all pure).
+    ("lerp", crate::numeric_utils::builtin_lerp),
+    ("remap", crate::numeric_utils::builtin_remap),
+    (
+        "float_approx_eq",
+        crate::numeric_utils::builtin_float_approx_eq,
+    ),
+    ("round_to", crate::numeric_utils::builtin_round_to),
+    ("int_pow", crate::numeric_utils::builtin_int_pow),
+    // RES-2650: collection extras (pure).
+    (
+        "array_frequency_map",
+        crate::collection_extras::builtin_array_frequency_map,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -22713,6 +22729,15 @@ impl Interpreter {
                         "string_for_each_char" => {
                             let args = self.eval_expressions(arguments)?;
                             return crate::string_hof::builtin_string_for_each_char(self, &args);
+                        }
+                        // RES-2650: collection extras with callbacks.
+                        "array_key_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::collection_extras::builtin_array_key_by(self, &args);
+                        }
+                        "array_iterate" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::collection_extras::builtin_array_iterate(self, &args);
                         }
                         _ => {}
                     }

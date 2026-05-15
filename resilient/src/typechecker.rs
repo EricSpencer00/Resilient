@@ -2339,6 +2339,64 @@ impl TypeChecker {
                     return_type: Box::new(Type::Void),
                 },
             );
+            // RES-2650: numeric utilities.
+            env.set(
+                "lerp".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Float),
+                },
+            );
+            env.set(
+                "remap".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Float),
+                },
+            );
+            env.set(
+                "float_approx_eq".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Bool),
+                },
+            );
+            env.set(
+                "round_to".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Int],
+                    return_type: Box::new(Type::Float),
+                },
+            );
+            env.set(
+                "int_pow".to_string(),
+                Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            // RES-2650: collection extras.
+            env.set(
+                "array_frequency_map".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_key_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_iterate".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Int, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -8701,6 +8759,16 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_filter_by",
         "string_fold",
         "string_for_each_char",
+        // RES-2650: numeric utilities.
+        "lerp",
+        "remap",
+        "float_approx_eq",
+        "round_to",
+        "int_pow",
+        // RES-2650: collection extras.
+        "array_frequency_map",
+        "array_key_by",
+        "array_iterate",
         "map_invert",
         // RES-416: array reductions.
         "array_sum",
