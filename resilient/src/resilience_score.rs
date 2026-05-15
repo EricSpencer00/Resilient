@@ -236,7 +236,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             "{source_path}:0:0: warning[resilience]: \
              `{}` scores {}/100 ({}) — \
              add `requires`/`ensures` contracts to improve resilience",
-            s.function_name, s.total, s.grade()
+            s.function_name,
+            s.total,
+            s.grade()
         );
     }
     Ok(())

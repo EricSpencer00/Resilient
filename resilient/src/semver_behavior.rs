@@ -33,7 +33,10 @@ pub fn install_semver_baseline(program: &Node) {
     let contracts = crate::semantic_regression::extract_contracts(program);
     let fingerprints = crate::behavioral_fingerprint::fingerprint_program(program);
     if let Ok(mut g) = SEMVER_BASELINE.write() {
-        *g = Some(SemverBaseline { contracts, fingerprints });
+        *g = Some(SemverBaseline {
+            contracts,
+            fingerprints,
+        });
     }
 }
 
@@ -111,9 +114,7 @@ pub fn classify(old_program: &Node, new_program: &Node) -> SemverDecision {
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // Fast-reject: skip programs with no function declarations.
-    let has_fn = crate::uniqueness_walk::any_node(program, |n| {
-        matches!(n, Node::Function { .. })
-    });
+    let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
     if !has_fn {
         return Ok(());
     }
@@ -123,9 +124,8 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 
     // Compare against baseline if one exists.
     let baseline = SEMVER_BASELINE.read().ok().and_then(|g| {
-        g.as_ref().map(|b| {
-            (b.contracts.clone(), b.fingerprints.clone())
-        })
+        g.as_ref()
+            .map(|b| (b.contracts.clone(), b.fingerprints.clone()))
     });
 
     if let Some((old_contracts, old_fps)) = baseline {
@@ -152,11 +152,15 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     reasons.push(format!("weakened contract on `{function}`"));
                 }
                 SemanticChange::Added(n) => {
-                    if kind == SemverKind::Patch { kind = SemverKind::Minor; }
+                    if kind == SemverKind::Patch {
+                        kind = SemverKind::Minor;
+                    }
                     reasons.push(format!("added function `{n}`"));
                 }
                 SemanticChange::Strengthened { function, .. } => {
-                    if kind == SemverKind::Patch { kind = SemverKind::Minor; }
+                    if kind == SemverKind::Patch {
+                        kind = SemverKind::Minor;
+                    }
                     reasons.push(format!("strengthened contract on `{function}`"));
                 }
             }

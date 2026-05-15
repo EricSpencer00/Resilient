@@ -95,7 +95,10 @@ pub enum ToolKind {
     /// Verification tool based on a JVM jar (like TLC / TLA+).
     JvmJar { jar_env: String, jar_class: String },
     /// Native binary tool invoked via PATH or explicit path.
-    NativeBinary { binary_name: String, env_override: String },
+    NativeBinary {
+        binary_name: String,
+        env_override: String,
+    },
     /// Built-in adapter that delegates to a Resilient-internal module.
     BuiltIn,
 }
@@ -126,8 +129,7 @@ impl BridgedTool {
             ToolKind::NativeBinary {
                 binary_name,
                 env_override,
-            } => resolve_binary(binary_name, env_override, self.explicit_path.as_deref())
-                .is_some(),
+            } => resolve_binary(binary_name, env_override, self.explicit_path.as_deref()).is_some(),
         }
     }
 
@@ -135,9 +137,7 @@ impl BridgedTool {
     pub fn resolved_path(&self) -> Option<PathBuf> {
         match &self.kind {
             ToolKind::BuiltIn => None,
-            ToolKind::JvmJar { jar_env, .. } => {
-                resolve_jar(jar_env, self.explicit_path.as_deref())
-            }
+            ToolKind::JvmJar { jar_env, .. } => resolve_jar(jar_env, self.explicit_path.as_deref()),
             ToolKind::NativeBinary {
                 binary_name,
                 env_override,
@@ -200,10 +200,7 @@ impl McpBridgeRegistry {
 
     /// Return all registered tools.
     pub fn all_tools(&self) -> Vec<BridgedTool> {
-        self.tools
-            .read()
-            .expect("registry lock poisoned")
-            .clone()
+        self.tools.read().expect("registry lock poisoned").clone()
     }
 
     /// Return only tools that are currently available.
@@ -466,9 +463,7 @@ pub fn z3_adapter() -> BridgedTool {
 fn invoke_tool(tool: &BridgedTool, params: &serde_json::Value) -> ToolInvocationResult {
     match &tool.kind {
         ToolKind::BuiltIn => invoke_builtin(tool, params),
-        ToolKind::JvmJar { jar_env, jar_class } => {
-            invoke_jvm_jar(tool, params, jar_env, jar_class)
-        }
+        ToolKind::JvmJar { jar_env, jar_class } => invoke_jvm_jar(tool, params, jar_env, jar_class),
         ToolKind::NativeBinary {
             binary_name,
             env_override,
@@ -610,10 +605,7 @@ fn invoke_native_binary(
 
     // Tool-specific extra flags
     if tool.name == "cbmc_check" {
-        let unwind = params
-            .get("unwind")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10);
+        let unwind = params.get("unwind").and_then(|v| v.as_u64()).unwrap_or(10);
         cmd.arg("--unwind").arg(unwind.to_string());
     }
 
@@ -623,10 +615,7 @@ fn invoke_native_binary(
         cmd.arg("--theorem").arg(theorem);
     }
 
-    let output = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+    let output = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output();
 
     match output {
         Err(e) => ToolInvocationResult::error(&tool.name, &format!("launch failed: {e}")),
@@ -659,9 +648,13 @@ fn parse_generic_output(output: &str, file: &str, tool_name: &str) -> (ToolOutco
         }
 
         // Error indicators
-        if l.contains("error:") || l.starts_with("Error") || l.contains("FAILED")
-            || l.contains("violated") || l.contains("VERIFICATION FAILED")
-            || l.contains("counterexample") || l.contains("Counterexample")
+        if l.contains("error:")
+            || l.starts_with("Error")
+            || l.contains("FAILED")
+            || l.contains("violated")
+            || l.contains("VERIFICATION FAILED")
+            || l.contains("counterexample")
+            || l.contains("Counterexample")
         {
             outcome = ToolOutcome::Violation;
             diags.push(format!("{file}:0:0: error[{tool_name}]: {l}"));
@@ -675,8 +668,10 @@ fn parse_generic_output(output: &str, file: &str, tool_name: &str) -> (ToolOutco
         }
 
         // Success indicators
-        if l.contains("No error") || l.contains("VERIFICATION SUCCESSFUL")
-            || l.contains("Proof complete") || l.contains("proved")
+        if l.contains("No error")
+            || l.contains("VERIFICATION SUCCESSFUL")
+            || l.contains("Proof complete")
+            || l.contains("proved")
         {
             diags.push(format!("{file}:0:0: info[{tool_name}]: {l}"));
         }
@@ -864,9 +859,9 @@ fn cmd_check(args: &[String]) -> i32 {
     let mut any_violation = false;
     for tool in &available {
         let params = serde_json::json!({ "file": file, "source": "" });
-        let result = reg.invoke(&tool.name, &params).unwrap_or_else(|e| {
-            ToolInvocationResult::error(&tool.name, &e)
-        });
+        let result = reg
+            .invoke(&tool.name, &params)
+            .unwrap_or_else(|e| ToolInvocationResult::error(&tool.name, &e));
         for diag in &result.diagnostics {
             println!("{diag}");
         }
@@ -875,11 +870,7 @@ fn cmd_check(args: &[String]) -> i32 {
         }
     }
 
-    if any_violation {
-        1
-    } else {
-        0
-    }
+    if any_violation { 1 } else { 0 }
 }
 
 fn print_tool_help() {
@@ -1116,8 +1107,7 @@ mod tests {
 
     #[test]
     fn parse_clean_output_returns_clean_outcome() {
-        let (outcome, diags) =
-            parse_generic_output("No error has been found.", "test.c", "cbmc");
+        let (outcome, diags) = parse_generic_output("No error has been found.", "test.c", "cbmc");
         assert_eq!(outcome, ToolOutcome::Clean);
         assert!(!diags.is_empty());
     }
@@ -1132,8 +1122,7 @@ mod tests {
 
     #[test]
     fn parse_output_with_failed_returns_violation() {
-        let (outcome, _) =
-            parse_generic_output("VERIFICATION FAILED", "test.tla", "tlc");
+        let (outcome, _) = parse_generic_output("VERIFICATION FAILED", "test.tla", "tlc");
         assert_eq!(outcome, ToolOutcome::Violation);
     }
 

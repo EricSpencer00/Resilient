@@ -121,7 +121,8 @@ fn all_paths_close(node: &Node, tx: &str) -> PathClose {
         } => {
             // The fall-through path doesn't close tx. If the consequence has
             // any returns without a prior close, that's an unclosed exit.
-            if has_return(consequence) && all_paths_close(consequence, tx) != PathClose::AlwaysCloses
+            if has_return(consequence)
+                && all_paths_close(consequence, tx) != PathClose::AlwaysCloses
             {
                 PathClose::UnclosedExit
             } else {
@@ -259,10 +260,7 @@ fn has_return(node: &Node) -> bool {
             consequence,
             alternative,
             ..
-        } => {
-            has_return(consequence)
-                || alternative.as_ref().is_some_and(|a| has_return(a))
-        }
+        } => has_return(consequence) || alternative.as_ref().is_some_and(|a| has_return(a)),
         Node::WhileStatement { body, .. } | Node::ForInStatement { body, .. } => has_return(body),
         _ => false,
     }
@@ -308,8 +306,12 @@ mod tests {
     fn path_analysis_never_closes() {
         let src = "fn save(Transaction tx) { let x = 1; }\n";
         let (prog, _) = parse(src);
-        let Node::Program(stmts) = &prog else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Program(stmts) = &prog else {
+            panic!()
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!()
+        };
         assert_eq!(all_paths_close(body, "tx"), PathClose::NeverCloses);
     }
 
@@ -317,8 +319,12 @@ mod tests {
     fn path_analysis_always_closes_linear() {
         let src = "fn save(Transaction tx) { commit(tx); return; }\n";
         let (prog, _) = parse(src);
-        let Node::Program(stmts) = &prog else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Program(stmts) = &prog else {
+            panic!()
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!()
+        };
         assert_eq!(all_paths_close(body, "tx"), PathClose::AlwaysCloses);
     }
 
@@ -333,8 +339,12 @@ fn save(Transaction tx, bool condition) {
 }
 "#;
         let (prog, _) = parse(src);
-        let Node::Program(stmts) = &prog else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Program(stmts) = &prog else {
+            panic!()
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!()
+        };
         assert_eq!(all_paths_close(body, "tx"), PathClose::UnclosedExit);
     }
 
@@ -350,8 +360,12 @@ fn save(Transaction tx, bool ok) {
 }
 "#;
         let (prog, _) = parse(src);
-        let Node::Program(stmts) = &prog else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Program(stmts) = &prog else {
+            panic!()
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!()
+        };
         assert_eq!(all_paths_close(body, "tx"), PathClose::AlwaysCloses);
     }
 
@@ -368,8 +382,12 @@ fn save(Transaction tx, bool ok) {
 }
 "#;
         let (prog, _) = parse(src);
-        let Node::Program(stmts) = &prog else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Program(stmts) = &prog else {
+            panic!()
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!()
+        };
         assert_eq!(all_paths_close(body, "tx"), PathClose::UnclosedExit);
     }
 }

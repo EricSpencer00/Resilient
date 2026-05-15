@@ -68,9 +68,9 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
                 "/" => push(out, fn_name, "arithmetic", "swap `/` -> `*`"),
                 "%" => push(out, fn_name, "arithmetic", "swap `%` -> `*`"),
                 // boundary
-                "<"  => push(out, fn_name, "boundary", "swap `<` -> `<=`"),
+                "<" => push(out, fn_name, "boundary", "swap `<` -> `<=`"),
                 "<=" => push(out, fn_name, "boundary", "swap `<=` -> `<`"),
-                ">"  => push(out, fn_name, "boundary", "swap `>` -> `>=`"),
+                ">" => push(out, fn_name, "boundary", "swap `>` -> `>=`"),
                 ">=" => push(out, fn_name, "boundary", "swap `>=` -> `>`"),
                 // relational
                 "==" => push(out, fn_name, "relational", "swap `==` -> `!=`"),
@@ -90,9 +90,16 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
             generate_in(left, fn_name, out);
             generate_in(right, fn_name, out);
         }
-        Node::PrefixExpression { operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
             if operator == "-" {
-                push(out, fn_name, "unary", "swap unary `-` -> `+` (remove negation)");
+                push(
+                    out,
+                    fn_name,
+                    "unary",
+                    "swap unary `-` -> `+` (remove negation)",
+                );
             }
             generate_in(right, fn_name, out);
         }
@@ -101,15 +108,35 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
                 push(out, fn_name, "literal", "swap `0` -> `1`");
             } else {
                 push(out, fn_name, "literal", format!("swap `{value}` -> `0`"));
-                push(out, fn_name, "literal", format!("off-by-one `{value}` -> `{}`", value - 1));
-                push(out, fn_name, "literal", format!("off-by-one `{value}` -> `{}`", value + 1));
+                push(
+                    out,
+                    fn_name,
+                    "literal",
+                    format!("off-by-one `{value}` -> `{}`", value - 1),
+                );
+                push(
+                    out,
+                    fn_name,
+                    "literal",
+                    format!("off-by-one `{value}` -> `{}`", value + 1),
+                );
             }
         }
         Node::BooleanLiteral { value, .. } => {
-            push(out, fn_name, "literal", format!("flip `{}` -> `{}`", value, !value));
+            push(
+                out,
+                fn_name,
+                "literal",
+                format!("flip `{}` -> `{}`", value, !value),
+            );
         }
         Node::StringLiteral { value, .. } if !value.is_empty() => {
-            push(out, fn_name, "literal", format!("swap string `\"{value}\"` -> `\"\"`"));
+            push(
+                out,
+                fn_name,
+                "literal",
+                format!("swap string `\"{value}\"` -> `\"\"`"),
+            );
         }
         Node::IfStatement {
             condition,
@@ -139,7 +166,9 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
             generate_in(value, fn_name, out);
         }
         Node::ExpressionStatement { expr, .. } => generate_in(expr, fn_name, out),
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             push(out, fn_name, "condition", "negate while-condition");
             generate_in(condition, fn_name, out);
             generate_in(body, fn_name, out);
@@ -367,7 +396,10 @@ mod tests {
         let src = r#"fn f() -> bool { return true; }"#;
         let (prog, _) = parse(src);
         let m = generate(&prog);
-        assert!(m.iter().any(|x| x.kind == "literal" && x.description.contains("true")));
+        assert!(
+            m.iter()
+                .any(|x| x.kind == "literal" && x.description.contains("true"))
+        );
     }
 
     #[test]
@@ -375,7 +407,10 @@ mod tests {
         let src = r#"fn f(int x) { if x > 0 { return x; } }"#;
         let (prog, _) = parse(src);
         let m = generate(&prog);
-        assert!(m.iter().any(|x| x.kind == "condition" && x.description.contains("negate if")));
+        assert!(
+            m.iter()
+                .any(|x| x.kind == "condition" && x.description.contains("negate if"))
+        );
     }
 
     #[test]
@@ -388,10 +423,14 @@ mod tests {
 
     #[test]
     fn forin_body_traversed() {
-        let src = r#"fn f(IntArr xs) -> int { let sum = 0; for x in xs { sum = sum + x; } return sum; }"#;
+        let src =
+            r#"fn f(IntArr xs) -> int { let sum = 0; for x in xs { sum = sum + x; } return sum; }"#;
         let (prog, _) = parse(src);
         let m = generate(&prog);
-        assert!(m.iter().any(|x| x.kind == "arithmetic"), "for-in body must be traversed");
+        assert!(
+            m.iter().any(|x| x.kind == "arithmetic"),
+            "for-in body must be traversed"
+        );
     }
 
     #[test]
@@ -441,7 +480,8 @@ mod tests {
     #[test]
     fn check_ok_on_contracted_fn_with_mutations() {
         // Contracted function — no unconstrained-mutation warning, still Ok.
-        let src = "fn add(int a, int b) -> int requires a >= 0 ensures result >= 0 { return a + b; }";
+        let src =
+            "fn add(int a, int b) -> int requires a >= 0 ensures result >= 0 { return a + b; }";
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }

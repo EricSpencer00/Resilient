@@ -28,7 +28,7 @@ pub(crate) fn builtin_map_filter(interp: &mut Interpreter, args: &[Value]) -> RR
             return Err(format!(
                 "map_filter: expected 2 arguments (map, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -44,7 +44,7 @@ pub(crate) fn builtin_map_filter(interp: &mut Interpreter, args: &[Value]) -> RR
             other => {
                 return Err(format!(
                     "map_filter: predicate must return bool, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -59,18 +59,19 @@ pub(crate) fn builtin_map_filter(interp: &mut Interpreter, args: &[Value]) -> RR
 /// ```text
 /// let doubled = map_map_values(m, fn(string k, int v) -> int { return v * 2; });
 /// ```
-pub(crate) fn builtin_map_map_values(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_map_map_values(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (m, f) = match args {
         [Value::Map(m), f] => (m.clone(), f.clone()),
-        [a, _] => return Err(format!("map_map_values: first argument must be a Map, got {a}")),
+        [a, _] => {
+            return Err(format!(
+                "map_map_values: first argument must be a Map, got {a}"
+            ));
+        }
         _ => {
             return Err(format!(
                 "map_map_values: expected 2 arguments (map, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -92,18 +93,19 @@ pub(crate) fn builtin_map_map_values(
 /// ```text
 /// map_for_each(m, fn(string k, int v) -> Void { println(k); });
 /// ```
-pub(crate) fn builtin_map_for_each(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_map_for_each(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (m, f) = match args {
         [Value::Map(m), f] => (m.clone(), f.clone()),
-        [a, _] => return Err(format!("map_for_each: first argument must be a Map, got {a}")),
+        [a, _] => {
+            return Err(format!(
+                "map_for_each: first argument must be a Map, got {a}"
+            ));
+        }
         _ => {
             return Err(format!(
                 "map_for_each: expected 2 arguments (map, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -132,9 +134,7 @@ pub(crate) fn builtin_map_to_pairs(args: &[Value]) -> RResult<Value> {
                 .collect();
             Ok(Value::Array(pairs))
         }
-        [other] => Err(format!(
-            "map_to_pairs: expected a Map, got {other}"
-        )),
+        [other] => Err(format!("map_to_pairs: expected a Map, got {other}")),
         _ => Err(format!(
             "map_to_pairs: expected 1 argument, got {}",
             args.len()
@@ -158,9 +158,8 @@ pub(crate) fn builtin_map_invert(args: &[Value]) -> RResult<Value> {
         [Value::Map(m)] => {
             let mut out = std::collections::HashMap::with_capacity(m.len());
             for (k, v) in m {
-                let new_key = MapKey::from_value(v).map_err(|e| {
-                    format!("map_invert: value {v} cannot become a key: {e}")
-                })?;
+                let new_key = MapKey::from_value(v)
+                    .map_err(|e| format!("map_invert: value {v} cannot become a key: {e}"))?;
                 let new_val = map_key_to_value(k);
                 out.insert(new_key, new_val);
             }
@@ -185,27 +184,24 @@ pub(crate) fn builtin_map_invert(args: &[Value]) -> RResult<Value> {
 ///     fn(string k, int v1, int v2) -> int { return v1 + v2; });
 /// // merged == {"a" -> 3, "b" -> 3}
 /// ```
-pub(crate) fn builtin_map_merge_with(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_map_merge_with(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (m1, m2, f) = match args {
         [Value::Map(m1), Value::Map(m2), f] => (m1.clone(), m2.clone(), f.clone()),
         [Value::Map(_), a, _] => {
             return Err(format!(
                 "map_merge_with: second argument must be a Map, got {a}"
-            ))
+            ));
         }
         [a, _, _] => {
             return Err(format!(
                 "map_merge_with: first argument must be a Map, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "map_merge_with: expected 3 arguments (map, map, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -236,10 +232,7 @@ pub(crate) fn builtin_map_merge_with(
 ///     fn(int v) -> int { return v + 1; });
 /// // m3 == {"x" -> 1}
 /// ```
-pub(crate) fn builtin_map_update_with(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_map_update_with(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (m, key_val, default, f) = match args {
         [Value::Map(m), key_val, default, f] => {
             (m.clone(), key_val.clone(), default.clone(), f.clone())
@@ -247,13 +240,13 @@ pub(crate) fn builtin_map_update_with(
         [a, _, _, _] => {
             return Err(format!(
                 "map_update_with: first argument must be a Map, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "map_update_with: expected 4 arguments (map, key, default, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -287,12 +280,10 @@ mod tests {
 
     #[test]
     fn map_filter_keeps_passing_entries() {
-        let r = run(
-            r#"let m = {"a" -> 10, "b" -> -1, "c" -> 5};
+        let r = run(r#"let m = {"a" -> 10, "b" -> -1, "c" -> 5};
 let pos = map_filter(m, fn(string k, int v) -> bool { return v > 0; });
 println(map_len(pos));
-println(pos["a"]);"#,
-        );
+println(pos["a"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "2", "expected 2 positive entries: {}", r.stdout);
@@ -301,22 +292,18 @@ println(pos["a"]);"#,
 
     #[test]
     fn map_filter_empty_result() {
-        let r = run(
-            r#"let m = {"x" -> 1};
+        let r = run(r#"let m = {"x" -> 1};
 let none = map_filter(m, fn(string k, int v) -> bool { return false; });
-println(map_len(none));"#,
-        );
+println(map_len(none));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'), "empty: {}", r.stdout);
     }
 
     #[test]
     fn map_filter_rejects_non_bool_predicate() {
-        let r = run(
-            r#"let m = {"a" -> 1};
+        let r = run(r#"let m = {"a" -> 1};
 let bad = map_filter(m, fn(string k, int v) -> int { return v; });
-println(bad);"#,
-        );
+println(bad);"#);
         assert!(!r.ok, "expected error for non-bool predicate");
     }
 
@@ -324,12 +311,10 @@ println(bad);"#,
 
     #[test]
     fn map_map_values_doubles_values() {
-        let r = run(
-            r#"let m = {"a" -> 3, "b" -> 7};
+        let r = run(r#"let m = {"a" -> 3, "b" -> 7};
 let doubled = map_map_values(m, fn(string k, int v) -> int { return v * 2; });
 println(doubled["a"]);
-println(doubled["b"]);"#,
-        );
+println(doubled["b"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('6'), "a*2=6: {}", r.stdout);
         assert!(r.stdout.contains("14"), "b*2=14: {}", r.stdout);
@@ -337,11 +322,9 @@ println(doubled["b"]);"#,
 
     #[test]
     fn map_map_values_preserves_key_count() {
-        let r = run(
-            r#"let m = {"x" -> 1, "y" -> 2, "z" -> 3};
+        let r = run(r#"let m = {"x" -> 1, "y" -> 2, "z" -> 3};
 let t = map_map_values(m, fn(string k, int v) -> string { return k; });
-println(map_len(t));"#,
-        );
+println(map_len(t));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('3'), "3 entries: {}", r.stdout);
     }
@@ -350,12 +333,10 @@ println(map_len(t));"#,
 
     #[test]
     fn map_for_each_visits_all_entries() {
-        let r = run(
-            r#"let m = {"p" -> 10, "q" -> 20};
+        let r = run(r#"let m = {"p" -> 10, "q" -> 20};
 let total = [0];
 map_for_each(m, fn(string k, int v) -> Void { total[0] = total[0] + v; });
-println(total[0]);"#,
-        );
+println(total[0]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("30"), "sum=30: {}", r.stdout);
     }
@@ -364,23 +345,19 @@ println(total[0]);"#,
 
     #[test]
     fn map_to_pairs_length_matches() {
-        let r = run(
-            r#"let m = {"a" -> 1, "b" -> 2, "c" -> 3};
+        let r = run(r#"let m = {"a" -> 1, "b" -> 2, "c" -> 3};
 let pairs = map_to_pairs(m);
-println(len(pairs));"#,
-        );
+println(len(pairs));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('3'), "3 pairs: {}", r.stdout);
     }
 
     #[test]
     fn map_to_pairs_roundtrips_via_from_pairs() {
-        let r = run(
-            r#"let m = {"hello" -> 42};
+        let r = run(r#"let m = {"hello" -> 42};
 let pairs = map_to_pairs(m);
 let m2 = map_from_pairs(pairs);
-println(m2["hello"]);"#,
-        );
+println(m2["hello"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("42"), "roundtrip: {}", r.stdout);
     }
@@ -389,12 +366,10 @@ println(m2["hello"]);"#,
 
     #[test]
     fn map_invert_swaps_keys_and_values() {
-        let r = run(
-            r#"let m = {"a" -> 1, "b" -> 2};
+        let r = run(r#"let m = {"a" -> 1, "b" -> 2};
 let inv = map_invert(m);
 println(inv[1]);
-println(inv[2]);"#,
-        );
+println(inv[2]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('a'), "1->a: {}", r.stdout);
         assert!(r.stdout.contains('b'), "2->b: {}", r.stdout);
@@ -402,11 +377,9 @@ println(inv[2]);"#,
 
     #[test]
     fn map_invert_rejects_non_hashable_value() {
-        let r = run(
-            r#"let m = {"x" -> 1.5};
+        let r = run(r#"let m = {"x" -> 1.5};
 let inv = map_invert(m);
-println(inv);"#,
-        );
+println(inv);"#);
         assert!(!r.ok, "expected error for float value as key");
     }
 
@@ -414,14 +387,12 @@ println(inv);"#,
 
     #[test]
     fn map_merge_with_sums_conflicts() {
-        let r = run(
-            r#"let m1 = {"a" -> 1, "b" -> 2};
+        let r = run(r#"let m1 = {"a" -> 1, "b" -> 2};
 let m2 = {"a" -> 10, "c" -> 3};
 let merged = map_merge_with(m1, m2, fn(string k, int v1, int v2) -> int { return v1 + v2; });
 println(merged["a"]);
 println(merged["b"]);
-println(merged["c"]);"#,
-        );
+println(merged["c"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "11", "a=1+10=11");
@@ -431,24 +402,20 @@ println(merged["c"]);"#,
 
     #[test]
     fn map_merge_with_empty_second() {
-        let r = run(
-            r#"let m1 = {"x" -> 42};
+        let r = run(r#"let m1 = {"x" -> 42};
 let m2 = map_new();
 let merged = map_merge_with(m1, m2, fn(string k, int v1, int v2) -> int { return v1 + v2; });
-println(merged["x"]);"#,
-        );
+println(merged["x"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("42"), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn map_merge_with_empty_first() {
-        let r = run(
-            r#"let m1 = map_new();
+        let r = run(r#"let m1 = map_new();
 let m2 = {"y" -> 7};
 let merged = map_merge_with(m1, m2, fn(string k, int v1, int v2) -> int { return v1 + v2; });
-println(merged["y"]);"#,
-        );
+println(merged["y"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('7'), "stdout: {}", r.stdout);
     }
@@ -457,34 +424,28 @@ println(merged["y"]);"#,
 
     #[test]
     fn map_update_with_existing_key() {
-        let r = run(
-            r#"let m = {"a" -> 5};
+        let r = run(r#"let m = {"a" -> 5};
 let m2 = map_update_with(m, "a", 0, fn(int v) -> int { return v + 10; });
-println(m2["a"]);"#,
-        );
+println(m2["a"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("15"), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn map_update_with_missing_key_uses_default() {
-        let r = run(
-            r#"let m = map_new();
+        let r = run(r#"let m = map_new();
 let m2 = map_update_with(m, "x", 0, fn(int v) -> int { return v + 1; });
-println(m2["x"]);"#,
-        );
+println(m2["x"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('1'), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn map_update_with_does_not_mutate_original() {
-        let r = run(
-            r#"let m = {"k" -> 100};
+        let r = run(r#"let m = {"k" -> 100};
 let m2 = map_update_with(m, "k", 0, fn(int v) -> int { return v * 2; });
 println(m["k"]);
-println(m2["k"]);"#,
-        );
+println(m2["k"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "100", "original unchanged");

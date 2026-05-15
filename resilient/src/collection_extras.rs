@@ -27,9 +27,7 @@ pub(crate) fn builtin_array_frequency_map(args: &[Value]) -> RResult<Value> {
                 std::collections::HashMap::new();
             for elem in arr {
                 let mk = MapKey::from_value(elem).map_err(|e| {
-                    format!(
-                        "array_frequency_map: elements must be hashable (int/string/bool): {e}"
-                    )
+                    format!("array_frequency_map: elements must be hashable (int/string/bool): {e}")
                 })?;
                 let entry = counts.entry(mk).or_insert(Value::Int(0));
                 if let Value::Int(n) = entry {
@@ -59,22 +57,19 @@ pub(crate) fn builtin_array_frequency_map(args: &[Value]) -> RResult<Value> {
 /// // if users == [["alice", 30], ["bob", 25]]
 /// // by_name == {"alice" -> ["alice",30], "bob" -> ["bob",25]}
 /// ```
-pub(crate) fn builtin_array_key_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_key_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_key_by: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_key_by: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -83,9 +78,8 @@ pub(crate) fn builtin_array_key_by(
 
     for elem in arr {
         let key_val = interp.apply_function(f.clone(), vec![elem.clone()])?;
-        let mk = MapKey::from_value(&key_val).map_err(|e| {
-            format!("array_key_by: key function returned non-hashable value: {e}")
-        })?;
+        let mk = MapKey::from_value(&key_val)
+            .map_err(|e| format!("array_key_by: key function returned non-hashable value: {e}"))?;
         map.insert(mk, elem);
     }
 
@@ -102,29 +96,24 @@ pub(crate) fn builtin_array_key_by(
 /// let powers = array_iterate(1, 5, fn(int x) -> int { return x * 2; });
 /// // powers == [1, 2, 4, 8, 16, 32]
 /// ```
-pub(crate) fn builtin_array_iterate(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_iterate(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (init, n, f) = match args {
         [init, Value::Int(n), f] => (init.clone(), *n, f.clone()),
         [_, n, _] => {
             return Err(format!(
                 "array_iterate: second argument must be an int, got {n}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_iterate: expected 3 arguments (init, n, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
     if n < 0 {
-        return Err(format!(
-            "array_iterate: n must be >= 0, got {n}"
-        ));
+        return Err(format!("array_iterate: n must be >= 0, got {n}"));
     }
 
     let mut out = Vec::with_capacity((n as usize) + 1);
@@ -164,20 +153,16 @@ println(freq["c"]);"#,
 
     #[test]
     fn frequency_map_ints() {
-        let r = run(
-            r#"let freq = array_frequency_map([1,2,2,3,3,3]);
-println(freq[3]);"#,
-        );
+        let r = run(r#"let freq = array_frequency_map([1,2,2,3,3,3]);
+println(freq[3]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('3'), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn frequency_map_empty_input() {
-        let r = run(
-            r#"let freq = array_frequency_map([]);
-println(map_len(freq));"#,
-        );
+        let r = run(r#"let freq = array_frequency_map([]);
+println(map_len(freq));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'));
     }
@@ -193,32 +178,26 @@ println(freq);"#);
 
     #[test]
     fn key_by_first_char() {
-        let r = run(
-            r#"let by_first = array_key_by(["apple","banana","avocado"],
+        let r = run(r#"let by_first = array_key_by(["apple","banana","avocado"],
     fn(string s) -> string { return string_at(s, 0); });
-println(by_first["b"]);"#,
-        );
+println(by_first["b"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("banana"), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn key_by_length() {
-        let r = run(
-            r#"let by_len = array_key_by(["x","xy","xyz"],
+        let r = run(r#"let by_len = array_key_by(["x","xy","xyz"],
     fn(string s) -> int { return len(s); });
-println(by_len[3]);"#,
-        );
+println(by_len[3]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("xyz"), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn key_by_empty_array() {
-        let r = run(
-            r#"let m = array_key_by([], fn(int x) -> int { return x; });
-println(map_len(m));"#,
-        );
+        let r = run(r#"let m = array_key_by([], fn(int x) -> int { return x; });
+println(map_len(m));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'));
     }

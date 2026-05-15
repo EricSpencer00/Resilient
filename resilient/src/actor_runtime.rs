@@ -431,16 +431,19 @@ pub fn check(program: &crate::Node, _source_path: &str) -> Result<(), String> {
     for spanned in stmts {
         match &spanned.node {
             crate::Node::Function { body, .. } => {
-                count_actor_calls_in_body(body, &mut spawn_count, &mut send_count, &mut receive_count);
+                count_actor_calls_in_body(
+                    body,
+                    &mut spawn_count,
+                    &mut send_count,
+                    &mut receive_count,
+                );
             }
             other => {
                 // Top-level receive() is always wrong — no actor context exists.
                 if is_actor_call(other, "receive") {
-                    return Err(
-                        "actor: `receive()` called at top level — \
+                    return Err("actor: `receive()` called at top level — \
                          receive must be called from within an actor function"
-                            .to_string(),
-                    );
+                        .to_string());
                 }
             }
         }

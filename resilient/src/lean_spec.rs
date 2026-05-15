@@ -305,9 +305,7 @@ pub fn list_emittable(program: &Node) -> Vec<String> {
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // Fast-reject: skip programs with no functions.
-    let has_fn = crate::uniqueness_walk::any_node(program, |n| {
-        matches!(n, Node::Function { .. })
-    });
+    let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
     if !has_fn {
         return Ok(());
     }
@@ -326,7 +324,13 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     };
     for s in stmts {
-        if let Node::Function { name, requires, ensures, .. } = &s.node {
+        if let Node::Function {
+            name,
+            requires,
+            ensures,
+            ..
+        } = &s.node
+        {
             if emittable.contains(name) && (!requires.is_empty() || !ensures.is_empty()) {
                 eprintln!(
                     "lean-spec:   `{name}` has {} requires + {} ensures clause(s) — \

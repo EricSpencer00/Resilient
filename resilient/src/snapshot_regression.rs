@@ -87,9 +87,7 @@ pub fn install_snapshot_baseline(snapshots: HashMap<String, Snapshot>) {
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // Fast-reject: skip programs with no function declarations.
-    let has_fn = crate::uniqueness_walk::any_node(program, |n| {
-        matches!(n, Node::Function { .. })
-    });
+    let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
     if !has_fn {
         return Ok(());
     }
@@ -185,7 +183,10 @@ mod tests {
         let snaps1 = build_snapshots(&p1);
         let snaps2 = build_snapshots(&p2);
         let changed = diff(&snaps1, &snaps2);
-        assert!(!changed.is_empty(), "removing ensures must change the fingerprint");
+        assert!(
+            !changed.is_empty(),
+            "removing ensures must change the fingerprint"
+        );
         assert!(changed.contains(&"f".to_string()));
     }
 
@@ -196,6 +197,9 @@ mod tests {
         let (prog, _) = parse(src);
         let snaps = build_snapshots(&prog);
         let changed = diff(&snaps, &snaps);
-        assert!(changed.is_empty(), "identical snapshots must have no changes");
+        assert!(
+            changed.is_empty(),
+            "identical snapshots must have no changes"
+        );
     }
 }

@@ -159,7 +159,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    let has_fn = stmts.iter().any(|s| matches!(&s.node, Node::Function { .. }));
+    let has_fn = stmts
+        .iter()
+        .any(|s| matches!(&s.node, Node::Function { .. }));
     if !has_fn {
         return Ok(());
     }
@@ -173,12 +175,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let total = current.len();
     let contracted: Vec<&str> = current
         .iter()
-        .filter(|(_, c)| c.requires_count > 0 || c.ensures_count > 0 || !c.fails_variants.is_empty())
+        .filter(|(_, c)| {
+            c.requires_count > 0 || c.ensures_count > 0 || !c.fails_variants.is_empty()
+        })
         .map(|(n, _)| n.as_str())
         .collect();
     let unconstrained: Vec<&str> = current
         .iter()
-        .filter(|(_, c)| c.requires_count == 0 && c.ensures_count == 0 && c.fails_variants.is_empty())
+        .filter(|(_, c)| {
+            c.requires_count == 0 && c.ensures_count == 0 && c.fails_variants.is_empty()
+        })
         .map(|(n, _)| n.as_str())
         .collect();
     let pct = (contracted.len() * 100).checked_div(total).unwrap_or(0);
@@ -203,7 +209,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         let changes = diff(&baseline, &current);
         for c in &changes {
             match c {
-                SemanticChange::Weakened { function, old_count, new_count, kind } => {
+                SemanticChange::Weakened {
+                    function,
+                    old_count,
+                    new_count,
+                    kind,
+                } => {
                     let kind_str = match kind {
                         ContractKind::Requires => "requires",
                         ContractKind::Ensures => "ensures",
@@ -317,7 +328,10 @@ mod tests {
         let (strong_prog, _) = parse(strong_src);
         let strong_contracts = extract_contracts(&strong_prog);
         let changes = diff(&strong_contracts, &weak_contracts);
-        assert!(has_weakening(&changes), "dropping ensures must be a weakening");
+        assert!(
+            has_weakening(&changes),
+            "dropping ensures must be a weakening"
+        );
     }
 
     #[test]

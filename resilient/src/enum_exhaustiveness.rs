@@ -323,13 +323,19 @@ fn handle(Status s) -> int {
 "#;
         let (prog, _) = crate::parse(src);
         let result = check(&prog, "test.rz");
-        assert!(result.is_err(), "expected check to fail for non-exhaustive enum match");
+        assert!(
+            result.is_err(),
+            "expected check to fail for non-exhaustive enum match"
+        );
         let msg = result.unwrap_err();
         assert!(
             msg.contains("non-exhaustive match on enum"),
             "error must contain 'non-exhaustive match on enum': {msg}"
         );
-        assert!(msg.contains("Pending"), "error must name missing variant 'Pending': {msg}");
+        assert!(
+            msg.contains("Pending"),
+            "error must name missing variant 'Pending': {msg}"
+        );
     }
 
     #[test]

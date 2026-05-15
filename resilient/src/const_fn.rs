@@ -58,7 +58,9 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
         Node::BooleanLiteral { value, .. } => Some(ConstValue::Bool(*value)),
         Node::Identifier { name, .. } => env.get(name).copied(),
 
-        Node::PrefixExpression { operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
             let v = eval_depth(right, env, depth + 1)?;
             match (operator.as_str(), v) {
                 ("-", ConstValue::Int(n)) => Some(ConstValue::Int(-n)),
@@ -67,7 +69,12 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
             }
         }
 
-        Node::InfixExpression { left, operator, right, .. } => {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
             // Short-circuit `&&` and `||` before evaluating both sides.
             match operator.as_str() {
                 "&&" => {
@@ -133,13 +140,18 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
             }
         }
 
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             let cond = eval_depth(condition, env, depth + 1)?;
             match cond {
                 ConstValue::Bool(true) => eval_depth(consequence, env, depth + 1),
-                ConstValue::Bool(false) => {
-                    alternative.as_ref().and_then(|a| eval_depth(a, env, depth + 1))
-                }
+                ConstValue::Bool(false) => alternative
+                    .as_ref()
+                    .and_then(|a| eval_depth(a, env, depth + 1)),
                 _ => None,
             }
         }
@@ -154,7 +166,7 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
                         env.insert(name.clone(), v);
                     }
                     Node::ReturnStatement { value: Some(e), .. } => {
-                        return eval_depth(e, &env, depth + 1)
+                        return eval_depth(e, &env, depth + 1);
                     }
                     Node::ExpressionStatement { expr, .. } => {
                         last = eval_depth(expr, &env, depth + 1);
@@ -169,7 +181,11 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
         }
 
         // Inline registered const-fn calls.
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if let Ok(g) = CONST_FNS.read() {
                     if let Some(body_node) = g.get(name.as_str()) {

@@ -165,15 +165,11 @@ fn handle_initialize(id: &Value, _params: Option<&Value>) -> Value {
 }
 
 fn handle_tools_list(id: &Value) -> Value {
-    let mut tools = tool_definitions()
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let mut tools = tool_definitions().as_array().cloned().unwrap_or_default();
     // RES-2645: bridge registry tools appear in tools/list automatically
     // so external verifiers (TLA+ TLC, Lean 4, CBMC, Z3, SPIN, Frama-C,
     // KLEE) are visible to MCP clients alongside built-in tools.
-    let bridge_defs = crate::mcp_tool_registry::McpBridgeRegistry::global()
-        .mcp_tool_definitions();
+    let bridge_defs = crate::mcp_tool_registry::McpBridgeRegistry::global().mcp_tool_definitions();
     tools.extend(bridge_defs);
     ok(id, json!({ "tools": tools }))
 }
@@ -440,10 +436,7 @@ fn handle_prompts_get(id: &Value, params: Option<&Value>) -> Value {
         }
         "explain_lint" => {
             let code = args.get("code").and_then(|v| v.as_str()).unwrap_or("");
-            let source_snippet = args
-                .get("source")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let source_snippet = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
             let explanation = match tool_explain_lint(&json!({ "code": code })) {
                 Ok(text) => text,
                 Err(msg) => format!("Error: {msg}"),
@@ -673,7 +666,7 @@ fn resource_syntax_doc() -> String {
          1..=9 => \"small\",\n\
          _ => \"large\",\n\
      }\n"
-        .to_string()
+    .to_string()
 }
 
 fn resource_stdlib_doc() -> String {
@@ -1464,10 +1457,16 @@ fn tool_contract_infer(args: &Value) -> Result<String, String> {
         .flat_map(|ic| {
             let mut out = Vec::new();
             for req in &ic.requires {
-                out.push(format!("  {} — suggested requires: {}", ic.function_name, req));
+                out.push(format!(
+                    "  {} — suggested requires: {}",
+                    ic.function_name, req
+                ));
             }
             for ens in &ic.ensures {
-                out.push(format!("  {} — suggested ensures: {}", ic.function_name, ens));
+                out.push(format!(
+                    "  {} — suggested ensures: {}",
+                    ic.function_name, ens
+                ));
             }
             out
         })
@@ -1542,13 +1541,27 @@ fn tool_call_graph(args: &Value) -> Result<String, String> {
     for start in fn_names.iter().map(|s| s.as_str()) {
         if !visited.contains(start) {
             let mut path = Vec::new();
-            find_cycle(start, &graph, &mut visited, &mut in_stack, &mut path, &mut cycles);
+            find_cycle(
+                start,
+                &graph,
+                &mut visited,
+                &mut in_stack,
+                &mut path,
+                &mut cycles,
+            );
         }
     }
     let cycle_note = if cycles.is_empty() {
         String::new()
     } else {
-        format!("\nCycles detected:\n{}", cycles.iter().map(|c| format!("  {c}")).collect::<Vec<_>>().join("\n"))
+        format!(
+            "\nCycles detected:\n{}",
+            cycles
+                .iter()
+                .map(|c| format!("  {c}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
     };
     Ok(format!(
         "Call graph ({} functions):\n{}{}",
@@ -1560,7 +1573,11 @@ fn tool_call_graph(args: &Value) -> Result<String, String> {
 
 fn collect_call_targets(node: &crate::Node, out: &mut std::collections::HashSet<String>) {
     match node {
-        crate::Node::CallExpression { function, arguments, .. } => {
+        crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             if let crate::Node::Identifier { name, .. } = function.as_ref() {
                 out.insert(name.clone());
             }
@@ -1580,14 +1597,21 @@ fn collect_call_targets(node: &crate::Node, out: &mut std::collections::HashSet<
             collect_call_targets(v, out);
         }
         crate::Node::ReturnStatement { value: None, .. } => {}
-        crate::Node::IfStatement { condition, consequence, alternative, .. } => {
+        crate::Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             collect_call_targets(condition, out);
             collect_call_targets(consequence, out);
             if let Some(alt) = alternative {
                 collect_call_targets(alt, out);
             }
         }
-        crate::Node::WhileStatement { condition, body, .. } => {
+        crate::Node::WhileStatement {
+            condition, body, ..
+        } => {
             collect_call_targets(condition, out);
             collect_call_targets(body, out);
         }
@@ -2546,7 +2570,10 @@ mod tests {
             "explain_lint",
             "safety_review",
         ] {
-            assert!(names.contains(expected), "missing prompt {expected}; got {names:?}");
+            assert!(
+                names.contains(expected),
+                "missing prompt {expected}; got {names:?}"
+            );
         }
     }
 
@@ -2556,7 +2583,10 @@ mod tests {
         let prompts = resp["result"]["prompts"].as_array().unwrap();
         for p in prompts {
             assert!(
-                p["description"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+                p["description"]
+                    .as_str()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false),
                 "prompt {:?} missing description",
                 p["name"]
             );
@@ -2573,7 +2603,10 @@ mod tests {
         let messages = resp["result"]["messages"].as_array().unwrap();
         assert!(!messages.is_empty(), "expected at least one message");
         let text = messages[0]["content"]["text"].as_str().unwrap_or("");
-        assert!(text.contains("requires") || text.contains("ensures"), "got: {text}");
+        assert!(
+            text.contains("requires") || text.contains("ensures"),
+            "got: {text}"
+        );
     }
 
     #[test]
@@ -2584,7 +2617,10 @@ mod tests {
         let messages = resp["result"]["messages"].as_array().unwrap();
         assert!(!messages.is_empty());
         let text = messages[0]["content"]["text"].as_str().unwrap_or("");
-        assert!(text.contains("type error") || text.contains("error"), "got: {text}");
+        assert!(
+            text.contains("type error") || text.contains("error"),
+            "got: {text}"
+        );
     }
 
     #[test]
@@ -2595,7 +2631,10 @@ mod tests {
         let messages = resp["result"]["messages"].as_array().unwrap();
         assert!(!messages.is_empty());
         let text = messages[0]["content"]["text"].as_str().unwrap_or("");
-        assert!(text.contains("recovers_to") || text.contains("live"), "got: {text}");
+        assert!(
+            text.contains("recovers_to") || text.contains("live"),
+            "got: {text}"
+        );
     }
 
     #[test]
@@ -2616,21 +2655,30 @@ mod tests {
         let messages = resp["result"]["messages"].as_array().unwrap();
         assert!(!messages.is_empty());
         let text = messages[0]["content"]["text"].as_str().unwrap_or("");
-        assert!(text.contains("safety") || text.contains("review"), "got: {text}");
+        assert!(
+            text.contains("safety") || text.contains("review"),
+            "got: {text}"
+        );
     }
 
     #[test]
     fn prompts_get_unknown_prompt_returns_error() {
         let params = json!({ "name": "nonexistent_prompt", "arguments": {} });
         let resp = handle_prompts_get(&json!(1), Some(&params));
-        assert!(resp.get("error").is_some(), "expected error for unknown prompt");
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for unknown prompt"
+        );
     }
 
     #[test]
     fn prompts_get_missing_name_returns_error() {
         let params = json!({ "arguments": {} });
         let resp = handle_prompts_get(&json!(1), Some(&params));
-        assert!(resp.get("error").is_some(), "expected error for missing name");
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for missing name"
+        );
     }
 
     #[test]
@@ -2664,7 +2712,10 @@ mod tests {
             "resilient://docs/effects",
             "resilient://docs/resilience",
         ] {
-            assert!(uris.contains(expected), "missing resource {expected}; got {uris:?}");
+            assert!(
+                uris.contains(expected),
+                "missing resource {expected}; got {uris:?}"
+            );
         }
     }
 
@@ -2717,8 +2768,14 @@ mod tests {
         let params = json!({ "uri": "resilient://docs/contracts" });
         let resp = handle_resources_read(&json!(1), Some(&params));
         let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
-        assert!(text.contains("requires"), "contracts doc must mention requires");
-        assert!(text.contains("ensures"), "contracts doc must mention ensures");
+        assert!(
+            text.contains("requires"),
+            "contracts doc must mention requires"
+        );
+        assert!(
+            text.contains("ensures"),
+            "contracts doc must mention ensures"
+        );
     }
 
     #[test]
@@ -2734,20 +2791,29 @@ mod tests {
         let params = json!({ "uri": "resilient://docs/resilience" });
         let resp = handle_resources_read(&json!(1), Some(&params));
         let text = resp["result"]["contents"][0]["text"].as_str().unwrap_or("");
-        assert!(text.contains("live") || text.contains("recovers_to"), "got: {text}");
+        assert!(
+            text.contains("live") || text.contains("recovers_to"),
+            "got: {text}"
+        );
     }
 
     #[test]
     fn resources_read_unknown_uri_returns_error() {
         let params = json!({ "uri": "resilient://docs/nonexistent" });
         let resp = handle_resources_read(&json!(1), Some(&params));
-        assert!(resp.get("error").is_some(), "expected error for unknown URI");
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for unknown URI"
+        );
     }
 
     #[test]
     fn resources_read_missing_uri_returns_error() {
         let resp = handle_resources_read(&json!(1), Some(&json!({})));
-        assert!(resp.get("error").is_some(), "expected error for missing URI");
+        assert!(
+            resp.get("error").is_some(),
+            "expected error for missing URI"
+        );
     }
 
     #[test]
@@ -2755,8 +2821,14 @@ mod tests {
         let resp = dispatch("initialize", &json!(1), Some(&json!({})), false);
         let resp = resp.unwrap();
         let caps = &resp["result"]["capabilities"];
-        assert!(caps["prompts"].is_object(), "capabilities must include prompts");
-        assert!(caps["resources"].is_object(), "capabilities must include resources");
+        assert!(
+            caps["prompts"].is_object(),
+            "capabilities must include prompts"
+        );
+        assert!(
+            caps["resources"].is_object(),
+            "capabilities must include resources"
+        );
     }
 
     // ── resilient_tla_check ───────────────────────────────────────────────────

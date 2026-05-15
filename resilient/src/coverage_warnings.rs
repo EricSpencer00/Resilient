@@ -107,11 +107,7 @@ fn is_err_call(node: &Node) -> bool {
 
 /// Warn when a Block has a `return` statement followed by non-trivial
 /// statements (unreachable code after return).
-fn check_unreachable_after_return(
-    stmts: &[Node],
-    fn_name: &str,
-    out: &mut Vec<CoverageWarning>,
-) {
+fn check_unreachable_after_return(stmts: &[Node], fn_name: &str, out: &mut Vec<CoverageWarning>) {
     let mut saw_return = false;
     for stmt in stmts {
         if saw_return {
@@ -179,12 +175,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         },
         _ => false,
     });
-    let has_match = crate::uniqueness_walk::any_node(program, |n| {
-        matches!(n, Node::Match { .. })
-    });
-    let has_return = crate::uniqueness_walk::any_node(program, |n| {
-        matches!(n, Node::ReturnStatement { .. })
-    });
+    let has_match = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Match { .. }));
+    let has_return =
+        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::ReturnStatement { .. }));
     if !has_err_call && !has_match && !has_return {
         return Ok(());
     }
@@ -256,7 +249,10 @@ fn f(int x) -> int {
         let src = "fn f(int x) -> int { return x; }\n";
         let (prog, _) = parse(src);
         let w = analyze(&prog);
-        let unreachable: Vec<_> = w.iter().filter(|x| x.message.contains("unreachable")).collect();
+        let unreachable: Vec<_> = w
+            .iter()
+            .filter(|x| x.message.contains("unreachable"))
+            .collect();
         assert!(
             unreachable.is_empty(),
             "must not flag single return: {:?}",
@@ -297,7 +293,10 @@ fn classify(int code) -> int {
 "#;
         let (prog, _) = parse(src);
         let w = analyze(&prog);
-        let wildcard_warn: Vec<_> = w.iter().filter(|x| x.message.contains("wildcard")).collect();
+        let wildcard_warn: Vec<_> = w
+            .iter()
+            .filter(|x| x.message.contains("wildcard"))
+            .collect();
         assert!(
             wildcard_warn.is_empty(),
             "must not flag match that has a wildcard arm: {:?}",

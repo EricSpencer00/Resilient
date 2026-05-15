@@ -253,10 +253,7 @@ fn check_node_interp(
                     // Errors in nested nodes: we can't propagate from the
                     // closure, so emit as a warning-style diagnostic to stderr.
                     let loc = if span.start.line > 0 {
-                        format!(
-                            "{}:{}:{}",
-                            source_path, span.start.line, span.start.column
-                        )
+                        format!("{}:{}:{}", source_path, span.start.line, span.start.column)
                     } else {
                         source_path.to_string()
                     };

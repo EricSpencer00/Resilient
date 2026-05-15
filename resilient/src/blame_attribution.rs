@@ -357,7 +357,13 @@ mod tests {
         let chain = map.blame_chain("e", 2);
         let names: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
         // At depth 2: e ← d ← c; should include d and c but not b
-        assert!(!names.contains(&"a"), "depth-limited chain must not reach 'a'");
-        assert!(!names.contains(&"b"), "depth-limited chain must not reach 'b'");
+        assert!(
+            !names.contains(&"a"),
+            "depth-limited chain must not reach 'a'"
+        );
+        assert!(
+            !names.contains(&"b"),
+            "depth-limited chain must not reach 'b'"
+        );
     }
 }

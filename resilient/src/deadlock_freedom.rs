@@ -168,9 +168,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         // record that the actor network was proven cycle-free at this
         // compilation.
         let actor_count = g.edges.len();
-        eprintln!(
-            "deadlock-free: actor network ({actor_count} actor(s)) verified cycle-free"
-        );
+        eprintln!("deadlock-free: actor network ({actor_count} actor(s)) verified cycle-free");
     } else {
         for c in &cycles {
             eprintln!(

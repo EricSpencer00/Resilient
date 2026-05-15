@@ -199,7 +199,12 @@ fn is_read_node(node: &Node, sensor: &str) -> bool {
 }
 
 fn is_read_call(node: &Node, sensor: &str) -> bool {
-    if let Node::CallExpression { function, arguments, .. } = node {
+    if let Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = node
+    {
         if let Node::FieldAccess { target, field, .. } = function.as_ref() {
             if READ_METHODS.contains(&field.as_str()) && is_param(target, sensor) {
                 return true;
@@ -227,7 +232,12 @@ fn is_fresh_check_node(node: &Node, sensor: &str) -> bool {
 }
 
 fn is_fresh_call(node: &Node, sensor: &str) -> bool {
-    if let Node::CallExpression { function, arguments, .. } = node {
+    if let Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = node
+    {
         if let Node::FieldAccess { target, field, .. } = function.as_ref() {
             if FRESH_METHODS.contains(&field.as_str()) && is_param(target, sensor) {
                 return true;
@@ -294,10 +304,7 @@ fn read_temp(Sensor s) -> int {
 "#;
         let (prog, _) = parse(src);
         let has = any_stale_warning(&prog, "s");
-        assert!(
-            has,
-            "read before fresh check must be flagged as stale"
-        );
+        assert!(has, "read before fresh check must be flagged as stale");
     }
 
     #[test]
@@ -309,10 +316,7 @@ fn read_temp(Sensor s) -> int {
 "#;
         let (prog, _) = parse(src);
         let has = any_stale_warning(&prog, "s");
-        assert!(
-            has,
-            "read with no freshness check anywhere must be flagged"
-        );
+        assert!(has, "read with no freshness check anywhere must be flagged");
     }
 
     #[test]
@@ -355,12 +359,15 @@ fn read_temp(Sensor s, bool ok) -> int {
 
     /// Helper: returns true if the function body for any sensor param has a stale read.
     fn any_stale_warning(program: &Node, sensor: &str) -> bool {
-        let Node::Program(stmts) = program else { return false; };
+        let Node::Program(stmts) = program else {
+            return false;
+        };
         for s in stmts {
-            if let Node::Function { body, parameters, .. } = &s.node {
-                let is_sensor_param = parameters
-                    .iter()
-                    .any(|(_, n)| n == sensor);
+            if let Node::Function {
+                body, parameters, ..
+            } = &s.node
+            {
+                let is_sensor_param = parameters.iter().any(|(_, n)| n == sensor);
                 if is_sensor_param && reads_value(body, sensor) && has_stale_read(body, sensor) {
                     return true;
                 }

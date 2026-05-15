@@ -4473,7 +4473,9 @@ impl TypeChecker {
                         // so the env lookup succeeds; the main pass then
                         // overwrites the binding with the inferred value
                         // type and populates const_bindings.
-                        Node::Const { name, type_annot, .. } => {
+                        Node::Const {
+                            name, type_annot, ..
+                        } => {
                             let bind_type = if let Some(ty_name) = type_annot {
                                 self.parse_type_name(ty_name).unwrap_or(Type::Any)
                             } else {
@@ -5839,7 +5841,10 @@ impl TypeChecker {
             }
 
             Node::Assert {
-                condition, message, span, ..
+                condition,
+                message,
+                span,
+                ..
             } => {
                 self.current_span = *span;
                 // Condition must be a boolean expression
@@ -5871,7 +5876,10 @@ impl TypeChecker {
 
             // RES-133a: assume has the same type rules as assert
             Node::Assume {
-                condition, message, span, ..
+                condition,
+                message,
+                span,
+                ..
             } => {
                 self.current_span = *span;
                 let condition_type = self.check_node(condition)?;
@@ -5970,8 +5978,9 @@ impl TypeChecker {
                         let range_ok = match &declared {
                             Type::Int8 => (-128_i64..=127).contains(&literal_val),
                             Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
-                            Type::Int32 => (-2_147_483_648_i64..=2_147_483_647)
-                                .contains(&literal_val),
+                            Type::Int32 => {
+                                (-2_147_483_648_i64..=2_147_483_647).contains(&literal_val)
+                            }
                             Type::UInt8 => (0_i64..=255).contains(&literal_val),
                             Type::UInt16 => (0_i64..=65535).contains(&literal_val),
                             Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
@@ -6272,7 +6281,10 @@ impl TypeChecker {
             }
 
             Node::Match {
-                scrutinee, arms, span, ..
+                scrutinee,
+                arms,
+                span,
+                ..
             } => {
                 self.current_span = *span;
                 let scrutinee_type = self.check_node(scrutinee)?;
@@ -6502,7 +6514,12 @@ impl TypeChecker {
                 {
                     return Err(format!(
                         "{}:{}:{}: error: duplicate type alias `{}` — previously defined as `{}`, now re-defined as `{}`",
-                        self.source_path, span.start.line, span.start.column, name, prev_target, target,
+                        self.source_path,
+                        span.start.line,
+                        span.start.column,
+                        name,
+                        prev_target,
+                        target,
                     ));
                 }
                 self.type_aliases.insert(name.clone(), target.clone());
@@ -6778,7 +6795,9 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            Node::StructLiteral { name, fields, span, .. } => {
+            Node::StructLiteral {
+                name, fields, span, ..
+            } => {
                 self.current_span = *span;
                 // RES-404: look up declared field types. When the struct
                 // is known, validate (a) no unknown fields and (b) every
@@ -6818,8 +6837,7 @@ impl TypeChecker {
                             ));
                         }
                         // Type mismatch on a known field.
-                        if let Some((_, field_ty)) =
-                            declared.iter().find(|(n, _)| n == field_name)
+                        if let Some((_, field_ty)) = declared.iter().find(|(n, _)| n == field_name)
                             && !compatible(field_ty, &val_ty)
                         {
                             return Err(format!(
@@ -6844,7 +6862,12 @@ impl TypeChecker {
                 Ok(Type::Struct(name.clone()))
             }
 
-            Node::FieldAccess { target, field, span, .. } => {
+            Node::FieldAccess {
+                target,
+                field,
+                span,
+                ..
+            } => {
                 self.current_span = *span;
                 let tgt_ty = self.check_node(target)?;
                 // RES-153: if the target is a known struct, return the
@@ -6886,12 +6909,10 @@ impl TypeChecker {
                 // Function type here lets the call site infer the correct return.
                 if tgt_ty == Type::Array {
                     let ret = match field.as_str() {
-                        "map" | "filter" | "push" | "pop" | "sort" | "reverse" => {
-                            Type::Function {
-                                params: vec![Type::Any],
-                                return_type: Box::new(Type::Array),
-                            }
-                        }
+                        "map" | "filter" | "push" | "pop" | "sort" | "reverse" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Array),
+                        },
                         "reduce" => Type::Function {
                             params: vec![Type::Any, Type::Any],
                             return_type: Box::new(Type::Any),
@@ -7025,9 +7046,7 @@ impl TypeChecker {
             Node::Slice { target, lo, hi, .. } => {
                 let target_ty = self.check_node(target)?;
                 // RES-407: enforce integer endpoints.
-                let is_int_like = |t: &Type| {
-                    matches!(t, Type::Int | Type::Any) || is_pinned_int(t)
-                };
+                let is_int_like = |t: &Type| matches!(t, Type::Int | Type::Any) || is_pinned_int(t);
                 if let Some(lo_expr) = lo {
                     let lo_ty = self.check_node(lo_expr)?;
                     if !is_int_like(&lo_ty) {
@@ -7113,11 +7132,11 @@ impl TypeChecker {
                 {
                     match callee.as_str() {
                         // Integer-valued array builtins.
-                        "array_range" | "array_range_int" | "array_cumsum"
-                        | "array_cumprod" | "array_diffs" => Type::Int,
+                        "array_range" | "array_range_int" | "array_cumsum" | "array_cumprod"
+                        | "array_diffs" => Type::Int,
                         // String-element builtins.
-                        "split" | "string_split" | "string_split_n"
-                        | "string_split_last" | "chars" | "split_chars" => Type::String,
+                        "split" | "string_split" | "string_split_n" | "string_split_last"
+                        | "chars" | "split_chars" => Type::String,
                         _ => Type::Any,
                     }
                 } else {
@@ -7135,7 +7154,10 @@ impl TypeChecker {
             }
 
             Node::WhileStatement {
-                condition, body, span, ..
+                condition,
+                body,
+                span,
+                ..
             } => {
                 self.current_span = *span;
                 // RES-406: while condition must be boolean.
@@ -7168,6 +7190,19 @@ impl TypeChecker {
                     return Err("'continue' outside of a loop — `continue` is only \
                          valid inside a `while` or `for-in` body"
                         .to_string());
+                }
+                Ok(Type::Void)
+            }
+            // RES-2653: labeled break/continue — same depth check as unlabeled.
+            Node::BreakLabel { .. } => {
+                if self.loop_depth == 0 {
+                    return Err("'break <label>' outside of a loop".to_string());
+                }
+                Ok(Type::Void)
+            }
+            Node::ContinueLabel { .. } => {
+                if self.loop_depth == 0 {
+                    return Err("'continue <label>' outside of a loop".to_string());
                 }
                 Ok(Type::Void)
             }
@@ -7205,8 +7240,9 @@ impl TypeChecker {
                         let range_ok = match &declared {
                             Type::Int8 => (-128_i64..=127).contains(&literal_val),
                             Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
-                            Type::Int32 => (-2_147_483_648_i64..=2_147_483_647)
-                                .contains(&literal_val),
+                            Type::Int32 => {
+                                (-2_147_483_648_i64..=2_147_483_647).contains(&literal_val)
+                            }
                             Type::UInt8 => (0_i64..=255).contains(&literal_val),
                             Type::UInt16 => (0_i64..=65535).contains(&literal_val),
                             Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
@@ -7413,9 +7449,9 @@ impl TypeChecker {
                         // static method calls (no `self`) reachable via the
                         // `Type::method()` call syntax users expect.
                         if let Some(idx) = name.find("::")
-                            && let Some(typ) = self
-                                .env
-                                .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
+                            && let Some(typ) =
+                                self.env
+                                    .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
                         {
                             return Ok(typ);
                         }
@@ -7536,7 +7572,11 @@ impl TypeChecker {
                         {
                             return Err(format!(
                                 "integer {} by zero — denominator is a compile-time constant 0",
-                                if operator == "/" { "division" } else { "modulo" }
+                                if operator == "/" {
+                                    "division"
+                                } else {
+                                    "modulo"
+                                }
                             ));
                         }
                         check_numeric_same_type(operator, &left_type, &right_type)
@@ -7803,7 +7843,9 @@ impl TypeChecker {
                 // propagate that type as the return instead of Any.
                 // This catches cases like `let x = min(1, 2); x + 1`
                 // which previously inferred x as Any.
-                if let Node::Identifier { name: callee_name, .. } = function.as_ref()
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
                     && matches!(
                         callee_name.as_str(),
                         "min" | "max" | "pow" | "abs" | "sign" | "clamp"
@@ -7840,13 +7882,12 @@ impl TypeChecker {
                         } else {
                             false
                         };
-                        let (explicit_params, param_offset) = if is_struct_method_call
-                            && !params.is_empty()
-                        {
-                            (params.len() - 1, 1)
-                        } else {
-                            (params.len(), 0)
-                        };
+                        let (explicit_params, param_offset) =
+                            if is_struct_method_call && !params.is_empty() {
+                                (params.len() - 1, 1)
+                            } else {
+                                (params.len(), 0)
+                            };
 
                         // Check argument count
                         if arguments.len() != explicit_params {
@@ -7860,15 +7901,20 @@ impl TypeChecker {
                         // RES-425: if the callee is a named generic function,
                         // collect its type-parameter names so Struct("T") can
                         // be treated as Any during argument checking.
-                        let callee_type_params: Option<Vec<String>> =
-                            if let Node::Identifier { name: callee_id, .. } = function.as_ref() {
-                                self.fn_type_params.get(callee_id.as_str()).cloned()
-                            } else {
-                                None
-                            };
+                        let callee_type_params: Option<Vec<String>> = if let Node::Identifier {
+                            name: callee_id,
+                            ..
+                        } = function.as_ref()
+                        {
+                            self.fn_type_params.get(callee_id.as_str()).cloned()
+                        } else {
+                            None
+                        };
                         // Check each argument type
-                        for (i, (arg, param_type)) in
-                            arguments.iter().zip(params[param_offset..].iter()).enumerate()
+                        for (i, (arg, param_type)) in arguments
+                            .iter()
+                            .zip(params[param_offset..].iter())
+                            .enumerate()
                         {
                             let arg_type = self.check_node(arg)?;
                             // Treat Struct("T") as Any when T is a generic
@@ -7969,7 +8015,12 @@ impl TypeChecker {
             // `enum_decls` table so the `Match` arm can check
             // exhaustiveness and so `match_pattern_binding_types`
             // (future PR) can resolve payload-field types.
-            Node::EnumDecl { name, variants, span, .. } => {
+            Node::EnumDecl {
+                name,
+                variants,
+                span,
+                ..
+            } => {
                 // RES-406: reject duplicate variant names inside the same enum.
                 let mut seen_variants: std::collections::HashSet<&str> =
                     std::collections::HashSet::with_capacity(variants.len());
@@ -7977,11 +8028,7 @@ impl TypeChecker {
                     if !seen_variants.insert(v.name.as_str()) {
                         return Err(format!(
                             "{}:{}:{}: error: duplicate variant `{}` in enum `{}`",
-                            self.source_path,
-                            span.start.line,
-                            span.start.column,
-                            v.name,
-                            name,
+                            self.source_path, span.start.line, span.start.column, v.name, name,
                         ));
                     }
                 }
@@ -11235,9 +11282,7 @@ mod res1859_builtin_return_types {
 
     #[test]
     fn array_slice_return_type_is_array() {
-        check_ok(
-            "fn f(array a) -> int { let b = array_slice(a, 0, 3, false); return len(b); }",
-        );
+        check_ok("fn f(array a) -> int { let b = array_slice(a, 0, 3, false); return len(b); }");
     }
 }
 
@@ -11404,7 +11449,8 @@ mod res402_arm_type_inference {
     fn match_result_used_as_int() {
         // When all match arms return int, the result should be usable
         // as an int (e.g., added to another int).
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f(int x) -> int {
     let v = match x {
         0 => 10,
@@ -11413,13 +11459,15 @@ fn f(int x) -> int {
     };
     return v + 1;
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn match_result_used_as_string() {
         // When all match arms return a string, the result is a string.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn describe(int x) -> string {
     return match x {
         0 => "zero",
@@ -11427,42 +11475,49 @@ fn describe(int x) -> string {
         _ => "other",
     };
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn match_result_used_as_bool() {
         // Arms returning bool — inferred type is bool.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn is_zero(int x) -> bool {
     return match x {
         0 => true,
         _ => false,
     };
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn if_with_both_branches_propagates_int() {
         // if/else where both branches return int — result is int.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn abs_val(int x) -> int {
     let v = if x >= 0 { x } else { 0 - x };
     return v + 1;
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn if_else_type_mismatch_errors() {
         // if branch returns int, else branch returns string — type error.
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 fn f(bool c) -> int {
     let _v = if c { 1 } else { "x" };
     return 0;
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("incompatible") || err.contains("type"),
             "expected incompatible-types error; got: {err}"
@@ -11472,7 +11527,8 @@ fn f(bool c) -> int {
     #[test]
     fn match_arms_used_in_len_context() {
         // match on bool with both arms returning array — can call len().
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f(bool b) -> int {
     let arr = match b {
         true  => [1, 2, 3],
@@ -11480,7 +11536,8 @@ fn f(bool b) -> int {
     };
     return len(arr);
 }
-"#);
+"#,
+        );
     }
 }
 
@@ -11510,12 +11567,14 @@ mod res403_return_type_validation {
     #[test]
     fn early_return_wrong_type_is_error() {
         // An early `return 42` in a function declared `-> string` should fail.
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 fn f(bool b) -> string {
     if b { return 42; }
     return "hello";
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("return type mismatch") || err.contains("type mismatch"),
             "expected return-type-mismatch error; got: {err}"
@@ -11525,46 +11584,54 @@ fn f(bool b) -> string {
     #[test]
     fn early_return_correct_type_ok() {
         // Early return with the correct type should pass.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f(bool b) -> int {
     if b { return 1; }
     return 0;
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn void_function_bare_return_ok() {
         // Bare `return;` in a void function is always valid.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f(bool b) -> void {
     if b { return; }
     println("done");
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn lambda_return_validated_against_lambda_type() {
         // The lambda's own declared return type governs its return statements,
         // not the enclosing function's return type.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn outer(array a) -> int {
     let mapped = array_map(a, fn(int x) -> int { return x * 2; });
     return len(mapped);
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn lambda_return_type_mismatch_errors() {
         // A lambda returning the wrong type should fail.
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 fn f(array a) -> int {
     let mapped = array_map(a, fn(int x) -> int { return "oops"; });
     return len(mapped);
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("return type mismatch") || err.contains("type mismatch"),
             "expected return-type error in lambda; got: {err}"
@@ -11597,24 +11664,28 @@ mod res404_field_assignment_type_check {
 
     #[test]
     fn assign_correct_field_type_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 struct Point { int x, int y }
 fn f() -> void {
     let p = new Point { x: 1, y: 2 };
     p.x = 10;
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn assign_wrong_field_type_errors() {
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 struct Point { int x, int y }
 fn f() -> void {
     let p = new Point { x: 1, y: 2 };
     p.x = "oops";
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("cannot assign") || err.contains("type"),
             "expected type mismatch for field assignment; got: {err}"
@@ -11623,13 +11694,15 @@ fn f() -> void {
 
     #[test]
     fn assign_nonexistent_field_errors() {
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 struct Point { int x, int y }
 fn f() -> void {
     let p = new Point { x: 1, y: 2 };
     p.z = 99;
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("no field") || err.contains("available"),
             "expected field-not-found error; got: {err}"
@@ -11662,22 +11735,26 @@ mod res405_assignment_type_check {
 
     #[test]
     fn assign_same_type_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f() -> void {
     let x = 5;
     x = 10;
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn assign_wrong_type_errors() {
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 fn f() -> void {
     let x = 5;
     x = "hello";
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("cannot assign") || err.contains("type"),
             "expected type mismatch on assignment; got: {err}"
@@ -11686,22 +11763,26 @@ fn f() -> void {
 
     #[test]
     fn assign_to_string_var_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f() -> void {
     let s = "hello";
     s = "world";
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn assign_int_to_string_var_errors() {
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 fn f() -> void {
     let s = "hello";
     s = 42;
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("cannot assign") || err.contains("type"),
             "expected type mismatch on string assignment; got: {err}"
@@ -11859,10 +11940,12 @@ mod res406_loop_and_collection_checks {
 
     #[test]
     fn enum_unique_variants_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 enum Color { Red, Green, Blue }
 fn f() -> void { }
-"#);
+"#,
+        );
     }
 
     #[test]
@@ -11921,18 +12004,22 @@ mod res407_field_access_and_slice {
 
     #[test]
     fn field_access_known_field_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 struct Point { int x, int y }
 fn f(Point p) -> int { return p.x; }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn field_access_unknown_field_errors() {
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 struct Point { int x, int y }
 fn f(Point p) -> int { return p.z; }
-"#);
+"#,
+        );
         assert!(
             err.contains("no field") || err.contains("z"),
             "expected no-field error; got: {err}"
@@ -12001,18 +12088,22 @@ mod res408_any_type_annotation {
 
     #[test]
     fn any_param_accepts_int_arg() {
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f(any x) -> int { return 0; }
 fn g() -> int { return f(42); }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn any_param_accepts_string_arg() {
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f(any x) -> int { return 0; }
 fn g() -> int { return f("hello"); }
-"#);
+"#,
+        );
     }
 
     #[test]
@@ -12022,7 +12113,8 @@ fn g() -> int { return f("hello"); }
 
     #[test]
     fn struct_pattern_on_any_scrutinee_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 struct Point { int x, int y }
 fn f(any p) -> int {
     return match p {
@@ -12030,12 +12122,14 @@ fn f(any p) -> int {
         _ => 0,
     };
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn struct_pattern_wrong_struct_errors() {
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 struct Point { int x, int y }
 struct Rect { int w, int h }
 fn f(Rect r) -> int {
@@ -12044,7 +12138,8 @@ fn f(Rect r) -> int {
         _ => 0,
     };
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("Point") || err.contains("Rect") || err.contains("pattern"),
             "expected struct mismatch error; got: {err}"
@@ -12085,13 +12180,15 @@ mod res409_forin_element_type_and_duplicate_struct {
     #[test]
     fn for_in_range_elem_is_int() {
         // The loop variable `i` should be Int, so `i + 1` is valid.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f() -> void {
     for i in 0..10 {
         let _x = i + 1;
     }
 }
-"#);
+"#,
+        );
     }
 
     #[test]
@@ -12099,13 +12196,15 @@ fn f() -> void {
         // `i` is Int from a range; `"hello" + i` is String (coercion),
         // but `i - "hello"` is an error (not a valid arithmetic op).
         // This validates that the range-elem binding really is Int.
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 fn f() -> void {
     for i in 0..5 {
         let _x = i - "hello";
     }
 }
-"#);
+"#,
+        );
         assert!(
             err.contains("Cannot apply") || err.contains("int") || err.contains("string"),
             "expected type error for int - string in range loop; got: {err}"
@@ -12115,32 +12214,38 @@ fn f() -> void {
     #[test]
     fn for_in_string_elem_is_string() {
         // Each character from a string iteration is a String.
-        check_ok(r#"
+        check_ok(
+            r#"
 fn f(string s) -> void {
     for c in s {
         let _x: string = c;
     }
 }
-"#);
+"#,
+        );
     }
 
     // ── duplicate struct declaration ──────────────────────────────────────────
 
     #[test]
     fn unique_struct_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 struct Point { int x, int y }
 fn f() -> void { }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn duplicate_struct_errors() {
-        let err = check_err(r#"
+        let err = check_err(
+            r#"
 struct Point { int x, int y }
 struct Point { int a, int b }
 fn f() -> void { }
-"#);
+"#,
+        );
         assert!(
             err.contains("duplicate") || err.contains("Point"),
             "expected duplicate struct error; got: {err}"
@@ -12199,20 +12304,24 @@ mod res410_numeric_poly_and_type_alias {
 
     #[test]
     fn unique_type_alias_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 type Meters = float;
 fn f(Meters m) -> float { return m; }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn duplicate_type_alias_same_target_ok() {
         // Re-declaring to the same target is silently accepted (the
         // pre-pass may have already registered it).
-        check_ok(r#"
+        check_ok(
+            r#"
 type Meters = float;
 fn f() -> void { }
-"#);
+"#,
+        );
     }
 
     #[test]
@@ -12292,7 +12401,10 @@ mod res411_pinned_int_overflow {
     #[test]
     fn uint8_negative_errors() {
         let e = check_err("fn f() -> void { let x: UInt8 = -1; }");
-        assert!(e.contains("overflows"), "expected overflow error for negative UInt8; got: {e}");
+        assert!(
+            e.contains("overflows"),
+            "expected overflow error for negative UInt8; got: {e}"
+        );
     }
 
     #[test]
@@ -12429,19 +12541,28 @@ mod res413_div_by_zero {
     #[test]
     fn div_by_zero_literal_errors() {
         let e = check_err("fn f() -> int { return 10 / 0; }");
-        assert!(e.contains("division by zero") || e.contains("by zero"), "got: {e}");
+        assert!(
+            e.contains("division by zero") || e.contains("by zero"),
+            "got: {e}"
+        );
     }
 
     #[test]
     fn mod_by_zero_literal_errors() {
         let e = check_err("fn f() -> int { return 10 % 0; }");
-        assert!(e.contains("modulo by zero") || e.contains("by zero"), "got: {e}");
+        assert!(
+            e.contains("modulo by zero") || e.contains("by zero"),
+            "got: {e}"
+        );
     }
 
     #[test]
     fn div_by_const_zero_errors() {
         let e = check_err("fn f() -> int { let d = 0; return 10 / d; }");
-        assert!(e.contains("by zero"), "expected division-by-zero error; got: {e}");
+        assert!(
+            e.contains("by zero"),
+            "expected division-by-zero error; got: {e}"
+        );
     }
 
     #[test]
@@ -12537,13 +12658,19 @@ mod res415_collection_type_checks {
     #[test]
     fn map_mixed_key_types_errors() {
         let e = check_err(r#"fn f() -> void { let _m = {"a" -> 1, 2 -> 3}; }"#);
-        assert!(e.contains("mixed key types") || e.contains("key"), "got: {e}");
+        assert!(
+            e.contains("mixed key types") || e.contains("key"),
+            "got: {e}"
+        );
     }
 
     #[test]
     fn map_mixed_value_types_errors() {
         let e = check_err(r#"fn f() -> void { let _m = {"a" -> 1, "b" -> "two"}; }"#);
-        assert!(e.contains("mixed value types") || e.contains("value"), "got: {e}");
+        assert!(
+            e.contains("mixed value types") || e.contains("value"),
+            "got: {e}"
+        );
     }
 
     #[test]
@@ -12617,18 +12744,22 @@ mod res416_const_and_enum_checks {
 
     #[test]
     fn enum_constructor_correct_types_ok() {
-        check_ok(r#"
+        check_ok(
+            r#"
 enum Shape { Circle(int) }
 fn f() -> void { let _s = Shape::Circle(5); }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn enum_constructor_wrong_arg_type_errors() {
-        let e = check_err(r#"
+        let e = check_err(
+            r#"
 enum Shape { Circle(int) }
 fn f() -> void { let _s = Shape::Circle("not_an_int"); }
-"#);
+"#,
+        );
         assert!(
             e.contains("argument has type") || e.contains("expected"),
             "expected constructor type error; got: {e}"
@@ -12637,10 +12768,12 @@ fn f() -> void { let _s = Shape::Circle("not_an_int"); }
 
     #[test]
     fn enum_constructor_wrong_arg_count_errors() {
-        let e = check_err(r#"
+        let e = check_err(
+            r#"
 enum Shape { Circle(int) }
 fn f() -> void { let _s = Shape::Circle(1, 2); }
-"#);
+"#,
+        );
         assert!(
             e.contains("expected") && (e.contains("arg") || e.contains("argument")),
             "expected arity error; got: {e}"
@@ -12761,7 +12894,10 @@ fn f() -> void { let _p = new Point { x: 1, z: 2 }; }
             e.contains("has no field") || e.contains("no field"),
             "expected unknown-field error; got: {e}"
         );
-        assert!(e.contains("z"), "error must name the unknown field; got: {e}");
+        assert!(
+            e.contains("z"),
+            "error must name the unknown field; got: {e}"
+        );
     }
 
     #[test]

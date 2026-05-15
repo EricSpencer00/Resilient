@@ -431,6 +431,7 @@ fn rewrite_node(
             body,
             invariants,
             span,
+            label,
         } => Node::WhileStatement {
             condition: Box::new(rewrite_node(condition, generic_fns, instantiations)),
             body: Box::new(rewrite_node(body, generic_fns, instantiations)),
@@ -439,6 +440,7 @@ fn rewrite_node(
                 .map(|i| rewrite_node(i, generic_fns, instantiations))
                 .collect(),
             span: *span,
+            label: label.clone(),
         },
         Node::ForInStatement {
             name,
@@ -446,6 +448,7 @@ fn rewrite_node(
             body,
             invariants,
             span,
+            label,
         } => Node::ForInStatement {
             name: name.clone(),
             iterable: Box::new(rewrite_node(iterable, generic_fns, instantiations)),
@@ -455,6 +458,7 @@ fn rewrite_node(
                 .map(|i| rewrite_node(i, generic_fns, instantiations))
                 .collect(),
             span: *span,
+            label: label.clone(),
         },
         Node::InfixExpression {
             left,

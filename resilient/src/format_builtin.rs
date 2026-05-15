@@ -248,11 +248,12 @@ fn check_format_calls(node: &Node, source_path: &str, errors: &mut Vec<String>) 
                             for seg in &segments {
                                 if let FormatSegment::Placeholder(spec) = seg {
                                     if !spec.is_empty() {
-                                        let spec_check = if spec.contains('.') || spec == ":e" || spec == ":E" {
-                                            render_float(spec, 0.0)
-                                        } else {
-                                            render_int(spec, 0)
-                                        };
+                                        let spec_check =
+                                            if spec.contains('.') || spec == ":e" || spec == ":E" {
+                                                render_float(spec, 0.0)
+                                            } else {
+                                                render_int(spec, 0)
+                                            };
                                         if let Err(e) = spec_check {
                                             errors.push(format!("{loc}: error[fmt]: {e}"));
                                         }

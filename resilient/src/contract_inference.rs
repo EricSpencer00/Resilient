@@ -232,7 +232,11 @@ fn body_accesses_field(node: &Node, param: &str) -> bool {
                     .as_ref()
                     .is_some_and(|a| body_accesses_field(a, param))
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             body_accesses_field(function, param)
                 || arguments.iter().any(|a| body_accesses_field(a, param))
         }
@@ -282,7 +286,10 @@ fn is_upper_bound_for(node: &Node, param: &str) -> bool {
 /// requiring `0 <= param <= 63` to avoid undefined behavior.
 fn body_uses_as_shift_amount(node: &Node, param: &str) -> bool {
     crate::uniqueness_walk::any_node(node, |n| {
-        if let Node::InfixExpression { operator, right, .. } = n {
+        if let Node::InfixExpression {
+            operator, right, ..
+        } = n
+        {
             (operator == "<<" || operator == ">>")
                 && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
         } else {
@@ -374,7 +381,9 @@ fn format_simple_expr(node: &Node) -> String {
                 format!("({l} {operator} {r})")
             }
         }
-        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => {
             let inner = format_simple_expr(right);
             if inner == "<complex>" {
                 "<complex>".to_string()
@@ -383,7 +392,11 @@ fn format_simple_expr(node: &Node) -> String {
             }
         }
         // Well-known pure functions: one-arg (len, abs) and two-arg (min, max, clamp).
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 match (name.as_str(), arguments.len()) {
                     ("len" | "abs", 1) => {
@@ -517,8 +530,10 @@ fn expr_is_strictly_positive(node: &Node) -> bool {
             right,
             ..
         } => match operator.as_str() {
-            "+" => expr_is_non_negative(left) && expr_is_strictly_positive(right)
-                || expr_is_strictly_positive(left) && expr_is_non_negative(right),
+            "+" => {
+                expr_is_non_negative(left) && expr_is_strictly_positive(right)
+                    || expr_is_strictly_positive(left) && expr_is_non_negative(right)
+            }
             "*" => expr_is_strictly_positive(left) && expr_is_strictly_positive(right),
             _ => false,
         },
@@ -786,7 +801,9 @@ mod new_inference_tests {
         let inferred = infer_program(&prog);
         if let Some(f) = inferred.iter().find(|c| c.function_name == "shift") {
             assert!(
-                f.requires.iter().any(|r| r.contains("n") && r.contains("63")),
+                f.requires
+                    .iter()
+                    .any(|r| r.contains("n") && r.contains("63")),
                 "expected shift-amount requires for n; got: {:?}",
                 f.requires
             );
@@ -832,7 +849,10 @@ mod new_inference_tests {
         // `return 5` goes through single_return_expr → result == 5, not result > 0.
         // Verify at least some ensures is inferred.
         if let Some(f) = inferred.iter().find(|c| c.function_name == "pos") {
-            assert!(!f.ensures.is_empty(), "expected ensures for positive literal return");
+            assert!(
+                !f.ensures.is_empty(),
+                "expected ensures for positive literal return"
+            );
         }
     }
 
@@ -909,7 +929,8 @@ mod new_inference_tests {
     #[test]
     fn all_branches_literal_zero_infers_result_ge_0() {
         // Both branches return 0 → ensures result >= 0 inferred from recursive scan.
-        let src = r#"fn zero_or_zero(bool flag) -> int { if flag { return 0; } else { return 0; } }"#;
+        let src =
+            r#"fn zero_or_zero(bool flag) -> int { if flag { return 0; } else { return 0; } }"#;
         let (prog, _) = parse(src);
         let inferred = infer_program(&prog);
         if let Some(f) = inferred.iter().find(|c| c.function_name == "zero_or_zero") {

@@ -33,22 +33,19 @@ type RResult<T> = Result<T, String>;
 ///     });
 /// // sorted == ["apple", "banana", "cherry"]
 /// ```
-pub(crate) fn builtin_array_sort_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_sort_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, cmp) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_sort_by: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_sort_by: expected 2 arguments (array, cmp_fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -92,22 +89,19 @@ pub(crate) fn builtin_array_sort_by(
 ///     fn(string s) -> int { return len(s); });
 /// // shortest == "ox"
 /// ```
-pub(crate) fn builtin_array_min_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_min_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_min_by: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_min_by: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -120,9 +114,7 @@ pub(crate) fn builtin_array_min_by(
 
     for elem in arr.into_iter().skip(1) {
         let key = interp.apply_function(f.clone(), vec![elem.clone()])?;
-        let is_smaller = compare_key(&key, &best_key).map_err(|e| {
-            format!("array_min_by: {e}")
-        })?;
+        let is_smaller = compare_key(&key, &best_key).map_err(|e| format!("array_min_by: {e}"))?;
         if is_smaller < 0 {
             best_elem = elem;
             best_key = key;
@@ -141,22 +133,19 @@ pub(crate) fn builtin_array_min_by(
 ///     fn(string s) -> int { return len(s); });
 /// // longest == "elephant"
 /// ```
-pub(crate) fn builtin_array_max_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_max_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_max_by: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_max_by: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -169,9 +158,7 @@ pub(crate) fn builtin_array_max_by(
 
     for elem in arr.into_iter().skip(1) {
         let key = interp.apply_function(f.clone(), vec![elem.clone()])?;
-        let is_larger = compare_key(&key, &best_key).map_err(|e| {
-            format!("array_max_by: {e}")
-        })?;
+        let is_larger = compare_key(&key, &best_key).map_err(|e| format!("array_max_by: {e}"))?;
         if is_larger > 0 {
             best_elem = elem;
             best_key = key;
@@ -188,22 +175,19 @@ pub(crate) fn builtin_array_max_by(
 /// let evens = array_count_if([1,2,3,4,5], fn(int x) -> bool { return x % 2 == 0; });
 /// // evens == 2
 /// ```
-pub(crate) fn builtin_array_count_if(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_count_if(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_count_if: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_count_if: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -215,7 +199,7 @@ pub(crate) fn builtin_array_count_if(
             other => {
                 return Err(format!(
                     "array_count_if: predicate must return bool, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -232,27 +216,24 @@ pub(crate) fn builtin_array_count_if(
 ///     fn(int a, int b) -> int { return a + b; });
 /// // sums == [11, 22, 33]
 /// ```
-pub(crate) fn builtin_array_zip_with(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_zip_with(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (a, b, f) = match args {
         [Value::Array(a), Value::Array(b), f] => (a.clone(), b.clone(), f.clone()),
         [Value::Array(_), b, _] => {
             return Err(format!(
                 "array_zip_with: second argument must be an Array, got {b}"
-            ))
+            ));
         }
         [a, _, _] => {
             return Err(format!(
                 "array_zip_with: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_zip_with: expected 3 arguments (array, array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -286,25 +267,23 @@ pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
         [Value::Array(_), n] => {
             return Err(format!(
                 "array_windows: second argument must be an int, got {n}"
-            ))
+            ));
         }
         [a, _] => {
             return Err(format!(
                 "array_windows: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_windows: expected 2 arguments (array, n), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
     if n < 1 {
-        return Err(format!(
-            "array_windows: window size must be >= 1, got {n}"
-        ));
+        return Err(format!("array_windows: window size must be >= 1, got {n}"));
     }
     let n = n as usize;
     if arr.len() < n {
@@ -325,22 +304,19 @@ pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
 /// let prefix = array_take_while([1,2,3,4,1], fn(int x) -> bool { return x < 4; });
 /// // prefix == [1, 2, 3]
 /// ```
-pub(crate) fn builtin_array_take_while(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_take_while(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_take_while: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_take_while: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -352,7 +328,7 @@ pub(crate) fn builtin_array_take_while(
             other => {
                 return Err(format!(
                     "array_take_while: predicate must return bool, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -368,22 +344,19 @@ pub(crate) fn builtin_array_take_while(
 /// let rest = array_drop_while([1,2,3,4,1], fn(int x) -> bool { return x < 3; });
 /// // rest == [3, 4, 1]
 /// ```
-pub(crate) fn builtin_array_drop_while(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_drop_while(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_drop_while: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_drop_while: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -400,7 +373,7 @@ pub(crate) fn builtin_array_drop_while(
                 other => {
                     return Err(format!(
                         "array_drop_while: predicate must return bool, got {other}"
-                    ))
+                    ));
                 }
             }
         } else {
@@ -421,22 +394,19 @@ pub(crate) fn builtin_array_drop_while(
 ///     fn(string s) -> int { return len(s); });
 /// // total == 3 + 2 + 8 == 13
 /// ```
-pub(crate) fn builtin_array_sum_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_sum_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_sum_by: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_sum_by: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -447,7 +417,7 @@ pub(crate) fn builtin_array_sum_by(
             other => {
                 return Err(format!(
                     "array_sum_by: callback must return int, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -462,22 +432,19 @@ pub(crate) fn builtin_array_sum_by(
 /// let prod = array_product_by([1,2,3,4], fn(int x) -> int { return x * 2; });
 /// // prod == 2 * 4 * 6 * 8 == 384
 /// ```
-pub(crate) fn builtin_array_product_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_product_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "array_product_by: first argument must be an Array, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "array_product_by: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -488,7 +455,7 @@ pub(crate) fn builtin_array_product_by(
             other => {
                 return Err(format!(
                     "array_product_by: callback must return int, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -505,15 +472,9 @@ fn compare_key(a: &Value, b: &Value) -> RResult<i64> {
     }
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => Ok(ord(x.cmp(y))),
-        (Value::Float(x), Value::Float(y)) => {
-            Ok(x.partial_cmp(y).map(ord).unwrap_or(0))
-        }
-        (Value::Int(x), Value::Float(y)) => {
-            Ok((*x as f64).partial_cmp(y).map(ord).unwrap_or(0))
-        }
-        (Value::Float(x), Value::Int(y)) => {
-            Ok(x.partial_cmp(&(*y as f64)).map(ord).unwrap_or(0))
-        }
+        (Value::Float(x), Value::Float(y)) => Ok(x.partial_cmp(y).map(ord).unwrap_or(0)),
+        (Value::Int(x), Value::Float(y)) => Ok((*x as f64).partial_cmp(y).map(ord).unwrap_or(0)),
+        (Value::Float(x), Value::Int(y)) => Ok(x.partial_cmp(&(*y as f64)).map(ord).unwrap_or(0)),
         (Value::String(a), Value::String(b)) => Ok(ord(a.as_str().cmp(b.as_str()))),
         (other, _) => Err(format!(
             "key function must return int, float, or string — got {other}"
@@ -533,8 +494,7 @@ mod tests {
 
     #[test]
     fn sort_by_strings_alphabetically() {
-        let r = run(
-            r#"let sorted = array_sort_by(["banana","apple","cherry"],
+        let r = run(r#"let sorted = array_sort_by(["banana","apple","cherry"],
     fn(string a, string b) -> int {
         if a < b { return -1; }
         if a > b { return 1; }
@@ -542,8 +502,7 @@ mod tests {
     });
 println(sorted[0]);
 println(sorted[1]);
-println(sorted[2]);"#,
-        );
+println(sorted[2]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "apple");
@@ -553,12 +512,10 @@ println(sorted[2]);"#,
 
     #[test]
     fn sort_by_ints_descending() {
-        let r = run(
-            r#"let sorted = array_sort_by([3,1,4,1,5,9,2,6],
+        let r = run(r#"let sorted = array_sort_by([3,1,4,1,5,9,2,6],
     fn(int a, int b) -> int { return b - a; });
 println(sorted[0]);
-println(sorted[1]);"#,
-        );
+println(sorted[1]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "9");
@@ -588,42 +545,34 @@ println(sorted);"#,
 
     #[test]
     fn min_by_string_length() {
-        let r = run(
-            r#"let shortest = array_min_by(["cat","elephant","ox"],
+        let r = run(r#"let shortest = array_min_by(["cat","elephant","ox"],
     fn(string s) -> int { return len(s); });
-println(shortest);"#,
-        );
+println(shortest);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("ox"), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn max_by_string_length() {
-        let r = run(
-            r#"let longest = array_max_by(["cat","elephant","ox"],
+        let r = run(r#"let longest = array_max_by(["cat","elephant","ox"],
     fn(string s) -> int { return len(s); });
-println(longest);"#,
-        );
+println(longest);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("elephant"), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn min_by_empty_errors() {
-        let r = run(
-            r#"let m = array_min_by([], fn(int x) -> int { return x; });
-println(m);"#,
-        );
+        let r = run(r#"let m = array_min_by([], fn(int x) -> int { return x; });
+println(m);"#);
         assert!(!r.ok, "expected error for empty array");
     }
 
     #[test]
     fn max_by_int_values() {
-        let r = run(
-            r#"let m = array_max_by([3,1,4,1,5,9,2,6],
+        let r = run(r#"let m = array_max_by([3,1,4,1,5,9,2,6],
     fn(int x) -> int { return x; });
-println(m);"#,
-        );
+println(m);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('9'), "stdout: {}", r.stdout);
     }
@@ -664,13 +613,11 @@ println(n);"#,
 
     #[test]
     fn zip_with_sum() {
-        let r = run(
-            r#"let sums = array_zip_with([1,2,3], [10,20,30],
+        let r = run(r#"let sums = array_zip_with([1,2,3], [10,20,30],
     fn(int a, int b) -> int { return a + b; });
 println(sums[0]);
 println(sums[1]);
-println(sums[2]);"#,
-        );
+println(sums[2]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "11");
@@ -680,21 +627,17 @@ println(sums[2]);"#,
 
     #[test]
     fn zip_with_length_mismatch_errors() {
-        let r = run(
-            r#"let r = array_zip_with([1,2], [1],
+        let r = run(r#"let r = array_zip_with([1,2], [1],
     fn(int a, int b) -> int { return a + b; });
-println(r);"#,
-        );
+println(r);"#);
         assert!(!r.ok, "expected error for length mismatch");
     }
 
     #[test]
     fn zip_with_empty_arrays() {
-        let r = run(
-            r#"let r = array_zip_with([], [],
+        let r = run(r#"let r = array_zip_with([], [],
     fn(int a, int b) -> int { return a + b; });
-println(len(r));"#,
-        );
+println(len(r));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'));
     }
@@ -703,13 +646,11 @@ println(len(r));"#,
 
     #[test]
     fn windows_basic() {
-        let r = run(
-            r#"let ws = array_windows([1,2,3,4,5], 3);
+        let r = run(r#"let ws = array_windows([1,2,3,4,5], 3);
 println(len(ws));
 println(ws[0][0]);
 println(ws[0][2]);
-println(ws[2][0]);"#,
-        );
+println(ws[2][0]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "3", "3 windows");
@@ -720,20 +661,16 @@ println(ws[2][0]);"#,
 
     #[test]
     fn windows_size_equals_length() {
-        let r = run(
-            r#"let ws = array_windows([1,2,3], 3);
-println(len(ws));"#,
-        );
+        let r = run(r#"let ws = array_windows([1,2,3], 3);
+println(len(ws));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('1'), "1 window");
     }
 
     #[test]
     fn windows_larger_than_array() {
-        let r = run(
-            r#"let ws = array_windows([1,2], 5);
-println(len(ws));"#,
-        );
+        let r = run(r#"let ws = array_windows([1,2], 5);
+println(len(ws));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'), "0 windows");
     }
@@ -749,12 +686,10 @@ println(ws);"#);
 
     #[test]
     fn take_while_prefix() {
-        let r = run(
-            r#"let prefix = array_take_while([1,2,3,4,1],
+        let r = run(r#"let prefix = array_take_while([1,2,3,4,1],
     fn(int x) -> bool { return x < 4; });
 println(len(prefix));
-println(prefix[2]);"#,
-        );
+println(prefix[2]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "3");
@@ -763,34 +698,28 @@ println(prefix[2]);"#,
 
     #[test]
     fn take_while_empty_result() {
-        let r = run(
-            r#"let prefix = array_take_while([5,6,7],
+        let r = run(r#"let prefix = array_take_while([5,6,7],
     fn(int x) -> bool { return x < 3; });
-println(len(prefix));"#,
-        );
+println(len(prefix));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'));
     }
 
     #[test]
     fn take_while_full_array() {
-        let r = run(
-            r#"let prefix = array_take_while([1,2,3],
+        let r = run(r#"let prefix = array_take_while([1,2,3],
     fn(int x) -> bool { return x > 0; });
-println(len(prefix));"#,
-        );
+println(len(prefix));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('3'));
     }
 
     #[test]
     fn drop_while_suffix() {
-        let r = run(
-            r#"let rest = array_drop_while([1,2,3,4,1],
+        let r = run(r#"let rest = array_drop_while([1,2,3,4,1],
     fn(int x) -> bool { return x < 3; });
 println(len(rest));
-println(rest[0]);"#,
-        );
+println(rest[0]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         let lines: Vec<&str> = r.stdout.trim().lines().collect();
         assert_eq!(lines[0], "3");
@@ -799,22 +728,18 @@ println(rest[0]);"#,
 
     #[test]
     fn drop_while_all_pass_returns_empty() {
-        let r = run(
-            r#"let rest = array_drop_while([1,2,3],
+        let r = run(r#"let rest = array_drop_while([1,2,3],
     fn(int x) -> bool { return x > 0; });
-println(len(rest));"#,
-        );
+println(len(rest));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'));
     }
 
     #[test]
     fn drop_while_none_pass_returns_all() {
-        let r = run(
-            r#"let rest = array_drop_while([5,6,7],
+        let r = run(r#"let rest = array_drop_while([5,6,7],
     fn(int x) -> bool { return x < 3; });
-println(len(rest));"#,
-        );
+println(len(rest));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('3'));
     }
@@ -823,11 +748,9 @@ println(len(rest));"#,
 
     #[test]
     fn sum_by_string_lengths() {
-        let r = run(
-            r#"let total = array_sum_by(["cat","ox","elephant"],
+        let r = run(r#"let total = array_sum_by(["cat","ox","elephant"],
     fn(string s) -> int { return len(s); });
-println(total);"#,
-        );
+println(total);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("13"), "3+2+8=13: {}", r.stdout);
     }

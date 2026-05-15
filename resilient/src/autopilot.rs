@@ -103,9 +103,7 @@ pub fn format_report(report: &AutopilotReport) -> String {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    let has_fn = crate::uniqueness_walk::any_node(program, |n| {
-        matches!(n, Node::Function { .. })
-    });
+    let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
     if !has_fn {
         return Ok(());
     }
@@ -127,16 +125,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             );
         }
         for r in &e.inferred_requires {
-            eprintln!(
-                "autopilot: `{}` suggested: requires {}",
-                e.function_name, r
-            );
+            eprintln!("autopilot: `{}` suggested: requires {}", e.function_name, r);
         }
         for r in &e.inferred_ensures {
-            eprintln!(
-                "autopilot: `{}` suggested: ensures {}",
-                e.function_name, r
-            );
+            eprintln!("autopilot: `{}` suggested: ensures {}", e.function_name, r);
         }
     }
     Ok(())

@@ -6291,9 +6291,7 @@ fn walk_l0061(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0061".into(),
             severity: Severity::Warning,
-            message: format!(
-                "shifting by zero (`{operator} 0`) is a no-op — simplify to `x`"
-            ),
+            message: format!("shifting by zero (`{operator} 0`) is a no-op — simplify to `x`"),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -6423,7 +6421,9 @@ fn walk_l0065(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && let Node::Block { stmts: cons_stmts, .. } = consequence.as_ref()
+        && let Node::Block {
+            stmts: cons_stmts, ..
+        } = consequence.as_ref()
         && cons_stmts.len() == 1
         && matches!(
             &cons_stmts[0],
@@ -6431,7 +6431,9 @@ fn walk_l0065(node: &Node, out: &mut Vec<Lint>) {
                 value: Some(v), ..
             } if matches!(v.as_ref(), Node::BooleanLiteral { value: true, .. })
         )
-        && let Node::Block { stmts: alt_stmts, .. } = alt.as_ref()
+        && let Node::Block {
+            stmts: alt_stmts, ..
+        } = alt.as_ref()
         && alt_stmts.len() == 1
         && matches!(
             &alt_stmts[0],
@@ -6443,7 +6445,9 @@ fn walk_l0065(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0065".into(),
             severity: Severity::Warning,
-            message: "`if cond { return true; } else { return false; }` simplifies to `return cond;`".into(),
+            message:
+                "`if cond { return true; } else { return false; }` simplifies to `return cond;`"
+                    .into(),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -6466,7 +6470,9 @@ fn walk_l0066(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && let Node::Block { stmts: cons_stmts, .. } = consequence.as_ref()
+        && let Node::Block {
+            stmts: cons_stmts, ..
+        } = consequence.as_ref()
         && cons_stmts.len() == 1
         && matches!(
             &cons_stmts[0],
@@ -6474,7 +6480,9 @@ fn walk_l0066(node: &Node, out: &mut Vec<Lint>) {
                 value: Some(v), ..
             } if matches!(v.as_ref(), Node::BooleanLiteral { value: false, .. })
         )
-        && let Node::Block { stmts: alt_stmts, .. } = alt.as_ref()
+        && let Node::Block {
+            stmts: alt_stmts, ..
+        } = alt.as_ref()
         && alt_stmts.len() == 1
         && matches!(
             &alt_stmts[0],
@@ -6486,7 +6494,9 @@ fn walk_l0066(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0066".into(),
             severity: Severity::Warning,
-            message: "`if cond { return false; } else { return true; }` simplifies to `return !cond;`".into(),
+            message:
+                "`if cond { return false; } else { return true; }` simplifies to `return !cond;`"
+                    .into(),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -6503,7 +6513,12 @@ fn run_l0071_too_many_params(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_l0071(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::Function { name, parameters, span, .. } = node
+    if let Node::Function {
+        name,
+        parameters,
+        span,
+        ..
+    } = node
         && parameters.len() > MAX_PARAM_COUNT
     {
         out.push(Lint {
@@ -6528,7 +6543,9 @@ fn run_l0072_unused_for_var(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_l0072(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::ForInStatement { name, body, span, .. } = node
+    if let Node::ForInStatement {
+        name, body, span, ..
+    } = node
         && !name.is_empty()
         && !ident_used_in(body, name)
     {
@@ -6547,9 +6564,10 @@ fn walk_l0072(node: &Node, out: &mut Vec<Lint>) {
 }
 
 fn ident_used_in(node: &Node, target: &str) -> bool {
-    crate::uniqueness_walk::any_node(node, |n| {
-        matches!(n, Node::Identifier { name, .. } if name == target)
-    })
+    crate::uniqueness_walk::any_node(
+        node,
+        |n| matches!(n, Node::Identifier { name, .. } if name == target),
+    )
 }
 
 // ---- L0073: duplicate contract clause ----
@@ -6583,7 +6601,9 @@ fn clause_text(n: &Node) -> String {
             right,
             ..
         } => format!("{} {operator} {}", clause_text(left), clause_text(right)),
-        Node::PrefixExpression { operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
             format!("{operator}{}", clause_text(right))
         }
         Node::CallExpression {
@@ -6703,7 +6723,11 @@ fn check_vacuous_clauses(
 ) {
     for clause in clauses {
         if let Node::BooleanLiteral { value, .. } = clause {
-            let desc = if *value { "trivially true" } else { "trivially false" };
+            let desc = if *value {
+                "trivially true"
+            } else {
+                "trivially false"
+            };
             let hint = match (kind, *value) {
                 ("requires", true) => "vacuous precondition — remove it or write a real constraint",
                 ("requires", false) => "unsatisfiable precondition — function can never be called",
@@ -6714,9 +6738,7 @@ fn check_vacuous_clauses(
             out.push(Lint {
                 code: "L0075".into(),
                 severity: Severity::Warning,
-                message: format!(
-                    "function `{fn_name}` has `{kind} {value}` ({desc}): {hint}"
-                ),
+                message: format!("function `{fn_name}` has `{kind} {value}` ({desc}): {hint}"),
                 line: span.start.line as u32,
                 column: span.start.column as u32,
             });
@@ -6779,7 +6801,13 @@ fn run_l0067_and_true(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_l0067(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::InfixExpression { operator, left, right, span, .. } = node
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+        ..
+    } = node
         && operator == "&&"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: true, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: true, .. }))
@@ -6787,7 +6815,8 @@ fn walk_l0067(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0067".into(),
             severity: Severity::Warning,
-            message: "`x && true` / `true && x` — AND with `true` is the identity; simplify to `x`".into(),
+            message: "`x && true` / `true && x` — AND with `true` is the identity; simplify to `x`"
+                .into(),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -6802,7 +6831,13 @@ fn run_l0068_and_false(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_l0068(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::InfixExpression { operator, left, right, span, .. } = node
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+        ..
+    } = node
         && operator == "&&"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: false, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: false, .. }))
@@ -6825,7 +6860,13 @@ fn run_l0069_or_true(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_l0069(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::InfixExpression { operator, left, right, span, .. } = node
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+        ..
+    } = node
         && operator == "||"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: true, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: true, .. }))
@@ -6833,7 +6874,9 @@ fn walk_l0069(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0069".into(),
             severity: Severity::Warning,
-            message: "`x || true` / `true || x` — OR with `true` is always `true`; likely a logic error".into(),
+            message:
+                "`x || true` / `true || x` — OR with `true` is always `true`; likely a logic error"
+                    .into(),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -6848,7 +6891,13 @@ fn run_l0070_or_false(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_l0070(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::InfixExpression { operator, left, right, span, .. } = node
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+        ..
+    } = node
         && operator == "||"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: false, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: false, .. }))
@@ -6856,7 +6905,9 @@ fn walk_l0070(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0070".into(),
             severity: Severity::Warning,
-            message: "`x || false` / `false || x` — OR with `false` is the identity; simplify to `x`".into(),
+            message:
+                "`x || false` / `false || x` — OR with `false` is the identity; simplify to `x`"
+                    .into(),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -6882,7 +6933,9 @@ fn contains_result_identifier(node: &Node) -> bool {
 }
 
 fn run_l0076_result_in_requires(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for s in stmts {
         if let Node::Function {
             name,
@@ -6915,7 +6968,9 @@ fn run_l0076_result_in_requires(program: &Node, out: &mut Vec<Lint>) {
 // ============================================================
 
 fn run_l0077_ensures_result_void(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for s in stmts {
         if let Node::Function {
             name,
@@ -6949,13 +7004,14 @@ fn run_l0077_ensures_result_void(program: &Node, out: &mut Vec<Lint>) {
 // ============================================================
 
 const SHADOWED_BUILTINS: &[&str] = &[
-    "len", "print", "println", "assert", "format", "abs", "min", "max",
-    "sqrt", "panic", "abort", "push", "pop", "contains", "split", "join",
-    "range", "keys", "values", "type_of", "exit",
+    "len", "print", "println", "assert", "format", "abs", "min", "max", "sqrt", "panic", "abort",
+    "push", "pop", "contains", "split", "join", "range", "keys", "values", "type_of", "exit",
 ];
 
 fn run_l0078_param_shadows_builtin(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for s in stmts {
         if let Node::Function {
             name: fn_name,
@@ -6987,10 +7043,16 @@ fn run_l0078_param_shadows_builtin(program: &Node, out: &mut Vec<Lint>) {
 // ============================================================
 
 fn run_l0079_empty_function_body(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for s in stmts {
-        if let Node::Function { name, body, span, .. } = &s.node
-            && let Node::Block { stmts: body_stmts, .. } = body.as_ref()
+        if let Node::Function {
+            name, body, span, ..
+        } = &s.node
+            && let Node::Block {
+                stmts: body_stmts, ..
+            } = body.as_ref()
             && body_stmts.is_empty()
         {
             out.push(Lint {
@@ -7016,7 +7078,9 @@ fn walk_l0080(node: &Node, out: &mut Vec<Lint>) {
     if let Node::Block { stmts, .. } = node {
         for i in 0..stmts.len().saturating_sub(1) {
             if let Node::LetStatement { name, span, .. } = &stmts[i]
-                && let Node::Assignment { name: asgn_name, .. } = &stmts[i + 1]
+                && let Node::Assignment {
+                    name: asgn_name, ..
+                } = &stmts[i + 1]
                 && asgn_name == name
             {
                 out.push(Lint {
@@ -7046,8 +7110,16 @@ fn run_l0081_duplicate_assert(program: &Node, out: &mut Vec<Lint>) {
 fn walk_l0081(node: &Node, out: &mut Vec<Lint>) {
     if let Node::Block { stmts, .. } = node {
         for i in 0..stmts.len().saturating_sub(1) {
-            if let Node::Assert { condition: cond1, span: span1, .. } = &stmts[i]
-                && let Node::Assert { condition: cond2, span, .. } = &stmts[i + 1]
+            if let Node::Assert {
+                condition: cond1,
+                span: span1,
+                ..
+            } = &stmts[i]
+                && let Node::Assert {
+                    condition: cond2,
+                    span,
+                    ..
+                } = &stmts[i + 1]
                 && clause_text(cond1) == clause_text(cond2)
             {
                 out.push(Lint {
@@ -7110,7 +7182,9 @@ fn run_l0083_noreturn_with_return_type(program: &Node, source: &str, out: &mut V
     if noreturn_fns.is_empty() {
         return;
     }
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for s in stmts {
         if let Node::Function {
             name,
@@ -7139,7 +7213,9 @@ fn run_l0083_noreturn_with_return_type(program: &Node, source: &str, out: &mut V
 // ============================================================
 
 fn run_l0084_nested_function(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for s in stmts {
         if let Node::Function {
             name: outer_name,
@@ -7167,7 +7243,9 @@ fn walk_l0084_in_body(node: &Node, outer_name: &str, out: &mut Vec<Lint>) {
         // don't recurse deeper into nested-of-nested to avoid duplicate reports
         return;
     }
-    recurse_children(node, &mut |child| walk_l0084_in_body(child, outer_name, out));
+    recurse_children(node, &mut |child| {
+        walk_l0084_in_body(child, outer_name, out)
+    });
 }
 
 // ============================================================
@@ -7175,13 +7253,12 @@ fn walk_l0084_in_body(node: &Node, outer_name: &str, out: &mut Vec<Lint>) {
 // ============================================================
 
 fn run_l0085_empty_struct(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for s in stmts {
         if let Node::StructDecl {
-            name,
-            fields,
-            span,
-            ..
+            name, fields, span, ..
         } = &s.node
             && fields.is_empty()
         {
@@ -7214,9 +7291,8 @@ fn run_l0086_empty_string_comparison(program: &Node, out: &mut Vec<Lint>) {
             if !matches!(operator.as_str(), "==" | "!=") {
                 return;
             }
-            let is_empty_str = |n: &Node| {
-                matches!(n, Node::StringLiteral { value, .. } if value.is_empty())
-            };
+            let is_empty_str =
+                |n: &Node| matches!(n, Node::StringLiteral { value, .. } if value.is_empty());
             if is_empty_str(left) || is_empty_str(right) {
                 let op = operator.clone();
                 let suggestion = if op == "==" {
@@ -7249,7 +7325,9 @@ fn walk_nodes<F: FnMut(&Node)>(node: &Node, f: &mut F) {
 // ============================================================
 
 fn run_l0087_pure_fn_prints(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for stmt in stmts {
         if let Node::Function {
             name,
@@ -7368,8 +7446,10 @@ fn run_l0090_both_arms_same_return(program: &Node, out: &mut Vec<Lint>) {
             span,
             ..
         } = node
-            && let (Some(a), Some(b)) =
-                (extract_sole_return_literal(consequence), extract_sole_return_literal(alt))
+            && let (Some(a), Some(b)) = (
+                extract_sole_return_literal(consequence),
+                extract_sole_return_literal(alt),
+            )
             && a == b
         {
             out.push(Lint {
@@ -7411,10 +7491,8 @@ fn run_l0091_empty_range_for(program: &Node, out: &mut Vec<Lint>) {
     walk_nodes(program, &mut |node| {
         if let Node::ForInStatement { iterable, span, .. } = node
             && let Node::Range { lo, hi, .. } = iterable.as_ref()
-            && let (
-                Node::IntegerLiteral { value: lv, .. },
-                Node::IntegerLiteral { value: hv, .. },
-            ) = (lo.as_ref(), hi.as_ref())
+            && let (Node::IntegerLiteral { value: lv, .. }, Node::IntegerLiteral { value: hv, .. }) =
+                (lo.as_ref(), hi.as_ref())
             && lv == hv
         {
             out.push(Lint {
@@ -7436,7 +7514,9 @@ fn run_l0091_empty_range_for(program: &Node, out: &mut Vec<Lint>) {
 // ============================================================
 
 fn run_l0092_ensures_false(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for stmt in stmts {
         if let Node::Function {
             name,
@@ -7467,7 +7547,9 @@ fn run_l0092_ensures_false(program: &Node, out: &mut Vec<Lint>) {
 // ============================================================
 
 fn run_l0093_param_named_result(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for stmt in stmts {
         if let Node::Function {
             name,
@@ -10394,7 +10476,8 @@ mod tests {
 
     #[test]
     fn l0065_fires_on_return_true_else_false() {
-        let src = r#"fn is_pos(int x) -> bool { if x > 0 { return true; } else { return false; } }"#;
+        let src =
+            r#"fn is_pos(int x) -> bool { if x > 0 { return true; } else { return false; } }"#;
         assert!(
             codes(src).contains(&"L0065".to_string()),
             "L0065 must fire for `if cond {{ return true; }} else {{ return false; }}`"
@@ -10414,7 +10497,8 @@ mod tests {
 
     #[test]
     fn l0066_fires_on_return_false_else_true() {
-        let src = r#"fn is_neg(int x) -> bool { if x < 0 { return false; } else { return true; } }"#;
+        let src =
+            r#"fn is_neg(int x) -> bool { if x < 0 { return false; } else { return true; } }"#;
         assert!(
             codes(src).contains(&"L0066".to_string()),
             "L0066 must fire for `if cond {{ return false; }} else {{ return true; }}`"
@@ -10655,8 +10739,7 @@ mod tests {
 
     #[test]
     fn l0081_fires_on_duplicate_assert() {
-        let src =
-            "fn f(int x) requires x > 0 { assert(x > 0); assert(x > 0); return x; }\n";
+        let src = "fn f(int x) requires x > 0 { assert(x > 0); assert(x > 0); return x; }\n";
         assert!(
             codes(src).contains(&"L0081".to_string()),
             "L0081 must fire for duplicate consecutive assert; got {:?}",
@@ -10666,8 +10749,7 @@ mod tests {
 
     #[test]
     fn l0081_silent_for_different_asserts() {
-        let src =
-            "fn f(int x) requires x > 0 { assert(x > 0); assert(x < 100); return x; }\n";
+        let src = "fn f(int x) requires x > 0 { assert(x > 0); assert(x < 100); return x; }\n";
         assert!(
             !codes(src).contains(&"L0081".to_string()),
             "L0081 must not fire for different assert conditions"
@@ -10807,7 +10889,10 @@ mod tests {
         // The parser currently rejects `let _` syntax, so the lint fires only
         // once parser support for wildcard bindings is added. Until then, verify
         // the code is registered and has an explanation.
-        assert!(KNOWN_CODES.contains(&"L0088"), "L0088 must be in KNOWN_CODES");
+        assert!(
+            KNOWN_CODES.contains(&"L0088"),
+            "L0088 must be in KNOWN_CODES"
+        );
         assert!(explain("L0088").is_some(), "L0088 must have an explanation");
     }
 

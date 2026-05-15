@@ -16,7 +16,11 @@
 //! The check operates on `Node::Actor` (RES-332). It iterates the
 //! actor's declared receive handlers and looks for the convention.
 
-#![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, clippy::single_match)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::doc_lazy_continuation,
+    clippy::single_match
+)]
 
 use crate::Node;
 

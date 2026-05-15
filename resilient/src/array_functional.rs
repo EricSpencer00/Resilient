@@ -26,18 +26,19 @@ type RResult<T> = Result<T, String>;
 /// let result = array_flat_map([1, 2, 3], fn(int x) -> Array { [x, x * 10] });
 /// // result == [1, 10, 2, 20, 3, 30]
 /// ```
-pub(crate) fn builtin_array_flat_map(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_flat_map(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
-        [a, _] => return Err(format!("array_flat_map: first argument must be an Array, got {a}")),
+        [a, _] => {
+            return Err(format!(
+                "array_flat_map: first argument must be an Array, got {a}"
+            ));
+        }
         _ => {
             return Err(format!(
                 "array_flat_map: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -49,7 +50,7 @@ pub(crate) fn builtin_array_flat_map(
             other => {
                 return Err(format!(
                     "array_flat_map: callback must return an Array, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -68,18 +69,19 @@ pub(crate) fn builtin_array_flat_map(
 /// });
 /// // m == {"even" -> [2, 4], "odd" -> [1, 3]}
 /// ```
-pub(crate) fn builtin_array_group_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_group_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
-        [a, _] => return Err(format!("array_group_by: first argument must be an Array, got {a}")),
+        [a, _] => {
+            return Err(format!(
+                "array_group_by: first argument must be an Array, got {a}"
+            ));
+        }
         _ => {
             return Err(format!(
                 "array_group_by: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -90,8 +92,9 @@ pub(crate) fn builtin_array_group_by(
 
     for elem in arr {
         let key_val = interp.apply_function(f.clone(), vec![elem.clone()])?;
-        let mk = MapKey::from_value(&key_val)
-            .map_err(|e| format!("array_group_by: key function returned non-hashable value: {e}"))?;
+        let mk = MapKey::from_value(&key_val).map_err(|e| {
+            format!("array_group_by: key function returned non-hashable value: {e}")
+        })?;
         if !groups.contains_key(&mk) {
             order.push(mk.clone());
             groups.insert(mk.clone(), Vec::new());
@@ -122,18 +125,19 @@ pub(crate) fn builtin_array_group_by(
 /// // parts[0] == [2, 4]   (evens)
 /// // parts[1] == [1, 3, 5] (odds)
 /// ```
-pub(crate) fn builtin_array_partition(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_partition(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, f) = match args {
         [Value::Array(a), f] => (a.clone(), f.clone()),
-        [a, _] => return Err(format!("array_partition: first argument must be an Array, got {a}")),
+        [a, _] => {
+            return Err(format!(
+                "array_partition: first argument must be an Array, got {a}"
+            ));
+        }
         _ => {
             return Err(format!(
                 "array_partition: expected 2 arguments (array, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -147,11 +151,14 @@ pub(crate) fn builtin_array_partition(
             other => {
                 return Err(format!(
                     "array_partition: predicate must return bool, got {other}"
-                ))
+                ));
             }
         }
     }
-    Ok(Value::Array(vec![Value::Array(passing), Value::Array(failing)]))
+    Ok(Value::Array(vec![
+        Value::Array(passing),
+        Value::Array(failing),
+    ]))
 }
 
 /// `map_from_pairs(pairs) -> Map`
@@ -167,12 +174,16 @@ pub(crate) fn builtin_array_partition(
 pub(crate) fn builtin_map_from_pairs(args: &[Value]) -> RResult<Value> {
     let pairs = match args {
         [Value::Array(a)] => a.clone(),
-        [other] => return Err(format!("map_from_pairs: expected an Array of pairs, got {other}")),
+        [other] => {
+            return Err(format!(
+                "map_from_pairs: expected an Array of pairs, got {other}"
+            ));
+        }
         _ => {
             return Err(format!(
                 "map_from_pairs: expected 1 argument, got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -182,21 +193,20 @@ pub(crate) fn builtin_map_from_pairs(args: &[Value]) -> RResult<Value> {
     for (i, pair) in pairs.into_iter().enumerate() {
         match pair {
             Value::Array(ref kv) if kv.len() == 2 => {
-                let mk = MapKey::from_value(&kv[0]).map_err(|e| {
-                    format!("map_from_pairs: pair[{i}] key is not hashable: {e}")
-                })?;
+                let mk = MapKey::from_value(&kv[0])
+                    .map_err(|e| format!("map_from_pairs: pair[{i}] key is not hashable: {e}"))?;
                 map.insert(mk, kv[1].clone());
             }
             Value::Array(ref kv) => {
                 return Err(format!(
                     "map_from_pairs: pair[{i}] must have exactly 2 elements, got {}",
                     kv.len()
-                ))
+                ));
             }
             other => {
                 return Err(format!(
                     "map_from_pairs: pair[{i}] must be a 2-element Array, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -214,18 +224,19 @@ pub(crate) fn builtin_map_from_pairs(args: &[Value]) -> RResult<Value> {
 /// let running_sum = array_scan([1,2,3,4], 0, fn(int acc, int x) -> int { return acc + x; });
 /// // running_sum == [0, 1, 3, 6, 10]
 /// ```
-pub(crate) fn builtin_array_scan(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_array_scan(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (arr, init, f) = match args {
         [Value::Array(a), init, f] => (a.clone(), init.clone(), f.clone()),
-        [a, _, _] => return Err(format!("array_scan: first argument must be an Array, got {a}")),
+        [a, _, _] => {
+            return Err(format!(
+                "array_scan: first argument must be an Array, got {a}"
+            ));
+        }
         _ => {
             return Err(format!(
                 "array_scan: expected 3 arguments (array, init, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -266,8 +277,10 @@ println(result[3]);"#,
 
     #[test]
     fn flat_map_empty_input() {
-        let r = run(r#"let result = array_flat_map([], fn(int x) -> Array { [x] });
-println(len(result));"#);
+        let r = run(
+            r#"let result = array_flat_map([], fn(int x) -> Array { [x] });
+println(len(result));"#,
+        );
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'), "len: {}", r.stdout);
     }
@@ -284,8 +297,10 @@ println(len(result));"#,
 
     #[test]
     fn flat_map_rejects_non_array_callback_return() {
-        let r = run(r#"let result = array_flat_map([1, 2], fn(int x) -> int { x });
-println(result);"#);
+        let r = run(
+            r#"let result = array_flat_map([1, 2], fn(int x) -> int { x });
+println(result);"#,
+        );
         assert!(!r.ok, "expected error for non-array callback return");
     }
 
@@ -307,10 +322,8 @@ println(len(m["odd"]));"#,
 
     #[test]
     fn group_by_empty_input() {
-        let r = run(
-            r#"let m = array_group_by([], fn(int x) -> string { "k" });
-println(map_len(m));"#,
-        );
+        let r = run(r#"let m = array_group_by([], fn(int x) -> string { "k" });
+println(map_len(m));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'), "len: {}", r.stdout);
     }
@@ -369,11 +382,9 @@ println(len(parts[1]));"#,
 
     #[test]
     fn map_from_pairs_basic() {
-        let r = run(
-            r#"let m = map_from_pairs([["a", 1], ["b", 2]]);
+        let r = run(r#"let m = map_from_pairs([["a", 1], ["b", 2]]);
 println(m["a"]);
-println(m["b"]);"#,
-        );
+println(m["b"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('1'), "a: {}", r.stdout);
         assert!(r.stdout.contains('2'), "b: {}", r.stdout);
@@ -406,10 +417,8 @@ println(m);"#);
 
     #[test]
     fn map_from_pairs_duplicate_keys_last_wins() {
-        let r = run(
-            r#"let m = map_from_pairs([["x", 1], ["x", 99]]);
-println(m["x"]);"#,
-        );
+        let r = run(r#"let m = map_from_pairs([["x", 1], ["x", 99]]);
+println(m["x"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("99"), "last wins: {}", r.stdout);
     }

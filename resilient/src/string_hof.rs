@@ -24,22 +24,19 @@ type RResult<T> = Result<T, String>;
 /// let upper = string_map_chars("hello", fn(string c) -> string { to_upper(c) });
 /// // upper == "HELLO"
 /// ```
-pub(crate) fn builtin_string_map_chars(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_string_map_chars(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (s, f) = match args {
         [Value::String(s), f] => (s.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "string_map_chars: first argument must be a string, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "string_map_chars: expected 2 arguments (string, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -51,7 +48,7 @@ pub(crate) fn builtin_string_map_chars(
             other => {
                 return Err(format!(
                     "string_map_chars: callback must return a string, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -69,22 +66,19 @@ pub(crate) fn builtin_string_map_chars(
 /// });
 /// // digits_only == "123"
 /// ```
-pub(crate) fn builtin_string_filter_by(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_string_filter_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (s, f) = match args {
         [Value::String(s), f] => (s.clone(), f.clone()),
         [a, _] => {
             return Err(format!(
                 "string_filter_by: first argument must be a string, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "string_filter_by: expected 2 arguments (string, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -97,7 +91,7 @@ pub(crate) fn builtin_string_filter_by(
             other => {
                 return Err(format!(
                     "string_filter_by: callback must return bool, got {other}"
-                ))
+                ));
             }
         }
     }
@@ -116,22 +110,19 @@ pub(crate) fn builtin_string_filter_by(
 /// });
 /// // count == 1  (one space)
 /// ```
-pub(crate) fn builtin_string_fold(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> RResult<Value> {
+pub(crate) fn builtin_string_fold(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (s, init, f) = match args {
         [Value::String(s), init, f] => (s.clone(), init.clone(), f.clone()),
         [a, _, _] => {
             return Err(format!(
                 "string_fold: first argument must be a string, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "string_fold: expected 3 arguments (string, init, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -161,13 +152,13 @@ pub(crate) fn builtin_string_for_each_char(
         [a, _] => {
             return Err(format!(
                 "string_for_each_char: first argument must be a string, got {a}"
-            ))
+            ));
         }
         _ => {
             return Err(format!(
                 "string_for_each_char: expected 2 arguments (string, fn), got {}",
                 args.len()
-            ))
+            ));
         }
     };
 
@@ -313,22 +304,18 @@ println(rev);"#,
 
     #[test]
     fn for_each_char_visits_all() {
-        let r = run(
-            r#"let count = [0];
+        let r = run(r#"let count = [0];
 string_for_each_char("hello", fn(string c) -> Void { count[0] = count[0] + 1; });
-println(count[0]);"#,
-        );
+println(count[0]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('5'), "stdout: {}", r.stdout);
     }
 
     #[test]
     fn for_each_char_empty_string_no_calls() {
-        let r = run(
-            r#"let count = [0];
+        let r = run(r#"let count = [0];
 string_for_each_char("", fn(string c) -> Void { count[0] = count[0] + 1; });
-println(count[0]);"#,
-        );
+println(count[0]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('0'));
     }

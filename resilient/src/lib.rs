@@ -15,13 +15,13 @@ mod alignment_helpers;
 // RES-1160: argmax / argmin for float and string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_argminmax;
-mod array_functional;
 mod array_combinators;
-mod map_functional;
-mod string_hof;
-mod numeric_utils;
+mod array_functional;
 mod collection_extras;
+mod map_functional;
+mod numeric_utils;
 mod result_option_hof;
+mod string_hof;
 mod type_builtins;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
@@ -544,6 +544,7 @@ mod param_destructuring;
 // `<EXTENSION_PASSES>` block. One walk collects fn names + parameter
 // types; per-pass call sites consult it to skip ~15 attribute-only
 // passes whose markers are absent in the input program.
+mod enum_exhaustiveness;
 mod pass_gate;
 mod phantom_types;
 mod power_contracts;
@@ -558,7 +559,6 @@ mod semver_behavior;
 mod session_types;
 mod snapshot_regression;
 mod stack_contracts;
-mod enum_exhaustiveness;
 mod struct_exhaustiveness;
 mod typestate_types;
 mod vibe_debt;
@@ -2241,6 +2241,19 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-2653: `break label;` — exit the loop with the given label.
+    BreakLabel {
+        label: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-2653: `continue label;` — skip to the next iteration of the
+    /// loop with the given label.
+    ContinueLabel {
+        label: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     IfStatement {
         condition: Box<Node>,
         consequence: Box<Node>,
@@ -2264,6 +2277,8 @@ enum Node {
         invariants: Vec<Node>,
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-2653: optional loop label for labeled break/continue.
+        label: Option<String>,
     },
     /// RES-037: `for NAME in EXPR { BODY }`. `EXPR` must evaluate to an
     /// array; `NAME` is bound to each element in order.
@@ -2279,6 +2294,8 @@ enum Node {
         invariants: Vec<Node>,
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-2653: optional loop label for labeled break/continue.
+        label: Option<String>,
     },
     /// RES-087: converted from tuple form so it can carry a span
     /// matching the wrapped expression's starting token.
@@ -3217,6 +3234,37 @@ impl Parser {
                     tok
                 ));
                 None
+            }
+            // RES-2653: labeled loop — `label: while COND { ... }` or
+            // `label: for X in Y { ... }`. The label is an ordinary
+            // identifier followed by `:`. We peek two tokens ahead to
+            // distinguish from an expression statement like `foo:` (which
+            // would be invalid anyway).
+            Token::Identifier(_) if self.peek_token == Token::Colon => {
+                // peek_token is `:`. We need to look one further token
+                // ahead to see if it's `while` or `for`. Do a speculative
+                // read: save state, advance, check, then restore or
+                // continue. Since the parser doesn't support arbitrary
+                // lookahead natively, we check the next-next token by
+                // saving current state and peeking.
+                // Strategy: read the identifier, consume `:`, then parse
+                // the labeled loop.
+                let label = match &self.current_token {
+                    Token::Identifier(n) => n.clone(),
+                    _ => unreachable!(),
+                };
+                // Advance past identifier and `:` to see what follows.
+                self.next_token(); // now on `:`
+                self.next_token(); // now on `while` or `for` (or something else)
+                match &self.current_token {
+                    Token::While => Some(self.parse_labeled_while_statement(label)),
+                    Token::For => Some(self.parse_labeled_for_in_statement(label)),
+                    _ => {
+                        // Not a labeled loop — error recovery: just try to
+                        // parse as an expression statement from here.
+                        self.parse_expression_statement()
+                    }
+                }
             }
             // RES-390: contextual keywords `actor` / `cluster`. Both
             // are recognised only at the top of a statement when
@@ -5467,6 +5515,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
         self.next_token(); // skip 'in'
@@ -5507,6 +5556,7 @@ impl Parser {
                 }),
                 invariants,
                 span: stmt_span,
+                label: None,
             };
         }
         let body = self.parse_block_statement();
@@ -5516,6 +5566,7 @@ impl Parser {
             body: Box::new(body),
             invariants,
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -5603,6 +5654,7 @@ impl Parser {
                 }),
                 invariants,
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -5638,6 +5690,7 @@ impl Parser {
             body: Box::new(body_block),
             invariants,
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -5744,6 +5797,7 @@ impl Parser {
                 }),
                 invariants,
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -5753,6 +5807,7 @@ impl Parser {
             body: Box::new(body),
             invariants,
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -6693,26 +6748,97 @@ impl Parser {
         }
     }
 
-    /// RES-910: parse `break;`. The keyword may be followed by an
-    /// optional `;`, mirroring `return;` syntax. The typechecker is
-    /// what enforces "must be inside a loop".
+    /// RES-910: parse `break;` or `break label;` (RES-2653).
+    /// The typechecker enforces "must be inside a loop".
     fn parse_break_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // skip `break`
+        // RES-2653: `break label;` — if current token is an identifier
+        // (not a semicolon or EOF), treat it as a label name.
+        if let Token::Identifier(label) = &self.current_token.clone() {
+            let label = label.clone();
+            // Consume the label identifier.
+            if self.peek_token == Token::Semicolon {
+                self.next_token(); // move to `;`
+            }
+            return Node::BreakLabel {
+                label,
+                span: stmt_span,
+            };
+        }
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Node::Break { span: stmt_span }
     }
 
-    /// RES-910: parse `continue;`. Same shape as `break`.
+    /// RES-910: parse `continue;` or `continue label;` (RES-2653).
     fn parse_continue_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // skip `continue`
+        // RES-2653: `continue label;` — if current token is an identifier.
+        if let Token::Identifier(label) = &self.current_token.clone() {
+            let label = label.clone();
+            if self.peek_token == Token::Semicolon {
+                self.next_token();
+            }
+            return Node::ContinueLabel {
+                label,
+                span: stmt_span,
+            };
+        }
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Node::Continue { span: stmt_span }
+    }
+
+    /// RES-2653: parse `label: while COND { BODY }`.
+    /// Caller has already consumed `label` identifier and `:` and `while`.
+    /// On entry, `current_token` is `while`.
+    fn parse_labeled_while_statement(&mut self, label: String) -> Node {
+        // Delegate to the existing while parser, then patch label in.
+        let node = self.parse_while_statement();
+        match node {
+            Node::WhileStatement {
+                condition,
+                body,
+                invariants,
+                span,
+                ..
+            } => Node::WhileStatement {
+                condition,
+                body,
+                invariants,
+                span,
+                label: Some(label),
+            },
+            other => other,
+        }
+    }
+
+    /// RES-2653: parse `label: for X in ITER { BODY }`.
+    /// On entry, `current_token` is `for`.
+    fn parse_labeled_for_in_statement(&mut self, label: String) -> Node {
+        let node = self.parse_for_in_statement();
+        match node {
+            Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                invariants,
+                span,
+                ..
+            } => Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                invariants,
+                span,
+                label: Some(label),
+            },
+            other => other,
+        }
     }
 
     /// RES-914: parse `while let <pattern> = <scrutinee> { body }` and
@@ -6749,6 +6875,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
         self.next_token(); // skip `=`
@@ -6776,6 +6903,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -6812,6 +6940,7 @@ impl Parser {
             body: Box::new(loop_body),
             invariants: Vec::new(),
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -6837,6 +6966,7 @@ impl Parser {
                 }),
                 invariants: Vec::new(),
                 span: stmt_span,
+                label: None,
             };
         }
 
@@ -6849,6 +6979,7 @@ impl Parser {
             body: Box::new(body),
             invariants: Vec::new(),
             span: stmt_span,
+            label: None,
         }
     }
 
@@ -9373,6 +9504,7 @@ impl Parser {
             // the original source-level loops carry them.
             invariants: Vec::new(),
             span: default(),
+            label: None,
         };
 
         // let _r = [];
@@ -9754,6 +9886,12 @@ enum Value {
     /// rule as `Break`; the loop evaluator consumes it and starts the
     /// next iteration instead of exiting.
     Continue,
+    /// RES-2653: labeled `break label;` sentinel — propagates through inner
+    /// loops (which only intercept `Value::Break`) until the loop whose
+    /// `label` matches consumes it.
+    BreakLabel(String),
+    /// RES-2653: labeled `continue label;` sentinel — same propagation rule.
+    ContinueLabel(String),
     Void,
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
     /// the hashable primitives (`Int`, `String`, `Bool`) — anything
@@ -9949,6 +10087,8 @@ impl std::fmt::Debug for Value {
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Break => write!(f, "Break"),
             Value::Continue => write!(f, "Continue"),
+            Value::BreakLabel(l) => write!(f, "BreakLabel({l})"),
+            Value::ContinueLabel(l) => write!(f, "ContinueLabel({l})"),
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
@@ -10049,6 +10189,8 @@ impl std::fmt::Display for Value {
             Value::Return(v) => write!(f, "{}", v),
             Value::Break => write!(f, "<break>"),
             Value::Continue => write!(f, "<continue>"),
+            Value::BreakLabel(l) => write!(f, "<break {l}>"),
+            Value::ContinueLabel(l) => write!(f, "<continue {l}>"),
             Value::Void => write!(f, "void"),
             Value::Map(m) => {
                 // RES-148: iterate keys in sorted order so Display is
@@ -22063,18 +22205,23 @@ impl Interpreter {
             // loop evaluator consumes it.
             Node::Break { .. } => Ok(Value::Break),
             Node::Continue { .. } => Ok(Value::Continue),
+            // RES-2653: labeled break/continue sentinels.
+            Node::BreakLabel { label, .. } => Ok(Value::BreakLabel(label.clone())),
+            Node::ContinueLabel { label, .. } => Ok(Value::ContinueLabel(label.clone())),
             Node::ForInStatement {
                 name,
                 iterable,
                 body,
                 invariants,
                 span,
-            } => self.eval_for_in(name, iterable, body, invariants, span),
+                label,
+            } => self.eval_for_in(name, iterable, body, invariants, span, label.as_deref()),
             Node::WhileStatement {
                 condition,
                 body,
                 invariants,
                 span,
+                label,
             } => {
                 // Cap iterations as a safety net so a buggy loop can't
                 // freeze the interpreter. 1M is big enough for
@@ -22111,6 +22258,20 @@ impl Interpreter {
                     if matches!(result, Value::Break) {
                         break;
                     }
+                    // RES-2653: labeled break — consume only if the label
+                    // matches this loop; otherwise propagate upward.
+                    if let Value::BreakLabel(ref lbl) = result {
+                        if label.as_deref() == Some(lbl.as_str()) {
+                            break;
+                        }
+                        return Ok(result);
+                    }
+                    // RES-2653: labeled continue — propagate if label doesn't match.
+                    if let Value::ContinueLabel(ref lbl) = result
+                        && label.as_deref() != Some(lbl.as_str())
+                    {
+                        return Ok(result);
+                    }
                     // Value::Continue is intentionally ignored here —
                     // the loop simply proceeds to its next condition
                     // check.
@@ -22144,9 +22305,9 @@ impl Interpreter {
                 } else if let Some(value) = self.statics.borrow().get(name).cloned() {
                     Ok(value)
                 } else if let Some(idx) = name.find("::")
-                    && let Some(value) = self
-                        .env
-                        .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
+                    && let Some(value) =
+                        self.env
+                            .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
                 {
                     // RES-424: `Struct::method()` syntax bridges to the
                     // `Struct$method` mangled name impl methods are stored
@@ -23424,9 +23585,7 @@ impl Interpreter {
                     // RES-427: Map index assignment via MapKey (string / int / bool keys).
                     Value::Map(mut m) => {
                         if path_exprs.len() != 1 {
-                            return Err(
-                                "Nested map index assignment not yet supported".to_string()
-                            );
+                            return Err("Nested map index assignment not yet supported".to_string());
                         }
                         let idx_val = self.eval(path_exprs[0])?;
                         let mk = MapKey::from_value(&idx_val)
@@ -23437,15 +23596,11 @@ impl Interpreter {
                     }
                     // Array index assignment (existing behaviour).
                     Value::Array(mut items) => {
-                        let mut path_indices: Vec<i64> =
-                            Vec::with_capacity(path_exprs.len());
+                        let mut path_indices: Vec<i64> = Vec::with_capacity(path_exprs.len());
                         for idx_expr in &path_exprs {
                             let idx_val = self.eval(idx_expr)?;
                             let Value::Int(i) = idx_val else {
-                                return Err(format!(
-                                    "Array index must be int, got {}",
-                                    idx_val
-                                ));
+                                return Err(format!("Array index must be int, got {}", idx_val));
                             };
                             path_indices.push(i);
                         }
@@ -23683,6 +23838,7 @@ impl Interpreter {
         body: &Node,
         invariants: &[Node],
         span: &span::Span,
+        label: Option<&str>,
     ) -> RResult<Value> {
         // RES-1085: wrap the iteration in a fresh enclosed environment so
         // the loop binding `name` shadows the outer scope rather than
@@ -23690,7 +23846,7 @@ impl Interpreter {
         // 0..3 {} println(i);` prints 2 instead of 100.
         let inner_env = Environment::new_enclosed(self.env.clone());
         let saved_env = std::mem::replace(&mut self.env, inner_env);
-        let result = self.eval_for_in_in_scope(name, iterable, body, invariants, span);
+        let result = self.eval_for_in_in_scope(name, iterable, body, invariants, span, label);
         self.env = saved_env;
         result
     }
@@ -23706,6 +23862,7 @@ impl Interpreter {
         body: &Node,
         invariants: &[Node],
         span: &span::Span,
+        label: Option<&str>,
     ) -> RResult<Value> {
         // RES-222: extract body-level invariants once.
         let body_invs = crate::loop_invariants::collect_body_invariants(body);
@@ -23739,6 +23896,18 @@ impl Interpreter {
                 if matches!(result, Value::Break) {
                     return Ok(Value::Void);
                 }
+                // RES-2653: labeled break/continue.
+                if let Value::BreakLabel(ref lbl) = result {
+                    if label == Some(lbl.as_str()) {
+                        return Ok(Value::Void);
+                    }
+                    return Ok(result);
+                }
+                if let Value::ContinueLabel(ref lbl) = result
+                    && label != Some(lbl.as_str())
+                {
+                    return Ok(result);
+                }
             }
             return Ok(Value::Void);
         }
@@ -23760,6 +23929,18 @@ impl Interpreter {
             // fast-path above.
             if matches!(result, Value::Break) {
                 return Ok(Value::Void);
+            }
+            // RES-2653: labeled break/continue.
+            if let Value::BreakLabel(ref lbl) = result {
+                if label == Some(lbl.as_str()) {
+                    return Ok(Value::Void);
+                }
+                return Ok(result);
+            }
+            if let Value::ContinueLabel(ref lbl) = result
+                && label != Some(lbl.as_str())
+            {
+                return Ok(result);
             }
         }
         Ok(Value::Void)
@@ -23858,7 +24039,14 @@ impl Interpreter {
                     // RES-910: Break/Continue propagate through blocks
                     // just like Return — the enclosing While/ForIn
                     // evaluator consumes them.
-                    if matches!(result, Value::Return(_) | Value::Break | Value::Continue) {
+                    if matches!(
+                        result,
+                        Value::Return(_)
+                            | Value::Break
+                            | Value::Continue
+                            | Value::BreakLabel(_)
+                            | Value::ContinueLabel(_)
+                    ) {
                         self.env = saved;
                         return Ok(result);
                     }
@@ -56790,63 +56978,51 @@ mod res427_map_index_tests {
 
     #[test]
     fn map_index_read_string_key() {
-        let r = run(
-            r#"let m = {"a" -> 1, "b" -> 2};
-println(m["a"]);"#,
-        );
+        let r = run(r#"let m = {"a" -> 1, "b" -> 2};
+println(m["a"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('1'), "got: {}", r.stdout);
     }
 
     #[test]
     fn map_index_read_int_key() {
-        let r = run(
-            r#"let m = {1 -> "one", 2 -> "two"};
-println(m[1]);"#,
-        );
+        let r = run(r#"let m = {1 -> "one", 2 -> "two"};
+println(m[1]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("one"), "got: {}", r.stdout);
     }
 
     #[test]
     fn map_index_write_string_key() {
-        let r = run(
-            r#"let m = {"x" -> 10};
+        let r = run(r#"let m = {"x" -> 10};
 m["x"] = 99;
-println(m["x"]);"#,
-        );
+println(m["x"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("99"), "got: {}", r.stdout);
     }
 
     #[test]
     fn map_index_write_new_key() {
-        let r = run(
-            r#"let m = {"a" -> 1};
+        let r = run(r#"let m = {"a" -> 1};
 m["b"] = 42;
-println(m["b"]);"#,
-        );
+println(m["b"]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("42"), "got: {}", r.stdout);
     }
 
     #[test]
     fn map_index_write_int_key() {
-        let r = run(
-            r#"let m = {0 -> "zero"};
+        let r = run(r#"let m = {0 -> "zero"};
 m[0] = "changed";
-println(m[0]);"#,
-        );
+println(m[0]);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("changed"), "got: {}", r.stdout);
     }
 
     #[test]
     fn map_index_missing_key_errors() {
-        let r = run(
-            r#"let m = {"a" -> 1};
-println(m["z"]);"#,
-        );
+        let r = run(r#"let m = {"a" -> 1};
+println(m["z"]);"#);
         assert!(!r.ok, "expected error for missing key");
     }
 }

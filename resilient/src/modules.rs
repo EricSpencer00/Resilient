@@ -190,13 +190,19 @@ mod math { fn sub(int x, int y) -> int { return x - y; } }
 "#;
         let (prog, _) = parse(src);
         let result = super::check(&prog, "test.rz");
-        assert!(result.is_err(), "expected error for duplicate module declaration");
+        assert!(
+            result.is_err(),
+            "expected error for duplicate module declaration"
+        );
         let msg = result.unwrap_err();
         assert!(
             msg.contains("duplicate module declaration"),
             "error message must mention 'duplicate module declaration': {msg}"
         );
-        assert!(msg.contains("math"), "error message must name the module: {msg}");
+        assert!(
+            msg.contains("math"),
+            "error message must name the module: {msg}"
+        );
     }
 
     #[test]

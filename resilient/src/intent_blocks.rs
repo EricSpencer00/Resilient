@@ -88,10 +88,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
 
     for intent in &intents {
-        let prop_label = intent
-            .property
-            .as_deref()
-            .unwrap_or(&intent.item_name);
+        let prop_label = intent.property.as_deref().unwrap_or(&intent.item_name);
 
         for enforcer in &intent.enforcers {
             if !fn_names.contains(enforcer.as_str()) {
@@ -101,7 +98,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     intent.item_name, prop_label, enforcer
                 );
             } else {
-                let has_contracts = fn_contracts.get(enforcer.as_str()).copied().unwrap_or(false);
+                let has_contracts = fn_contracts
+                    .get(enforcer.as_str())
+                    .copied()
+                    .unwrap_or(false);
                 if !has_contracts {
                     eprintln!(
                         "warning: intent `{}` (property: \"{}\") enforcer `{}` \

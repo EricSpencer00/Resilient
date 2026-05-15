@@ -26,10 +26,7 @@ pub struct ExhaustivenessWarning {
 /// Returns true if the sub-pattern inside a struct field binding
 /// cannot fail (i.e., it always matches any value).
 fn is_irrefutable_sub_pattern(p: &crate::Pattern) -> bool {
-    matches!(
-        p,
-        crate::Pattern::Wildcard | crate::Pattern::Identifier(_)
-    )
+    matches!(p, crate::Pattern::Wildcard | crate::Pattern::Identifier(_))
 }
 
 /// Returns true if `pattern` is an unguarded catch-all arm — one that
