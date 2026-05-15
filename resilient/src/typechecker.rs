@@ -4667,8 +4667,12 @@ impl TypeChecker {
                 // RES-1605: `format_builtin::check` is a no-op stub;
                 // the `format` builtin is registered in the builtin
                 // table at startup, not per-typecheck.
-                // RES-1597: `struct_exhaustiveness::check` is a no-op
-                // stub for a future feature.
+                // RES-1597: gate on `has_match_expr` — avoids the
+                // struct-pattern walk when the program has no match
+                // expressions at all.
+                if markers.has_match_expr {
+                    crate::struct_exhaustiveness::check(program, source_path)?;
+                }
                 // RES-1597: `labeled_break::check` is a no-op stub; the
                 // parser already enforces label well-formedness.
                 // RES-1606 gate: pass scans for `CallExpression` whose

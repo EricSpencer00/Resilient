@@ -141,6 +141,11 @@ pub(crate) struct Markers<'a> {
     /// trailing-only and const-default validation pass when no
     /// defaulted parameters exist in the program.
     pub has_fn_defaults: bool,
+    /// True if any `Node::Match` appears anywhere in the AST. Used by
+    /// the `struct_exhaustiveness` gate (RES-1597) to skip the
+    /// non-exhaustive struct match detection pass when the program
+    /// has no match expressions.
+    pub has_match_expr: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -289,6 +294,9 @@ impl<'a> Markers<'a> {
             }
             Node::WhileStatement { invariants, .. } if !invariants.is_empty() => {
                 m.has_while_with_invariants = true;
+            }
+            Node::Match { .. } => {
+                m.has_match_expr = true;
             }
             _ => {}
         });

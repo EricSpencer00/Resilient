@@ -107,6 +107,15 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             }
         }
         Node::ExpressionStatement { expr, .. } => visit(expr, f),
+        Node::Match { scrutinee, arms, .. } => {
+            visit(scrutinee, f);
+            for (_, guard, body) in arms {
+                if let Some(g) = guard {
+                    visit(g, f);
+                }
+                visit(body, f);
+            }
+        }
         _ => {}
     }
 }
