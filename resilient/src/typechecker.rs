@@ -1649,28 +1649,27 @@ impl TypeChecker {
             env.set("array_is_sorted_float".to_string(), fn_array_to_bool());
             env.set("array_is_sorted_string".to_string(), fn_array_to_bool());
             // RES-1148: binary search on sorted int / float / string arrays.
-            // Return type is Result<Int, Int> — typed as `Any` since the type
-            // system has no generic Result<T, E> yet (same convention as the
-            // `checked_*` builtins in RES-1115).
+            // Return type is Value::Result (ok/err) — now typed as Type::Result
+            // since the runtime confirmed returns Value::Result { ok, payload }.
             env.set(
                 "array_binary_search".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             env.set(
                 "array_binary_search_float".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::Float],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             env.set(
                 "array_binary_search_string".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::String],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             // RES-1150: statistical reductions — variance, stddev,
@@ -1863,11 +1862,15 @@ impl TypeChecker {
                 "bytes_strip_suffix".to_string(),
                 fn_bytes_bytes_to_bytes_strip(),
             );
+            // RES-1178: bytes_to_string always produces a String value on
+            // the success path (invalid UTF-8 returns a lossy string, not a
+            // different type). Promote from Any → String so the typechecker
+            // can verify that callers don't treat the result as an int/bool.
             env.set(
                 "bytes_to_string".to_string(),
                 Type::Function {
                     params: vec![Type::Bytes],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::String),
                 },
             );
             // RES-1178: bytes slicing primitives — (Bytes, Int) -> Bytes.
@@ -4332,8 +4335,9 @@ impl TypeChecker {
                 if markers.has_interp_string {
                     crate::string_interp::check(program, source_path)?;
                 }
-                // RES-1605: `modules::check` is a no-op stub; see
-                // `full_modules` for the actual module-graph build.
+                // RES-324: modules::check now active (duplicate names +
+                // unresolved items); gated at the has_inline_module site above.
+                // `full_modules::check` separately handles the module graph/cycles.
                 // RES-1615: validate default parameter values — check
                 // that defaults are trailing-only and compile-time
                 // constants. Gated on the `has_fn_defaults` marker so
@@ -4682,6 +4686,17 @@ impl TypeChecker {
                 // expressions at all.
                 if markers.has_match_expr {
                     crate::struct_exhaustiveness::check(program, source_path)?;
+                }
+                // RES-400: enum exhaustiveness — verify all declared enum
+                // variants are covered in every match expression that only
+                // uses EnumVariant arms (no wildcard catch-all).
+                if markers.has_enum_decl && markers.has_match_expr {
+                    crate::enum_exhaustiveness::check(program, source_path)?;
+                }
+                // RES-324: module namespace validation — detect duplicate
+                // module declarations and unresolved name::item references.
+                if markers.has_inline_module {
+                    crate::modules::check(program, source_path)?;
                 }
                 // RES-1597: `labeled_break::check` is a no-op stub; the
                 // parser already enforces label well-formedness.

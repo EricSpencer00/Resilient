@@ -154,6 +154,14 @@ pub(crate) struct Markers<'a> {
     /// sub-expression type-checking walk when no interpolated strings
     /// are present.
     pub has_interp_string: bool,
+    /// True if any `Node::EnumDecl` appears anywhere. Used by the
+    /// `enum_exhaustiveness::check` pass (RES-400) to skip the
+    /// exhaustiveness walk when the program declares no enums.
+    pub has_enum_decl: bool,
+    /// True if any `Node::ModuleDecl` appears at top-level. Used by
+    /// `modules::check` (RES-324) to skip the duplicate-name and
+    /// unresolved-item walk when the program has no inline modules.
+    pub has_inline_module: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -261,6 +269,7 @@ impl<'a> Markers<'a> {
             }
             Node::ModuleDecl { .. } => {
                 m.has_module_decl = true;
+                m.has_inline_module = true;
             }
             Node::Use { .. } => {
                 m.has_use = true;
@@ -311,6 +320,9 @@ impl<'a> Markers<'a> {
             }
             Node::InterpolatedString { .. } => {
                 m.has_interp_string = true;
+            }
+            Node::EnumDecl { .. } => {
+                m.has_enum_decl = true;
             }
             _ => {}
         });

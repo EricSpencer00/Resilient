@@ -550,6 +550,7 @@ mod semver_behavior;
 mod session_types;
 mod snapshot_regression;
 mod stack_contracts;
+mod enum_exhaustiveness;
 mod struct_exhaustiveness;
 mod typestate_types;
 mod vibe_debt;
