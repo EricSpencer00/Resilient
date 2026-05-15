@@ -402,7 +402,6 @@ pub(crate) fn generate_prefix_obligation(
     collect_identifiers(recovers_clause, &mut ids);
 
     let mut buf = String::with_capacity(256);
-    buf.push_str("(push)\n");
     buf.push_str(&format!(
         "; RES-392b: per-prefix obligation for prefix {prefix_id}\n"
     ));
@@ -420,9 +419,10 @@ pub(crate) fn generate_prefix_obligation(
 
     // Assert the NEGATION of the recovers_to postcondition.
     // SAT → postcondition can be violated → crash-recovery hazard.
+    // Note: no (check-sat) or (push)/(pop) here — check_smtlib2 creates
+    // a fresh Solver and calls solver.check() itself, so those wrappers
+    // would incorrectly reset the solver state before the check fires.
     buf.push_str(&format!("(assert (not {recovers_smt}))\n"));
-    buf.push_str("(check-sat)\n");
-    buf.push_str("(pop)\n");
     buf
 }
 
@@ -686,29 +686,31 @@ mod tests {
             "obligation must negate the recovers_to clause; got:\n{obligation}"
         );
         assert!(
-            obligation.contains("(check-sat)"),
-            "obligation must contain (check-sat)"
-        );
-        assert!(
             obligation.contains("(declare-const reading Int)"),
             "obligation must declare free variables"
+        );
+        // No (check-sat) or (push)/(pop) — check_smtlib2 drives the solve
+        // with a fresh Solver; including those here would reset state early.
+        assert!(
+            !obligation.contains("(check-sat)"),
+            "obligation must NOT contain (check-sat) — solver.check() does it"
+        );
+        assert!(
+            !obligation.contains("(push)"),
+            "obligation must NOT contain (push)"
         );
     }
 
     #[test]
-    fn generate_prefix_obligation_push_pop_balanced() {
+    fn generate_prefix_obligation_has_comment_header() {
         let clause = Node::BooleanLiteral {
             value: true,
             span: Span::default(),
         };
         let obligation = generate_prefix_obligation(3, "init_f", &clause);
         assert!(
-            obligation.starts_with("(push)"),
-            "obligation must start with (push)"
-        );
-        assert!(
-            obligation.trim_end().ends_with("(pop)"),
-            "obligation must end with (pop)"
+            obligation.contains("; RES-392b: per-prefix obligation for prefix 3"),
+            "obligation must contain comment header; got:\n{obligation}"
         );
     }
 }
