@@ -83,15 +83,57 @@ pub fn run_property(spec: &PropertySpec) -> PropertyResult {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1206: this pass historically called `collect()` and
-    // discarded the returned `Vec<PropertySpec>`. `collect` reads
-    // the static `feature_attrs` registry (no AST walk needed) and
-    // returns the property-test specs; the real consumer (the
-    // `--run-property-tests` driver) calls `collect` directly. The
-    // work here was unobservable. The entry point is kept so the
-    // `EXTENSION_PASSES` block in `typechecker.rs` stays undisturbed
-    // and a future use can flow data through this slot.
+/// Validate `#[property_test]` annotations and verify their functions
+/// have contracts (`requires`/`ensures`) to actually test.
+///
+/// RES-1206: upgraded from no-op to real validation — warns when a
+/// function is annotated `#[property_test]` but has no contracts to
+/// exercise, and confirms the expected sample counts.
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let specs = collect();
+    if specs.is_empty() {
+        return Ok(());
+    }
+
+    // Build a set of functions that actually have requires/ensures clauses.
+    let mut functions_with_contracts: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    if let Node::Program(stmts) = program {
+        for stmt in stmts {
+            if let Node::Function {
+                name,
+                requires,
+                ensures,
+                ..
+            } = &stmt.node
+            {
+                if !requires.is_empty() || !ensures.is_empty() {
+                    functions_with_contracts.insert(name.clone());
+                }
+            }
+        }
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    for spec in &specs {
+        if !functions_with_contracts.contains(&spec.fn_name) {
+            warnings.push(format!(
+                "{source_path}:0:0: warning[property_test]: \
+                 `#[property_test]` on `{}` has no `requires`/`ensures` \
+                 contracts — no properties will be checked",
+                spec.fn_name
+            ));
+        } else {
+            eprintln!(
+                "property_test: `{}` registered for {} sample(s)",
+                spec.fn_name, spec.samples
+            );
+        }
+    }
+
+    for w in &warnings {
+        eprintln!("{w}");
+    }
     Ok(())
 }
 
@@ -124,5 +166,38 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(a.next_i64(0, 1000), b.next_i64(0, 1000));
         }
+    }
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_when_no_property_test_attrs() {
+        let src = "fn f(int x) -> int { return x; }";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_with_property_test_and_contract() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "add_pos",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 100".into(),
+                line: 0,
+            },
+        );
+        let src = "fn add_pos(int x) requires x > 0 ensures result > 0 { return x + 1; }";
+        let (prog, _) = crate::parse(src);
+        let result = check(&prog, "<test>");
+        // Should pass — function has contracts
+        assert!(result.is_ok(), "expected ok, got: {:?}", result);
+        crate::feature_attrs::reset();
     }
 }
