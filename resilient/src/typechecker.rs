@@ -6376,7 +6376,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            Node::ReturnStatement { value, .. } => {
+            Node::ReturnStatement {
+                value,
+                span: ret_span,
+            } => {
+                // RES-1862: track span for diagnostics.
+                if ret_span.start.line > 0 {
+                    self.current_span = *ret_span;
+                }
                 // Bare `return;` has type Void; otherwise pass through
                 // the type of the returned value.
                 match value {
@@ -6389,8 +6396,12 @@ impl TypeChecker {
                 condition,
                 consequence,
                 alternative,
-                ..
+                span: if_span,
             } => {
+                // RES-1862: track span for diagnostics.
+                if if_span.start.line > 0 {
+                    self.current_span = *if_span;
+                }
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!(
@@ -6452,6 +6463,12 @@ impl TypeChecker {
             Node::ExpressionStatement { expr, .. } => self.check_node(expr),
 
             Node::Identifier { name, span } => {
+                // RES-1862: track innermost span so the check_program
+                // wrapper uses the identifier's position rather than
+                // the enclosing statement's start position.
+                if span.start.line > 0 {
+                    self.current_span = *span;
+                }
                 // RES-078: identifier span lets us tell users where
                 // exactly the undefined reference lives. Skip the
                 // prefix when the span looks default (synthetic).
@@ -6514,8 +6531,14 @@ impl TypeChecker {
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
 
             Node::PrefixExpression {
-                operator, right, ..
+                operator,
+                right,
+                span: prefix_span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                if prefix_span.start.line > 0 {
+                    self.current_span = *prefix_span;
+                }
                 let right_type = self.check_node(right)?;
 
                 match operator.as_str() {
@@ -9911,6 +9934,40 @@ mod span_diagnostic_tests {
     fn ok_program_has_no_span_error() {
         let src = "fn add(int x, int y) -> int { return x + y; }";
         assert!(check_with_source(src, "test.rz").is_ok());
+    }
+
+    /// RES-1862: an undefined-variable error inside a function body should
+    /// report the identifier's position, not the function declaration's start.
+    #[test]
+    fn undefined_var_span_is_identifier_position() {
+        // `unknown_var` is on line 2 col 12 (1-indexed)
+        let src = "fn f(int x) -> int {\n    return unknown_var;\n}";
+        let err = check_with_source(src, "src.rz").expect_err("expected undefined var error");
+        assert!(
+            err.contains("src.rz"),
+            "error should contain file path: {}",
+            err
+        );
+        // Must point at line 2, not line 1 (the function declaration).
+        assert!(
+            err.contains("src.rz:2:"),
+            "error should point to line 2 where the identifier is: {}",
+            err
+        );
+    }
+
+    /// RES-1862: a type error inside an infix expression should report the
+    /// infix span.
+    #[test]
+    fn infix_type_error_uses_infix_span() {
+        // The `+` is on line 2.
+        let src = "fn f(int x) -> int {\n    return x + \"hello\";\n}";
+        let err = check_with_source(src, "expr.rz").expect_err("expected infix type error");
+        assert!(
+            err.contains("expr.rz:2:"),
+            "error should point to line 2 (the infix expression): {}",
+            err
+        );
     }
 
     #[test]
