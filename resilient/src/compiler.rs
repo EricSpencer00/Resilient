@@ -690,6 +690,19 @@ fn compile_stmt(
         ),
         // Verification-only constructs: emit nothing at runtime.
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // Type-level / declaration-only constructs: no runtime bytecode.
+        // All type information is handled at parse/typecheck time.
+        Node::StructDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::TraitDecl { .. }
+        | Node::ImplBlock { .. }
+        | Node::TypeAlias { .. }
+        | Node::NewtypeDecl { .. }
+        | Node::RegionDecl { .. }
+        | Node::SupervisorDecl { .. }
+        | Node::ModuleDecl { .. }
+        | Node::Use { .. }
+        | Node::UnsafeBlock { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -1289,6 +1302,20 @@ fn compile_stmt_in_fn(
         ),
         // Verification-only constructs: emit nothing at runtime.
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // Type-level / declaration-only constructs: no runtime bytecode.
+        Node::StructDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::TraitDecl { .. }
+        | Node::ImplBlock { .. }
+        | Node::TypeAlias { .. }
+        | Node::NewtypeDecl { .. }
+        | Node::RegionDecl { .. }
+        | Node::ActorDecl { .. }
+        | Node::ClusterDecl { .. }
+        | Node::SupervisorDecl { .. }
+        | Node::ModuleDecl { .. }
+        | Node::Use { .. }
+        | Node::UnsafeBlock { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -1443,6 +1470,22 @@ fn compile_control_flow_in_fn(
             line,
             /* in_fn */ true,
         ),
+        // Type-level / declaration-only constructs: no runtime bytecode.
+        Node::StructDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::TraitDecl { .. }
+        | Node::ImplBlock { .. }
+        | Node::TypeAlias { .. }
+        | Node::NewtypeDecl { .. }
+        | Node::RegionDecl { .. }
+        | Node::ActorDecl { .. }
+        | Node::ClusterDecl { .. }
+        | Node::SupervisorDecl { .. }
+        | Node::ModuleDecl { .. }
+        | Node::Use { .. }
+        | Node::UnsafeBlock { .. }
+        | Node::Assume { .. }
+        | Node::InvariantStatement { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
