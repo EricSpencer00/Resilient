@@ -4816,13 +4816,21 @@ impl TypeChecker {
                 fields,
                 ..
             } => {
-                let Type::Struct(sname) = scrut_ty else {
-                    return Err(format!(
-                        "struct pattern `{}` used where scrutinee is not a struct (got {})",
-                        struct_name, scrut_ty
-                    ));
+                // RES-408: when the scrutinee is Any (type unknown at
+                // compile time), be permissive — the runtime will catch
+                // mismatches. Only reject when we have a concrete,
+                // conflicting struct name.
+                let sname: &str = match scrut_ty {
+                    Type::Any => struct_name.as_str(),
+                    Type::Struct(s) => s.as_str(),
+                    _ => {
+                        return Err(format!(
+                            "struct pattern `{}` used where scrutinee is not a struct (got {})",
+                            struct_name, scrut_ty
+                        ));
+                    }
                 };
-                if struct_name != sname {
+                if sname != struct_name.as_str() && !matches!(scrut_ty, Type::Any) {
                     return Err(format!(
                         "struct pattern `{}` does not match scrutinee struct `{}`",
                         struct_name, sname
@@ -7385,6 +7393,12 @@ impl TypeChecker {
             "void" => Ok(Type::Void),
             "Result" => Ok(Type::Result),
             "array" => Ok(Type::Array),
+            // RES-408: `any` as a written type annotation maps to Type::Any
+            // (the unresolved/wildcard type). Without this arm the identifier
+            // falls through to `other => Type::Struct("any")`, which caused
+            // argument-type mismatches (`expected any, got int`) and broke
+            // struct pattern matching when the scrutinee was declared `any`.
+            "any" | "Any" => Ok(Type::Any),
             "" => Ok(Type::Any), // Empty type name means "any" for now
             // RES-128: a registered alias expands transitively.
             other if self.type_aliases.contains_key(other) => {
@@ -11161,5 +11175,86 @@ fn f(Point p) -> int { return p.z; }
     #[test]
     fn slice_string_int_bounds_ok() {
         check_ok(r#"fn f(string s) -> string { return s[0..5]; }"#);
+    }
+}
+
+// ── RES-408: `any` type annotation → Type::Any + struct pattern permissiveness ─
+
+#[cfg(test)]
+mod res408_any_type_annotation {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn any_param_accepts_int_arg() {
+        check_ok(r#"
+fn f(any x) -> int { return 0; }
+fn g() -> int { return f(42); }
+"#);
+    }
+
+    #[test]
+    fn any_param_accepts_string_arg() {
+        check_ok(r#"
+fn f(any x) -> int { return 0; }
+fn g() -> int { return f("hello"); }
+"#);
+    }
+
+    #[test]
+    fn any_return_ok() {
+        check_ok(r#"fn f() -> any { return 42; }"#);
+    }
+
+    #[test]
+    fn struct_pattern_on_any_scrutinee_ok() {
+        check_ok(r#"
+struct Point { int x, int y }
+fn f(any p) -> int {
+    return match p {
+        Point { x, y } => x,
+        _ => 0,
+    };
+}
+"#);
+    }
+
+    #[test]
+    fn struct_pattern_wrong_struct_errors() {
+        let err = check_err(r#"
+struct Point { int x, int y }
+struct Rect { int w, int h }
+fn f(Rect r) -> int {
+    return match r {
+        Point { x, y } => x,
+        _ => 0,
+    };
+}
+"#);
+        assert!(
+            err.contains("Point") || err.contains("Rect") || err.contains("pattern"),
+            "expected struct mismatch error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn any_let_binding_ok() {
+        check_ok(r#"fn f() -> void { let x: any = 5; let _y: any = "hello"; }"#);
     }
 }
