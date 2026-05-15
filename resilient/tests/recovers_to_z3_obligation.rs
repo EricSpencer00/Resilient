@@ -130,3 +130,42 @@ fn recovers_to_unhandled_destructive_is_rejected() {
         combined
     );
 }
+
+/// RES-1857 Phase 3: per-prefix BMC emits `warning[bmc]` with the
+/// instruction boundary number and the function name in the message.
+///
+/// `recovers_to_bmc_prefix_warns.rz` declares `recovers_to: x > 0`
+/// with no `requires` constraint and no `fails` set. The final-state
+/// check cannot prove `x > 0` (x is unconstrained), but without a
+/// non-empty `fails` set the missing proof is advisory, not a hard
+/// error. The per-prefix BMC (Phase 3) still runs and finds SAT at
+/// every prefix boundary, emitting `warning[bmc]` for each one.
+#[test]
+fn bmc_prefix_warns_on_unconstrained_recovers_to() {
+    let output = typecheck("recovers_to_bmc_prefix_warns.rz");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        output.status.success(),
+        "expected typecheck to pass (no fails set → advisory only); \
+         combined output:\n{}",
+        combined
+    );
+    assert!(
+        combined.contains("warning[bmc]"),
+        "expected BMC prefix warning in output; combined:\n{}",
+        combined
+    );
+    assert!(
+        combined.contains("instruction boundary"),
+        "BMC warning must name the instruction boundary; combined:\n{}",
+        combined
+    );
+    assert!(
+        combined.contains("register_write"),
+        "BMC warning must name the function; combined:\n{}",
+        combined
+    );
+}

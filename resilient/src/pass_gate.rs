@@ -135,6 +135,12 @@ pub(crate) struct Markers<'a> {
     /// method calls and indirect calls count too). Used by the
     /// `blame_attribution` gate (RES-1629).
     pub has_call_expression: bool,
+    /// True if any `Node::Function` or `Node::FunctionLiteral` has at
+    /// least one non-`None` entry in its `defaults` vector. Used by
+    /// the `default_params::check` gate (RES-1615) to skip the
+    /// trailing-only and const-default validation pass when no
+    /// defaulted parameters exist in the program.
+    pub has_fn_defaults: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -176,6 +182,7 @@ impl<'a> Markers<'a> {
                 name,
                 parameters,
                 type_params,
+                defaults,
                 pure,
                 effects,
                 ..
@@ -191,6 +198,9 @@ impl<'a> Markers<'a> {
                 }
                 if !type_params.is_empty() {
                     m.has_generic_fn = true;
+                }
+                if defaults.iter().any(|d| d.is_some()) {
+                    m.has_fn_defaults = true;
                 }
                 // RES-1671: purity marker. There are TWO parser paths
                 // that produce a pure fn:

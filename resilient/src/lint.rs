@@ -110,6 +110,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0048", // bitwise XOR of a value with itself (x ^ x) is always 0 — likely a bug
     "L0049", // empty `if` then-branch — body was probably forgotten or condition is inverted
     "L0050", // redundant `else` after `if` that always breaks or continues the loop
+    "L0051", // comparison of two string literals — always evaluates to a constant
+    "L0052", // negation of a boolean literal in a condition (`!true` or `!false`)
+    "L0053", // array index is a literal that is out of bounds for the literal array
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -666,6 +669,49 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: remove the `else` keyword and de-nest the body.\n\
              Suppress: // resilient: allow L0050",
         ),
+        "L0051" => Some(
+            "L0051 — comparison of two string literals\n\
+             \n\
+             Comparing two string literals with `==` or `!=` always evaluates to a\n\
+             compile-time constant (`true` or `false`). This is almost always a bug —\n\
+             either one side should be a variable, or the check is redundant.\n\
+             \n\
+             Example (bad):\n\
+               if mode == \"debug\" == \"release\" { ... }  // always false\n\
+             Example (bad):\n\
+               if \"hello\" == \"hello\" { ... }  // always true\n\
+             \n\
+             Fix: replace one operand with the variable you intended to compare.\n\
+             Suppress: // resilient: allow L0051",
+        ),
+        "L0052" => Some(
+            "L0052 — negation of a boolean literal\n\
+             \n\
+             `!true` evaluates to `false` and `!false` evaluates to `true`. Using\n\
+             negation of a boolean literal in a condition is always a bug or a\n\
+             readability problem — replace with the simplified literal directly.\n\
+             \n\
+             Example (bad): if !true { ... }   // body is unreachable\n\
+             Example (bad): if !false { ... }  // condition is always true\n\
+             Example (good): if false { ... }  // or remove the check entirely\n\
+             \n\
+             Fix: replace `!true` with `false` and `!false` with `true`.\n\
+             Suppress: // resilient: allow L0052",
+        ),
+        "L0053" => Some(
+            "L0053 — array index literal is out of bounds\n\
+             \n\
+             When an array literal (`[a, b, c]`) is indexed with an integer literal\n\
+             and that index is >= the array length or < 0, the access will always\n\
+             panic at runtime. Catch this at lint time before the program runs.\n\
+             \n\
+             Example (bad): [1, 2, 3][5]  // index 5 >= length 3\n\
+             Example (bad): [1, 2, 3][-1] // negative index\n\
+             \n\
+             Fix: use a valid index, or store the array in a variable and guard\n\
+             the index with a bounds check.\n\
+             Suppress: // resilient: allow L0053",
+        ),
         _ => None,
     }
 }
@@ -741,6 +787,12 @@ struct LintTriggers {
     /// L0048: any `^` (Bxor) infix expression exists.
     has_xor_infix: bool,
     // L0049 reuses has_if_statement; L0050 reuses has_if_with_else — no new fields needed.
+    /// L0051: any `==` / `!=` infix on two string literals.
+    has_string_literal_cmp: bool,
+    /// L0052: any prefix `!` applied to a boolean literal.
+    has_negated_bool_literal: bool,
+    /// L0053: any index expression whose object is an array literal.
+    has_array_literal_index: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -752,10 +804,19 @@ fn scan_lint_triggers(program: &Node) -> LintTriggers {
 fn scan_node(node: &Node, t: &mut LintTriggers) {
     match node {
         Node::Assume { .. } => t.has_assume = true,
-        Node::IndexExpression { .. } => t.has_index = true,
+        Node::IndexExpression { target, .. } => {
+            t.has_index = true;
+            // L0053: index into an array literal.
+            if matches!(target.as_ref(), Node::ArrayLiteral { .. }) {
+                t.has_array_literal_index = true;
+            }
+        }
         Node::Match { .. } => t.has_match = true,
         Node::InfixExpression {
-            operator, right, ..
+            operator,
+            left,
+            right,
+            ..
         } => {
             t.has_infix = true;
             if operator == "/" || operator == "%" {
@@ -775,6 +836,22 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             // L0048: any Bxor (^) infix expression.
             if operator == "^" {
                 t.has_xor_infix = true;
+            }
+            // L0051: `==` or `!=` between two string literals.
+            if matches!(operator.as_str(), "==" | "!=")
+                && matches!(left.as_ref(), Node::StringLiteral { .. })
+                && matches!(right.as_ref(), Node::StringLiteral { .. })
+            {
+                t.has_string_literal_cmp = true;
+            }
+        }
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
+            t.has_prefix_expr = true;
+            // L0052: `!` applied directly to a bool literal.
+            if operator == "!" && matches!(right.as_ref(), Node::BooleanLiteral { .. }) {
+                t.has_negated_bool_literal = true;
             }
         }
         Node::Function { .. } => t.has_function = true,
@@ -835,7 +912,6 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::StructLiteral { .. } => t.has_struct_literal = true,
         Node::MapLiteral { .. } => t.has_map_literal = true,
         Node::TryCatch { .. } => t.has_try_catch = true,
-        Node::PrefixExpression { .. } => t.has_prefix_expr = true,
         Node::FloatLiteral { .. } => t.has_float_literal = true,
         Node::ExpressionStatement { expr, .. } => {
             if matches!(expr.as_ref(), Node::InfixExpression { operator, .. }
@@ -1011,6 +1087,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_if_with_else {
         run_l0050_redundant_else_after_loop_exit(program, &mut out);
+    }
+    if t.has_string_literal_cmp {
+        run_l0051_string_literal_comparison(program, &mut out);
+    }
+    if t.has_negated_bool_literal {
+        run_l0052_negated_bool_literal(program, &mut out);
+    }
+    if t.has_array_literal_index {
+        run_l0053_out_of_bounds_literal_index(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -5227,6 +5312,122 @@ fn consequence_always_exits_loop(block: &Node) -> bool {
 }
 
 // ============================================================
+// L0051: comparison of two string literals
+// ============================================================
+
+fn run_l0051_string_literal_comparison(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0051(program, out);
+}
+
+fn walk_l0051(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+    } = node
+        && matches!(operator.as_str(), "==" | "!=")
+        && let Node::StringLiteral { value: lv, .. } = left.as_ref()
+        && let Node::StringLiteral { value: rv, .. } = right.as_ref()
+    {
+        let result = if operator == "==" { lv == rv } else { lv != rv };
+        out.push(Lint {
+            code: "L0051".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "comparison of two string literals always evaluates to `{result}` — \
+                 did you mean to compare against a variable?"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0051(child, out));
+}
+
+// ============================================================
+// L0052: negation of a boolean literal
+// ============================================================
+
+fn run_l0052_negated_bool_literal(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0052(program, out);
+}
+
+fn walk_l0052(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::PrefixExpression {
+        operator,
+        right,
+        span,
+    } = node
+        && operator == "!"
+        && let Node::BooleanLiteral { value, .. } = right.as_ref()
+    {
+        let simplified = if *value { "false" } else { "true" };
+        out.push(Lint {
+            code: "L0052".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "`!{}` is always `{simplified}` — use `{simplified}` directly",
+                value
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0052(child, out));
+}
+
+// ============================================================
+// L0053: array index literal out of bounds
+// ============================================================
+
+fn run_l0053_out_of_bounds_literal_index(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0053(program, out);
+}
+
+fn walk_l0053(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IndexExpression {
+        target,
+        index,
+        span,
+    } = node
+        && let Node::ArrayLiteral { items, .. } = target.as_ref()
+    {
+        // Resolve the index to an i64 if it's a compile-time constant.
+        // `-1` is parsed as PrefixExpression(`-`, IntegerLiteral(1)).
+        let const_idx: Option<i64> = match index.as_ref() {
+            Node::IntegerLiteral { value, .. } => Some(*value),
+            Node::PrefixExpression {
+                operator, right, ..
+            } if operator == "-" => {
+                if let Node::IntegerLiteral { value, .. } = right.as_ref() {
+                    Some(-(*value))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(idx) = const_idx {
+            let len = items.len() as i64;
+            if idx < 0 || idx >= len {
+                out.push(Lint {
+                    code: "L0053".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "index `{idx}` is out of bounds for an array literal of length {len} — \
+                         this will always panic at runtime"
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0053(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -7530,6 +7731,102 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0050".to_string()),
             "L0050 must not fire when consequence has no break/continue"
+        );
+    }
+
+    // ---------- L0051: comparison of two string literals ----------
+
+    #[test]
+    fn l0051_fires_on_two_string_literal_eq() {
+        let src = r#"let x = "a" == "b";"#;
+        assert!(
+            codes(src).contains(&"L0051".to_string()),
+            "L0051 must fire on string-literal == string-literal"
+        );
+    }
+
+    #[test]
+    fn l0051_fires_on_two_string_literal_ne() {
+        let src = r#"let x = "hello" != "world";"#;
+        assert!(
+            codes(src).contains(&"L0051".to_string()),
+            "L0051 must fire on string-literal != string-literal"
+        );
+    }
+
+    #[test]
+    fn l0051_silent_on_var_vs_literal() {
+        let src = r#"let s = "hello"; let ok = s == "hello";"#;
+        assert!(
+            !codes(src).contains(&"L0051".to_string()),
+            "L0051 must not fire when one operand is a variable"
+        );
+    }
+
+    // ---------- L0052: negation of boolean literal ----------
+
+    #[test]
+    fn l0052_fires_on_not_true() {
+        let src = "let x = !true;";
+        assert!(
+            codes(src).contains(&"L0052".to_string()),
+            "L0052 must fire on `!true`"
+        );
+    }
+
+    #[test]
+    fn l0052_fires_on_not_false() {
+        let src = "let x = !false;";
+        assert!(
+            codes(src).contains(&"L0052".to_string()),
+            "L0052 must fire on `!false`"
+        );
+    }
+
+    #[test]
+    fn l0052_silent_on_not_variable() {
+        let src = "let b = true; let x = !b;";
+        assert!(
+            !codes(src).contains(&"L0052".to_string()),
+            "L0052 must not fire when operand is a variable"
+        );
+    }
+
+    // ---------- L0053: array index out of bounds ----------
+
+    #[test]
+    fn l0053_fires_on_index_past_end() {
+        let src = "let x = [1, 2, 3][5];";
+        assert!(
+            codes(src).contains(&"L0053".to_string()),
+            "L0053 must fire when index >= array length"
+        );
+    }
+
+    #[test]
+    fn l0053_fires_on_negative_index() {
+        let src = "let x = [1, 2, 3][-1];";
+        assert!(
+            codes(src).contains(&"L0053".to_string()),
+            "L0053 must fire on negative index"
+        );
+    }
+
+    #[test]
+    fn l0053_silent_on_valid_index() {
+        let src = "let x = [1, 2, 3][2];";
+        assert!(
+            !codes(src).contains(&"L0053".to_string()),
+            "L0053 must not fire when index is within bounds"
+        );
+    }
+
+    #[test]
+    fn l0053_silent_on_zero_index() {
+        let src = "let x = [10, 20, 30][0];";
+        assert!(
+            !codes(src).contains(&"L0053".to_string()),
+            "L0053 must not fire on valid index 0"
         );
     }
 }

@@ -1,0 +1,23 @@
+// RES-1857: BMC prefix span fixture.
+//
+// `register_write` has a `recovers_to` clause but no `requires`
+// constraint, so Z3 can find x = 0 as a counterexample at every
+// prefix boundary. Without a `fails` annotation the final-state
+// failure is advisory (no hard compile error), but the per-prefix
+// BMC (Phase 3) still emits a `warning[bmc]` naming the instruction
+// boundary and the function.
+//
+// This file is tested by `recovers_to_z3_obligation.rs` with
+// `--features z3` to verify the BMC diagnostic format.
+fn register_write(int x) -> int
+    recovers_to: x > 0;
+{
+    let stepped = x + 1;
+    return stepped;
+}
+
+fn main() {
+    let v = register_write(5);
+    println(v);
+}
+main();

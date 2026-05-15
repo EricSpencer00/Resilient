@@ -4319,10 +4319,13 @@ impl TypeChecker {
                 // `string_interp::parse`, not here.
                 // RES-1605: `modules::check` is a no-op stub; see
                 // `full_modules` for the actual module-graph build.
-                // RES-1615: `default_params::check` is a no-op stub
-                // (`Ok(())`); the real default-arg rewrite happens via
-                // `collect_defaults` + `rewrite_calls` from a different
-                // path.
+                // RES-1615: validate default parameter values — check
+                // that defaults are trailing-only and compile-time
+                // constants. Gated on the `has_fn_defaults` marker so
+                // programs with no defaulted parameters pay nothing.
+                if markers.has_fn_defaults {
+                    crate::default_params::check(program, source_path)?;
+                }
                 // RES-1616 gate: pass scans for `Node::Function` with
                 // non-empty `type_params`. Markers records the flag
                 // during the shared whole-AST walk.
