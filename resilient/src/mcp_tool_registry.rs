@@ -180,6 +180,10 @@ impl McpBridgeRegistry {
             reg.register(lean4_adapter());
             reg.register(cbmc_adapter());
             reg.register(z3_adapter());
+            // RES-2645: additional verification/analysis tool adapters.
+            reg.register(spin_adapter());
+            reg.register(frama_c_adapter());
+            reg.register(klee_adapter());
             reg
         })
     }
@@ -322,6 +326,111 @@ pub fn cbmc_adapter() -> BridgedTool {
                 "property": {
                     "type": "string",
                     "description": "Specific property to check (default: all)"
+                }
+            }
+        }),
+    }
+}
+
+/// SPIN / Promela model checker adapter.
+///
+/// SPIN verifies concurrent systems specified in Promela. Useful for
+/// checking message-passing protocols alongside Resilient actor programs.
+/// Requires `spin` on PATH or `RESILIENT_SPIN_BIN` to be set.
+pub fn spin_adapter() -> BridgedTool {
+    BridgedTool {
+        name: "spin_check".to_string(),
+        description: "Run SPIN model checking on a Promela specification. \
+                      Verifies safety/liveness properties of concurrent systems. \
+                      Requires spin on PATH or RESILIENT_SPIN_BIN."
+            .to_string(),
+        kind: ToolKind::NativeBinary {
+            binary_name: "spin".to_string(),
+            env_override: "RESILIENT_SPIN_BIN".to_string(),
+        },
+        explicit_path: None,
+        input_schema: serde_json::json!({
+            "type": "object",
+            "required": ["file"],
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Path to the Promela (.pml) specification file"
+                },
+                "property": {
+                    "type": "string",
+                    "description": "Optional: LTL property formula to check"
+                }
+            }
+        }),
+    }
+}
+
+/// Frama-C static analyser adapter.
+///
+/// Frama-C is a modular static analysis framework for C programs. The
+/// Eva value-analysis plugin computes over-approximations of variable
+/// ranges and detects undefined behaviour. Requires `frama-c` on PATH
+/// or `RESILIENT_FRAMAC_BIN` to be set.
+pub fn frama_c_adapter() -> BridgedTool {
+    BridgedTool {
+        name: "frama_c_check".to_string(),
+        description: "Run Frama-C static analysis on a C source file. \
+                      Uses the Eva value-analysis plugin to detect undefined behaviour, \
+                      integer overflows, and out-of-bounds accesses. \
+                      Requires frama-c on PATH or RESILIENT_FRAMAC_BIN."
+            .to_string(),
+        kind: ToolKind::NativeBinary {
+            binary_name: "frama-c".to_string(),
+            env_override: "RESILIENT_FRAMAC_BIN".to_string(),
+        },
+        explicit_path: None,
+        input_schema: serde_json::json!({
+            "type": "object",
+            "required": ["file"],
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Path to the C source file to analyse"
+                },
+                "plugin": {
+                    "type": "string",
+                    "description": "Frama-C plugin to use (default: eva)"
+                }
+            }
+        }),
+    }
+}
+
+/// KLEE symbolic execution adapter.
+///
+/// KLEE generates test inputs that exercise all reachable paths in an
+/// LLVM bitcode file, making it effective for finding crashes and
+/// undefined behaviour. Requires `klee` on PATH or `RESILIENT_KLEE_BIN`.
+pub fn klee_adapter() -> BridgedTool {
+    BridgedTool {
+        name: "klee_check".to_string(),
+        description: "Run KLEE symbolic execution on an LLVM bitcode file (.bc). \
+                      Generates concrete test inputs for all reachable paths and \
+                      reports crashes, assertion failures, and undefined behaviour. \
+                      Requires klee on PATH or RESILIENT_KLEE_BIN."
+            .to_string(),
+        kind: ToolKind::NativeBinary {
+            binary_name: "klee".to_string(),
+            env_override: "RESILIENT_KLEE_BIN".to_string(),
+        },
+        explicit_path: None,
+        input_schema: serde_json::json!({
+            "type": "object",
+            "required": ["file"],
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Path to the LLVM bitcode file (.bc) to analyse"
+                },
+                "max_time": {
+                    "type": "integer",
+                    "description": "Maximum analysis time in seconds (default: 60)"
                 }
             }
         }),

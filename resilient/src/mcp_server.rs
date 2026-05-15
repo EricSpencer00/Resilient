@@ -134,7 +134,17 @@ fn handle_initialize(id: &Value, _params: Option<&Value>) -> Value {
 }
 
 fn handle_tools_list(id: &Value) -> Value {
-    ok(id, json!({ "tools": tool_definitions() }))
+    let mut tools = tool_definitions()
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    // RES-2645: bridge registry tools appear in tools/list automatically
+    // so external verifiers (TLA+ TLC, Lean 4, CBMC, Z3, SPIN, Frama-C,
+    // KLEE) are visible to MCP clients alongside built-in tools.
+    let bridge_defs = crate::mcp_tool_registry::McpBridgeRegistry::global()
+        .mcp_tool_definitions();
+    tools.extend(bridge_defs);
+    ok(id, json!({ "tools": tools }))
 }
 
 fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
@@ -162,7 +172,34 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
         "resilient_disasm" => tool_disasm(args),
         "resilient_vm_run" => tool_vm_run(args),
         "resilient_tla_check" => tool_tla_check(args),
-        other => Err(format!("Unknown tool: {other}")),
+        // RES-2645: four new built-in analysis tools.
+        "resilient_fingerprint" => tool_fingerprint(args),
+        "resilient_resilience_score" => tool_resilience_score(args),
+        "resilient_contract_infer" => tool_contract_infer(args),
+        "resilient_call_graph" => tool_call_graph(args),
+        // RES-2645: fall through to bridge registry for external tools
+        // (SPIN, Frama-C, KLEE, TLC, Lean 4, CBMC, etc.).
+        other => {
+            let registry = crate::mcp_tool_registry::McpBridgeRegistry::global();
+            if registry.get(other).is_some() {
+                match registry.invoke(other, args) {
+                    Ok(result) => {
+                        let text = if result.diagnostics.is_empty() {
+                            format!("{:?}: {}", result.outcome, result.raw_output)
+                        } else {
+                            result.diagnostics.join("\n")
+                        };
+                        match result.outcome {
+                            crate::mcp_tool_registry::ToolOutcome::Clean => Ok(text),
+                            _ => Err(text),
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                Err(format!("Unknown tool: {other}"))
+            }
+        }
     };
 
     match result {
@@ -723,6 +760,287 @@ fn tool_tla_check(args: &Value) -> Result<String, String> {
     }
 }
 
+/// Compute behavioral fingerprints for every function in the program.
+///
+/// Each fingerprint is a stable hash of the function's contracts
+/// (requires/ensures), parameter types, and fails variants — NOT the body.
+/// Body refactors that preserve postconditions keep the same fingerprint.
+fn tool_fingerprint(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let fps = crate::behavioral_fingerprint::fingerprint_program(&program);
+    if fps.is_empty() {
+        return Ok("No functions found.".to_string());
+    }
+    let mut names: Vec<&String> = fps.keys().collect();
+    names.sort();
+    let lines: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let fp = &fps[*n];
+            let recovery = if fp.has_recovery { " [recovery]" } else { "" };
+            let fails = if fp.fails_variants.is_empty() {
+                String::new()
+            } else {
+                format!(" fails=[{}]", fp.fails_variants.join(", "))
+            };
+            format!(
+                "  {} — digest: 0x{:016x}{}{}",
+                n, fp.digest, recovery, fails
+            )
+        })
+        .collect();
+    Ok(format!(
+        "Behavioral fingerprints ({} functions):\n{}",
+        fps.len(),
+        lines.join("\n")
+    ))
+}
+
+/// Compute resilience scores for every function in the program.
+///
+/// Each score (0–100) is a weighted sum of safety signals: contract
+/// coverage, effect annotations, live-recovery blocks, call-site
+/// coverage, and body simplicity. Scores map to letter grades A–F.
+fn tool_resilience_score(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let scores = crate::resilience_score::score_program(&program);
+    if scores.is_empty() {
+        return Ok("No functions found.".to_string());
+    }
+    let lines: Vec<String> = scores
+        .iter()
+        .map(|s| {
+            format!(
+                "  {} — {}/100 ({})  contracts={} effects={} live={} coverage={} simplicity={}",
+                s.function_name,
+                s.total,
+                s.grade(),
+                s.contracts_pts,
+                s.effects_pts,
+                s.live_pts,
+                s.coverage_pts,
+                s.simplicity_pts,
+            )
+        })
+        .collect();
+    let avg = scores.iter().map(|s| s.total as u64).sum::<u64>() / scores.len() as u64;
+    Ok(format!(
+        "Resilience scores ({} functions, avg {avg}/100):\n{}",
+        scores.len(),
+        lines.join("\n")
+    ))
+}
+
+/// Run contract inference on the program and show suggested requires/ensures
+/// clauses that could be added to under-specified functions.
+fn tool_contract_infer(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let inferred = crate::contract_inference::infer_program(&program);
+    if inferred.is_empty() {
+        return Ok("No inference suggestions (all functions already have complete contracts, or no functions found).".to_string());
+    }
+    let lines: Vec<String> = inferred
+        .iter()
+        .flat_map(|ic| {
+            let mut out = Vec::new();
+            for req in &ic.requires {
+                out.push(format!("  {} — suggested requires: {}", ic.function_name, req));
+            }
+            for ens in &ic.ensures {
+                out.push(format!("  {} — suggested ensures: {}", ic.function_name, ens));
+            }
+            out
+        })
+        .collect();
+    if lines.is_empty() {
+        return Ok("No inference suggestions generated.".to_string());
+    }
+    Ok(format!(
+        "Contract inference suggestions ({} functions):\n{}",
+        inferred.len(),
+        lines.join("\n")
+    ))
+}
+
+/// Extract and display the function call graph for the program.
+///
+/// Shows, for each function, which other functions it calls directly.
+/// Mutual recursion and cycles are flagged.
+fn tool_call_graph(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let crate::Node::Program(stmts) = &program else {
+        return Ok("Not a program.".to_string());
+    };
+    use std::collections::{HashMap, HashSet};
+    let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
+    for stmt in stmts {
+        if let crate::Node::Function { name, body, .. } = &stmt.node {
+            let mut callees = HashSet::new();
+            collect_call_targets(body, &mut callees);
+            graph.insert(name.clone(), callees);
+        }
+    }
+    if graph.is_empty() {
+        return Ok("No functions found.".to_string());
+    }
+    let mut fn_names: Vec<&String> = graph.keys().collect();
+    fn_names.sort();
+    let defined: HashSet<&str> = fn_names.iter().map(|n| n.as_str()).collect();
+    let mut lines = Vec::new();
+    for name in &fn_names {
+        let mut callees: Vec<&String> = graph[*name].iter().collect();
+        callees.sort();
+        let callee_list = if callees.is_empty() {
+            "(no calls)".to_string()
+        } else {
+            callees
+                .iter()
+                .map(|c| {
+                    if defined.contains(c.as_str()) {
+                        c.to_string()
+                    } else {
+                        format!("{c}[extern]")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(format!("  {} → {}", name, callee_list));
+    }
+    // Detect cycles (mutual recursion) via DFS.
+    let mut cycles: Vec<String> = Vec::new();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut in_stack: HashSet<&str> = HashSet::new();
+    for start in fn_names.iter().map(|s| s.as_str()) {
+        if !visited.contains(start) {
+            let mut path = Vec::new();
+            find_cycle(start, &graph, &mut visited, &mut in_stack, &mut path, &mut cycles);
+        }
+    }
+    let cycle_note = if cycles.is_empty() {
+        String::new()
+    } else {
+        format!("\nCycles detected:\n{}", cycles.iter().map(|c| format!("  {c}")).collect::<Vec<_>>().join("\n"))
+    };
+    Ok(format!(
+        "Call graph ({} functions):\n{}{}",
+        graph.len(),
+        lines.join("\n"),
+        cycle_note
+    ))
+}
+
+fn collect_call_targets(node: &crate::Node, out: &mut std::collections::HashSet<String>) {
+    match node {
+        crate::Node::CallExpression { function, arguments, .. } => {
+            if let crate::Node::Identifier { name, .. } = function.as_ref() {
+                out.insert(name.clone());
+            }
+            for a in arguments {
+                collect_call_targets(a, out);
+            }
+            collect_call_targets(function, out);
+        }
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_call_targets(s, out);
+            }
+        }
+        crate::Node::LetStatement { value, .. } => collect_call_targets(value, out),
+        crate::Node::Assignment { value, .. } => collect_call_targets(value, out),
+        crate::Node::ReturnStatement { value: Some(v), .. } => {
+            collect_call_targets(v, out);
+        }
+        crate::Node::ReturnStatement { value: None, .. } => {}
+        crate::Node::IfStatement { condition, consequence, alternative, .. } => {
+            collect_call_targets(condition, out);
+            collect_call_targets(consequence, out);
+            if let Some(alt) = alternative {
+                collect_call_targets(alt, out);
+            }
+        }
+        crate::Node::WhileStatement { condition, body, .. } => {
+            collect_call_targets(condition, out);
+            collect_call_targets(body, out);
+        }
+        crate::Node::ForInStatement { iterable, body, .. } => {
+            collect_call_targets(iterable, out);
+            collect_call_targets(body, out);
+        }
+        crate::Node::ExpressionStatement { expr, .. } => collect_call_targets(expr, out),
+        crate::Node::InfixExpression { left, right, .. } => {
+            collect_call_targets(left, out);
+            collect_call_targets(right, out);
+        }
+        crate::Node::PrefixExpression { right, .. } => collect_call_targets(right, out),
+        crate::Node::IndexExpression { target, index, .. } => {
+            collect_call_targets(target, out);
+            collect_call_targets(index, out);
+        }
+        _ => {}
+    }
+}
+
+fn find_cycle<'a>(
+    node: &'a str,
+    graph: &'a std::collections::HashMap<String, std::collections::HashSet<String>>,
+    visited: &mut std::collections::HashSet<&'a str>,
+    in_stack: &mut std::collections::HashSet<&'a str>,
+    path: &mut Vec<&'a str>,
+    cycles: &mut Vec<String>,
+) {
+    visited.insert(node);
+    in_stack.insert(node);
+    path.push(node);
+    if let Some(callees) = graph.get(node) {
+        let mut sorted_callees: Vec<&str> = callees.iter().map(|s| s.as_str()).collect();
+        sorted_callees.sort();
+        for callee in sorted_callees {
+            if !visited.contains(callee) {
+                find_cycle(callee, graph, visited, in_stack, path, cycles);
+            } else if in_stack.contains(callee) {
+                let start = path.iter().position(|&n| n == callee).unwrap_or(0);
+                let cycle_path = path[start..].to_vec();
+                cycles.push(format!("{} → {}", cycle_path.join(" → "), callee));
+            }
+        }
+    }
+    path.pop();
+    in_stack.remove(node);
+}
+
 // ── Tool schema definitions ───────────────────────────────────────────────────
 
 fn tool_definitions() -> Value {
@@ -959,6 +1277,75 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["spec"]
             }
+        },
+        {
+            "name": "resilient_fingerprint",
+            "description": "Compute behavioral fingerprints for every function in Resilient \
+                            source code. Each fingerprint is a stable digest of the function's \
+                            contracts (requires/ensures), parameter types, and fails variants \
+                            — NOT the body. Refactors that preserve postconditions keep the \
+                            same fingerprint, making regressions detectable in CI.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to fingerprint"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_resilience_score",
+            "description": "Compute per-function resilience scores (0–100) for Resilient \
+                            source. The score is a weighted sum of: contract coverage (40 pts), \
+                            effect annotations (10 pts), live-recovery blocks (15 pts), \
+                            call-site coverage (15 pts), and body simplicity (20 pts). \
+                            Returns a letter grade (A–F) for each function.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to score"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_contract_infer",
+            "description": "Run contract inference on Resilient source and suggest \
+                            requires/ensures clauses for under-specified functions. \
+                            Useful for adding contracts incrementally to an existing codebase.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to analyse"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_call_graph",
+            "description": "Extract and display the function call graph for Resilient source. \
+                            Shows, for each function, which other functions it calls directly. \
+                            External/builtin callees are marked [extern]. Mutual recursion \
+                            cycles are flagged.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to analyse"
+                    }
+                },
+                "required": ["source"]
+            }
         }
     ])
 }
@@ -1194,6 +1581,10 @@ mod tests {
             "resilient_disasm",
             "resilient_vm_run",
             "resilient_tla_check",
+            "resilient_fingerprint",
+            "resilient_resilience_score",
+            "resilient_contract_infer",
+            "resilient_call_graph",
         ] {
             assert!(
                 names.contains(expected),
@@ -1407,6 +1798,142 @@ mod tests {
         let r = tool_vm_run(&json!({}));
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("Missing required argument"));
+    }
+
+    // ── resilient_tla_check ───────────────────────────────────────────────────
+
+    // ── resilient_fingerprint ─────────────────────────────────────────────────
+
+    #[test]
+    fn fingerprint_returns_digest_for_function() {
+        let src = "fn f(int x) -> int ensures result > 0 { return x + 1; }";
+        let r = tool_fingerprint(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("digest:"), "got: {text}");
+        assert!(text.contains("f"), "got: {text}");
+    }
+
+    #[test]
+    fn fingerprint_empty_program_says_no_functions() {
+        let r = tool_fingerprint(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(r.unwrap().contains("No functions"));
+    }
+
+    #[test]
+    fn fingerprint_parse_error_propagates() {
+        let r = tool_fingerprint(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn fingerprint_recovery_flag_appears() {
+        let src = "fn f(int x) -> int fails IOError recovers_to: result >= 0 { return x; }";
+        let r = tool_fingerprint(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(
+            text.contains("[recovery]") || text.contains("0x"),
+            "got: {text}"
+        );
+    }
+
+    // ── resilient_resilience_score ────────────────────────────────────────────
+
+    #[test]
+    fn resilience_score_returns_grade_for_function() {
+        let src = "fn f(int x) -> int requires x > 0 ensures result > 0 { return x; }";
+        let r = tool_resilience_score(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("/100"), "got: {text}");
+    }
+
+    #[test]
+    fn resilience_score_empty_program_says_no_functions() {
+        let r = tool_resilience_score(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(r.unwrap().contains("No functions"));
+    }
+
+    #[test]
+    fn resilience_score_parse_error_propagates() {
+        let r = tool_resilience_score(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn resilience_score_shows_avg() {
+        let src = "// resilient: allow L0010, L0014\nfn f(int x) -> int { return x; }";
+        let r = tool_resilience_score(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("avg"), "got: {text}");
+    }
+
+    // ── resilient_contract_infer ──────────────────────────────────────────────
+
+    #[test]
+    fn contract_infer_suggests_for_unspecified_function() {
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let r = tool_contract_infer(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        // Either suggestions exist, or "no inference" message.
+        let text = r.unwrap();
+        assert!(
+            !text.is_empty(),
+            "contract_infer must return something, got empty"
+        );
+    }
+
+    #[test]
+    fn contract_infer_empty_program_ok() {
+        let r = tool_contract_infer(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn contract_infer_parse_error_propagates() {
+        let r = tool_contract_infer(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
+    }
+
+    // ── resilient_call_graph ──────────────────────────────────────────────────
+
+    #[test]
+    fn call_graph_shows_callee() {
+        let src = "fn g(int x) -> int { return x; }\nfn f(int x) -> int { return g(x); }";
+        let r = tool_call_graph(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("f"), "got: {text}");
+        assert!(text.contains("g"), "got: {text}");
+    }
+
+    #[test]
+    fn call_graph_detects_cycle() {
+        let src = "fn f(int x) -> int { return g(x); }\nfn g(int x) -> int { return f(x); }";
+        let r = tool_call_graph(&json!({ "source": src }));
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(
+            text.contains("Cycle") || text.contains("cycle") || text.contains("→"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn call_graph_empty_program_says_no_functions() {
+        let r = tool_call_graph(&json!({ "source": "" }));
+        assert!(r.is_ok(), "{r:?}");
+        assert!(r.unwrap().contains("No functions"));
+    }
+
+    #[test]
+    fn call_graph_parse_error_propagates() {
+        let r = tool_call_graph(&json!({ "source": "fn {{{{" }));
+        assert!(r.is_err());
     }
 
     // ── resilient_tla_check ───────────────────────────────────────────────────

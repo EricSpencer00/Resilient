@@ -145,6 +145,16 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0083", // `@noreturn`-annotated function has a declared return type
     "L0084", // function defined inside another function body (nested function)
     "L0085", // struct declaration with zero fields
+    "L0086", // string compared to empty literal `== ""` / `!= ""` — use `is_empty()`
+    "L0087", // function declared `pure` contains a `print` or `println` call
+    "L0088", // `let _ = expr` — wildcard discard binding; use bare `expr;` statement
+    "L0089", // `exit()` or `abort()` call directly inside a `live { }` recovery block
+    "L0090", // both arms of `if/else` return the same literal value — condition irrelevant
+    "L0091", // for-range with equal start/end literal (0..0) — guaranteed empty
+    "L0092", // `ensures false` in a function contract — claims function always diverges
+    "L0093", // function parameter named `result` — shadows the postcondition pseudo-variable
+    "L0094", // consecutive `break` or `continue` statements — second is unreachable
+    "L0095", // `match` with a single wildcard arm (`_ => ...`) — prefer an expression
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -1039,6 +1049,75 @@ pub fn explain(code: &str) -> Option<&'static str> {
              add a comment. Otherwise add the missing fields.\n\
              Suppress: // resilient: allow L0085",
         ),
+        "L0086" => Some(
+            "L0086 — string compared to empty literal\n\
+             \n\
+             `s == \"\"` / `s != \"\"` compares against the empty string literal. \
+             Prefer `is_empty(s)` / `!is_empty(s)` for clarity.\n\
+             Suppress: // resilient: allow L0086",
+        ),
+        "L0087" => Some(
+            "L0087 — pure function calls print/println\n\
+             \n\
+             A `pure` function must not produce I/O side effects. Remove the\n\
+             `print`/`println` call or remove the `pure` annotation.\n\
+             Suppress: // resilient: allow L0087",
+        ),
+        "L0088" => Some(
+            "L0088 — wildcard let discard binding\n\
+             \n\
+             `let _ = expr;` is clearer written as a bare `expr;` statement.\n\
+             Suppress: // resilient: allow L0088",
+        ),
+        "L0089" => Some(
+            "L0089 — exit/abort inside a live recovery block\n\
+             \n\
+             Calling `exit()` or `abort()` inside a `live { }` block defeats \
+             recovery. Use a controlled error path instead.\n\
+             Suppress: // resilient: allow L0089",
+        ),
+        "L0090" => Some(
+            "L0090 — both if/else arms return the same value\n\
+             \n\
+             Both branches return the same literal; the condition is irrelevant. \
+             Simplify to `return <value>;` or fix the branch.\n\
+             Suppress: // resilient: allow L0090",
+        ),
+        "L0091" => Some(
+            "L0091 — for-range with equal start and end (empty)\n\
+             \n\
+             `for i in N..N` never executes its body. Check the range bounds.\n\
+             Suppress: // resilient: allow L0091",
+        ),
+        "L0092" => Some(
+            "L0092 — `ensures false` claims function always diverges\n\
+             \n\
+             A contract `ensures false` means the verifier treats every return\n\
+             as unreachable. Unless the function truly never returns, this is a\n\
+             bug in the contract. Use `// @noreturn` for intentional divergence.\n\
+             Suppress: // resilient: allow L0092",
+        ),
+        "L0093" => Some(
+            "L0093 — parameter named `result`\n\
+             \n\
+             The name `result` is the postcondition pseudo-variable in `ensures`\n\
+             clauses. A parameter of the same name will shadow it, producing\n\
+             incorrect verification. Rename the parameter.\n\
+             Suppress: // resilient: allow L0093",
+        ),
+        "L0094" => Some(
+            "L0094 — consecutive break/continue (second unreachable)\n\
+             \n\
+             The second `break`/`continue` in a sequence is dead code. Remove it.\n\
+             Suppress: // resilient: allow L0094",
+        ),
+        "L0095" => Some(
+            "L0095 — match with single wildcard arm\n\
+             \n\
+             A `match` with one `_ => body` arm is equivalent to `body` directly.\n\
+             Remove the `match` or add meaningful patterns.\n\
+             Suppress: // resilient: allow L0095",
+        ),
         _ => None,
     }
 }
@@ -1143,11 +1222,35 @@ struct LintTriggers {
     has_bool_literal_contract: bool,
     /// L0085: any `struct` declaration with zero fields.
     has_empty_struct: bool,
+    /// L0086: any `==` / `!=` infix where one operand is an empty string literal.
+    has_empty_str_cmp: bool,
+    /// L0087: any `pure` function AND any `print`/`println` call in program.
+    has_pure_fn_with_print: bool,
+    /// L0088: any `let _ = expr` wildcard discard binding.
+    has_wildcard_let: bool,
+    /// L0089: any `live` block containing `exit`/`abort` call.
+    has_live_block: bool,
+    /// L0090: any `if/else` where both arms have a return statement.
+    has_if_else_with_returns: bool,
+    /// L0091: any for-in with a Range iterable whose lo == hi as integer literals.
+    has_empty_range_for: bool,
+    /// L0092: any function with an `ensures false` clause.
+    has_ensures_false: bool,
+    /// L0093: any function with a parameter named "result".
+    has_result_param: bool,
+    /// L0094: any block containing consecutive break/continue.
+    has_consecutive_break_continue: bool,
+    /// L0095: any match expression with exactly one wildcard arm.
+    has_single_wildcard_match: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
     let mut t = LintTriggers::default();
     scan_node(program, &mut t);
+    // L0087: set composite trigger after full scan (run fn does fine-grained check).
+    if t.has_pure_fn && t.has_call {
+        t.has_pure_fn_with_print = true;
+    }
     t
 }
 
@@ -1161,7 +1264,13 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_array_literal_index = true;
             }
         }
-        Node::Match { .. } => t.has_match = true,
+        Node::Match { arms, .. } => {
+            t.has_match = true;
+            // L0095: single wildcard arm.
+            if arms.len() == 1 && matches!(arms[0].0, crate::Pattern::Wildcard) {
+                t.has_single_wildcard_match = true;
+            }
+        }
         Node::InfixExpression {
             operator,
             left,
@@ -1215,6 +1324,13 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             {
                 t.has_bool_logic_with_literal = true;
             }
+            // L0086: `==` / `!=` with an empty string literal operand.
+            if matches!(operator.as_str(), "==" | "!=")
+                && (matches!(left.as_ref(), Node::StringLiteral { value, .. } if value.is_empty())
+                    || matches!(right.as_ref(), Node::StringLiteral { value, .. } if value.is_empty()))
+            {
+                t.has_empty_str_cmp = true;
+            }
         }
         Node::PrefixExpression {
             operator, right, ..
@@ -1251,16 +1367,46 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             if has_bool_clause {
                 t.has_bool_literal_contract = true;
             }
+            // L0092: ensures false clause.
+            if ensures
+                .iter()
+                .any(|e| matches!(e, Node::BooleanLiteral { value: false, .. }))
+            {
+                t.has_ensures_false = true;
+            }
+            // L0093: parameter named "result".
+            if parameters.iter().any(|(_, n)| n == "result") {
+                t.has_result_param = true;
+            }
         }
-        Node::LetStatement { .. } => {
+        Node::LetStatement { name, .. } => {
             t.has_let = true;
             t.has_let_binding = true;
+            // L0088: wildcard discard `let _ = ...`
+            if name == "_" {
+                t.has_wildcard_let = true;
+            }
         }
         Node::Block { stmts, .. } => {
             t.has_block = true;
             // L0017 trigger: a let inside a block (potential shadowing site).
             if stmts.iter().any(|s| matches!(s, Node::LetStatement { .. })) {
                 t.has_let_in_nested_block = true;
+            }
+            // L0094: consecutive break/continue statements.
+            {
+                let mut last_was_jump = false;
+                for s in stmts {
+                    if matches!(s, Node::Break { .. } | Node::Continue { .. }) {
+                        if last_was_jump {
+                            t.has_consecutive_break_continue = true;
+                            break;
+                        }
+                        last_was_jump = true;
+                    } else {
+                        last_was_jump = false;
+                    }
+                }
             }
         }
         Node::CallExpression { function, .. } => {
@@ -1299,6 +1445,16 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             if !name.is_empty() {
                 t.has_for_in_with_var = true;
             }
+            // L0091: Range iterable with equal integer literal bounds.
+            if let Node::Range { lo, hi, .. } = iterable.as_ref()
+                && let (
+                    Node::IntegerLiteral { value: lv, .. },
+                    Node::IntegerLiteral { value: hv, .. },
+                ) = (lo.as_ref(), hi.as_ref())
+                && lv == hv
+            {
+                t.has_empty_range_for = true;
+            }
         }
         Node::Assert { .. } => t.has_assert_stmt = true,
         Node::IfStatement {
@@ -1309,6 +1465,8 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             t.has_if_statement = true;
             if alternative.is_some() {
                 t.has_if_with_else = true;
+                // L0090: run fn does detailed same-literal check.
+                t.has_if_else_with_returns = true;
             }
             if matches!(condition.as_ref(), Node::Assignment { .. }) {
                 t.has_assign_in_cond = true;
@@ -1334,6 +1492,10 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::Break { .. } | Node::Continue { .. } => t.has_break_continue = true,
         Node::StructDecl { fields, .. } if fields.is_empty() => {
             t.has_empty_struct = true;
+        }
+        // L0089: live block — the pass itself inspects content.
+        Node::LiveBlock { .. } => {
+            t.has_live_block = true;
         }
         _ => {}
     }
@@ -1580,6 +1742,37 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_empty_struct {
         run_l0085_empty_struct(program, &mut out);
+    }
+    // RES-2645: L0086–L0095 new lint rules.
+    if t.has_empty_str_cmp {
+        run_l0086_empty_string_comparison(program, &mut out);
+    }
+    if t.has_pure_fn_with_print {
+        run_l0087_pure_fn_prints(program, &mut out);
+    }
+    if t.has_wildcard_let {
+        run_l0088_wildcard_let_discard(program, &mut out);
+    }
+    if t.has_live_block {
+        run_l0089_exit_in_live_block(program, &mut out);
+    }
+    if t.has_if_else_with_returns {
+        run_l0090_both_arms_same_return(program, &mut out);
+    }
+    if t.has_empty_range_for {
+        run_l0091_empty_range_for(program, &mut out);
+    }
+    if t.has_ensures_false {
+        run_l0092_ensures_false(program, &mut out);
+    }
+    if t.has_result_param {
+        run_l0093_param_named_result(program, &mut out);
+    }
+    if t.has_consecutive_break_continue {
+        run_l0094_consecutive_break_continue(program, &mut out);
+    }
+    if t.has_single_wildcard_match {
+        run_l0095_single_wildcard_match(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -7006,6 +7199,356 @@ fn run_l0085_empty_struct(program: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0086: string compared to empty literal `== ""` / `!= ""`
+// ============================================================
+
+fn run_l0086_empty_string_comparison(program: &Node, out: &mut Vec<Lint>) {
+    walk_nodes(program, &mut |node| {
+        if let Node::InfixExpression {
+            operator,
+            left,
+            right,
+            span,
+        } = node
+        {
+            if !matches!(operator.as_str(), "==" | "!=") {
+                return;
+            }
+            let is_empty_str = |n: &Node| {
+                matches!(n, Node::StringLiteral { value, .. } if value.is_empty())
+            };
+            if is_empty_str(left) || is_empty_str(right) {
+                let op = operator.clone();
+                let suggestion = if op == "==" {
+                    "is_empty(s)"
+                } else {
+                    "!is_empty(s)"
+                };
+                out.push(Lint {
+                    code: "L0086".into(),
+                    message: format!(
+                        "comparing to empty string literal with `{op}`; \
+                         prefer `{suggestion}` for clarity"
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                    severity: Severity::Warning,
+                });
+            }
+        }
+    });
+}
+
+fn walk_nodes<F: FnMut(&Node)>(node: &Node, f: &mut F) {
+    f(node);
+    recurse_children(node, &mut |child| walk_nodes(child, f));
+}
+
+// ============================================================
+// L0087: pure function calls print/println
+// ============================================================
+
+fn run_l0087_pure_fn_prints(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for stmt in stmts {
+        if let Node::Function {
+            name,
+            pure,
+            body,
+            span,
+            ..
+        } = &stmt.node
+            && *pure
+            && body_calls_print(body)
+        {
+            out.push(Lint {
+                code: "L0087".into(),
+                message: format!(
+                    "function `{name}` is declared `pure` but calls `print` or `println`; \
+                     pure functions must not produce side effects"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    }
+}
+
+fn body_calls_print(node: &Node) -> bool {
+    match node {
+        Node::CallExpression { function, .. } => {
+            matches!(function.as_ref(), Node::Identifier { name, .. }
+                if name == "print" || name == "println")
+        }
+        other => {
+            let mut found = false;
+            recurse_children(other, &mut |child| {
+                if !found {
+                    found = body_calls_print(child);
+                }
+            });
+            found
+        }
+    }
+}
+
+// ============================================================
+// L0088: `let _ = expr` wildcard discard binding
+// ============================================================
+
+fn run_l0088_wildcard_let_discard(program: &Node, out: &mut Vec<Lint>) {
+    walk_nodes(program, &mut |node| {
+        if let Node::LetStatement { name, span, .. } = node
+            && name == "_"
+        {
+            out.push(Lint {
+                code: "L0088".into(),
+                message: "`let _ = expr;` wildcard discard — use a bare `expr;` statement instead"
+                    .to_string(),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    });
+}
+
+// ============================================================
+// L0089: exit/abort call inside a live recovery block
+// ============================================================
+
+fn run_l0089_exit_in_live_block(program: &Node, out: &mut Vec<Lint>) {
+    walk_nodes(program, &mut |node| {
+        if let Node::LiveBlock { body, span, .. } = node
+            && body_calls_diverging(body)
+        {
+            out.push(Lint {
+                code: "L0089".into(),
+                message: "`exit()` or `abort()` inside a `live` recovery block defeats recovery; \
+                           use a controlled error path instead"
+                    .to_string(),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    });
+}
+
+const DIVERGING_CALLS: &[&str] = &["exit", "abort"];
+
+fn body_calls_diverging(node: &Node) -> bool {
+    match node {
+        Node::CallExpression { function, .. } => {
+            matches!(function.as_ref(), Node::Identifier { name, .. }
+                if DIVERGING_CALLS.contains(&name.as_str()))
+        }
+        other => {
+            let mut found = false;
+            recurse_children(other, &mut |child| {
+                if !found {
+                    found = body_calls_diverging(child);
+                }
+            });
+            found
+        }
+    }
+}
+
+// ============================================================
+// L0090: both if/else arms return the same literal
+// ============================================================
+
+fn run_l0090_both_arms_same_return(program: &Node, out: &mut Vec<Lint>) {
+    walk_nodes(program, &mut |node| {
+        if let Node::IfStatement {
+            consequence,
+            alternative: Some(alt),
+            span,
+            ..
+        } = node
+            && let (Some(a), Some(b)) =
+                (extract_sole_return_literal(consequence), extract_sole_return_literal(alt))
+            && a == b
+        {
+            out.push(Lint {
+                code: "L0090".into(),
+                message: format!(
+                    "both `if` and `else` branches return the same value `{a}`; \
+                     the condition is irrelevant — simplify to `return {a};`"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    });
+}
+
+fn extract_sole_return_literal(node: &Node) -> Option<String> {
+    match node {
+        Node::ReturnStatement { value: Some(v), .. } => literal_text(v),
+        Node::Block { stmts, .. } if stmts.len() == 1 => extract_sole_return_literal(&stmts[0]),
+        _ => None,
+    }
+}
+
+fn literal_text(node: &Node) -> Option<String> {
+    match node {
+        Node::IntegerLiteral { value, .. } => Some(value.to_string()),
+        Node::BooleanLiteral { value, .. } => Some(value.to_string()),
+        Node::StringLiteral { value, .. } => Some(format!("\"{value}\"")),
+        _ => None,
+    }
+}
+
+// ============================================================
+// L0091: for-range with equal start and end (0..0)
+// ============================================================
+
+fn run_l0091_empty_range_for(program: &Node, out: &mut Vec<Lint>) {
+    walk_nodes(program, &mut |node| {
+        if let Node::ForInStatement { iterable, span, .. } = node
+            && let Node::Range { lo, hi, .. } = iterable.as_ref()
+            && let (
+                Node::IntegerLiteral { value: lv, .. },
+                Node::IntegerLiteral { value: hv, .. },
+            ) = (lo.as_ref(), hi.as_ref())
+            && lv == hv
+        {
+            out.push(Lint {
+                code: "L0091".into(),
+                message: format!(
+                    "for-loop range `{lv}..{hv}` has equal start and end — \
+                     the loop body will never execute"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    });
+}
+
+// ============================================================
+// L0092: `ensures false` — function claims it always diverges
+// ============================================================
+
+fn run_l0092_ensures_false(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for stmt in stmts {
+        if let Node::Function {
+            name,
+            ensures,
+            span,
+            ..
+        } = &stmt.node
+            && ensures
+                .iter()
+                .any(|e| matches!(e, Node::BooleanLiteral { value: false, .. }))
+        {
+            out.push(Lint {
+                code: "L0092".into(),
+                message: format!(
+                    "function `{name}` has `ensures false` — this claims the function \
+                     never returns normally. If intentional, use `// @noreturn` instead."
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    }
+}
+
+// ============================================================
+// L0093: function parameter named "result"
+// ============================================================
+
+fn run_l0093_param_named_result(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for stmt in stmts {
+        if let Node::Function {
+            name,
+            parameters,
+            span,
+            ..
+        } = &stmt.node
+            && parameters.iter().any(|(_, n)| n == "result")
+        {
+            out.push(Lint {
+                code: "L0093".into(),
+                message: format!(
+                    "function `{name}` has a parameter named `result`; \
+                     this shadows the postcondition pseudo-variable in `ensures` clauses — \
+                     rename the parameter"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    }
+}
+
+// ============================================================
+// L0094: consecutive break/continue (second is unreachable)
+// ============================================================
+
+fn run_l0094_consecutive_break_continue(program: &Node, out: &mut Vec<Lint>) {
+    walk_nodes(program, &mut |node| {
+        if let Node::Block { stmts, .. } = node {
+            let mut last_jump_span: Option<&Span> = None;
+            for s in stmts {
+                match s {
+                    Node::Break { span, .. } | Node::Continue { span, .. } => {
+                        if last_jump_span.is_some() {
+                            out.push(Lint {
+                                code: "L0094".into(),
+                                message: "unreachable `break`/`continue` — a jump statement \
+                                          already precedes this one in the same block"
+                                    .to_string(),
+                                line: span.start.line as u32,
+                                column: span.start.column as u32,
+                                severity: Severity::Warning,
+                            });
+                        }
+                        last_jump_span = Some(span);
+                    }
+                    _ => {
+                        last_jump_span = None;
+                    }
+                }
+            }
+        }
+    });
+}
+
+// ============================================================
+// L0095: match with a single wildcard arm
+// ============================================================
+
+fn run_l0095_single_wildcard_match(program: &Node, out: &mut Vec<Lint>) {
+    walk_nodes(program, &mut |node| {
+        if let Node::Match { arms, span, .. } = node
+            && arms.len() == 1
+            && matches!(arms[0].0, crate::Pattern::Wildcard)
+        {
+            out.push(Lint {
+                code: "L0095".into(),
+                message: "`match` with a single `_ =>` arm is equivalent to the arm's body \
+                           directly — remove the `match` or add meaningful patterns"
+                    .to_string(),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    });
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -10212,6 +10755,215 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0085".to_string()),
             "L0085 must not fire for struct with fields"
+        );
+    }
+
+    // ── L0086 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0086_fires_on_eq_empty_string() {
+        let src = "fn f(int x) { if x == \"\" { return 1; } return 0; }\n";
+        assert!(
+            codes(src).contains(&"L0086".to_string()),
+            "L0086 must fire when comparing with `==` to empty string literal; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0086_silent_for_non_empty_string_comparison() {
+        let src = "fn f(int x) { if x == \"hello\" { return 1; } return 0; }\n";
+        assert!(
+            !codes(src).contains(&"L0086".to_string()),
+            "L0086 must not fire when comparing to a non-empty string literal"
+        );
+    }
+
+    // ── L0087 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0087_fires_on_pure_fn_with_println() {
+        let src = "@pure fn square(int x) -> int { println(x); return x * x; }\n";
+        assert!(
+            codes(src).contains(&"L0087".to_string()),
+            "L0087 must fire when a pure function calls println; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0087_silent_for_pure_fn_without_print() {
+        let src = "@pure fn square(int x) -> int { return x * x; }\n";
+        assert!(
+            !codes(src).contains(&"L0087".to_string()),
+            "L0087 must not fire when pure function has no print/println call"
+        );
+    }
+
+    // ── L0088 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0088_explain_is_registered() {
+        // The parser currently rejects `let _` syntax, so the lint fires only
+        // once parser support for wildcard bindings is added. Until then, verify
+        // the code is registered and has an explanation.
+        assert!(KNOWN_CODES.contains(&"L0088"), "L0088 must be in KNOWN_CODES");
+        assert!(explain("L0088").is_some(), "L0088 must have an explanation");
+    }
+
+    #[test]
+    fn l0088_silent_for_named_let() {
+        let src = "fn f(int x) -> int { let y = x + 1; return y; }\n";
+        assert!(
+            !codes(src).contains(&"L0088".to_string()),
+            "L0088 must not fire for a normal named let binding"
+        );
+    }
+
+    // ── L0089 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0089_fires_on_exit_in_live_block() {
+        let src = "fn f(int x) -> int { live { exit(1); } return x; }\n";
+        assert!(
+            codes(src).contains(&"L0089".to_string()),
+            "L0089 must fire when exit() is called inside a live block; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0089_silent_for_live_block_without_exit() {
+        let src = "fn f(int x) -> int { live { return x; } return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0089".to_string()),
+            "L0089 must not fire when live block has no exit/abort"
+        );
+    }
+
+    // ── L0090 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0090_fires_when_both_arms_return_same_literal() {
+        let src = "fn f(int x) -> int { if x > 0 { return 1; } else { return 1; } }\n";
+        assert!(
+            codes(src).contains(&"L0090".to_string()),
+            "L0090 must fire when both if/else arms return the same literal; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0090_silent_when_arms_return_different_values() {
+        let src = "fn f(int x) -> int { if x > 0 { return 1; } else { return 0; } }\n";
+        assert!(
+            !codes(src).contains(&"L0090".to_string()),
+            "L0090 must not fire when if/else arms return different values"
+        );
+    }
+
+    // ── L0091 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0091_fires_on_equal_range_bounds() {
+        let src = "fn f() { for i in 5..5 { return 1; } }\n";
+        assert!(
+            codes(src).contains(&"L0091".to_string()),
+            "L0091 must fire for for-range with equal bounds; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0091_silent_for_non_equal_range_bounds() {
+        let src = "fn f() { for i in 0..5 { return 1; } }\n";
+        assert!(
+            !codes(src).contains(&"L0091".to_string()),
+            "L0091 must not fire when range bounds differ"
+        );
+    }
+
+    // ── L0092 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0092_fires_on_ensures_false() {
+        let src = "fn f(int x) -> int ensures false { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0092".to_string()),
+            "L0092 must fire when function has `ensures false`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0092_silent_for_normal_ensures() {
+        let src = "fn f(int x) -> int ensures result > 0 { return x + 1; }\n";
+        assert!(
+            !codes(src).contains(&"L0092".to_string()),
+            "L0092 must not fire for a meaningful ensures clause"
+        );
+    }
+
+    // ── L0093 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0093_fires_on_param_named_result() {
+        let src = "fn f(int result) -> int { return result; }\n";
+        assert!(
+            codes(src).contains(&"L0093".to_string()),
+            "L0093 must fire when a parameter is named `result`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0093_silent_for_normal_param_names() {
+        let src = "fn f(int value) -> int { return value; }\n";
+        assert!(
+            !codes(src).contains(&"L0093".to_string()),
+            "L0093 must not fire for parameters with normal names"
+        );
+    }
+
+    // ── L0094 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0094_fires_on_consecutive_break() {
+        let src = "fn f() { for i in 0..5 { break; break; } }\n";
+        assert!(
+            codes(src).contains(&"L0094".to_string()),
+            "L0094 must fire for consecutive break statements; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0094_silent_for_single_break() {
+        let src = "fn f() { for i in 0..5 { break; } }\n";
+        assert!(
+            !codes(src).contains(&"L0094".to_string()),
+            "L0094 must not fire for a single break statement"
+        );
+    }
+
+    // ── L0095 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0095_fires_on_single_wildcard_match() {
+        let src = "fn f(int x) -> int { return match x { _ => 1, }; }\n";
+        assert!(
+            codes(src).contains(&"L0095".to_string()),
+            "L0095 must fire for match with single wildcard arm; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0095_silent_for_multi_arm_match() {
+        let src = "fn f(int x) -> int { return match x { 0 => 0, _ => 1, }; }\n";
+        assert!(
+            !codes(src).contains(&"L0095".to_string()),
+            "L0095 must not fire for match with multiple arms"
         );
     }
 }
