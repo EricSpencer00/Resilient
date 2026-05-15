@@ -157,7 +157,10 @@ pub(crate) fn builtin_stats_percentile(args: &[Value]) -> RResult<Value> {
             if xs.is_empty() {
                 return Err("stats_percentile: empty array".to_string());
             }
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if xs.iter().any(|v| v.is_nan()) {
+                return Err("stats_percentile: array contains NaN".to_string());
+            }
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let idx = p / 100.0 * (xs.len() - 1) as f64;
             let lo = idx.floor() as usize;
             let hi = idx.ceil() as usize;
@@ -765,7 +768,7 @@ pub(crate) fn builtin_mat_solve(args: &[Value]) -> RResult<Value> {
                 }
             }
 
-            let x: Vec<f64> = aug.iter().map(|row| *row.last().unwrap()).collect();
+            let x: Vec<f64> = aug.iter().map(|row| row[n]).collect();
             Ok(float_arr(x))
         }
         _ => Err(format!(
