@@ -492,7 +492,7 @@ fn solve_bmc_obligation(
         SatResult::Sat => {
             // Z3 found a state where recovers_to can be violated.
             let line = span.start.line;
-            let col = span.start.col;
+            let col = span.start.column;
             let loc = if line > 0 {
                 format!("{line}:{col}: ")
             } else {
