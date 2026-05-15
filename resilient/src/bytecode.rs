@@ -107,6 +107,13 @@ pub enum Op {
     /// wire the actual slab; today the dispatch arm returns
     /// `VmError::Unsupported`.
     LoadUpvalue(u16),
+    /// RES-169c: call a closure value sitting below `arity` arguments
+    /// on the operand stack. Stack layout before this op:
+    ///   `[..., closure, arg0, arg1, …, argArity-1]`
+    /// Pops `arity` args (reverse order → source order in the new
+    /// frame's locals), then pops the closure, creates a new
+    /// `CallFrame` with the closure's `fn_idx` and `upvalues` slab.
+    CallClosure { arity: u8 },
     /// RES-384: self-tail-call in tail position. Reuses the current
     /// `CallFrame` instead of pushing a new one, keeping call-stack
     /// depth O(1) for tail-recursive functions. The callee MUST be

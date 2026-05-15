@@ -226,6 +226,7 @@ fn write_op(
         Op::Shr => write!(out, "Shr")?,
         Op::AssertFail => write!(out, "AssertFail")?,
         Op::MakeTuple { len } => write!(out, "MakeTuple {}", len)?,
+        Op::CallClosure { arity } => write!(out, "CallClosure arity={}", arity)?,
     }
     Ok(())
 }

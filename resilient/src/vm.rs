@@ -85,6 +85,9 @@ pub enum VmError {
     /// (the condition was false). Carries the user-supplied or
     /// auto-generated failure message.
     AssertionFailed(String),
+    /// RES-169c: `LoadUpvalue(idx)` with `idx` outside the current
+    /// frame's upvalue slab.
+    UpvalueOutOfBounds(u16),
 }
 
 impl VmError {
@@ -132,6 +135,9 @@ impl std::fmt::Display for VmError {
             }
             VmError::AssertionFailed(msg) => {
                 write!(f, "ASSERTION ERROR: {}", msg)
+            }
+            VmError::UpvalueOutOfBounds(idx) => {
+                write!(f, "vm: upvalue index {} out of bounds", idx)
             }
         }
     }
@@ -294,6 +300,9 @@ struct CallFrame {
     /// Base offset into the shared `locals` slab. LoadLocal(idx)
     /// resolves to `locals[locals_base + idx]`.
     locals_base: usize,
+    /// RES-169c: captured values for this closure frame. Empty for
+    /// regular (non-closure) calls; `LoadUpvalue(i)` indexes here.
+    upvalues: Box<[Value]>,
 }
 
 /// RES-329: dispatch strategy. The default match-based loop and the
@@ -398,6 +407,7 @@ fn run_inner(
         chunk_idx: usize::MAX, // main
         pc: 0,
         locals_base: 0,
+        upvalues: Box::default(),
     });
 
     loop {
@@ -534,6 +544,7 @@ fn run_inner(
                     chunk_idx: idx as usize,
                     pc: 0,
                     locals_base: base,
+                    upvalues: Box::default(),
                 });
             }
             Op::ReturnFromCall => {
@@ -678,11 +689,60 @@ fn run_inner(
             // today it's a wiring bug, not user-facing. Return
             // Unsupported with a self-describing descriptor so the
             // at-line wrapper still works.
-            Op::MakeClosure { .. } => {
-                return Err(VmError::Unsupported("MakeClosure"));
+            Op::MakeClosure {
+                fn_idx,
+                upvalue_count,
+            } => {
+                if stack.len() < upvalue_count as usize {
+                    return Err(VmError::EmptyStack);
+                }
+                let split = stack.len() - upvalue_count as usize;
+                let captured: Box<[Value]> =
+                    stack.drain(split..).collect::<Vec<_>>().into_boxed_slice();
+                stack.push(Value::Closure {
+                    fn_idx,
+                    upvalues: captured,
+                });
             }
-            Op::LoadUpvalue(_) => {
-                return Err(VmError::Unsupported("LoadUpvalue"));
+            Op::LoadUpvalue(idx) => {
+                let frame_idx = frames.len() - 1;
+                let v = frames[frame_idx]
+                    .upvalues
+                    .get(idx as usize)
+                    .ok_or(VmError::UpvalueOutOfBounds(idx))?
+                    .clone();
+                stack.push(v);
+            }
+            Op::CallClosure { arity } => {
+                if stack.len() < arity as usize + 1 {
+                    return Err(VmError::EmptyStack);
+                }
+                if frames.len() >= MAX_CALL_DEPTH {
+                    return Err(VmError::CallStackOverflow);
+                }
+                let split = stack.len() - arity as usize;
+                let args: Vec<Value> = stack.drain(split..).collect();
+                let closure = stack.pop().ok_or(VmError::EmptyStack)?;
+                let (fn_idx, captured) = match closure {
+                    Value::Closure { fn_idx, upvalues } => (fn_idx, upvalues),
+                    _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
+                };
+                let func = program
+                    .functions
+                    .get(fn_idx as usize)
+                    .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+                let base = locals.len();
+                locals.resize(base + func.local_count as usize, Value::Void);
+                for (i, v) in args.into_iter().enumerate() {
+                    locals[base + i] = v;
+                }
+                frames.push(CallFrame {
+                    chunk_idx: fn_idx as usize,
+                    pc: 0,
+                    locals_base: base,
+                    upvalues: captured,
+                });
+                continue;
             }
             #[cfg(feature = "ffi")]
             Op::CallForeign(idx) => {
@@ -1151,6 +1211,7 @@ fn op_to_index(op: Op) -> usize {
         Op::Shr => OP_KIND_SHR,
         Op::AssertFail => OP_KIND_ASSERT_FAIL,
         Op::MakeTuple { .. } => OP_KIND_MAKE_TUPLE,
+        Op::CallClosure { .. } => OP_KIND_CALL_CLOSURE,
     }
 }
 
@@ -1165,7 +1226,8 @@ const OP_KIND_SHL: usize = 38;
 const OP_KIND_SHR: usize = 39;
 const OP_KIND_ASSERT_FAIL: usize = 40;
 const OP_KIND_MAKE_TUPLE: usize = 41;
-const HANDLER_TABLE_LEN: usize = 42;
+const OP_KIND_CALL_CLOSURE: usize = 42;
+const HANDLER_TABLE_LEN: usize = 43;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1213,6 +1275,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_SHR] = h_shr;
     table[OP_KIND_ASSERT_FAIL] = h_assert_fail;
     table[OP_KIND_MAKE_TUPLE] = h_make_tuple;
+    table[OP_KIND_CALL_CLOSURE] = h_call_closure;
     table
 };
 
@@ -1239,6 +1302,7 @@ fn run_direct(
         chunk_idx: usize::MAX,
         pc: 0,
         locals_base: 0,
+        upvalues: Box::default(),
     });
 
     loop {
@@ -1428,6 +1492,7 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         chunk_idx: idx as usize,
         pc: 0,
         locals_base: base,
+        upvalues: Box::default(),
     });
     Ok(Step::Continue)
 }
@@ -1580,13 +1645,82 @@ fn h_return(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 }
 
 #[inline(never)]
-fn h_make_closure(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    Err(VmError::Unsupported("MakeClosure"))
+fn h_make_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::MakeClosure {
+        fn_idx,
+        upvalue_count,
+    } = op
+    else {
+        unreachable!()
+    };
+    if state.stack.len() < upvalue_count as usize {
+        return Err(VmError::EmptyStack);
+    }
+    let split = state.stack.len() - upvalue_count as usize;
+    let captured: Box<[Value]> = state
+        .stack
+        .drain(split..)
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    state.stack.push(Value::Closure {
+        fn_idx,
+        upvalues: captured,
+    });
+    Ok(Step::Continue)
 }
 
 #[inline(never)]
-fn h_load_upvalue(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    Err(VmError::Unsupported("LoadUpvalue"))
+fn h_load_upvalue(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::LoadUpvalue(idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    let v = state.frames[frame_idx]
+        .upvalues
+        .get(idx as usize)
+        .ok_or(VmError::UpvalueOutOfBounds(idx))?
+        .clone();
+    state.stack.push(v);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::CallClosure { arity } = op else {
+        unreachable!()
+    };
+    if state.stack.len() < arity as usize + 1 {
+        return Err(VmError::EmptyStack);
+    }
+    if state.frames.len() >= MAX_CALL_DEPTH {
+        return Err(VmError::CallStackOverflow);
+    }
+    let split = state.stack.len() - arity as usize;
+    let args: Vec<Value> = state.stack.drain(split..).collect();
+    let closure = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let (fn_idx, captured) = match closure {
+        Value::Closure { fn_idx, upvalues } => (fn_idx, upvalues),
+        _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
+    };
+    let func = state
+        .program
+        .functions
+        .get(fn_idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    let base = state.locals.len();
+    state
+        .locals
+        .resize(base + func.local_count as usize, Value::Void);
+    for (i, v) in args.into_iter().enumerate() {
+        state.locals[base + i] = v;
+    }
+    state.frames.push(CallFrame {
+        chunk_idx: fn_idx as usize,
+        pc: 0,
+        locals_base: base,
+        upvalues: captured,
+    });
+    Ok(Step::Continue)
 }
 
 #[inline(never)]
@@ -2405,35 +2539,54 @@ mod tests {
         assert_int(compile_run(src).unwrap(), 55);
     }
 
-    // ---------- RES-169a: skeleton closure-opcode dispatch ----------
+    // ---------- RES-169c: closure opcodes are fully implemented ----------
 
     #[test]
-    fn res169a_make_closure_dispatch_returns_unsupported() {
-        // MakeClosure is laid down as a skeleton in RES-169a; the
-        // compiler never emits it yet, so if it shows up in a
-        // chunk that's a wiring bug. The dispatch arm reports that
-        // cleanly via `VmError::Unsupported("MakeClosure")`.
-        let p = const_program(
-            &[],
-            &[Op::MakeClosure {
-                fn_idx: 0,
-                upvalue_count: 0,
+    fn res169c_make_closure_produces_closure_value() {
+        // MakeClosure with 0 upvalues should push a Closure value onto
+        // the stack. We add a dummy function at index 0 so FunctionOutOfBounds
+        // doesn't fire when CallClosure tries to look it up.
+        use crate::bytecode::Function;
+        let mut main = Chunk::new();
+        main.code.push(Op::MakeClosure {
+            fn_idx: 0,
+            upvalue_count: 0,
+        });
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        main.line_info.push(1);
+        let mut body = Chunk::new();
+        body.code.push(Op::Return);
+        body.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "f".into(),
+                arity: 0,
+                local_count: 0,
+                chunk: body,
             }],
-        );
-        let err = run(&p).unwrap_err();
-        match err.kind() {
-            VmError::Unsupported(what) => assert_eq!(*what, "MakeClosure"),
-            other => panic!("expected Unsupported(MakeClosure), got {:?}", other),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let v = run(&p).unwrap();
+        match v {
+            Value::Closure { fn_idx, upvalues } => {
+                assert_eq!(fn_idx, 0);
+                assert_eq!(upvalues.len(), 0);
+            }
+            other => panic!("expected Closure, got {:?}", other),
         }
     }
 
     #[test]
-    fn res169a_load_upvalue_dispatch_returns_unsupported() {
-        let p = const_program(&[], &[Op::LoadUpvalue(0)]);
+    fn res169c_load_upvalue_out_of_bounds_errors() {
+        // LoadUpvalue(5) on a frame with 0 upvalues → UpvalueOutOfBounds
+        let p = const_program(&[], &[Op::LoadUpvalue(5)]);
         let err = run(&p).unwrap_err();
         match err.kind() {
-            VmError::Unsupported(what) => assert_eq!(*what, "LoadUpvalue"),
-            other => panic!("expected Unsupported(LoadUpvalue), got {:?}", other),
+            VmError::UpvalueOutOfBounds(idx) => assert_eq!(*idx, 5),
+            other => panic!("expected UpvalueOutOfBounds(5), got {:?}", other),
         }
     }
 
@@ -3265,18 +3418,35 @@ mod tests {
     }
 
     #[test]
-    fn res329_direct_unsupported_closures_surface_cleanly() {
-        let p = const_program(
-            &[],
-            &[Op::MakeClosure {
-                fn_idx: 0,
-                upvalue_count: 0,
+    fn res329_direct_make_closure_works() {
+        // MakeClosure in the direct-threaded path should produce a Closure value.
+        use crate::bytecode::Function;
+        let mut main = Chunk::new();
+        main.code.push(Op::MakeClosure {
+            fn_idx: 0,
+            upvalue_count: 0,
+        });
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        main.line_info.push(1);
+        let mut body = Chunk::new();
+        body.code.push(Op::Return);
+        body.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![Function {
+                name: "f".into(),
+                arity: 0,
+                local_count: 0,
+                chunk: body,
             }],
-        );
-        let err = run_with(&p, OverflowMode::Wrap, Dispatch::Direct).unwrap_err();
-        match err.kind() {
-            VmError::Unsupported(what) => assert_eq!(*what, "MakeClosure"),
-            other => panic!("expected Unsupported(MakeClosure), got {:?}", other),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let v = run_with(&p, OverflowMode::Wrap, Dispatch::Direct).unwrap();
+        match v {
+            Value::Closure { fn_idx, .. } => assert_eq!(fn_idx, 0),
+            other => panic!("expected Closure, got {:?}", other),
         }
     }
 
@@ -3337,6 +3507,7 @@ mod tests {
             Op::Shr,
             Op::AssertFail,
             Op::MakeTuple { len: 0 },
+            Op::CallClosure { arity: 0 },
         ];
         for op in samples {
             let idx = op_to_index(*op);
