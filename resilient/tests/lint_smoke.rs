@@ -340,7 +340,7 @@ fn lint_l0015_silent_for_valid_arithmetic() {
     // RES-397: `// source:` satisfies L0012. Call `f` to silence L0014.
     let src = tmp_file(
         "l0015_clean",
-        "// source: test fixture\nfn f() -> int requires true { return 100 + 200; }\nf();\n",
+        "// source: test fixture\nfn f(int x) -> int requires x >= 0 { return 100 + 200; }\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
