@@ -130,6 +130,9 @@ pub(crate) struct Markers<'a> {
     /// `collect_actor_obligations` when the program has no actors.
     /// Also used by the `deadlock_freedom` gate (RES-1629).
     pub has_actor_decl: bool,
+    /// True if any `Node::Actor { .. }` (standalone actor block) appears.
+    /// Used by the `actor_drain` drain-before-shutdown pass (RES-1232).
+    pub has_actor: bool,
     /// True if any `Node::CallExpression` appears anywhere
     /// (regardless of whether the callee is an `Identifier` —
     /// method calls and indirect calls count too). Used by the
@@ -146,6 +149,11 @@ pub(crate) struct Markers<'a> {
     /// non-exhaustive struct match detection pass when the program
     /// has no match expressions.
     pub has_match_expr: bool,
+    /// True if any `Node::InterpolatedString` appears anywhere. Used
+    /// by the `string_interp::check` pass (RES-221) to skip the
+    /// sub-expression type-checking walk when no interpolated strings
+    /// are present.
+    pub has_interp_string: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -292,11 +300,17 @@ impl<'a> Markers<'a> {
                     m.has_actor_with_eventually = true;
                 }
             }
+            Node::Actor { .. } => {
+                m.has_actor = true;
+            }
             Node::WhileStatement { invariants, .. } if !invariants.is_empty() => {
                 m.has_while_with_invariants = true;
             }
             Node::Match { .. } => {
                 m.has_match_expr = true;
+            }
+            Node::InterpolatedString { .. } => {
+                m.has_interp_string = true;
             }
             _ => {}
         });

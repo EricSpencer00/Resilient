@@ -4328,9 +4328,10 @@ impl TypeChecker {
                 if markers.has_range {
                     crate::ranges::check(program, source_path)?;
                 }
-                // RES-1605: `string_interp::check` is a no-op stub; the
-                // parser-side interpolation handling lives in
-                // `string_interp::parse`, not here.
+                // RES-221: type-check interpolated string sub-expressions.
+                if markers.has_interp_string {
+                    crate::string_interp::check(program, source_path)?;
+                }
                 // RES-1605: `modules::check` is a no-op stub; see
                 // `full_modules` for the actual module-graph build.
                 // RES-1615: validate default parameter values — check
@@ -4428,11 +4429,10 @@ impl TypeChecker {
                     crate::reentrancy_guard::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #8: actor drain-on-shutdown.
-                // RES-1594: pass body is a no-op (`Ok(())`) until the
-                // `Node::Actor` variant is wired — see the RES-1232
-                // comment in `actor_drain.rs`. Skip the call dispatch
-                // until that lands; re-add via the standard extension
-                // pattern when the pass becomes meaningful again.
+                // RES-1232: `Node::Actor` is wired; pass is now active.
+                if markers.has_actor {
+                    crate::actor_drain::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #9: backpressure-safe handler.
                 // RES-1585 gate: pass scans param types ∈ QUEUE_TYPES.
                 if markers.any_param_type_in(&[
