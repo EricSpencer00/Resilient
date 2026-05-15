@@ -56,7 +56,10 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
             };
             Ok(Value::String(name.to_string()))
         }
-        _ => Err(format!("type_of: expected 1 argument, got {}", args.len())),
+        _ => Err(format!(
+            "type_of: expected 1 argument (x), got {}",
+            args.len()
+        )),
     }
 }
 
@@ -99,7 +102,7 @@ pub(crate) fn builtin_result_collect(args: &[Value]) -> RResult<Value> {
             "result_collect: expected an Array of Results, got {other}"
         )),
         _ => Err(format!(
-            "result_collect: expected 1 argument, got {}",
+            "result_collect: expected 1 argument (arr), got {}",
             args.len()
         )),
     }

@@ -147,6 +147,11 @@ pub(crate) fn builtin_round_to(args: &[Value]) -> RResult<Value> {
     if n < 0 {
         return Err(format!("round_to: decimal places must be >= 0, got {n}"));
     }
+    if n > 308 {
+        return Err(format!(
+            "round_to: decimal places must be <= 308 (f64 precision limit), got {n}"
+        ));
+    }
     let factor = 10f64.powi(n as i32);
     Ok(Value::Float((x * factor).round() / factor))
 }
