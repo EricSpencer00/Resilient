@@ -527,6 +527,7 @@ mod format_builtin;
 mod full_modules;
 mod functional_hof;
 mod ghost_types;
+mod graph_algorithms;
 mod hw_state_machine;
 mod incremental_verify;
 mod info_flow;
@@ -11885,6 +11886,49 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "array_cartesian_product_n",
         crate::combinatorics::builtin_array_cartesian_product_n,
+    ),
+    // RES-2659: graph algorithm builtins (pure — no callbacks).
+    ("graph_bfs", crate::graph_algorithms::builtin_graph_bfs),
+    ("graph_dfs", crate::graph_algorithms::builtin_graph_dfs),
+    (
+        "graph_has_path",
+        crate::graph_algorithms::builtin_graph_has_path,
+    ),
+    (
+        "graph_topological_sort",
+        crate::graph_algorithms::builtin_graph_topological_sort,
+    ),
+    (
+        "graph_connected_components",
+        crate::graph_algorithms::builtin_graph_connected_components,
+    ),
+    (
+        "graph_num_components",
+        crate::graph_algorithms::builtin_graph_num_components,
+    ),
+    (
+        "graph_out_degrees",
+        crate::graph_algorithms::builtin_graph_out_degrees,
+    ),
+    (
+        "graph_in_degrees",
+        crate::graph_algorithms::builtin_graph_in_degrees,
+    ),
+    (
+        "graph_reverse",
+        crate::graph_algorithms::builtin_graph_reverse,
+    ),
+    (
+        "graph_is_dag",
+        crate::graph_algorithms::builtin_graph_is_dag,
+    ),
+    (
+        "graph_reachable",
+        crate::graph_algorithms::builtin_graph_reachable,
+    ),
+    (
+        "graph_dijkstra",
+        crate::graph_algorithms::builtin_graph_dijkstra,
     ),
 ];
 
