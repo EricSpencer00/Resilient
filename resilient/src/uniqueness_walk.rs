@@ -217,3 +217,89 @@ pub(crate) fn is_ident(node: &Node, target: &str) -> bool {
 pub(crate) fn ident_in(node: &Node, targets: &[&str]) -> bool {
     matches!(node, Node::Identifier { name, .. } if targets.contains(&name.as_str()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn any_node_finds_identifier_in_expression() {
+        // `x` appears as an identifier in the function call argument.
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(
+            &prog,
+            |n| matches!(n, Node::Identifier { name, .. } if name == "x"),
+        );
+        assert!(
+            found,
+            "any_node must find the identifier 'x' in function body"
+        );
+    }
+
+    #[test]
+    fn any_node_returns_false_when_not_present() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(
+            &prog,
+            |n| matches!(n, Node::Identifier { name, .. } if name == "zzz"),
+        );
+        assert!(
+            !found,
+            "any_node must return false when identifier is absent"
+        );
+    }
+
+    #[test]
+    fn any_node_finds_infix_expression() {
+        let src = "fn f(int x) -> int { return x + 1; }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(&prog, |n| matches!(n, Node::InfixExpression { .. }));
+        assert!(found, "any_node must find InfixExpression in function body");
+    }
+
+    #[test]
+    fn for_each_function_visits_top_level_fns() {
+        let src = "fn foo(int x) -> int { return x; }\nfn bar(int y) -> int { return y; }\n";
+        let (prog, _) = parse(src);
+        let mut names = Vec::new();
+        for_each_function(&prog, |name, _params, _body| names.push(name.to_string()));
+        assert!(names.contains(&"foo".to_string()));
+        assert!(names.contains(&"bar".to_string()));
+        assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn for_each_function_empty_program() {
+        let (prog, _) = parse("");
+        let mut count = 0usize;
+        for_each_function(&prog, |_, _, _| count += 1);
+        assert_eq!(count, 0, "empty program has no functions to visit");
+    }
+
+    #[test]
+    fn visit_reaches_nested_nodes() {
+        let src = "let x = 1 + 2;\n";
+        let (prog, _) = parse(src);
+        let mut saw_infix = false;
+        visit(&prog, &mut |n| {
+            if matches!(n, Node::InfixExpression { .. }) {
+                saw_infix = true;
+            }
+        });
+        assert!(saw_infix, "visit must reach nested InfixExpression nodes");
+    }
+
+    #[test]
+    fn is_ident_returns_true_for_match() {
+        use crate::span::Span;
+        let node = Node::Identifier {
+            name: "myVar".to_string(),
+            span: Span::default(),
+        };
+        assert!(is_ident(&node, "myVar"));
+        assert!(!is_ident(&node, "other"));
+    }
+}

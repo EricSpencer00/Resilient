@@ -100,3 +100,33 @@ fn is_closed(body: &Node, tx: &str) -> bool {
         _ => false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn no_tx_param_skips_check() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn tx_without_commit_returns_ok_v1() {
+        // V1 emits a warning but always returns Ok.
+        let src = "fn save(Transaction tx) { let x = 1; }\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "V1 checker only warns, never returns Err"
+        );
+    }
+}
