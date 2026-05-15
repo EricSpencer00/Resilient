@@ -580,3 +580,53 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         Err(refuted.join("\n"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn no_actor_returns_ok() {
+        let src = "fn f(int x) -> int { return x + 1; }\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "programs without actor declarations must return Ok immediately"
+        );
+    }
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn actor_without_eventually_returns_ok() {
+        let src = "actor C { state: int = 0; always: state >= 0; }\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "actor with no eventually clauses must fast-reject and return Ok"
+        );
+    }
+
+    #[test]
+    fn liveness_result_variants_are_debug_printable() {
+        let proved = LivenessResult::Proved;
+        let refuted = LivenessResult::Refuted {
+            reason: "counter example found".into(),
+        };
+        let partial = LivenessResult::PartialProof {
+            reason: "ranking not found".into(),
+        };
+        let unsupported = LivenessResult::Unsupported {
+            reason: "non-linear body".into(),
+        };
+        assert!(format!("{proved:?}").contains("Proved"));
+        assert!(format!("{refuted:?}").contains("Refuted"));
+        assert!(format!("{partial:?}").contains("PartialProof"));
+        assert!(format!("{unsupported:?}").contains("Unsupported"));
+    }
+}

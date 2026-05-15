@@ -125,3 +125,32 @@ fn contains_ident(node: &Node, var: &str) -> bool {
         |n| matches!(n, Node::Identifier { name, .. } if name == var),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn no_secret_binding_skips_check() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn non_secret_named_binding_skips_check() {
+        let src = "fn f() { let plaintext = 42; }\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "ordinary bindings must not trigger secret-erasure check"
+        );
+    }
+}
