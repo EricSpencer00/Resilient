@@ -194,6 +194,13 @@ pub enum Op {
     Shl,
     /// Bitwise right-shift (arithmetic): pop two ints, push `lhs >> (rhs & 63)`.
     Shr,
+    /// RES-break-continue: pop a `Value::String` message from the operand
+    /// stack and return `VmError::AssertionFailed(msg)`. Emitted by the
+    /// bytecode compiler for `assert cond[, msg];` when the condition
+    /// evaluates to false at runtime. The message constant is pushed by
+    /// a preceding `Const` instruction; the JumpIfTrue before it skips
+    /// the fail sequence entirely when the condition holds.
+    AssertFail,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;

@@ -224,6 +224,7 @@ fn write_op(
         Op::Bxor => write!(out, "Bxor")?,
         Op::Shl => write!(out, "Shl")?,
         Op::Shr => write!(out, "Shr")?,
+        Op::AssertFail => write!(out, "AssertFail")?,
     }
     Ok(())
 }

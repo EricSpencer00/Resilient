@@ -81,6 +81,10 @@ pub enum VmError {
     /// Shift amount is outside the valid range 0..63.
     /// Matches the tree-walker interpreter's `"shift amount out of range: N"` error.
     ShiftOutOfRange(i64),
+    /// RES-break-continue: `assert cond[, msg];` fired at runtime
+    /// (the condition was false). Carries the user-supplied or
+    /// auto-generated failure message.
+    AssertionFailed(String),
 }
 
 impl VmError {
@@ -125,6 +129,9 @@ impl std::fmt::Display for VmError {
             }
             VmError::ShiftOutOfRange(n) => {
                 write!(f, "shift amount out of range: {}", n)
+            }
+            VmError::AssertionFailed(msg) => {
+                write!(f, "ASSERTION ERROR: {}", msg)
             }
         }
     }
@@ -934,6 +941,13 @@ fn run_inner(
                 }
                 stack.push(Value::Int(a >> b));
             }
+            Op::AssertFail => {
+                let msg = match stack.pop().ok_or(VmError::EmptyStack)? {
+                    Value::String(s) => s,
+                    other => format!("assertion failed: {}", other),
+                };
+                return Err(VmError::AssertionFailed(msg));
+            }
         }
     }
 }
@@ -1110,6 +1124,7 @@ fn op_to_index(op: Op) -> usize {
         Op::Bxor => OP_KIND_BXOR,
         Op::Shl => OP_KIND_SHL,
         Op::Shr => OP_KIND_SHR,
+        Op::AssertFail => OP_KIND_ASSERT_FAIL,
     }
 }
 
@@ -1122,7 +1137,8 @@ const OP_KIND_BOR: usize = 36;
 const OP_KIND_BXOR: usize = 37;
 const OP_KIND_SHL: usize = 38;
 const OP_KIND_SHR: usize = 39;
-const HANDLER_TABLE_LEN: usize = 40;
+const OP_KIND_ASSERT_FAIL: usize = 40;
+const HANDLER_TABLE_LEN: usize = 41;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1168,6 +1184,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_BXOR] = h_bxor;
     table[OP_KIND_SHL] = h_shl;
     table[OP_KIND_SHR] = h_shr;
+    table[OP_KIND_ASSERT_FAIL] = h_assert_fail;
     table
 };
 
@@ -1845,6 +1862,14 @@ fn h_shr(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     }
     state.stack.push(Value::Int(a >> b));
     Ok(Step::Continue)
+}
+
+fn h_assert_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let msg = match state.stack.pop().ok_or(VmError::EmptyStack)? {
+        Value::String(s) => s,
+        other => format!("assertion failed: {}", other),
+    };
+    Err(VmError::AssertionFailed(msg))
 }
 
 #[cfg(test)]
