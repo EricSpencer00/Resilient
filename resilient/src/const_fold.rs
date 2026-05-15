@@ -1011,19 +1011,22 @@ mod tests {
     }
 
     #[test]
-    fn shl_masks_shift_amount_to_63() {
-        // Shifts of 64 or more are undefined in many languages; we mask
-        // the shift amount to 0..63 to match the VM's `a << (b & 63)`.
+    fn shl_out_of_range_is_not_folded() {
+        // Shifts with amounts outside 0..63 are intentionally skipped by
+        // const-fold so the VM produces the same runtime error as the
+        // tree-walker interpreter (ShiftOutOfRange). The chunk must be
+        // unchanged after optimize().
         let mut chunk = mk_chunk(
             &[Op::Const(0), Op::Const(1), Op::Shl, Op::Return],
             vec![Value::Int(1), Value::Int(64)],
             &[1, 1, 1, 1],
         );
         optimize(&mut chunk).unwrap();
-        let Op::Const(k) = chunk.code[0] else {
-            panic!()
-        };
-        // 64 & 63 == 0, so 1 << 0 == 1
-        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 1);
+        // The Shl must still be present — fold was skipped.
+        assert!(
+            chunk.code.iter().any(|op| *op == Op::Shl),
+            "out-of-range Shl must not be folded; code: {:?}",
+            chunk.code
+        );
     }
 }

@@ -23,6 +23,8 @@
 //! 11. `Const(k==-1); Band`                 → drop both (x & -1 == x)
 //! 12. `<pure-load>; Const(k==0); Band`     → drop pure load + push Const(0)
 //!     (x & 0 == 0 for any x)
+//! 13. `<pure-load>; Const(k==-1); Bor`    → drop pure load + push Const(-1)
+//!     (x | -1 == -1 for any x — -1 is the absorbing element for Bor)
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -195,6 +197,20 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
                 unreachable!()
             };
             new_code.push(Op::Const(zero_k));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 13 — `<pure-load>; Const(-1); Bor` → `Const(-1)`.
+        // -1 (all bits set) is the absorbing element for Bor: x | -1 == -1.
+        if rule_bor_neg_one(chunk, i, &targets, &new_code) {
+            new_code.pop();
+            new_line_info.pop();
+            let Op::Const(neg1_k) = chunk.code[i] else {
+                unreachable!()
+            };
+            new_code.push(Op::Const(neg1_k));
             new_line_info.push(chunk.line_info[i]);
             optimized_any = true;
             i += 2;
@@ -502,6 +518,30 @@ pub(crate) fn rule_band_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code
         return false;
     }
     if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+}
+
+/// Rule 13: fold `<pure-load>; Const(k==-1); Bor` → `Const(-1)`.
+/// `x | -1 == -1` for any x (-1 is all bits set, the absorbing element).
+/// Mirrors `rule_band_zero` in structure.
+///
+/// Skips if `Bor` is a jump target.
+pub(crate) fn rule_bor_neg_one(chunk: &Chunk, i: usize, targets: &[bool], new_code: &[Op]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Bor) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(-1))) {
         return false;
     }
     if *targets.get(i + 1).unwrap_or(&false) {
@@ -1014,5 +1054,46 @@ mod tests {
         // Preceding op is Band (not a pure load)
         let new_code = vec![Op::Band];
         assert!(!rule_band_zero(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    // ---------- Rule 13: <pure-load>; Const(-1); Bor → Const(-1) ----------
+
+    #[test]
+    fn rule13_bor_neg_one_predicate_fires_with_pure_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(-1)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(rule_bor_neg_one(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule13_bor_neg_one_predicate_skips_non_neg_one() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(!rule_bor_neg_one(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule13_bor_neg_one_folds_in_full_pass() {
+        // LoadLocal(0) pushes x; Const(-1); Bor → Const(-1).
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Bor, Op::Return],
+            vec![Value::Int(42), Value::Int(-1)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2, "code: {:?}", chunk.code);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!("expected Const");
+        };
+        assert!(matches!(chunk.constants[k as usize], Value::Int(-1)));
+    }
+
+    #[test]
+    fn rule13_bor_neg_one_predicate_skips_when_bor_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(-1)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        let mut targets = vec![false; 3];
+        targets[1] = true;
+        assert!(!rule_bor_neg_one(&chunk, 0, &targets, &new_code));
     }
 }

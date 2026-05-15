@@ -103,6 +103,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0041", // redundant `else` block when the `if` arm always returns
     "L0042", // dead code after `return` statement in same block
     "L0043", // `let` binding shadows an existing binding with the same name
+    "L0044", // shift amount is a literal outside 0..63 — always a runtime error
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -557,6 +558,20 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: rename one of the bindings.\n\
              Suppress: // resilient: allow L0043",
         ),
+        "L0044" => Some(
+            "L0044 — shift amount out of range\n\
+             \n\
+             A bitwise shift (`<<` or `>>`) uses an integer literal shift amount that\n\
+             is outside the valid range 0..63. Any shift amount less than 0 or\n\
+             greater than 63 is a guaranteed runtime error in Resilient (the VM and\n\
+             interpreter both reject it with `shift amount out of range`).\n\
+             \n\
+             In safety-critical embedded code this is always a bug — shifting by a\n\
+             constant out-of-range value produces no useful result.\n\
+             \n\
+             Fix: use a shift amount in 0..63.\n\
+             Suppress: // resilient: allow L0044",
+        ),
         _ => None,
     }
 }
@@ -621,6 +636,8 @@ struct LintTriggers {
     has_return_in_block: bool,
     /// L0043: any LetStatement present (potential shadowing).
     has_let_binding: bool,
+    /// L0044: any bitwise shift (`<<` / `>>`) with an integer literal as the RHS.
+    has_literal_shift: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -634,7 +651,9 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::Assume { .. } => t.has_assume = true,
         Node::IndexExpression { .. } => t.has_index = true,
         Node::Match { .. } => t.has_match = true,
-        Node::InfixExpression { operator, .. } => {
+        Node::InfixExpression {
+            operator, right, ..
+        } => {
             t.has_infix = true;
             if operator == "/" || operator == "%" {
                 t.has_division = true;
@@ -643,6 +662,12 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             // to gate the magic-number pass.
             if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%") {
                 t.has_arith_int_literal = true;
+            }
+            // L0044: shift with a literal RHS.
+            if matches!(operator.as_str(), "<<" | ">>")
+                && matches!(right.as_ref(), Node::IntegerLiteral { .. })
+            {
+                t.has_literal_shift = true;
             }
         }
         Node::Function { .. } => t.has_function = true,
@@ -853,6 +878,9 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_let_binding && t.has_function {
         run_l0043_shadowed_binding(program, &mut out);
+    }
+    if t.has_literal_shift {
+        run_l0044_shift_out_of_range(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -4799,6 +4827,47 @@ fn walk_l0043_block(
 }
 
 // ============================================================
+// L0044: shift amount is a literal outside 0..63
+// ============================================================
+//
+// Fires when a `<<` or `>>` expression has an integer literal as the
+// right-hand operand and that literal is outside the range 0..=63.
+// Any such shift is a guaranteed runtime error; catching it statically
+// (as a lint rather than a compiler error) lets the checker report a
+// friendly diagnostic before the program runs.
+//
+// This complements the VM/interpreter's ShiftOutOfRange runtime error
+// by surfacing the problem at lint time when the shift amount is known.
+
+fn run_l0044_shift_out_of_range(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0044(program, out);
+}
+
+fn walk_l0044(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        right,
+        span,
+        ..
+    } = node
+        && matches!(operator.as_str(), "<<" | ">>")
+        && let Node::IntegerLiteral { value, .. } = right.as_ref()
+        && !(0..64).contains(value)
+    {
+        out.push(Lint {
+            code: "L0044".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "shift amount `{value}` is outside 0..63 — this is always a runtime error"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0044(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -6825,6 +6894,66 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0043".to_string()),
             "L0043 must not fire for distinct binding names"
+        );
+    }
+
+    // ---------- L0044: shift amount out of range ----------
+
+    #[test]
+    fn l0044_fires_on_shift_amount_64() {
+        let src = "let x = 1 << 64;\n";
+        assert!(
+            codes(src).contains(&"L0044".to_string()),
+            "L0044 must fire for shift amount 64; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0044_fires_on_shift_amount_100() {
+        let src = "let x = 1 >> 100;\n";
+        assert!(
+            codes(src).contains(&"L0044".to_string()),
+            "L0044 must fire for shift amount 100; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0044_fires_on_shift_amount_zero_boundary() {
+        // 0 is a valid shift (x << 0 == x), so L0044 must NOT fire.
+        let src = "let x = 1 << 0;\n";
+        assert!(
+            !codes(src).contains(&"L0044".to_string()),
+            "L0044 must not fire for shift amount 0"
+        );
+    }
+
+    #[test]
+    fn l0044_silent_for_valid_shift_amount() {
+        let src = "let x = 1 << 7;\n";
+        assert!(
+            !codes(src).contains(&"L0044".to_string()),
+            "L0044 must not fire for shift amount 7"
+        );
+    }
+
+    #[test]
+    fn l0044_silent_for_shift_amount_63() {
+        let src = "let x = 1 << 63;\n";
+        assert!(
+            !codes(src).contains(&"L0044".to_string()),
+            "L0044 must not fire for shift amount 63 (max valid)"
+        );
+    }
+
+    #[test]
+    fn l0044_silent_when_rhs_is_not_literal() {
+        // When the shift amount is a variable, L0044 must not fire.
+        let src = "fn f(int n, int s) -> int { return n << s; }\nf(1, 2);\n";
+        assert!(
+            !codes(src).contains(&"L0044".to_string()),
+            "L0044 must not fire when shift amount is not a literal"
         );
     }
 }
