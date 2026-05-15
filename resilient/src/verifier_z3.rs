@@ -702,7 +702,7 @@ pub fn reset_cache_stats() {
 pub fn check_smtlib2(obligation: &str) -> z3::SatResult {
     Z3_CTX.with(|ctx| {
         let solver = z3::Solver::new(ctx);
-        solver.from_string(obligation);
+        solver.from_string(obligation.to_owned());
         solver.check()
     })
 }
