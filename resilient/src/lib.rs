@@ -22,6 +22,7 @@ mod string_hof;
 mod numeric_utils;
 mod collection_extras;
 mod result_option_hof;
+mod type_builtins;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -11661,6 +11662,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "option_ok_or",
         crate::result_option_hof::builtin_option_ok_or,
     ),
+    // RES-2652: type introspection + result_collect (pure).
+    ("type_of", crate::type_builtins::builtin_type_of),
+    (
+        "result_collect",
+        crate::type_builtins::builtin_result_collect,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -22777,6 +22784,11 @@ impl Interpreter {
                         "option_or_else" => {
                             let args = self.eval_expressions(arguments)?;
                             return crate::result_option_hof::builtin_option_or_else(self, &args);
+                        }
+                        // RES-2652: array_from_fn (needs interpreter).
+                        "array_from_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::type_builtins::builtin_array_from_fn(self, &args);
                         }
                         _ => {}
                     }

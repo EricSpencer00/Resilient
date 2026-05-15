@@ -2421,6 +2421,28 @@ impl TypeChecker {
                     return_type: Box::new(Type::Any),
                 },
             );
+            // RES-2652: type introspection + collection ergonomics.
+            env.set(
+                "type_of".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::String),
+                },
+            );
+            env.set(
+                "result_collect".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_from_fn".to_string(),
+                Type::Function {
+                    params: vec![Type::Int, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -8803,6 +8825,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "option_filter",
         "option_or_else",
         "option_ok_or",
+        // RES-2652: type introspection + collection ergonomics.
+        "type_of",
+        "result_collect",
+        "array_from_fn",
         "map_invert",
         // RES-416: array reductions.
         "array_sum",
