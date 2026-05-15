@@ -358,10 +358,8 @@ pub(crate) fn node_to_smtlib2(node: &Node) -> String {
 /// Used to emit `(declare-const …)` lines in the SMT-LIB2 preamble.
 fn collect_identifiers(node: &Node, out: &mut Vec<String>) {
     match node {
-        Node::Identifier { name, .. } => {
-            if !out.contains(name) {
-                out.push(name.clone());
-            }
+        Node::Identifier { name, .. } if !out.contains(name) => {
+            out.push(name.clone());
         }
         Node::InfixExpression { left, right, .. } => {
             collect_identifiers(left, out);
