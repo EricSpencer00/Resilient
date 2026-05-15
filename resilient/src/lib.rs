@@ -27378,6 +27378,31 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
         return None;
     }
 
+    // Fast path: `rz lint --explain LXXXX` prints explanation and exits.
+    if args.get(2).map(|s| s.as_str()) == Some("--explain") {
+        let code = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        match lint::explain(code) {
+            Some(text) => {
+                println!("{text}");
+                return Some(0);
+            }
+            None if code.is_empty() => {
+                eprintln!(
+                    "Usage: rz lint --explain LXXXX\nKnown codes: {}",
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+            None => {
+                eprintln!(
+                    "Unknown lint code `{code}`. Known: {}",
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+        }
+    }
+
     let mut file: Option<PathBuf> = None;
     let mut deny: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut allow: std::collections::HashSet<String> = std::collections::HashSet::new();

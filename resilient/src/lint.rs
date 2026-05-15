@@ -96,6 +96,365 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0034", // string concatenation with `+` inside a loop is O(N²)
 ];
 
+/// Return a human-readable explanation for a lint code, or `None` if unknown.
+///
+/// Used by `rz lint --explain LXXXX` and the `resilient_explain_lint` MCP tool.
+pub fn explain(code: &str) -> Option<&'static str> {
+    match code {
+        "L0001" => Some(
+            "L0001 — unused local binding\n\
+             \n\
+             A `let` binding is declared inside a function but its value is never read.\n\
+             Dead bindings add noise and may indicate a logic error (e.g., a computation\n\
+             result that was meant to be used).\n\
+             \n\
+             Example (bad):\n\
+             \n\
+             fn f() -> int {\n\
+               let x = heavy_computation()   // x is never read\n\
+               42\n\
+             }\n\
+             \n\
+             Fix: remove the binding, or use it.\n\
+             Suppress: // resilient: allow L0001",
+        ),
+        "L0002" => Some(
+            "L0002 — unreachable match arm after wildcard\n\
+             \n\
+             A `match` arm pattern appears after a wildcard (`_`) that already catches\n\
+             every possible value. The arm can never execute.\n\
+             \n\
+             Fix: reorder arms so the specific pattern comes before the wildcard.\n\
+             Suppress: // resilient: allow L0002",
+        ),
+        "L0003" => Some(
+            "L0003 — self-comparison (`x == x`)\n\
+             \n\
+             A value is compared against itself. The result is always `true` for `==`\n\
+             and always `false` for `!=`. This is almost certainly a typo.\n\
+             \n\
+             Fix: replace one side with the intended value.\n\
+             Suppress: // resilient: allow L0003",
+        ),
+        "L0004" => Some(
+            "L0004 — mixing `&&` and `||` without parentheses\n\
+             \n\
+             An expression mixes `&&` and `||` at the same precedence level without\n\
+             explicit parentheses. The evaluation order may surprise readers.\n\
+             \n\
+             Fix: add parentheses to make the intent explicit.\n\
+             Suppress: // resilient: allow L0004",
+        ),
+        "L0005" => Some(
+            "L0005 — redundant trailing `return;`\n\
+             \n\
+             A `return` with no value at the end of a void function is redundant;\n\
+             the function returns implicitly.\n\
+             \n\
+             Fix: remove the trailing `return;`.\n\
+             Suppress: // resilient: allow L0005",
+        ),
+        "L0006" => Some(
+            "L0006 — `assume(false)` vacuously discharges all verification obligations\n\
+             \n\
+             `assume(false)` tells the Z3 verifier that the current path is unreachable.\n\
+             Any `ensures` clause trivially holds because the premise is false. This\n\
+             is dangerous in safety-critical code: it silently hides incomplete proofs.\n\
+             \n\
+             In `--safety-critical` mode this is promoted to a hard error.\n\
+             \n\
+             Fix: replace with a real proof or mark the path unreachable with a panic.\n\
+             Suppress: // resilient: allow L0006  (not allowed in safety-critical mode)",
+        ),
+        "L0007" => Some(
+            "L0007 — unreachable code after unconditional `return`\n\
+             \n\
+             Statements that follow an unconditional `return` in the same block can\n\
+             never execute. They are dead code.\n\
+             \n\
+             Fix: remove the dead statements.\n\
+             Suppress: // resilient: allow L0007",
+        ),
+        "L0008" => Some(
+            "L0008 — duplicate identical struct literal match arm\n\
+             \n\
+             Two arms in a `match` have structurally identical struct literal patterns.\n\
+             The second arm can never match because the first already does.\n\
+             \n\
+             Fix: remove or differentiate the duplicate arm.\n\
+             Suppress: // resilient: allow L0008",
+        ),
+        "L0009" => Some(
+            "L0009 — integer division by zero\n\
+             \n\
+             A division or modulo expression has a constant zero denominator, or the\n\
+             Z3 verifier proved that zero is reachable. Division by zero is undefined\n\
+             behaviour in Resilient.\n\
+             \n\
+             Fix: add a `requires y != 0` contract or guard the call site.\n\
+             Suppress: // resilient: allow L0009",
+        ),
+        "L0010" => Some(
+            "L0010 — function has no `requires`/`ensures` contract\n\
+             \n\
+             A non-trivial function does not declare any formal specification.\n\
+             Without contracts the Z3 verifier cannot prove callers safe and cannot\n\
+             catch implementation bugs at proof time.\n\
+             \n\
+             Example (bad):\n\
+             fn div(int x, int y) -> int { x / y }\n\
+             \n\
+             Example (good):\n\
+             fn div(int x, int y) -> int\n\
+               requires y != 0\n\
+               ensures result == x / y\n\
+             { x / y }\n\
+             \n\
+             Suppress: // resilient: allow L0010",
+        ),
+        "L0011" => Some(
+            "L0011 — unused variable (binding never read)\n\
+             \n\
+             A `let` binding is never referenced after its declaration. Unlike L0001\n\
+             this fires on every unused binding including those at the top of a function\n\
+             body, not just inner-block ones.\n\
+             \n\
+             Fix: prefix the name with `_` to signal intentional disuse, or remove it.\n\
+             Suppress: // resilient: allow L0011",
+        ),
+        "L0012" => Some(
+            "L0012 — spec annotation lacks `// source:` provenance comment\n\
+             \n\
+             A `@spec` annotation (or `requires`/`ensures` clause derived from an\n\
+             external requirement) does not carry a `// source:` comment linking it to\n\
+             the originating requirement document or ticket.\n\
+             \n\
+             In safety-critical codebases every formal property must be traceable to a\n\
+             requirement. Without the provenance comment, audits cannot verify coverage.\n\
+             \n\
+             Fix: add `// source: REQ-NNN` above the annotation.\n\
+             Suppress: // resilient: allow L0012",
+        ),
+        "L0013" => Some(
+            "L0013 — unchecked array indexing (not proven in-bounds)\n\
+             \n\
+             An array index expression `a[i]` could be out-of-bounds at runtime and\n\
+             the verifier cannot prove otherwise from the surrounding contracts.\n\
+             \n\
+             Fix: add a `requires i < len(a) && i >= 0` contract, or use a bounds-safe\n\
+             accessor.\n\
+             Suppress: // resilient: allow L0013",
+        ),
+        "L0014" => Some(
+            "L0014 — function defined but never called (dead function)\n\
+             \n\
+             A top-level function is defined but no call site references it in the\n\
+             same source file. It may be dead code, or it may be an entry point that\n\
+             should be exported.\n\
+             \n\
+             Fix: call it, delete it, or mark it as an entry point with `@export`.\n\
+             Suppress: // resilient: allow L0014",
+        ),
+        "L0015" => Some(
+            "L0015 — constant arithmetic expression overflows `int`\n\
+             \n\
+             A compile-time-evaluable arithmetic expression produces a value outside\n\
+             the range of the `int` type (−2^63 … 2^63−1 on 64-bit targets).\n\
+             \n\
+             Fix: use a smaller constant, or widen the type.\n\
+             Suppress: // resilient: allow L0015",
+        ),
+        "L0016" => Some(
+            "L0016 — constant boolean condition in `if`\n\
+             \n\
+             An `if` condition evaluates to a compile-time constant (`true` or `false`).\n\
+             One branch is dead code; the whole `if` can be simplified.\n\
+             \n\
+             Fix: remove the dead branch.\n\
+             Suppress: // resilient: allow L0016",
+        ),
+        "L0017" => Some(
+            "L0017 — binding shadows an outer binding of the same name\n\
+             \n\
+             A `let` declaration inside a nested scope has the same name as an outer\n\
+             binding. The outer value is inaccessible in the inner scope, which can\n\
+             hide bugs.\n\
+             \n\
+             Fix: rename one of the bindings.\n\
+             Suppress: // resilient: allow L0017",
+        ),
+        "L0018" => Some(
+            "L0018 — function with return type may not return on all paths\n\
+             \n\
+             A function declares a non-void return type but contains a control-flow\n\
+             path that reaches the end of the body without a `return` statement.\n\
+             \n\
+             Fix: add a `return` on every path, or add a `panic`/`unreachable` sentinel.\n\
+             Suppress: // resilient: allow L0018",
+        ),
+        "L0019" => Some(
+            "L0019 — `format()` argument count mismatch\n\
+             \n\
+             The number of `{}` placeholders in the format string does not match the\n\
+             number of extra arguments passed to `format()`.\n\
+             \n\
+             Example (bad):  format(\"{} {}\", x)       // 2 placeholders, 1 arg\n\
+             Example (good): format(\"{} {}\", x, y)    // 2 placeholders, 2 args\n\
+             \n\
+             Suppress: // resilient: allow L0019",
+        ),
+        "L0020" => Some(
+            "L0020 — function parameter is never used in the body\n\
+             \n\
+             A parameter is declared but never referenced in the function body.\n\
+             This may indicate a forgotten computation or a stale signature.\n\
+             \n\
+             Fix: remove the parameter, or use it.\n\
+             Suppress: // resilient: allow L0020",
+        ),
+        "L0021" => Some(
+            "L0021 — redundant boolean sub-expression (`x && x`, `x || x`)\n\
+             \n\
+             A boolean expression ANDs or ORs a sub-expression with itself. The result\n\
+             is always equal to the sub-expression alone.\n\
+             \n\
+             Fix: remove one copy of the sub-expression.\n\
+             Suppress: // resilient: allow L0021",
+        ),
+        "L0022" => Some(
+            "L0022 — else branch after unconditional return is redundant\n\
+             \n\
+             The `if` branch ends with an unconditional `return`, so the `else` block\n\
+             is always entered when the `if` condition is false. The `else` can be\n\
+             flattened (removed) without changing semantics.\n\
+             \n\
+             Fix: remove the `else` and de-indent its body.\n\
+             Suppress: // resilient: allow L0022",
+        ),
+        "L0023" => Some(
+            "L0023 — tautological comparison with boolean literal\n\
+             \n\
+             An expression compares a value against `true` or `false` with `==`/`!=`.\n\
+             The comparison is redundant: `x == true` is identical to `x`, and\n\
+             `x == false` is identical to `!x`.\n\
+             \n\
+             Fix: use the value directly.\n\
+             Suppress: // resilient: allow L0023",
+        ),
+        "L0024" => Some(
+            "L0024 — struct literal missing required fields\n\
+             \n\
+             A struct literal does not provide values for one or more fields declared\n\
+             in the struct definition. The omitted fields will be zero-initialised,\n\
+             which may silently produce incorrect state.\n\
+             \n\
+             Fix: provide explicit values for all fields.\n\
+             Suppress: // resilient: allow L0024",
+        ),
+        "L0025" => Some(
+            "L0025 — unreachable code after infinite `while true` loop\n\
+             \n\
+             Statements following a `while true { … }` that contains no `break` can\n\
+             never execute. The loop never terminates, so control never reaches the\n\
+             code after it.\n\
+             \n\
+             Fix: add a `break` inside the loop, or remove the dead code.\n\
+             Suppress: // resilient: allow L0025",
+        ),
+        "L0026" => Some(
+            "L0026 — duplicate literal key in map literal\n\
+             \n\
+             A map literal (`{ key: val, key: val2 }`) contains two entries with the\n\
+             same key. The earlier entry is silently shadowed by the later one.\n\
+             \n\
+             Fix: remove or rename the duplicate key.\n\
+             Suppress: // resilient: allow L0026",
+        ),
+        "L0027" => Some(
+            "L0027 — empty `catch` block silently discards the error\n\
+             \n\
+             A `try`/`catch` block has an empty catch body. The caught error is\n\
+             swallowed without logging, handling, or re-throwing. This is a common\n\
+             source of hard-to-debug failures.\n\
+             \n\
+             Fix: log the error, handle it, or re-throw it.\n\
+             Suppress: // resilient: allow L0027",
+        ),
+        "L0028" => Some(
+            "L0028 — negation of boolean literal (`!true` / `!false`)\n\
+             \n\
+             `!true` evaluates to `false` and `!false` evaluates to `true`. Use the\n\
+             resulting literal directly instead of negating the other.\n\
+             \n\
+             Fix: replace `!true` → `false`, `!false` → `true`.\n\
+             Suppress: // resilient: allow L0028",
+        ),
+        "L0029" => Some(
+            "L0029 — comparison result discarded as statement\n\
+             \n\
+             A comparison expression (e.g. `x == y`) is used as a standalone statement.\n\
+             Its boolean result is immediately thrown away. This is almost always a\n\
+             typo — either `=` (assignment) was intended, or the result should be\n\
+             passed to `assert(…)`.\n\
+             \n\
+             Fix: use `assert(x == y)` or turn it into an assignment.\n\
+             Suppress: // resilient: allow L0029",
+        ),
+        "L0030" => Some(
+            "L0030 — float equality comparison (`==` / `!=`)\n\
+             \n\
+             Comparing floating-point values with `==` or `!=` is almost always a bug\n\
+             due to rounding errors accumulated during computation.\n\
+             \n\
+             Example (bad):  if a == b { … }\n\
+             Example (good): if abs(a - b) < 1e-9 { … }\n\
+             \n\
+             Fix: use an epsilon-based comparison instead.\n\
+             Suppress: // resilient: allow L0030",
+        ),
+        "L0031" => Some(
+            "L0031 — double negation (`!!x`) is redundant\n\
+             \n\
+             Applying `!` twice cancels out: `!!x` is always equal to `x`.\n\
+             \n\
+             Fix: simplify to `x`.\n\
+             Suppress: // resilient: allow L0031",
+        ),
+        "L0032" => Some(
+            "L0032 — assignment used as boolean condition\n\
+             \n\
+             The condition of an `if` or `while` statement is an assignment expression\n\
+             (`x = value`). Assignments return the assigned value, so this compiles,\n\
+             but it is almost certainly a typo for `==` (equality test).\n\
+             \n\
+             Fix: replace `=` with `==` if equality was intended.\n\
+             Suppress: // resilient: allow L0032",
+        ),
+        "L0033" => Some(
+            "L0033 — integer modulo by 1 is always 0\n\
+             \n\
+             `x % 1` is always `0` for any integer `x`. A modulus of 1 is almost\n\
+             certainly a wrong constant — the likely intent is `% 2` (even/odd test)\n\
+             or some other power of two.\n\
+             \n\
+             Fix: use the correct modulus.\n\
+             Suppress: // resilient: allow L0033",
+        ),
+        "L0034" => Some(
+            "L0034 — string concatenation with `+` inside a loop is O(N²)\n\
+             \n\
+             Building a string by repeated `+` concatenation inside a loop copies\n\
+             the accumulated string on every iteration, resulting in O(N²) total\n\
+             work for N iterations.\n\
+             \n\
+             Fix: collect parts into a list and join at the end, or use a string\n\
+             builder if available.\n\
+             Suppress: // resilient: allow L0034",
+        ),
+        _ => None,
+    }
+}
+
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
 ///
 /// When enabled, `assume(false)` (L0006) is promoted from a warning to

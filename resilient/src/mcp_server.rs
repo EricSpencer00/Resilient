@@ -155,6 +155,9 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
         "resilient_format" => tool_format(args),
         "resilient_check" => tool_check(args),
         "resilient_verify" => tool_verify(args),
+        "resilient_explain_lint" => tool_explain_lint(args),
+        "resilient_symbols" => tool_symbols(args),
+        "resilient_hover" => tool_hover(args),
         other => Err(format!("Unknown tool: {other}")),
     };
 
@@ -372,6 +375,204 @@ fn tool_verify(args: &Value) -> Result<String, String> {
     }
 }
 
+/// Explain a lint code in detail.
+fn tool_explain_lint(args: &Value) -> Result<String, String> {
+    let code = args
+        .get("code")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required argument: code (string, e.g. \"L0010\")".to_string())?;
+    match crate::lint::explain(code) {
+        Some(text) => Ok(text.to_string()),
+        None => Err(format!(
+            "Unknown lint code `{code}`. Known codes: {}",
+            crate::lint::KNOWN_CODES.join(", ")
+        )),
+    }
+}
+
+/// Extract named symbols (functions, let bindings) from source.
+fn tool_symbols(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors ({}):\n{}",
+            parse_errors.len(),
+            parse_errors.join("\n")
+        ));
+    }
+    let mut symbols = Vec::new();
+    collect_symbols(&program, &mut symbols);
+    if symbols.is_empty() {
+        Ok("No named symbols found.".to_string())
+    } else {
+        Ok(symbols.join("\n"))
+    }
+}
+
+fn collect_symbols(node: &crate::Node, out: &mut Vec<String>) {
+    match node {
+        crate::Node::Program(stmts) => {
+            for s in stmts {
+                collect_symbols(&s.node, out);
+            }
+        }
+        crate::Node::Function {
+            name,
+            parameters,
+            return_type,
+            body,
+            ..
+        } => {
+            let params = parameters
+                .iter()
+                .map(|(ty, pname)| format!("{ty} {pname}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret = return_type
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(" -> {s}"))
+                .unwrap_or_default();
+            out.push(format!("fn {name}({params}){ret}"));
+            collect_symbols(body, out);
+        }
+        crate::Node::LetStatement {
+            name, type_annot, ..
+        } => {
+            let ty = type_annot.as_deref().unwrap_or("?");
+            out.push(format!("let {name}: {ty}"));
+        }
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_symbols(s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Return type info for an identifier at a given byte offset in the source.
+fn tool_hover(args: &Value) -> Result<String, String> {
+    let src = source_arg(args)?;
+    let offset = args.get("offset").and_then(|v| v.as_u64()).ok_or_else(|| {
+        "Missing required argument: offset (integer byte offset into source)".to_string()
+    })? as usize;
+
+    if offset > src.len() {
+        return Err(format!(
+            "Offset {offset} is out of range (source is {} bytes)",
+            src.len()
+        ));
+    }
+
+    // Extract the identifier at `offset`: scan left/right for word boundaries.
+    let bytes = src.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    // If the character at offset is not an identifier character, report error
+    // immediately — don't scan backwards into the preceding token.
+    if !is_ident(bytes[offset]) {
+        return Err(format!(
+            "No identifier at offset {offset} (found {:?})",
+            bytes[offset] as char
+        ));
+    }
+    let start = (0..=offset)
+        .rev()
+        .find(|&i| i == 0 || !is_ident(bytes[i - 1]))
+        .unwrap_or(offset);
+    let end = (offset..src.len())
+        .find(|&i| !is_ident(bytes[i]))
+        .unwrap_or(src.len());
+    let ident = &src[start..end];
+    if ident.is_empty() {
+        return Err("No identifier at the given offset.".to_string());
+    }
+
+    let (program, parse_errors) = crate::parse(src);
+    if !parse_errors.is_empty() {
+        return Err(format!(
+            "Parse errors — cannot hover:\n{}",
+            parse_errors.join("\n")
+        ));
+    }
+
+    match hover_infer_type(&program, ident) {
+        Some(ty) => Ok(format!("{ident}: {ty}")),
+        None => Ok(format!("{ident}: (type unknown)")),
+    }
+}
+
+/// Minimal identifier-type inference for hover — walks functions looking for
+/// parameter types and let-binding annotations. Does not depend on the `lsp`
+/// feature.
+fn hover_infer_type(node: &crate::Node, target: &str) -> Option<String> {
+    match node {
+        crate::Node::Program(stmts) => {
+            for s in stmts {
+                if let Some(ty) = hover_infer_type(&s.node, target) {
+                    return Some(ty);
+                }
+            }
+            None
+        }
+        crate::Node::Function {
+            name,
+            parameters,
+            return_type,
+            body,
+            ..
+        } => {
+            if name == target {
+                let params = parameters
+                    .iter()
+                    .map(|(ty, pname)| format!("{ty} {pname}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = return_type
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" -> {s}"))
+                    .unwrap_or_default();
+                return Some(format!("fn {name}({params}){ret}"));
+            }
+            for (ty, pname) in parameters {
+                if pname == target {
+                    return Some(ty.clone());
+                }
+            }
+            hover_infer_type(body, target)
+        }
+        crate::Node::LetStatement {
+            name,
+            value,
+            type_annot,
+            ..
+        } if name == target => {
+            let ty = type_annot.clone().unwrap_or_else(|| {
+                // Infer from literal type.
+                match value.as_ref() {
+                    crate::Node::IntegerLiteral { .. } => "int".to_string(),
+                    crate::Node::FloatLiteral { .. } => "float".to_string(),
+                    crate::Node::BooleanLiteral { .. } => "bool".to_string(),
+                    crate::Node::StringLiteral { .. } => "string".to_string(),
+                    _ => "?".to_string(),
+                }
+            });
+            Some(ty)
+        }
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                if let Some(ty) = hover_infer_type(s, target) {
+                    return Some(ty);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 // ── Tool schema definitions ───────────────────────────────────────────────────
 
 fn tool_definitions() -> Value {
@@ -483,6 +684,59 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["source"]
             }
+        },
+        {
+            "name": "resilient_explain_lint",
+            "description": "Return a detailed human-readable explanation for a Resilient \
+                            lint code (e.g. L0010). Includes what the lint detects, why \
+                            it matters, an example, the recommended fix, and the \
+                            suppression syntax.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Lint code to explain, e.g. \"L0010\""
+                    }
+                },
+                "required": ["code"]
+            }
+        },
+        {
+            "name": "resilient_symbols",
+            "description": "Extract all named symbols (functions, top-level let bindings) \
+                            from Resilient source and return a structured list with \
+                            signatures. Useful for navigation and code understanding.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code to extract symbols from"
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "resilient_hover",
+            "description": "Return type information for the identifier at a given byte \
+                            offset in the Resilient source. Mirrors the LSP hover \
+                            behaviour.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Resilient source code"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based byte offset of the identifier to hover"
+                    }
+                },
+                "required": ["source", "offset"]
+            }
         }
     ])
 }
@@ -525,6 +779,18 @@ mod tests {
             "resilient_verify" => tool_verify(&args),
             _ => panic!("unknown tool {name}"),
         }
+    }
+
+    fn explain(code: &str) -> Result<String, String> {
+        tool_explain_lint(&json!({ "code": code }))
+    }
+
+    fn symbols(source: &str) -> Result<String, String> {
+        tool_symbols(&json!({ "source": source }))
+    }
+
+    fn hover(source: &str, offset: usize) -> Result<String, String> {
+        tool_hover(&json!({ "source": source, "offset": offset }))
     }
 
     // ── resilient_parse ───────────────────────────────────────────────────────
@@ -699,6 +965,9 @@ mod tests {
             "resilient_format",
             "resilient_check",
             "resilient_verify",
+            "resilient_explain_lint",
+            "resilient_symbols",
+            "resilient_hover",
         ] {
             assert!(
                 names.contains(expected),
@@ -722,5 +991,98 @@ mod tests {
         assert!(resp.is_some());
         let resp = resp.unwrap();
         assert_eq!(resp["result"], json!({}));
+    }
+
+    // ── resilient_explain_lint ────────────────────────────────────────────────
+
+    #[test]
+    fn explain_known_code_l0010() {
+        let r = explain("L0010");
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("L0010"), "got: {text}");
+        assert!(text.contains("requires"), "got: {text}");
+    }
+
+    #[test]
+    fn explain_unknown_code_returns_error() {
+        let r = explain("L9999");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Unknown lint code"));
+    }
+
+    #[test]
+    fn explain_missing_code_arg_returns_error() {
+        let r = tool_explain_lint(&json!({}));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Missing required argument"));
+    }
+
+    #[test]
+    fn explain_all_known_codes_have_entry() {
+        for code in crate::lint::KNOWN_CODES {
+            let r = explain(code);
+            assert!(r.is_ok(), "missing explain entry for {code}");
+        }
+    }
+
+    // ── resilient_symbols ─────────────────────────────────────────────────────
+
+    #[test]
+    fn symbols_lists_functions() {
+        let src = "fn add(int a, int b) -> int { a + b }\nfn sub(int a, int b) -> int { a - b }";
+        let r = symbols(src);
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("fn add"), "got: {text}");
+        assert!(text.contains("fn sub"), "got: {text}");
+    }
+
+    #[test]
+    fn symbols_empty_program() {
+        let r = symbols("");
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn symbols_parse_error_propagates() {
+        let r = symbols("fn {{{");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn symbols_includes_return_type() {
+        let src = "fn f(int x) -> int { x }";
+        let r = symbols(src);
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("-> int"), "got: {text}");
+    }
+
+    // ── resilient_hover ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hover_on_parameter_name() {
+        let src = "fn f(int myParam) -> int { myParam }";
+        // offset of 'm' in "myParam" in the parameter list (position ~9)
+        let offset = src.find("myParam").unwrap();
+        let r = hover(src, offset);
+        assert!(r.is_ok(), "{r:?}");
+        let text = r.unwrap();
+        assert!(text.contains("myParam"), "got: {text}");
+    }
+
+    #[test]
+    fn hover_out_of_range_returns_error() {
+        let src = "fn f(int x) -> int { x }";
+        let r = hover(src, src.len() + 100);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn hover_on_non_ident_char_returns_error() {
+        let src = "fn f(int x) -> int { x }";
+        let r = hover(src, src.find('(').unwrap());
+        assert!(r.is_err());
     }
 }
