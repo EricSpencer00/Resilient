@@ -8260,7 +8260,13 @@ impl TypeChecker {
                 let params = if params_str.trim().is_empty() {
                     Vec::new()
                 } else {
-                    let mut parts: Vec<Type> = Vec::new();
+                    // Upper bound: total comma count + 1. Nested-fn types
+                    // (e.g. `(int) -> (bool, int)`) over-count slightly
+                    // because the inner comma sits at depth > 0, but the
+                    // bytewise scan is still cheaper than the 0 → 4 growth
+                    // chain on `parts` for any params_str with ≥ 4 types.
+                    let cap = params_str.bytes().filter(|b| *b == b',').count() + 1;
+                    let mut parts: Vec<Type> = Vec::with_capacity(cap);
                     let mut depth2 = 0usize;
                     let mut start = 0;
                     for (i, ch) in params_str.char_indices() {
