@@ -372,7 +372,17 @@ fn inline_into_chunk(
             // every emitted Jump-replacement-of-ReturnFromCall and
             // back-patch its offset at the end.
             let body_start_new_pc = new_code.len();
-            let mut return_jump_patches: Vec<usize> = Vec::new();
+            // Pre-size to the exact count of `Op::ReturnFromCall` in the
+            // callee body — `rewrite_inlined_op` maps that one op (and
+            // nothing else) to `InlinedOp::ReturnAsJump`, which is the
+            // sole producer of patches. The scan is cheap (variant match,
+            // no allocation) and avoids the default 0→4→8 growth chain on
+            // every inlined fn that has more than 3 return points.
+            let return_count = callee.chunk.code[..body_end]
+                .iter()
+                .filter(|op| matches!(op, Op::ReturnFromCall))
+                .count();
+            let mut return_jump_patches: Vec<usize> = Vec::with_capacity(return_count);
             for (body_pc, body_op) in callee.chunk.code[..body_end].iter().enumerate() {
                 let body_line = callee.chunk.line_info[body_pc];
                 let rewritten = rewrite_inlined_op(*body_op, base, &callee.chunk, chunk)?;
