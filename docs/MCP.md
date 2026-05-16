@@ -168,6 +168,19 @@ every function.
 
 ---
 
+## Registry
+
+The Resilient MCP server is published to the [official MCP Registry](https://registry.modelcontextprotocol.io)
+under the namespace `io.github.ericspencer00/resilient`. The registration
+points at the multi-arch Docker image at `ghcr.io/ericspencer00/resilient`
+(both `amd64` and `arm64`), so any MCP client that resolves servers from
+the registry can install Resilient with a single click without needing
+to clone or build from source.
+
+`server.json` at the repo root is the source of truth for the registry
+entry; `.github/workflows/mcp-publish.yml` re-publishes it on every
+`release: published` event, syncing the version + OCI tag to the release.
+
 ## Example session
 
 ```

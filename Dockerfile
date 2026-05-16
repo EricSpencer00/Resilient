@@ -49,6 +49,12 @@ RUN cargo build \
 # ---------- runtime ----------
 FROM debian:bookworm-slim AS runtime
 
+# MCP registry namespace ownership marker. The Resilient compiler ships
+# an MCP server (`rz --mcp`) and registers under this name on
+# registry.modelcontextprotocol.io. The registry verifies ownership of
+# Docker images by matching this label against the published server name.
+LABEL io.modelcontextprotocol.server.name="io.github.ericspencer00/resilient"
+
 # libz3-4 provides libz3.so.4 at the system-library path the
 # binary linked against. ca-certificates is a defensive add for
 # anyone piping certs through the binary later; small and
