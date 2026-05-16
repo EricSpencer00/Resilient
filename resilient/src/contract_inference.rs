@@ -57,8 +57,15 @@ pub fn infer_program(program: &Node) -> Vec<InferredContracts> {
             if !requires.is_empty() && !ensures.is_empty() {
                 continue;
             }
-            let mut req = Vec::new();
-            let mut ens = Vec::new();
+            // Per-param inference pushes at most ~4 entries each
+            // (divide-by-zero, len > 0 from indexing, len > 0 from
+            // iteration, non-null from field access); using
+            // `parameters.len()` as the capacity covers the common
+            // case (1-2 contracts inferred per param) and lets
+            // `Vec::extend`'s amortised growth take over for the
+            // rare param that hits multiple branches.
+            let mut req = Vec::with_capacity(parameters.len());
+            let mut ens = Vec::with_capacity(parameters.len());
             for (_, pname) in parameters {
                 if requires.is_empty() {
                     if body_divides_by(body, pname) {
@@ -607,7 +614,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         } else {
             "note[contract_infer]"
         };
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<String> = Vec::with_capacity(ic.requires.len() + ic.ensures.len());
         for r in &ic.requires {
             parts.push(format!("requires {r}"));
         }
