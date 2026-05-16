@@ -274,11 +274,17 @@ fn try_prove_invariant(
 
     // -------- Inductive step --------
     // Drop bindings for names assigned in the body so they're free.
-    let step_bindings: HashMap<String, i64> = bindings
-        .iter()
-        .filter(|(k, _)| !assigned.contains(k.as_str()))
-        .map(|(k, v)| (k.clone(), *v))
-        .collect();
+    // `bindings.len()` is the exact upper bound — `filter` only ever
+    // shrinks the count — and `HashMap::FromIterator` over a filtered
+    // iterator pulls only the lower bound (0) from `size_hint`, so the
+    // collected map starts at capacity 0 and grows. Building it with
+    // an explicit pre-sized loop skips that grow cascade.
+    let mut step_bindings: HashMap<String, i64> = HashMap::with_capacity(bindings.len());
+    for (k, v) in bindings.iter() {
+        if !assigned.contains(k.as_str()) {
+            step_bindings.insert(k.clone(), *v);
+        }
+    }
 
     // Build WP(body, invariant) by reverse substitution.
     let wp = match weakest_precondition(body, invariant) {
