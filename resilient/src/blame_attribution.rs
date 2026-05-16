@@ -234,7 +234,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                 callers.iter().map(|(n, _)| n.as_str()).collect()
             } else {
                 // Last entries in the chain are deepest; collect unique roots
-                let mut roots: Vec<&str> = Vec::new();
+                // in deepest-first order. `chain.len()` is the exact upper
+                // bound on unique callers (each entry contributes at most
+                // one name); the dedup against `roots.contains` only ever
+                // shrinks the count.
+                let mut roots: Vec<&str> = Vec::with_capacity(chain.len());
                 for (caller, _) in chain.iter().rev() {
                     if !roots.contains(&caller.as_str()) {
                         roots.push(caller.as_str());
