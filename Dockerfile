@@ -11,13 +11,14 @@
 # `docker run ghcr.io/ericspencer00/resilient:latest --help` (and
 # `rz src/main.rs`) "just work".
 #
-# Deviation from the ticket AC: the builder base is rust:1.85, not
-# rust:1.84. Edition 2024 — used by every crate in this workspace
-# — requires Rust 1.85+. Pinning 1.84 would fail the build. 1.85
-# is the minimum edition-2024 release.
+# Builder base: rust:1.90-bookworm. Edition 2024 (used by every crate
+# in this workspace) requires Rust 1.85+, and one of our transitive
+# deps (`home@0.5.12`) requires 1.88+, so bumping past 1.88 is necessary
+# to avoid `rustc is not supported by the following package` errors.
+# 1.90 is the most recent stable bookworm tag.
 
 # ---------- builder ----------
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.90-bookworm AS builder
 
 # libz3-dev provides the Z3 headers + libz3.so for linking; clang
 # is needed by some sys-crate build scripts (curve25519-dalek's
