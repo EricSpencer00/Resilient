@@ -4570,7 +4570,10 @@ impl TypeChecker {
                 } else {
                     Vec::new()
                 };
-                let mut refuted: Vec<String> = Vec::new();
+                // Worst case every obligation is `Refuted` and contributes one
+                // diagnostic; pre-size to skip the default 0→4→8 growth chain
+                // when the file actually has invariant violations to report.
+                let mut refuted: Vec<String> = Vec::with_capacity(obligations.len());
                 for o in obligations {
                     match o.result {
                         crate::verifier_actors::ActorProofResult::Proved => {}
