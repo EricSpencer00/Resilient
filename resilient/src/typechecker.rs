@@ -6173,9 +6173,9 @@ impl TypeChecker {
                     }
                 }
                 if concrete.len() > 1 {
-                    let first_ty = concrete[0].0.clone();
+                    let first_ty = &concrete[0].0;
                     if let Some((other_ty, _)) =
-                        concrete.iter().find(|(t, _)| *t != first_ty).cloned()
+                        concrete.iter().skip(1).find(|(t, _)| t != first_ty)
                     {
                         return Err(format!(
                             "Array literal contains mixed element types: {} and {}. Resilient does not implicitly coerce between types — pick one and convert the others explicitly.",
