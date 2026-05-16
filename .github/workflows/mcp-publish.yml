@@ -1,0 +1,96 @@
+name: mcp-publish
+
+# Publish `server.json` to the official MCP Registry at
+# registry.modelcontextprotocol.io.
+#
+# Triggers:
+#   - `release: published` → after release.yml + release-image.yml finish
+#     producing artifacts for a `v*` tag, this fires automatically.
+#   - `workflow_dispatch` → for manual republishes (e.g., metadata-only
+#     update where the Docker image already exists).
+#
+# Authentication: GitHub OIDC. The registry validates the OIDC token's
+# `repository` claim against the `io.github.<owner>/<name>` namespace,
+# so no PAT is needed. The job requests `id-token: write` to mint the
+# token at runtime.
+#
+# Package ownership: the registry verifies that the OCI image at the
+# `identifier` URL in `server.json` carries a
+# `io.modelcontextprotocol.server.name` LABEL that matches the
+# server name. That label is set in our Dockerfile.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Validate server.json without publishing"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: mcp-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to MCP Registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+          mcp-publisher --help | head -5
+
+      - name: Sync server.json version to release tag
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # Strip leading `v` from the tag (e.g. v0.2.0 → 0.2.0).
+          VERSION="${TAG#v}"
+          python3 - <<PY
+          import json, pathlib, os
+          p = pathlib.Path("server.json")
+          data = json.loads(p.read_text())
+          version = os.environ["TAG"].lstrip("v")
+          data["version"] = version
+          # Point at the matching OCI tag that release-image.yml just pushed.
+          for pkg in data.get("packages", []):
+              if pkg.get("registryType") == "oci":
+                  ident = pkg["identifier"]
+                  # ghcr.io/owner/name:OLD_TAG → ghcr.io/owner/name:VERSION
+                  base = ident.rsplit(":", 1)[0]
+                  pkg["identifier"] = f"{base}:{version}"
+          p.write_text(json.dumps(data, indent=2) + "\n")
+          print(f"server.json version bumped to {version}")
+          PY
+
+      - name: Validate server.json
+        run: mcp-publisher validate server.json
+
+      - name: Authenticate with registry (OIDC)
+        if: ${{ !inputs.dry_run }}
+        run: mcp-publisher login github-oidc
+
+      - name: Publish to registry
+        if: ${{ !inputs.dry_run }}
+        run: mcp-publisher publish server.json
+
+      - name: Dry-run summary
+        if: inputs.dry_run
+        run: |
+          echo "::notice::Dry-run complete. server.json validated; no publish performed."

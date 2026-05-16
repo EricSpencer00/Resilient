@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ericspencer00/resilient",
+  "title": "Resilient",
+  "description": "Resilient compiler-as-MCP — parse, typecheck, run, lint, format, and Z3-verify Resilient programs.",
+  "version": "0.2.0",
+  "websiteUrl": "https://github.com/EricSpencer00/Resilient",
+  "repository": {
+    "url": "https://github.com/EricSpencer00/Resilient",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "oci",
+      "registryBaseUrl": "https://ghcr.io",
+      "identifier": "ghcr.io/ericspencer00/resilient:0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeArguments": [
+        {
+          "type": "positional",
+          "value": "--mcp"
+        }
+      ]
+    }
+  ]
+}
