@@ -6207,8 +6207,8 @@ impl TypeChecker {
                     }
                 }
                 if key_types.len() > 1 {
-                    let first = key_types[0].clone();
-                    if let Some(other) = key_types.iter().find(|t| **t != first) {
+                    let first = &key_types[0];
+                    if let Some(other) = key_types.iter().skip(1).find(|t| *t != first) {
                         return Err(format!(
                             "map literal contains mixed key types: {} and {} — all keys must have the same type",
                             first, other
@@ -6216,8 +6216,8 @@ impl TypeChecker {
                     }
                 }
                 if val_types.len() > 1 {
-                    let first = val_types[0].clone();
-                    if let Some(other) = val_types.iter().find(|t| **t != first) {
+                    let first = &val_types[0];
+                    if let Some(other) = val_types.iter().skip(1).find(|t| *t != first) {
                         return Err(format!(
                             "map literal contains mixed value types: {} and {} — all values must have the same type",
                             first, other
@@ -6241,8 +6241,8 @@ impl TypeChecker {
                     }
                 }
                 if concrete.len() > 1 {
-                    let first = concrete[0].clone();
-                    if let Some(other) = concrete.iter().find(|t| **t != first) {
+                    let first = &concrete[0];
+                    if let Some(other) = concrete.iter().skip(1).find(|t| *t != first) {
                         return Err(format!(
                             "Set literal contains mixed element types: {} and {}",
                             first, other
