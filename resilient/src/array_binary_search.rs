@@ -27,22 +27,27 @@ fn result_int(ok: bool, idx: usize) -> Value {
 /// `array_binary_search(arr, target) -> Result<Int, Int>` — lookup in a
 /// sorted int array. Array elements must all be ints; mixed types are
 /// rejected with a typed error.
+///
+/// RES-2034: pre-walks `items` for type validation, then dispatches
+/// `binary_search_by` directly on the original `&[Value]`. The previous
+/// implementation materialized a throwaway `Vec<i64>` of length N just
+/// to satisfy `binary_search`'s signature.
 pub(crate) fn builtin_array_binary_search(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::Int(target)] => {
-            let mut nums: Vec<i64> = Vec::with_capacity(items.len());
             for v in items {
-                match v {
-                    Value::Int(n) => nums.push(*n),
-                    other => {
-                        return Err(format!(
-                            "array_binary_search: expected all int elements, got {}",
-                            other
-                        ));
-                    }
+                if !matches!(v, Value::Int(_)) {
+                    return Err(format!(
+                        "array_binary_search: expected all int elements, got {}",
+                        v
+                    ));
                 }
             }
-            match nums.binary_search(target) {
+            let result = items.binary_search_by(|v| match v {
+                Value::Int(n) => n.cmp(target),
+                _ => unreachable!("validated above"),
+            });
+            match result {
                 Ok(idx) => Ok(result_int(true, idx)),
                 Err(idx) => Ok(result_int(false, idx)),
             }
@@ -66,22 +71,26 @@ pub(crate) fn builtin_array_binary_search(args: &[Value]) -> RResult<Value> {
 /// lookup in a sorted float array. Comparison uses `f64::total_cmp` so
 /// the search behaves correctly on NaN / `±0` / signed-NaN inputs,
 /// matching `array_sort_float`'s ordering.
+///
+/// RES-2034: pre-walks `items` for type validation, then dispatches
+/// `binary_search_by` directly on the original `&[Value]` (drops the
+/// previous `Vec<f64>` materialization).
 pub(crate) fn builtin_array_binary_search_float(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::Float(target)] => {
-            let mut nums: Vec<f64> = Vec::with_capacity(items.len());
             for v in items {
-                match v {
-                    Value::Float(f) => nums.push(*f),
-                    other => {
-                        return Err(format!(
-                            "array_binary_search_float: expected all float elements, got {}",
-                            other
-                        ));
-                    }
+                if !matches!(v, Value::Float(_)) {
+                    return Err(format!(
+                        "array_binary_search_float: expected all float elements, got {}",
+                        v
+                    ));
                 }
             }
-            match nums.binary_search_by(|x| x.total_cmp(target)) {
+            let result = items.binary_search_by(|v| match v {
+                Value::Float(f) => f.total_cmp(target),
+                _ => unreachable!("validated above"),
+            });
+            match result {
                 Ok(idx) => Ok(result_int(true, idx)),
                 Err(idx) => Ok(result_int(false, idx)),
             }
@@ -104,22 +113,27 @@ pub(crate) fn builtin_array_binary_search_float(args: &[Value]) -> RResult<Value
 /// `array_binary_search_string(arr, target) -> Result<Int, Int>` —
 /// lookup in a sorted string array. Comparison is byte-wise on the
 /// UTF-8 representation, matching `array_sort_string`'s ordering.
+///
+/// RES-2034: pre-walks `items` for type validation, then dispatches
+/// `binary_search_by` directly on the original `&[Value]`. The previous
+/// `Vec<&String>` materialization (one pointer per element) is gone.
 pub(crate) fn builtin_array_binary_search_string(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::String(target)] => {
-            let mut strings: Vec<&String> = Vec::with_capacity(items.len());
             for v in items {
-                match v {
-                    Value::String(s) => strings.push(s),
-                    other => {
-                        return Err(format!(
-                            "array_binary_search_string: expected all string elements, got {}",
-                            other
-                        ));
-                    }
+                if !matches!(v, Value::String(_)) {
+                    return Err(format!(
+                        "array_binary_search_string: expected all string elements, got {}",
+                        v
+                    ));
                 }
             }
-            match strings.binary_search(&target) {
+            let target_str = target.as_str();
+            let result = items.binary_search_by(|v| match v {
+                Value::String(s) => s.as_str().cmp(target_str),
+                _ => unreachable!("validated above"),
+            });
+            match result {
                 Ok(idx) => Ok(result_int(true, idx)),
                 Err(idx) => Ok(result_int(false, idx)),
             }
