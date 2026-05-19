@@ -28,7 +28,15 @@ pub struct AssocConstant {
     pub value: String,
 }
 
-static ASSOC: LazyLock<RwLock<HashMap<(String, String), AssocConstant>>> =
+/// RES-2014: nested map — outer key `type_name`, inner key `const_name`.
+/// The flat `HashMap<(String, String), V>` shape forced `lookup` to
+/// allocate two transient `String`s per call (stdlib's `Borrow`
+/// impls don't allow `(String, String): Borrow<(&str, &str)>`).
+/// Both nested-map `.get` calls accept `&str` via the existing
+/// `String: Borrow<str>` impl. Same fix as RES-2008 / RES-2010 /
+/// RES-2012 — completes the (String, String) HashMap key conversion
+/// across all four registries in the codebase.
+static ASSOC: LazyLock<RwLock<HashMap<String, HashMap<String, AssocConstant>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn collect() -> Vec<AssocConstant> {
@@ -69,14 +77,21 @@ pub fn install(items: Vec<AssocConstant>) {
     if let Ok(mut g) = ASSOC.write() {
         g.clear();
         for a in items {
-            g.insert((a.type_name.clone(), a.const_name.clone()), a);
+            g.entry(a.type_name.clone())
+                .or_default()
+                .insert(a.const_name.clone(), a);
         }
     }
 }
 
 pub fn lookup(type_name: &str, const_name: &str) -> Option<String> {
+    // RES-2014: nested-map lookup — `.get(&str)` on each level uses
+    // the existing `String: Borrow<str>` impl. Zero per-call
+    // allocations (the previous flat `(String, String)` key forced
+    // two transient `String::to_string()` allocs per call).
     ASSOC.read().ok().and_then(|g| {
-        g.get(&(type_name.to_string(), const_name.to_string()))
+        g.get(type_name)
+            .and_then(|m| m.get(const_name))
             .map(|a| a.value.clone())
     })
 }
