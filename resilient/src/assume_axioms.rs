@@ -23,11 +23,16 @@ use crate::Node;
 /// Returns conditions in source order. Caller appends them to the
 /// `requires` axiom set when invoking the Z3 prover.
 pub(crate) fn collect_leading_assume_axioms(body: &Node) -> Vec<Node> {
-    let mut out = Vec::new();
     let stmts = match body {
         Node::Block { stmts, .. } => stmts,
-        _ => return out,
+        _ => return Vec::new(),
     };
+    // RES-1958: pre-size to `stmts.len()` — the exact upper bound
+    // (every leading statement could be an `assume`). Called by the
+    // verifier per requires/ensures/recovers_to obligation the
+    // contract folder couldn't discharge, so the 0→4 doubling chain
+    // was paid on a Z3-dispatch hot path.
+    let mut out = Vec::with_capacity(stmts.len());
 
     for stmt in stmts {
         match stmt {
