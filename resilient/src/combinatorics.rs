@@ -66,7 +66,17 @@ pub(crate) fn builtin_array_combinations(args: &[Value]) -> RResult<Value> {
                     arr.len()
                 ));
             }
-            let mut out = Vec::new();
+            // RES-1938: pre-size `out` to the exact C(n, k) when
+            // computable. Falls back to Vec::new() on overflow — that
+            // case yields gigantic outputs anyway and is dominated by
+            // the per-element work below.
+            let cap = (0..k).try_fold(1usize, |acc, i| {
+                acc.checked_mul(arr.len() - i).map(|m| m / (i + 1))
+            });
+            let mut out = match cap {
+                Some(c) => Vec::with_capacity(c),
+                None => Vec::new(),
+            };
             let mut indices: Vec<usize> = (0..k).collect();
             if k == 0 {
                 out.push(Value::Array(vec![]));
@@ -127,7 +137,14 @@ pub(crate) fn builtin_array_permutations(args: &[Value]) -> RResult<Value> {
                     arr.len()
                 ));
             }
-            let mut out = Vec::new();
+            // RES-1938: pre-size `out` to the exact P(n, k) when
+            // computable. Falls back to Vec::new() on overflow — same
+            // shape as the combinations pre-size above.
+            let cap = (0..k).try_fold(1usize, |acc, i| acc.checked_mul(arr.len() - i));
+            let mut out = match cap {
+                Some(c) => Vec::with_capacity(c),
+                None => Vec::new(),
+            };
             let mut used = vec![false; arr.len()];
             let mut current = Vec::with_capacity(k);
             fn permute(

@@ -367,6 +367,10 @@
     "resilient/src/array_combinators.rs": {
       "branch": "res-1934-array-combinators-clone-elim",
       "claimed_at": "2026-05-19T17:58:20Z"
+    },
+    "resilient/src/combinatorics.rs": {
+      "branch": "res-1938-combinatorics-presize",
+      "claimed_at": "2026-05-19T18:07:46Z"
     }
   }
 }
