@@ -121,8 +121,8 @@
       "claimed_at": "2026-05-12T13:34:45Z"
     },
     "resilient/src/blame_attribution.rs": {
-      "branch": "res-1544-blame-attribution-callers-borrow",
-      "claimed_at": "2026-05-12T14:23:18Z"
+      "branch": "res-1968-blame-chain-perf",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/termination.rs": {
       "branch": "res-1538-termination-fn-info-borrow",
