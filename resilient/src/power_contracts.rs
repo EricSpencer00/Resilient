@@ -30,19 +30,30 @@ pub fn collect() -> Vec<PowerSpec> {
     // handful when chunks fail to parse, but power-budget attrs are
     // rare and the alternative is a growing 0→4 doubling chain).
     let mut out = Vec::with_capacity(attrs.len());
+    // RES-2018: pull the value out of the inner loop first, then push
+    // once with `item` moved (not cloned). Previously the push lived
+    // inside the inner `for chunk` loop, which forced
+    // `fn_name: item.clone()` because the borrow checker could not
+    // see that only one chunk matches `uj` per attribute. Same fix
+    // applied to wcet_contracts and stack_contracts.
     for (item, rec) in attrs {
+        let mut budget_uj: Option<f64> = None;
         for chunk in rec.args.split(',') {
             let chunk = chunk.trim();
             if let Some((k, v)) = chunk.split_once('=') {
                 if k.trim() == "uj" {
                     if let Ok(n) = v.trim().trim_matches('"').parse() {
-                        out.push(PowerSpec {
-                            fn_name: item.clone(),
-                            budget_uj: n,
-                        });
+                        budget_uj = Some(n);
+                        break;
                     }
                 }
             }
+        }
+        if let Some(n) = budget_uj {
+            out.push(PowerSpec {
+                fn_name: item,
+                budget_uj: n,
+            });
         }
     }
     out

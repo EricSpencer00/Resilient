@@ -23,19 +23,27 @@ pub fn collect() -> Vec<StackSpec> {
     // RES-1784: pre-size to attrs.len() — conditional push (only when
     // `bytes` chunk parses), so this is an upper bound.
     let mut out = Vec::with_capacity(attrs.len());
+    // RES-2018: see power_contracts::collect — pull the value out of
+    // the inner loop first, then move `item` into the spec instead
+    // of cloning per push.
     for (item, rec) in attrs {
+        let mut budget_bytes: Option<u64> = None;
         for chunk in rec.args.split(',') {
             let chunk = chunk.trim();
             if let Some((k, v)) = chunk.split_once('=') {
                 if k.trim() == "bytes" {
                     if let Ok(n) = v.trim().trim_matches('"').parse() {
-                        out.push(StackSpec {
-                            fn_name: item.clone(),
-                            budget_bytes: n,
-                        });
+                        budget_bytes = Some(n);
+                        break;
                     }
                 }
             }
+        }
+        if let Some(n) = budget_bytes {
+            out.push(StackSpec {
+                fn_name: item,
+                budget_bytes: n,
+            });
         }
     }
     out
