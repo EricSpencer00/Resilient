@@ -149,8 +149,8 @@
       "claimed_at": "2026-05-13T11:24:43Z"
     },
     "resilient/src/intent_blocks.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
+      "branch": "res-1994-intent-blocks-drop-fnames",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/row_polymorphism.rs": {
       "branch": "res-1754-collect-presize",
