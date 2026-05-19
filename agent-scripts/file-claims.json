@@ -181,8 +181,8 @@
       "claimed_at": "2026-05-13T11:30:51Z"
     },
     "resilient/src/behavioral_fingerprint.rs": {
-      "branch": "res-1756-program-collect-presize",
-      "claimed_at": "2026-05-13T11:30:51Z"
+      "branch": "res-1992-fingerprint-presize-write",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/contract_inference.rs": {
       "branch": "res-1756-program-collect-presize",

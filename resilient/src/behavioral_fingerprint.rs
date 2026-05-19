@@ -30,6 +30,7 @@
 use crate::Node;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
@@ -138,7 +139,10 @@ pub fn diff_fingerprints(
     stored: &HashMap<String, Fingerprint>,
     current: &HashMap<String, Fingerprint>,
 ) -> Vec<String> {
-    let mut changed = Vec::new();
+    // RES-1992: pre-size to `current.len()` — exact upper bound (at most
+    // one push per current key when digest diverges). Same pattern as
+    // RES-1982's `snapshot_regression::diff`.
+    let mut changed: Vec<String> = Vec::with_capacity(current.len());
     for (name, cur) in current {
         if let Some(prev) = stored.get(name) {
             if prev.digest != cur.digest {
@@ -177,7 +181,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     let current = fingerprint_program(program);
-    let mut regressions: Vec<String> = Vec::new();
+    // RES-1992: pre-size to `current.len()` — exact upper bound on
+    // regression count. Same shape as `diff_fingerprints` above.
+    let mut regressions: Vec<String> = Vec::with_capacity(current.len());
     for (name, fp) in &current {
         if let Some(&stored_digest) = stored.get(name.as_str()) {
             if stored_digest != fp.digest {
@@ -189,17 +195,23 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if regressions.is_empty() {
         return Ok(());
     }
-    let msgs: Vec<String> = regressions
-        .iter()
-        .map(|name| {
-            format!(
-                "{source_path}:0:0: error[fingerprint]: behavioral fingerprint of \
-                 `{name}` changed — contracts or parameter types were modified; \
-                 run `rz fingerprint --update` if the change is intentional"
-            )
-        })
-        .collect();
-    Err(msgs.join("\n"))
+    // RES-1992: previously built the joined message via
+    // `.map(|name| format!(...))` into a `Vec<String>` then `.join("\n")`
+    // — each format! allocated a fresh String, dropped after join. Build
+    // directly into the result String via `write!` instead.
+    let mut msg = String::with_capacity(regressions.len() * 160);
+    for (i, name) in regressions.iter().enumerate() {
+        if i > 0 {
+            msg.push('\n');
+        }
+        let _ = write!(
+            msg,
+            "{source_path}:0:0: error[fingerprint]: behavioral fingerprint of \
+             `{name}` changed — contracts or parameter types were modified; \
+             run `rz fingerprint --update` if the change is intentional"
+        );
+    }
+    Err(msg)
 }
 
 /// Parse `.resilient/fingerprints.lock` — lines of the form:
