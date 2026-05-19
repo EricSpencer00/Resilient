@@ -635,15 +635,20 @@ fn collect_self_assignments(body: &Node) -> Result<Vec<(String, Node)>, String> 
     // RES-1770: pre-size to stmts.len() — every handler body
     // statement must be a `FieldAssignment` (else we error out),
     // and each one contributes exactly one push.
-    let mut out: Vec<(String, Node)> = Vec::with_capacity(stmts.len());
+    //
+    // RES-2066: walk `stmts` once in reverse and keep only the
+    // first occurrence of each field name (rev-first = last-write
+    // source-wise). The previous shape used `retain` + `push` per
+    // statement, which scanned the full `out` vector on every
+    // step — O(K²) for K statements. The new shape is O(K) with
+    // a per-call HashSet that borrows into the AST.
+    //
+    // Pre-pass: validate that every statement is a
+    // `self.<field> = EXPR;` so the error diagnostic still fires
+    // before any work — the rev-scan below assumes well-formed
+    // statements.
     for stmt in stmts {
-        let Node::FieldAssignment {
-            target,
-            field,
-            value,
-            ..
-        } = stmt
-        else {
+        let Node::FieldAssignment { target, .. } = stmt else {
             return Err(format!(
                 "statement `{}` — supported: `self.<field> = EXPR;`",
                 node_kind(stmt)
@@ -658,14 +663,20 @@ fn collect_self_assignments(body: &Node) -> Result<Vec<(String, Node)>, String> 
                 ));
             }
         }
-        // Replace any earlier write to this field so the last
-        // assignment wins, then append so source order is
-        // preserved for the unmodified fields. `retain` +
-        // `push` rather than a map keeps the Vec ordering.
-        out.retain(|(f, _)| f != field);
-        out.push((field.clone(), (**value).clone()));
     }
-    Ok(out)
+
+    let mut seen: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(stmts.len());
+    let mut rev_out: Vec<(String, Node)> = Vec::with_capacity(stmts.len());
+    for stmt in stmts.iter().rev() {
+        if let Node::FieldAssignment { field, value, .. } = stmt
+            && seen.insert(field.as_str())
+        {
+            rev_out.push((field.clone(), (**value).clone()));
+        }
+    }
+    rev_out.reverse();
+    Ok(rev_out)
 }
 
 /// Human-readable node kind for diagnostics. Matches the terms
