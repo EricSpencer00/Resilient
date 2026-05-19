@@ -54,7 +54,11 @@ pub(crate) fn builtin_array_difference(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_intersection(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(a), Value::Array(b)] => {
-            let mut out: Vec<Value> = Vec::new();
+            // RES-1948: match the sister builtin_array_difference's
+            // pre-size — `a.len()` is the exact upper bound (the
+            // intersection contains at most every element of `a`).
+            // Skips the default 0→4→8→… doubling chain.
+            let mut out: Vec<Value> = Vec::with_capacity(a.len());
             for v in a {
                 if member_of("array_intersection", v, b)? {
                     out.push(v.clone());

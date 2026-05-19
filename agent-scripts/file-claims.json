@@ -375,6 +375,10 @@
     "resilient/src/data_utils.rs": {
       "branch": "res-1942-data-utils-presize",
       "claimed_at": "2026-05-19T18:14:43Z"
+    },
+    "resilient/src/array_set_helpers.rs": {
+      "branch": "res-1948-array-intersection-presize",
+      "claimed_at": "2026-05-19T18:30:11Z"
     }
   }
 }
