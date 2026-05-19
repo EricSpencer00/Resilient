@@ -117,8 +117,8 @@
       "claimed_at": "2026-05-12T13:18:45Z"
     },
     "resilient/src/full_modules.rs": {
-      "branch": "res-1517-full-modules-dfs-borrow",
-      "claimed_at": "2026-05-12T13:25:00Z"
+      "branch": "res-2004-full-modules-stack-lift",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/crash_only.rs": {
       "branch": "res-1520-crash-only-name-borrow",

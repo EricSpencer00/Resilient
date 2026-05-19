@@ -97,9 +97,15 @@ pub fn detect_cycle(graph: &ModuleGraph) -> Option<Vec<String>> {
     // RES-1786: pre-size both to graph.deps.len() — visited grows
     // exactly to the module count; stack peaks at module-graph depth
     // which is bounded by the same count.
+    // RES-2004: lift `stack` outside the per-root loop. `dfs` is
+    // push/pop balanced, so the stack returns empty after each
+    // unsuccessful return — ready for the next `start` without
+    // re-allocation. Same buffer-reuse shape as RES-1966
+    // (isr_call_graph), RES-1988 (vibe_debt), RES-1990
+    // (resilience_score).
     let mut visited: HashSet<&str> = HashSet::with_capacity(graph.deps.len());
+    let mut stack: Vec<&str> = Vec::with_capacity(graph.deps.len());
     for start in graph.deps.keys() {
-        let mut stack: Vec<&str> = Vec::with_capacity(graph.deps.len());
         if let Some(cycle) = dfs(start.as_str(), graph, &mut stack, &mut visited) {
             return Some(cycle.into_iter().map(str::to_string).collect());
         }
