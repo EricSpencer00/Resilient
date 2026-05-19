@@ -24,23 +24,19 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{any_node, for_each_function};
+use crate::uniqueness_walk::{any_node, for_each_function, visit};
+use std::collections::HashSet;
 
 const SECRET_NAME_PREFIXES: &[&str] = &["secret_", "key_", "priv_", "password", "nonce_"];
 const SECRET_TYPE_PREFIXES: &[&str] = &["Secret", "&Secret", "&mut Secret"];
 const WIPE_FNS: &[&str] = &["zeroize", "zero_out", "wipe", "scrub"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1256: fast-reject. `collect_local_secrets` walks each
-    // function body looking for `LetStatement` / `StaticLet` whose
-    // name or type annotation matches the secret prefix list. For
-    // programs with no such binding (the overwhelming majority of
-    // `cargo test` inputs and the entire `examples/` tree), every
-    // per-function visit walks the body in full and finds nothing —
-    // and the per-function `leaks` Vec is then empty so the rest of
-    // the closure is a no-op. Pre-scan the program once via
-    // `any_node` (RES-1238 made this early-terminating) and skip the
-    // pass entirely when no secret-prefixed binding exists.
+    // RES-1256: fast-reject. `scan_body` walks each function body in
+    // full; for programs without any secret-prefixed binding the walks
+    // produce no diagnostic but still touch every node. Pre-scan the
+    // program once via `any_node` (RES-1238 made this early-terminating)
+    // and skip the pass entirely when no secret-prefixed binding exists.
     let has_secret = any_node(program, |n| match n {
         Node::LetStatement {
             name, type_annot, ..
@@ -55,10 +51,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     for_each_function(program, |fname, _params, body| {
-        let mut leaks = Vec::new();
-        collect_local_secrets(body, &mut leaks);
-        for var in leaks {
-            if !is_wiped(body, &var) && !is_returned(body, &var) {
+        // RES-1970: single-pass scan. Previously this loop did one walk
+        // per `collect_local_secrets` plus *two more* whole-body walks
+        // per secret (one for `is_wiped`, one for `is_returned`) — a
+        // structural O(k * |body|). Both `is_wiped` and `is_returned`
+        // are body-wide membership queries; we can compute their
+        // closures once in a single recursive walk, then drop the
+        // per-secret loop to O(1) lookups.
+        let (secrets, wiped, returned) = scan_body(body);
+        for var in &secrets {
+            if !wiped.contains(*var) && !returned.contains(*var) {
                 eprintln!(
                     "warning: function '{fname}' binds secret '{var}' but never \
                      calls zeroize()/zero_out()/wipe() on it before exit — \
@@ -70,60 +72,81 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn collect_local_secrets(body: &Node, out: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::new();
-    let mut sink = |n: &Node| {
-        let (name, type_annot) = match n {
-            Node::LetStatement {
-                name, type_annot, ..
-            } => (name, type_annot.as_deref()),
-            Node::StaticLet { name, .. } => (name, None),
-            _ => return,
-        };
-        if !seen.insert(name.clone()) {
-            return;
-        }
-        let by_name = SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(*p));
-        let by_type = type_annot.map(is_secret_type).unwrap_or(false);
-        if by_name || by_type {
-            out.push(name.clone());
-        }
-    };
-    crate::uniqueness_walk::visit(body, &mut sink);
-}
-
 fn is_secret_type(ty: &str) -> bool {
     SECRET_TYPE_PREFIXES.iter().any(|p| ty.starts_with(*p))
 }
 
-fn is_wiped(body: &Node, var: &str) -> bool {
-    any_node(body, |n| match n {
+/// Single-pass body scan: returns `(secrets, wiped, returned)`.
+///
+/// * `secrets` — distinct names of `let` / `static let` bindings whose
+///   name or type annotation matches the SECRET prefix list.
+/// * `wiped` — identifier names that appear as a direct argument to a
+///   `zeroize` / `zero_out` / `wipe` / `scrub` call anywhere in the body.
+/// * `returned` — identifier names that appear transitively in any
+///   `return <expr>` value in the body (i.e., possibly leaving the frame).
+///
+/// All three borrow from the AST (`&'a str`), so no per-name allocation
+/// happens during collection. Names are deduped via `HashSet` for the
+/// two membership sets; `secrets` preserves source order via a small
+/// dedup-on-push check (k is tiny — typically 1).
+fn scan_body<'a>(body: &'a Node) -> (Vec<&'a str>, HashSet<&'a str>, HashSet<&'a str>) {
+    let mut secrets: Vec<&'a str> = Vec::new();
+    let mut secret_dedup: HashSet<&'a str> = HashSet::new();
+    let mut wiped: HashSet<&'a str> = HashSet::new();
+    let mut returned: HashSet<&'a str> = HashSet::new();
+
+    // First pass via shared `visit`: collect secret-binding names and
+    // wiped argument names. This catches every `let` / `static let`
+    // and every `zeroize(x)`-style call regardless of nesting.
+    visit(body, &mut |n| match n {
+        Node::LetStatement {
+            name, type_annot, ..
+        } => {
+            let by_name = SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(*p));
+            let by_type = type_annot.as_deref().map(is_secret_type).unwrap_or(false);
+            if (by_name || by_type) && secret_dedup.insert(name.as_str()) {
+                secrets.push(name.as_str());
+            }
+        }
+        Node::StaticLet { name, .. } => {
+            let by_name = SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(*p));
+            if by_name && secret_dedup.insert(name.as_str()) {
+                secrets.push(name.as_str());
+            }
+        }
         Node::CallExpression {
             function,
             arguments,
             ..
-        } => match function.as_ref() {
-            Node::Identifier { name, .. } if WIPE_FNS.contains(&name.as_str()) => arguments
-                .iter()
-                .any(|a| matches!(a, Node::Identifier { name, .. } if name == var)),
-            _ => false,
-        },
-        _ => false,
-    })
-}
+        } => {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                if WIPE_FNS.contains(&name.as_str()) {
+                    for a in arguments {
+                        if let Node::Identifier { name: arg, .. } = a {
+                            wiped.insert(arg.as_str());
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    });
 
-fn is_returned(body: &Node, var: &str) -> bool {
-    any_node(body, |n| match n {
-        Node::ReturnStatement { value: Some(v), .. } => contains_ident(v, var),
-        _ => false,
-    })
-}
+    // Second pass: for each `ReturnStatement` value, collect *all*
+    // identifier names within it. `visit` walks into `ReturnStatement`
+    // children automatically; an explicit closure flag would be awkward,
+    // so collect the return-value subtree roots first, then walk each.
+    visit(body, &mut |n| {
+        if let Node::ReturnStatement { value: Some(v), .. } = n {
+            visit(v, &mut |inner| {
+                if let Node::Identifier { name, .. } = inner {
+                    returned.insert(name.as_str());
+                }
+            });
+        }
+    });
 
-fn contains_ident(node: &Node, var: &str) -> bool {
-    any_node(
-        node,
-        |n| matches!(n, Node::Identifier { name, .. } if name == var),
-    )
+    (secrets, wiped, returned)
 }
 
 #[cfg(test)]

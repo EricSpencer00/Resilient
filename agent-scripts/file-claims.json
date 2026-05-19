@@ -61,8 +61,8 @@
       "claimed_at": "2026-05-12T03:32:45Z"
     },
     "resilient/src/secret_erasure.rs": {
-      "branch": "res-1256-secret-erasure-fast-reject",
-      "claimed_at": "2026-05-12T03:39:06Z"
+      "branch": "res-1970-secret-erasure-single-pass",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/monotonic_field.rs": {
       "branch": "res-1262-monotonic-fast-reject",
