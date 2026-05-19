@@ -18,7 +18,7 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{any_node, for_each_function, visit};
+use crate::uniqueness_walk::{for_each_function, visit};
 
 const AUDIT_FNS: &[&str] = &["audit_log", "journal", "record_event", "emit_audit"];
 
@@ -26,28 +26,33 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // RES-1254 / RES-1917: the typechecker gates this call behind
     // `markers.any_field_assigned_with_prefix_or_suffix(&["audited_"],
     // &["_audited"])`, so the program is guaranteed to contain at
-    // least one audited-prefixed/suffixed field assignment. The
-    // previous `any_node` pre-scan was redundant — removed.
+    // least one audited-prefixed/suffixed field assignment.
+    //
+    // RES-2052: single body walk tracks both flags. The previous
+    // shape did one `visit` to find audited writes (no short-circuit)
+    // and then a second `any_node` to find audit calls — two full
+    // AST traversals per function with audited writes. The new form
+    // updates both flags during a single `visit` and decides
+    // afterward whether to emit the warning.
     for_each_function(program, |fname, _params, body| {
         let mut has_audited_write = false;
-        visit(body, &mut |n| {
-            if let Node::FieldAssignment { field, .. } = n {
+        let mut has_audit_call = false;
+        visit(body, &mut |n| match n {
+            Node::FieldAssignment { field, .. } => {
                 if field.starts_with("audited_") || field.ends_with("_audited") {
                     has_audited_write = true;
                 }
             }
+            Node::CallExpression { function, .. } => {
+                if let Node::Identifier { name, .. } = function.as_ref()
+                    && AUDIT_FNS.contains(&name.as_str())
+                {
+                    has_audit_call = true;
+                }
+            }
+            _ => {}
         });
-        if !has_audited_write {
-            return;
-        }
-        let logged = any_node(body, |n| match n {
-            Node::CallExpression { function, .. } => match function.as_ref() {
-                Node::Identifier { name, .. } => AUDIT_FNS.contains(&name.as_str()),
-                _ => false,
-            },
-            _ => false,
-        });
-        if !logged {
+        if has_audited_write && !has_audit_call {
             eprintln!(
                 "warning: function '{fname}' writes to an audited field but never \
                  calls audit_log()/journal()/record_event() — compliance violation"
