@@ -337,8 +337,8 @@
       "claimed_at": "2026-05-19T18:44:10Z"
     },
     "resilient/src/traits.rs": {
-      "branch": "res-1802-traits-presize",
-      "claimed_at": "2026-05-13T13:02:04Z"
+      "branch": "res-2056-traits-nested-impl-map",
+      "claimed_at": "2026-05-20T03:00:00Z"
     },
     "resilient/src/verifier_actors.rs": {
       "branch": "res-1808-flatten-body-presize",

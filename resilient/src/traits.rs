@@ -428,8 +428,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // top-level ImplBlock for each map.
     let mut type_methods: HashMap<String, HashMap<String, usize>> =
         HashMap::with_capacity(stmts.len());
-    // Set of explicit `impl Trait for Type` declarations.
-    let mut explicit_impls: HashSet<(String, String)> = HashSet::with_capacity(stmts.len());
+    // RES-2056: nested `HashMap<trait_name, HashSet<struct_name>>`
+    // shape — the contains hot path at the bound-satisfaction check
+    // below queries with borrowed `&str`s (via `String: Borrow<str>`)
+    // and never has to construct a `(String, String)` tuple key.
+    // Saves 2 String allocations per generic-call-site bound check.
+    let mut explicit_impls: HashMap<String, HashSet<String>> = HashMap::with_capacity(stmts.len());
 
     for stmt in stmts {
         if let Node::ImplBlock {
@@ -453,7 +457,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 }
             }
             if let Some(t) = trait_name {
-                explicit_impls.insert((t.clone(), struct_name.clone()));
+                explicit_impls
+                    .entry(t.clone())
+                    .or_default()
+                    .insert(struct_name.clone());
             }
         }
     }
@@ -620,7 +627,7 @@ fn walk_call_sites(
     fns_by_name: &HashMap<&str, &Node>,
     traits: &HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
     type_methods: &HashMap<String, HashMap<String, usize>>,
-    explicit_impls: &HashSet<(String, String)>,
+    explicit_impls: &HashMap<String, HashSet<String>>,
     source_path: &str,
 ) -> Result<(), String> {
     match node {
@@ -805,14 +812,21 @@ fn walk_call_sites(
                         Some(a) => a,
                         None => continue,
                     };
-                    let concrete_type = match arg {
-                        Node::StructLiteral { name, .. } => Some(name.clone()),
+                    // RES-2056: borrow the StructLiteral name as `&str`
+                    // instead of cloning. The lifetime is tied to the
+                    // AST, which outlives this walk.
+                    let concrete_type: Option<&str> = match arg {
+                        Node::StructLiteral { name, .. } => Some(name.as_str()),
                         _ => None,
                     };
                     if let Some(ct) = concrete_type {
                         for bound in bounds {
-                            let satisfied = explicit_impls.contains(&(bound.clone(), ct.clone()))
-                                || trait_satisfied_structurally(bound, &ct, traits, type_methods);
+                            // RES-2056: O(1) nested-map lookups by `&str`,
+                            // no tuple-key allocation.
+                            let satisfied = explicit_impls
+                                .get(bound.as_str())
+                                .is_some_and(|set| set.contains(ct))
+                                || trait_satisfied_structurally(bound, ct, traits, type_methods);
                             if !satisfied {
                                 return Err(format_err(
                                     source_path,
