@@ -103,7 +103,19 @@ pub(crate) fn builtin_arange(args: &[Value]) -> RResult<Value> {
                 return Err("arange: step must be nonzero".to_string());
             }
             const MAX_ELEMENTS: usize = 10_000_000;
-            let mut v = Vec::new();
+            // RES-1942: pre-size to the computed step count. Floor at
+            // `MAX_ELEMENTS + 1` so the existing guard still fires for
+            // oversize requests, and clamp NaN / overflow → 0 (fall
+            // back to default-cap Vec). The +1 accommodates the
+            // strict-inequality bound of the loop above for cases
+            // where (stop - start) is an exact multiple of step.
+            let raw = ((stop - start) / step).abs().ceil();
+            let cap = if raw.is_finite() && raw >= 0.0 {
+                (raw as usize).saturating_add(1).min(MAX_ELEMENTS + 1)
+            } else {
+                0
+            };
+            let mut v = Vec::with_capacity(cap);
             let mut x = start;
             while (step > 0.0 && x < stop) || (step < 0.0 && x > stop) {
                 v.push(Value::Float(x));
@@ -168,7 +180,18 @@ fn parse_delimited(s: &str, delim: char) -> Vec<Value> {
 
 /// Parse a single CSV row with optional quoting.
 fn parse_csv_row(line: &str, delim: char) -> Vec<String> {
-    let mut fields = Vec::new();
+    // RES-1942: pre-size `fields` to the upper-bound count of
+    // unescaped delimiters + 1. `,` and `\t` (the only two callers,
+    // via builtin_csv_parse / _tsv) are ASCII single-byte so the
+    // byte-level scan is a safe approximation. Quoted-delimiter
+    // escapes can lower the actual field count, but never raise it,
+    // so this is a safe upper bound.
+    let cap = if (delim as u32) < 0x80 {
+        line.bytes().filter(|&b| b == delim as u8).count() + 1
+    } else {
+        1
+    };
+    let mut fields = Vec::with_capacity(cap);
     let mut current = String::new();
     let mut in_quotes = false;
     let mut chars = line.chars().peekable();

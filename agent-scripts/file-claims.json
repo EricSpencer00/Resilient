@@ -371,6 +371,10 @@
     "resilient/src/combinatorics.rs": {
       "branch": "res-1938-combinatorics-presize",
       "claimed_at": "2026-05-19T18:07:46Z"
+    },
+    "resilient/src/data_utils.rs": {
+      "branch": "res-1942-data-utils-presize",
+      "claimed_at": "2026-05-19T18:14:43Z"
     }
   }
 }
