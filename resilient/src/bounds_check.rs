@@ -149,24 +149,10 @@ pub fn check_array_bounds(program: &Node, source_path: &str) -> Result<(), Strin
     let Node::Program(statements) = program else {
         return Ok(());
     };
-    // RES-1278: fast-reject. `walk_toplevel` only does meaningful work
-    // when it descends into a `Node::IndexExpression` (every other AST
-    // shape is plain recursion). For programs that never index an
-    // array — the overwhelming majority of `cargo test` inputs and
-    // every fixture in `examples/` that isn't array-shaped — the full
-    // descent classifies nothing. Pre-scan once with the early-
-    // terminating `any_node` (RES-1238) and skip the per-stmt walk
-    // entirely when no `IndexExpression` exists. The `reset_stats()`
-    // call above stays — it must run on every invocation so a stale
-    // PROVEN_SITES set from a prior call doesn't cause `is_proven_site`
-    // to report false positives for the current program's bytecode
-    // compilation (safe default: indices not proven → bounds checks
-    // emitted at runtime).
-    let has_index =
-        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::IndexExpression { .. }));
-    if !has_index {
-        return Ok(());
-    }
+    // RES-1278 / RES-1916: the typechecker gates this call behind
+    // `markers.has_index_expression`, so the program is guaranteed to
+    // contain at least one `IndexExpression`. The previous `any_node`
+    // pre-scan was redundant — removed.
     let mut strict_errors: Vec<String> = Vec::new();
     for stmt in statements {
         walk_toplevel(&stmt.node, source_path, &mut strict_errors);

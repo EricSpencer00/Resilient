@@ -73,19 +73,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         Node::Program(stmts) => stmts,
         _ => return Ok(()),
     };
-    // RES-1270: fast-reject. `check_stmt` is a recursive walk over every
-    // top-level statement (and through every block / for / while / fn
-    // body) looking for `Node::Range` to either accept (in `for…in` /
-    // `let` position) or reject (anywhere else). Without a `Node::Range`
-    // anywhere in the program — the case for every fixture in
-    // `examples/` and every unit test that doesn't use range literals
-    // — every recursion produces nothing. Pre-scan once with the
-    // early-terminating `any_node` (RES-1238) and skip the per-stmt
-    // walk entirely when no `Range` exists.
-    let has_range = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Range { .. }));
-    if !has_range {
-        return Ok(());
-    }
+    // RES-1270 / RES-1916: the typechecker gates this call behind
+    // `markers.has_range`, so the program is guaranteed to contain
+    // at least one `Range`. The previous `any_node` pre-scan was
+    // redundant — removed.
     for stmt in stmts {
         check_stmt(&stmt.node, source_path)?;
     }

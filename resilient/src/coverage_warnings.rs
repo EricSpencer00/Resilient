@@ -167,20 +167,12 @@ fn is_catch_all_arm(p: &crate::Pattern, guard: &Option<Node>) -> bool {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1284: fast-reject. Pre-scan with early-terminating `any_node`.
-    let has_err_call = crate::uniqueness_walk::any_node(program, |n| match n {
-        Node::CallExpression { function, .. } => match function.as_ref() {
-            Node::Identifier { name, .. } => name == "Err",
-            _ => false,
-        },
-        _ => false,
-    });
-    let has_match = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Match { .. }));
-    let has_return =
-        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::ReturnStatement { .. }));
-    if !has_err_call && !has_match && !has_return {
-        return Ok(());
-    }
+    // RES-1284 / RES-1916: the typechecker gates this call behind
+    // `markers.call_idents.contains("Err")`, so the program is
+    // guaranteed to contain at least one `Err(…)` call. The three
+    // previous `any_node` pre-scans (Err-call, Match, Return) were
+    // redundant — the first was always true from the outer gate, and
+    // the OR logic meant the fast-reject could never trigger.
     let warnings = analyze(program);
     for w in &warnings {
         eprintln!("warning: coverage in `{}`: {}", w.function, w.message);
