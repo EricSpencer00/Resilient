@@ -379,6 +379,10 @@
     "resilient/src/json_builtins.rs": {
       "branch": "res-1946-json-parser-presize",
       "claimed_at": "2026-05-19T18:22:09Z"
+    },
+    "resilient/src/numeric_units.rs": {
+      "branch": "res-1950-numeric-units-static-suffix",
+      "claimed_at": "2026-05-19T18:34:18Z"
     }
   }
 }
