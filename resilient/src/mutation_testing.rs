@@ -37,8 +37,22 @@ pub fn generate(program: &Node) -> Vec<Mutation> {
         return out;
     };
     for s in stmts {
-        if let Node::Function { name, body, .. } = &s.node {
-            generate_in(body, name, &mut out);
+        match &s.node {
+            Node::Function { name, body, .. } => {
+                generate_in(body, name, &mut out);
+            }
+            // RES-1918: impl-block methods are parsed as `Node::Function`
+            // values with mangled names (`<StructName>$<method>`); without
+            // this arm the entire method body is invisible to the mutation
+            // walker.
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function { name, body, .. } = method {
+                        generate_in(body, name, &mut out);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out
@@ -177,9 +191,147 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
             generate_in(iterable, fn_name, out);
             generate_in(body, fn_name, out);
         }
-        Node::CallExpression { arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            // RES-1918: descend into the callee position too — chained
+            // expressions like `foo(1).bar(2)` parse with a CallExpression
+            // as the `function` of the outer call, so a literal `1` inside
+            // is otherwise invisible.
+            generate_in(function, fn_name, out);
             for a in arguments {
                 generate_in(a, fn_name, out);
+            }
+        }
+        // RES-1918: match scrutinee, guards, and arm bodies all carry
+        // mutatable nodes. The arm-pattern Vec<Pattern> uses literal
+        // ints/bools internally; mutating patterns would change semantic
+        // coverage in subtle ways, so we deliberately leave patterns
+        // alone and walk only the value-producing positions.
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            generate_in(scrutinee, fn_name, out);
+            for (_, guard, body) in arms {
+                if let Some(g) = guard {
+                    generate_in(g, fn_name, out);
+                }
+                generate_in(body, fn_name, out);
+            }
+        }
+        // RES-1918: struct/collection literal element expressions.
+        Node::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                generate_in(v, fn_name, out);
+            }
+        }
+        Node::ArrayLiteral { items, .. } | Node::SetLiteral { items, .. } => {
+            for i in items {
+                generate_in(i, fn_name, out);
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                generate_in(k, fn_name, out);
+                generate_in(v, fn_name, out);
+            }
+        }
+        Node::TupleLiteral { items, .. } => {
+            for i in items {
+                generate_in(i, fn_name, out);
+            }
+        }
+        Node::TupleIndex { tuple, .. } => generate_in(tuple, fn_name, out),
+        // RES-1918: indexing forms.
+        Node::IndexExpression { target, index, .. } => {
+            generate_in(target, fn_name, out);
+            generate_in(index, fn_name, out);
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            generate_in(target, fn_name, out);
+            generate_in(index, fn_name, out);
+            generate_in(value, fn_name, out);
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            generate_in(target, fn_name, out);
+            if let Some(e) = lo {
+                generate_in(e, fn_name, out);
+            }
+            if let Some(e) = hi {
+                generate_in(e, fn_name, out);
+            }
+        }
+        // RES-1918: field-access chains.
+        Node::FieldAccess { target, .. } => generate_in(target, fn_name, out),
+        Node::FieldAssignment { target, value, .. } => {
+            generate_in(target, fn_name, out);
+            generate_in(value, fn_name, out);
+        }
+        // RES-1918: error-handling expression forms.
+        Node::TryExpression { expr, .. } => generate_in(expr, fn_name, out),
+        Node::TryCatch { body, handlers, .. } => {
+            for s in body {
+                generate_in(s, fn_name, out);
+            }
+            for (_caught_var, handler_body) in handlers {
+                for s in handler_body {
+                    generate_in(s, fn_name, out);
+                }
+            }
+        }
+        Node::OptionalChain { object, access, .. } => {
+            generate_in(object, fn_name, out);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    generate_in(a, fn_name, out);
+                }
+            }
+        }
+        // RES-1918: block-shaped statement forms.
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
+            generate_in(body, fn_name, out);
+            for inv in invariants {
+                generate_in(inv, fn_name, out);
+            }
+        }
+        Node::UnsafeBlock { body, .. } => generate_in(body, fn_name, out),
+        // RES-1918: interpolated-string sub-expressions.
+        Node::InterpolatedString { parts, .. } => {
+            for p in parts {
+                if let crate::string_interp::StringPart::Expr(e) = p {
+                    generate_in(e, fn_name, out);
+                }
+            }
+        }
+        // RES-1918: lambda body.
+        Node::FunctionLiteral { body, .. } => generate_in(body, fn_name, out),
+        // RES-1918: additional binding-introduction forms with
+        // value-position expressions.
+        Node::StaticLet { value, .. } | Node::Const { value, .. } => {
+            generate_in(value, fn_name, out);
+        }
+        Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
+            generate_in(value, fn_name, out);
+        }
+        // RES-1918: assert/assume conditions carry mutatable infix /
+        // literal sub-expressions; mutating these is exactly the kind
+        // of regression mutation testing is meant to expose.
+        Node::Assert { condition, .. } => generate_in(condition, fn_name, out),
+        Node::Assume {
+            condition, message, ..
+        } => {
+            generate_in(condition, fn_name, out);
+            if let Some(m) = message {
+                generate_in(m, fn_name, out);
             }
         }
         _ => {}
@@ -211,18 +363,18 @@ pub fn summarize(mutations: &[Mutation]) -> HashMap<String, (usize, Vec<String>)
 /// function with mutations is contractually verified; 100% means vibe-coded
 /// all the way down.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
-    // Fast-reject: skip when there are no infix expressions or literals to mutate.
-    let has_mutatable = crate::uniqueness_walk::any_node(program, |n| {
-        matches!(
-            n,
-            Node::InfixExpression { .. }
-                | Node::BooleanLiteral { .. }
-                | Node::IntegerLiteral { .. }
-        )
-    });
-    if !has_mutatable {
-        return Ok(());
-    }
+    // RES-1918: removed the `any_node` fast-reject pre-scan. The
+    // `uniqueness_walk::any_node` walker did not descend into the same
+    // set of nodes that `generate_in` does (it skipped `ImplBlock`,
+    // `StructLiteral`, `MapLiteral`, `SetLiteral`, and others), so any
+    // program whose only mutatable nodes lived inside an impl method
+    // body or a struct-literal field hit the fast-reject and produced
+    // no mutation output. The `mutations.is_empty()` guard below still
+    // short-circuits empty programs, and `generate` walks once
+    // regardless — so the lost work is at most one early-terminating
+    // walk per typecheck of a program with no mutatables (an empty
+    // program or a declarations-only file). Same shape as RES-1916 /
+    // RES-1917's removal of redundant any_node pre-scans.
     let mutations = generate(program);
     if mutations.is_empty() {
         return Ok(());
@@ -492,5 +644,221 @@ mod tests {
         let src = "fn add(int a, int b) -> int { return a + b; }";
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
+    }
+
+    // ── RES-1918: walker reaches impl methods, match arms, struct/collection
+    //              literals, indexing, try/catch, interpolations, etc. ───────
+
+    /// `impl` block methods are parsed as `Node::Function` values inside
+    /// `Node::ImplBlock.methods`. The old walker iterated only top-level
+    /// `Node::Function`, leaving every method body invisible. Attribution
+    /// uses the parser-mangled `<StructName>$<method>` name.
+    #[test]
+    fn impl_block_methods_walked() {
+        let src = r#"
+            struct Point { int x, int y, }
+            impl Point {
+                fn distance(self) -> int { return self.x * self.x + self.y * self.y; }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter()
+                .any(|x| x.fn_name == "Point$distance" && x.kind == "arithmetic"),
+            "method `Point$distance` body must yield arithmetic mutations (got {:?})",
+            m
+        );
+    }
+
+    /// `match` scrutinees and arm bodies were not in the old walker
+    /// dispatch, so any mutation-bearing sub-expression inside them was
+    /// silently dropped.
+    #[test]
+    fn match_arm_bodies_walked() {
+        let src = r#"fn f(int x) -> int { return match x { 0 => 1, _ => x + 1, }; }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().any(|x| x.kind == "arithmetic"),
+            "match arm `x + 1` must contribute an arithmetic mutation (got {:?})",
+            m
+        );
+    }
+
+    /// Match-arm guard expressions (`p if g => body`) must also be
+    /// walked — they hold the same shape as any other condition.
+    #[test]
+    fn match_arm_guards_walked() {
+        let src = r#"fn f(int x) -> int { return match x { y if y > 100 => 1, _ => 0, }; }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().any(|x| x.kind == "boundary"),
+            "match guard `y > 100` must contribute a boundary mutation (got {:?})",
+            m
+        );
+    }
+
+    /// Struct-literal field values are expression positions; the integer
+    /// literals `3` and `4` in `new Point { x: 3, y: 4 }` must each
+    /// generate the standard literal-mutation triple.
+    #[test]
+    fn struct_literal_field_values_walked() {
+        let src = r#"
+            struct Point { int x, int y, }
+            fn build() -> Point { return new Point { x: 3, y: 4 }; }
+        "#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().filter(|x| x.kind == "literal").count() >= 6,
+            "two non-zero literals (3, 4) must each yield three mutations (got {:?})",
+            m
+        );
+    }
+
+    /// Array-literal element expressions must be walked.
+    #[test]
+    fn array_literal_items_walked() {
+        let src = r#"fn f() -> IntArr { return [1, 2, 3]; }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().filter(|x| x.kind == "literal").count() >= 9,
+            "three non-zero literals must each yield three mutations (got {:?})",
+            m
+        );
+    }
+
+    /// Map-literal keys and values are both expression positions.
+    #[test]
+    fn map_literal_entries_walked() {
+        let src = r#"fn f() { let m = {"k" -> 1, "j" -> 2}; }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().filter(|x| x.kind == "literal").count() >= 4,
+            "map literal entries must yield literal mutations for both keys and values (got {:?})",
+            m
+        );
+    }
+
+    /// Set-literal element expressions must be walked.
+    #[test]
+    fn set_literal_items_walked() {
+        let src = r#"fn f() { let s = #{1, 2}; }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().filter(|x| x.kind == "literal").count() >= 6,
+            "set literal items must yield literal mutations (got {:?})",
+            m
+        );
+    }
+
+    /// `arr[i]` indexing carries two expression positions (`arr` and
+    /// `i`); both must be walked.
+    #[test]
+    fn index_expression_target_and_index_walked() {
+        let src = r#"fn f(IntArr xs) -> int { return xs[1 + 1]; }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().any(|x| x.kind == "arithmetic"),
+            "index expression `1 + 1` must produce an arithmetic mutation (got {:?})",
+            m
+        );
+    }
+
+    /// Field-assignment LHS and RHS are both expression positions.
+    #[test]
+    fn field_assignment_value_walked() {
+        let src = r#"
+            struct Holder { int x, }
+            impl Holder { fn set(self) { self.x = 1 + 2; } }
+        "#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter()
+                .any(|x| x.fn_name == "Holder$set" && x.kind == "arithmetic"),
+            "field assignment value `1 + 2` must produce arithmetic mutation (got {:?})",
+            m
+        );
+    }
+
+    /// `assert(<cond>)` carries the same expression shape as an `if`
+    /// condition and must be walked.
+    #[test]
+    fn assert_condition_inside_fn_body_walked() {
+        let src = r#"fn f(int x) { assert(x > 0); }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().any(|x| x.kind == "boundary"),
+            "assert condition `x > 0` must yield boundary mutation (got {:?})",
+            m
+        );
+    }
+
+    /// Lambda (`FunctionLiteral`) bodies carry the same expression
+    /// shapes as named functions.
+    #[test]
+    fn lambda_body_walked() {
+        let src = r#"fn f() { let inc = fn(int x) -> int { return x + 1; }; }"#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        assert!(
+            m.iter().any(|x| x.kind == "arithmetic"),
+            "lambda body `x + 1` must produce arithmetic mutation (got {:?})",
+            m
+        );
+    }
+
+    /// `try { ... } catch e { ... }` blocks must descend into both the
+    /// try body and every catch handler body.
+    #[test]
+    fn try_catch_bodies_walked() {
+        let src = r#"
+            fn f() {
+                try {
+                    let a = 1 + 2;
+                } catch e {
+                    let b = 3 - 4;
+                }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        let arith = m.iter().filter(|x| x.kind == "arithmetic").count();
+        assert!(
+            arith >= 2,
+            "both try body `1 + 2` and catch body `3 - 4` must yield arithmetic mutations (got {:?})",
+            m
+        );
+    }
+
+    /// Two top-level fns plus a method inside an impl block all
+    /// contribute to the summary.
+    #[test]
+    fn summarize_groups_top_level_and_impl_methods() {
+        let src = r#"
+            fn add(int a, int b) -> int { return a + b; }
+            struct S { int v, }
+            impl S { fn bump(self) -> int { return self.v + 1; } }
+        "#;
+        let (prog, _) = parse(src);
+        let m = generate(&prog);
+        let s = summarize(&m);
+        assert!(
+            s.contains_key("add"),
+            "top-level fn `add` must be in summary"
+        );
+        assert!(
+            s.contains_key("S$bump"),
+            "impl method `S$bump` must be in summary (got keys: {:?})",
+            s.keys().collect::<Vec<_>>()
+        );
     }
 }
