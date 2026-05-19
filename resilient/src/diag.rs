@@ -23,6 +23,7 @@
 //! own terminal wrapper.
 
 use crate::span::Span;
+use std::fmt::Write as _;
 
 /// How many spaces a literal `\t` becomes when computing the
 /// caret column. Picked to match most terminals' default, and
@@ -68,7 +69,23 @@ pub fn format_diagnostic(src: &str, span: Span, level: &str, msg: &str) -> Strin
     let pad = " ".repeat(start_col - 1);
     let carets = "^".repeat(caret_count);
 
-    let mut out = String::new();
+    // RES-1984: pre-size to a close-fit estimate (header + line + carets
+    // + optional multi-line tail). Skips the 0→4→...→256 doubling
+    // cascade. `format_diagnostic` is on every compiler error/warning
+    // path so the per-call savings are hot.
+    let mut out = String::with_capacity(
+        level.len()
+            + 2
+            + msg.len()
+            + 1
+            + 3
+            + expanded.len()
+            + 1
+            + 3
+            + pad.len()
+            + carets.len()
+            + 32,
+    );
     out.push_str(level);
     out.push_str(": ");
     out.push_str(msg);
@@ -80,7 +97,9 @@ pub fn format_diagnostic(src: &str, span: Span, level: &str, msg: &str) -> Strin
     out.push_str(&pad);
     out.push_str(&carets);
     if span.end.line != span.start.line {
-        out.push_str(&format!("\n   (span continues on line {})", span.end.line));
+        // RES-1984: write! directly into `out` instead of the
+        // `push_str(&format!())` antipattern. No intermediate String alloc.
+        let _ = write!(out, "\n   (span continues on line {})", span.end.line);
     }
     out
 }
@@ -115,13 +134,20 @@ pub fn format_subst_context(
     subst: &crate::generics::Subst,
     original: &str,
 ) -> String {
+    // RES-1984: collect pairs into a Vec for stable sort order, then
+    // build the `args_str` directly via `write!` into a String — the
+    // previous shape allocated a fresh `String` per pair via `format!()`
+    // inside `.map(...)` only to drop those Strings after `.join(", ")`.
     let mut pairs: Vec<(&String, &crate::typechecker::Type)> = subst.iter().collect();
     pairs.sort_by_key(|(k, _)| k.as_str());
-    let args_str = pairs
-        .iter()
-        .map(|(k, v)| format!("{} = {}", k, v))
-        .collect::<Vec<_>>()
-        .join(", ");
+
+    let mut args_str = String::with_capacity(pairs.len() * 16);
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        if i > 0 {
+            args_str.push_str(", ");
+        }
+        let _ = write!(args_str, "{} = {}", k, v);
+    }
     format!("in generic {}<{}>: {}", fn_name, args_str, original)
 }
 
@@ -317,22 +343,25 @@ impl Diagnostic {
 /// where escape codes render as garbage.
 #[allow(dead_code)]
 pub fn format_diagnostic_terminal(src: &str, diag: &Diagnostic) -> String {
-    let mut out = String::new();
+    // RES-1984: pre-size to a typical terminal-diagnostic size; switch
+    // the three `push_str(&format!())` sites to `write!` for the header
+    // and per-note headers.
+    let mut out = String::with_capacity(256 + diag.notes.len() * 128);
     // Primary header: "<severity>[<code>]: <message>" — rustc-
     // shaped. Without a code, drop the brackets.
     match &diag.code {
         Some(code) => {
-            out.push_str(&format!("{}[{}]: {}\n", diag.severity, code, diag.message));
+            let _ = writeln!(out, "{}[{}]: {}", diag.severity, code, diag.message);
         }
         None => {
-            out.push_str(&format!("{}: {}\n", diag.severity, diag.message));
+            let _ = writeln!(out, "{}: {}", diag.severity, diag.message);
         }
     }
     // Source-context block for the primary span.
     out.push_str(&render_span_snippet(src, diag.span));
     // Each note: `note: <msg>` header + its own snippet block.
     for (note_span, note_msg) in &diag.notes {
-        out.push_str(&format!("note: {}\n", note_msg));
+        let _ = writeln!(out, "note: {}", note_msg);
         out.push_str(&render_span_snippet(src, *note_span));
     }
     out
