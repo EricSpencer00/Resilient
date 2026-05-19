@@ -41,8 +41,8 @@
       "claimed_at": "2026-05-12T02:42:33Z"
     },
     "resilient/src/actor_drain.rs": {
-      "branch": "res-1232-actor-drain-noop",
-      "claimed_at": "2026-05-12T02:37:38Z"
+      "branch": "res-2002-actor-drain-single-pass",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/uniqueness_walk.rs": {
       "branch": "res-1238-any-node-early-terminate",
