@@ -2925,7 +2925,12 @@ fn compile_match_expr(
     *next_local += 1;
     chunk.emit(Op::StoreLocal(scrutinee_slot), line);
 
-    let mut after_match_patches: Vec<usize> = Vec::new();
+    // RES-1922: exact upper bound — every arm pushes one entry below
+    // (its "jump past the whole match" patch). Skips the default
+    // 0→4→8→16 grow chain for matches with ≥ 4 arms (common shape
+    // for enum-exhaustive matches over Result / Option / custom sum
+    // types). Same shape as RES-1800 / RES-1762 / RES-1796 pre-sizes.
+    let mut after_match_patches: Vec<usize> = Vec::with_capacity(arms.len());
 
     for (pattern, guard, body) in arms {
         // Each arm gets its own mutable locals copy so bindings don't
