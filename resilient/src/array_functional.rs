@@ -44,7 +44,7 @@ pub(crate) fn builtin_array_flat_map(interp: &mut Interpreter, args: &[Value]) -
 
     let mut out: Vec<Value> = Vec::with_capacity(arr.len() * 2);
     for elem in arr {
-        let result = interp.apply_function(f.clone(), vec![elem])?;
+        let result = interp.apply_function(&f, vec![elem])?;
         match result {
             Value::Array(inner) => out.extend(inner),
             other => {
@@ -91,7 +91,7 @@ pub(crate) fn builtin_array_group_by(interp: &mut Interpreter, args: &[Value]) -
         std::collections::HashMap::new();
 
     for elem in arr {
-        let key_val = interp.apply_function(f.clone(), vec![elem.clone()])?;
+        let key_val = interp.apply_function(&f, vec![elem.clone()])?;
         let mk = MapKey::from_value(&key_val).map_err(|e| {
             format!("array_group_by: key function returned non-hashable value: {e}")
         })?;
@@ -144,7 +144,7 @@ pub(crate) fn builtin_array_partition(interp: &mut Interpreter, args: &[Value]) 
     let mut passing: Vec<Value> = Vec::new();
     let mut failing: Vec<Value> = Vec::new();
     for elem in arr {
-        let pred_val = interp.apply_function(f.clone(), vec![elem.clone()])?;
+        let pred_val = interp.apply_function(&f, vec![elem.clone()])?;
         match pred_val {
             Value::Bool(true) => passing.push(elem),
             Value::Bool(false) => failing.push(elem),
@@ -244,7 +244,7 @@ pub(crate) fn builtin_array_scan(interp: &mut Interpreter, args: &[Value]) -> RR
     let mut acc = init;
     out.push(acc.clone());
     for elem in arr {
-        acc = interp.apply_function(f.clone(), vec![acc, elem])?;
+        acc = interp.apply_function(&f, vec![acc, elem])?;
         out.push(acc.clone());
     }
     Ok(Value::Array(out))

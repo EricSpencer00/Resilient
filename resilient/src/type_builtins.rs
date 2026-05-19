@@ -134,7 +134,7 @@ pub(crate) fn builtin_array_from_fn(interp: &mut Interpreter, args: &[Value]) ->
 
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
-        out.push(interp.apply_function(f.clone(), vec![Value::Int(i)])?);
+        out.push(interp.apply_function(&f, vec![Value::Int(i)])?);
     }
     Ok(Value::Array(out))
 }

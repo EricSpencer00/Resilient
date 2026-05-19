@@ -22716,7 +22716,7 @@ impl Interpreter {
                                 let callback = extra_args.pop().unwrap();
                                 let mut out = Vec::with_capacity(items.len());
                                 for item in items {
-                                    out.push(self.apply_function(callback.clone(), vec![item])?);
+                                    out.push(self.apply_function(&callback, vec![item])?);
                                 }
                                 return Ok(Value::Array(out));
                             }
@@ -22730,9 +22730,7 @@ impl Interpreter {
                                 let predicate = extra_args.pop().unwrap();
                                 let mut out = Vec::new();
                                 for item in items {
-                                    match self
-                                        .apply_function(predicate.clone(), vec![item.clone()])?
-                                    {
+                                    match self.apply_function(&predicate, vec![item.clone()])? {
                                         Value::Bool(true) => out.push(item),
                                         Value::Bool(false) => {}
                                         other => {
@@ -22755,7 +22753,7 @@ impl Interpreter {
                                 let callback = extra_args.pop().unwrap();
                                 let mut acc = extra_args.pop().unwrap();
                                 for item in items {
-                                    acc = self.apply_function(callback.clone(), vec![acc, item])?;
+                                    acc = self.apply_function(&callback, vec![acc, item])?;
                                 }
                                 return Ok(acc);
                             }
@@ -22824,7 +22822,7 @@ impl Interpreter {
                             // Prepend the target as the implicit `self`.
                             let mut args = vec![target_val];
                             args.extend(self.eval_expressions(arguments)?);
-                            return self.apply_function(method_val, args);
+                            return self.apply_function(&method_val, args);
                         }
                         // No matching method on this struct — fall
                         // through to the regular `FieldAccess` eval
@@ -22849,9 +22847,7 @@ impl Interpreter {
                                 Value::Array(items) => {
                                     let mut out = Vec::with_capacity(items.len());
                                     for item in items {
-                                        out.push(
-                                            self.apply_function(callback.clone(), vec![item])?,
-                                        );
+                                        out.push(self.apply_function(&callback, vec![item])?);
                                     }
                                     return Ok(Value::Array(out));
                                 }
@@ -22875,9 +22871,7 @@ impl Interpreter {
                                 Value::Array(items) => {
                                     let mut out = Vec::new();
                                     for item in items {
-                                        match self
-                                            .apply_function(predicate.clone(), vec![item.clone()])?
-                                        {
+                                        match self.apply_function(&predicate, vec![item.clone()])? {
                                             Value::Bool(true) => out.push(item),
                                             Value::Bool(false) => {}
                                             other => {
@@ -22909,8 +22903,7 @@ impl Interpreter {
                             match args.pop().unwrap() {
                                 Value::Array(items) => {
                                     for item in items {
-                                        acc =
-                                            self.apply_function(callback.clone(), vec![acc, item])?;
+                                        acc = self.apply_function(&callback, vec![acc, item])?;
                                     }
                                     return Ok(acc);
                                 }
@@ -22935,9 +22928,7 @@ impl Interpreter {
                             match args.pop().unwrap() {
                                 Value::Array(items) => {
                                     for item in items {
-                                        match self
-                                            .apply_function(predicate.clone(), vec![item.clone()])?
-                                        {
+                                        match self.apply_function(&predicate, vec![item.clone()])? {
                                             Value::Bool(true) => {
                                                 return Ok(Value::Option(Some(Box::new(item))));
                                             }
@@ -22971,7 +22962,7 @@ impl Interpreter {
                             match args.pop().unwrap() {
                                 Value::Array(items) => {
                                     for (i, item) in items.into_iter().enumerate() {
-                                        match self.apply_function(predicate.clone(), vec![item])? {
+                                        match self.apply_function(&predicate, vec![item])? {
                                             Value::Bool(true) => {
                                                 return Ok(Value::Int(i as i64));
                                             }
@@ -23006,7 +22997,7 @@ impl Interpreter {
                             match args.pop().unwrap() {
                                 Value::Array(items) => {
                                     for item in items {
-                                        match self.apply_function(predicate.clone(), vec![item])? {
+                                        match self.apply_function(&predicate, vec![item])? {
                                             Value::Bool(true) => return Ok(Value::Bool(true)),
                                             Value::Bool(false) => {}
                                             other => {
@@ -23038,7 +23029,7 @@ impl Interpreter {
                             match args.pop().unwrap() {
                                 Value::Array(items) => {
                                     for item in items {
-                                        match self.apply_function(predicate.clone(), vec![item])? {
+                                        match self.apply_function(&predicate, vec![item])? {
                                             Value::Bool(true) => {}
                                             Value::Bool(false) => return Ok(Value::Bool(false)),
                                             other => {
@@ -23223,7 +23214,7 @@ impl Interpreter {
                 }
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
-                self.apply_function(func, args)
+                self.apply_function(&func, args)
             }
             Node::ArrayLiteral { items, .. } => {
                 let mut out = Vec::with_capacity(items.len());
@@ -23362,7 +23353,7 @@ impl Interpreter {
                                     args.push(self.eval(a)?);
                                 }
                                 return self
-                                    .apply_function(method_val, args)
+                                    .apply_function(&method_val, args)
                                     .map(|v| Value::Option(Some(Box::new(v))));
                             }
                         }
@@ -23373,7 +23364,7 @@ impl Interpreter {
                                 args.push(self.eval(a)?);
                             }
                             return self
-                                .apply_function(func_val, args)
+                                .apply_function(&func_val, args)
                                 .map(|v| Value::Option(Some(Box::new(v))));
                         }
                         Err(format!("Unknown method '{}'", method))
@@ -25108,7 +25099,7 @@ impl Interpreter {
         Ok(result)
     }
 
-    fn apply_function(&mut self, func: Value, args: Vec<Value>) -> RResult<Value> {
+    fn apply_function(&mut self, func: &Value, args: Vec<Value>) -> RResult<Value> {
         match func {
             Value::Function(fv) => {
                 let FunctionValue {
@@ -25121,7 +25112,7 @@ impl Interpreter {
                     name,
                     type_params,
                     fails,
-                } = *fv;
+                } = fv.as_ref();
                 let max_depth = max_interpreter_call_depth();
                 if self.call_depth >= max_depth {
                     return Err(format!(
@@ -25134,7 +25125,7 @@ impl Interpreter {
                 // captured env IS the same RefCell that gets the
                 // function's name rebound, so recursion works through
                 // shared mutation.
-                let extended_env = Environment::new_enclosed(env);
+                let extended_env = Environment::new_enclosed(env.clone());
 
                 // RES-1471: when the callee is generic the
                 // `infer_subst` path below needs the runtime types of
@@ -25191,7 +25182,7 @@ impl Interpreter {
                         .map(|(ty_str, _)| type_str_to_tc_type(ty_str))
                         .collect();
                     if let Ok(subst) =
-                        crate::generics::infer_subst(&type_params, &declared_types, &actual_types)
+                        crate::generics::infer_subst(type_params, &declared_types, &actual_types)
                     {
                         interpreter.active_subst = Some(subst);
                     }
@@ -25201,7 +25192,7 @@ impl Interpreter {
                 // the body. Parameters are already in scope; anything
                 // else (e.g. `static` bindings, closed-over vars) is
                 // reachable just like inside the body.
-                for clause in &requires {
+                for clause in requires {
                     let v = interpreter.eval(clause)?;
                     if !interpreter.is_truthy(&v) {
                         return Err(format!(
@@ -25213,12 +25204,12 @@ impl Interpreter {
                 }
 
                 if self.inject_checked_failures && !fails.is_empty() {
-                    return Err(checked_failure_signal(&fails[0], &name));
+                    return Err(checked_failure_signal(&fails[0], name));
                 }
 
-                let body_result = interpreter.eval(&body).map_err(|e| {
+                let body_result = interpreter.eval(body).map_err(|e| {
                     if let Some(ref subst) = interpreter.active_subst {
-                        crate::diag::format_subst_context(&name, subst, &e)
+                        crate::diag::format_subst_context(name, subst, &e)
                     } else {
                         e
                     }
@@ -25235,7 +25226,7 @@ impl Interpreter {
                     interpreter
                         .env
                         .set("result".to_string(), return_value.clone());
-                    for clause in &ensures {
+                    for clause in ensures {
                         let v = interpreter.eval(clause)?;
                         if !interpreter.is_truthy(&v) {
                             return Err(format!(
@@ -27063,7 +27054,7 @@ fn run_pending_actors(interpreter: &mut Interpreter) -> RResult<()> {
             }
         };
         actor_runtime::set_current_actor(Some(pid));
-        let result = interpreter.apply_function(fn_val, vec![]);
+        let result = interpreter.apply_function(&fn_val, vec![]);
         actor_runtime::set_current_actor(None);
         match result {
             Ok(_) => {
