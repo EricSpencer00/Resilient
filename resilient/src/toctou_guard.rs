@@ -32,42 +32,49 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // `markers.any_call_ident_with_suffix` with the same CHECK_SUFFIXES.
     // The previous `any_node` pre-scan was redundant — removed.
     for_each_function(program, |fname, _params, body| {
-        let mut events: Vec<(bool, String, Option<String>)> = Vec::new();
-        // (is_check, fn_name, first_ident_arg)
+        // RES-2064: borrow event names/args as `&str` from the AST.
+        // The events Vec is scoped to this closure call and drops
+        // at its end; both the fn name (Node::Identifier) and arg
+        // names/values (Node::Identifier / Node::StringLiteral)
+        // are borrowed from the body AST, which outlives the call.
+        // Same borrow-into-AST pattern as RES-2060 / 2062.
+        // Tuple shape `(is_check, fn_name, first_ident_arg)` — all
+        // elements Copy so the pair-detection loop destructures
+        // by-value.
+        let mut events: Vec<(bool, &str, Option<&str>)> = Vec::new();
         visit(body, &mut |n| {
             if let Node::CallExpression {
                 function,
                 arguments,
                 ..
             } = n
+                && let Node::Identifier { name, .. } = function.as_ref()
             {
-                if let Node::Identifier { name, .. } = function.as_ref() {
-                    let arg = arguments.first().and_then(|a| match a {
-                        Node::Identifier { name, .. } => Some(name.clone()),
-                        Node::StringLiteral { value, .. } => Some(value.clone()),
-                        _ => None,
-                    });
-                    if CHECK_SUFFIXES.iter().any(|s| name.ends_with(*s)) {
-                        events.push((true, name.clone(), arg));
-                    } else if USE_SUFFIXES.iter().any(|s| name.ends_with(*s))
-                        && !name.starts_with("atomic_")
-                    {
-                        events.push((false, name.clone(), arg));
-                    }
+                let arg: Option<&str> = arguments.first().and_then(|a| match a {
+                    Node::Identifier { name, .. } => Some(name.as_str()),
+                    Node::StringLiteral { value, .. } => Some(value.as_str()),
+                    _ => None,
+                });
+                if CHECK_SUFFIXES.iter().any(|s| name.ends_with(*s)) {
+                    events.push((true, name.as_str(), arg));
+                } else if USE_SUFFIXES.iter().any(|s| name.ends_with(*s))
+                    && !name.starts_with("atomic_")
+                {
+                    events.push((false, name.as_str(), arg));
                 }
             }
         });
         // Find pairs: a check followed later by a non-atomic use on same arg.
-        for (i, (is_check, cname, carg)) in events.iter().enumerate() {
-            if !*is_check {
+        for (i, &(is_check, cname, carg)) in events.iter().enumerate() {
+            if !is_check {
                 continue;
             }
             let Some(carg) = carg else { continue };
-            for (is_check2, uname, uarg) in events.iter().skip(i + 1) {
-                if *is_check2 {
+            for &(is_check2, uname, uarg) in events.iter().skip(i + 1) {
+                if is_check2 {
                     continue;
                 }
-                if uarg.as_deref() == Some(carg) {
+                if uarg == Some(carg) {
                     eprintln!(
                         "warning: in '{fname}', TOCTOU: '{cname}({carg})' followed \
                          by '{uname}({carg})' — use atomic_{uname} or wrap both \

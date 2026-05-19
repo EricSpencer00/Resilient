@@ -423,6 +423,10 @@
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
       "claimed_at": "2026-05-19T22:27:31Z"
+    },
+    "resilient/src/toctou_guard.rs": {
+      "branch": "res-2064-toctou-events-borrow",
+      "claimed_at": "2026-05-19T23:45:55Z"
     }
   }
 }
