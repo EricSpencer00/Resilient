@@ -51,21 +51,12 @@ fn collect_strings(name: &str, items: &[Value]) -> RResult<Vec<String>> {
     Ok(out)
 }
 
-fn collect_ints(name: &str, items: &[Value]) -> RResult<Vec<i64>> {
-    let mut out: Vec<i64> = Vec::with_capacity(items.len());
-    for v in items {
-        match v {
-            Value::Int(n) => out.push(*n),
-            other => {
-                return Err(format!(
-                    "{}: expected all int elements, got {}",
-                    name, other
-                ));
-            }
-        }
-    }
-    Ok(out)
-}
+// RES-2032: `collect_ints` was previously used by `is_sorted` to
+// materialize the entire input into a `Vec<i64>` before checking
+// sortedness. The new single-pass `is_sorted` walks `&[Value]`
+// directly with a `prev` register, so the helper is no longer needed.
+// `collect_floats` / `collect_strings` remain because `sort_float` /
+// `sort_string` need random access on a typed Vec for sorting.
 
 /// `array_sort_float(arr) -> Array` — sort a float array ascending using
 /// IEEE 754 total order (`f64::total_cmp`). NaN, `±0`, and signed-NaN
@@ -109,11 +100,42 @@ pub(crate) fn builtin_array_sort_string(args: &[Value]) -> RResult<Value> {
 /// `array_is_sorted(arr) -> Bool` — true iff every consecutive pair of
 /// int elements is non-decreasing. Empty and singleton arrays are
 /// vacuously sorted.
+///
+/// RES-2032: single-pass scan over `&[Value]`. The previous
+/// implementation materialized a full `Vec<i64>` via `collect_ints` and
+/// then walked `windows(2).all(...)` — two passes plus one throwaway
+/// allocation. The new form validates types inline and returns
+/// `Bool(false)` on the first inversion.
 pub(crate) fn builtin_array_is_sorted(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_ints("array_is_sorted", items)?;
-            Ok(Value::Bool(nums.windows(2).all(|w| w[0] <= w[1])))
+            let mut iter = items.iter();
+            let mut prev = match iter.next() {
+                None => return Ok(Value::Bool(true)),
+                Some(Value::Int(n)) => *n,
+                Some(other) => {
+                    return Err(format!(
+                        "array_is_sorted: expected all int elements, got {}",
+                        other
+                    ));
+                }
+            };
+            for v in iter {
+                let curr = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_is_sorted: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if curr < prev {
+                    return Ok(Value::Bool(false));
+                }
+                prev = curr;
+            }
+            Ok(Value::Bool(true))
         }
         [other] => Err(format!("array_is_sorted: expected array, got {}", other)),
         _ => Err(format!(
@@ -126,13 +148,38 @@ pub(crate) fn builtin_array_is_sorted(args: &[Value]) -> RResult<Value> {
 /// `array_is_sorted_float(arr) -> Bool` — true iff every consecutive
 /// pair is `<=` under IEEE 754 total order. Same NaN-safety as
 /// `array_sort_float`.
+///
+/// RES-2032: single-pass form. See `array_is_sorted` for the rationale.
 pub(crate) fn builtin_array_is_sorted_float(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_floats("array_is_sorted_float", items)?;
-            Ok(Value::Bool(nums.windows(2).all(|w| {
-                w[0].total_cmp(&w[1]) != std::cmp::Ordering::Greater
-            })))
+            let mut iter = items.iter();
+            let mut prev = match iter.next() {
+                None => return Ok(Value::Bool(true)),
+                Some(Value::Float(f)) => *f,
+                Some(other) => {
+                    return Err(format!(
+                        "array_is_sorted_float: expected all float elements, got {}",
+                        other
+                    ));
+                }
+            };
+            for v in iter {
+                let curr = match v {
+                    Value::Float(f) => *f,
+                    other => {
+                        return Err(format!(
+                            "array_is_sorted_float: expected all float elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if curr.total_cmp(&prev) == std::cmp::Ordering::Less {
+                    return Ok(Value::Bool(false));
+                }
+                prev = curr;
+            }
+            Ok(Value::Bool(true))
         }
         [other] => Err(format!(
             "array_is_sorted_float: expected array, got {}",
@@ -147,11 +194,41 @@ pub(crate) fn builtin_array_is_sorted_float(args: &[Value]) -> RResult<Value> {
 
 /// `array_is_sorted_string(arr) -> Bool` — true iff every consecutive
 /// pair is lex-ordered.
+///
+/// RES-2032: single-pass form. The previous `collect_strings` helper
+/// cloned every string element into a `Vec<String>` before comparing;
+/// the new form holds `prev: &str` borrowed directly into the input,
+/// so no string clones happen. Big win for long arrays of long strings.
 pub(crate) fn builtin_array_is_sorted_string(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let strings = collect_strings("array_is_sorted_string", items)?;
-            Ok(Value::Bool(strings.windows(2).all(|w| w[0] <= w[1])))
+            let mut iter = items.iter();
+            let mut prev: &str = match iter.next() {
+                None => return Ok(Value::Bool(true)),
+                Some(Value::String(s)) => s.as_str(),
+                Some(other) => {
+                    return Err(format!(
+                        "array_is_sorted_string: expected all string elements, got {}",
+                        other
+                    ));
+                }
+            };
+            for v in iter {
+                let curr: &str = match v {
+                    Value::String(s) => s.as_str(),
+                    other => {
+                        return Err(format!(
+                            "array_is_sorted_string: expected all string elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if curr < prev {
+                    return Ok(Value::Bool(false));
+                }
+                prev = curr;
+            }
+            Ok(Value::Bool(true))
         }
         [other] => Err(format!(
             "array_is_sorted_string: expected array, got {}",
