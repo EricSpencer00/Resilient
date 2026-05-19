@@ -522,7 +522,27 @@ pub(crate) fn builtin_rle_decode(args: &[Value]) -> RResult<Value> {
                 Value::Array(a) => a,
                 other => return Err(format!("rle_decode: expected Array, got {other}")),
             };
-            let mut out: Vec<Value> = Vec::new();
+            // RES-2024: pre-walk runs to sum the decoded length, then
+            // pre-size `out` exactly. The previous `Vec::new()` shape
+            // grew via the 0→4→8→...→N doubling cascade — ~log2(N)
+            // reallocations + memcopies for a decode of N items. The
+            // pre-walk cost is O(runs.len()), much smaller than the
+            // O(N) push work it enables to be allocation-free. Same
+            // shape as RES-1942's arange pre-size (this file).
+            let total: usize = runs
+                .iter()
+                .filter_map(|r| {
+                    if let Value::Array(pair) = r
+                        && pair.len() == 2
+                        && let Value::Int(n) = &pair[0]
+                        && *n >= 0
+                    {
+                        return Some(*n as usize);
+                    }
+                    None
+                })
+                .sum();
+            let mut out: Vec<Value> = Vec::with_capacity(total);
             for (i, run) in runs.iter().enumerate() {
                 match run {
                     Value::Array(pair) if pair.len() == 2 => {
