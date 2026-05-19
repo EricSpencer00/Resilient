@@ -25,7 +25,13 @@ use crate::Node;
 #[derive(Debug, Clone)]
 pub struct CoverageWarning {
     pub function: String,
-    pub message: String,
+    /// RES-2020: `&'static str` because every push site populates this
+    /// from a string literal. The previous `String` shape forced a
+    /// `.into()` allocation per push for content that already lived in
+    /// the binary's `.rodata` segment. Display via `eprintln!("{}", ...)`
+    /// and `.contains("...")` checks (used by tests) work identically
+    /// on `&str` and `String`.
+    pub message: &'static str,
 }
 
 pub fn analyze(program: &Node) -> Vec<CoverageWarning> {
@@ -52,7 +58,7 @@ fn walk(node: &Node, fn_name: &str, out: &mut Vec<CoverageWarning>) {
             if cons_returns_err {
                 out.push(CoverageWarning {
                     function: fn_name.to_string(),
-                    message: "if-branch returns Err but no test exercises this path".into(),
+                    message: "if-branch returns Err but no test exercises this path",
                 });
             }
             walk(consequence, fn_name, out);
@@ -60,7 +66,7 @@ fn walk(node: &Node, fn_name: &str, out: &mut Vec<CoverageWarning>) {
                 if block_returns_err(alt) {
                     out.push(CoverageWarning {
                         function: fn_name.to_string(),
-                        message: "else-branch returns Err — verify a test exercises it".into(),
+                        message: "else-branch returns Err — verify a test exercises it",
                     });
                 }
                 walk(alt, fn_name, out);
@@ -115,7 +121,7 @@ fn check_unreachable_after_return(stmts: &[Node], fn_name: &str, out: &mut Vec<C
             if !is_trivial_stmt(stmt) {
                 out.push(CoverageWarning {
                     function: fn_name.to_string(),
-                    message: "unreachable code after `return` statement".into(),
+                    message: "unreachable code after `return` statement",
                 });
                 return; // one warning per block is enough
             }
@@ -149,8 +155,7 @@ fn check_all_literal_match_no_wildcard(
         out.push(CoverageWarning {
             function: fn_name.to_string(),
             message: "match covers only literal values with no wildcard arm — \
-                      unhandled values will fall through at runtime"
-                .into(),
+                      unhandled values will fall through at runtime",
         });
     }
 }
