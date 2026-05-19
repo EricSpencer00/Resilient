@@ -40,12 +40,19 @@ impl BlameMap {
     /// Example: for `main → process → validate`, calling
     /// `blame_chain("validate", 3)` returns `[("process", 0), ("main", 0)]`.
     pub fn blame_chain(&self, callee: &str, max_depth: usize) -> Vec<(String, usize)> {
-        let mut result = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
+        // RES-1968: pre-size BFS state to the upper bound for visited
+        // nodes (`self.edges.len() + 1` — every callee key plus the
+        // seeded callee itself). Skips the 0→4→8→16 doubling cascade
+        // in the typical typecheck-time call from
+        // `blame_attribution::check`, where every function with a
+        // `requires` clause calls into here.
+        let n_cap = self.edges.len().saturating_add(1);
+        let mut result: Vec<(String, usize)> = Vec::with_capacity(n_cap);
+        let mut visited: HashSet<String> = HashSet::with_capacity(n_cap);
         visited.insert(callee.to_string());
 
         // BFS queue: (fn_name, arg_idx_that_brought_us_here, depth)
-        let mut queue: VecDeque<(String, usize, usize)> = VecDeque::new();
+        let mut queue: VecDeque<(String, usize, usize)> = VecDeque::with_capacity(n_cap);
         if let Some(callers) = self.edges.get(callee) {
             for (caller, idx) in callers {
                 if !visited.contains(caller) {
@@ -54,11 +61,14 @@ impl BlameMap {
             }
         }
 
+        // RES-1968: use `visited.insert(...)` as the dedup gate at pop
+        // time — its bool return tells us whether the node was new.
+        // Eliminates the redundant `contains` probe that previously
+        // sat in front of the same hash key.
         while let Some((node, arg_idx, depth)) = queue.pop_front() {
-            if visited.contains(&node) {
+            if !visited.insert(node.clone()) {
                 continue;
             }
-            visited.insert(node.clone());
             result.push((node.clone(), arg_idx));
 
             if depth < max_depth {
@@ -82,7 +92,12 @@ impl BlameMap {
         if chain.is_empty() {
             return callee.to_string();
         }
-        let mut parts: Vec<&str> = chain.iter().map(|(n, _)| n.as_str()).collect();
+        // RES-1968: pre-size `parts` to `chain.len() + 1` (the chain
+        // entries + the trailing `callee`). `Vec::from_iter` via
+        // `collect` only sees `chain.iter()`'s ExactSizeIterator hint,
+        // which doesn't reserve the slot for the post-collect push.
+        let mut parts: Vec<&str> = Vec::with_capacity(chain.len() + 1);
+        parts.extend(chain.iter().map(|(n, _)| n.as_str()));
         parts.reverse(); // root first
         parts.push(callee);
         parts.join(" → ")
