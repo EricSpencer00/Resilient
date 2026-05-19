@@ -347,6 +347,10 @@
     "resilient/src/verifier_z3.rs": {
       "branch": "res-1920-collect-cert-idents-single-walk",
       "claimed_at": "2026-05-19T17:06:58Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-1922-compile-match-presize",
+      "claimed_at": "2026-05-19T17:22:52Z"
     }
   }
 }
