@@ -48,6 +48,10 @@
       "branch": "res-1238-any-node-early-terminate",
       "claimed_at": "2026-05-12T02:48:11Z"
     },
+    "resilient/src/diag.rs": {
+      "branch": "res-1984-diag-presize-write",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     ".github/workflows/playground.yml": {
       "branch": "res-1248-playground-rust-cache",
       "claimed_at": "2026-05-12T03:10:39Z"
