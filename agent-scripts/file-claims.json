@@ -273,8 +273,8 @@
       "claimed_at": "2026-05-19T17:31:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1766-typechecker-hot-presize",
-      "claimed_at": "2026-05-13T11:55:37Z"
+      "branch": "res-2048-typechecker-gate-incremental-verify-z3",
+      "claimed_at": "2026-05-20T01:30:00Z"
     },
     "resilient/src/supervisor.rs": {
       "branch": "res-1770-verifier-presize",
