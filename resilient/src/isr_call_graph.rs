@@ -72,7 +72,8 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // RES-1744: pre-size the call-graph map to stmts.len() (upper
     // bound). Same shape as RES-1742 for reentrancy_guard.
     let mut callees: HashMap<&str, HashSet<String>> = HashMap::with_capacity(stmts.len());
-    let mut isr_roots: Vec<&str> = Vec::new();
+    // RES-1966: pre-size to 4 — typical ISR count is 1-5.
+    let mut isr_roots: Vec<&str> = Vec::with_capacity(4);
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             callees.insert(name.as_str(), collect_callees(body));
@@ -86,9 +87,17 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // and Vec both live for the duration of this block, so `&str`
     // borrows from them remain valid across the BFS. Mirror of
     // RES-1471's `bounded_blocking::transitive_blocking` refactor.
+    // RES-1966: lift `seen` + `q` outside the per-root loop and
+    // `clear()` between roots — `HashSet::clear` / `VecDeque::clear`
+    // retain capacity, so each additional ISR root reuses the same
+    // backing buffer. Pre-size to `callees.len()` (exact upper bound
+    // — each fn enqueued at most once per BFS). Same pattern as
+    // RES-1944 graph_connected_components.
+    let mut seen: HashSet<&str> = HashSet::with_capacity(callees.len());
+    let mut q: VecDeque<&str> = VecDeque::with_capacity(callees.len());
     for &root in &isr_roots {
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut q: VecDeque<&str> = VecDeque::new();
+        seen.clear();
+        q.clear();
         q.push_back(root);
         while let Some(fname) = q.pop_front() {
             if !seen.insert(fname) {
@@ -120,7 +129,9 @@ fn is_isr_unsafe_call(name: &str) -> bool {
 }
 
 fn collect_callees(body: &Node) -> HashSet<String> {
-    let mut out = HashSet::new();
+    // RES-1966: pre-size to 8 — typical fn bodies have 1-10 call
+    // sites.
+    let mut out = HashSet::with_capacity(8);
     visit(body, &mut |n| {
         if let Node::CallExpression { function, .. } = n {
             if let Node::Identifier { name, .. } = function.as_ref() {
