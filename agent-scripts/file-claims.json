@@ -209,7 +209,7 @@
       "claimed_at": "2026-05-13T11:42:08Z"
     },
     "resilient/src/mutual_recursion_scc.rs": {
-      "branch": "res-1760-callgraph-presize",
+      "branch": "res-1974-scc-transpose-borrow",
       "claimed_at": "2026-05-13T11:42:08Z"
     },
     "resilient/src/set_result_option.rs": {

@@ -106,25 +106,30 @@ impl CallGraph {
     }
 
     /// Return the transposed graph (edges reversed).
-    fn transpose(&self) -> HashMap<String, HashSet<String>> {
-        // RES-1497: pre-size the transposed map to the source's node
-        // count. The transposed graph has the same set of vertices
-        // (every src is also kept as a key via the
-        // `entry(src.clone()).or_default()` line, and every dest is
-        // a vertex in the source so it's already in `self.graph`).
-        // The default-bucket HashMap rehash chain triggered as we
-        // crossed 4/8/16/... bucket boundaries is avoidable with one
-        // upfront `with_capacity`.
-        let mut transposed: HashMap<String, HashSet<String>> =
-            HashMap::with_capacity(self.graph.len());
+    ///
+    /// RES-1497: pre-size the transposed map to the source's node count.
+    /// Every src is also kept as a key via the empty-default insertion;
+    /// every dest is itself a vertex in `self.graph` so it's already
+    /// counted by `self.graph.len()`.
+    ///
+    /// RES-1974: borrow every name from `self.graph` as `&'a str` into
+    /// the result. The previous shape did **V + 2E String clones** per
+    /// transpose call: one per src key seed, one per (src,dest) edge for
+    /// the dest key insertion, and one per (src,dest) edge for the src
+    /// value insertion. Since `self.graph` outlives the transposed
+    /// view (caller `find_sccs` holds the table across the whole SCC
+    /// walk), all three name positions can be borrows. Mirrors the
+    /// RES-1471 / RES-1474 / RES-1477 / RES-1514 graph-borrow series.
+    fn transpose(&self) -> HashMap<&str, HashSet<&str>> {
+        let mut transposed: HashMap<&str, HashSet<&str>> = HashMap::with_capacity(self.graph.len());
 
         for (src, dests) in &self.graph {
-            transposed.entry(src.clone()).or_default();
+            transposed.entry(src.as_str()).or_default();
             for dest in dests {
                 transposed
-                    .entry(dest.clone())
+                    .entry(dest.as_str())
                     .or_default()
-                    .insert(src.clone());
+                    .insert(src.as_str());
             }
         }
 
@@ -288,9 +293,13 @@ fn dfs_finish_order<'a>(
 }
 
 /// DFS to collect SCC nodes (second DFS pass of Kosaraju on transposed graph).
+///
+/// RES-1974: `transposed` now holds borrowed names from the original
+/// `self.graph` (see `CallGraph::transpose`). Iteration dereferences
+/// `&&str` to `&str` directly without an intermediate `.as_str()`.
 fn dfs_collect<'a>(
     node: &'a str,
-    transposed: &'a HashMap<String, HashSet<String>>,
+    transposed: &HashMap<&'a str, HashSet<&'a str>>,
     visited: &mut HashSet<&'a str>,
     scc: &mut Vec<&'a str>,
 ) {
@@ -298,9 +307,9 @@ fn dfs_collect<'a>(
     scc.push(node);
 
     if let Some(neighbors) = transposed.get(node) {
-        for neighbor in neighbors {
-            if !visited.contains(neighbor.as_str()) {
-                dfs_collect(neighbor.as_str(), transposed, visited, scc);
+        for &neighbor in neighbors {
+            if !visited.contains(neighbor) {
+                dfs_collect(neighbor, transposed, visited, scc);
             }
         }
     }
