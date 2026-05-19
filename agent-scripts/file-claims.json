@@ -105,8 +105,8 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/quantifiers.rs": {
-      "branch": "res-1376-quantifier-eval-clone",
-      "claimed_at": "2026-05-12T08:58:44Z"
+      "branch": "res-2038-quantifier-range-lazy",
+      "claimed_at": "2026-05-19T23:00:00Z"
     },
     "resilient/src/unify.rs": {
       "branch": "res-1381-apply-hop-counter",

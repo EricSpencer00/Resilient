@@ -154,6 +154,15 @@ pub(crate) fn parse_quantifier(parser: &mut Parser) -> Option<Node> {
 
 /// Runtime evaluation. Iterates the range, binding `var` in a fresh
 /// inner scope, and short-circuits per `kind`.
+///
+/// RES-2038: the `Range { lo, hi }` arm now iterates `lo..hi` lazily
+/// inside the per-witness loop instead of materializing a full
+/// `Vec<Value::Int(_)>` upfront. Short-circuit truly short-circuits
+/// — a `exists i in 0..10000: f(i)` that's true at i=0 no longer
+/// allocates 10000 Values to throw them away. The Iterable arm still
+/// materializes because the underlying Array / Set / Bytes is already
+/// allocated by the evaluator step that produced it; the
+/// `iterable_witnesses` call just takes ownership.
 pub(crate) fn eval_quantifier(
     interp: &mut Interpreter,
     kind: QuantifierKind,
@@ -161,17 +170,24 @@ pub(crate) fn eval_quantifier(
     range: &QuantRange,
     body: &Node,
 ) -> RResult<Value> {
-    let witnesses = collect_witnesses(interp, range)?;
+    // Resolve range / iterable in the *outer* env, before we install
+    // the inner env that binds `var`.
+    let (range_bounds, iterable_vals) = match range {
+        QuantRange::Range { lo, hi } => {
+            let lo_v = expect_int(interp.eval(lo)?, "range lower bound")?;
+            let hi_v = expect_int(interp.eval(hi)?, "range upper bound")?;
+            (Some((lo_v, hi_v)), None)
+        }
+        QuantRange::Iterable(expr) => {
+            let v = interp.eval(expr)?;
+            (None, Some(iterable_witnesses(v)?))
+        }
+    };
+
     // RES-1376: build the enclosed inner from a single clone of the
     // current env, then `mem::replace` the inner into `interp.env`
     // while capturing the original outer for restore. Mirrors the
-    // RES-1320 shape from `TypeChecker::with_quantifier_binding`:
-    // the previous code did one clone for `saved` and another for
-    // `inner.outer`, paying two `Environment::clone`s (Rc bumps) per
-    // quantifier evaluation. The body walk only reads through the
-    // enclosed env (lookups fall through to the outer on miss), so
-    // the moved original is safe to hand back unchanged after the
-    // loop.
+    // RES-1320 shape from `TypeChecker::with_quantifier_binding`.
     let inner_env = crate::Environment::new_enclosed(interp.env.clone());
     let saved_env = std::mem::replace(&mut interp.env, inner_env);
 
@@ -180,59 +196,67 @@ pub(crate) fn eval_quantifier(
         QuantifierKind::Exists => false,
     };
 
-    for witness in witnesses {
-        interp.env.set(var.to_string(), witness);
-        let val = interp.eval(body)?;
-        let b = match val {
-            Value::Bool(b) => b,
-            other => {
-                interp.env = saved_env;
-                return Err(format!(
-                    "{} body must evaluate to Bool, got {}",
-                    kind.keyword(),
-                    other
-                ));
-            }
-        };
-        match kind {
-            QuantifierKind::Forall => {
-                if !b {
-                    result = false;
-                    break;
+    // Single short-circuiting loop over either witness source.
+    let outcome: RResult<()> = (|| {
+        match (range_bounds, iterable_vals) {
+            (Some((lo_v, hi_v)), _) => {
+                for i in lo_v..hi_v {
+                    if !step_quantifier(interp, var, body, kind, Value::Int(i), &mut result)? {
+                        break;
+                    }
                 }
             }
-            QuantifierKind::Exists => {
-                if b {
-                    result = true;
-                    break;
+            (_, Some(vals)) => {
+                for w in vals {
+                    if !step_quantifier(interp, var, body, kind, w, &mut result)? {
+                        break;
+                    }
                 }
             }
+            _ => unreachable!("range_bounds XOR iterable_vals"),
         }
-    }
+        Ok(())
+    })();
 
+    // Always restore the outer env — even on body-type error.
     interp.env = saved_env;
+    outcome?;
     Ok(Value::Bool(result))
 }
 
-fn collect_witnesses(interp: &mut Interpreter, range: &QuantRange) -> RResult<Vec<Value>> {
-    match range {
-        QuantRange::Range { lo, hi } => {
-            let lo_v = expect_int(interp.eval(lo)?, "range lower bound")?;
-            let hi_v = expect_int(interp.eval(hi)?, "range upper bound")?;
-            if hi_v < lo_v {
-                return Ok(Vec::new());
-            }
-            let len = (hi_v - lo_v) as usize;
-            let mut out = Vec::with_capacity(len);
-            for i in lo_v..hi_v {
-                out.push(Value::Int(i));
-            }
-            Ok(out)
+/// RES-2038: shared per-witness step. Returns `Ok(true)` to continue
+/// iterating, `Ok(false)` to short-circuit, `Err(_)` to propagate a
+/// body evaluation / type error.
+fn step_quantifier(
+    interp: &mut Interpreter,
+    var: &str,
+    body: &Node,
+    kind: QuantifierKind,
+    witness: Value,
+    result: &mut bool,
+) -> RResult<bool> {
+    interp.env.set(var.to_string(), witness);
+    let val = interp.eval(body)?;
+    let b = match val {
+        Value::Bool(b) => b,
+        other => {
+            return Err(format!(
+                "{} body must evaluate to Bool, got {}",
+                kind.keyword(),
+                other
+            ));
         }
-        QuantRange::Iterable(expr) => {
-            let v = interp.eval(expr)?;
-            iterable_witnesses(v)
+    };
+    match kind {
+        QuantifierKind::Forall if !b => {
+            *result = false;
+            Ok(false)
         }
+        QuantifierKind::Exists if b => {
+            *result = true;
+            Ok(false)
+        }
+        _ => Ok(true),
     }
 }
 
