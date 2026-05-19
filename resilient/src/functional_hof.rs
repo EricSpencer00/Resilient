@@ -50,15 +50,15 @@ pub(crate) fn builtin_array_zip_with_fn(
                     b.len()
                 ));
             }
-            let f = f.clone();
-            let pairs: Vec<(Value, Value)> = a
-                .iter()
-                .zip(b.iter())
-                .map(|(x, y)| (x.clone(), y.clone()))
-                .collect();
-            let mut out = Vec::with_capacity(pairs.len());
-            for (x, y) in pairs {
-                out.push(interp.apply_function(&f, vec![x, y])?);
+            // RES-1932: pass `f` through as `&Value` (apply_function
+            // already takes a borrow). Iterate `a.iter().zip(b.iter())`
+            // directly and clone each element only at the apply_function
+            // callsite — drops the intermediate `pairs: Vec<(Value, Value)>`
+            // allocation that the legacy code built only to immediately
+            // consume.
+            let mut out = Vec::with_capacity(a.len());
+            for (x, y) in a.iter().zip(b.iter()) {
+                out.push(interp.apply_function(f, vec![x.clone(), y.clone()])?);
             }
             Ok(Value::Array(out))
         }
@@ -88,13 +88,16 @@ pub(crate) fn builtin_array_zip_with_fn(
 pub(crate) fn builtin_array_scan_fn(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(arr), init, f] => {
-            let f = f.clone();
-            let elems: Vec<Value> = arr.clone();
-            let mut out = Vec::with_capacity(elems.len() + 1);
+            // RES-1932: borrow `f` and iterate `arr.iter()` — drops the
+            // full `arr.clone()` Vec allocation; element clones happen
+            // at the apply_function callsite (same total count). `init`
+            // still needs `.clone()` because `acc` is rebound each
+            // iteration.
+            let mut out = Vec::with_capacity(arr.len() + 1);
             let mut acc = init.clone();
             out.push(acc.clone());
-            for elem in elems {
-                acc = interp.apply_function(&f, vec![acc, elem])?;
+            for elem in arr.iter() {
+                acc = interp.apply_function(f, vec![acc, elem.clone()])?;
                 out.push(acc.clone());
             }
             Ok(Value::Array(out))
@@ -124,11 +127,13 @@ pub(crate) fn builtin_array_flat_map_fn(
 ) -> RResult<Value> {
     match args {
         [Value::Array(arr), f] => {
-            let f = f.clone();
-            let elems: Vec<Value> = arr.clone();
-            let mut out = Vec::new();
-            for (i, elem) in elems.into_iter().enumerate() {
-                match interp.apply_function(&f, vec![elem])? {
+            // RES-1932: borrow `f`; iterate `arr.iter()` instead of
+            // consuming a cloned Vec. Pre-size `out` to `arr.len()` —
+            // exact lower bound (each callback returns ≥ 0 elements);
+            // saves the default 0→4 doubling for non-empty inputs.
+            let mut out = Vec::with_capacity(arr.len());
+            for (i, elem) in arr.iter().enumerate() {
+                match interp.apply_function(f, vec![elem.clone()])? {
                     Value::Array(sub) => out.extend(sub),
                     other => {
                         return Err(format!(
@@ -165,13 +170,15 @@ pub(crate) fn builtin_array_apply_n(interp: &mut Interpreter, args: &[Value]) ->
                 return Err(format!("array_apply_n: n must be >= 0, got {n}"));
             }
             let n = *n;
-            let f = f.clone();
-            let elems: Vec<Value> = arr.clone();
-            let mut out = Vec::with_capacity(elems.len());
-            for elem in elems {
-                let mut v = elem;
+            // RES-1932: borrow `f` and iterate `arr.iter()`; clone each
+            // element only at the outer loop's seed (the inner `for _
+            // in 0..n` mutates `v` through apply_function and so genuinely
+            // needs the owned starting value).
+            let mut out = Vec::with_capacity(arr.len());
+            for elem in arr.iter() {
+                let mut v = elem.clone();
                 for _ in 0..n {
-                    v = interp.apply_function(&f, vec![v])?;
+                    v = interp.apply_function(f, vec![v])?;
                 }
                 out.push(v);
             }

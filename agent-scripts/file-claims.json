@@ -359,6 +359,10 @@
     "resilient/src/map_functional.rs": {
       "branch": "res-1930-map-functional-clone-elim",
       "claimed_at": "2026-05-19T17:47:04Z"
+    },
+    "resilient/src/functional_hof.rs": {
+      "branch": "res-1932-functional-hof-clone-elim",
+      "claimed_at": "2026-05-19T17:53:14Z"
     }
   }
 }
