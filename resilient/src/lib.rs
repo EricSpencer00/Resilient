@@ -25296,7 +25296,7 @@ impl Interpreter {
                     inject_checked_failures: false,
                     overflow_mode: self.overflow_mode,
                 };
-                for pre in &requires {
+                for pre in requires {
                     let ok = match contract_interp.eval(pre)? {
                         Value::Bool(b) => b,
                         _ => false,
@@ -25309,10 +25309,10 @@ impl Interpreter {
                         ));
                     }
                 }
-                let result = if is_variadic {
-                    crate::ffi_trampolines::call_foreign_variadic(&symbol, &args)?
+                let result = if *is_variadic {
+                    crate::ffi_trampolines::call_foreign_variadic(symbol, &args)?
                 } else {
-                    crate::ffi_trampolines::call_foreign(&symbol, &args)?
+                    crate::ffi_trampolines::call_foreign(symbol, &args)?
                 };
                 // Check postconditions.
                 if !ensures.is_empty() {
@@ -25328,7 +25328,7 @@ impl Interpreter {
                         overflow_mode: self.overflow_mode,
                     };
                     post_interp.env.set("result".to_string(), result.clone());
-                    for post in &ensures {
+                    for post in ensures {
                         let ok = match post_interp.eval(post)? {
                             Value::Bool(b) => b,
                             _ => false,

@@ -37,6 +37,8 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 Value::Set(_) => "set",
                 Value::Void => "void",
                 Value::Function(_) | Value::Closure { .. } | Value::Builtin { .. } => "function",
+                #[cfg(feature = "ffi")]
+                Value::Foreign { .. } => "function",
                 Value::Bytes(_) => "bytes",
                 Value::Struct { .. } => "struct",
                 Value::Tuple(_) => "tuple",
