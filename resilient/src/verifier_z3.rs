@@ -1332,16 +1332,12 @@ fn prove_with_axioms_and_timeout_in(
         // value, then assert the NEGATED goal so a fresh Z3 returns
         // `unsat` (which is the proof that the original was always
         // true).
+        // RES-1893: single-pass collection of int idents + array args
+        // (len_args already collected above before the solver phase).
         let mut idents: BTreeSet<&str> = BTreeSet::new();
-        collect_int_identifiers(expr, &mut idents);
-
-        // RES-408: collect arrays referenced via `a[i]` so the cert
-        // declares them with Z3's `(Array Int Int)` sort. Arrays
-        // referenced *only* via `len(a)` (and not via index) keep
-        // the historical behaviour — `len_a` Int const, no array
-        // declaration needed.
         let mut arr_args: BTreeSet<&str> = BTreeSet::new();
-        collect_array_args(expr, &mut arr_args);
+        let mut cert_len_args: BTreeSet<&str> = BTreeSet::new();
+        collect_cert_idents(expr, &mut idents, &mut arr_args, &mut cert_len_args);
 
         // RES-1383: write the SMT-LIB cert via `writeln!` into `smt2`
         // directly — `String` implements `fmt::Write`, so the format
@@ -1594,12 +1590,12 @@ fn prove_tautology_with_axioms_and_timeout_in(
         return (false, None, timed_out);
     }
 
-    // Tautology proven — emit the same SMT-LIB2 certificate shape
-    // `prove_with_axioms_and_timeout` would have.
+    // RES-1893: single-pass collection of int idents + array args
+    // (len_args already collected above before the solver phase).
     let mut idents: BTreeSet<&str> = BTreeSet::new();
-    collect_int_identifiers(expr, &mut idents);
     let mut arr_args: BTreeSet<&str> = BTreeSet::new();
-    collect_array_args(expr, &mut arr_args);
+    let mut cert_len_args: BTreeSet<&str> = BTreeSet::new();
+    collect_cert_idents(expr, &mut idents, &mut arr_args, &mut cert_len_args);
 
     // RES-1383: same `writeln!`-into-buffer fix as the LIA verifier's
     // cert builder above — eliminates the intermediate `format!`
@@ -2068,6 +2064,72 @@ fn extract_counterexample(
 /// Conservative — over-collecting is fine (extra unused declarations
 /// don't change satisfiability); under-collecting would make the
 /// certificate reference an undefined symbol and stock Z3 would error.
+/// RES-1893: single-pass collector that populates all three identifier
+/// sets (`int_idents`, `array_args`, `len_args`) in one AST walk.
+/// Replaces the former triple-walk of `collect_int_identifiers`,
+/// `collect_array_args`, and `collect_len_args` on the certificate
+/// generation path — cuts traversal from 3N to N on every Z3
+/// cache-miss proof attempt.
+fn collect_cert_idents<'a>(
+    node: &'a Node,
+    int_idents: &mut BTreeSet<&'a str>,
+    array_args: &mut BTreeSet<&'a str>,
+    len_args: &mut BTreeSet<&'a str>,
+) {
+    match node {
+        Node::Identifier { name, .. } => {
+            int_idents.insert(name.as_str());
+        }
+        Node::PrefixExpression { right, .. } => {
+            collect_cert_idents(right, int_idents, array_args, len_args);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            collect_cert_idents(left, int_idents, array_args, len_args);
+            collect_cert_idents(right, int_idents, array_args, len_args);
+        }
+        Node::Quantifier {
+            var, range, body, ..
+        } => {
+            if let crate::quantifiers::QuantRange::Range { lo, hi } = range {
+                collect_cert_idents(lo, int_idents, array_args, len_args);
+                collect_cert_idents(hi, int_idents, array_args, len_args);
+            }
+            collect_cert_idents(body, int_idents, array_args, len_args);
+            int_idents.remove(var.as_str());
+        }
+        Node::IndexExpression { target, index, .. } => {
+            if let Node::Identifier { name, .. } = target.as_ref() {
+                array_args.insert(name.as_str());
+            }
+            // Only descend into `index` for int_idents — the array
+            // target's Identifier belongs in array_args, not int_idents.
+            collect_cert_idents(index, int_idents, array_args, len_args);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if is_len_call(function, arguments) {
+                if let Node::Identifier { name, .. } = &arguments[0] {
+                    len_args.insert(name.as_str());
+                }
+            }
+            // int_idents: original collect_int_identifiers ignores
+            // CallExpression entirely, so we must NOT recurse for
+            // int_idents here. Delegate to the single-purpose
+            // collectors for array_args and len_args.
+            collect_array_args(function, array_args);
+            collect_len_args(function, len_args);
+            for arg in arguments {
+                collect_array_args(arg, array_args);
+                collect_len_args(arg, len_args);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_int_identifiers<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::Identifier { name, .. } => {
@@ -2078,12 +2140,6 @@ fn collect_int_identifiers<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
             collect_int_identifiers(left, out);
             collect_int_identifiers(right, out);
         }
-        // RES-408: walk into quantifier bodies so the cert declares
-        // free Int identifiers referenced inside `forall i ...: P(i, x)`
-        // (where `x` is free). The bound variable `var` is removed
-        // afterwards because it's quantified inline by the negated
-        // formula's `(forall ((i Int)) ...)` block — declaring it at
-        // top level would shadow the bound binding.
         Node::Quantifier {
             var, range, body, ..
         } => {
@@ -2094,25 +2150,13 @@ fn collect_int_identifiers<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
             collect_int_identifiers(body, out);
             out.remove(var.as_str());
         }
-        // RES-408: walk into the index of `a[i]` (the array name lives
-        // separately in the `arr_<name>` collector — see
-        // `collect_array_args`); descending into `target` would
-        // mistakenly add the array's name to the Int idents.
         Node::IndexExpression { index, .. } => {
             collect_int_identifiers(index, out);
         }
-        // Literals contribute no identifiers; everything else
-        // (calls, blocks, etc.) is outside the supported subset and
-        // would have caused translate_*() to bail already.
         _ => {}
     }
 }
 
-/// RES-408: collect every array identifier referenced via
-/// `IndexExpression { target: Identifier(name), .. }` so the
-/// certificate generator can emit
-/// `(declare-const arr_<name> (Array Int Int))`. Mirrors the shape
-/// of `collect_len_args`.
 fn collect_array_args<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::IndexExpression { target, index, .. } => {
@@ -3686,6 +3730,47 @@ mod tests {
         collect_int_identifiers(&q, &mut idents);
         assert!(!idents.contains("i"), "bound var leaked into idents");
         assert!(idents.contains("x"), "free var x missing from idents");
+    }
+
+    #[test]
+    fn collect_cert_idents_matches_individual_collectors() {
+        // `forall i in 0..len(a): a[i] + x >= 0` — exercises all three
+        // collector responsibilities in one expression.
+        let body = infix(
+            infix(index_expr(ident("a"), ident("i")), "+", ident("x")),
+            ">=",
+            int(0),
+        );
+        let q = forall_range("i", int(0), len_call("a"), body);
+
+        let mut expected_ints: BTreeSet<&str> = BTreeSet::new();
+        collect_int_identifiers(&q, &mut expected_ints);
+        let mut expected_arrs: BTreeSet<&str> = BTreeSet::new();
+        collect_array_args(&q, &mut expected_arrs);
+        let mut expected_lens: BTreeSet<&str> = BTreeSet::new();
+        collect_len_args(&q, &mut expected_lens);
+
+        let mut actual_ints: BTreeSet<&str> = BTreeSet::new();
+        let mut actual_arrs: BTreeSet<&str> = BTreeSet::new();
+        let mut actual_lens: BTreeSet<&str> = BTreeSet::new();
+        collect_cert_idents(&q, &mut actual_ints, &mut actual_arrs, &mut actual_lens);
+
+        assert_eq!(actual_ints, expected_ints, "int_idents mismatch");
+        assert_eq!(actual_arrs, expected_arrs, "array_args mismatch");
+        assert_eq!(actual_lens, expected_lens, "len_args mismatch");
+    }
+
+    #[test]
+    fn collect_cert_idents_simple_arithmetic() {
+        // `x + y > 0` — two int idents, no arrays, no len calls.
+        let expr = infix(infix(ident("x"), "+", ident("y")), ">", int(0));
+        let mut ints: BTreeSet<&str> = BTreeSet::new();
+        let mut arrs: BTreeSet<&str> = BTreeSet::new();
+        let mut lens: BTreeSet<&str> = BTreeSet::new();
+        collect_cert_idents(&expr, &mut ints, &mut arrs, &mut lens);
+        assert_eq!(ints, ["x", "y"].into_iter().collect::<BTreeSet<&str>>());
+        assert!(arrs.is_empty());
+        assert!(lens.is_empty());
     }
 
     #[test]
