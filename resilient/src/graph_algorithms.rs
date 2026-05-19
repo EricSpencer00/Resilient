@@ -96,7 +96,9 @@ pub(crate) fn builtin_graph_bfs(args: &[Value]) -> RResult<Value> {
 
             let mut visited = vec![false; n];
             let mut order = Vec::with_capacity(n);
-            let mut queue = VecDeque::new();
+            // RES-1944: queue holds at most n nodes (each enqueued at
+            // most once); pre-size to skip the default 0→4→8→… grow.
+            let mut queue = VecDeque::with_capacity(n);
 
             visited[start] = true;
             queue.push_back(start);
@@ -183,7 +185,9 @@ pub(crate) fn builtin_graph_has_path(args: &[Value]) -> RResult<Value> {
             }
 
             let mut visited = vec![false; n];
-            let mut queue = VecDeque::new();
+            // RES-1944: queue holds at most n nodes (each enqueued at
+            // most once); pre-size to skip the default 0→4→8→… grow.
+            let mut queue = VecDeque::with_capacity(n);
             visited[src] = true;
             queue.push_back(src);
 
@@ -280,12 +284,18 @@ pub(crate) fn builtin_graph_connected_components(args: &[Value]) -> RResult<Valu
             let mut component = vec![usize::MAX; n];
             let mut comp_id = 0usize;
 
+            // RES-1944: lift queue out of the per-component loop and
+            // clear() between components. `VecDeque::clear` retains
+            // capacity, so subsequent components reuse the buffer.
+            // Pre-size to n — each component's queue holds at most n
+            // entries (a component cannot exceed the whole graph).
+            let mut queue: VecDeque<usize> = VecDeque::with_capacity(n);
             for start in 0..n {
                 if component[start] != usize::MAX {
                     continue;
                 }
                 // BFS treating edges as undirected
-                let mut queue = VecDeque::new();
+                queue.clear();
                 queue.push_back(start);
                 component[start] = comp_id;
                 while let Some(node) = queue.pop_front() {
@@ -541,7 +551,18 @@ pub(crate) fn builtin_graph_reverse(args: &[Value]) -> RResult<Value> {
         [adj_val] => {
             let adj = extract_adj("graph_reverse", adj_val)?;
             let n = adj.len();
-            let mut rev: Vec<Vec<i64>> = vec![Vec::new(); n];
+            // RES-1944: two-pass — first count in-degrees, then
+            // allocate each inner Vec with its exact capacity. The
+            // single-pass `vec![Vec::new(); n]` shape forced every
+            // reverse-edge insert to grow through the default
+            // 0→4→8→… doubling chain per inner Vec.
+            let mut in_deg = vec![0usize; n];
+            for neighbours in &adj {
+                for &v in neighbours {
+                    in_deg[v] += 1;
+                }
+            }
+            let mut rev: Vec<Vec<i64>> = in_deg.iter().map(|&d| Vec::with_capacity(d)).collect();
             for (u, neighbours) in adj.iter().enumerate() {
                 for &v in neighbours {
                     rev[v].push(u as i64);
