@@ -332,13 +332,13 @@
       "branch": "res-1822-string-interp-expr-presize",
       "claimed_at": "2026-05-13T13:50:23Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-1826-parse-method-presize",
-      "claimed_at": "2026-05-13T14:04:02Z"
-    },
     "resilient/src/vm.rs": {
       "branch": "res-1830-vm-run-direct-locals-presize",
       "claimed_at": "2026-05-13T14:15:49Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-1901-hof-clone-elim",
+      "claimed_at": "2026-05-19T05:02:34Z"
     }
   }
 }

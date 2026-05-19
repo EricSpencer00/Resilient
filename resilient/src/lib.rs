@@ -10209,7 +10209,7 @@ impl std::fmt::Display for Value {
                 // order would make golden tests flaky otherwise.
                 write!(f, "{{")?;
                 let mut keys: Vec<&MapKey> = m.keys().collect();
-                keys.sort_by(|a, b| match (a, b) {
+                keys.sort_unstable_by(|a, b| match (a, b) {
                     (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
                     (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
                     (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
@@ -10257,7 +10257,7 @@ impl std::fmt::Display for Value {
                 // HashSet having arbitrary iteration order.
                 write!(f, "#{{")?;
                 let mut items: Vec<&MapKey> = s.iter().collect();
-                items.sort_by(|a, b| match (a, b) {
+                items.sort_unstable_by(|a, b| match (a, b) {
                     (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
                     (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
                     (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
@@ -17374,7 +17374,7 @@ fn builtin_array_sort_desc(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            nums.sort_by(|a, b| b.cmp(a));
+            nums.sort_unstable_by(|a, b| b.cmp(a));
             Ok(Value::Array(nums.into_iter().map(Value::Int).collect()))
         }
         [other] => Err(format!("array_sort_desc: expected array, got {}", other)),
@@ -20203,7 +20203,7 @@ fn builtin_map_keys(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Map(m)] => {
             let mut keys: Vec<&MapKey> = m.keys().collect();
-            keys.sort_by(|a, b| match (a, b) {
+            keys.sort_unstable_by(|a, b| match (a, b) {
                 (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
                 (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
                 (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
@@ -20255,7 +20255,7 @@ fn builtin_map_values(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Map(m)] => {
             let mut entries: Vec<(&MapKey, &Value)> = m.iter().collect();
-            entries.sort_by(|(a, _), (b, _)| match (a, b) {
+            entries.sort_unstable_by(|(a, _), (b, _)| match (a, b) {
                 (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
                 (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
                 (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
@@ -20407,7 +20407,7 @@ fn builtin_hashmap_values(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Map(m)] => {
             let mut entries: Vec<(&MapKey, &Value)> = m.iter().collect();
-            entries.sort_by(|(a, _), (b, _)| match (a, b) {
+            entries.sort_unstable_by(|(a, _), (b, _)| match (a, b) {
                 (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
                 (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
                 (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
@@ -20434,7 +20434,7 @@ fn builtin_hashmap_keys(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Map(m)] => {
             let mut keys: Vec<&MapKey> = m.keys().collect();
-            keys.sort_by(|a, b| match (a, b) {
+            keys.sort_unstable_by(|a, b| match (a, b) {
                 (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
                 (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
                 (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
@@ -21210,7 +21210,7 @@ fn builtin_set_items(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Set(s)] => {
             let mut items: Vec<&MapKey> = s.iter().collect();
-            items.sort_by(|a, b| match (a, b) {
+            items.sort_unstable_by(|a, b| match (a, b) {
                 (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
                 (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
                 (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
@@ -22699,74 +22699,68 @@ impl Interpreter {
                     // the callback dispatch needs the interpreter's
                     // `&mut self`, so handle them inline here before
                     // the generic builtin dispatch.
-                    if let Value::Array(items) = &target_val {
-                        let extra_args = self.eval_expressions(arguments)?;
+                    if matches!(&target_val, Value::Array(_))
+                        && matches!(field.as_str(), "map" | "filter" | "reduce")
+                    {
+                        let Value::Array(items) = target_val else {
+                            unreachable!()
+                        };
+                        let mut extra_args = self.eval_expressions(arguments)?;
                         match field.as_str() {
-                            "map" => match extra_args.as_slice() {
-                                [callback] => {
-                                    let mut out = Vec::with_capacity(items.len());
-                                    for item in items.clone() {
-                                        let v =
-                                            self.apply_function(callback.clone(), vec![item])?;
-                                        out.push(v);
-                                    }
-                                    return Ok(Value::Array(out));
-                                }
-                                other => {
+                            "map" => {
+                                if extra_args.len() != 1 {
                                     return Err(format!(
                                         "map: expected 1 callback argument, got {}",
-                                        other.len()
+                                        extra_args.len()
                                     ));
                                 }
-                            },
-                            "filter" => match extra_args.as_slice() {
-                                [predicate] => {
-                                    let mut out = Vec::new();
-                                    for item in items.clone() {
-                                        let keep = self.apply_function(
-                                            predicate.clone(),
-                                            vec![item.clone()],
-                                        )?;
-                                        match keep {
-                                            Value::Bool(true) => out.push(item),
-                                            Value::Bool(false) => {}
-                                            other => {
-                                                return Err(format!(
-                                                    "filter: predicate must return Bool, got {}",
-                                                    other
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    return Ok(Value::Array(out));
+                                let callback = extra_args.pop().unwrap();
+                                let mut out = Vec::with_capacity(items.len());
+                                for item in items {
+                                    out.push(self.apply_function(callback.clone(), vec![item])?);
                                 }
-                                other => {
+                                return Ok(Value::Array(out));
+                            }
+                            "filter" => {
+                                if extra_args.len() != 1 {
                                     return Err(format!(
                                         "filter: expected 1 predicate argument, got {}",
-                                        other.len()
+                                        extra_args.len()
                                     ));
                                 }
-                            },
-                            "reduce" => match extra_args.as_slice() {
-                                [init, callback] => {
-                                    let mut acc = init.clone();
-                                    for item in items.clone() {
-                                        acc =
-                                            self.apply_function(callback.clone(), vec![acc, item])?;
+                                let predicate = extra_args.pop().unwrap();
+                                let mut out = Vec::new();
+                                for item in items {
+                                    match self
+                                        .apply_function(predicate.clone(), vec![item.clone()])?
+                                    {
+                                        Value::Bool(true) => out.push(item),
+                                        Value::Bool(false) => {}
+                                        other => {
+                                            return Err(format!(
+                                                "filter: predicate must return Bool, got {}",
+                                                other
+                                            ));
+                                        }
                                     }
-                                    return Ok(acc);
                                 }
-                                other => {
+                                return Ok(Value::Array(out));
+                            }
+                            "reduce" => {
+                                if extra_args.len() != 2 {
                                     return Err(format!(
                                         "reduce: expected 2 arguments (init, callback), got {}",
-                                        other.len()
+                                        extra_args.len()
                                     ));
                                 }
-                            },
-                            _ => {
-                                // Fall through to the RES-920 generic
-                                // builtin dispatch below.
+                                let callback = extra_args.pop().unwrap();
+                                let mut acc = extra_args.pop().unwrap();
+                                for item in items {
+                                    acc = self.apply_function(callback.clone(), vec![acc, item])?;
+                                }
+                                return Ok(acc);
                             }
+                            _ => unreachable!(),
                         }
                     }
                     // RES-920: method-call sugar on built-in String /
@@ -22844,11 +22838,16 @@ impl Interpreter {
                 if let Node::Identifier { name: fn_name, .. } = function.as_ref() {
                     match fn_name.as_str() {
                         "array_map" => {
-                            let args = self.eval_expressions(arguments)?;
-                            match args.as_slice() {
-                                [Value::Array(items), callback] => {
-                                    let items = items.clone();
-                                    let callback = callback.clone();
+                            let mut args = self.eval_expressions(arguments)?;
+                            if args.len() != 2 {
+                                return Err(format!(
+                                    "array_map: expected (array, fn), got {} args",
+                                    args.len()
+                                ));
+                            }
+                            let callback = args.pop().unwrap();
+                            match args.pop().unwrap() {
+                                Value::Array(items) => {
                                     let mut out = Vec::with_capacity(items.len());
                                     for item in items {
                                         out.push(
@@ -22857,20 +22856,24 @@ impl Interpreter {
                                     }
                                     return Ok(Value::Array(out));
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "array_map: expected (array, fn), got {} args",
-                                        other.len()
-                                    ));
+                                _ => {
+                                    return Err(
+                                        "array_map: expected (array, fn), got {} args".to_string()
+                                    );
                                 }
                             }
                         }
                         "array_filter" => {
-                            let args = self.eval_expressions(arguments)?;
-                            match args.as_slice() {
-                                [Value::Array(items), predicate] => {
-                                    let items = items.clone();
-                                    let predicate = predicate.clone();
+                            let mut args = self.eval_expressions(arguments)?;
+                            if args.len() != 2 {
+                                return Err(format!(
+                                    "array_filter: expected (array, fn), got {} args",
+                                    args.len()
+                                ));
+                            }
+                            let predicate = args.pop().unwrap();
+                            match args.pop().unwrap() {
+                                Value::Array(items) => {
                                     let mut out = Vec::new();
                                     for item in items {
                                         match self
@@ -22888,42 +22891,50 @@ impl Interpreter {
                                     }
                                     return Ok(Value::Array(out));
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "array_filter: expected (array, fn), got {} args",
-                                        other.len()
-                                    ));
+                                _ => {
+                                    return Err("array_filter: expected (array, fn), got {} args"
+                                        .to_string());
                                 }
                             }
                         }
                         "array_reduce" => {
-                            let args = self.eval_expressions(arguments)?;
-                            match args.as_slice() {
-                                [Value::Array(items), init, callback] => {
-                                    let items = items.clone();
-                                    let callback = callback.clone();
-                                    let mut acc = init.clone();
+                            let mut args = self.eval_expressions(arguments)?;
+                            if args.len() != 3 {
+                                return Err(format!(
+                                    "array_reduce: expected (array, init, fn), got {} args",
+                                    args.len()
+                                ));
+                            }
+                            let callback = args.pop().unwrap();
+                            let mut acc = args.pop().unwrap();
+                            match args.pop().unwrap() {
+                                Value::Array(items) => {
                                     for item in items {
                                         acc =
                                             self.apply_function(callback.clone(), vec![acc, item])?;
                                     }
                                     return Ok(acc);
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "array_reduce: expected (array, init, fn), got {} args",
-                                        other.len()
-                                    ));
+                                _ => {
+                                    return Err(
+                                        "array_reduce: expected (array, init, fn), got {} args"
+                                            .to_string(),
+                                    );
                                 }
                             }
                         }
                         // RES-507: array_find(arr, fn) → first element where fn returns true, or null.
                         "array_find" => {
-                            let args = self.eval_expressions(arguments)?;
-                            match args.as_slice() {
-                                [Value::Array(items), predicate] => {
-                                    let items = items.clone();
-                                    let predicate = predicate.clone();
+                            let mut args = self.eval_expressions(arguments)?;
+                            if args.len() != 2 {
+                                return Err(format!(
+                                    "array_find: expected (array, fn), got {} args",
+                                    args.len()
+                                ));
+                            }
+                            let predicate = args.pop().unwrap();
+                            match args.pop().unwrap() {
+                                Value::Array(items) => {
                                     for item in items {
                                         match self
                                             .apply_function(predicate.clone(), vec![item.clone()])?
@@ -22941,21 +22952,25 @@ impl Interpreter {
                                     }
                                     return Ok(Value::Option(None));
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "array_find: expected (array, fn), got {} args",
-                                        other.len()
-                                    ));
+                                _ => {
+                                    return Err(
+                                        "array_find: expected (array, fn), got {} args".to_string()
+                                    );
                                 }
                             }
                         }
                         // RES-507: array_find_index(arr, fn) → index of first match, or -1.
                         "array_find_index" => {
-                            let args = self.eval_expressions(arguments)?;
-                            match args.as_slice() {
-                                [Value::Array(items), predicate] => {
-                                    let items = items.clone();
-                                    let predicate = predicate.clone();
+                            let mut args = self.eval_expressions(arguments)?;
+                            if args.len() != 2 {
+                                return Err(format!(
+                                    "array_find_index: expected (array, fn), got {} args",
+                                    args.len()
+                                ));
+                            }
+                            let predicate = args.pop().unwrap();
+                            match args.pop().unwrap() {
+                                Value::Array(items) => {
                                     for (i, item) in items.into_iter().enumerate() {
                                         match self.apply_function(predicate.clone(), vec![item])? {
                                             Value::Bool(true) => {
@@ -22971,21 +22986,26 @@ impl Interpreter {
                                     }
                                     return Ok(Value::Int(-1));
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "array_find_index: expected (array, fn), got {} args",
-                                        other.len()
-                                    ));
+                                _ => {
+                                    return Err(
+                                        "array_find_index: expected (array, fn), got {} args"
+                                            .to_string(),
+                                    );
                                 }
                             }
                         }
                         // RES-507: array_any(arr, fn) → true iff any element satisfies fn.
                         "array_any" => {
-                            let args = self.eval_expressions(arguments)?;
-                            match args.as_slice() {
-                                [Value::Array(items), predicate] => {
-                                    let items = items.clone();
-                                    let predicate = predicate.clone();
+                            let mut args = self.eval_expressions(arguments)?;
+                            if args.len() != 2 {
+                                return Err(format!(
+                                    "array_any: expected (array, fn), got {} args",
+                                    args.len()
+                                ));
+                            }
+                            let predicate = args.pop().unwrap();
+                            match args.pop().unwrap() {
+                                Value::Array(items) => {
                                     for item in items {
                                         match self.apply_function(predicate.clone(), vec![item])? {
                                             Value::Bool(true) => return Ok(Value::Bool(true)),
@@ -22999,21 +23019,25 @@ impl Interpreter {
                                     }
                                     return Ok(Value::Bool(false));
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "array_any: expected (array, fn), got {} args",
-                                        other.len()
-                                    ));
+                                _ => {
+                                    return Err(
+                                        "array_any: expected (array, fn), got {} args".to_string()
+                                    );
                                 }
                             }
                         }
                         // RES-507: array_all(arr, fn) → true iff every element satisfies fn.
                         "array_all" => {
-                            let args = self.eval_expressions(arguments)?;
-                            match args.as_slice() {
-                                [Value::Array(items), predicate] => {
-                                    let items = items.clone();
-                                    let predicate = predicate.clone();
+                            let mut args = self.eval_expressions(arguments)?;
+                            if args.len() != 2 {
+                                return Err(format!(
+                                    "array_all: expected (array, fn), got {} args",
+                                    args.len()
+                                ));
+                            }
+                            let predicate = args.pop().unwrap();
+                            match args.pop().unwrap() {
+                                Value::Array(items) => {
                                     for item in items {
                                         match self.apply_function(predicate.clone(), vec![item])? {
                                             Value::Bool(true) => {}
@@ -23027,11 +23051,10 @@ impl Interpreter {
                                     }
                                     return Ok(Value::Bool(true));
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "array_all: expected (array, fn), got {} args",
-                                        other.len()
-                                    ));
+                                _ => {
+                                    return Err(
+                                        "array_all: expected (array, fn), got {} args".to_string()
+                                    );
                                 }
                             }
                         }
@@ -26795,7 +26818,7 @@ fn scan_comment_tokens(src: &str) -> Vec<AbsSemToken> {
 #[allow(dead_code)]
 pub(crate) fn encode_semantic_tokens(tokens: &[AbsSemToken]) -> Vec<u32> {
     let mut sorted: Vec<AbsSemToken> = tokens.to_vec();
-    sorted.sort_by(|a, b| a.line.cmp(&b.line).then(a.col.cmp(&b.col)));
+    sorted.sort_unstable_by(|a, b| a.line.cmp(&b.line).then(a.col.cmp(&b.col)));
 
     let mut out = Vec::with_capacity(sorted.len() * 5);
     let mut prev_line: u32 = 0;
