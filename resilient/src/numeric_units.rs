@@ -40,7 +40,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         // parameter seeds plus a small allowance for body-let
         // bindings with unit suffixes. Same shape as the pre-size
         // series across the per-fn passes.
-        let mut units: std::collections::HashMap<String, String> =
+        // RES-1950: values are `&'static str` from the static
+        // UNIT_SUFFIXES table — no per-binding String allocation.
+        let mut units: std::collections::HashMap<String, &'static str> =
             std::collections::HashMap::with_capacity(params.len() + 8);
         for (_ty, name) in params {
             if let Some(u) = unit_of(name) {
@@ -59,18 +61,20 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn unit_of(name: &str) -> Option<String> {
-    UNIT_SUFFIXES
-        .iter()
-        .find(|s| name.ends_with(*s))
-        .map(|s| (*s).to_string())
+// RES-1950: return the matched static slice directly instead of
+// allocating a fresh String. `UNIT_SUFFIXES` entries are `&'static str`
+// already, so wrapping them in `String::from` was pure overhead —
+// paid once per parameter / let-binding whose name carried a unit
+// suffix.
+fn unit_of(name: &str) -> Option<&'static str> {
+    UNIT_SUFFIXES.iter().find(|s| name.ends_with(*s)).copied()
 }
 
 fn check_expr(
     fname: &str,
     var: &str,
     expr: &Node,
-    units: &std::collections::HashMap<String, String>,
+    units: &std::collections::HashMap<String, &'static str>,
 ) {
     if let Node::InfixExpression {
         operator,
@@ -95,9 +99,14 @@ fn check_expr(
     }
 }
 
-fn ident_unit(node: &Node, units: &std::collections::HashMap<String, String>) -> Option<String> {
+// RES-1950: returns `&'static str` so callers do a Copy instead of
+// a String clone on lookup hit.
+fn ident_unit(
+    node: &Node,
+    units: &std::collections::HashMap<String, &'static str>,
+) -> Option<&'static str> {
     if let Node::Identifier { name, .. } = node {
-        return units.get(name).cloned().or_else(|| unit_of(name));
+        return units.get(name).copied().or_else(|| unit_of(name));
     }
     None
 }
