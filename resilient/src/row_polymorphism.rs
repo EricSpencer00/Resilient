@@ -124,7 +124,7 @@ fn collect_struct_decls(node: &Node, out: &mut HashMap<String, Vec<(String, Stri
 /// types are not known without full type inference.
 fn walk_calls(
     node: &Node,
-    specs: &HashMap<String, RowSpec>,
+    specs: &HashMap<&str, &RowSpec>,
     struct_fields: &HashMap<String, Vec<(String, String)>>,
     source_path: &str,
 ) -> Result<(), String> {
@@ -226,21 +226,24 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if specs.is_empty() {
         return Ok(());
     }
-    // Build a local snapshot for the walk so we don't hold the
-    // global SPECS read-lock across the entire AST traversal.
-    let specs_map: HashMap<String, RowSpec> = specs
-        .iter()
-        .map(|s| (s.fn_name.clone(), s.clone()))
-        .collect();
-    install(specs);
 
     // Pass 1: collect all struct declarations so we know each struct's
     // field types when we encounter a StructLiteral at a call site.
     let mut struct_fields: HashMap<String, Vec<(String, String)>> = HashMap::new();
     collect_struct_decls(program, &mut struct_fields);
 
-    // Pass 2: validate every call to a row-poly function.
-    walk_calls(program, &specs_map, &struct_fields, source_path)
+    // RES-1998: borrow into local `specs` for the walk map instead of
+    // cloning every RowSpec (which carries a Vec<(String, String)>).
+    // The borrowed view lives only during `walk_calls`; once that
+    // returns, ownership of `specs` is handed to `install`. Same
+    // shape as RES-1996 (refinement_types).
+    let result = {
+        let specs_map: HashMap<&str, &RowSpec> =
+            specs.iter().map(|s| (s.fn_name.as_str(), s)).collect();
+        walk_calls(program, &specs_map, &struct_fields, source_path)
+    };
+    install(specs);
+    result
 }
 
 #[cfg(test)]
