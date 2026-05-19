@@ -213,6 +213,15 @@ fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
         Node::PrefixExpression { right, .. } => any_node_inner(right, pred),
         Node::ArrayLiteral { items, .. } => items.iter().any(|i| any_node_inner(i, pred)),
         Node::ExpressionStatement { expr, .. } => any_node_inner(expr, pred),
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            any_node_inner(scrutinee, pred)
+                || arms.iter().any(|(_, guard, body)| {
+                    guard.as_ref().is_some_and(|g| any_node_inner(g, pred))
+                        || any_node_inner(body, pred)
+                })
+        }
         _ => false,
     }
 }
@@ -301,6 +310,21 @@ mod tests {
             }
         });
         assert!(saw_infix, "visit must reach nested InfixExpression nodes");
+    }
+
+    #[test]
+    fn any_node_descends_into_match_arms() {
+        let src = "fn f(int x) -> int {\n\
+                        return match x {\n\
+                            1 => x + 42,\n\
+                            _ => 0,\n\
+                        };\n\
+                    }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(&prog, |n| {
+            matches!(n, Node::IntegerLiteral { value: 42, .. })
+        });
+        assert!(found, "any_node must descend into match arm bodies");
     }
 
     #[test]
