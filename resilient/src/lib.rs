@@ -22699,74 +22699,68 @@ impl Interpreter {
                     // the callback dispatch needs the interpreter's
                     // `&mut self`, so handle them inline here before
                     // the generic builtin dispatch.
-                    if let Value::Array(items) = &target_val {
-                        let extra_args = self.eval_expressions(arguments)?;
+                    if matches!(&target_val, Value::Array(_))
+                        && matches!(field.as_str(), "map" | "filter" | "reduce")
+                    {
+                        let Value::Array(items) = target_val else {
+                            unreachable!()
+                        };
+                        let mut extra_args = self.eval_expressions(arguments)?;
                         match field.as_str() {
-                            "map" => match extra_args.as_slice() {
-                                [callback] => {
-                                    let mut out = Vec::with_capacity(items.len());
-                                    for item in items.clone() {
-                                        let v =
-                                            self.apply_function(callback.clone(), vec![item])?;
-                                        out.push(v);
-                                    }
-                                    return Ok(Value::Array(out));
-                                }
-                                other => {
+                            "map" => {
+                                if extra_args.len() != 1 {
                                     return Err(format!(
                                         "map: expected 1 callback argument, got {}",
-                                        other.len()
+                                        extra_args.len()
                                     ));
                                 }
-                            },
-                            "filter" => match extra_args.as_slice() {
-                                [predicate] => {
-                                    let mut out = Vec::new();
-                                    for item in items.clone() {
-                                        let keep = self.apply_function(
-                                            predicate.clone(),
-                                            vec![item.clone()],
-                                        )?;
-                                        match keep {
-                                            Value::Bool(true) => out.push(item),
-                                            Value::Bool(false) => {}
-                                            other => {
-                                                return Err(format!(
-                                                    "filter: predicate must return Bool, got {}",
-                                                    other
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    return Ok(Value::Array(out));
+                                let callback = extra_args.pop().unwrap();
+                                let mut out = Vec::with_capacity(items.len());
+                                for item in items {
+                                    out.push(self.apply_function(callback.clone(), vec![item])?);
                                 }
-                                other => {
+                                return Ok(Value::Array(out));
+                            }
+                            "filter" => {
+                                if extra_args.len() != 1 {
                                     return Err(format!(
                                         "filter: expected 1 predicate argument, got {}",
-                                        other.len()
+                                        extra_args.len()
                                     ));
                                 }
-                            },
-                            "reduce" => match extra_args.as_slice() {
-                                [init, callback] => {
-                                    let mut acc = init.clone();
-                                    for item in items.clone() {
-                                        acc =
-                                            self.apply_function(callback.clone(), vec![acc, item])?;
+                                let predicate = extra_args.pop().unwrap();
+                                let mut out = Vec::new();
+                                for item in items {
+                                    match self
+                                        .apply_function(predicate.clone(), vec![item.clone()])?
+                                    {
+                                        Value::Bool(true) => out.push(item),
+                                        Value::Bool(false) => {}
+                                        other => {
+                                            return Err(format!(
+                                                "filter: predicate must return Bool, got {}",
+                                                other
+                                            ));
+                                        }
                                     }
-                                    return Ok(acc);
                                 }
-                                other => {
+                                return Ok(Value::Array(out));
+                            }
+                            "reduce" => {
+                                if extra_args.len() != 2 {
                                     return Err(format!(
                                         "reduce: expected 2 arguments (init, callback), got {}",
-                                        other.len()
+                                        extra_args.len()
                                     ));
                                 }
-                            },
-                            _ => {
-                                // Fall through to the RES-920 generic
-                                // builtin dispatch below.
+                                let callback = extra_args.pop().unwrap();
+                                let mut acc = extra_args.pop().unwrap();
+                                for item in items {
+                                    acc = self.apply_function(callback.clone(), vec![acc, item])?;
+                                }
+                                return Ok(acc);
                             }
+                            _ => unreachable!(),
                         }
                     }
                     // RES-920: method-call sugar on built-in String /
