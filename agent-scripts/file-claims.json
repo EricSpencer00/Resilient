@@ -413,8 +413,8 @@
       "claimed_at": "2026-05-19T18:52:28Z"
     },
     "resilient/src/reentrancy_guard.rs": {
-      "branch": "res-1962-reentrancy-rate-limit-presize",
-      "claimed_at": "2026-05-19T18:59:39Z"
+      "branch": "res-2062-reentrancy-callees-borrow",
+      "claimed_at": "2026-05-20T04:30:00Z"
     },
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-1966-isr-bfs-reuse",
