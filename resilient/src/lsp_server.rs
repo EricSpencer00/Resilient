@@ -387,13 +387,22 @@ pub(crate) fn build_top_level_defs(program: &Node) -> Vec<TopLevelDef> {
         Node::Program(s) => s,
         _ => return Vec::new(),
     };
-    let mut out: Vec<TopLevelDef> = Vec::new();
+    // RES-1976: pre-size `out` and `seen` to `stmts.len()` — the exact
+    // upper bound (at most one entry per top-level statement, since
+    // Function / StructDecl / TypeAlias are the only matching variants
+    // and dedup-via-`seen` only shrinks the count further). Skips the
+    // 0→4→8→16→32 doubling cascade for both Vec and HashSet. Same
+    // exact-upper-bound shape as RES-1742 / RES-1744 / RES-1746 call-
+    // graph pre-size series. `build_top_level_defs` is keystroke-rate
+    // (runs per LSP `textDocument/definition` and `documentSymbol`).
+    let mut out: Vec<TopLevelDef> = Vec::with_capacity(stmts.len());
     // RES-1508: borrow the AST's decl names into the dedup set
     // instead of cloning them. The owned String allocation only
     // happens once at the `out.push(...)` site — previously each
     // decl name allocated twice (once to bind `name`, once to feed
     // `seen.insert`).
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(stmts.len());
     for spanned in stmts {
         let name = match &spanned.node {
             Node::Function { name, .. } => name.as_str(),
