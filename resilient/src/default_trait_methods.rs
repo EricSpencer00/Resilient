@@ -33,14 +33,23 @@ pub struct DefaultMethod {
     pub method_name: String,
 }
 
-static DEFAULTS: LazyLock<RwLock<HashMap<(String, String), DefaultMethod>>> =
+/// RES-2012: nested map — outer key `trait_name`, inner key
+/// `method_name`. The flat `HashMap<(String, String), V>` shape forced
+/// `has_default` to allocate two transient `String`s per call (stdlib's
+/// `Borrow` impls don't allow `(String, String): Borrow<(&str, &str)>`).
+/// Both nested-map `.get`/`.contains_key` calls accept `&str` via the
+/// existing `String: Borrow<str>` impl. Same fix as RES-2008
+/// (typestate_types) and RES-2010 (hw_state_machine).
+static DEFAULTS: LazyLock<RwLock<HashMap<String, HashMap<String, DefaultMethod>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn install(items: Vec<DefaultMethod>) {
     if let Ok(mut g) = DEFAULTS.write() {
         g.clear();
         for d in items {
-            g.insert((d.trait_name.clone(), d.method_name.clone()), d);
+            g.entry(d.trait_name.clone())
+                .or_default()
+                .insert(d.method_name.clone(), d);
         }
     }
 }
@@ -49,8 +58,7 @@ pub fn has_default(trait_name: &str, method: &str) -> bool {
     DEFAULTS
         .read()
         .ok()
-        .map(|g| g.contains_key(&(trait_name.to_string(), method.to_string())))
-        .unwrap_or(false)
+        .is_some_and(|g| g.get(trait_name).is_some_and(|m| m.contains_key(method)))
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {

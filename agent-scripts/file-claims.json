@@ -289,8 +289,8 @@
       "claimed_at": "2026-05-13T12:28:38Z"
     },
     "resilient/src/default_trait_methods.rs": {
-      "branch": "res-1784-attr-collects-3",
-      "claimed_at": "2026-05-13T12:28:38Z"
+      "branch": "res-2012-default-trait-nested-map",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/rate_limit_static.rs": {
       "branch": "res-1962-reentrancy-rate-limit-presize",
