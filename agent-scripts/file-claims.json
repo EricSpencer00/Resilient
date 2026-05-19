@@ -417,8 +417,8 @@
       "claimed_at": "2026-05-19T18:59:39Z"
     },
     "resilient/src/isr_call_graph.rs": {
-      "branch": "res-1966-isr-bfs-reuse",
-      "claimed_at": "2026-05-19T19:06:11Z"
+      "branch": "res-2060-isr-callees-borrow",
+      "claimed_at": "2026-05-20T04:00:00Z"
     },
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
