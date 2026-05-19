@@ -122,21 +122,30 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let current_contracts = crate::semantic_regression::extract_contracts(program);
     let current_fps = crate::behavioral_fingerprint::fingerprint_program(program);
 
-    // Compare against baseline if one exists.
-    let baseline = SEMVER_BASELINE.read().ok().and_then(|g| {
-        g.as_ref()
-            .map(|b| (b.contracts.clone(), b.fingerprints.clone()))
-    });
+    // RES-2006: hold the read guard through the two `diff` calls and
+    // only materialize the (small) result Vecs. The previous shape
+    // cloned both baseline maps (`HashMap<String, FunctionContract>`
+    // + `HashMap<String, Fingerprint>`) just to release the lock —
+    // wasted work proportional to baseline size. The diff functions
+    // are pure and short, so holding the guard briefly costs nothing.
+    // Same lock-then-borrow shape as RES-1544 / RES-1547 / RES-1549
+    // / RES-1552 / RES-1558.
+    use crate::semantic_regression::SemanticChange;
+    let diff_data: Option<(Vec<SemanticChange>, Vec<String>)> =
+        if let Ok(g) = SEMVER_BASELINE.read() {
+            g.as_ref().map(|b| {
+                let changes = crate::semantic_regression::diff(&b.contracts, &current_contracts);
+                let regressed =
+                    crate::behavioral_fingerprint::diff_fingerprints(&b.fingerprints, &current_fps);
+                (changes, regressed)
+            })
+        } else {
+            None
+        };
 
-    if let Some((old_contracts, old_fps)) = baseline {
-        // Build ephemeral old/new programs to reuse classify(), or
-        // diff directly from the contract/fingerprint maps.
-        let changes = crate::semantic_regression::diff(&old_contracts, &current_contracts);
-        let regressed = crate::behavioral_fingerprint::diff_fingerprints(&old_fps, &current_fps);
-
-        use crate::semantic_regression::SemanticChange;
+    if let Some((changes, regressed)) = diff_data {
         let mut kind = SemverKind::Patch;
-        let mut reasons: Vec<String> = Vec::new();
+        let mut reasons: Vec<String> = Vec::with_capacity(changes.len() + 1);
 
         if !regressed.is_empty() {
             reasons.push(format!("fingerprint changed for: {}", regressed.join(", ")));

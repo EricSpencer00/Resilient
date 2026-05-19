@@ -209,8 +209,8 @@
       "claimed_at": "2026-05-13T11:38:11Z"
     },
     "resilient/src/semver_behavior.rs": {
-      "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:38:11Z"
+      "branch": "res-2006-semver-baseline-borrow",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/region_inference.rs": {
       "branch": "res-1972-region-inference-borrow",
