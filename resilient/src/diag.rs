@@ -65,26 +65,17 @@ pub fn format_diagnostic(src: &str, span: Span, level: &str, msg: &str) -> Strin
         expanded.chars().count() + 1
     };
     let caret_count = (end_col - start_col).max(1);
-
-    let pad = " ".repeat(start_col - 1);
-    let carets = "^".repeat(caret_count);
+    let pad_count = start_col - 1;
 
     // RES-1984: pre-size to a close-fit estimate (header + line + carets
     // + optional multi-line tail). Skips the 0→4→...→256 doubling
     // cascade. `format_diagnostic` is on every compiler error/warning
     // path so the per-call savings are hot.
+    //
+    // RES-2050: include the pad + caret widths directly in the
+    // capacity calc so the subsequent per-char pushes never reallocate.
     let mut out = String::with_capacity(
-        level.len()
-            + 2
-            + msg.len()
-            + 1
-            + 3
-            + expanded.len()
-            + 1
-            + 3
-            + pad.len()
-            + carets.len()
-            + 32,
+        level.len() + 2 + msg.len() + 1 + 3 + expanded.len() + 1 + 3 + pad_count + caret_count + 32,
     );
     out.push_str(level);
     out.push_str(": ");
@@ -94,8 +85,16 @@ pub fn format_diagnostic(src: &str, span: Span, level: &str, msg: &str) -> Strin
     out.push_str(&expanded);
     out.push('\n');
     out.push_str("   ");
-    out.push_str(&pad);
-    out.push_str(&carets);
+    // RES-2050: write spaces / carets character-by-character into the
+    // pre-sized buffer. `str::repeat` would allocate a fresh String
+    // only to copy it back into `out` immediately — wasted work on
+    // every diagnostic.
+    for _ in 0..pad_count {
+        out.push(' ');
+    }
+    for _ in 0..caret_count {
+        out.push('^');
+    }
     if span.end.line != span.start.line {
         // RES-1984: write! directly into `out` instead of the
         // `push_str(&format!())` antipattern. No intermediate String alloc.
@@ -164,11 +163,17 @@ fn nth_line(src: &str, n: usize) -> Option<&str> {
 /// Expand any `\t` in `line` to `TAB_WIDTH` spaces so the caret
 /// underline lines up visually. Non-tab characters are preserved
 /// byte-for-byte (no UTF-8 normalisation).
+///
+/// RES-2050: tab expansion pushes spaces directly into the output
+/// buffer. The previous `" ".repeat(TAB_WIDTH)` allocated a fresh
+/// String per tab character only to copy it into `out` immediately.
 fn expand_tabs(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     for c in line.chars() {
         if c == '\t' {
-            out.push_str(&" ".repeat(TAB_WIDTH));
+            for _ in 0..TAB_WIDTH {
+                out.push(' ');
+            }
         } else {
             out.push(c);
         }

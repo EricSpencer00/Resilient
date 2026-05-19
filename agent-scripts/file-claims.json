@@ -49,8 +49,8 @@
       "claimed_at": "2026-05-12T02:48:11Z"
     },
     "resilient/src/diag.rs": {
-      "branch": "res-1984-diag-presize-write",
-      "claimed_at": "2026-05-19T00:00:00Z"
+      "branch": "res-2050-diag-drop-intermediate-strings",
+      "claimed_at": "2026-05-20T02:00:00Z"
     },
     "resilient/src/array_argminmax.rs": {
       "branch": "res-2026-argminmax-single-pass",
