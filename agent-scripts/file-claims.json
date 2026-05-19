@@ -101,8 +101,8 @@
       "claimed_at": "2026-05-12T11:56:23Z"
     },
     "resilient/src/lsp_server.rs": {
-      "branch": "res-1531-lsp-completion-lazy-clone",
-      "claimed_at": "2026-05-12T14:20:00Z"
+      "branch": "res-1976-lsp-top-defs-presize",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/imports.rs": {
       "branch": "res-1523-imports-canon-move",
