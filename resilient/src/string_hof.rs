@@ -25,8 +25,13 @@ type RResult<T> = Result<T, String>;
 /// // upper == "HELLO"
 /// ```
 pub(crate) fn builtin_string_map_chars(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1928: borrow `s` and `f` directly from `args` — `apply_function`
+    // takes `func: &Value`, and the loop body only iterates `s.chars()` /
+    // reads `s.len()`, both of which accept `&str`. The legacy
+    // `s.clone()` / `f.clone()` pair was pure overhead (one String alloc
+    // + one Function Rc bump per call).
     let (s, f) = match args {
-        [Value::String(s), f] => (s.clone(), f.clone()),
+        [Value::String(s), f] => (s.as_str(), f),
         [a, _] => {
             return Err(format!(
                 "string_map_chars: first argument must be a string, got {a}"
@@ -43,7 +48,7 @@ pub(crate) fn builtin_string_map_chars(interp: &mut Interpreter, args: &[Value])
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        match interp.apply_function(&f, vec![c_str])? {
+        match interp.apply_function(f, vec![c_str])? {
             Value::String(piece) => out.push_str(&piece),
             other => {
                 return Err(format!(
@@ -67,8 +72,10 @@ pub(crate) fn builtin_string_map_chars(interp: &mut Interpreter, args: &[Value])
 /// // digits_only == "123"
 /// ```
 pub(crate) fn builtin_string_filter_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1928: borrow `s` and `f` directly from `args`. See
+    // `builtin_string_map_chars` above for rationale.
     let (s, f) = match args {
-        [Value::String(s), f] => (s.clone(), f.clone()),
+        [Value::String(s), f] => (s.as_str(), f),
         [a, _] => {
             return Err(format!(
                 "string_filter_by: first argument must be a string, got {a}"
@@ -85,7 +92,7 @@ pub(crate) fn builtin_string_filter_by(interp: &mut Interpreter, args: &[Value])
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        match interp.apply_function(&f, vec![c_str])? {
+        match interp.apply_function(f, vec![c_str])? {
             Value::Bool(true) => out.push(ch),
             Value::Bool(false) => {}
             other => {
@@ -111,8 +118,11 @@ pub(crate) fn builtin_string_filter_by(interp: &mut Interpreter, args: &[Value])
 /// // count == 1  (one space)
 /// ```
 pub(crate) fn builtin_string_fold(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1928: `s` and `f` are borrows; `init` still needs `.clone()`
+    // because it seeds the mutable `acc` accumulator that gets rebound
+    // each loop iteration.
     let (s, init, f) = match args {
-        [Value::String(s), init, f] => (s.clone(), init.clone(), f.clone()),
+        [Value::String(s), init, f] => (s.as_str(), init.clone(), f),
         [a, _, _] => {
             return Err(format!(
                 "string_fold: first argument must be a string, got {a}"
@@ -129,7 +139,7 @@ pub(crate) fn builtin_string_fold(interp: &mut Interpreter, args: &[Value]) -> R
     let mut acc = init;
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        acc = interp.apply_function(&f, vec![acc, c_str])?;
+        acc = interp.apply_function(f, vec![acc, c_str])?;
     }
     Ok(acc)
 }
@@ -147,8 +157,9 @@ pub(crate) fn builtin_string_for_each_char(
     interp: &mut Interpreter,
     args: &[Value],
 ) -> RResult<Value> {
+    // RES-1928: borrow `s` and `f` directly from `args`.
     let (s, f) = match args {
-        [Value::String(s), f] => (s.clone(), f.clone()),
+        [Value::String(s), f] => (s.as_str(), f),
         [a, _] => {
             return Err(format!(
                 "string_for_each_char: first argument must be a string, got {a}"
@@ -164,7 +175,7 @@ pub(crate) fn builtin_string_for_each_char(
 
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        interp.apply_function(&f, vec![c_str])?;
+        interp.apply_function(f, vec![c_str])?;
     }
     Ok(Value::Void)
 }

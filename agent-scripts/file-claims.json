@@ -351,6 +351,10 @@
     "resilient/src/compiler.rs": {
       "branch": "res-1922-compile-match-presize",
       "claimed_at": "2026-05-19T17:22:52Z"
+    },
+    "resilient/src/string_hof.rs": {
+      "branch": "res-1928-string-hof-clone-elim",
+      "claimed_at": "2026-05-19T17:42:33Z"
     }
   }
 }
