@@ -24862,7 +24862,9 @@ impl Interpreter {
             && let (Some(ls), Some(rs)) =
                 (stringify_for_concat(&left), stringify_for_concat(&right))
         {
-            return Ok(Value::String(format!("{ls}{rs}")));
+            let mut s = ls;
+            s.push_str(&rs);
+            return Ok(Value::String(s));
         }
 
         // Array concat: `[1,2] + [3]` → `[1,2,3]`. Only for `+`.
@@ -25063,7 +25065,11 @@ impl Interpreter {
         // Lexicographic comparison for <, >, <=, >= matches the standard
         // behavior users expect from strings in most languages.
         match operator {
-            "+" => Ok(Value::String(format!("{}{}", left, right))),
+            "+" => {
+                let mut s = left;
+                s.push_str(&right);
+                Ok(Value::String(s))
+            }
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
             "<" => Ok(Value::Bool(left < right)),
