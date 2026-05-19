@@ -230,7 +230,7 @@ fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<S
                 right,
                 ..
             } = iterable.as_ref()
-                && operator == ".."
+                && *operator == ".."
             {
                 let ident = |n: &str| Node::Identifier {
                     name: n.to_string(),
@@ -239,14 +239,14 @@ fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<S
                 // Axiom: lower_bound <= i
                 body_ctx.axioms.push(Node::InfixExpression {
                     left: Box::new((**left).clone()),
-                    operator: "<=".to_string(),
+                    operator: "<=",
                     right: Box::new(ident(name)),
                     span: Span::default(),
                 });
                 // Axiom: i < upper_bound
                 body_ctx.axioms.push(Node::InfixExpression {
                     left: Box::new(ident(name)),
-                    operator: "<".to_string(),
+                    operator: "<",
                     right: Box::new((**right).clone()),
                     span: Span::default(),
                 });
@@ -413,19 +413,19 @@ fn build_bounds_goal(target_name: &str, index: &Node) -> Node {
     };
     let ge = Node::InfixExpression {
         left: Box::new(zero),
-        operator: "<=".to_string(),
+        operator: "<=",
         right: Box::new(index.clone()),
         span: Span::default(),
     };
     let lt = Node::InfixExpression {
         left: Box::new(index.clone()),
-        operator: "<".to_string(),
+        operator: "<",
         right: Box::new(len_call),
         span: Span::default(),
     };
     Node::InfixExpression {
         left: Box::new(ge),
-        operator: "&&".to_string(),
+        operator: "&&",
         right: Box::new(lt),
         span: Span::default(),
     }

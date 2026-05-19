@@ -56,7 +56,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                 left,
                 right,
                 ..
-            } if matches!(operator.as_str(), ">" | "<" | ">=" | "<=") => {
+            } if matches!(*operator, ">" | "<" | ">=" | "<=") => {
                 for side in [left.as_ref(), right.as_ref()] {
                     if let Node::FieldAccess { target, field, .. } = side {
                         if field.ends_with("_at") {

@@ -321,7 +321,7 @@ pub(crate) fn node_to_smtlib2(node: &Node) -> String {
         } => {
             let l = node_to_smtlib2(left);
             let r = node_to_smtlib2(right);
-            let op = match operator.as_str() {
+            let op = match *operator {
                 "+" => "+",
                 "-" => "-",
                 "*" => "*",
@@ -343,7 +343,7 @@ pub(crate) fn node_to_smtlib2(node: &Node) -> String {
             operator, right, ..
         } => {
             let r = node_to_smtlib2(right);
-            match operator.as_str() {
+            match *operator {
                 "!" => format!("(not {r})"),
                 "-" => format!("(- {r})"),
                 _ => "true".to_string(),
@@ -635,7 +635,7 @@ mod tests {
                 name: "reading".to_string(),
                 span: Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 100,
                 span: Span::default(),
@@ -653,7 +653,7 @@ mod tests {
                 name: "a".to_string(),
                 span: Span::default(),
             }),
-            operator: "!=".to_string(),
+            operator: "!=",
             right: Box::new(Node::Identifier {
                 name: "b".to_string(),
                 span: Span::default(),
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn smtlib2_prefix_not() {
         let node = Node::PrefixExpression {
-            operator: "!".to_string(),
+            operator: "!",
             right: Box::new(Node::BooleanLiteral {
                 value: true,
                 span: Span::default(),
@@ -684,7 +684,7 @@ mod tests {
                 name: "reading".to_string(),
                 span: Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 100,
                 span: Span::default(),
@@ -722,7 +722,7 @@ mod tests {
                 name: "reading".to_string(),
                 span: Span::default(),
             }),
-            operator: ">=".to_string(),
+            operator: ">=",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: Span::default(),
@@ -734,7 +734,7 @@ mod tests {
                 name: "reading".to_string(),
                 span: Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 100,
                 span: Span::default(),

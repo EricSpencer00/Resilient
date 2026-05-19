@@ -1857,7 +1857,7 @@ fn compile_expr(
         }
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "-" => {
+        } if *operator == "-" => {
             compile_expr(
                 right,
                 chunk,
@@ -1875,7 +1875,7 @@ fn compile_expr(
         // RES-083: logical negation.
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "!" => {
+        } if *operator == "!" => {
             compile_expr(
                 right,
                 chunk,
@@ -1896,7 +1896,7 @@ fn compile_expr(
             operator,
             right,
             ..
-        } if operator == "&&" => {
+        } if *operator == "&&" => {
             compile_expr(
                 left,
                 chunk,
@@ -1936,7 +1936,7 @@ fn compile_expr(
             operator,
             right,
             ..
-        } if operator == "||" => {
+        } if *operator == "||" => {
             compile_expr(
                 left,
                 chunk,
@@ -2001,7 +2001,7 @@ fn compile_expr(
                 next_fn_idx,
                 line,
             )?;
-            let op = match operator.as_str() {
+            let op = match *operator {
                 "+" => Op::Add,
                 "-" => Op::Sub,
                 "*" => Op::Mul,

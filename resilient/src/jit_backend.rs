@@ -2638,7 +2638,7 @@ fn lower_expr(
             right,
             ..
         } => {
-            let op_str = operator.as_str();
+            let op_str = *operator;
             // Validate first so we can short-circuit Unsupported
             // before recursing into the operands.
             if !matches!(
@@ -3737,7 +3737,7 @@ mod tests {
                         name: "n".to_string(),
                         span: Span::default(),
                     }),
-                    operator: "*".to_string(),
+                    operator: "*",
                     right: Box::new(Node::IntegerLiteral {
                         value: 2,
                         span: Span::default(),
@@ -3807,7 +3807,7 @@ mod tests {
         for _ in 0..10 {
             body = Node::InfixExpression {
                 left: Box::new(body),
-                operator: "+".to_string(),
+                operator: "+",
                 right: Box::new(Node::IntegerLiteral {
                     value: 1,
                     span: Span::default(),

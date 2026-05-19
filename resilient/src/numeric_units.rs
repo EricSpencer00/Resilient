@@ -97,7 +97,7 @@ fn check_expr(
         ..
     } = expr
     {
-        if !matches!(operator.as_str(), "+" | "-") {
+        if !matches!(*operator, "+" | "-") {
             return;
         }
         let lu = ident_unit(left, units);

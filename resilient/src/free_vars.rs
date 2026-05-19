@@ -725,7 +725,7 @@ mod tests {
                 name: "x".into(),
                 value: Box::new(Node::InfixExpression {
                     left: Box::new(ident("x")),
-                    operator: "+".into(),
+                    operator: "+",
                     right: Box::new(int_lit(1)),
                     span: Span::default(),
                 }),
@@ -746,7 +746,7 @@ mod tests {
                 stmts: vec![Node::ReturnStatement {
                     value: Some(Box::new(Node::InfixExpression {
                         left: Box::new(ident("x")),
-                        operator: "+".into(),
+                        operator: "+",
                         right: Box::new(ident("n")),
                         span: Span::default(),
                     })),
@@ -794,11 +794,11 @@ mod tests {
                     value: Some(Box::new(Node::InfixExpression {
                         left: Box::new(Node::InfixExpression {
                             left: Box::new(ident("x")),
-                            operator: "+".into(),
+                            operator: "+",
                             right: Box::new(ident("a")),
                             span: Span::default(),
                         }),
-                        operator: "+".into(),
+                        operator: "+",
                         right: Box::new(ident("b")),
                         span: Span::default(),
                     })),
@@ -826,7 +826,7 @@ mod tests {
                     name: "sum".into(),
                     value: Box::new(Node::InfixExpression {
                         left: Box::new(ident("sum")),
-                        operator: "+".into(),
+                        operator: "+",
                         right: Box::new(ident("x")),
                         span: Span::default(),
                     }),
@@ -851,7 +851,7 @@ mod tests {
                 None,
                 Node::InfixExpression {
                     left: Box::new(ident("y")),
-                    operator: "+".into(),
+                    operator: "+",
                     right: Box::new(ident("outer")),
                     span: Span::default(),
                 },
@@ -885,11 +885,11 @@ mod tests {
                     value: Some(Box::new(Node::InfixExpression {
                         left: Box::new(Node::InfixExpression {
                             left: Box::new(ident("a")),
-                            operator: "+".into(),
+                            operator: "+",
                             right: Box::new(ident("b")),
                             span: Span::default(),
                         }),
-                        operator: "+".into(),
+                        operator: "+",
                         right: Box::new(ident("c")),
                         span: Span::default(),
                     })),
@@ -940,7 +940,7 @@ mod tests {
             name: "sum".into(),
             value: Box::new(Node::InfixExpression {
                 left: Box::new(ident("sum")),
-                operator: "+".into(),
+                operator: "+",
                 right: Box::new(int_lit(1)),
                 span: Span::default(),
             }),
@@ -1019,22 +1019,22 @@ mod tests {
         let a = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
                 left: Box::new(ident("gamma")),
-                operator: "+".into(),
+                operator: "+",
                 right: Box::new(ident("alpha")),
                 span: Span::default(),
             }),
-            operator: "+".into(),
+            operator: "+",
             right: Box::new(ident("beta")),
             span: Span::default(),
         };
         let b = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
                 left: Box::new(ident("alpha")),
-                operator: "+".into(),
+                operator: "+",
                 right: Box::new(ident("beta")),
                 span: Span::default(),
             }),
-            operator: "+".into(),
+            operator: "+",
             right: Box::new(ident("gamma")),
             span: Span::default(),
         };
@@ -1068,7 +1068,7 @@ mod tests {
             }),
             invariants: vec![Node::InfixExpression {
                 left: Box::new(ident("p")),
-                operator: ">=".into(),
+                operator: ">=",
                 right: Box::new(int_lit(0)),
                 span: Span::default(),
             }],

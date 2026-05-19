@@ -230,21 +230,21 @@ fn candidates(state_name: &str) -> Vec<Node> {
         state.clone(),
         // μ = -state
         Node::PrefixExpression {
-            operator: "-".to_string(),
+            operator: "-",
             right: Box::new(state.clone()),
             span: Span::default(),
         },
         // μ = state - 1
         Node::InfixExpression {
             left: Box::new(state.clone()),
-            operator: "-".to_string(),
+            operator: "-",
             right: Box::new(int_lit(1)),
             span: Span::default(),
         },
         // μ = 1 - state
         Node::InfixExpression {
             left: Box::new(int_lit(1)),
-            operator: "-".to_string(),
+            operator: "-",
             right: Box::new(state),
             span: Span::default(),
         },
@@ -428,10 +428,10 @@ fn mk_true() -> Node {
     }
 }
 
-fn infix(left: Node, op: &str, right: Node) -> Node {
+fn infix(left: Node, op: &'static str, right: Node) -> Node {
     Node::InfixExpression {
         left: Box::new(left),
-        operator: op.to_string(),
+        operator: op,
         right: Box::new(right),
         span: Span::default(),
     }
@@ -440,7 +440,7 @@ fn infix(left: Node, op: &str, right: Node) -> Node {
 fn and_node(a: Node, b: Node) -> Node {
     Node::InfixExpression {
         left: Box::new(a),
-        operator: "&&".to_string(),
+        operator: "&&",
         right: Box::new(b),
         span: Span::default(),
     }
@@ -449,7 +449,7 @@ fn and_node(a: Node, b: Node) -> Node {
 fn or_node(a: Node, b: Node) -> Node {
     Node::InfixExpression {
         left: Box::new(a),
-        operator: "||".to_string(),
+        operator: "||",
         right: Box::new(b),
         span: Span::default(),
     }
@@ -458,11 +458,11 @@ fn or_node(a: Node, b: Node) -> Node {
 fn implies_node(a: Node, b: Node) -> Node {
     Node::InfixExpression {
         left: Box::new(Node::PrefixExpression {
-            operator: "!".to_string(),
+            operator: "!",
             right: Box::new(a),
             span: Span::default(),
         }),
-        operator: "||".to_string(),
+        operator: "||",
         right: Box::new(b),
         span: Span::default(),
     }

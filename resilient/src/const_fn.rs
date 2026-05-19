@@ -62,7 +62,7 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
             operator, right, ..
         } => {
             let v = eval_depth(right, env, depth + 1)?;
-            match (operator.as_str(), v) {
+            match (*operator, v) {
                 ("-", ConstValue::Int(n)) => Some(ConstValue::Int(-n)),
                 ("!", ConstValue::Bool(b)) => Some(ConstValue::Bool(!b)),
                 _ => None,
@@ -76,7 +76,7 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
             ..
         } => {
             // Short-circuit `&&` and `||` before evaluating both sides.
-            match operator.as_str() {
+            match *operator {
                 "&&" => {
                     let lv = eval_depth(left, env, depth + 1)?;
                     if let ConstValue::Bool(false) = lv {
@@ -103,7 +103,7 @@ fn eval_depth(body: &Node, env: &HashMap<String, ConstValue>, depth: u32) -> Opt
             }
             let l = eval_depth(left, env, depth + 1)?;
             let r = eval_depth(right, env, depth + 1)?;
-            match (l, r, operator.as_str()) {
+            match (l, r, *operator) {
                 (ConstValue::Int(a), ConstValue::Int(b), "+") => {
                     Some(ConstValue::Int(a.wrapping_add(b)))
                 }
@@ -254,10 +254,10 @@ mod tests {
         }
     }
 
-    fn infix(left: Node, op: &str, right: Node) -> Node {
+    fn infix(left: Node, op: &'static str, right: Node) -> Node {
         Node::InfixExpression {
             left: Box::new(left),
-            operator: op.into(),
+            operator: op,
             right: Box::new(right),
             span: crate::Span::default(),
         }
@@ -344,7 +344,7 @@ mod tests {
     fn evaluates_prefix_negation() {
         let env = HashMap::new();
         let neg = Node::PrefixExpression {
-            operator: "-".into(),
+            operator: "-",
             right: Box::new(int_lit(5)),
             span: crate::Span::default(),
         };
@@ -355,7 +355,7 @@ mod tests {
     fn evaluates_prefix_not() {
         let env = HashMap::new();
         let not = Node::PrefixExpression {
-            operator: "!".into(),
+            operator: "!",
             right: Box::new(bool_lit(true)),
             span: crate::Span::default(),
         };
@@ -453,7 +453,7 @@ mod tests {
         };
         let expr = Node::InfixExpression {
             left: Box::new(bool_lit(false)),
-            operator: "&&".into(),
+            operator: "&&",
             right: Box::new(unevaluable),
             span: crate::Span::default(),
         };
@@ -470,7 +470,7 @@ mod tests {
         };
         let expr = Node::InfixExpression {
             left: Box::new(bool_lit(true)),
-            operator: "||".into(),
+            operator: "||",
             right: Box::new(unevaluable),
             span: crate::Span::default(),
         };

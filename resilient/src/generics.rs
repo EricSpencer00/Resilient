@@ -294,7 +294,7 @@ fn check_body_for_constraints(
             // generic-typed local AND the other operand is a concrete
             // numeric literal — that's the canonical body-consistency
             // violation.
-            let arith = matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%");
+            let arith = matches!(*operator, "+" | "-" | "*" | "/" | "%");
             if arith {
                 let left_is_generic = identifier_in_set(left, generic_locals);
                 let right_is_generic = identifier_in_set(right, generic_locals);

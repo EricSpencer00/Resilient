@@ -352,7 +352,7 @@ fn literal_int(node: &Node) -> Option<i64> {
     } else if let Node::PrefixExpression {
         operator, right, ..
     } = node
-        && operator == "-"
+        && *operator == "-"
         && let Node::IntegerLiteral { value, .. } = right.as_ref()
     {
         Some(-*value)
@@ -435,7 +435,7 @@ fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
             span,
         } => Node::InfixExpression {
             left: Box::new(substitute(left, name, replacement)),
-            operator: operator.clone(),
+            operator,
             right: Box::new(substitute(right, name, replacement)),
             span: *span,
         },
@@ -444,7 +444,7 @@ fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
             right,
             span,
         } => Node::PrefixExpression {
-            operator: operator.clone(),
+            operator,
             right: Box::new(substitute(right, name, replacement)),
             span: *span,
         },
@@ -458,18 +458,18 @@ fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
 fn build_implication(p: &Node, cond: &Node, q: &Node) -> Node {
     let p_and_cond = Node::InfixExpression {
         left: Box::new(p.clone()),
-        operator: "&&".to_string(),
+        operator: "&&",
         right: Box::new(cond.clone()),
         span: Span::default(),
     };
     let neg_p_and_cond = Node::PrefixExpression {
-        operator: "!".to_string(),
+        operator: "!",
         right: Box::new(p_and_cond),
         span: Span::default(),
     };
     Node::InfixExpression {
         left: Box::new(neg_p_and_cond),
-        operator: "||".to_string(),
+        operator: "||",
         right: Box::new(q.clone()),
         span: Span::default(),
     }

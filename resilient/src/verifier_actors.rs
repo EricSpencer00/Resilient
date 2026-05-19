@@ -181,7 +181,7 @@ fn substitute_state(expr: &Node, state_name: &str, value: &Node) -> Node {
             span,
         } => Node::InfixExpression {
             left: Box::new(substitute_state(left, state_name, value)),
-            operator: operator.clone(),
+            operator,
             right: Box::new(substitute_state(right, state_name, value)),
             span: *span,
         },
@@ -190,7 +190,7 @@ fn substitute_state(expr: &Node, state_name: &str, value: &Node) -> Node {
             right,
             span,
         } => Node::PrefixExpression {
-            operator: operator.clone(),
+            operator,
             right: Box::new(substitute_state(right, state_name, value)),
             span: *span,
         },
@@ -313,7 +313,7 @@ fn flatten_body(body: &Node) -> Option<Vec<&Node>> {
 fn and_node(a: Node, b: Node) -> Node {
     Node::InfixExpression {
         left: Box::new(a),
-        operator: "&&".to_string(),
+        operator: "&&",
         right: Box::new(b),
         span: Span::default(),
     }
@@ -323,11 +323,11 @@ fn and_node(a: Node, b: Node) -> Node {
 fn implies_node(a: Node, b: Node) -> Node {
     Node::InfixExpression {
         left: Box::new(Node::PrefixExpression {
-            operator: "!".to_string(),
+            operator: "!",
             right: Box::new(a),
             span: Span::default(),
         }),
-        operator: "||".to_string(),
+        operator: "||",
         right: Box::new(b),
         span: Span::default(),
     }
@@ -453,10 +453,10 @@ mod tests {
         }
     }
 
-    fn infix(left: Node, op: &str, right: Node) -> Node {
+    fn infix(left: Node, op: &'static str, right: Node) -> Node {
         Node::InfixExpression {
             left: Box::new(left),
-            operator: op.to_string(),
+            operator: op,
             right: Box::new(right),
             span: Span::default(),
         }

@@ -2354,7 +2354,7 @@ enum Node {
         span: span::Span,
     },
     PrefixExpression {
-        operator: String,
+        operator: &'static str,
         right: Box<Node>,
         /// RES-084: source span of the operator token. Consumed in
         /// follow-ups (e.g. typechecker arithmetic-mismatch errors).
@@ -2363,7 +2363,7 @@ enum Node {
     },
     InfixExpression {
         left: Box<Node>,
-        operator: String,
+        operator: &'static str,
         right: Box<Node>,
         /// RES-084: span of the operator token (NOT the full
         /// `lhs op rhs` range — that's a future refinement).
@@ -3426,7 +3426,7 @@ impl Parser {
     /// RES-917: build the desugared assignment node for
     /// `LHS OP= RHS`. The LHS is cloned for the read-side of the
     /// generated `InfixExpression`.
-    fn build_compound_lvalue_assignment(&mut self, lhs: Node, op: &str, rhs: Node) -> Node {
+    fn build_compound_lvalue_assignment(&mut self, lhs: Node, op: &'static str, rhs: Node) -> Node {
         let stmt_span = match &lhs {
             Node::IndexExpression { span, .. } => *span,
             Node::FieldAccess { span, .. } => *span,
@@ -3445,7 +3445,7 @@ impl Parser {
                 };
                 let combined = Node::InfixExpression {
                     left: Box::new(read),
-                    operator: op.to_string(),
+                    operator: op,
                     right: Box::new(rhs),
                     span: stmt_span,
                 };
@@ -3468,7 +3468,7 @@ impl Parser {
                 };
                 let combined = Node::InfixExpression {
                     left: Box::new(read),
-                    operator: op.to_string(),
+                    operator: op,
                     right: Box::new(rhs),
                     span: stmt_span,
                 };
@@ -3526,7 +3526,7 @@ impl Parser {
         };
         let ident_span = self.span_at_current();
         self.next_token(); // move onto the OP= token
-        let op_str = match &self.current_token {
+        let op_str: &'static str = match &self.current_token {
             Token::PlusAssign => "+",
             Token::MinusAssign => "-",
             Token::StarAssign => "*",
@@ -3538,8 +3538,7 @@ impl Parser {
             Token::ShlAssign => "<<",
             Token::ShrAssign => ">>",
             other => unreachable!("compound-assign with non-OP= token: {:?}", other),
-        }
-        .to_string();
+        };
         self.next_token(); // skip the OP= token to first token of RHS
         let rhs = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
             value: 0,
@@ -7729,7 +7728,7 @@ impl Parser {
                 // `-1 + 2` stays `(-1) + 2`.
                 let right = self.parse_expression(10)?;
                 Some(Node::PrefixExpression {
-                    operator: op.to_string(),
+                    operator: op,
                     right: Box::new(right),
                     span: op_span,
                 })
@@ -7863,7 +7862,7 @@ impl Parser {
                     });
                     Some(Node::InfixExpression {
                         left: Box::new(current_left),
-                        operator: "??".to_string(),
+                        operator: "??",
                         right: Box::new(rhs),
                         span: op_span,
                     })
@@ -7999,28 +7998,26 @@ impl Parser {
     }
 
     fn parse_infix_expression(&mut self, left: Node) -> Option<Node> {
-        let operator = match &self.current_token {
-            Token::Plus => "+".to_string(),
-            Token::Minus => "-".to_string(),
-            Token::Multiply => "*".to_string(),
-            Token::Divide => "/".to_string(),
-            Token::Modulo => "%".to_string(),
-            Token::And => "&&".to_string(),
-            Token::Or => "||".to_string(),
-            Token::BitAnd => "&".to_string(),
-            Token::BitOr => "|".to_string(),
-            Token::BitXor => "^".to_string(),
-            Token::ShiftLeft => "<<".to_string(),
-            Token::ShiftRight => ">>".to_string(),
-            Token::Equal => "==".to_string(),
-            Token::NotEqual => "!=".to_string(),
-            Token::Less => "<".to_string(),
-            Token::Greater => ">".to_string(),
-            Token::LessEqual => "<=".to_string(),
-            Token::GreaterEqual => ">=".to_string(),
+        let operator: &'static str = match &self.current_token {
+            Token::Plus => "+",
+            Token::Minus => "-",
+            Token::Multiply => "*",
+            Token::Divide => "/",
+            Token::Modulo => "%",
+            Token::And => "&&",
+            Token::Or => "||",
+            Token::BitAnd => "&",
+            Token::BitOr => "|",
+            Token::BitXor => "^",
+            Token::ShiftLeft => "<<",
+            Token::ShiftRight => ">>",
+            Token::Equal => "==",
+            Token::NotEqual => "!=",
+            Token::Less => "<",
+            Token::Greater => ">",
+            Token::LessEqual => "<=",
+            Token::GreaterEqual => ">=",
             _ => {
-                // Unreachable in practice (the caller only dispatches
-                // known operator tokens), but better to report than panic.
                 let tok = self.current_token.clone();
                 self.record_error(format!("Internal: unexpected operator token {:?}", tok));
                 return None;
@@ -22577,7 +22574,7 @@ impl Interpreter {
                 // fall through to `eval_infix_expression` so the
                 // existing "Logical '&&' requires bool operands" error
                 // still fires.
-                if operator == "&&" {
+                if *operator == "&&" {
                     let left_val = self.eval(left)?;
                     if let Value::Bool(false) = left_val {
                         return Ok(Value::Bool(false));
@@ -22585,7 +22582,7 @@ impl Interpreter {
                     let right_val = self.eval(right)?;
                     return self.eval_infix_expression(operator, left_val, right_val);
                 }
-                if operator == "||" {
+                if *operator == "||" {
                     let left_val = self.eval(left)?;
                     if let Value::Bool(true) = left_val {
                         return Ok(Value::Bool(true));
@@ -24035,7 +24032,7 @@ impl Interpreter {
                 operator, right, ..
             } => {
                 let rv = Self::eval_const_expr(right, resolved, evaluating)?;
-                match (operator.as_str(), rv) {
+                match (*operator, rv) {
                     ("-", Value::Int(i)) => Ok(Value::Int(-i)),
                     ("-", Value::Float(f)) => Ok(Value::Float(-f)),
                     ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
@@ -24053,7 +24050,7 @@ impl Interpreter {
             } => {
                 let lv = Self::eval_const_expr(left, resolved, evaluating)?;
                 let rv = Self::eval_const_expr(right, resolved, evaluating)?;
-                match (operator.as_str(), lv, rv) {
+                match (*operator, lv, rv) {
                     ("+", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
                     ("-", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
                     ("*", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
@@ -24792,7 +24789,7 @@ impl Interpreter {
             right,
             ..
         } = condition
-            && matches!(operator.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">=")
+            && matches!(*operator, "==" | "!=" | "<" | ">" | "<=" | ">=")
             && let (Ok(lv), Ok(rv)) = (self.eval(left), self.eval(right))
         {
             return format!("condition {} {} {} was {}", lv, operator, rv, final_value);
@@ -53411,7 +53408,7 @@ mod tests {
         let Node::InfixExpression { operator, span, .. } = expr.as_ref() else {
             panic!("expected InfixExpression, got {:?}", expr);
         };
-        assert_eq!(operator, "+");
+        assert_eq!(*operator, "+");
         assert!(span.start.line >= 1, "infix span: {:?}", span);
     }
 
@@ -53430,7 +53427,7 @@ mod tests {
         let Node::PrefixExpression { operator, span, .. } = expr.as_ref() else {
             panic!()
         };
-        assert_eq!(operator, "!");
+        assert_eq!(*operator, "!");
         assert!(span.start.line >= 1);
         // stmt 2 is the call f()
         let Node::ExpressionStatement { expr, .. } = &stmts[2].node else {

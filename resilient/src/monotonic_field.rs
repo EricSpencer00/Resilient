@@ -82,7 +82,7 @@ fn value_is_monotonic(value: &Node, target: &Node, field: &str) -> bool {
             right,
             ..
         } => {
-            if operator == "+" {
+            if *operator == "+" {
                 touches_self_field(left, target, field) || touches_self_field(right, target, field)
             } else {
                 false

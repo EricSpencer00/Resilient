@@ -60,7 +60,7 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
             right,
             ..
         } => {
-            match operator.as_str() {
+            match *operator {
                 // arithmetic
                 "+" => push(out, fn_name, "arithmetic", "swap `+` -> `-`"),
                 "-" => push(out, fn_name, "arithmetic", "swap `-` -> `+`"),
@@ -93,7 +93,7 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
         Node::PrefixExpression {
             operator, right, ..
         } => {
-            if operator == "-" {
+            if *operator == "-" {
                 push(
                     out,
                     fn_name,

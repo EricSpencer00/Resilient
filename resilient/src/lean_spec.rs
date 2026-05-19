@@ -139,7 +139,7 @@ fn lower_expr(node: &Node) -> Result<LeanExpr, LowerError> {
             operator, right, ..
         } => {
             let inner = lower_expr(right)?;
-            match operator.as_str() {
+            match *operator {
                 "-" => Ok(LeanExpr::Neg(Box::new(inner))),
                 "!" => Ok(LeanExpr::Not(Box::new(inner))),
                 op => Err(LowerError::UnsupportedOperator(op.to_string())),
@@ -153,7 +153,7 @@ fn lower_expr(node: &Node) -> Result<LeanExpr, LowerError> {
         } => {
             let l = Box::new(lower_expr(left)?);
             let r = Box::new(lower_expr(right)?);
-            match operator.as_str() {
+            match *operator {
                 "+" => Ok(LeanExpr::Add(l, r)),
                 "-" => Ok(LeanExpr::Sub(l, r)),
                 "*" => Ok(LeanExpr::Mul(l, r)),

@@ -1278,54 +1278,54 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             ..
         } => {
             t.has_infix = true;
-            if operator == "/" || operator == "%" {
+            if *operator == "/" || *operator == "%" {
                 t.has_division = true;
             }
             // L0040: arithmetic operator — combined with has_integer_literal
             // to gate the magic-number pass.
-            if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%") {
+            if matches!(*operator, "+" | "-" | "*" | "/" | "%") {
                 t.has_arith_int_literal = true;
             }
             // L0044: shift with a literal RHS.
-            if matches!(operator.as_str(), "<<" | ">>")
+            if matches!(*operator, "<<" | ">>")
                 && matches!(right.as_ref(), Node::IntegerLiteral { .. })
             {
                 t.has_literal_shift = true;
             }
             // L0048: any Bxor (^) infix expression.
-            if operator == "^" {
+            if *operator == "^" {
                 t.has_xor_infix = true;
             }
             // L0051: `==` or `!=` between two string literals.
-            if matches!(operator.as_str(), "==" | "!=")
+            if matches!(*operator, "==" | "!=")
                 && matches!(left.as_ref(), Node::StringLiteral { .. })
                 && matches!(right.as_ref(), Node::StringLiteral { .. })
             {
                 t.has_string_literal_cmp = true;
             }
             // L0055: `!=` where one operand is a boolean literal.
-            if operator == "!="
+            if *operator == "!="
                 && (matches!(left.as_ref(), Node::BooleanLiteral { .. })
                     || matches!(right.as_ref(), Node::BooleanLiteral { .. }))
             {
                 t.has_bool_neq_cmp = true;
             }
             // L0057-L0061: arithmetic identity operands (0 or 1 as literal).
-            if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "<<" | ">>")
+            if matches!(*operator, "+" | "-" | "*" | "/" | "<<" | ">>")
                 && (matches!(left.as_ref(), Node::IntegerLiteral { value: 0 | 1, .. })
                     || matches!(right.as_ref(), Node::IntegerLiteral { value: 0 | 1, .. }))
             {
                 t.has_arith_identity = true;
             }
             // L0067-L0070: `&&` / `||` where one operand is a boolean literal.
-            if matches!(operator.as_str(), "&&" | "||")
+            if matches!(*operator, "&&" | "||")
                 && (matches!(left.as_ref(), Node::BooleanLiteral { .. })
                     || matches!(right.as_ref(), Node::BooleanLiteral { .. }))
             {
                 t.has_bool_logic_with_literal = true;
             }
             // L0086: `==` / `!=` with an empty string literal operand.
-            if matches!(operator.as_str(), "==" | "!=")
+            if matches!(*operator, "==" | "!=")
                 && (matches!(left.as_ref(), Node::StringLiteral { value, .. } if value.is_empty())
                     || matches!(right.as_ref(), Node::StringLiteral { value, .. } if value.is_empty()))
             {
@@ -1337,7 +1337,7 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         } => {
             t.has_prefix_expr = true;
             // L0052: `!` applied directly to a bool literal.
-            if operator == "!" && matches!(right.as_ref(), Node::BooleanLiteral { .. }) {
+            if *operator == "!" && matches!(right.as_ref(), Node::BooleanLiteral { .. }) {
                 t.has_negated_bool_literal = true;
             }
         }
@@ -1478,7 +1478,7 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::FloatLiteral { .. } => t.has_float_literal = true,
         Node::ExpressionStatement { expr, .. } => {
             if matches!(expr.as_ref(), Node::InfixExpression { operator, .. }
-                if matches!(operator.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">="))
+                if matches!(*operator, "==" | "!=" | "<" | "<=" | ">" | ">="))
             {
                 t.has_expr_stmt_cmp = true;
             }
@@ -2622,12 +2622,12 @@ fn walk_self_comparisons(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && (operator == "==" || operator == "!=")
+        && (*operator == "==" || *operator == "!=")
         && let (Node::Identifier { name: ln, .. }, Node::Identifier { name: rn, .. }) =
             (left.as_ref(), right.as_ref())
         && ln == rn
     {
-        let always = if operator == "==" {
+        let always = if *operator == "==" {
             "always true"
         } else {
             "always false"
@@ -2667,7 +2667,7 @@ fn walk_and_or(node: &Node, out: &mut Vec<Lint>) {
         span,
     } = node
     {
-        let opposite = match operator.as_str() {
+        let opposite = match *operator {
             "&&" => Some("||"),
             "||" => Some("&&"),
             _ => None,
@@ -2691,7 +2691,7 @@ fn walk_and_or(node: &Node, out: &mut Vec<Lint>) {
 }
 
 fn has_top_level_op(node: &Node, op: &str) -> bool {
-    matches!(node, Node::InfixExpression { operator, .. } if operator == op)
+    matches!(node, Node::InfixExpression { operator, .. } if *operator == op)
 }
 
 /// RES-198: best-effort span extraction. Mirrors the helper in
@@ -2991,7 +2991,7 @@ fn walk_divisions(node: &Node, requires: &[Node], out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && (operator == "/" || operator == "%")
+        && (*operator == "/" || *operator == "%")
     {
         match right.as_ref() {
             Node::IntegerLiteral { value: 0, .. } => {
@@ -3045,7 +3045,7 @@ fn l0009_z3_check(
     // Construct the synthetic obligation `<right> != 0`.
     let obligation = Node::InfixExpression {
         left: Box::new(right.clone()),
-        operator: "!=".to_string(),
+        operator: "!=",
         right: Box::new(Node::IntegerLiteral {
             value: 0,
             span: crate::span::Span::default(),
@@ -3902,7 +3902,7 @@ fn try_const_int(node: &Node) -> Option<i64> {
         Node::IntegerLiteral { value, .. } => Some(*value),
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "-" => try_const_int(right).and_then(i64::checked_neg),
+        } if *operator == "-" => try_const_int(right).and_then(i64::checked_neg),
         Node::InfixExpression {
             operator,
             left,
@@ -3911,7 +3911,7 @@ fn try_const_int(node: &Node) -> Option<i64> {
         } => {
             let l = try_const_int(left)?;
             let r = try_const_int(right)?;
-            match operator.as_str() {
+            match *operator {
                 "+" => l.checked_add(r),
                 "-" => l.checked_sub(r),
                 "*" => l.checked_mul(r),
@@ -3944,7 +3944,7 @@ fn walk_l0015(node: &Node, out: &mut Vec<Lint>) {
         span,
     } = node
     {
-        let op = operator.as_str();
+        let op = *operator;
         if matches!(op, "+" | "-" | "*" | "/" | "%") {
             let l_val = try_const_int(left);
             let r_val = try_const_int(right);
@@ -3996,13 +3996,13 @@ fn try_const_bool(node: &Node) -> Option<bool> {
         Node::BooleanLiteral { value, .. } => Some(*value),
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "!" => try_const_bool(right).map(|v| !v),
+        } if *operator == "!" => try_const_bool(right).map(|v| !v),
         Node::InfixExpression {
             operator,
             left,
             right,
             ..
-        } => match operator.as_str() {
+        } => match *operator {
             "==" => {
                 let (l, r) = (try_const_int(left)?, try_const_int(right)?);
                 Some(l == r)
@@ -4502,7 +4502,7 @@ fn walk_l0021(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && (operator == "&&" || operator == "||")
+        && (*operator == "&&" || *operator == "||")
         && nodes_structurally_equal(left, right)
     {
         out.push(Lint {
@@ -4629,7 +4629,7 @@ fn walk_l0023(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && operator == "=="
+        && *operator == "=="
     {
         let (bool_val, other_side) = if let Node::BooleanLiteral { value, .. } = left.as_ref() {
             (Some(*value), right.as_ref())
@@ -4914,7 +4914,7 @@ fn walk_l0028(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && operator == "!"
+        && *operator == "!"
         && let Node::BooleanLiteral { value, .. } = right.as_ref()
     {
         let result = if *value { "false" } else { "true" };
@@ -4948,7 +4948,7 @@ fn run_l0029_comparison_result_discarded(program: &Node, out: &mut Vec<Lint>) {
 fn walk_l0029(node: &Node, out: &mut Vec<Lint>) {
     if let Node::ExpressionStatement { expr, span } = node
         && let Node::InfixExpression { operator, .. } = expr.as_ref()
-        && matches!(operator.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=")
+        && matches!(*operator, "==" | "!=" | "<" | "<=" | ">" | ">=")
     {
         out.push(Lint {
             code: "L0029".into(),
@@ -4988,7 +4988,7 @@ fn walk_l0030(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && (operator == "==" || operator == "!=")
+        && (*operator == "==" || *operator == "!=")
     {
         let left_is_float = matches!(left.as_ref(), Node::FloatLiteral { .. });
         let right_is_float = matches!(right.as_ref(), Node::FloatLiteral { .. });
@@ -5026,11 +5026,11 @@ fn walk_l0031(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && operator == "!"
+        && *operator == "!"
         && let Node::PrefixExpression {
             operator: inner_op, ..
         } = right.as_ref()
-        && inner_op == "!"
+        && *inner_op == "!"
     {
         out.push(Lint {
             code: "L0031".into(),
@@ -5093,7 +5093,7 @@ fn walk_l0033(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "%"
+        && *operator == "%"
         && matches!(right.as_ref(), Node::IntegerLiteral { value: 1, .. })
     {
         out.push(Lint {
@@ -5137,7 +5137,7 @@ fn walk_l0034_loop(node: &Node, in_loop: bool, out: &mut Vec<Lint>) {
             operator,
             right,
             span,
-        } if in_loop && operator == "+" => {
+        } if in_loop && *operator == "+" => {
             let left_is_str = matches!(left.as_ref(), Node::StringLiteral { .. });
             let right_is_str = matches!(right.as_ref(), Node::StringLiteral { .. });
             if left_is_str || right_is_str {
@@ -5254,7 +5254,7 @@ fn is_negative_int_literal(node: &Node) -> bool {
         Node::IntegerLiteral { value, .. } => *value < 0,
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "-" => {
+        } if *operator == "-" => {
             matches!(right.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
         }
         _ => false,
@@ -5268,7 +5268,7 @@ fn walk_l0036(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && matches!(operator.as_str(), "<" | "<=" | "==" | "!=" | ">" | ">=")
+        && matches!(*operator, "<" | "<=" | "==" | "!=" | ">" | ">=")
     {
         let matched = (is_len_call(left) && is_negative_int_literal(right))
             || (is_len_call(right) && is_negative_int_literal(left));
@@ -5533,7 +5533,7 @@ fn walk_l0040_arith(node: &Node, out: &mut Vec<Lint>) {
         right,
         ..
     } = node
-        && matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%")
+        && matches!(*operator, "+" | "-" | "*" | "/" | "%")
     {
         // Check left operand.
         if let Node::IntegerLiteral { value, span } = left.as_ref()
@@ -5742,7 +5742,7 @@ fn walk_l0044(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && matches!(operator.as_str(), "<<" | ">>")
+        && matches!(*operator, "<<" | ">>")
         && let Node::IntegerLiteral { value, .. } = right.as_ref()
         && !(0..64).contains(value)
     {
@@ -5881,7 +5881,7 @@ fn walk_l0048(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "^"
+        && *operator == "^"
         && let Node::Identifier { name: lname, .. } = left.as_ref()
         && let Node::Identifier { name: rname, .. } = right.as_ref()
         && lname == rname
@@ -6003,11 +6003,15 @@ fn walk_l0051(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && matches!(operator.as_str(), "==" | "!=")
+        && matches!(*operator, "==" | "!=")
         && let Node::StringLiteral { value: lv, .. } = left.as_ref()
         && let Node::StringLiteral { value: rv, .. } = right.as_ref()
     {
-        let result = if operator == "==" { lv == rv } else { lv != rv };
+        let result = if *operator == "==" {
+            lv == rv
+        } else {
+            lv != rv
+        };
         out.push(Lint {
             code: "L0051".into(),
             severity: Severity::Warning,
@@ -6036,7 +6040,7 @@ fn walk_l0052(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && operator == "!"
+        && *operator == "!"
         && let Node::BooleanLiteral { value, .. } = right.as_ref()
     {
         let simplified = if *value { "false" } else { "true" };
@@ -6076,7 +6080,7 @@ fn walk_l0053(node: &Node, out: &mut Vec<Lint>) {
             Node::IntegerLiteral { value, .. } => Some(*value),
             Node::PrefixExpression {
                 operator, right, ..
-            } if operator == "-" => {
+            } if *operator == "-" => {
                 if let Node::IntegerLiteral { value, .. } = right.as_ref() {
                     Some(-(*value))
                 } else {
@@ -6122,7 +6126,7 @@ fn walk_l0055(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && operator == "!="
+        && *operator == "!="
     {
         let bool_val = if let Node::BooleanLiteral { value, .. } = left.as_ref() {
             Some(*value)
@@ -6167,7 +6171,7 @@ fn walk_l0057(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && operator == "+"
+        && *operator == "+"
         && (matches!(left.as_ref(), Node::IntegerLiteral { value: 0, .. })
             || matches!(right.as_ref(), Node::IntegerLiteral { value: 0, .. }))
     {
@@ -6197,7 +6201,7 @@ fn walk_l0058(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "-"
+        && *operator == "-"
         && matches!(right.as_ref(), Node::IntegerLiteral { value: 0, .. })
     {
         out.push(Lint {
@@ -6226,7 +6230,7 @@ fn walk_l0059(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && operator == "*"
+        && *operator == "*"
         && (matches!(left.as_ref(), Node::IntegerLiteral { value: 1, .. })
             || matches!(right.as_ref(), Node::IntegerLiteral { value: 1, .. }))
     {
@@ -6256,7 +6260,7 @@ fn walk_l0060(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "/"
+        && *operator == "/"
         && matches!(right.as_ref(), Node::IntegerLiteral { value: 1, .. })
     {
         out.push(Lint {
@@ -6285,7 +6289,7 @@ fn walk_l0061(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && (operator == "<<" || operator == ">>")
+        && (*operator == "<<" || *operator == ">>")
         && matches!(right.as_ref(), Node::IntegerLiteral { value: 0, .. })
     {
         out.push(Lint {
@@ -6315,12 +6319,12 @@ fn walk_l0062(node: &Node, out: &mut Vec<Lint>) {
         right,
         span,
     } = node
-        && matches!(operator.as_str(), "<" | ">" | "<=" | ">=")
+        && matches!(*operator, "<" | ">" | "<=" | ">=")
         && let Node::Identifier { name: lname, .. } = left.as_ref()
         && let Node::Identifier { name: rname, .. } = right.as_ref()
         && lname == rname
     {
-        let result = if operator == "<" || operator == ">" {
+        let result = if *operator == "<" || *operator == ">" {
             "always false"
         } else {
             "always true"
@@ -6808,7 +6812,7 @@ fn walk_l0067(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "&&"
+        && *operator == "&&"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: true, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: true, .. }))
     {
@@ -6838,7 +6842,7 @@ fn walk_l0068(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "&&"
+        && *operator == "&&"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: false, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: false, .. }))
     {
@@ -6867,7 +6871,7 @@ fn walk_l0069(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "||"
+        && *operator == "||"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: true, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: true, .. }))
     {
@@ -6898,7 +6902,7 @@ fn walk_l0070(node: &Node, out: &mut Vec<Lint>) {
         span,
         ..
     } = node
-        && operator == "||"
+        && *operator == "||"
         && (matches!(left.as_ref(), Node::BooleanLiteral { value: false, .. })
             || matches!(right.as_ref(), Node::BooleanLiteral { value: false, .. }))
     {
@@ -7288,14 +7292,13 @@ fn run_l0086_empty_string_comparison(program: &Node, out: &mut Vec<Lint>) {
             span,
         } = node
         {
-            if !matches!(operator.as_str(), "==" | "!=") {
+            if !matches!(*operator, "==" | "!=") {
                 return;
             }
             let is_empty_str =
                 |n: &Node| matches!(n, Node::StringLiteral { value, .. } if value.is_empty());
             if is_empty_str(left) || is_empty_str(right) {
-                let op = operator.clone();
-                let suggestion = if op == "==" {
+                let suggestion = if *operator == "==" {
                     "is_empty(s)"
                 } else {
                     "!is_empty(s)"
@@ -7303,7 +7306,7 @@ fn run_l0086_empty_string_comparison(program: &Node, out: &mut Vec<Lint>) {
                 out.push(Lint {
                     code: "L0086".into(),
                     message: format!(
-                        "comparing to empty string literal with `{op}`; \
+                        "comparing to empty string literal with `{operator}`; \
                          prefer `{suggestion}` for clarity"
                     ),
                     line: span.start.line as u32,

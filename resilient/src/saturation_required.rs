@@ -61,7 +61,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 
 fn uses_unchecked_arith(node: &Node) -> bool {
     if let Node::InfixExpression { operator, .. } = node {
-        return matches!(operator.as_str(), "+" | "-" | "*");
+        return matches!(*operator, "+" | "-" | "*");
     }
     false
 }
