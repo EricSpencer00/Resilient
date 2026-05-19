@@ -66,7 +66,10 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
     // allocation for *every* call expression in the program — the
     // counters only need lookup-by-name, never owned storage. Same
     // pattern as RES-1495 / RES-1500 / RES-1503.
-    let mut refs: HashMap<&str, u32> = HashMap::new();
+    // RES-1988: pre-size `refs` to 32 — typical program has 20-100
+    // distinct call-site identifiers; 32 fits the common case without
+    // pessimizing tiny programs.
+    let mut refs: HashMap<&str, u32> = HashMap::with_capacity(32);
     for s in stmts {
         collect_refs(&s.node, &mut refs);
     }
@@ -74,6 +77,12 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
     // RES-1756: pre-size to stmts.len() — every top-level statement
     // is potentially a function and pushes one entry.
     let mut entries = Vec::with_capacity(stmts.len());
+    // RES-1988: lift `tmp` outside the per-fn loop and `clear()`
+    // between iterations — retains the bucket allocation across all
+    // functions instead of allocating + dropping a fresh HashMap per
+    // function. Same shape as RES-1966's BFS-state lift in
+    // isr_call_graph and the RES-1521 buffer-reuse in crash_only.
+    let mut tmp: HashMap<&str, u32> = HashMap::with_capacity(8);
     for s in stmts {
         if let Node::Function {
             name,
@@ -85,11 +94,9 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
             ..
         } = &s.node
         {
-            let self_calls = {
-                let mut tmp: HashMap<&str, u32> = HashMap::new();
-                collect_refs(body, &mut tmp);
-                tmp.get(name.as_str()).copied().unwrap_or(0)
-            };
+            tmp.clear();
+            collect_refs(body, &mut tmp);
+            let self_calls = tmp.get(name.as_str()).copied().unwrap_or(0);
             let external = refs
                 .get(name.as_str())
                 .copied()
