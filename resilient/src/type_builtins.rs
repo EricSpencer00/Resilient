@@ -36,9 +36,7 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 Value::Map(_) => "map",
                 Value::Set(_) => "set",
                 Value::Void => "void",
-                Value::Function { .. } | Value::Closure { .. } | Value::Builtin { .. } => {
-                    "function"
-                }
+                Value::Function(_) | Value::Closure { .. } | Value::Builtin { .. } => "function",
                 Value::Bytes(_) => "bytes",
                 Value::Struct { .. } => "struct",
                 Value::Tuple(_) => "tuple",
