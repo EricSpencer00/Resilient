@@ -34,8 +34,13 @@ type RResult<T> = Result<T, String>;
 /// // sorted == ["apple", "banana", "cherry"]
 /// ```
 pub(crate) fn builtin_array_sort_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1934: borrow `arr` and `cmp` from `args`. Build the indexed
+    // sort buffer in one Vec allocation by cloning straight from
+    // `arr.iter()` — the legacy code first cloned `arr` into a fresh
+    // Vec, then consumed it into a *second* Vec<(usize, Value)>, doing
+    // two Vec allocations where one suffices.
     let (arr, cmp) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_sort_by: first argument must be an Array, got {a}"
@@ -49,15 +54,16 @@ pub(crate) fn builtin_array_sort_by(interp: &mut Interpreter, args: &[Value]) ->
         }
     };
 
-    // Collect (index, element) pairs, sort by calling the comparator.
-    let mut indexed: Vec<(usize, Value)> = arr.into_iter().enumerate().collect();
+    // Collect (index, element) pairs in one allocation, sort by
+    // calling the comparator.
+    let mut indexed: Vec<(usize, Value)> = arr.iter().cloned().enumerate().collect();
     let mut error: Option<String> = None;
 
     indexed.sort_by(|(_, a), (_, b)| {
         if error.is_some() {
             return std::cmp::Ordering::Equal;
         }
-        match interp.apply_function(&cmp, vec![a.clone(), b.clone()]) {
+        match interp.apply_function(cmp, vec![a.clone(), b.clone()]) {
             Ok(Value::Int(n)) => n.cmp(&0),
             Ok(other) => {
                 error = Some(format!(
@@ -90,8 +96,12 @@ pub(crate) fn builtin_array_sort_by(interp: &mut Interpreter, args: &[Value]) ->
 /// // shortest == "ox"
 /// ```
 pub(crate) fn builtin_array_min_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1934: borrow `arr` and `f` from `args`. Iterate `arr.iter()`
+    // directly instead of cloning the whole Vec upfront — element
+    // clones only happen at the apply_function callsite and when we
+    // adopt a new best_elem.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_min_by: first argument must be an Array, got {a}"
@@ -110,13 +120,13 @@ pub(crate) fn builtin_array_min_by(interp: &mut Interpreter, args: &[Value]) -> 
     }
 
     let mut best_elem = arr[0].clone();
-    let mut best_key = interp.apply_function(&f, vec![arr[0].clone()])?;
+    let mut best_key = interp.apply_function(f, vec![arr[0].clone()])?;
 
-    for elem in arr.into_iter().skip(1) {
-        let key = interp.apply_function(&f, vec![elem.clone()])?;
+    for elem in arr.iter().skip(1) {
+        let key = interp.apply_function(f, vec![elem.clone()])?;
         let is_smaller = compare_key(&key, &best_key).map_err(|e| format!("array_min_by: {e}"))?;
         if is_smaller < 0 {
-            best_elem = elem;
+            best_elem = elem.clone();
             best_key = key;
         }
     }
@@ -134,8 +144,9 @@ pub(crate) fn builtin_array_min_by(interp: &mut Interpreter, args: &[Value]) -> 
 /// // longest == "elephant"
 /// ```
 pub(crate) fn builtin_array_max_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1934: borrow `arr` and `f`; see `builtin_array_min_by` above.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_max_by: first argument must be an Array, got {a}"
@@ -154,13 +165,13 @@ pub(crate) fn builtin_array_max_by(interp: &mut Interpreter, args: &[Value]) -> 
     }
 
     let mut best_elem = arr[0].clone();
-    let mut best_key = interp.apply_function(&f, vec![arr[0].clone()])?;
+    let mut best_key = interp.apply_function(f, vec![arr[0].clone()])?;
 
-    for elem in arr.into_iter().skip(1) {
-        let key = interp.apply_function(&f, vec![elem.clone()])?;
+    for elem in arr.iter().skip(1) {
+        let key = interp.apply_function(f, vec![elem.clone()])?;
         let is_larger = compare_key(&key, &best_key).map_err(|e| format!("array_max_by: {e}"))?;
         if is_larger > 0 {
-            best_elem = elem;
+            best_elem = elem.clone();
             best_key = key;
         }
     }

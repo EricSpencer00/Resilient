@@ -363,6 +363,10 @@
     "resilient/src/functional_hof.rs": {
       "branch": "res-1932-functional-hof-clone-elim",
       "claimed_at": "2026-05-19T17:53:14Z"
+    },
+    "resilient/src/array_combinators.rs": {
+      "branch": "res-1934-array-combinators-clone-elim",
+      "claimed_at": "2026-05-19T17:58:20Z"
     }
   }
 }
