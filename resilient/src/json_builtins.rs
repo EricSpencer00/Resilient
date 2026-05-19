@@ -266,7 +266,33 @@ impl<'a> JsonParser<'a> {
 
     fn parse_string(&mut self) -> RResult<String> {
         self.expect_byte(b'"')?;
-        let mut out = String::new();
+        // RES-1946: scan ahead for the closing unescaped `"` to get an
+        // upper bound on the decoded string length. Escape sequences
+        // can only shorten the output (`\n` → 1 char, `\uXXXX` → ≤ 4
+        // bytes UTF-8 = up to 6 input bytes → 4 output bytes), so the
+        // raw byte delta is a safe pre-size hint. Falls back to 16 if
+        // the input is malformed (no closing quote on this line).
+        let cap = {
+            let mut i = self.pos;
+            let mut bound: Option<usize> = None;
+            while i < self.src.len() {
+                match self.src[i] {
+                    b'"' => {
+                        bound = Some(i - self.pos);
+                        break;
+                    }
+                    b'\\' => {
+                        // Skip the escape char AND the next byte;
+                        // `\uXXXX` is over-counted by 4 but that's
+                        // a tighter upper bound than no scan at all.
+                        i += 2;
+                    }
+                    _ => i += 1,
+                }
+            }
+            bound.unwrap_or(16)
+        };
+        let mut out = String::with_capacity(cap);
         loop {
             let b = self.consume()?;
             match b {
@@ -387,7 +413,10 @@ impl<'a> JsonParser<'a> {
 
     fn parse_array(&mut self) -> RResult<Value> {
         self.expect_byte(b'[')?;
-        let mut items = Vec::new();
+        // RES-1946: typical JSON arrays hold 1-10 items; pre-size to
+        // 4 to skip the default 0→4 first grow. Empty arrays
+        // (immediately followed by `]`) waste 4 slots — negligible.
+        let mut items = Vec::with_capacity(4);
         self.skip_ws();
         if self.peek() == Some(b']') {
             self.pos += 1;
@@ -417,7 +446,10 @@ impl<'a> JsonParser<'a> {
 
     fn parse_object(&mut self) -> RResult<Value> {
         self.expect_byte(b'{')?;
-        let mut map: HashMap<MapKey, Value> = HashMap::new();
+        // RES-1946: typical JSON objects hold 2-10 entries; pre-size
+        // to 4 to skip the default 0-bucket → 4-bucket rehash. Empty
+        // objects waste a small bucket array — negligible.
+        let mut map: HashMap<MapKey, Value> = HashMap::with_capacity(4);
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;

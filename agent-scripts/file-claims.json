@@ -375,6 +375,10 @@
     "resilient/src/data_utils.rs": {
       "branch": "res-1942-data-utils-presize",
       "claimed_at": "2026-05-19T18:14:43Z"
+    },
+    "resilient/src/json_builtins.rs": {
+      "branch": "res-1946-json-parser-presize",
+      "claimed_at": "2026-05-19T18:22:09Z"
     }
   }
 }
