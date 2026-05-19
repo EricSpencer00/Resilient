@@ -55,7 +55,13 @@ pub fn lower(program: &Node) -> Node {
     }
 
     // Phase 2: collect unique instantiations from literal call sites.
-    let mut instantiations: HashMap<String, Vec<Vec<Type>>> = HashMap::new();
+    // RES-1924: pre-size to `generic_fns.len()` — the upper bound on
+    // distinct generic-fn names that can land as `instantiations`
+    // keys. `generic_fns.is_empty()` is guarded by the early-return
+    // above, so the capacity is always ≥ 1 on the live path. Mirrors
+    // RES-1764 / RES-1796 / RES-1800 pre-sizes.
+    let mut instantiations: HashMap<String, Vec<Vec<Type>>> =
+        HashMap::with_capacity(generic_fns.len());
     for spanned in stmts {
         collect_in_node(&spanned.node, &generic_fns, &mut instantiations);
     }
@@ -78,7 +84,11 @@ pub fn lower(program: &Node) -> Node {
     // Append specialized monomorphic clones after the existing declarations.
     for (fn_name, instances) in &instantiations {
         if let Some(fn_node) = generic_fns.get(fn_name.as_str()) {
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // RES-1924: pre-size to `instances.len()` — exact upper
+            // bound, one mangled name per type-args tuple. Skips the
+            // default 0→4 grow for fns with ≥ 4 distinct instantiations.
+            let mut seen: std::collections::HashSet<String> =
+                std::collections::HashSet::with_capacity(instances.len());
             for type_args in instances {
                 let mangled = mangle_name(fn_name, type_args);
                 if seen.insert(mangled.clone()) {
@@ -236,7 +246,9 @@ fn try_infer_call(
         return None;
     }
     let tp_set: std::collections::HashSet<&str> = type_params.iter().map(String::as_str).collect();
-    let mut mapping: HashMap<&str, Type> = HashMap::new();
+    // RES-1924: pre-size to `type_params.len()` — exact upper bound,
+    // one mapping entry per matching type parameter at most.
+    let mut mapping: HashMap<&str, Type> = HashMap::with_capacity(type_params.len());
     for ((param_ty, _), arg) in parameters.iter().zip(arguments.iter()) {
         if tp_set.contains(param_ty.as_str()) {
             let inferred = infer_literal_type(arg)?;
