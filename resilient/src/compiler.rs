@@ -2508,8 +2508,15 @@ fn compile_expr(
             // sequence (needed so LoadUpvalue(i) indices are stable).
             let param_names: std::collections::HashSet<&str> =
                 parameters.iter().map(|(_, n)| n.as_str()).collect();
-            let mut captured: Vec<(u16, String)> = Vec::new(); // (outer slot, name)
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // RES-1926: pre-size to 4 — fits the median closure shape
+            // (0-3 captures) without doubling growth, and overshoots
+            // tiny closures by < 96 bytes. Same shape as the
+            // `fn_chunk = Chunk::with_capacity(64)` /
+            // `fn_locals = HashMap::with_capacity(parameters.len() * 2)`
+            // pre-sizes immediately below.
+            let mut captured: Vec<(u16, String)> = Vec::with_capacity(4); // (outer slot, name)
+            let mut seen: std::collections::HashSet<String> =
+                std::collections::HashSet::with_capacity(4);
             collect_free_vars(body, &param_names, locals, &mut captured, &mut seen);
 
             // Build the closure's local map: params at 0..arity, then upvalues
