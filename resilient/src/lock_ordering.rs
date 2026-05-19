@@ -41,7 +41,15 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // a combined check on `markers.call_idents` for LOCK_FNS/UNLOCK_FNS
     // names and `lock_`/`unlock_` prefixes. The previous `any_node`
     // pre-scan was redundant — removed.
-    let mut pair_sites: HashMap<(String, String), Vec<String>> = HashMap::new();
+    // RES-2016: nested map — outer key `prior` lock, inner key `later`
+    // lock. The flat `HashMap<(String, String), V>` shape forced the
+    // cycle-detection lookup below to clone two Strings per outer-loop
+    // pair to construct the reverse-direction key (stdlib's `Borrow`
+    // impls don't allow `(String, String): Borrow<(&str, &str)>`). The
+    // nested shape uses `String: Borrow<str>` on each level — zero
+    // clones per reverse-pair lookup. Same fix as RES-2008 / RES-2010
+    // / RES-2012 / RES-2014.
+    let mut pair_sites: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             collect_pairs(name, body, &mut pair_sites);
@@ -50,34 +58,39 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // RES-1524: borrow lock-name pairs into the dedup set instead
     // of cloning. The `pair_sites` map already owns the strings;
     // `reported` only checks "have I warned on this canonical
-    // pair before". Same pattern as RES-1495 / RES-1500 / RES-1520
-    // applied to a tuple key. The `key_ba` lookup also doesn't
-    // need owned strings — `(&str, &str)` works via `Borrow` on
-    // tuple-of-borrows.
+    // pair before".
     let mut reported: HashSet<(&str, &str)> = HashSet::new();
-    for ((a, b), fns_ab) in &pair_sites {
-        let key_ba = (b.clone(), a.clone());
-        if let Some(fns_ba) = pair_sites.get(&key_ba) {
-            let canon: (&str, &str) = if a < b {
-                (a.as_str(), b.as_str())
-            } else {
-                (b.as_str(), a.as_str())
-            };
-            if !reported.insert(canon) {
-                continue;
+    for (a, b_map) in &pair_sites {
+        for (b, fns_ab) in b_map {
+            // RES-2016: `&str` lookup chain — `pair_sites.get(b)` uses
+            // `String: Borrow<str>`, then `.get(a.as_str())` does the
+            // same on the inner map. Zero clones.
+            if let Some(fns_ba) = pair_sites.get(b.as_str()).and_then(|m| m.get(a.as_str())) {
+                let canon: (&str, &str) = if a < b {
+                    (a.as_str(), b.as_str())
+                } else {
+                    (b.as_str(), a.as_str())
+                };
+                if !reported.insert(canon) {
+                    continue;
+                }
+                eprintln!(
+                    "warning: lock-ordering inversion: '{a}' before '{b}' in [{}] vs \
+                     '{b}' before '{a}' in [{}] — deadlock risk",
+                    fns_ab.join(", "),
+                    fns_ba.join(", ")
+                );
             }
-            eprintln!(
-                "warning: lock-ordering inversion: '{a}' before '{b}' in [{}] vs \
-                 '{b}' before '{a}' in [{}] — deadlock risk",
-                fns_ab.join(", "),
-                fns_ba.join(", ")
-            );
         }
     }
     Ok(())
 }
 
-fn collect_pairs(fn_name: &str, body: &Node, pairs: &mut HashMap<(String, String), Vec<String>>) {
+fn collect_pairs(
+    fn_name: &str,
+    body: &Node,
+    pairs: &mut HashMap<String, HashMap<String, Vec<String>>>,
+) {
     // RES-1752: pre-size — a fn body typically has a small handful
     // of lock/unlock calls. 8 covers the common case without
     // doubling growth from 0.
@@ -105,8 +118,15 @@ fn collect_pairs(fn_name: &str, body: &Node, pairs: &mut HashMap<(String, String
         if is_lock {
             for prior in &held {
                 if prior != &lk {
+                    // RES-2016: nested map insert — `entry(prior).or_default()`
+                    // for the outer key, `.entry(lk).or_default()` for the
+                    // inner key, then push the fn_name. Same total clone
+                    // count as the previous flat-tuple insert (2 for the
+                    // keys), so insert path is equal-cost.
                     pairs
-                        .entry((prior.clone(), lk.clone()))
+                        .entry(prior.clone())
+                        .or_default()
+                        .entry(lk.clone())
                         .or_default()
                         .push(fn_name.to_string());
                 }

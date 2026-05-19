@@ -137,8 +137,8 @@
       "claimed_at": "2026-05-12T15:15:14Z"
     },
     "resilient/src/lock_ordering.rs": {
-      "branch": "res-1752-lock-ordering-presize",
-      "claimed_at": "2026-05-13T11:18:18Z"
+      "branch": "res-2016-lock-ordering-nested-map",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/refinement_types.rs": {
       "branch": "res-1754-collect-presize",
