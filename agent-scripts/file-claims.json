@@ -405,8 +405,8 @@
       "claimed_at": "2026-05-19T18:22:09Z"
     },
     "resilient/src/numeric_units.rs": {
-      "branch": "res-1950-numeric-units-static-suffix",
-      "claimed_at": "2026-05-19T18:34:18Z"
+      "branch": "res-2058-numeric-units-borrow-keys",
+      "claimed_at": "2026-05-20T03:30:00Z"
     },
     "resilient/src/assume_axioms.rs": {
       "branch": "res-1958-assume-axioms-presize",
