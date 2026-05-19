@@ -52,6 +52,10 @@
       "branch": "res-1984-diag-presize-write",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
+    "resilient/src/struct_exhaustiveness.rs": {
+      "branch": "res-2022-exhaustiveness-static-msg",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     "resilient/src/ai_threat_model.rs": {
       "branch": "res-1986-block-shape-direct-write",
       "claimed_at": "2026-05-19T00:00:00Z"
