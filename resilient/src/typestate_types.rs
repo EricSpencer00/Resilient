@@ -27,8 +27,16 @@ use std::sync::RwLock;
 pub struct TypestateSpec {
     pub struct_name: String,
     pub states: Vec<String>,
-    /// Map of (current_state, method) -> next_state.
-    pub transitions: HashMap<(String, String), String>,
+    /// Nested map: `current_state -> (method -> next_state)`.
+    ///
+    /// RES-2008: previously a single `HashMap<(String, String), String>`
+    /// keyed on the tuple. The flat shape forced `validate_call` to
+    /// allocate two transient `String`s per call (stdlib's `Borrow`
+    /// impls don't allow looking up a `(String, String)` key by
+    /// `(&str, &str)`). The nested shape uses `String: Borrow<str>`
+    /// on each level, so both `.get()` calls accept `&str` with zero
+    /// per-call allocation.
+    pub transitions: HashMap<String, HashMap<String, String>>,
 }
 
 static SPECS: RwLock<Vec<TypestateSpec>> = RwLock::new(Vec::new());
@@ -58,10 +66,12 @@ pub fn collect() -> Vec<TypestateSpec> {
                             // Format: state:method->next
                             if let Some((lhs, next)) = t.split_once("->") {
                                 if let Some((state, method)) = lhs.split_once(':') {
-                                    spec.transitions.insert(
-                                        (state.to_string(), method.to_string()),
-                                        next.to_string(),
-                                    );
+                                    // RES-2008: nested map shape — see comment
+                                    // on `TypestateSpec::transitions`.
+                                    spec.transitions
+                                        .entry(state.to_string())
+                                        .or_default()
+                                        .insert(method.to_string(), next.to_string());
                                 }
                             }
                         }
@@ -98,8 +108,13 @@ pub fn validate_call(
         .iter()
         .find(|s| s.struct_name == struct_name)
         .ok_or_else(|| format!("no typestate for {struct_name}"))?;
+    // RES-2008: nested-map lookup — `.get(&str)` on each level uses
+    // the existing `String: Borrow<str>` impl. Zero per-call
+    // allocations (the previous flat `(String, String)` key forced
+    // two transient `String::to_string()` allocs per call).
     spec.transitions
-        .get(&(current_state.to_string(), method.to_string()))
+        .get(current_state)
+        .and_then(|m| m.get(method))
         .cloned()
         .ok_or_else(|| {
             format!(
