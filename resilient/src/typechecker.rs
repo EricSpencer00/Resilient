@@ -8211,19 +8211,6 @@ impl TypeChecker {
             // struct pattern matching when the scrutinee was declared `any`.
             "any" | "Any" => Ok(Type::Any),
             "" => Ok(Type::Any), // Empty type name means "any" for now
-            // RES-128: a registered alias expands transitively.
-            other if self.type_aliases.contains_key(other) => {
-                if seen.iter().any(|n| n == other) {
-                    // Cycle — include the full chain so users see
-                    // how they got into it.
-                    let mut chain = seen.clone();
-                    chain.push(other.to_string());
-                    return Err(format!("type alias cycle: {}", chain.join(" -> ")));
-                }
-                seen.push(other.to_string());
-                let target = self.type_aliases[other].clone();
-                self.parse_type_name_inner(&target, seen)
-            }
             // RES-419: `fn(T1, T2) -> R` — function-type annotation.
             // Covers higher-order function parameters and return types.
             // Syntax: "fn(" followed by comma-separated type names,
@@ -8297,10 +8284,28 @@ impl TypeChecker {
             // system will promote this to Type::Tuple once the full
             // tuple-type variant lands in G7).
             other if other.starts_with('(') && other.ends_with(')') => Ok(Type::Any),
-            // RES-053: any other identifier is assumed to be a
-            // user-defined struct. G7 will register struct decls and
-            // reject unknown type names, but at MVP we're permissive.
-            other => Ok(Type::Struct(other.to_string())),
+            // RES-128: a registered alias expands transitively.
+            // RES-1894: single `.get()` replaces the former
+            // `contains_key()` guard + `[]` index double-lookup.
+            // Moved after `fn(` and tuple guards so those patterns
+            // are tried first (preserving match order), then the
+            // alias lookup uses one `.get()` call instead of two.
+            other => {
+                if let Some(target) = self.type_aliases.get(other) {
+                    if seen.iter().any(|n| n == other) {
+                        let mut chain = seen.clone();
+                        chain.push(other.to_string());
+                        return Err(format!("type alias cycle: {}", chain.join(" -> ")));
+                    }
+                    let target = target.clone();
+                    seen.push(other.to_string());
+                    self.parse_type_name_inner(&target, seen)
+                } else {
+                    // RES-053: any other identifier is assumed to be a
+                    // user-defined struct.
+                    Ok(Type::Struct(other.to_string()))
+                }
+            }
         }
     }
 }
