@@ -117,8 +117,8 @@
       "claimed_at": "2026-05-12T09:48:19Z"
     },
     "resilient/src/default_params.rs": {
-      "branch": "res-1475-default-params-skip-no-defaults",
-      "claimed_at": "2026-05-12T11:56:23Z"
+      "branch": "res-2042-default-params-borrow-name",
+      "claimed_at": "2026-05-20T00:00:00Z"
     },
     "resilient/src/lsp_server.rs": {
       "branch": "res-1976-lsp-top-defs-presize",

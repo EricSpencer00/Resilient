@@ -457,6 +457,12 @@ fn rewrite_calls(node: &mut Node, sigs: &HashMap<String, FnDefaults>) {
         // The hot path: if a call to a known top-level fn is missing
         // trailing arguments and those positions have defaults, fill
         // them in before the interpreter ever sees the call.
+        //
+        // RES-2042: borrow the callee name as `&str` instead of cloning.
+        // `HashMap<String, V>::get` accepts `&str` via `String: Borrow<str>`,
+        // so the lookup works without an owned conversion. The previous
+        // shape cloned `name` on every CallExpression — pure overhead
+        // for programs where no callee has declared defaults.
         Node::CallExpression {
             function,
             arguments,
@@ -466,13 +472,14 @@ fn rewrite_calls(node: &mut Node, sigs: &HashMap<String, FnDefaults>) {
             for a in arguments.iter_mut() {
                 rewrite_calls(a, sigs);
             }
-            let callee_name = if let Node::Identifier { name, .. } = function.as_ref() {
-                Some(name.clone())
+            let callee_name: Option<&str> = if let Node::Identifier { name, .. } = function.as_ref()
+            {
+                Some(name.as_str())
             } else {
                 None
             };
             if let Some(name) = callee_name
-                && let Some(sig) = sigs.get(&name)
+                && let Some(sig) = sigs.get(name)
             {
                 let provided = arguments.len();
                 let total = sig.param_count;
