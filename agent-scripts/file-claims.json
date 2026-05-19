@@ -387,6 +387,10 @@
     "resilient/src/assume_axioms.rs": {
       "branch": "res-1958-assume-axioms-presize",
       "claimed_at": "2026-05-19T18:52:28Z"
+    },
+    "resilient/src/bounded_blocking.rs": {
+      "branch": "res-1964-bounded-blocking-presize",
+      "claimed_at": "2026-05-19T19:03:12Z"
     }
   }
 }

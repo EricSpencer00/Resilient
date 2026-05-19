@@ -74,7 +74,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             decls.push(name.as_str());
-            let mut cs = Vec::new();
+            // RES-1964: pre-size to 8 — typical fn bodies have 1-10
+            // call sites. Skips the 0→4 first grow.
+            let mut cs = Vec::with_capacity(8);
             let mut bn = 0;
             visit(body, &mut |n| {
                 if let Node::CallExpression { function, .. } = n {
@@ -120,8 +122,12 @@ fn transitive_blocking<'a>(
     bn: &HashMap<&str, usize>,
 ) -> usize {
     let mut total = 0;
-    let mut seen: HashSet<&'a str> = HashSet::new();
-    let mut q: VecDeque<&'a str> = VecDeque::new();
+    // RES-1964: pre-size the BFS visited set and queue to
+    // `callees.len()` — exact upper bound (each fn enqueued at most
+    // once). Saves the 0→4→… doubling chain on every transitive_blocking
+    // root walk.
+    let mut seen: HashSet<&'a str> = HashSet::with_capacity(callees.len());
+    let mut q: VecDeque<&'a str> = VecDeque::with_capacity(callees.len());
     q.push_back(start);
     while let Some(f) = q.pop_front() {
         if !seen.insert(f) {
