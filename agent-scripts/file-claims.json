@@ -281,8 +281,8 @@
       "claimed_at": "2026-05-13T12:06:03Z"
     },
     "resilient/src/hw_state_machine.rs": {
-      "branch": "res-1784-attr-collects-3",
-      "claimed_at": "2026-05-13T12:28:38Z"
+      "branch": "res-2010-hw-state-nested-map",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/stack_contracts.rs": {
       "branch": "res-1784-attr-collects-3",
