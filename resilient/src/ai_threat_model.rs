@@ -772,11 +772,21 @@ fn detect_copy_paste(node: &Node, ctx: &mut FnContext) {
 fn collect_block_shapes(node: &Node, out: &mut HashMap<String, u32>) {
     if let Node::Block { stmts, .. } = node {
         if stmts.len() >= 3 {
-            let shape = stmts
-                .iter()
-                .map(stmt_shape_tag)
-                .collect::<Vec<_>>()
-                .join("|");
+            // RES-1986: build the shape key directly into a pre-sized
+            // String instead of collecting a `Vec<&'static str>` just
+            // to `.join("|")` it. The previous shape allocated one Vec
+            // + one String per ≥3-stmt block; for programs with many
+            // such blocks (the typical large fn body), the intermediate
+            // Vec is per-block dead weight. Each tag is a single
+            // character so `stmts.len() * 2` covers the tag + separator
+            // pattern exactly.
+            let mut shape = String::with_capacity(stmts.len() * 2);
+            for (i, s) in stmts.iter().enumerate() {
+                if i > 0 {
+                    shape.push('|');
+                }
+                shape.push_str(stmt_shape_tag(s));
+            }
             *out.entry(shape).or_insert(0) += 1;
         }
         for s in stmts {
