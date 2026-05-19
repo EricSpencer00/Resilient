@@ -9832,8 +9832,14 @@ enum Value {
     String(String),
     Bool(bool),
     Function {
-        parameters: Vec<(String, String)>,
-        body: Box<Node>,
+        /// RES-1913: Rc-shared so `env.get()` (which clones the Value)
+        /// bumps a refcount instead of deep-cloning the parameter list.
+        parameters: Rc<Vec<(String, String)>>,
+        /// RES-1913: Rc-shared so every `env.get("fn_name")` avoids
+        /// deep-cloning the entire function body AST. For recursive
+        /// workloads (fib(25) ≈ 243k calls) this eliminates one full
+        /// AST deep-clone per call.
+        body: Rc<Node>,
         env: Environment,
         /// RES-035: pre-conditions propagated into the runtime Value so
         /// apply_function can check them. Empty when absent.
@@ -22246,8 +22252,8 @@ impl Interpreter {
                     requires.clone()
                 };
                 let func = Value::Function {
-                    parameters: parameters.clone(),
-                    body: body.clone(),
+                    parameters: Rc::new(parameters.clone()),
+                    body: Rc::new(body.as_ref().clone()),
                     env: self.env.clone(),
                     requires: runtime_requires,
                     ensures: ensures.clone(),
@@ -23292,8 +23298,8 @@ impl Interpreter {
                 recovers_to,
                 ..
             } => Ok(Value::Function {
-                parameters: parameters.clone(),
-                body: body.clone(),
+                parameters: Rc::new(parameters.clone()),
+                body: Rc::new(body.as_ref().clone()),
                 env: self.env.clone(),
                 requires: requires.clone(),
                 ensures: ensures.clone(),
