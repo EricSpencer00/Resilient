@@ -2115,9 +2115,15 @@ fn collect_cert_idents<'a>(
                     len_args.insert(name.as_str());
                 }
             }
-            collect_cert_idents(function, int_idents, array_args, len_args);
+            // int_idents: original collect_int_identifiers ignores
+            // CallExpression entirely, so we must NOT recurse for
+            // int_idents here. Delegate to the single-purpose
+            // collectors for array_args and len_args.
+            collect_array_args(function, array_args);
+            collect_len_args(function, len_args);
             for arg in arguments {
-                collect_cert_idents(arg, int_idents, array_args, len_args);
+                collect_array_args(arg, array_args);
+                collect_len_args(arg, len_args);
             }
         }
         _ => {}
