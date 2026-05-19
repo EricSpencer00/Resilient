@@ -65,16 +65,18 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         if sensors.is_empty() {
             return;
         }
-        // Only warn for sensors that are actually read somewhere.
+        // RES-2000: drop the redundant `reads_value` pre-filter.
+        // `has_stale_read` returns `check_order == StaleRead`, which
+        // can only be true when `is_read_node` matched at least once
+        // (`check_order`'s only path to `StaleRead`). `is_read_node`
+        // ultimately calls `is_read_call`, the same predicate
+        // `reads_value` uses. So `has_stale_read = true` already
+        // implies a read exists — the `reads_value` filter was a
+        // wasted body walk per sensor.
         let stale: Vec<&str> = sensors
             .iter()
             .copied()
-            .filter(|s| reads_value(body, s))
-            .filter(|s| {
-                // A sensor read is unsafe when there's a path that reaches
-                // the read without a prior freshness check.
-                has_stale_read(body, s)
-            })
+            .filter(|s| has_stale_read(body, s))
             .collect();
         if !stale.is_empty() {
             eprintln!(
@@ -254,10 +256,6 @@ fn is_fresh_call(node: &Node, sensor: &str) -> bool {
     false
 }
 
-fn reads_value(body: &Node, sensor: &str) -> bool {
-    crate::uniqueness_walk::any_node(body, |n| is_read_call(n, sensor))
-}
-
 fn is_param(node: &Node, sensor: &str) -> bool {
     matches!(node, Node::Identifier { name, .. } if name == sensor)
 }
@@ -368,7 +366,9 @@ fn read_temp(Sensor s, bool ok) -> int {
             } = &s.node
             {
                 let is_sensor_param = parameters.iter().any(|(_, n)| n == sensor);
-                if is_sensor_param && reads_value(body, sensor) && has_stale_read(body, sensor) {
+                // RES-2000: `reads_value` is implied by `has_stale_read` —
+                // see comment in `check`. Drop the redundant pre-filter.
+                if is_sensor_param && has_stale_read(body, sensor) {
                     return true;
                 }
             }

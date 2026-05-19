@@ -17,8 +17,8 @@
       "claimed_at": "2026-05-12T02:11:38Z"
     },
     "resilient/src/sensor_freshness.rs": {
-      "branch": "res-1218-param-type-fast-reject",
-      "claimed_at": "2026-05-12T02:11:38Z"
+      "branch": "res-2000-sensor-freshness-drop-redundant",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/transaction_commit.rs": {
       "branch": "res-1218-param-type-fast-reject",
