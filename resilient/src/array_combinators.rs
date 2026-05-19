@@ -57,7 +57,7 @@ pub(crate) fn builtin_array_sort_by(interp: &mut Interpreter, args: &[Value]) ->
         if error.is_some() {
             return std::cmp::Ordering::Equal;
         }
-        match interp.apply_function(cmp.clone(), vec![a.clone(), b.clone()]) {
+        match interp.apply_function(&cmp, vec![a.clone(), b.clone()]) {
             Ok(Value::Int(n)) => n.cmp(&0),
             Ok(other) => {
                 error = Some(format!(
@@ -110,10 +110,10 @@ pub(crate) fn builtin_array_min_by(interp: &mut Interpreter, args: &[Value]) -> 
     }
 
     let mut best_elem = arr[0].clone();
-    let mut best_key = interp.apply_function(f.clone(), vec![arr[0].clone()])?;
+    let mut best_key = interp.apply_function(&f, vec![arr[0].clone()])?;
 
     for elem in arr.into_iter().skip(1) {
-        let key = interp.apply_function(f.clone(), vec![elem.clone()])?;
+        let key = interp.apply_function(&f, vec![elem.clone()])?;
         let is_smaller = compare_key(&key, &best_key).map_err(|e| format!("array_min_by: {e}"))?;
         if is_smaller < 0 {
             best_elem = elem;
@@ -154,10 +154,10 @@ pub(crate) fn builtin_array_max_by(interp: &mut Interpreter, args: &[Value]) -> 
     }
 
     let mut best_elem = arr[0].clone();
-    let mut best_key = interp.apply_function(f.clone(), vec![arr[0].clone()])?;
+    let mut best_key = interp.apply_function(&f, vec![arr[0].clone()])?;
 
     for elem in arr.into_iter().skip(1) {
-        let key = interp.apply_function(f.clone(), vec![elem.clone()])?;
+        let key = interp.apply_function(&f, vec![elem.clone()])?;
         let is_larger = compare_key(&key, &best_key).map_err(|e| format!("array_max_by: {e}"))?;
         if is_larger > 0 {
             best_elem = elem;
@@ -193,7 +193,7 @@ pub(crate) fn builtin_array_count_if(interp: &mut Interpreter, args: &[Value]) -
 
     let mut count: i64 = 0;
     for elem in arr {
-        match interp.apply_function(f.clone(), vec![elem])? {
+        match interp.apply_function(&f, vec![elem])? {
             Value::Bool(true) => count += 1,
             Value::Bool(false) => {}
             other => {
@@ -247,7 +247,7 @@ pub(crate) fn builtin_array_zip_with(interp: &mut Interpreter, args: &[Value]) -
 
     let mut out = Vec::with_capacity(a.len());
     for (x, y) in a.into_iter().zip(b) {
-        out.push(interp.apply_function(f.clone(), vec![x, y])?);
+        out.push(interp.apply_function(&f, vec![x, y])?);
     }
     Ok(Value::Array(out))
 }
@@ -322,7 +322,7 @@ pub(crate) fn builtin_array_take_while(interp: &mut Interpreter, args: &[Value])
 
     let mut out = Vec::new();
     for elem in arr {
-        match interp.apply_function(f.clone(), vec![elem.clone()])? {
+        match interp.apply_function(&f, vec![elem.clone()])? {
             Value::Bool(true) => out.push(elem),
             Value::Bool(false) => break,
             other => {
@@ -364,7 +364,7 @@ pub(crate) fn builtin_array_drop_while(interp: &mut Interpreter, args: &[Value])
     let mut out = Vec::new();
     for elem in arr {
         if dropping {
-            match interp.apply_function(f.clone(), vec![elem.clone()])? {
+            match interp.apply_function(&f, vec![elem.clone()])? {
                 Value::Bool(true) => continue,
                 Value::Bool(false) => {
                     dropping = false;
@@ -412,7 +412,7 @@ pub(crate) fn builtin_array_sum_by(interp: &mut Interpreter, args: &[Value]) -> 
 
     let mut total: i64 = 0;
     for elem in arr {
-        match interp.apply_function(f.clone(), vec![elem])? {
+        match interp.apply_function(&f, vec![elem])? {
             Value::Int(n) => total += n,
             other => {
                 return Err(format!(
@@ -450,7 +450,7 @@ pub(crate) fn builtin_array_product_by(interp: &mut Interpreter, args: &[Value])
 
     let mut product: i64 = 1;
     for elem in arr {
-        match interp.apply_function(f.clone(), vec![elem])? {
+        match interp.apply_function(&f, vec![elem])? {
             Value::Int(n) => product *= n,
             other => {
                 return Err(format!(

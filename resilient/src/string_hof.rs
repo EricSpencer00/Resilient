@@ -43,7 +43,7 @@ pub(crate) fn builtin_string_map_chars(interp: &mut Interpreter, args: &[Value])
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        match interp.apply_function(f.clone(), vec![c_str])? {
+        match interp.apply_function(&f, vec![c_str])? {
             Value::String(piece) => out.push_str(&piece),
             other => {
                 return Err(format!(
@@ -85,7 +85,7 @@ pub(crate) fn builtin_string_filter_by(interp: &mut Interpreter, args: &[Value])
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        match interp.apply_function(f.clone(), vec![c_str])? {
+        match interp.apply_function(&f, vec![c_str])? {
             Value::Bool(true) => out.push(ch),
             Value::Bool(false) => {}
             other => {
@@ -129,7 +129,7 @@ pub(crate) fn builtin_string_fold(interp: &mut Interpreter, args: &[Value]) -> R
     let mut acc = init;
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        acc = interp.apply_function(f.clone(), vec![acc, c_str])?;
+        acc = interp.apply_function(&f, vec![acc, c_str])?;
     }
     Ok(acc)
 }
@@ -164,7 +164,7 @@ pub(crate) fn builtin_string_for_each_char(
 
     for ch in s.chars() {
         let c_str = Value::String(ch.to_string());
-        interp.apply_function(f.clone(), vec![c_str])?;
+        interp.apply_function(&f, vec![c_str])?;
     }
     Ok(Value::Void)
 }

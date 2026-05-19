@@ -37,6 +37,8 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 Value::Set(_) => "set",
                 Value::Void => "void",
                 Value::Function(_) | Value::Closure { .. } | Value::Builtin { .. } => "function",
+                #[cfg(feature = "ffi")]
+                Value::Foreign { .. } => "function",
                 Value::Bytes(_) => "bytes",
                 Value::Struct { .. } => "struct",
                 Value::Tuple(_) => "tuple",
@@ -134,7 +136,7 @@ pub(crate) fn builtin_array_from_fn(interp: &mut Interpreter, args: &[Value]) ->
 
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
-        out.push(interp.apply_function(f.clone(), vec![Value::Int(i)])?);
+        out.push(interp.apply_function(&f, vec![Value::Int(i)])?);
     }
     Ok(Value::Array(out))
 }

@@ -82,7 +82,7 @@ pub(crate) fn try_dispatch(
     };
 
     let args = vec![left.clone(), right.clone()];
-    interp.apply_function(method_val, args).map(Some)
+    interp.apply_function(&method_val, args).map(Some)
 }
 
 #[cfg(test)]

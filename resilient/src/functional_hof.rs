@@ -58,7 +58,7 @@ pub(crate) fn builtin_array_zip_with_fn(
                 .collect();
             let mut out = Vec::with_capacity(pairs.len());
             for (x, y) in pairs {
-                out.push(interp.apply_function(f.clone(), vec![x, y])?);
+                out.push(interp.apply_function(&f, vec![x, y])?);
             }
             Ok(Value::Array(out))
         }
@@ -94,7 +94,7 @@ pub(crate) fn builtin_array_scan_fn(interp: &mut Interpreter, args: &[Value]) ->
             let mut acc = init.clone();
             out.push(acc.clone());
             for elem in elems {
-                acc = interp.apply_function(f.clone(), vec![acc, elem])?;
+                acc = interp.apply_function(&f, vec![acc, elem])?;
                 out.push(acc.clone());
             }
             Ok(Value::Array(out))
@@ -128,7 +128,7 @@ pub(crate) fn builtin_array_flat_map_fn(
             let elems: Vec<Value> = arr.clone();
             let mut out = Vec::new();
             for (i, elem) in elems.into_iter().enumerate() {
-                match interp.apply_function(f.clone(), vec![elem])? {
+                match interp.apply_function(&f, vec![elem])? {
                     Value::Array(sub) => out.extend(sub),
                     other => {
                         return Err(format!(
@@ -171,7 +171,7 @@ pub(crate) fn builtin_array_apply_n(interp: &mut Interpreter, args: &[Value]) ->
             for elem in elems {
                 let mut v = elem;
                 for _ in 0..n {
-                    v = interp.apply_function(f.clone(), vec![v])?;
+                    v = interp.apply_function(&f, vec![v])?;
                 }
                 out.push(v);
             }

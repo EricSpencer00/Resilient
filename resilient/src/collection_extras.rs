@@ -77,7 +77,7 @@ pub(crate) fn builtin_array_key_by(interp: &mut Interpreter, args: &[Value]) -> 
         std::collections::HashMap::with_capacity(arr.len());
 
     for elem in arr {
-        let key_val = interp.apply_function(f.clone(), vec![elem.clone()])?;
+        let key_val = interp.apply_function(&f, vec![elem.clone()])?;
         let mk = MapKey::from_value(&key_val)
             .map_err(|e| format!("array_key_by: key function returned non-hashable value: {e}"))?;
         map.insert(mk, elem);
@@ -120,7 +120,7 @@ pub(crate) fn builtin_array_iterate(interp: &mut Interpreter, args: &[Value]) ->
     let mut current = init;
     out.push(current.clone());
     for _ in 0..n {
-        current = interp.apply_function(f.clone(), vec![current])?;
+        current = interp.apply_function(&f, vec![current])?;
         out.push(current.clone());
     }
     Ok(Value::Array(out))

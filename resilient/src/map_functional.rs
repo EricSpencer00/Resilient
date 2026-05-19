@@ -35,7 +35,7 @@ pub(crate) fn builtin_map_filter(interp: &mut Interpreter, args: &[Value]) -> RR
     let mut out = std::collections::HashMap::with_capacity(m.len());
     for (k, v) in &m {
         let k_val = map_key_to_value(k);
-        let keep = interp.apply_function(f.clone(), vec![k_val, v.clone()])?;
+        let keep = interp.apply_function(&f, vec![k_val, v.clone()])?;
         match keep {
             Value::Bool(true) => {
                 out.insert(k.clone(), v.clone());
@@ -78,7 +78,7 @@ pub(crate) fn builtin_map_map_values(interp: &mut Interpreter, args: &[Value]) -
     let mut out = std::collections::HashMap::with_capacity(m.len());
     for (k, v) in &m {
         let k_val = map_key_to_value(k);
-        let new_val = interp.apply_function(f.clone(), vec![k_val, v.clone()])?;
+        let new_val = interp.apply_function(&f, vec![k_val, v.clone()])?;
         out.insert(k.clone(), new_val);
     }
     Ok(Value::Map(out))
@@ -111,7 +111,7 @@ pub(crate) fn builtin_map_for_each(interp: &mut Interpreter, args: &[Value]) -> 
 
     for (k, v) in &m {
         let k_val = map_key_to_value(k);
-        interp.apply_function(f.clone(), vec![k_val, v.clone()])?;
+        interp.apply_function(&f, vec![k_val, v.clone()])?;
     }
     Ok(Value::Void)
 }
@@ -209,7 +209,7 @@ pub(crate) fn builtin_map_merge_with(interp: &mut Interpreter, args: &[Value]) -
     for (k, v2) in &m2 {
         if let Some(v1) = out.get(k) {
             let k_val = map_key_to_value(k);
-            let merged = interp.apply_function(f.clone(), vec![k_val, v1.clone(), v2.clone()])?;
+            let merged = interp.apply_function(&f, vec![k_val, v1.clone(), v2.clone()])?;
             out.insert(k.clone(), merged);
         } else {
             out.insert(k.clone(), v2.clone());
@@ -253,7 +253,7 @@ pub(crate) fn builtin_map_update_with(interp: &mut Interpreter, args: &[Value]) 
     let mk = MapKey::from_value(&key_val)
         .map_err(|e| format!("map_update_with: key is not hashable: {e}"))?;
     let existing = m.get(&mk).cloned().unwrap_or(default);
-    let new_val = interp.apply_function(f, vec![existing])?;
+    let new_val = interp.apply_function(&f, vec![existing])?;
     let mut out = m;
     out.insert(mk, new_val);
     Ok(Value::Map(out))
