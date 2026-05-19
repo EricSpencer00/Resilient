@@ -57,7 +57,9 @@ pub fn score_program(program: &Node) -> Vec<ResilienceScore> {
     // RES-1507: borrow each call-site name as `&str` from the AST
     // instead of cloning. Same pattern applied to `vibe_debt::analyze`
     // in this PR; mirrors RES-1495 / RES-1500 / RES-1503.
-    let mut call_refs: HashMap<&str, u32> = HashMap::new();
+    // RES-1990: pre-size to 32 — typical program has 20-100 distinct
+    // call-site identifiers; 32 fits the common case.
+    let mut call_refs: HashMap<&str, u32> = HashMap::with_capacity(32);
     for s in stmts {
         collect_call_names(&s.node, &mut call_refs);
     }
@@ -66,6 +68,11 @@ pub fn score_program(program: &Node) -> Vec<ResilienceScore> {
     // function, upper-bounded by stmts.len(). Same pattern as the
     // semantic_regression / vibe_debt pre-sizes.
     let mut out = Vec::with_capacity(stmts.len());
+    // RES-1990: lift the per-fn self-call HashMap outside the loop and
+    // `clear()` between iterations — retains the bucket allocation
+    // across all functions. Same buffer-reuse shape as RES-1988
+    // (vibe_debt) and RES-1966 (isr_call_graph).
+    let mut self_call_buf: HashMap<&str, u32> = HashMap::with_capacity(8);
     for s in stmts {
         if let Node::Function {
             name,
@@ -100,7 +107,8 @@ pub fn score_program(program: &Node) -> Vec<ResilienceScore> {
             // Subtract self-references so a recursive fn can't earn
             // coverage credit by calling itself.
             let raw_refs = call_refs.get(name.as_str()).copied().unwrap_or(0);
-            let self_refs = count_self_calls(body, name);
+            self_call_buf.clear();
+            let self_refs = count_self_calls_into(body, name, &mut self_call_buf);
             let external_refs = raw_refs.saturating_sub(self_refs);
             score.coverage_pts = match external_refs {
                 0 => 0,
@@ -188,9 +196,10 @@ fn collect_call_names<'a>(node: &'a Node, out: &mut HashMap<&'a str, u32>) {
     }
 }
 
-fn count_self_calls(node: &Node, target: &str) -> u32 {
-    let mut tmp: HashMap<&str, u32> = HashMap::new();
-    collect_call_names(node, &mut tmp);
+/// RES-1990: variant that reuses a caller-provided HashMap to avoid
+/// per-fn allocations. Caller must `clear()` between invocations.
+fn count_self_calls_into<'a>(node: &'a Node, target: &str, tmp: &mut HashMap<&'a str, u32>) -> u32 {
+    collect_call_names(node, tmp);
     tmp.get(target).copied().unwrap_or(0)
 }
 

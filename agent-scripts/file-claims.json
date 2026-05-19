@@ -193,8 +193,8 @@
       "claimed_at": "2026-05-13T11:30:51Z"
     },
     "resilient/src/resilience_score.rs": {
-      "branch": "res-1756-program-collect-presize",
-      "claimed_at": "2026-05-13T11:30:51Z"
+      "branch": "res-1990-resilience-buffer-reuse",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/lean_spec.rs": {
       "branch": "res-1980-lean-spec-write",
