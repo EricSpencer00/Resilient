@@ -24,9 +24,14 @@ pub enum ProofResult {
     Failed(String),
 }
 
+/// Nested-map shape from RES-2046. The outer key is the fn name, the
+/// inner key is the contract digest. This lets `lookup(&str, u64)`
+/// query the outer map with a borrowed `&str` (via `String: Borrow<str>`)
+/// — dropping the `String` allocation that the previous
+/// `(String, u64)` composite key paid per call.
 #[derive(Debug, Clone, Default)]
 pub struct ProofCache {
-    pub entries: HashMap<(String, u64), ProofResult>,
+    pub entries: HashMap<String, HashMap<u64, ProofResult>>,
     pub hits: u64,
     pub misses: u64,
 }
@@ -39,11 +44,17 @@ pub fn reset() {
     }
 }
 
+/// RES-2046: nested-map lookup. The outer-map `get(fn_name)` accepts
+/// `&str` directly via `String: Borrow<str>`, so the hit path does
+/// no `String` allocation. The previous `(String, u64)` composite-
+/// key shape allocated an owned `String` on every call just to form
+/// the lookup tuple.
 pub fn lookup(fn_name: &str, contract_digest: u64) -> Option<ProofResult> {
     if let Ok(mut g) = CACHE.write() {
         let cache = g.get_or_insert_with(ProofCache::default);
-        let key = (fn_name.to_string(), contract_digest);
-        if let Some(r) = cache.entries.get(&key) {
+        if let Some(per_fn) = cache.entries.get(fn_name)
+            && let Some(r) = per_fn.get(&contract_digest)
+        {
             cache.hits += 1;
             return Some(r.clone());
         }
@@ -57,7 +68,9 @@ pub fn store(fn_name: &str, contract_digest: u64, result: ProofResult) {
         let cache = g.get_or_insert_with(ProofCache::default);
         cache
             .entries
-            .insert((fn_name.to_string(), contract_digest), result);
+            .entry(fn_name.to_string())
+            .or_default()
+            .insert(contract_digest, result);
     }
 }
 
@@ -113,11 +126,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     };
     if let Ok(mut g) = CACHE.write() {
         if let Some(cache) = g.as_mut() {
-            let before = cache.entries.len();
+            // RES-2046: count the total inner-entry population before/
+            // after so the eviction message stays meaningful under the
+            // nested-map shape (one outer entry per fn, many inner
+            // entries per contract digest).
+            let before: usize = cache.entries.values().map(|m| m.len()).sum();
             cache
                 .entries
-                .retain(|(fn_name, _), _| live_names.contains(fn_name.as_str()));
-            let evicted = before.saturating_sub(cache.entries.len());
+                .retain(|fn_name, _| live_names.contains(fn_name.as_str()));
+            let after: usize = cache.entries.values().map(|m| m.len()).sum();
+            let evicted = before.saturating_sub(after);
             if evicted > 0 {
                 eprintln!("incremental_verify: evicted {evicted} stale proof-cache entry/ies");
             }
