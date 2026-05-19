@@ -137,10 +137,14 @@ pub(crate) fn builtin_file_read_chunk(args: &[Value]) -> RResult<Value> {
 /// `file_write_chunk(handle: File, bytes: Bytes) -> Result<Int, String>`.
 /// Writes the entire byte slice; returns the number of bytes written.
 pub(crate) fn builtin_file_write_chunk(args: &[Value]) -> RResult<Value> {
-    let (id, bytes) = match args {
+    // RES-1952: borrow `bytes` from args. The legacy `b.clone()`
+    // allocated a fresh `Vec<u8>` per call (typically 4-64 KiB for
+    // chunked I/O) even though `f.write_all` and `len()` both accept
+    // borrows.
+    let (id, bytes): (i64, &[u8]) = match args {
         [Value::Struct { name, fields }, Value::Bytes(b)] if name == "File" => {
             let id = handle_id_from_fields(fields)?;
-            (id, b.clone())
+            (id, b.as_slice())
         }
         _ => {
             return Err(format!(
@@ -154,7 +158,7 @@ pub(crate) fn builtin_file_write_chunk(args: &[Value]) -> RResult<Value> {
         let f = reg
             .get_mut(&id)
             .ok_or_else(|| std::io::Error::other("closed or unknown file handle"))?;
-        f.write_all(&bytes)?;
+        f.write_all(bytes)?;
         Ok(bytes.len())
     });
     match result {
@@ -173,14 +177,17 @@ pub(crate) fn builtin_file_write_chunk(args: &[Value]) -> RResult<Value> {
 /// Whence is one of `"start"`, `"current"`, `"end"`. Returns the new
 /// cursor position from the start of the file.
 pub(crate) fn builtin_file_seek(args: &[Value]) -> RResult<Value> {
-    let (id, offset, whence) = match args {
+    // RES-1952: borrow `whence` from args — only used for the
+    // immediate `match whence.as_str()` below; cloning the String
+    // was pure overhead.
+    let (id, offset, whence): (i64, i64, &str) = match args {
         [
             Value::Struct { name, fields },
             Value::Int(o),
             Value::String(w),
         ] if name == "File" => {
             let id = handle_id_from_fields(fields)?;
-            (id, *o, w.clone())
+            (id, *o, w.as_str())
         }
         _ => {
             return Err(format!(
@@ -189,7 +196,7 @@ pub(crate) fn builtin_file_seek(args: &[Value]) -> RResult<Value> {
             ));
         }
     };
-    let seek_from = match whence.as_str() {
+    let seek_from = match whence {
         "start" => {
             if offset < 0 {
                 return Err(format!(

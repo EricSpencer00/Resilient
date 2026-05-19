@@ -379,6 +379,10 @@
     "resilient/src/json_builtins.rs": {
       "branch": "res-1946-json-parser-presize",
       "claimed_at": "2026-05-19T18:22:09Z"
+    },
+    "resilient/src/file_io.rs": {
+      "branch": "res-1952-file-io-clone-elim",
+      "claimed_at": "2026-05-19T18:38:57Z"
     }
   }
 }
