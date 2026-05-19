@@ -363,7 +363,16 @@ fn build_callee_table(stmts: &[crate::Spanned<crate::Node>]) -> HashMap<String, 
 
 /// Walk a node tree collecting all `Node::CallExpression` nodes whose
 /// function slot is a plain `Node::Identifier`.
-fn collect_calls(node: &crate::Node, calls: &mut Vec<(String, Vec<crate::Node>)>) {
+///
+/// RES-1972: pushed entries borrow into the AST as `(&'a str, &'a [Node])`
+/// instead of cloning `(String, Vec<Node>)`. The consumer
+/// (`check_call_site_region_aliasing`) only reads the borrowed name
+/// for a HashMap lookup and iterates the borrowed slice for the
+/// region-aliasing analysis — it never mutates or moves out of either,
+/// so the previous owning shape was pure overhead. Skipping the
+/// `arguments.clone()` is the dominant win: each per-call-site clone
+/// deep-copies the entire argument-expression subtree.
+fn collect_calls<'a>(node: &'a crate::Node, calls: &mut Vec<(&'a str, &'a [crate::Node])>) {
     match node {
         crate::Node::CallExpression {
             function,
@@ -371,7 +380,7 @@ fn collect_calls(node: &crate::Node, calls: &mut Vec<(String, Vec<crate::Node>)>
             ..
         } => {
             if let crate::Node::Identifier { name, .. } = function.as_ref() {
-                calls.push((name.clone(), arguments.clone()));
+                calls.push((name.as_str(), arguments.as_slice()));
             }
             // Recurse into arguments even if callee isn't an identifier.
             for arg in arguments {
@@ -458,11 +467,15 @@ pub fn check_call_site_region_aliasing(program: &crate::Node, source_path: &str)
             // default `Vec::new()` doubling growth from 0 paid 2-3
             // reallocations per visited fn. Same shape as the
             // RES-1716/1718/1720 pre-size series.
-            let mut calls: Vec<(String, Vec<crate::Node>)> = Vec::with_capacity(8);
+            // RES-1972: entries now borrow into the AST as
+            // `(&str, &[Node])` instead of cloning `(String, Vec<Node>)`
+            // per call site — eliminates the deep `arguments.clone()`
+            // that the consumer never needed.
+            let mut calls: Vec<(&str, &[crate::Node])> = Vec::with_capacity(8);
             collect_calls(body, &mut calls);
 
             for (callee_name, args) in &calls {
-                let Some(info) = callee_table.get(callee_name) else {
+                let Some(info) = callee_table.get(*callee_name) else {
                     continue;
                 };
                 if args.len() != info.param_types.len() {
