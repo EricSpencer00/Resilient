@@ -285,8 +285,8 @@
       "claimed_at": "2026-05-13T11:59:58Z"
     },
     "resilient/src/verifier_liveness.rs": {
-      "branch": "res-1770-verifier-presize",
-      "claimed_at": "2026-05-13T11:59:58Z"
+      "branch": "res-2068-liveness-borrow-other-posts",
+      "claimed_at": "2026-05-20T05:30:00Z"
     },
     "resilient/src/recovery_checker.rs": {
       "branch": "res-1774-recovery-lint-presize",
