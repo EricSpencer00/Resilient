@@ -48,6 +48,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeanExpr {
@@ -221,18 +222,22 @@ pub fn render_native(expr: &LeanExpr) -> String {
 }
 
 pub fn emit_theorem(f: &LeanFn) -> String {
-    let mut out = String::new();
+    // RES-1980: the four `out.push_str(&format!(...))` sites previously
+    // allocated a fresh `String` per call, copied bytes into `out`, then
+    // dropped the intermediate — four wasted allocations per emit. Switch
+    // to `write!(out, "...", ...)`, which writes formatted bytes directly
+    // into `out`'s backing buffer. Pre-size to 256: covers the import
+    // header (~40 bytes) + def + theorem + simp tactic for a typical
+    // small fn before any growth.
+    let mut out = String::with_capacity(256);
     out.push_str("import Resilient.Semantics\n");
     out.push_str("open Resilient\n\n");
-    out.push_str(&format!(
-        "/-! Auto-generated from Resilient fn `{}` -/\n\n",
+    let _ = writeln!(
+        out,
+        "/-! Auto-generated from Resilient fn `{}` -/\n",
         f.name
-    ));
-    out.push_str(&format!(
-        "def {} : Expr := {}\n\n",
-        f.name,
-        render_expr(&f.body)
-    ));
+    );
+    let _ = writeln!(out, "def {} : Expr := {}\n", f.name, render_expr(&f.body));
 
     let param_pairs: Vec<String> = f
         .params
@@ -247,15 +252,17 @@ pub fn emit_theorem(f: &LeanFn) -> String {
         .map(|(ty, name)| format!("({name} : {})", lean_type_for(ty)))
         .collect();
 
-    out.push_str(&format!(
-        "theorem {}_correct {} :\n",
+    let _ = writeln!(
+        out,
+        "theorem {}_correct {} :",
         f.name,
         param_typed.join(" ")
-    ));
-    out.push_str(&format!(
-        "    eval ({}) {} = some {} := by\n",
+    );
+    let _ = writeln!(
+        out,
+        "    eval ({}) {} = some {} := by",
         env_str, f.name, native_body
-    ));
+    );
     out.push_str("  simp [eval, env_of, ");
     out.push_str(&f.name);
     out.push_str("]\n");
