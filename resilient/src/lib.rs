@@ -9824,6 +9824,23 @@ impl Parser {
 // Signature for native Rust functions exposed to the interpreter.
 type BuiltinFn = fn(&[Value]) -> RResult<Value>;
 
+/// Heap-allocated payload for `Value::Function`. Boxed so the Value
+/// enum stays small (~48 bytes instead of ~136 bytes), improving
+/// cache locality and clone speed for the common non-Function
+/// variants (Int, Float, Bool, String).
+#[derive(Clone)]
+struct FunctionValue {
+    parameters: Rc<Vec<(String, String)>>,
+    body: Rc<Node>,
+    env: Environment,
+    requires: Vec<Node>,
+    ensures: Vec<Node>,
+    recovers_to: Option<Box<Node>>,
+    name: String,
+    type_params: Vec<String>,
+    fails: Rc<Vec<String>>,
+}
+
 // Value types for our interpreter
 #[derive(Clone)]
 enum Value {
@@ -9831,36 +9848,7 @@ enum Value {
     Float(f64),
     String(String),
     Bool(bool),
-    Function {
-        /// RES-1913: Rc-shared so `env.get()` (which clones the Value)
-        /// bumps a refcount instead of deep-cloning the parameter list.
-        parameters: Rc<Vec<(String, String)>>,
-        /// RES-1913: Rc-shared so every `env.get("fn_name")` avoids
-        /// deep-cloning the entire function body AST. For recursive
-        /// workloads (fib(25) ≈ 243k calls) this eliminates one full
-        /// AST deep-clone per call.
-        body: Rc<Node>,
-        env: Environment,
-        /// RES-035: pre-conditions propagated into the runtime Value so
-        /// apply_function can check them. Empty when absent.
-        requires: Vec<Node>,
-        ensures: Vec<Node>,
-        /// RES-392: crash-recovery postcondition (MVP: final-state
-        /// variant, evaluated after the body returns — same env as
-        /// `ensures`, with `result` bound). `None` means no clause
-        /// was declared on the function.
-        recovers_to: Option<Box<Node>>,
-        /// Function name — used for better contract-violation messages.
-        name: String,
-        /// RES-405 PR 2: type parameters declared on this generic function.
-        /// Empty for monomorphic functions.
-        type_params: Vec<String>,
-        /// RES-775: declared checked-failure variants for this function.
-        /// Stored behind `Rc` because function values are cloned on
-        /// every call/lookup, and keeping this metadata shared avoids
-        /// inflating recursive interpreter stack frames.
-        fails: Rc<Vec<String>>,
-    },
+    Function(Box<FunctionValue>),
     /// Native function. `name` is the identifier it was registered as,
     /// for diagnostics only.
     Builtin {
@@ -10084,8 +10072,8 @@ impl std::fmt::Debug for Value {
             Value::Float(fl) => write!(f, "Float({})", fl),
             Value::String(s) => write!(f, "String({:?})", s),
             Value::Bool(b) => write!(f, "Bool({})", b),
-            Value::Function { parameters, .. } => {
-                write!(f, "Function({} params)", parameters.len())
+            Value::Function(fv) => {
+                write!(f, "Function({} params)", fv.parameters.len())
             }
             Value::Builtin { name, .. } => write!(f, "Builtin({})", name),
             Value::Array(items) => write!(f, "Array({} items)", items.len()),
@@ -10160,7 +10148,7 @@ impl std::fmt::Display for Value {
             Value::Float(fl) => write!(f, "{}", fl),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Bool(b) => write!(f, "{}", b),
-            Value::Function { .. } => write!(f, "<function>"),
+            Value::Function(_) => write!(f, "<function>"),
             Value::Builtin { name, .. } => write!(f, "<builtin {}>", name),
             Value::Array(items) => {
                 write!(f, "[")?;
@@ -10455,12 +10443,10 @@ impl Environment {
         let frame = self.inner.borrow();
         let mut out = HashMap::new();
         for (name, val) in &frame.store {
-            if let Value::Function {
-                requires, ensures, ..
-            } = val
-                && (!requires.is_empty() || !ensures.is_empty())
+            if let Value::Function(fv) = val
+                && (!fv.requires.is_empty() || !fv.ensures.is_empty())
             {
-                out.insert(name.clone(), (requires.clone(), ensures.clone()));
+                out.insert(name.clone(), (fv.requires.clone(), fv.ensures.clone()));
             }
         }
         out
@@ -21769,7 +21755,7 @@ fn builtin_cell_new(args: &[Value]) -> RResult<Value> {
 /// `spawn(fn)` — allocate a new actor running `fn`, return its PID.
 fn builtin_spawn(args: &[Value]) -> RResult<Value> {
     match args {
-        [fn_val @ Value::Function { .. }] => crate::actor_runtime::actor_spawn(fn_val.clone()),
+        [fn_val @ Value::Function(_)] => crate::actor_runtime::actor_spawn(fn_val.clone()),
         [other] => Err(format!(
             "spawn: expected a function argument, got {:?}",
             other
@@ -22251,7 +22237,7 @@ impl Interpreter {
                 } else {
                     requires.clone()
                 };
-                let func = Value::Function {
+                let func = Value::Function(Box::new(FunctionValue {
                     parameters: Rc::new(parameters.clone()),
                     body: Rc::new(body.as_ref().clone()),
                     env: self.env.clone(),
@@ -22261,7 +22247,7 @@ impl Interpreter {
                     name: name.clone(),
                     type_params: type_params.clone(),
                     fails: Rc::new(fails.clone()),
-                };
+                }));
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
             }
@@ -23297,7 +23283,7 @@ impl Interpreter {
                 ensures,
                 recovers_to,
                 ..
-            } => Ok(Value::Function {
+            } => Ok(Value::Function(Box::new(FunctionValue {
                 parameters: Rc::new(parameters.clone()),
                 body: Rc::new(body.as_ref().clone()),
                 env: self.env.clone(),
@@ -23307,7 +23293,7 @@ impl Interpreter {
                 name: "<anon>".to_string(),
                 type_params: vec![],
                 fails: Rc::new(vec![]),
-            }),
+            }))),
             Node::TryExpression { expr: inner, .. } => {
                 let v = self.eval(inner)?;
                 match v {
@@ -23525,7 +23511,7 @@ impl Interpreter {
                     // in the current env, error — the ticket calls this
                     // out as a duplicate-def diagnostic.
                     if let Node::Function { name: mangled, .. } = method
-                        && matches!(self.env.get(mangled), Some(Value::Function { .. }))
+                        && matches!(self.env.get(mangled), Some(Value::Function(_)))
                     {
                         return Err(format!(
                             "duplicate method: `{}::{}` defined more than once across impl blocks",
@@ -25124,17 +25110,18 @@ impl Interpreter {
 
     fn apply_function(&mut self, func: Value, args: Vec<Value>) -> RResult<Value> {
         match func {
-            Value::Function {
-                parameters,
-                body,
-                env,
-                requires,
-                ensures,
-                recovers_to,
-                name,
-                type_params,
-                fails,
-            } => {
+            Value::Function(fv) => {
+                let FunctionValue {
+                    parameters,
+                    body,
+                    env,
+                    requires,
+                    ensures,
+                    recovers_to,
+                    name,
+                    type_params,
+                    fails,
+                } = *fv;
                 let max_depth = max_interpreter_call_depth();
                 if self.call_depth >= max_depth {
                     return Err(format!(
@@ -37546,7 +37533,7 @@ mod tests {
         // Mangled fn is also directly callable via its mangled name.
         assert!(matches!(
             interp.env.get("Point$mag_sq"),
-            Some(Value::Function { .. })
+            Some(Value::Function(_))
         ));
     }
 
@@ -38113,9 +38100,9 @@ mod tests {
         let mut interp = Interpreter::new().with_proven_fns(proven);
         interp.eval(&program).unwrap();
         match interp.env.get("pos").unwrap() {
-            Value::Function { requires, .. } => {
+            Value::Function(fv) => {
                 assert!(
-                    requires.is_empty(),
+                    fv.requires.is_empty(),
                     "expected requires to be elided after proof"
                 );
             }
@@ -38146,9 +38133,9 @@ mod tests {
         let mut interp = Interpreter::new().with_proven_fns(proven);
         interp.eval(&program).unwrap();
         match interp.env.get("pos").unwrap() {
-            Value::Function { requires, .. } => {
+            Value::Function(fv) => {
                 assert_eq!(
-                    requires.len(),
+                    fv.requires.len(),
                     1,
                     "expected requires to be retained for runtime check"
                 );
