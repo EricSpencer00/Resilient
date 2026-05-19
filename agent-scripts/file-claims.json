@@ -397,8 +397,8 @@
       "claimed_at": "2026-05-19T17:53:14Z"
     },
     "resilient/src/array_combinators.rs": {
-      "branch": "res-1934-array-combinators-clone-elim",
-      "claimed_at": "2026-05-19T17:58:20Z"
+      "branch": "res-2036-array-combinators-borrow-args",
+      "claimed_at": "2026-05-19T22:00:00Z"
     },
     "resilient/src/combinatorics.rs": {
       "branch": "res-1938-combinatorics-presize",

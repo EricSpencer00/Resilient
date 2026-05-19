@@ -187,8 +187,9 @@ pub(crate) fn builtin_array_max_by(interp: &mut Interpreter, args: &[Value]) -> 
 /// // evens == 2
 /// ```
 pub(crate) fn builtin_array_count_if(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2036: borrow `arr` and `f`; clone only per apply_function call.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_count_if: first argument must be an Array, got {a}"
@@ -203,8 +204,8 @@ pub(crate) fn builtin_array_count_if(interp: &mut Interpreter, args: &[Value]) -
     };
 
     let mut count: i64 = 0;
-    for elem in arr {
-        match interp.apply_function(&f, vec![elem])? {
+    for elem in arr.iter() {
+        match interp.apply_function(f, vec![elem.clone()])? {
             Value::Bool(true) => count += 1,
             Value::Bool(false) => {}
             other => {
@@ -228,8 +229,11 @@ pub(crate) fn builtin_array_count_if(interp: &mut Interpreter, args: &[Value]) -
 /// // sums == [11, 22, 33]
 /// ```
 pub(crate) fn builtin_array_zip_with(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2036: borrow both arrays and the function; clone only the
+    // two values passed to apply_function. Saves *two* full-array
+    // clones per call.
     let (a, b, f) = match args {
-        [Value::Array(a), Value::Array(b), f] => (a.clone(), b.clone(), f.clone()),
+        [Value::Array(a), Value::Array(b), f] => (a, b, f),
         [Value::Array(_), b, _] => {
             return Err(format!(
                 "array_zip_with: second argument must be an Array, got {b}"
@@ -257,8 +261,8 @@ pub(crate) fn builtin_array_zip_with(interp: &mut Interpreter, args: &[Value]) -
     }
 
     let mut out = Vec::with_capacity(a.len());
-    for (x, y) in a.into_iter().zip(b) {
-        out.push(interp.apply_function(&f, vec![x, y])?);
+    for (x, y) in a.iter().zip(b.iter()) {
+        out.push(interp.apply_function(f, vec![x.clone(), y.clone()])?);
     }
     Ok(Value::Array(out))
 }
@@ -273,8 +277,9 @@ pub(crate) fn builtin_array_zip_with(interp: &mut Interpreter, args: &[Value]) -
 /// // ws == [[1,2,3], [2,3,4], [3,4,5]]
 /// ```
 pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
+    // RES-2036: borrow `arr`; only per-window `.to_vec()` clones happen.
     let (arr, n) = match args {
-        [Value::Array(a), Value::Int(n)] => (a.clone(), *n),
+        [Value::Array(a), Value::Int(n)] => (a, *n),
         [Value::Array(_), n] => {
             return Err(format!(
                 "array_windows: second argument must be an int, got {n}"
@@ -316,8 +321,10 @@ pub(crate) fn builtin_array_windows(args: &[Value]) -> RResult<Value> {
 /// // prefix == [1, 2, 3]
 /// ```
 pub(crate) fn builtin_array_take_while(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2036: borrow `arr` and `f`; clone only when pushing to `out`
+    // or passing to apply_function.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_take_while: first argument must be an Array, got {a}"
@@ -332,9 +339,9 @@ pub(crate) fn builtin_array_take_while(interp: &mut Interpreter, args: &[Value])
     };
 
     let mut out = Vec::new();
-    for elem in arr {
-        match interp.apply_function(&f, vec![elem.clone()])? {
-            Value::Bool(true) => out.push(elem),
+    for elem in arr.iter() {
+        match interp.apply_function(f, vec![elem.clone()])? {
+            Value::Bool(true) => out.push(elem.clone()),
             Value::Bool(false) => break,
             other => {
                 return Err(format!(
@@ -356,8 +363,10 @@ pub(crate) fn builtin_array_take_while(interp: &mut Interpreter, args: &[Value])
 /// // rest == [3, 4, 1]
 /// ```
 pub(crate) fn builtin_array_drop_while(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2036: borrow `arr` and `f`; clone individual elements only
+    // when retained (kept after the drop-prefix ends).
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_drop_while: first argument must be an Array, got {a}"
@@ -373,13 +382,13 @@ pub(crate) fn builtin_array_drop_while(interp: &mut Interpreter, args: &[Value])
 
     let mut dropping = true;
     let mut out = Vec::new();
-    for elem in arr {
+    for elem in arr.iter() {
         if dropping {
-            match interp.apply_function(&f, vec![elem.clone()])? {
+            match interp.apply_function(f, vec![elem.clone()])? {
                 Value::Bool(true) => continue,
                 Value::Bool(false) => {
                     dropping = false;
-                    out.push(elem);
+                    out.push(elem.clone());
                 }
                 other => {
                     return Err(format!(
@@ -388,7 +397,7 @@ pub(crate) fn builtin_array_drop_while(interp: &mut Interpreter, args: &[Value])
                 }
             }
         } else {
-            out.push(elem);
+            out.push(elem.clone());
         }
     }
     Ok(Value::Array(out))
@@ -406,8 +415,9 @@ pub(crate) fn builtin_array_drop_while(interp: &mut Interpreter, args: &[Value])
 /// // total == 3 + 2 + 8 == 13
 /// ```
 pub(crate) fn builtin_array_sum_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2036: borrow `arr` and `f`; clone only per apply_function call.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_sum_by: first argument must be an Array, got {a}"
@@ -422,8 +432,8 @@ pub(crate) fn builtin_array_sum_by(interp: &mut Interpreter, args: &[Value]) -> 
     };
 
     let mut total: i64 = 0;
-    for elem in arr {
-        match interp.apply_function(&f, vec![elem])? {
+    for elem in arr.iter() {
+        match interp.apply_function(f, vec![elem.clone()])? {
             Value::Int(n) => total += n,
             other => {
                 return Err(format!(
@@ -444,8 +454,9 @@ pub(crate) fn builtin_array_sum_by(interp: &mut Interpreter, args: &[Value]) -> 
 /// // prod == 2 * 4 * 6 * 8 == 384
 /// ```
 pub(crate) fn builtin_array_product_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2036: borrow `arr` and `f`; clone only per apply_function call.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_product_by: first argument must be an Array, got {a}"
@@ -460,8 +471,8 @@ pub(crate) fn builtin_array_product_by(interp: &mut Interpreter, args: &[Value])
     };
 
     let mut product: i64 = 1;
-    for elem in arr {
-        match interp.apply_function(&f, vec![elem])? {
+    for elem in arr.iter() {
+        match interp.apply_function(f, vec![elem.clone()])? {
             Value::Int(n) => product *= n,
             other => {
                 return Err(format!(
