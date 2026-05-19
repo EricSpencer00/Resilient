@@ -24911,26 +24911,29 @@ impl Interpreter {
             return Ok(Value::Bool(result));
         }
 
-        match (left.clone(), right.clone()) {
-            (Value::Int(l), Value::Int(r)) => self.eval_integer_infix_expression(operator, l, r),
-            (Value::Float(l), Value::Float(r)) => self.eval_float_infix_expression(operator, l, r),
-            // RES-130: no implicit int ↔ float coercion at runtime.
-            // The typechecker rejects this before eval when the
-            // program is typechecked; the runtime guard below
-            // catches the same shape for programs bypassing
-            // `--typecheck`.
+        // RES-1899: match by reference to avoid cloning both Values on
+        // every infix dispatch. Int, Float, Bool inner values are Copy,
+        // so dereferencing costs nothing. String is handled separately
+        // to avoid the clone on the non-String path (the dominant case).
+        match (&left, &right) {
+            (Value::Int(l), Value::Int(r)) => self.eval_integer_infix_expression(operator, *l, *r),
+            (Value::Float(l), Value::Float(r)) => {
+                self.eval_float_infix_expression(operator, *l, *r)
+            }
             (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => Err(format!(
                 "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
                 operator
             )),
-            (Value::String(l), Value::String(r)) => {
-                self.eval_string_infix_expression(operator, l, r)
+            (Value::String(_), Value::String(_)) => match (left, right) {
+                (Value::String(l), Value::String(r)) => {
+                    self.eval_string_infix_expression(operator, l, r)
+                }
+                _ => unreachable!(),
+            },
+            (Value::Bool(l), Value::Bool(r)) => {
+                self.eval_boolean_infix_expression(operator, *l, *r)
             }
-            (Value::Bool(l), Value::Bool(r)) => self.eval_boolean_infix_expression(operator, l, r),
             _ => {
-                // Operator overloading: when one operand is a struct
-                // and a `<StructName>$<op_method>` exists in the env,
-                // dispatch through it instead of erroring out.
                 if let Some(v) =
                     crate::operator_overload::try_dispatch(self, operator, &left, &right)?
                 {
