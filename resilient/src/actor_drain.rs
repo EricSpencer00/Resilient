@@ -39,44 +39,36 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 }
 
 fn check_actor(node: &Node) {
-    let handlers = match collect_handler_names(node) {
-        Some((name, h)) => (name, h),
-        None => return,
+    // RES-2002: match the Actor variant directly and walk handlers in a
+    // single pass. The previous helper-pair (`collect_handler_names` +
+    // `actor_name_of`) cloned the actor name plus every handler name
+    // into a `Vec<String>`, then iterated that Vec twice. All of that
+    // owned-data extraction was wasted — the Actor variant outlives
+    // every use here.
+    let Node::Actor {
+        name: actor_name,
+        handlers,
+        ..
+    } = node
+    else {
+        return;
     };
-    let (actor_name, handler_names) = handlers;
-    let has_stop = handler_names
-        .iter()
-        .any(|h| STOP_HANDLERS.contains(&h.as_str()));
-    let has_drain = handler_names
-        .iter()
-        .any(|h| DRAIN_HANDLERS.contains(&h.as_str()));
+    let mut has_stop = false;
+    let mut has_drain = false;
+    for h in handlers {
+        let n = h.name.as_str();
+        if STOP_HANDLERS.contains(&n) {
+            has_stop = true;
+        }
+        if DRAIN_HANDLERS.contains(&n) {
+            has_drain = true;
+        }
+    }
     if has_stop && !has_drain {
         eprintln!(
             "warning: actor '{actor_name}' declares a shutdown/terminate handler but \
              no drain/flush handler — un-processed messages may be discarded on exit"
         );
-    }
-}
-
-/// Best-effort: discover an actor declaration and the names of its
-/// declared receive handlers. The actual `Node::Actor` shape includes
-/// receive handlers as nested function-like nodes; we look for any
-/// child with a `name`-bearing variant under the actor body.
-fn collect_handler_names(node: &Node) -> Option<(String, Vec<String>)> {
-    let actor_name = actor_name_of(node)?;
-    if let Node::Actor { handlers, .. } = node {
-        let names = handlers.iter().map(|h| h.name.clone()).collect();
-        Some((actor_name, names))
-    } else {
-        None
-    }
-}
-
-fn actor_name_of(node: &Node) -> Option<String> {
-    if let Node::Actor { name, .. } = node {
-        Some(name.clone())
-    } else {
-        None
     }
 }
 
