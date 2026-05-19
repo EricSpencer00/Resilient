@@ -19,6 +19,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone)]
 pub struct AutopilotEntry {
@@ -78,24 +79,37 @@ pub fn run(program: &Node) -> AutopilotReport {
 }
 
 pub fn format_report(report: &AutopilotReport) -> String {
-    let mut s = String::new();
-    s.push_str(&format!(
-        "Autopilot report — program-wide vibe debt: {:.1}%\n\n",
+    // RES-1978: previously this function called `s.push_str(&format!(...))`
+    // at five sites in the per-entry loop. Each `format!(...)` allocated
+    // a fresh `String`, copied bytes into `s`, then dropped the
+    // intermediate. For an entry with k requires + m ensures + n action
+    // items, that's (1 + k + m + n) wasted allocations per entry plus
+    // one for the leader.
+    //
+    // Switch to `write!(&mut s, "...", ...).unwrap()` — `write!` writes
+    // formatted bytes directly into `s`'s backing buffer. Pre-size to
+    // 256 to cover a typical small-program report header + several
+    // entries before growth. Same byte-for-byte output.
+    let mut s = String::with_capacity(256);
+    let _ = writeln!(
+        s,
+        "Autopilot report — program-wide vibe debt: {:.1}%\n",
         report.program_debt_pct
-    ));
+    );
     for e in &report.entries {
-        s.push_str(&format!(
-            "fn {}\n  resilience: {} / 100   {}\n  vibe-signals: {} / 4\n",
+        let _ = writeln!(
+            s,
+            "fn {}\n  resilience: {} / 100   {}\n  vibe-signals: {} / 4",
             e.function_name, e.resilience_total, e.grade, e.vibe_signals
-        ));
+        );
         for r in &e.inferred_requires {
-            s.push_str(&format!("  suggested: requires {}\n", r));
+            let _ = writeln!(s, "  suggested: requires {}", r);
         }
         for r in &e.inferred_ensures {
-            s.push_str(&format!("  suggested: ensures {}\n", r));
+            let _ = writeln!(s, "  suggested: ensures {}", r);
         }
         for a in &e.action_items {
-            s.push_str(&format!("  action: {}\n", a));
+            let _ = writeln!(s, "  action: {}", a);
         }
         s.push('\n');
     }

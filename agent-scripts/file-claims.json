@@ -193,8 +193,8 @@
       "claimed_at": "2026-05-13T11:30:51Z"
     },
     "resilient/src/autopilot.rs": {
-      "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:38:11Z"
+      "branch": "res-1978-autopilot-write",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/iterator_protocol.rs": {
       "branch": "res-1758-more-collect-presize",
