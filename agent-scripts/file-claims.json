@@ -56,6 +56,10 @@
       "branch": "res-2026-argminmax-single-pass",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
+    "resilient/src/array_stats.rs": {
+      "branch": "res-2030-stats-single-pass",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     "resilient/src/struct_exhaustiveness.rs": {
       "branch": "res-2022-exhaustiveness-static-msg",
       "claimed_at": "2026-05-19T00:00:00Z"

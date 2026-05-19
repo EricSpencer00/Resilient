@@ -27,60 +27,89 @@
 
 use crate::{RResult, Value};
 
-fn collect_ints(name: &str, items: &[Value]) -> RResult<Vec<i64>> {
+// RES-2030: inline type-check helpers. Replace the previous
+// `collect_ints` / `collect_floats` helpers that materialized an
+// intermediate Vec from the entire input — these are throwaway for
+// the variance / stddev / range computations.
+
+#[inline]
+fn as_int(name: &str, v: &Value) -> RResult<i64> {
+    match v {
+        Value::Int(n) => Ok(*n),
+        other => Err(format!(
+            "{}: expected all int elements, got {}",
+            name, other
+        )),
+    }
+}
+
+#[inline]
+fn as_float(name: &str, v: &Value) -> RResult<f64> {
+    match v {
+        Value::Float(f) => Ok(*f),
+        other => Err(format!(
+            "{}: expected all float elements, got {}",
+            name, other
+        )),
+    }
+}
+
+/// RES-2030: population variance computed directly over `&[Value]`
+/// without an intermediate Vec. Pass 1 validates element type and
+/// sums to find the mean; pass 2 re-pattern-matches the (validated)
+/// slice and accumulates the sum-of-squared-deviations. Same two-pass
+/// algorithm as the previous helper-based shape, no allocations.
+fn population_variance_int(name: &str, items: &[Value]) -> RResult<f64> {
     if items.is_empty() {
         return Err(format!("{}: empty array has no value", name));
     }
-    let mut out: Vec<i64> = Vec::with_capacity(items.len());
+    let mut sum: f64 = 0.0;
     for v in items {
-        match v {
-            Value::Int(n) => out.push(*n),
-            other => {
-                return Err(format!(
-                    "{}: expected all int elements, got {}",
-                    name, other
-                ));
-            }
+        let n = as_int(name, v)?;
+        sum += n as f64;
+    }
+    let n_f = items.len() as f64;
+    let mean = sum / n_f;
+    let mut sumsq: f64 = 0.0;
+    for v in items {
+        // Validated by pass 1 — silently skip otherwise (unreachable).
+        if let Value::Int(n) = v {
+            let x = *n as f64;
+            sumsq += (x - mean).powi(2);
         }
     }
-    Ok(out)
+    Ok(sumsq / n_f)
 }
 
-fn collect_floats(name: &str, items: &[Value]) -> RResult<Vec<f64>> {
+/// Float variant of `population_variance_int`.
+fn population_variance_float(name: &str, items: &[Value]) -> RResult<f64> {
     if items.is_empty() {
         return Err(format!("{}: empty array has no value", name));
     }
-    let mut out: Vec<f64> = Vec::with_capacity(items.len());
+    let mut sum: f64 = 0.0;
     for v in items {
-        match v {
-            Value::Float(f) => out.push(*f),
-            other => {
-                return Err(format!(
-                    "{}: expected all float elements, got {}",
-                    name, other
-                ));
-            }
+        let f = as_float(name, v)?;
+        sum += f;
+    }
+    let n_f = items.len() as f64;
+    let mean = sum / n_f;
+    let mut sumsq: f64 = 0.0;
+    for v in items {
+        if let Value::Float(f) = v {
+            sumsq += (*f - mean).powi(2);
         }
     }
-    Ok(out)
-}
-
-fn population_variance(values: &[f64]) -> f64 {
-    let n = values.len() as f64;
-    let mean = values.iter().sum::<f64>() / n;
-    let sumsq: f64 = values.iter().map(|x| (x - mean).powi(2)).sum();
-    sumsq / n
+    Ok(sumsq / n_f)
 }
 
 /// `array_variance_int(arr) -> Float` — population variance
 /// (∑(xᵢ - μ)² / N) of an int array. Computation is performed in `f64`.
 pub(crate) fn builtin_array_variance_int(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let nums = collect_ints("array_variance_int", items)?;
-            let floats: Vec<f64> = nums.iter().map(|&n| n as f64).collect();
-            Ok(Value::Float(population_variance(&floats)))
-        }
+        [Value::Array(items)] => Ok(Value::Float(population_variance_int(
+            "array_variance_int",
+            items,
+        )?)),
         [other] => Err(format!("array_variance_int: expected array, got {}", other)),
         _ => Err(format!(
             "array_variance_int: expected 1 argument, got {}",
@@ -93,10 +122,10 @@ pub(crate) fn builtin_array_variance_int(args: &[Value]) -> RResult<Value> {
 /// float array.
 pub(crate) fn builtin_array_variance_float(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let nums = collect_floats("array_variance_float", items)?;
-            Ok(Value::Float(population_variance(&nums)))
-        }
+        [Value::Array(items)] => Ok(Value::Float(population_variance_float(
+            "array_variance_float",
+            items,
+        )?)),
         [other] => Err(format!(
             "array_variance_float: expected array, got {}",
             other
@@ -112,11 +141,9 @@ pub(crate) fn builtin_array_variance_float(args: &[Value]) -> RResult<Value> {
 /// int array.
 pub(crate) fn builtin_array_stddev_int(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let nums = collect_ints("array_stddev_int", items)?;
-            let floats: Vec<f64> = nums.iter().map(|&n| n as f64).collect();
-            Ok(Value::Float(population_variance(&floats).sqrt()))
-        }
+        [Value::Array(items)] => Ok(Value::Float(
+            population_variance_int("array_stddev_int", items)?.sqrt(),
+        )),
         [other] => Err(format!("array_stddev_int: expected array, got {}", other)),
         _ => Err(format!(
             "array_stddev_int: expected 1 argument, got {}",
@@ -129,10 +156,9 @@ pub(crate) fn builtin_array_stddev_int(args: &[Value]) -> RResult<Value> {
 /// float array.
 pub(crate) fn builtin_array_stddev_float(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let nums = collect_floats("array_stddev_float", items)?;
-            Ok(Value::Float(population_variance(&nums).sqrt()))
-        }
+        [Value::Array(items)] => Ok(Value::Float(
+            population_variance_float("array_stddev_float", items)?.sqrt(),
+        )),
         [other] => Err(format!("array_stddev_float: expected array, got {}", other)),
         _ => Err(format!(
             "array_stddev_float: expected 1 argument, got {}",
@@ -147,7 +173,16 @@ pub(crate) fn builtin_array_stddev_float(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_median_float(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let mut nums = collect_floats("array_median_float", items)?;
+            // RES-2030: median needs sorted random access, so we still
+            // materialize the `Vec<f64>` — but the type-check inlines
+            // (no separate `collect_floats` helper).
+            if items.is_empty() {
+                return Err("array_median_float: empty array has no value".to_string());
+            }
+            let mut nums: Vec<f64> = Vec::with_capacity(items.len());
+            for v in items {
+                nums.push(as_float("array_median_float", v)?);
+            }
             nums.sort_by(|a, b| a.total_cmp(b));
             let n = nums.len();
             let median = if n % 2 == 1 {
@@ -170,15 +205,23 @@ pub(crate) fn builtin_array_median_float(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_range_float(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_floats("array_range_float", items)?;
-            let mut min = nums[0];
-            let mut max = nums[0];
-            for &v in &nums[1..] {
-                if v.total_cmp(&min) == std::cmp::Ordering::Less {
-                    min = v;
+            // RES-2030: single-pass min/max scan with inline type-check.
+            // Previously materialized a `Vec<f64>` via `collect_floats`
+            // before scanning — pure overhead since we only need two
+            // floats (min, max) tracked in registers.
+            if items.is_empty() {
+                return Err("array_range_float: empty array has no value".to_string());
+            }
+            let first = as_float("array_range_float", &items[0])?;
+            let mut min = first;
+            let mut max = first;
+            for v in items.iter().skip(1) {
+                let f = as_float("array_range_float", v)?;
+                if f.total_cmp(&min) == std::cmp::Ordering::Less {
+                    min = f;
                 }
-                if v.total_cmp(&max) == std::cmp::Ordering::Greater {
-                    max = v;
+                if f.total_cmp(&max) == std::cmp::Ordering::Greater {
+                    max = f;
                 }
             }
             Ok(Value::Float(max - min))
