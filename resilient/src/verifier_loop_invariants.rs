@@ -300,12 +300,24 @@ fn try_prove_invariant(
     }
 
     // -------- Both proven: capture certificate + emit message --------
-    let mut smt2 = String::new();
+    // RES-1954: pre-size the certificate buffer to the actual base +
+    // step cert lengths plus a small header margin. The legacy
+    // `String::new()` grew through the default 0→4→8→16 doubling
+    // chain even though the final size is known up-front from the
+    // already-materialised `base_cert.smt2` and `step_cert.smt2`
+    // strings. Header / spacing overhead is ~120 bytes.
+    const HEADER_MARGIN: usize = 128;
+    let cap = HEADER_MARGIN
+        + base_cert.as_ref().map(|c| c.smt2.len()).unwrap_or(0)
+        + step_cert.as_ref().map(|c| c.smt2.len()).unwrap_or(0);
+    let mut smt2 = String::with_capacity(cap);
     smt2.push_str("; RES-318 loop-invariant proof certificate\n");
-    smt2.push_str(&format!(
-        "; loop at line {}, col {}\n",
+    use std::fmt::Write as _;
+    let _ = writeln!(
+        &mut smt2,
+        "; loop at line {}, col {}",
         loop_span.start.line, loop_span.start.column
-    ));
+    );
     smt2.push_str("; ----- base case -----\n");
     if let Some(c) = base_cert {
         smt2.push_str(&c.smt2);
