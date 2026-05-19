@@ -4950,12 +4950,15 @@ impl TypeChecker {
                 // anti_regression so the latter has the call graph.
                 // RES-2645: resilience_score warns for F-grade functions;
                 // vibe_debt warns for fully-vibe-coded functions;
-                // behavioral_fingerprint checks for contract regressions;
                 // contract_inference emits inline contract suggestions.
-                crate::resilience_score::check(program, source_path)?;
-                crate::vibe_debt::check(program, source_path)?;
+                // All three only examine top-level functions — skip them
+                // when the program has none.
+                if !markers.fn_names.is_empty() {
+                    crate::resilience_score::check(program, source_path)?;
+                    crate::vibe_debt::check(program, source_path)?;
+                    crate::contract_inference::check(program, source_path)?;
+                }
                 crate::behavioral_fingerprint::check(program, source_path)?;
-                crate::contract_inference::check(program, source_path)?;
                 // RES-2645: mutation_testing cross-references mutation
                 // sites with contract declarations; warns on unconstrained.
                 crate::mutation_testing::check(program, source_path)?;

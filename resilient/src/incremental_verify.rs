@@ -61,6 +61,14 @@ pub fn store(fn_name: &str, contract_digest: u64, result: ProofResult) {
     }
 }
 
+pub fn cache_is_empty() -> bool {
+    CACHE
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|c| c.entries.is_empty()))
+        .unwrap_or(true)
+}
+
 pub fn stats() -> (u64, u64) {
     // RES-1566: borrow through the read guard and read the two `Copy`
     // u64s in place. The previous `g.clone()` shape cloned the entire
@@ -87,6 +95,9 @@ pub fn stats() -> (u64, u64) {
 /// function names from the AST, then drop every cache entry whose
 /// function name is absent from that set.
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    if cache_is_empty() {
+        return Ok(());
+    }
     let live_names: std::collections::HashSet<&str> = match program {
         Node::Program(stmts) => stmts
             .iter()
