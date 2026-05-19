@@ -197,13 +197,11 @@ pub fn format_blame_chain(callee: &str, max_depth: usize) -> String {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1291: fast-reject when no calls exist.
-    let has_call =
-        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::CallExpression { .. }));
-    if !has_call {
-        install(BlameMap::default());
-        return Ok(());
-    }
+    // RES-1291 / RES-1917: the typechecker gates this call behind
+    // `markers.has_call_expression`, so the program is guaranteed to
+    // contain at least one `CallExpression`. The previous `any_node`
+    // pre-scan was redundant — removed. (The typechecker else branch
+    // installs `BlameMap::default()` directly.)
     let map = build(program);
 
     // At compile time, for every function with `requires` clauses, emit a

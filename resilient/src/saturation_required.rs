@@ -19,26 +19,15 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{any_node, for_each_function, visit};
+use crate::uniqueness_walk::{for_each_function, visit};
 
 const SAT_NAME_SUFFIXES: &[&str] = &["_pwm", "_duty", "_brightness", "_pct", "_throttle"];
 const SAT_FNS: &[&str] = &["saturating_add", "saturating_sub", "saturating_mul"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1266: fast-reject. The per-function descent walks every function
-    // body looking for `LetStatement`s whose name ends in a saturation-typed
-    // suffix (`_pwm`, `_duty`, …). The overwhelming majority of programs
-    // (every fixture in `examples/`, every unit test, every integration
-    // test) have no such binding, so every descent produces zero work.
-    // Pre-scan once with the early-terminating `any_node` (RES-1238) and
-    // skip the per-function loop entirely when nothing matches.
-    let has_sat_let = any_node(program, |n| match n {
-        Node::LetStatement { name, .. } => SAT_NAME_SUFFIXES.iter().any(|s| name.ends_with(*s)),
-        _ => false,
-    });
-    if !has_sat_let {
-        return Ok(());
-    }
+    // RES-1266 / RES-1917: the typechecker gates this call behind
+    // `markers.any_let_name_with_suffix` with the same SAT_NAME_SUFFIXES.
+    // The previous `any_node` pre-scan was redundant — removed.
     for_each_function(program, |fname, _params, body| {
         visit(body, &mut |n| {
             if let Node::LetStatement { name, value, .. } = n {
