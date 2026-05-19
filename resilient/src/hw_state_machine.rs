@@ -16,7 +16,14 @@ use std::sync::{LazyLock, RwLock};
 pub struct PeripheralSpec {
     pub name: String,
     pub states: Vec<String>,
-    pub transitions: HashMap<(String, String), String>,
+    /// Nested map: `current_state -> (method -> next_state)`.
+    ///
+    /// RES-2010: previously a flat `HashMap<(String, String), String>`.
+    /// The flat shape forced `transition` to allocate two transient
+    /// Strings per call (stdlib's `Borrow` impls don't allow looking
+    /// up a `(String, String)` key by `(&str, &str)`). Same fix as
+    /// RES-2008 for sibling `typestate_types::TypestateSpec`.
+    pub transitions: HashMap<String, HashMap<String, String>>,
     pub initial_state: String,
 }
 
@@ -51,8 +58,12 @@ pub fn collect() -> Vec<PeripheralSpec> {
                         for t in v.split_whitespace() {
                             if let Some((lhs, next)) = t.split_once("->") {
                                 if let Some((s, m)) = lhs.split_once(':') {
+                                    // RES-2010: nested map shape — see comment
+                                    // on `PeripheralSpec::transitions`.
                                     spec.transitions
-                                        .insert((s.to_string(), m.to_string()), next.to_string());
+                                        .entry(s.to_string())
+                                        .or_default()
+                                        .insert(m.to_string(), next.to_string());
                                 }
                             }
                         }
@@ -87,8 +98,13 @@ pub fn transition(peripheral: &str, current: &str, method: &str) -> Result<Strin
     let spec = g
         .get(peripheral)
         .ok_or_else(|| format!("no peripheral spec for `{peripheral}`"))?;
+    // RES-2010: nested-map lookup — `.get(&str)` on each level uses
+    // the existing `String: Borrow<str>` impl. Zero per-call
+    // allocations (the previous flat `(String, String)` key forced
+    // two transient `String::to_string()` allocs per call).
     spec.transitions
-        .get(&(current.to_string(), method.to_string()))
+        .get(current)
+        .and_then(|m| m.get(method))
         .cloned()
         .ok_or_else(|| {
             format!(
