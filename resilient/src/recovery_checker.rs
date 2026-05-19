@@ -9,23 +9,13 @@
 // V1 emits warnings; V2 will escalate to errors under --v2-strict.
 
 use crate::Node;
-use crate::uniqueness_walk::any_node;
 use std::collections::HashSet;
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1270: fast-reject. Both `collect_declarations` and
-    // `check_live_blocks` only produce diagnostics when a `live{}` block
-    // exists somewhere in the program — the recovery-body warnings
-    // (opaque FFI, recursion, capturing closures) fire on nodes
-    // *inside* `Node::LiveBlock`. The overwhelming majority of programs
-    // (every fixture in `examples/`, every test) contain zero
-    // `LiveBlock`s, so the full two-pass descent is dead work. Pre-scan
-    // once with the early-terminating `any_node` (RES-1238) and skip
-    // the walks entirely when none exist.
-    let has_live = any_node(program, |n| matches!(n, Node::LiveBlock { .. }));
-    if !has_live {
-        return Ok(());
-    }
+    // RES-1270 / RES-1916: the typechecker gates this call behind
+    // `markers.has_live_block`, so the program is guaranteed to
+    // contain at least one `LiveBlock`. The previous `any_node`
+    // pre-scan was redundant — removed.
     let mut ctx = Context::new();
     ctx.collect_declarations(program);
     ctx.check_live_blocks(program);
