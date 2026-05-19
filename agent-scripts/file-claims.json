@@ -309,8 +309,8 @@
       "claimed_at": "2026-05-13T12:47:28Z"
     },
     "resilient/src/verifier_loop_invariants.rs": {
-      "branch": "res-1798-vli-bindings-presize",
-      "claimed_at": "2026-05-13T12:53:30Z"
+      "branch": "res-1954-loop-invariant-cert-presize",
+      "claimed_at": "2026-05-19T18:44:10Z"
     },
     "resilient/src/traits.rs": {
       "branch": "res-1802-traits-presize",
