@@ -27,8 +27,11 @@ type RResult<T> = Result<T, String>;
 /// // result == [1, 10, 2, 20, 3, 30]
 /// ```
 pub(crate) fn builtin_array_flat_map(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1936: borrow `arr` and `f` from `args`. The legacy
+    // `arr.clone()` only existed to provide an owned iter; iterate
+    // `arr.iter()` and clone each element at the apply_function call.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_flat_map: first argument must be an Array, got {a}"
@@ -43,8 +46,8 @@ pub(crate) fn builtin_array_flat_map(interp: &mut Interpreter, args: &[Value]) -
     };
 
     let mut out: Vec<Value> = Vec::with_capacity(arr.len() * 2);
-    for elem in arr {
-        let result = interp.apply_function(&f, vec![elem])?;
+    for elem in arr.iter() {
+        let result = interp.apply_function(f, vec![elem.clone()])?;
         match result {
             Value::Array(inner) => out.extend(inner),
             other => {
@@ -70,8 +73,12 @@ pub(crate) fn builtin_array_flat_map(interp: &mut Interpreter, args: &[Value]) -
 /// // m == {"even" -> [2, 4], "odd" -> [1, 3]}
 /// ```
 pub(crate) fn builtin_array_group_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1936: borrow `arr` and `f`; iterate `arr.iter()` and clone
+    // each element only at the apply_function callsite and at the
+    // per-group push. Pre-size `order` and `groups` to 8 — typical
+    // group counts on grouping HOF inputs are 2-10.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_group_by: first argument must be an Array, got {a}"
@@ -86,12 +93,12 @@ pub(crate) fn builtin_array_group_by(interp: &mut Interpreter, args: &[Value]) -
     };
 
     // Use an IndexMap-style approach: insertion-ordered map for deterministic output.
-    let mut order: Vec<MapKey> = Vec::new();
+    let mut order: Vec<MapKey> = Vec::with_capacity(8);
     let mut groups: std::collections::HashMap<MapKey, Vec<Value>> =
-        std::collections::HashMap::new();
+        std::collections::HashMap::with_capacity(8);
 
-    for elem in arr {
-        let key_val = interp.apply_function(&f, vec![elem.clone()])?;
+    for elem in arr.iter() {
+        let key_val = interp.apply_function(f, vec![elem.clone()])?;
         let mk = MapKey::from_value(&key_val).map_err(|e| {
             format!("array_group_by: key function returned non-hashable value: {e}")
         })?;
@@ -99,7 +106,7 @@ pub(crate) fn builtin_array_group_by(interp: &mut Interpreter, args: &[Value]) -
             order.push(mk.clone());
             groups.insert(mk.clone(), Vec::new());
         }
-        groups.get_mut(&mk).unwrap().push(elem);
+        groups.get_mut(&mk).unwrap().push(elem.clone());
     }
 
     let map: std::collections::HashMap<MapKey, Value> = order
@@ -126,8 +133,13 @@ pub(crate) fn builtin_array_group_by(interp: &mut Interpreter, args: &[Value]) -
 /// // parts[1] == [1, 3, 5] (odds)
 /// ```
 pub(crate) fn builtin_array_partition(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1936: borrow `arr` and `f`; iterate `arr.iter()` and clone
+    // each element only at the partition push (the apply_function
+    // call already needs an owned clone). `passing` / `failing` are
+    // pre-sized to `arr.len() / 2` so a balanced split lands without
+    // a Vec realloc.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_partition: first argument must be an Array, got {a}"
@@ -141,13 +153,14 @@ pub(crate) fn builtin_array_partition(interp: &mut Interpreter, args: &[Value]) 
         }
     };
 
-    let mut passing: Vec<Value> = Vec::new();
-    let mut failing: Vec<Value> = Vec::new();
-    for elem in arr {
-        let pred_val = interp.apply_function(&f, vec![elem.clone()])?;
+    let cap = arr.len() / 2 + 1;
+    let mut passing: Vec<Value> = Vec::with_capacity(cap);
+    let mut failing: Vec<Value> = Vec::with_capacity(cap);
+    for elem in arr.iter() {
+        let pred_val = interp.apply_function(f, vec![elem.clone()])?;
         match pred_val {
-            Value::Bool(true) => passing.push(elem),
-            Value::Bool(false) => failing.push(elem),
+            Value::Bool(true) => passing.push(elem.clone()),
+            Value::Bool(false) => failing.push(elem.clone()),
             other => {
                 return Err(format!(
                     "array_partition: predicate must return bool, got {other}"
@@ -172,8 +185,13 @@ pub(crate) fn builtin_array_partition(interp: &mut Interpreter, args: &[Value]) 
 /// // m == {"a" -> 1, "b" -> 2}
 /// ```
 pub(crate) fn builtin_map_from_pairs(args: &[Value]) -> RResult<Value> {
+    // RES-1936: borrow `pairs: &Vec<Value>` from args — the legacy
+    // `a.clone()` allocated an entire shadow Vec just to consume it.
+    // Iterating `pairs.iter()` yields `&Value`; pattern-matching gives
+    // back `kv: &Vec<Value>` for free, and the only owned-Value we
+    // actually want is the inner kv[1] (cloned at insert time).
     let pairs = match args {
-        [Value::Array(a)] => a.clone(),
+        [Value::Array(a)] => a,
         [other] => {
             return Err(format!(
                 "map_from_pairs: expected an Array of pairs, got {other}"
@@ -190,14 +208,14 @@ pub(crate) fn builtin_map_from_pairs(args: &[Value]) -> RResult<Value> {
     let mut map: std::collections::HashMap<MapKey, Value> =
         std::collections::HashMap::with_capacity(pairs.len());
 
-    for (i, pair) in pairs.into_iter().enumerate() {
+    for (i, pair) in pairs.iter().enumerate() {
         match pair {
-            Value::Array(ref kv) if kv.len() == 2 => {
+            Value::Array(kv) if kv.len() == 2 => {
                 let mk = MapKey::from_value(&kv[0])
                     .map_err(|e| format!("map_from_pairs: pair[{i}] key is not hashable: {e}"))?;
                 map.insert(mk, kv[1].clone());
             }
-            Value::Array(ref kv) => {
+            Value::Array(kv) => {
                 return Err(format!(
                     "map_from_pairs: pair[{i}] must have exactly 2 elements, got {}",
                     kv.len()

@@ -395,6 +395,10 @@
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-1966-isr-bfs-reuse",
       "claimed_at": "2026-05-19T19:06:11Z"
+    },
+    "resilient/src/array_functional.rs": {
+      "branch": "res-1936-array-functional-clone-elim",
+      "claimed_at": "2026-05-19T18:02:39Z"
     }
   }
 }
