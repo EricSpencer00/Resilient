@@ -57,7 +57,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // RES-1788: pre-size decls to stmts.len() (every top-level
     // statement could be a Function, one push each).
     let mut decls: Vec<&str> = Vec::with_capacity(stmts.len());
-    let mut counts: HashMap<String, usize> = HashMap::new();
+    // RES-1962: pre-size to 8 — distinct callee counts in real
+    // programs are typically 5-20, dominated by stdlib + user-fn
+    // names. Skips the 0-bucket initial rehash for the common case.
+    let mut counts: HashMap<String, usize> = HashMap::with_capacity(8);
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             decls.push(name.as_str());
