@@ -265,19 +265,35 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
         return Ok(false);
     }
 
+    // RES-2040: derive the reverse mapping new_pc → first old_pc in
+    // one O(n) pass. Walking old_pcs ascending and recording the
+    // first writer per new_pc reproduces the semantics of the
+    // previous `find(|&p| old_to_new[p] == new_pc)` scan, which
+    // returned the smallest p satisfying the predicate. The relink
+    // loop below then does an O(1) lookup per jump instead of the
+    // previous O(n) scan — net cost drops from O(n × jumps) to
+    // O(n + jumps) per fold pass.
+    let mut new_to_old: Vec<usize> = vec![usize::MAX; new_code.len()];
+    for (old_pc, &new_pc) in old_to_new.iter().enumerate().take(chunk.code.len()) {
+        if new_pc < new_code.len() && new_to_old[new_pc] == usize::MAX {
+            new_to_old[new_pc] = old_pc;
+        }
+    }
+
     // Re-link jump offsets in the rewritten stream. Identical
-    // mechanic to peephole.rs::optimize: find the originating old
-    // PC for each new jump, look up its original target, map
+    // mechanic to peephole.rs::optimize: look up the originating
+    // old PC via `new_to_old`, fetch its original target, map
     // through old_to_new, and recompute the relative offset.
     for (new_pc, op) in new_code.iter_mut().enumerate() {
         if !is_jump_op(*op) {
             continue;
         }
-        let Some(old_pc) = (0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc) else {
+        let old_pc = new_to_old[new_pc];
+        if old_pc == usize::MAX {
             return Err(FoldError::InternalError(
                 "constant fold: new_pc with no originating old_pc",
             ));
-        };
+        }
         let Some(old_target) = orig_targets[old_pc] else {
             continue;
         };

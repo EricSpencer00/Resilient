@@ -321,30 +321,38 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         return Ok(());
     }
 
+    // RES-2040: derive the reverse mapping new_pc → first old_pc in
+    // one O(n) pass. Walking old_pcs ascending and recording the
+    // first writer per new_pc reproduces the semantics of the
+    // previous `find(|&p| old_to_new[p] == new_pc)` scan (which
+    // returned the smallest p satisfying the predicate). This is
+    // load-bearing: drop-window rules leave old_to_new[head] equal
+    // to the new_pc of the *next* surviving op, and the relink
+    // path expects to see the head's `orig_targets` slot (None for
+    // most rules) — which keeps the emitted offset rather than
+    // recomputing it.
+    let mut new_to_old: Vec<usize> = vec![usize::MAX; new_code.len()];
+    for (old_pc, &new_pc) in old_to_new.iter().enumerate().take(chunk.code.len()) {
+        if new_pc < new_code.len() && new_to_old[new_pc] == usize::MAX {
+            new_to_old[new_pc] = old_pc;
+        }
+    }
+
     // Re-link jump offsets. For each JUMP op in new_code, look up
-    // which old PC it originated from (scan old_to_new), fetch
-    // that old op's original target, map through old_to_new, and
-    // compute the new offset.
-    //
-    // Scanning old_to_new to find the originating old PC per new
-    // op is O(n²) worst-case. For the chunk sizes we see today
-    // (hundreds of ops max) that's irrelevant; a future pass can
-    // carry old_pc alongside each emitted new op if it ever
-    // matters. Keep the simple version here.
+    // which old PC it originated from (now O(1) via new_to_old),
+    // fetch that old op's original target, map through old_to_new,
+    // and compute the new offset.
     for (new_pc, op) in new_code.iter_mut().enumerate() {
         // Only recompute for jump-carrying ops.
         if !is_jump_op(*op) {
             continue;
         }
-        // Find the old PC that maps to this new PC. The
-        // rewriting loop only inserts one new op per old
-        // position (never reorders), so the first old_pc with
-        // `old_to_new[old_pc] == new_pc` is the right one.
-        let Some(old_pc) = (0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc) else {
+        let old_pc = new_to_old[new_pc];
+        if old_pc == usize::MAX {
             return Err(OptimizeError::InternalError(
                 "peephole: new_pc with no originating old_pc",
             ));
-        };
+        }
         let Some(old_target) = orig_targets[old_pc] else {
             continue; // not actually a jump (shouldn't happen)
         };

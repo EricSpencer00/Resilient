@@ -101,8 +101,8 @@
       "claimed_at": "2026-05-12T05:08:27Z"
     },
     "resilient/src/const_fold.rs": {
-      "branch": "res-1341-cache-opt-env-vars",
-      "claimed_at": "2026-05-12T06:52:39Z"
+      "branch": "res-2040-fold-peephole-reverse-map",
+      "claimed_at": "2026-05-19T23:30:00Z"
     },
     "resilient/src/quantifiers.rs": {
       "branch": "res-1376-quantifier-eval-clone",
@@ -423,6 +423,10 @@
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
       "claimed_at": "2026-05-19T22:27:31Z"
+    },
+    "resilient/src/peephole.rs": {
+      "branch": "res-2040-fold-peephole-reverse-map",
+      "claimed_at": "2026-05-19T22:43:00Z"
     }
   }
 }
