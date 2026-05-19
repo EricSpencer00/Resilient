@@ -13,6 +13,7 @@
 
 use crate::Node;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::RwLock;
 
 /// Global snapshot baseline — populated on the first check() call;
@@ -48,7 +49,11 @@ pub fn diff(
     stored: &HashMap<String, Snapshot>,
     current: &HashMap<String, Snapshot>,
 ) -> Vec<String> {
-    let mut changed = Vec::new();
+    // RES-1982: pre-size to `current.len()` — exact upper bound (at most
+    // one push per current key when its fingerprint diverges from stored).
+    // Same shape as the RES-1742 / RES-1744 / RES-1746 call-graph pre-size
+    // series.
+    let mut changed: Vec<String> = Vec::with_capacity(current.len());
     for (name, cur) in current {
         if let Some(prev) = stored.get(name) {
             if prev.fingerprint_digest != cur.fingerprint_digest {
@@ -61,14 +66,25 @@ pub fn diff(
 }
 
 pub fn serialize(snapshots: &HashMap<String, Snapshot>) -> String {
-    let mut s = String::from("{\n");
-    let mut entries: Vec<(&String, &Snapshot)> = snapshots.iter().collect();
-    entries.sort_by_key(|(k, _)| (*k).clone());
+    // RES-1982: previously `sort_by_key(|(k, _)| (*k).clone())` cloned
+    // every snapshot name into the sort key (N String clones per call).
+    // `sort_by` with `String::cmp` compares the borrowed strings directly.
+    let mut entries: Vec<(&String, &Snapshot)> = Vec::with_capacity(snapshots.len());
+    entries.extend(snapshots.iter());
+    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    // RES-1982: build the JSON via `write!` directly into `s`. The
+    // previous `s.push_str(&format!(...))` site allocated a fresh
+    // String per entry, copied bytes into `s`, then dropped the
+    // intermediate. Same antipattern as RES-1978 / RES-1980.
+    let mut s = String::with_capacity(2 + entries.len() * 64);
+    s.push_str("{\n");
     for (i, (name, snap)) in entries.iter().enumerate() {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             r#"  "{}": {{ "digest": {}, "golden_hash": {} }}"#,
             name, snap.fingerprint_digest, snap.golden_output_hash
-        ));
+        );
         if i + 1 < entries.len() {
             s.push(',');
         }
