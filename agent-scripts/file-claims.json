@@ -339,6 +339,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-1901-hof-clone-elim",
       "claimed_at": "2026-05-19T05:02:34Z"
+    },
+    "resilient/src/mutation_testing.rs": {
+      "branch": "res-1918-mutation-testing-walker-coverage",
+      "claimed_at": "2026-05-19T16:38:37Z"
     }
   }
 }
