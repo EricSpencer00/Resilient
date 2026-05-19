@@ -112,7 +112,7 @@ fn try_const_int(expr: &Node) -> Option<i64> {
         } => {
             let l = try_const_int(left)?;
             let r = try_const_int(right)?;
-            match operator.as_str() {
+            match *operator {
                 "+" => l.checked_add(r),
                 "-" => l.checked_sub(r),
                 "*" => l.checked_mul(r),
@@ -205,7 +205,7 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
             // through. Subsumes the original RES-1665 raw-literal
             // arm — a bare `IntegerLiteral` is a one-step fold.
             if let (Some(a), Some(b)) = (try_const_int(left), try_const_int(right)) {
-                return match operator.as_str() {
+                return match *operator {
                     "==" => Some(a == b),
                     "!=" => Some(a != b),
                     "<" => Some(a < b),
@@ -227,7 +227,7 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
                 (left.as_ref(), right.as_ref())
                 && a == b
             {
-                return match operator.as_str() {
+                return match *operator {
                     "==" | "<=" | ">=" => Some(true),
                     "!=" | "<" | ">" => Some(false),
                     _ => None,
@@ -247,7 +247,7 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
             // Other operators (`&&`, `||`, `<`, ...) fall through to
             // the bool-combinator arm below — `BoolLit(true) && BoolLit(true)`
             // must still fold via the `&&` combinator path.
-            if matches!(operator.as_str(), "==" | "!=")
+            if matches!(*operator, "==" | "!=")
                 && let (Some(la), Some(rb)) =
                     (try_const_eval_bool(left), try_const_eval_bool(right))
             {
@@ -255,7 +255,7 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
             }
             // Boolean combinators — recurse to fold known sides,
             // short-circuiting before the other side has to fold.
-            match operator.as_str() {
+            match *operator {
                 "&&" => {
                     let l = try_const_eval_bool(left);
                     if l == Some(false) {
@@ -301,7 +301,7 @@ pub fn has_bitwise_ops(node: &Node) -> bool {
             right,
             ..
         } => {
-            matches!(operator.as_str(), "&" | "|" | "^" | "<<" | ">>")
+            matches!(*operator, "&" | "|" | "^" | "<<" | ">>")
                 || has_bitwise_ops(left)
                 || has_bitwise_ops(right)
         }
@@ -1842,7 +1842,7 @@ pub fn prove_alias_disjoint(param_a: &str, param_b: &str, requires: &[Node]) -> 
             name: param_a.to_string(),
             span: crate::span::Span::default(),
         }),
-        operator: "!=".to_string(),
+        operator: "!=",
         right: Box::new(Node::Identifier {
             name: param_b.to_string(),
             span: crate::span::Span::default(),
@@ -1937,7 +1937,7 @@ fn translate_bool_bv<'c>(
             operator,
             right,
             ..
-        } => match operator.as_str() {
+        } => match *operator {
             "&&" => {
                 let l = translate_bool_bv(ctx, left, bindings)?;
                 let r = translate_bool_bv(ctx, right, bindings)?;
@@ -1951,7 +1951,7 @@ fn translate_bool_bv<'c>(
             "==" | "!=" | "<" | ">" | "<=" | ">=" => {
                 let l = translate_bv(ctx, left, bindings)?;
                 let r = translate_bv(ctx, right, bindings)?;
-                let cmp = match operator.as_str() {
+                let cmp = match *operator {
                     "==" => l._eq(&r),
                     "!=" => l._eq(&r).not(),
                     "<" => l.bvslt(&r),
@@ -1991,7 +1991,7 @@ fn translate_bv<'c>(
         } => {
             let l = translate_bv(ctx, left, bindings)?;
             let r = translate_bv(ctx, right, bindings)?;
-            Some(match operator.as_str() {
+            Some(match *operator {
                 "+" => l.bvadd(&r),
                 "-" => l.bvsub(&r),
                 "*" => l.bvmul(&r),
@@ -2237,7 +2237,7 @@ fn translate_bool<'c>(
             operator,
             right,
             ..
-        } => match operator.as_str() {
+        } => match *operator {
             "&&" => {
                 let l = translate_bool(ctx, left, bindings)?;
                 let r = translate_bool(ctx, right, bindings)?;
@@ -2251,7 +2251,7 @@ fn translate_bool<'c>(
             "==" | "!=" | "<" | ">" | "<=" | ">=" => {
                 let l = translate_int(ctx, left, bindings)?;
                 let r = translate_int(ctx, right, bindings)?;
-                let cmp = match operator.as_str() {
+                let cmp = match *operator {
                     "==" => l._eq(&r),
                     "!=" => l._eq(&r).not(),
                     "<" => l.lt(&r),
@@ -2293,7 +2293,7 @@ fn translate_int<'c>(
         } => {
             let l = translate_int(ctx, left, bindings)?;
             let r = translate_int(ctx, right, bindings)?;
-            Some(match operator.as_str() {
+            Some(match *operator {
                 "+" => Int::add(ctx, &[&l, &r]),
                 "-" => Int::sub(ctx, &[&l, &r]),
                 "*" => Int::mul(ctx, &[&l, &r]),
@@ -2699,7 +2699,7 @@ fn translate_state_rhs<'c>(
         } => {
             let l = translate_state_rhs(ctx, left, pre_state)?;
             let r = translate_state_rhs(ctx, right, pre_state)?;
-            Some(match operator.as_str() {
+            Some(match *operator {
                 "+" => Int::add(ctx, &[&l, &r]),
                 "-" => Int::sub(ctx, &[&l, &r]),
                 "*" => Int::mul(ctx, &[&l, &r]),
@@ -2730,7 +2730,7 @@ mod tests {
                 value: 7,
                 span: crate::span::Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 3,
                 span: crate::span::Span::default(),
@@ -2756,7 +2756,7 @@ mod tests {
                 value: 5,
                 span: crate::span::Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 3,
                 span: crate::span::Span::default(),
@@ -2791,7 +2791,7 @@ mod tests {
                 value: 0,
                 span: crate::span::Span::default(),
             }),
-            operator: "!=".to_string(),
+            operator: "!=",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -2818,7 +2818,7 @@ mod tests {
                 value: 5,
                 span: crate::span::Span::default(),
             }),
-            operator: "!=".to_string(),
+            operator: "!=",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -2830,7 +2830,7 @@ mod tests {
                 value: 0,
                 span: crate::span::Span::default(),
             }),
-            operator: "!=".to_string(),
+            operator: "!=",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -2852,7 +2852,7 @@ mod tests {
                 value: 5,
                 span: crate::span::Span::default(),
             }),
-            operator: "!=".to_string(),
+            operator: "!=",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -2871,7 +2871,7 @@ mod tests {
                 value: 0,
                 span: crate::span::Span::default(),
             }),
-            operator: "!=".to_string(),
+            operator: "!=",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -2892,14 +2892,14 @@ mod tests {
                     name: "x".to_string(),
                     span: crate::span::Span::default(),
                 }),
-                operator: "+".to_string(),
+                operator: "+",
                 right: Box::new(Node::IntegerLiteral {
                     value: 0,
                     span: crate::span::Span::default(),
                 }),
                 span: crate::span::Span::default(),
             }),
-            operator: "==".to_string(),
+            operator: "==",
             right: Box::new(Node::Identifier {
                 name: "x".to_string(),
                 span: crate::span::Span::default(),
@@ -2926,20 +2926,20 @@ mod tests {
                     name: "x".to_string(),
                     span: crate::span::Span::default(),
                 }),
-                operator: ">".to_string(),
+                operator: ">",
                 right: Box::new(Node::IntegerLiteral {
                     value: 0,
                     span: crate::span::Span::default(),
                 }),
                 span: crate::span::Span::default(),
             }),
-            operator: "||".to_string(),
+            operator: "||",
             right: Box::new(Node::InfixExpression {
                 left: Box::new(Node::Identifier {
                     name: "x".to_string(),
                     span: crate::span::Span::default(),
                 }),
-                operator: "<=".to_string(),
+                operator: "<=",
                 right: Box::new(Node::IntegerLiteral {
                     value: 0,
                     span: crate::span::Span::default(),
@@ -2963,14 +2963,14 @@ mod tests {
                     name: "x".to_string(),
                     span: crate::span::Span::default(),
                 }),
-                operator: "+".to_string(),
+                operator: "+",
                 right: Box::new(Node::IntegerLiteral {
                     value: 0,
                     span: crate::span::Span::default(),
                 }),
                 span: crate::span::Span::default(),
             }),
-            operator: "==".to_string(),
+            operator: "==",
             right: Box::new(Node::Identifier {
                 name: "x".to_string(),
                 span: crate::span::Span::default(),
@@ -3014,7 +3014,7 @@ mod tests {
                 name: "n".to_string(),
                 span: crate::span::Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -3041,7 +3041,7 @@ mod tests {
                 name: "x".to_string(),
                 span: crate::span::Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -3062,7 +3062,7 @@ mod tests {
                 name: "x".to_string(),
                 span: crate::span::Span::default(),
             }),
-            operator: ">".to_string(),
+            operator: ">",
             right: Box::new(Node::IntegerLiteral {
                 value: 0,
                 span: crate::span::Span::default(),
@@ -3091,10 +3091,10 @@ mod tests {
     }
 
     /// Build `left OP right` with a default span.
-    fn infix(left: Node, op: &str, right: Node) -> Node {
+    fn infix(left: Node, op: &'static str, right: Node) -> Node {
         Node::InfixExpression {
             left: Box::new(left),
-            operator: op.to_string(),
+            operator: op,
             right: Box::new(right),
             span: crate::span::Span::default(),
         }
@@ -4080,7 +4080,7 @@ mod tests {
 
     fn not_node(inner: Node) -> Node {
         Node::PrefixExpression {
-            operator: "!".to_string(),
+            operator: "!",
             right: Box::new(inner),
             span: crate::span::Span::default(),
         }
@@ -4358,7 +4358,7 @@ mod tests {
     #[test]
     fn const_int_folds_unary_minus() {
         let neg5 = Node::PrefixExpression {
-            operator: "-".to_string(),
+            operator: "-",
             right: Box::new(int(5)),
             span: crate::span::Span::default(),
         };

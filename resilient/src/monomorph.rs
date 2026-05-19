@@ -467,7 +467,7 @@ fn rewrite_node(
             span,
         } => Node::InfixExpression {
             left: Box::new(rewrite_node(left, generic_fns, instantiations)),
-            operator: operator.clone(),
+            operator,
             right: Box::new(rewrite_node(right, generic_fns, instantiations)),
             span: *span,
         },
@@ -476,7 +476,7 @@ fn rewrite_node(
             right,
             span,
         } => Node::PrefixExpression {
-            operator: operator.clone(),
+            operator,
             right: Box::new(rewrite_node(right, generic_fns, instantiations)),
             span: *span,
         },

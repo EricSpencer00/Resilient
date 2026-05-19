@@ -198,7 +198,7 @@ fn detect_off_by_one(node: &Node, ctx: &mut FnContext) {
                 operator, right, ..
             } = condition.as_ref()
             {
-                if (operator == "<=" || operator == ">=") && is_len_call(right) {
+                if (*operator == "<=" || *operator == ">=") && is_len_call(right) {
                     ctx.push(
                         ThreatKind::OffByOne,
                         format!(
@@ -354,7 +354,7 @@ fn detect_magic_numbers(node: &Node, ctx: &mut FnContext) {
             right,
             ..
         } => {
-            let arith = matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%" | "<<" | ">>");
+            let arith = matches!(*operator, "+" | "-" | "*" | "/" | "%" | "<<" | ">>");
             if arith {
                 check_magic_operand(left, ctx);
                 check_magic_operand(right, ctx);

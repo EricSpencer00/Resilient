@@ -3737,7 +3737,7 @@ mod tests {
                         name: "n".to_string(),
                         span: Span::default(),
                     }),
-                    operator: "*".to_string(),
+                    operator: "*",
                     right: Box::new(Node::IntegerLiteral {
                         value: 2,
                         span: Span::default(),
@@ -3807,7 +3807,7 @@ mod tests {
         for _ in 0..10 {
             body = Node::InfixExpression {
                 left: Box::new(body),
-                operator: "+".to_string(),
+                operator: "+",
                 right: Box::new(Node::IntegerLiteral {
                     value: 1,
                     span: Span::default(),

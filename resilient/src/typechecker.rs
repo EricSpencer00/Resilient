@@ -515,13 +515,13 @@ fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
         Node::BooleanLiteral { value: b, .. } => Some(*b),
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "!" => fold_const_bool(right, bindings).map(|b| !b),
+        } if *operator == "!" => fold_const_bool(right, bindings).map(|b| !b),
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => match operator.as_str() {
+        } => match *operator {
             // RES-1353: short-circuit `&&` / `||` before recursing
             // on the right operand. The old pattern-match form
             // (`match (fold(left), fold(right)) { … }`) eagerly
@@ -561,7 +561,7 @@ fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
             "==" | "!=" | "<" | ">" | "<=" | ">=" => {
                 let l = fold_const_i64(left, bindings)?;
                 let r = fold_const_i64(right, bindings)?;
-                Some(match operator.as_str() {
+                Some(match *operator {
                     "==" => l == r,
                     "!=" => l != r,
                     "<" => l < r,
@@ -591,7 +591,7 @@ fn extract_eq_assumption(cond: &Node) -> Option<(String, i64)> {
         right,
         ..
     } = cond
-        && operator == "=="
+        && *operator == "=="
     {
         let no_b: HashMap<String, i64> = HashMap::new();
         match (left.as_ref(), right.as_ref()) {
@@ -615,7 +615,7 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
         Node::Identifier { name, .. } => bindings.get(name).copied(),
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "-" => fold_const_i64(right, bindings).map(|v| -v),
+        } if *operator == "-" => fold_const_i64(right, bindings).map(|v| -v),
         Node::InfixExpression {
             left,
             operator,
@@ -624,7 +624,7 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
         } => {
             let l = fold_const_i64(left, bindings)?;
             let r = fold_const_i64(right, bindings)?;
-            match operator.as_str() {
+            match *operator {
                 "+" => l.checked_add(r),
                 "-" => l.checked_sub(r),
                 "*" => l.checked_mul(r),
@@ -7600,7 +7600,7 @@ impl TypeChecker {
                 }
                 let right_type = self.check_node(right)?;
 
-                match operator.as_str() {
+                match *operator {
                     "!" => {
                         if right_type != Type::Bool && right_type != Type::Any {
                             return Err(format!("Cannot apply '!' to {}", right_type));
@@ -7638,7 +7638,7 @@ impl TypeChecker {
                 // operator arm.
                 let is_bool = |t: &Type| matches!(t, Type::Bool | Type::Any);
 
-                match operator.as_str() {
+                match *operator {
                     "+" => {
                         // String-plus-primitive coercion (RES-008): if
                         // either side is a string, the result is a string.
@@ -7661,13 +7661,13 @@ impl TypeChecker {
                     "-" | "*" | "/" | "%" => {
                         // RES-130: same policy as `+` — no mixed int / float.
                         // RES-413: static division / modulo by zero detection.
-                        if matches!(operator.as_str(), "/" | "%")
+                        if matches!(*operator, "/" | "%")
                             && let Some(divisor) = fold_const_i64(right, &self.const_bindings)
                             && divisor == 0
                         {
                             return Err(format!(
                                 "integer {} by zero — denominator is a compile-time constant 0",
-                                if operator == "/" {
+                                if *operator == "/" {
                                     "division"
                                 } else {
                                     "modulo"

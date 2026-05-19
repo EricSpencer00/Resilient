@@ -133,7 +133,7 @@ fn body_divides_by(node: &Node, param: &str) -> bool {
             right,
             ..
         } => {
-            if (operator == "/" || operator == "%")
+            if (*operator == "/" || *operator == "%")
                 && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
             {
                 return true;
@@ -280,7 +280,7 @@ fn is_upper_bound_for(node: &Node, param: &str) -> bool {
         operator, right, ..
     } = node
     {
-        if (operator == "<" || operator == "<=")
+        if (*operator == "<" || *operator == "<=")
             && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
         {
             return true;
@@ -297,7 +297,7 @@ fn body_uses_as_shift_amount(node: &Node, param: &str) -> bool {
             operator, right, ..
         } = n
         {
-            (operator == "<<" || operator == ">>")
+            (*operator == "<<" || *operator == ">>")
                 && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
         } else {
             false
@@ -321,7 +321,7 @@ fn body_compares_to_negative(node: &Node, param: &str) -> bool {
             ..
         } = n
         {
-            let is_relational = matches!(operator.as_str(), "<" | "<=" | ">" | ">=");
+            let is_relational = matches!(*operator, "<" | "<=" | ">" | ">=");
             if !is_relational {
                 return false;
             }
@@ -330,7 +330,7 @@ fn body_compares_to_negative(node: &Node, param: &str) -> bool {
                 matches!(left.as_ref(), Node::Identifier { name, .. } if name == param);
             let right_is_neg_literal = matches!(right.as_ref(),
                 Node::PrefixExpression { operator: op, right: r, .. }
-                    if op == "-" && matches!(r.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
+                    if *op == "-" && matches!(r.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
             );
             if left_is_param && right_is_neg_literal {
                 return true;
@@ -339,7 +339,7 @@ fn body_compares_to_negative(node: &Node, param: &str) -> bool {
                 matches!(right.as_ref(), Node::Identifier { name, .. } if name == param);
             let left_is_neg_literal = matches!(left.as_ref(),
                 Node::PrefixExpression { operator: op, right: r, .. }
-                    if op == "-" && matches!(r.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
+                    if *op == "-" && matches!(r.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
             );
             right_is_param && left_is_neg_literal
         } else {
@@ -390,7 +390,7 @@ fn format_simple_expr(node: &Node) -> String {
         }
         Node::PrefixExpression {
             operator, right, ..
-        } if operator == "-" => {
+        } if *operator == "-" => {
             let inner = format_simple_expr(right);
             if inner == "<complex>" {
                 "<complex>".to_string()
@@ -536,7 +536,7 @@ fn expr_is_strictly_positive(node: &Node) -> bool {
             operator,
             right,
             ..
-        } => match operator.as_str() {
+        } => match *operator {
             "+" => {
                 expr_is_non_negative(left) && expr_is_strictly_positive(right)
                     || expr_is_strictly_positive(left) && expr_is_non_negative(right)
@@ -559,10 +559,9 @@ fn expr_is_non_negative(node: &Node) -> bool {
             operator,
             right,
             ..
-        } => match operator.as_str() {
-            "+" | "*" => expr_is_non_negative(left) && expr_is_non_negative(right),
-            _ => false,
-        },
+        } if matches!(*operator, "+" | "*") => {
+            expr_is_non_negative(left) && expr_is_non_negative(right)
+        }
         _ => false,
     }
 }
