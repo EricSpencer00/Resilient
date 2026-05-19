@@ -383,6 +383,10 @@
     "resilient/src/numeric_units.rs": {
       "branch": "res-1950-numeric-units-static-suffix",
       "claimed_at": "2026-05-19T18:34:18Z"
+    },
+    "resilient/src/epoch_ordering.rs": {
+      "branch": "res-1960-epoch-ordering-borrow",
+      "claimed_at": "2026-05-19T18:56:13Z"
     }
   }
 }

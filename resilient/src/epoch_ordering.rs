@@ -27,19 +27,22 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // identifier. The previous `any_node` pre-scan was redundant —
     // removed.
     for_each_function(program, |fname, _params, body| {
-        let mut sequence: Vec<(String, u32)> = Vec::new();
+        // RES-1960: borrow `name` as `&str` from the AST (which the
+        // visitor closure already borrows from anyway) — drops the
+        // String clone per epoch-call site. Pre-size to 8 — typical
+        // epoch-call sequences are 2-10.
+        let mut sequence: Vec<(&str, u32)> = Vec::with_capacity(8);
         visit(body, &mut |n| {
-            if let Node::CallExpression { function, .. } = n {
-                if let Node::Identifier { name, .. } = function.as_ref() {
-                    if let Some(e) = epoch_of(name) {
-                        sequence.push((name.clone(), e));
-                    }
-                }
+            if let Node::CallExpression { function, .. } = n
+                && let Node::Identifier { name, .. } = function.as_ref()
+                && let Some(e) = epoch_of(name)
+            {
+                sequence.push((name.as_str(), e));
             }
         });
         for w in sequence.windows(2) {
-            let (a, ea) = &w[0];
-            let (b, eb) = &w[1];
+            let (a, ea) = w[0];
+            let (b, eb) = w[1];
             if ea > eb {
                 eprintln!(
                     "warning: in '{fname}', epoch-ordered call '{a}' (epoch {ea}) \
