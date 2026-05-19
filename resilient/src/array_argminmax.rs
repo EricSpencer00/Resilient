@@ -16,58 +16,95 @@
 
 use crate::{RResult, Value};
 
-fn collect_floats(name: &str, items: &[Value]) -> RResult<Vec<f64>> {
+// RES-2026: single-pass scan helpers. The previous `collect_floats` /
+// `collect_strings` helpers materialized an intermediate `Vec<f64>` /
+// `Vec<&String>` from the entire input array, then a second loop
+// walked that Vec to find the best index. The intermediate is
+// throwaway — we only need the index. Inlining the type-check into
+// the scan loop drops the allocation entirely.
+
+/// Scan `items` left-to-right, tracking the index whose extracted
+/// `f64` is "best" by `is_better(candidate, current_best)`. Returns
+/// the index of the first such element. Empty array errors via
+/// `name`. Type-mismatch errors carry the element that failed.
+fn argbest_float(name: &str, items: &[Value], is_better: fn(f64, f64) -> bool) -> RResult<Value> {
     if items.is_empty() {
         return Err(format!("{}: empty array has no argmax/argmin", name));
     }
-    let mut out: Vec<f64> = Vec::with_capacity(items.len());
-    for v in items {
-        match v {
-            Value::Float(f) => out.push(*f),
+    let first = match &items[0] {
+        Value::Float(f) => *f,
+        other => {
+            return Err(format!(
+                "{}: expected all float elements, got {}",
+                name, other
+            ));
+        }
+    };
+    let mut best_idx = 0usize;
+    let mut best_val = first;
+    for (i, v) in items.iter().enumerate().skip(1) {
+        let f = match v {
+            Value::Float(f) => *f,
             other => {
                 return Err(format!(
                     "{}: expected all float elements, got {}",
                     name, other
                 ));
             }
+        };
+        if is_better(f, best_val) {
+            best_val = f;
+            best_idx = i;
         }
     }
-    Ok(out)
+    Ok(Value::Int(best_idx as i64))
 }
 
-fn collect_strings<'a>(name: &str, items: &'a [Value]) -> RResult<Vec<&'a String>> {
+/// String variant of `argbest_float`. Comparator takes `&str` slices.
+fn argbest_string(
+    name: &str,
+    items: &[Value],
+    is_better: fn(&str, &str) -> bool,
+) -> RResult<Value> {
     if items.is_empty() {
         return Err(format!("{}: empty array has no argmax/argmin", name));
     }
-    let mut out: Vec<&String> = Vec::with_capacity(items.len());
-    for v in items {
-        match v {
-            Value::String(s) => out.push(s),
+    let first = match &items[0] {
+        Value::String(s) => s.as_str(),
+        other => {
+            return Err(format!(
+                "{}: expected all string elements, got {}",
+                name, other
+            ));
+        }
+    };
+    let mut best_idx = 0usize;
+    let mut best_val: &str = first;
+    for (i, v) in items.iter().enumerate().skip(1) {
+        let s = match v {
+            Value::String(s) => s.as_str(),
             other => {
                 return Err(format!(
                     "{}: expected all string elements, got {}",
                     name, other
                 ));
             }
+        };
+        if is_better(s, best_val) {
+            best_val = s;
+            best_idx = i;
         }
     }
-    Ok(out)
+    Ok(Value::Int(best_idx as i64))
 }
 
 /// `array_argmax_float(arr) -> Int` — index of the maximum element
 /// under IEEE 754 total order. First match wins on ties.
 pub(crate) fn builtin_array_argmax_float(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let nums = collect_floats("array_argmax_float", items)?;
-            let mut best_idx = 0usize;
-            for (i, &v) in nums.iter().enumerate().skip(1) {
-                if v.total_cmp(&nums[best_idx]) == std::cmp::Ordering::Greater {
-                    best_idx = i;
-                }
-            }
-            Ok(Value::Int(best_idx as i64))
-        }
+        [Value::Array(items)] => argbest_float("array_argmax_float", items, |c, b| {
+            c.total_cmp(&b) == std::cmp::Ordering::Greater
+        }),
         [other] => Err(format!("array_argmax_float: expected array, got {}", other)),
         _ => Err(format!(
             "array_argmax_float: expected 1 argument, got {}",
@@ -80,16 +117,9 @@ pub(crate) fn builtin_array_argmax_float(args: &[Value]) -> RResult<Value> {
 /// under IEEE 754 total order.
 pub(crate) fn builtin_array_argmin_float(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let nums = collect_floats("array_argmin_float", items)?;
-            let mut best_idx = 0usize;
-            for (i, &v) in nums.iter().enumerate().skip(1) {
-                if v.total_cmp(&nums[best_idx]) == std::cmp::Ordering::Less {
-                    best_idx = i;
-                }
-            }
-            Ok(Value::Int(best_idx as i64))
-        }
+        [Value::Array(items)] => argbest_float("array_argmin_float", items, |c, b| {
+            c.total_cmp(&b) == std::cmp::Ordering::Less
+        }),
         [other] => Err(format!("array_argmin_float: expected array, got {}", other)),
         _ => Err(format!(
             "array_argmin_float: expected 1 argument, got {}",
@@ -101,16 +131,7 @@ pub(crate) fn builtin_array_argmin_float(args: &[Value]) -> RResult<Value> {
 /// `array_argmax_string(arr) -> Int` — index of the lex-maximum string.
 pub(crate) fn builtin_array_argmax_string(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let strings = collect_strings("array_argmax_string", items)?;
-            let mut best_idx = 0usize;
-            for (i, s) in strings.iter().enumerate().skip(1) {
-                if *s > strings[best_idx] {
-                    best_idx = i;
-                }
-            }
-            Ok(Value::Int(best_idx as i64))
-        }
+        [Value::Array(items)] => argbest_string("array_argmax_string", items, |c, b| c > b),
         [other] => Err(format!(
             "array_argmax_string: expected array, got {}",
             other
@@ -125,16 +146,7 @@ pub(crate) fn builtin_array_argmax_string(args: &[Value]) -> RResult<Value> {
 /// `array_argmin_string(arr) -> Int` — index of the lex-minimum string.
 pub(crate) fn builtin_array_argmin_string(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Array(items)] => {
-            let strings = collect_strings("array_argmin_string", items)?;
-            let mut best_idx = 0usize;
-            for (i, s) in strings.iter().enumerate().skip(1) {
-                if *s < strings[best_idx] {
-                    best_idx = i;
-                }
-            }
-            Ok(Value::Int(best_idx as i64))
-        }
+        [Value::Array(items)] => argbest_string("array_argmin_string", items, |c, b| c < b),
         [other] => Err(format!(
             "array_argmin_string: expected array, got {}",
             other
