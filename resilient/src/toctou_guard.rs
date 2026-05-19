@@ -22,30 +22,15 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{any_node, for_each_function, visit};
+use crate::uniqueness_walk::{for_each_function, visit};
 
 const CHECK_SUFFIXES: &[&str] = &["_exists", "_is_valid", "_status", "_check"];
 const USE_SUFFIXES: &[&str] = &["_open", "_read", "_write", "_delete", "_unlink", "_chmod"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1266: fast-reject. The TOCTOU detector pairs a `*_exists` /
-    // `*_is_valid` / `*_status` / `*_check` call with a later non-atomic
-    // `*_open` / `*_read` / … on the same argument. Without a *check*
-    // call in the function, there can never be a pair, so the per-function
-    // event collection is dead work for the overwhelming majority of
-    // programs (every fixture in `examples/`, every test). Pre-scan once
-    // for any check-suffixed CallExpression via the early-terminating
-    // `any_node` (RES-1238) and skip the loop entirely when none exist.
-    let has_check_call = any_node(program, |n| match n {
-        Node::CallExpression { function, .. } => match function.as_ref() {
-            Node::Identifier { name, .. } => CHECK_SUFFIXES.iter().any(|s| name.ends_with(*s)),
-            _ => false,
-        },
-        _ => false,
-    });
-    if !has_check_call {
-        return Ok(());
-    }
+    // RES-1266 / RES-1917: the typechecker gates this call behind
+    // `markers.any_call_ident_with_suffix` with the same CHECK_SUFFIXES.
+    // The previous `any_node` pre-scan was redundant — removed.
     for_each_function(program, |fname, _params, body| {
         let mut events: Vec<(bool, String, Option<String>)> = Vec::new();
         // (is_check, fn_name, first_ident_arg)
