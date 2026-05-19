@@ -55,7 +55,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // bound — every top-level statement could be a Function). The
     // per-fn callees HashSet starts empty; 8 fits a typical body.
     let mut callees: HashMap<&str, HashSet<String>> = HashMap::with_capacity(stmts.len());
-    let mut roots: Vec<&str> = Vec::new();
+    // RES-1962: pre-size to 4 — typical non-reentrant fn count is low
+    // (1-5 fns matching NR_PREFIXES / NR_SUFFIXES per program).
+    let mut roots: Vec<&str> = Vec::with_capacity(4);
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             let mut cs = HashSet::with_capacity(8);
@@ -90,7 +92,9 @@ fn is_nonreentrant(name: &str) -> bool {
 }
 
 fn reaches_self<'a>(callees: &'a HashMap<&'a str, HashSet<String>>, start: &str) -> bool {
-    let mut seen: HashSet<&'a str> = HashSet::new();
+    // RES-1962: pre-size the DFS visited set to `callees.len()` —
+    // exact upper bound, each callee is visited at most once.
+    let mut seen: HashSet<&'a str> = HashSet::with_capacity(callees.len());
     let mut stack: Vec<&'a str> = callees
         .get(start)
         .map(|cs| cs.iter().map(String::as_str).collect())
