@@ -21993,6 +21993,7 @@ struct Interpreter {
     /// entering the body. `try { ... } catch V { ... }` toggles this
     /// while its body executes.
     inject_checked_failures: bool,
+    overflow_mode: vm::OverflowMode,
 }
 
 /// RES-1108 + RES-1109 + RES-1110: structural equality for compound
@@ -22142,6 +22143,7 @@ impl Interpreter {
             enum_decls: Rc::new(RefCell::new(HashMap::new())),
             active_subst: None,
             inject_checked_failures: false,
+            overflow_mode: vm::OverflowMode::from_env(),
         }
     }
 
@@ -24823,7 +24825,7 @@ impl Interpreter {
             // RES-349: respect the configured overflow mode for unary
             // negation as well — `-i64::MIN` is the canonical overflow
             // case under Trap.
-            Value::Int(i) => vm::OverflowMode::from_env().neg_for_eval(i).map(Value::Int),
+            Value::Int(i) => self.overflow_mode.neg_for_eval(i).map(Value::Int),
             Value::Float(f) => Ok(Value::Float(-f)),
             _ => Err(format!("Unknown operator: -{}", right)),
         }
@@ -24864,9 +24866,10 @@ impl Interpreter {
         }
 
         // Array concat: `[1,2] + [3]` → `[1,2,3]`. Only for `+`.
-        if operator == "+"
-            && let (Value::Array(mut l), Value::Array(r)) = (left.clone(), right.clone())
-        {
+        if operator == "+" && matches!((&left, &right), (Value::Array(_), Value::Array(_))) {
+            let (Value::Array(mut l), Value::Array(r)) = (left, right) else {
+                unreachable!()
+            };
             l.extend(r);
             return Ok(Value::Array(l));
         }
@@ -24975,7 +24978,7 @@ impl Interpreter {
         // Default (Wrap) preserves byte-identical behaviour with pre-349
         // builds; `RESILIENT_OVERFLOW_MODE=saturate|trap` selects the
         // alternative semantics for safety-critical use cases.
-        let mode = vm::OverflowMode::from_env();
+        let mode = self.overflow_mode;
         match operator {
             "+" => mode.add_for_eval(left, right, "+").map(Value::Int),
             "-" => mode.sub_for_eval(left, right, "-").map(Value::Int),
@@ -25170,6 +25173,7 @@ impl Interpreter {
                     enum_decls: self.enum_decls.clone(),
                     active_subst: None,
                     inject_checked_failures: self.inject_checked_failures,
+                    overflow_mode: self.overflow_mode,
                 };
 
                 // RES-405 PR 2: if this is a generic call, infer the substitution
@@ -25293,6 +25297,7 @@ impl Interpreter {
                     enum_decls: self.enum_decls.clone(),
                     active_subst: None,
                     inject_checked_failures: false,
+                    overflow_mode: self.overflow_mode,
                 };
                 for pre in &requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -25323,6 +25328,7 @@ impl Interpreter {
                         enum_decls: self.enum_decls.clone(),
                         active_subst: None,
                         inject_checked_failures: false,
+                        overflow_mode: self.overflow_mode,
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in &ensures {
