@@ -41,10 +41,17 @@ pub struct ExhaustivenessError {
 /// nodes in the program (top-level only — nested EnumDecls inside functions
 /// are unusual and handled conservatively by returning no match error).
 fn collect_enum_variants<'a>(program: &'a Node) -> HashMap<&'a str, Vec<&'a str>> {
-    let mut map: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
     let Node::Program(stmts) = program else {
-        return map;
+        return HashMap::new();
     };
+    // RES-1956: pre-size to the actual enum-decl count. One linear
+    // pass to count is essentially free against the loop below;
+    // saves the 0→4→8→… doubling chain for programs with ≥ 4 enums.
+    let enum_count = stmts
+        .iter()
+        .filter(|s| matches!(&s.node, Node::EnumDecl { .. }))
+        .count();
+    let mut map: HashMap<&'a str, Vec<&'a str>> = HashMap::with_capacity(enum_count);
     for s in stmts {
         if let Node::EnumDecl { name, variants, .. } = &s.node {
             map.insert(
@@ -81,8 +88,10 @@ fn check_match(
 
     // Collect all EnumVariant type_names referenced in the arms.
     // If arms mix different enums or non-EnumVariant patterns, skip.
+    // RES-1956: pre-size `matched_variants` to `arms.len()` — exact
+    // upper bound, each arm contributes at most one variant name.
     let mut enum_name_seen: Option<&str> = None;
-    let mut matched_variants: HashSet<&str> = HashSet::new();
+    let mut matched_variants: HashSet<&str> = HashSet::with_capacity(arms.len());
 
     for (pat, _guard, _) in arms {
         match pat {
@@ -157,7 +166,9 @@ fn walk(
     // `errors` by reference, but uniqueness_walk's visitor signature
     // takes `&mut dyn FnMut(&Node)`, so we collect errors into a
     // separate Vec and extend after the visit.
-    let mut nested: Vec<ExhaustivenessError> = Vec::new();
+    // RES-1956: pre-size to 4 — typical match-error counts are low;
+    // skips the default 0→4 first grow.
+    let mut nested: Vec<ExhaustivenessError> = Vec::with_capacity(4);
     crate::uniqueness_walk::visit(node, &mut |n| {
         // Skip Function nodes — they will be handled by the outer walk
         // call in analyze() with the correct context name. Processing them
