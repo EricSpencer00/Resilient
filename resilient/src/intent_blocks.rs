@@ -69,10 +69,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     };
 
     // RES-1517: collect function names and their contract status in one pass.
-    // `fn_contracts[name]` = true when the function has at least one
-    // `requires` or `ensures` clause.
-    let mut fn_names: std::collections::HashSet<&str> =
-        std::collections::HashSet::with_capacity(stmts.len());
+    // RES-1994: previously kept a parallel `fn_names: HashSet<&str>` whose
+    // key set was identical to `fn_contracts` just for the existence
+    // check below. Drop it — `fn_contracts.get()` returning `None`
+    // already encodes "doesn't exist", and `Some(false)` encodes "no
+    // contracts". One HashMap allocation + N inserts per program
+    // instead of two of each.
     let mut fn_contracts: HashMap<&str, bool> = HashMap::with_capacity(stmts.len());
     for s in stmts {
         if let Node::Function {
@@ -82,7 +84,6 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             ..
         } = &s.node
         {
-            fn_names.insert(name.as_str());
             fn_contracts.insert(name.as_str(), !requires.is_empty() || !ensures.is_empty());
         }
     }
@@ -91,18 +92,15 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         let prop_label = intent.property.as_deref().unwrap_or(&intent.item_name);
 
         for enforcer in &intent.enforcers {
-            if !fn_names.contains(enforcer.as_str()) {
-                eprintln!(
-                    "warning: intent `{}` (property: \"{}\") names enforcer `{}` \
-                     which doesn't exist in the program",
-                    intent.item_name, prop_label, enforcer
-                );
-            } else {
-                let has_contracts = fn_contracts
-                    .get(enforcer.as_str())
-                    .copied()
-                    .unwrap_or(false);
-                if !has_contracts {
+            match fn_contracts.get(enforcer.as_str()) {
+                None => {
+                    eprintln!(
+                        "warning: intent `{}` (property: \"{}\") names enforcer `{}` \
+                         which doesn't exist in the program",
+                        intent.item_name, prop_label, enforcer
+                    );
+                }
+                Some(false) => {
                     eprintln!(
                         "warning: intent `{}` (property: \"{}\") enforcer `{}` \
                          has no `requires` or `ensures` clauses — the intent \
@@ -110,6 +108,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                         intent.item_name, prop_label, enforcer
                     );
                 }
+                Some(true) => {}
             }
         }
     }
