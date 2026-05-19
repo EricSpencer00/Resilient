@@ -794,7 +794,7 @@ thread_local! {
 /// different call sites hash to the same key — today every site
 /// carries a distinct span and cache-misses. After this, the
 /// common arithmetic-comparison shape dedupes across sites.
-fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
+pub(crate) fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
     use std::hash::Hash;
     // One-byte discriminant per variant so distinct shapes never
     // collide on accident.

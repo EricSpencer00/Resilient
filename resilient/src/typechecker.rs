@@ -907,10 +907,11 @@ pub(crate) fn reset_z3_prove_cache() {
 pub(crate) fn reset_z3_prove_cache() {}
 
 /// Hash the (expr, bindings, timeout, theory) tuple into a stable u64
-/// for `PROVE_CACHE`. Spans inside `expr`'s `Debug` output are part
-/// of the key — that's deliberate: per-call-site dispatches share
-/// the same `&Node` (and therefore span) for the same fn's clause,
-/// so same Node = same key. Bindings vary per call site.
+/// for `PROVE_CACHE`.
+///
+/// RES-1897: uses `hash_node_spanless` for structural hashing instead
+/// of `format!("{:?}", expr)` which allocated a temporary String
+/// proportional to the AST size on every cache lookup.
 #[cfg(feature = "z3")]
 fn prove_cache_key(
     expr: &Node,
@@ -921,9 +922,7 @@ fn prove_cache_key(
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
-    format!("{:?}", expr).hash(&mut h);
-    // HashMap iteration order is non-deterministic; sort by key for
-    // a stable hash regardless of insertion order.
+    crate::verifier_z3::hash_node_spanless(expr, &mut h);
     let mut sorted: Vec<(&String, &i64)> = bindings.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(b.0));
     for (k, v) in sorted {
@@ -931,7 +930,7 @@ fn prove_cache_key(
         v.hash(&mut h);
     }
     timeout_ms.hash(&mut h);
-    format!("{:?}", theory).hash(&mut h);
+    std::mem::discriminant(&theory).hash(&mut h);
     h.finish()
 }
 
@@ -974,6 +973,7 @@ fn z3_prove_with_cert(
 /// can't collide. The leading `with_axioms:` tag also prevents
 /// any collision with `prove_cache_key`'s no-axioms entries that
 /// share the same `PROVE_CACHE`.
+/// RES-1897: structural hashing for axiom-aware cache key.
 #[cfg(feature = "z3")]
 fn prove_cache_key_with_axioms(
     expr: &Node,
@@ -985,7 +985,7 @@ fn prove_cache_key_with_axioms(
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
     "with_axioms:".hash(&mut h);
-    format!("{:?}", expr).hash(&mut h);
+    crate::verifier_z3::hash_node_spanless(expr, &mut h);
     let mut sorted: Vec<(&String, &i64)> = bindings.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(b.0));
     for (k, v) in sorted {
@@ -993,7 +993,7 @@ fn prove_cache_key_with_axioms(
         v.hash(&mut h);
     }
     for ax in axioms {
-        format!("{:?}", ax).hash(&mut h);
+        crate::verifier_z3::hash_node_spanless(ax, &mut h);
     }
     timeout_ms.hash(&mut h);
     h.finish()
@@ -5443,10 +5443,16 @@ impl TypeChecker {
                         // of the function name + clause index + clause
                         // debug text — enough to detect any rewrite of
                         // the requires/ensures body.
+                        // RES-1897: structural hash instead of format!
                         let clause_digest = {
                             use std::hash::{Hash, Hasher};
                             let mut h = std::collections::hash_map::DefaultHasher::new();
-                            format!("{name}:{decl_idx}:{clause:?}").hash(&mut h);
+                            name.hash(&mut h);
+                            decl_idx.hash(&mut h);
+                            #[cfg(feature = "z3")]
+                            crate::verifier_z3::hash_node_spanless(clause, &mut h);
+                            #[cfg(not(feature = "z3"))]
+                            format!("{clause:?}").hash(&mut h);
                             h.finish()
                         };
                         if let Some(cached) = crate::incremental_verify::lookup(name, clause_digest)
