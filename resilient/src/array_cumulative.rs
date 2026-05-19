@@ -11,20 +11,19 @@
 
 use crate::{RResult, Value};
 
-fn collect_ints(name: &str, items: &[Value]) -> RResult<Vec<i64>> {
-    let mut out: Vec<i64> = Vec::with_capacity(items.len());
-    for v in items {
-        match v {
-            Value::Int(n) => out.push(*n),
-            other => {
-                return Err(format!(
-                    "{}: expected all int elements, got {}",
-                    name, other
-                ));
-            }
-        }
+// RES-2028: extract a `Value::Int` from a `&Value` or produce a typed
+// error mentioning the builtin name. Used inline by each of the four
+// builtins instead of the previous `collect_ints` helper that
+// materialized a fresh `Vec<i64>` per call.
+#[inline]
+fn as_int(name: &str, v: &Value) -> RResult<i64> {
+    match v {
+        Value::Int(n) => Ok(*n),
+        other => Err(format!(
+            "{}: expected all int elements, got {}",
+            name, other
+        )),
     }
-    Ok(out)
 }
 
 /// `array_cumsum(arr) -> Array` — prefix sums. Output length matches
@@ -33,10 +32,14 @@ fn collect_ints(name: &str, items: &[Value]) -> RResult<Vec<i64>> {
 pub(crate) fn builtin_array_cumsum(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_ints("array_cumsum", items)?;
-            let mut out: Vec<Value> = Vec::with_capacity(nums.len());
+            // RES-2028: single-pass scan. Inline the type-check into
+            // the accumulator loop instead of materializing a
+            // `Vec<i64>` first via `collect_ints`. Saves an 8*N-byte
+            // throwaway allocation per call.
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
             let mut acc: i64 = 0;
-            for n in nums {
+            for v in items {
+                let n = as_int("array_cumsum", v)?;
                 acc = acc.wrapping_add(n);
                 out.push(Value::Int(acc));
             }
@@ -55,10 +58,11 @@ pub(crate) fn builtin_array_cumsum(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_cumprod(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_ints("array_cumprod", items)?;
-            let mut out: Vec<Value> = Vec::with_capacity(nums.len());
+            // RES-2028: single-pass scan — see comment in `array_cumsum`.
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
             let mut acc: i64 = 1;
-            for n in nums {
+            for v in items {
+                let n = as_int("array_cumprod", v)?;
                 acc = acc.wrapping_mul(n);
                 out.push(Value::Int(acc));
             }
@@ -78,11 +82,20 @@ pub(crate) fn builtin_array_cumprod(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_array_diffs(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let nums = collect_ints("array_diffs", items)?;
-            let out: Vec<Value> = nums
-                .windows(2)
-                .map(|w| Value::Int(w[1].wrapping_sub(w[0])))
-                .collect();
+            // RES-2028: walk items pairwise with a `prev` register
+            // instead of collecting into `Vec<i64>` and using
+            // `.windows(2)` on it. Same algorithmic cost; drops the
+            // intermediate Vec.
+            if items.len() < 2 {
+                return Ok(Value::Array(Vec::new()));
+            }
+            let mut out: Vec<Value> = Vec::with_capacity(items.len() - 1);
+            let mut prev = as_int("array_diffs", &items[0])?;
+            for v in items.iter().skip(1) {
+                let curr = as_int("array_diffs", v)?;
+                out.push(Value::Int(curr.wrapping_sub(prev)));
+                prev = curr;
+            }
             Ok(Value::Array(out))
         }
         [other] => Err(format!("array_diffs: expected array, got {}", other)),
@@ -101,10 +114,14 @@ pub(crate) fn builtin_array_min_max(args: &[Value]) -> RResult<Value> {
             if items.is_empty() {
                 return Err("array_min_max: empty array has no min or max".to_string());
             }
-            let nums = collect_ints("array_min_max", items)?;
-            let mut min = nums[0];
-            let mut max = nums[0];
-            for &n in &nums[1..] {
+            // RES-2028: track min/max in registers during a single
+            // typed scan. Previously materialized the entire input
+            // as `Vec<i64>` then did the same scan.
+            let first = as_int("array_min_max", &items[0])?;
+            let mut min = first;
+            let mut max = first;
+            for v in items.iter().skip(1) {
+                let n = as_int("array_min_max", v)?;
                 if n < min {
                     min = n;
                 }
