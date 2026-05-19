@@ -423,6 +423,10 @@
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
       "claimed_at": "2026-05-19T22:27:31Z"
+    },
+    "resilient/src/age_bounded_data.rs": {
+      "branch": "res-2054-age-bounded-borrow",
+      "claimed_at": "2026-05-19T23:26:10Z"
     }
   }
 }
