@@ -20,7 +20,11 @@ use crate::Node;
 #[derive(Debug, Clone)]
 pub struct ExhaustivenessWarning {
     pub function: String,
-    pub message: String,
+    /// RES-2022: `&'static str` because the sole push site populates
+    /// this from a string literal. The previous `String` shape forced
+    /// a `.into()` allocation per push for content that already lived
+    /// in `.rodata`. Sibling fix to RES-2020 for `coverage_warnings`.
+    pub message: &'static str,
 }
 
 /// Returns true if the sub-pattern inside a struct field binding
@@ -73,8 +77,7 @@ fn walk(node: &Node, fn_name: &str, out: &mut Vec<ExhaustivenessWarning>) {
                 out.push(ExhaustivenessWarning {
                     function: fn_name.to_string(),
                     message: "Non-exhaustive match on struct — add a wildcard arm \
-                              (`_`, an identifier, or `StructName { .. }`)"
-                        .into(),
+                              (`_`, an identifier, or `StructName { .. }`)",
                 });
             }
             for (_, _, body) in arms {
