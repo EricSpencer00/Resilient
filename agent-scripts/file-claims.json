@@ -343,6 +343,10 @@
     "resilient/src/mutation_testing.rs": {
       "branch": "res-1918-mutation-testing-walker-coverage",
       "claimed_at": "2026-05-19T16:38:37Z"
+    },
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1920-collect-cert-idents-single-walk",
+      "claimed_at": "2026-05-19T17:06:58Z"
     }
   }
 }

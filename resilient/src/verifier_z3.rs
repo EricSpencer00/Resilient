@@ -2119,15 +2119,90 @@ fn collect_cert_idents<'a>(
             {
                 len_args.insert(name.as_str());
             }
-            // int_idents: original collect_int_identifiers ignores
-            // CallExpression entirely, so we must NOT recurse for
-            // int_idents here. Delegate to the single-purpose
-            // collectors for array_args and len_args.
-            collect_array_args(function, array_args);
-            collect_len_args(function, len_args);
+            // RES-1920: the function position and every argument are
+            // each walked once via `collect_cert_idents_in_call`, which
+            // updates `array_args` + `len_args` in a single pass while
+            // deliberately skipping `int_idents`. The skip preserves
+            // the conservative under-collection that the original
+            // `collect_int_identifiers` (the per-purpose collector
+            // RES-1893 replaced) already did for CallExpression —
+            // sound because `translate_int` doesn't translate general
+            // call shapes to LIA, so call-arg identifiers never appear
+            // in the emitted certificate.
+            //
+            // Previously each sub-tree was walked twice (once each by
+            // `collect_array_args` + `collect_len_args`); for nested
+            // calls like `f(g(h(x)))` that double-walked every node
+            // under the outermost call and undid the RES-1893 single-
+            // pass property exactly inside the most-ramified shape.
+            collect_cert_idents_in_call(function, array_args, len_args);
             for arg in arguments {
-                collect_array_args(arg, array_args);
-                collect_len_args(arg, len_args);
+                collect_cert_idents_in_call(arg, array_args, len_args);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// RES-1920: single-walk variant of `collect_cert_idents` used inside a
+/// `Node::CallExpression` sub-tree. Populates both `array_args` and
+/// `len_args` in one pass while deliberately omitting `int_idents`, so
+/// the cert-generation walker matches the conservative
+/// `collect_int_identifiers` behavior for identifiers nested inside
+/// call arguments (translate_int doesn't render call-arg identifiers
+/// into the SMT certificate, so omitting them is sound).
+///
+/// Without this helper the CallExpression arm of `collect_cert_idents`
+/// fell back to two separate walks (`collect_array_args` +
+/// `collect_len_args`) per argument — defeating the RES-1893 single-
+/// pass property exactly inside nested-call shapes.
+fn collect_cert_idents_in_call<'a>(
+    node: &'a Node,
+    array_args: &mut BTreeSet<&'a str>,
+    len_args: &mut BTreeSet<&'a str>,
+) {
+    match node {
+        Node::PrefixExpression { right, .. } => {
+            collect_cert_idents_in_call(right, array_args, len_args);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            collect_cert_idents_in_call(left, array_args, len_args);
+            collect_cert_idents_in_call(right, array_args, len_args);
+        }
+        Node::Quantifier { range, body, .. } => {
+            if let crate::quantifiers::QuantRange::Range { lo, hi } = range {
+                collect_cert_idents_in_call(lo, array_args, len_args);
+                collect_cert_idents_in_call(hi, array_args, len_args);
+            }
+            collect_cert_idents_in_call(body, array_args, len_args);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            if let Node::Identifier { name, .. } = target.as_ref() {
+                array_args.insert(name.as_str());
+            }
+            // RES-1920: walk both target and index. `collect_len_args`
+            // descended into target to catch nested `len()` calls (e.g.
+            // `f(args)[i]` where `f` carries `len(xs)` inside); the
+            // legacy two-walk path inside CallExpression invoked it,
+            // so this single-pass replacement must preserve that
+            // descent or the certificate would reference an undeclared
+            // `len_<x>` constant.
+            collect_cert_idents_in_call(target, array_args, len_args);
+            collect_cert_idents_in_call(index, array_args, len_args);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if is_len_call(function, arguments)
+                && let Node::Identifier { name, .. } = &arguments[0]
+            {
+                len_args.insert(name.as_str());
+            }
+            collect_cert_idents_in_call(function, array_args, len_args);
+            for arg in arguments {
+                collect_cert_idents_in_call(arg, array_args, len_args);
             }
         }
         _ => {}
@@ -2161,6 +2236,11 @@ fn collect_int_identifiers<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     }
 }
 
+// RES-1920: now only consulted by the cross-check test
+// `collect_cert_idents_matches_individual_collectors` (and friends)
+// after the RES-1893 single-pass collector absorbed every non-test
+// caller. Kept as a reference walker for the test cross-checks.
+#[cfg_attr(not(test), allow(dead_code))]
 fn collect_array_args<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::IndexExpression { target, index, .. } => {
@@ -3777,6 +3857,95 @@ mod tests {
         assert_eq!(ints, ["x", "y"].into_iter().collect::<BTreeSet<&str>>());
         assert!(arrs.is_empty());
         assert!(lens.is_empty());
+    }
+
+    /// RES-1920: nested-call shapes must produce identical
+    /// array_args + len_args output to the legacy
+    /// `collect_array_args` + `collect_len_args` two-walk pipeline.
+    /// The CallExpression arm of `collect_cert_idents` formerly fell
+    /// back to that double walk; the single-pass replacement must not
+    /// regress the catch.
+    #[test]
+    fn collect_cert_idents_handles_nested_calls() {
+        // Local helper: `name(args)` CallExpression.
+        fn call_expr(name: &str, args: Vec<Node>) -> Node {
+            Node::CallExpression {
+                function: Box::new(ident(name)),
+                arguments: args,
+                span: crate::span::Span::default(),
+            }
+        }
+        // Construct `f(g(len(xs)), h(ys[i]))` — three nested
+        // CallExpression layers, with a len() call and an array
+        // index buried inside.
+        let inner = call_expr("g", vec![len_call("xs")]);
+        let other = call_expr("h", vec![index_expr(ident("ys"), ident("i"))]);
+        let expr = call_expr("f", vec![inner, other]);
+
+        let mut expected_arrs: BTreeSet<&str> = BTreeSet::new();
+        collect_array_args(&expr, &mut expected_arrs);
+        let mut expected_lens: BTreeSet<&str> = BTreeSet::new();
+        collect_len_args(&expr, &mut expected_lens);
+
+        let mut actual_ints: BTreeSet<&str> = BTreeSet::new();
+        let mut actual_arrs: BTreeSet<&str> = BTreeSet::new();
+        let mut actual_lens: BTreeSet<&str> = BTreeSet::new();
+        collect_cert_idents(&expr, &mut actual_ints, &mut actual_arrs, &mut actual_lens);
+
+        assert_eq!(
+            actual_arrs, expected_arrs,
+            "array_args mismatch under nested calls"
+        );
+        assert_eq!(
+            actual_lens, expected_lens,
+            "len_args mismatch under nested calls"
+        );
+        assert!(
+            actual_lens.contains("xs"),
+            "expected `xs` from buried len(xs)"
+        );
+        assert!(
+            actual_arrs.contains("ys"),
+            "expected `ys` from buried ys[i]"
+        );
+    }
+
+    /// RES-1920: `f(args)[i]` — an IndexExpression whose target is a
+    /// CallExpression containing `len()`. The legacy two-walk path's
+    /// `collect_len_args` descended into the IndexExpression target,
+    /// catching the buried `len()`; the single-pass replacement must
+    /// match that behavior or the emitted certificate will reference
+    /// an undeclared `len_<x>` constant.
+    #[test]
+    fn collect_cert_idents_walks_index_target_for_buried_len() {
+        fn call_expr(name: &str, args: Vec<Node>) -> Node {
+            Node::CallExpression {
+                function: Box::new(ident(name)),
+                arguments: args,
+                span: crate::span::Span::default(),
+            }
+        }
+        // `f(len(xs))[i]`
+        let f_call = call_expr("f", vec![len_call("xs")]);
+        let expr = index_expr(f_call, ident("i"));
+        // Wrap inside an outer call so the new single-walk helper
+        // is exercised (collect_cert_idents only delegates to it
+        // inside CallExpression).
+        let outer = call_expr("outer", vec![expr]);
+
+        let mut expected_lens: BTreeSet<&str> = BTreeSet::new();
+        collect_len_args(&outer, &mut expected_lens);
+
+        let mut actual_ints: BTreeSet<&str> = BTreeSet::new();
+        let mut actual_arrs: BTreeSet<&str> = BTreeSet::new();
+        let mut actual_lens: BTreeSet<&str> = BTreeSet::new();
+        collect_cert_idents(&outer, &mut actual_ints, &mut actual_arrs, &mut actual_lens);
+
+        assert_eq!(
+            actual_lens, expected_lens,
+            "len_args under IndexExpression target with buried len() must match legacy walk"
+        );
+        assert!(actual_lens.contains("xs"));
     }
 
     #[test]
