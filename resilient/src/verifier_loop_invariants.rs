@@ -352,7 +352,7 @@ fn literal_int(node: &Node) -> Option<i64> {
     } else if let Node::PrefixExpression {
         operator, right, ..
     } = node
-        && operator == "-"
+        && *operator == "-"
         && let Node::IntegerLiteral { value, .. } = right.as_ref()
     {
         Some(-*value)
@@ -435,7 +435,7 @@ fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
             span,
         } => Node::InfixExpression {
             left: Box::new(substitute(left, name, replacement)),
-            operator: *operator,
+            operator,
             right: Box::new(substitute(right, name, replacement)),
             span: *span,
         },
@@ -444,7 +444,7 @@ fn substitute(node: &Node, name: &str, replacement: &Node) -> Node {
             right,
             span,
         } => Node::PrefixExpression {
-            operator: *operator,
+            operator,
             right: Box::new(substitute(right, name, replacement)),
             span: *span,
         },

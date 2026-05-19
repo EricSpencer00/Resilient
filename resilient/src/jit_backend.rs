@@ -2638,7 +2638,7 @@ fn lower_expr(
             right,
             ..
         } => {
-            let op_str = operator.as_str();
+            let op_str = *operator;
             // Validate first so we can short-circuit Unsupported
             // before recursing into the operands.
             if !matches!(

@@ -265,7 +265,7 @@ fn is_supported_invariant(node: &Node) -> bool {
         Node::FieldAccess { target, .. } => matches!(target.as_ref(), Node::Identifier { .. }),
         Node::PrefixExpression {
             right, operator, ..
-        } => matches!(operator.as_str(), "!" | "-") && is_supported_invariant(right),
+        } => matches!(*operator, "!" | "-") && is_supported_invariant(right),
         Node::InfixExpression {
             left,
             right,
@@ -273,7 +273,7 @@ fn is_supported_invariant(node: &Node) -> bool {
             ..
         } => {
             matches!(
-                operator.as_str(),
+                *operator,
                 "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
             ) && is_supported_invariant(left)
                 && is_supported_invariant(right)
@@ -519,7 +519,7 @@ fn rewrite_field_refs(node: &Node, scope_as_self: Option<&str>) -> Option<Node> 
             right,
             span,
         } => Some(Node::PrefixExpression {
-            operator: *operator,
+            operator,
             right: Box::new(rewrite_field_refs(right, scope_as_self)?),
             span: *span,
         }),
@@ -530,7 +530,7 @@ fn rewrite_field_refs(node: &Node, scope_as_self: Option<&str>) -> Option<Node> 
             span,
         } => Some(Node::InfixExpression {
             left: Box::new(rewrite_field_refs(left, scope_as_self)?),
-            operator: *operator,
+            operator,
             right: Box::new(rewrite_field_refs(right, scope_as_self)?),
             span: *span,
         }),
@@ -581,7 +581,7 @@ fn rewrite_invariant_post(
             right,
             span,
         } => Some(Node::PrefixExpression {
-            operator: *operator,
+            operator,
             right: Box::new(rewrite_invariant_post(
                 right,
                 owning_member,
@@ -602,7 +602,7 @@ fn rewrite_invariant_post(
                 members,
                 post_rewrites,
             )?),
-            operator: *operator,
+            operator,
             right: Box::new(rewrite_invariant_post(
                 right,
                 owning_member,
