@@ -367,6 +367,10 @@
     "resilient/src/array_combinators.rs": {
       "branch": "res-1934-array-combinators-clone-elim",
       "claimed_at": "2026-05-19T17:58:20Z"
+    },
+    "resilient/src/recovers_to_bmc.rs": {
+      "branch": "res-1940-recovers-bmc-quadratic",
+      "claimed_at": "2026-05-19T18:11:03Z"
     }
   }
 }

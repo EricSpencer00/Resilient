@@ -356,9 +356,17 @@ pub(crate) fn node_to_smtlib2(node: &Node) -> String {
 
 /// Collect all free variable names appearing in an expression node.
 /// Used to emit `(declare-const …)` lines in the SMT-LIB2 preamble.
+///
+/// RES-1940: push unconditionally; the caller's `sort + dedup`
+/// canonicalises the output. The legacy `!out.contains(name)` guard
+/// did a linear scan per push, making this O(N²) for the very-common
+/// shape where the same identifier appears multiple times in a clause
+/// (e.g. `x >= 0 && x <= max`). The unconditional push is O(N), and
+/// the existing dedup is O(N) after the O(N log N) sort — net cost
+/// drops from O(N²) to O(N log N) per call.
 fn collect_identifiers(node: &Node, out: &mut Vec<String>) {
     match node {
-        Node::Identifier { name, .. } if !out.contains(name) => {
+        Node::Identifier { name, .. } => {
             out.push(name.clone());
         }
         Node::InfixExpression { left, right, .. } => {
@@ -398,7 +406,9 @@ pub(crate) fn generate_prefix_obligation(
     let recovers_smt = node_to_smtlib2(recovers_clause);
 
     // Collect identifiers from both recovers clause and requires clauses.
-    let mut ids = Vec::new();
+    // RES-1940: pre-size to 4 — typical clauses reference 2-5 free
+    // variables; saves the default 0→4 doubling on first push.
+    let mut ids = Vec::with_capacity(4);
     collect_identifiers(recovers_clause, &mut ids);
     for req in requires_clauses {
         collect_identifiers(req, &mut ids);
