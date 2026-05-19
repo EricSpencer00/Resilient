@@ -10592,13 +10592,20 @@ fn format_contract_expr(node: &Node) -> String {
 /// string operand). Returns `None` for values that should NOT be implicitly
 /// coerced (functions, builtins, void, returns). Strings come back as their
 /// raw contents — *without* the surrounding quotes that `Display` adds.
-fn stringify_for_concat(v: &Value) -> Option<String> {
+fn can_stringify_for_concat(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::String(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_)
+    )
+}
+
+fn stringify_for_concat_owned(v: Value) -> String {
     match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Int(i) => Some(i.to_string()),
-        Value::Float(f) => Some(f.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        _ => None,
+        Value::String(s) => s,
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => unreachable!(),
     }
 }
 
@@ -24859,11 +24866,11 @@ impl Interpreter {
         // applies to `+` — other operators keep their strict behavior.
         if operator == "+"
             && (matches!(left, Value::String(_)) || matches!(right, Value::String(_)))
-            && let (Some(ls), Some(rs)) =
-                (stringify_for_concat(&left), stringify_for_concat(&right))
+            && can_stringify_for_concat(&left)
+            && can_stringify_for_concat(&right)
         {
-            let mut s = ls;
-            s.push_str(&rs);
+            let mut s = stringify_for_concat_owned(left);
+            s.push_str(&stringify_for_concat_owned(right));
             return Ok(Value::String(s));
         }
 
