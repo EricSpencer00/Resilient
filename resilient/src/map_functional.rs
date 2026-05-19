@@ -21,8 +21,15 @@ type RResult<T> = Result<T, String>;
 /// let m2 = map_filter(m, fn(string k, int v) -> bool { return v > 0; });
 /// ```
 pub(crate) fn builtin_map_filter(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1930: borrow `m` and `f` directly from `args`. The legacy
+    // `(m.clone(), f.clone())` allocated a fresh HashMap (one bucket
+    // array + every (MapKey, Value) entry) plus an Rc bump on every
+    // call — even though the body only iterates `&m` and passes `f`
+    // through `apply_function(func: &Value, ...)`. Cloning entries
+    // (`k.clone()` / `v.clone()`) into `out` is still needed since
+    // `out` is the owned return value.
     let (m, f) = match args {
-        [Value::Map(m), f] => (m.clone(), f.clone()),
+        [Value::Map(m), f] => (m, f),
         [a, _] => return Err(format!("map_filter: first argument must be a Map, got {a}")),
         _ => {
             return Err(format!(
@@ -33,9 +40,9 @@ pub(crate) fn builtin_map_filter(interp: &mut Interpreter, args: &[Value]) -> RR
     };
 
     let mut out = std::collections::HashMap::with_capacity(m.len());
-    for (k, v) in &m {
+    for (k, v) in m {
         let k_val = map_key_to_value(k);
-        let keep = interp.apply_function(&f, vec![k_val, v.clone()])?;
+        let keep = interp.apply_function(f, vec![k_val, v.clone()])?;
         match keep {
             Value::Bool(true) => {
                 out.insert(k.clone(), v.clone());
@@ -60,8 +67,9 @@ pub(crate) fn builtin_map_filter(interp: &mut Interpreter, args: &[Value]) -> RR
 /// let doubled = map_map_values(m, fn(string k, int v) -> int { return v * 2; });
 /// ```
 pub(crate) fn builtin_map_map_values(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1930: borrow `m` and `f`; see `builtin_map_filter` above.
     let (m, f) = match args {
-        [Value::Map(m), f] => (m.clone(), f.clone()),
+        [Value::Map(m), f] => (m, f),
         [a, _] => {
             return Err(format!(
                 "map_map_values: first argument must be a Map, got {a}"
@@ -76,9 +84,9 @@ pub(crate) fn builtin_map_map_values(interp: &mut Interpreter, args: &[Value]) -
     };
 
     let mut out = std::collections::HashMap::with_capacity(m.len());
-    for (k, v) in &m {
+    for (k, v) in m {
         let k_val = map_key_to_value(k);
-        let new_val = interp.apply_function(&f, vec![k_val, v.clone()])?;
+        let new_val = interp.apply_function(f, vec![k_val, v.clone()])?;
         out.insert(k.clone(), new_val);
     }
     Ok(Value::Map(out))
@@ -94,8 +102,9 @@ pub(crate) fn builtin_map_map_values(interp: &mut Interpreter, args: &[Value]) -
 /// map_for_each(m, fn(string k, int v) -> Void { println(k); });
 /// ```
 pub(crate) fn builtin_map_for_each(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1930: borrow `m` and `f`; see `builtin_map_filter` above.
     let (m, f) = match args {
-        [Value::Map(m), f] => (m.clone(), f.clone()),
+        [Value::Map(m), f] => (m, f),
         [a, _] => {
             return Err(format!(
                 "map_for_each: first argument must be a Map, got {a}"
@@ -109,9 +118,9 @@ pub(crate) fn builtin_map_for_each(interp: &mut Interpreter, args: &[Value]) -> 
         }
     };
 
-    for (k, v) in &m {
+    for (k, v) in m {
         let k_val = map_key_to_value(k);
-        interp.apply_function(&f, vec![k_val, v.clone()])?;
+        interp.apply_function(f, vec![k_val, v.clone()])?;
     }
     Ok(Value::Void)
 }
@@ -185,8 +194,12 @@ pub(crate) fn builtin_map_invert(args: &[Value]) -> RResult<Value> {
 /// // merged == {"a" -> 3, "b" -> 3}
 /// ```
 pub(crate) fn builtin_map_merge_with(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1930: borrow `m1` / `m2` / `f`; defer m1's clone to the
+    // `out` site below. The legacy code cloned m1 twice (match
+    // destructure + `let mut out = m1.clone()`); now exactly one clone
+    // happens, and that clone IS the owned `out` map.
     let (m1, m2, f) = match args {
-        [Value::Map(m1), Value::Map(m2), f] => (m1.clone(), m2.clone(), f.clone()),
+        [Value::Map(m1), Value::Map(m2), f] => (m1, m2, f),
         [Value::Map(_), a, _] => {
             return Err(format!(
                 "map_merge_with: second argument must be a Map, got {a}"
@@ -206,10 +219,14 @@ pub(crate) fn builtin_map_merge_with(interp: &mut Interpreter, args: &[Value]) -
     };
 
     let mut out = m1.clone();
-    for (k, v2) in &m2 {
+    for (k, v2) in m2 {
         if let Some(v1) = out.get(k) {
             let k_val = map_key_to_value(k);
-            let merged = interp.apply_function(&f, vec![k_val, v1.clone(), v2.clone()])?;
+            // RES-1930: `v1.clone()` is needed — `out` is borrowed
+            // mutably by `out.insert` below, so `v1` must own its
+            // value before we can take a `&mut` on `out`.
+            let v1_owned = v1.clone();
+            let merged = interp.apply_function(f, vec![k_val, v1_owned, v2.clone()])?;
             out.insert(k.clone(), merged);
         } else {
             out.insert(k.clone(), v2.clone());
@@ -233,10 +250,12 @@ pub(crate) fn builtin_map_merge_with(interp: &mut Interpreter, args: &[Value]) -
 /// // m3 == {"x" -> 1}
 /// ```
 pub(crate) fn builtin_map_update_with(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-1930: borrow all four args. The genuine clone — needed
+    // because `out` is mutated below — is deferred to the `out` site.
+    // `default` is cloned via `unwrap_or_else` so the clone fires only
+    // when the key is absent from the map.
     let (m, key_val, default, f) = match args {
-        [Value::Map(m), key_val, default, f] => {
-            (m.clone(), key_val.clone(), default.clone(), f.clone())
-        }
+        [Value::Map(m), key_val, default, f] => (m, key_val, default, f),
         [a, _, _, _] => {
             return Err(format!(
                 "map_update_with: first argument must be a Map, got {a}"
@@ -250,11 +269,11 @@ pub(crate) fn builtin_map_update_with(interp: &mut Interpreter, args: &[Value]) 
         }
     };
 
-    let mk = MapKey::from_value(&key_val)
+    let mk = MapKey::from_value(key_val)
         .map_err(|e| format!("map_update_with: key is not hashable: {e}"))?;
-    let existing = m.get(&mk).cloned().unwrap_or(default);
-    let new_val = interp.apply_function(&f, vec![existing])?;
-    let mut out = m;
+    let existing = m.get(&mk).cloned().unwrap_or_else(|| default.clone());
+    let new_val = interp.apply_function(f, vec![existing])?;
+    let mut out = m.clone();
     out.insert(mk, new_val);
     Ok(Value::Map(out))
 }
