@@ -8,5 +8,12 @@
 //! library's CLI entry point.
 
 fn main() {
-    resilient::run_cli();
+    const STACK_SIZE: usize = 16 * 1024 * 1024;
+    let builder = std::thread::Builder::new().stack_size(STACK_SIZE);
+    let handler = builder
+        .spawn(resilient::run_cli)
+        .expect("failed to spawn CLI thread");
+    if let Err(e) = handler.join() {
+        std::panic::resume_unwind(e);
+    }
 }
