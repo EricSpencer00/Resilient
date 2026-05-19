@@ -989,7 +989,11 @@ impl CandidateKind {
 /// When `prefix` is empty, the full candidate set (up to the cap)
 /// is returned — that's the Ctrl-Space case.
 pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candidate> {
-    let mut out: Vec<Candidate> = Vec::new();
+    // RES-2044: pre-size to the exact upper bound. `COMPLETION_LIMIT`
+    // is the hard cap enforced inside both loops below, so we never
+    // need to grow past it — skips the 0→4→8→16→32→64→128 doubling
+    // chain on every completion request.
+    let mut out: Vec<Candidate> = Vec::with_capacity(COMPLETION_LIMIT);
 
     // Builtins — alphabetically sorted snapshot.
     let mut names: Vec<&'static str> = builtin_names().collect();
@@ -1016,35 +1020,39 @@ pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candida
     };
     // RES-1531: borrow the decl name as `&str` for the prefix
     // filter; only allocate the owned label string when the entry
-    // is actually going to land in `out`. The previous shape
-    // cloned every top-level decl name, then dropped most of them
-    // on the `!name.starts_with(prefix)` continue — wasted work
-    // proportional to the program's top-level decl count for every
-    // completion request.
+    // is actually going to land in `out`.
+    //
+    // RES-2044: split the per-decl match into two passes. The first
+    // match extracts only `name.as_str()` (cheap, no allocation) so
+    // the prefix filter runs *before* we pay the per-kind `format!`
+    // for `detail`. For programs with hundreds of top-level decls
+    // and a typed prefix that matches a handful, the previous shape
+    // allocated a `String` for `detail` on every decl just to drop
+    // it on the `continue` below — wasted on every completion
+    // keystroke.
     for spanned in stmts {
-        let (name, kind, detail) = match &spanned.node {
-            Node::Function {
-                name, parameters, ..
-            } => (
-                name.as_str(),
-                CandidateKind::Function,
-                Some(format!("fn ({} params)", parameters.len())),
-            ),
-            Node::StructDecl { name, fields, .. } => (
-                name.as_str(),
-                CandidateKind::Struct,
-                Some(format!("struct ({} fields)", fields.len())),
-            ),
-            Node::TypeAlias { name, .. } => (
-                name.as_str(),
-                CandidateKind::TypeAlias,
-                Some("type".to_string()),
-            ),
+        let name = match &spanned.node {
+            Node::Function { name, .. }
+            | Node::StructDecl { name, .. }
+            | Node::TypeAlias { name, .. } => name.as_str(),
             _ => continue,
         };
         if !name.starts_with(prefix) {
             continue;
         }
+        // Only matches that pass the prefix filter pay for `detail`.
+        let (kind, detail) = match &spanned.node {
+            Node::Function { parameters, .. } => (
+                CandidateKind::Function,
+                Some(format!("fn ({} params)", parameters.len())),
+            ),
+            Node::StructDecl { fields, .. } => (
+                CandidateKind::Struct,
+                Some(format!("struct ({} fields)", fields.len())),
+            ),
+            Node::TypeAlias { .. } => (CandidateKind::TypeAlias, Some("type".to_string())),
+            _ => unreachable!("name-extracting match above guarded this"),
+        };
         out.push(Candidate {
             label: name.to_string(),
             kind,
