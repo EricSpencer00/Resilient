@@ -23,9 +23,15 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2174: dropped the redundant `type_name: String` field. It was
+/// set from the attribute's owning-item name in `collect()`. Two
+/// readers — `install`'s key clone and `check`'s validation error
+/// message — both used it as a HashMap key / display value tied to
+/// the entry. The field stored exactly what the key encoded. Same
+/// dead-field pattern as RES-2106 / RES-2110 / RES-2122 / RES-2168 /
+/// RES-2170 / RES-2172.
 #[derive(Debug, Clone)]
 pub struct DeriveSet {
-    pub type_name: String,
     pub traits: Vec<String>,
 }
 
@@ -48,7 +54,7 @@ const SUPPORTED: &[&str] = &[
     "Copy",
 ];
 
-pub fn collect() -> Vec<DeriveSet> {
+pub fn collect() -> Vec<(String, DeriveSet)> {
     let attrs = crate::feature_attrs::find_kind("derive");
     // RES-1782: pre-size to attrs.len() — exactly one push per
     // attribute record.
@@ -60,20 +66,19 @@ pub fn collect() -> Vec<DeriveSet> {
             .map(|s| s.trim().trim_matches('"').to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        out.push(DeriveSet {
-            type_name: item,
-            traits,
-        });
+        out.push((item, DeriveSet { traits }));
     }
     out
 }
 
-pub fn install(sets: Vec<DeriveSet>) {
+pub fn install(sets: Vec<(String, DeriveSet)>) {
     if let Ok(mut g) = DERIVES.write() {
         g.clear();
-        for s in sets {
-            g.insert(s.type_name.clone(), s);
-        }
+        // RES-2174: move (name, set) pairs straight from `collect()`
+        // into the map. The previous shape per-set cloned
+        // `s.type_name` to produce the key, since the field and the
+        // key encoded the same string.
+        g.extend(sets);
     }
 }
 
@@ -112,12 +117,12 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     if sets.is_empty() {
         return Ok(());
     }
-    for s in &sets {
+    for (type_name, s) in &sets {
         for t in &s.traits {
             if !SUPPORTED.contains(&t.as_str()) {
                 return Err(format!(
                     "{}:0:0: error: `#[derive({})]` on `{}` — unknown trait. Supported: {:?}",
-                    source_path, t, s.type_name, SUPPORTED
+                    source_path, t, type_name, SUPPORTED
                 ));
             }
         }
