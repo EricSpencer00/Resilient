@@ -61,14 +61,25 @@ pub fn diff(
 }
 
 pub fn serialize(snapshots: &HashMap<String, Snapshot>) -> String {
+    // RES-2266: write each entry directly into `s` via `std::fmt::Write`
+    // instead of `push_str(&format!(...))`. Each iteration previously
+    // allocated an intermediate `String` only to be immediately
+    // `push_str`'d. For an N-snapshot baseline, that's N avoidable
+    // String allocations per `serialize` call. Also drop the
+    // per-sort-key `(*k).clone()` — sort_by_key wants `K: Ord`, but
+    // `&&String: Ord` works fine via `Deref`.
+    //
+    // Mirrors RES-2256 / RES-2258 / RES-2260 / RES-2262 / RES-2264.
+    use std::fmt::Write;
     let mut s = String::from("{\n");
     let mut entries: Vec<(&String, &Snapshot)> = snapshots.iter().collect();
-    entries.sort_by_key(|(k, _)| (*k).clone());
+    entries.sort_by_key(|(k, _)| *k);
     for (i, (name, snap)) in entries.iter().enumerate() {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             r#"  "{}": {{ "digest": {}, "golden_hash": {} }}"#,
             name, snap.fingerprint_digest, snap.golden_output_hash
-        ));
+        );
         if i + 1 < entries.len() {
             s.push(',');
         }
