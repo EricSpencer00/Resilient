@@ -35,13 +35,20 @@ pub fn install(set: HashSet<String>) {
     }
 }
 
+/// RES-2112: hold the read guard for the contains check instead of deep-
+/// cloning the entire `HashSet<String>`. The previous shape called
+/// `g.clone()` on the lock guard's `Option<HashSet<String>>` payload
+/// for every `is_async(name)` call — and the typechecker invokes this
+/// for every call expression in the program. On a program with K
+/// async fns and N call sites, that's `N × K` `String` allocations
+/// burnt just to discover the matching subset. Borrowing through the
+/// guard makes each lookup `O(1)` allocation-free. Same pattern as
+/// RES-2074 (ghost_types).
 pub fn is_async(name: &str) -> bool {
-    ASYNC_FNS
-        .read()
-        .ok()
-        .and_then(|g| g.clone())
-        .map(|s| s.contains(name))
-        .unwrap_or(false)
+    let Ok(g) = ASYNC_FNS.read() else {
+        return false;
+    };
+    g.as_ref().is_some_and(|s| s.contains(name))
 }
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
