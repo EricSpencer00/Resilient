@@ -3091,7 +3091,7 @@ fn l0009_z3_check(
 // five lints actually need to descend through.
 // ============================================================
 
-fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
+fn recurse_children<'a, F: FnMut(&'a Node)>(node: &'a Node, f: &mut F) {
     match node {
         Node::Program(stmts) => {
             for s in stmts {
@@ -4082,8 +4082,15 @@ fn run_l0017_variable_shadowing(program: &Node, out: &mut Vec<Lint>) {
             Node::Function {
                 parameters, body, ..
             } => {
-                let mut scopes: Vec<std::collections::HashSet<String>> =
-                    vec![parameters.iter().map(|(_, name)| name.clone()).collect()];
+                // RES-2286: scope stack stores `&'a str` borrows from
+                // the AST instead of owned `String`s. Both lookups
+                // — `set.contains(name.as_str())` and the per-Let
+                // insertion — work with `&str` directly, so the per-
+                // parameter and per-Let `.clone()` shed their backing
+                // allocations. Same shape as RES-2154 / RES-2238 /
+                // RES-2240.
+                let mut scopes: Vec<std::collections::HashSet<&str>> =
+                    vec![parameters.iter().map(|(_, name)| name.as_str()).collect()];
                 l0017_walk(body, &mut scopes, out);
             }
             Node::ImplBlock { methods, .. } => {
@@ -4092,8 +4099,8 @@ fn run_l0017_variable_shadowing(program: &Node, out: &mut Vec<Lint>) {
                         parameters, body, ..
                     } = method
                     {
-                        let mut scopes: Vec<std::collections::HashSet<String>> =
-                            vec![parameters.iter().map(|(_, name)| name.clone()).collect()];
+                        let mut scopes: Vec<std::collections::HashSet<&str>> =
+                            vec![parameters.iter().map(|(_, name)| name.as_str()).collect()];
                         l0017_walk(body, &mut scopes, out);
                     }
                 }
@@ -4103,9 +4110,9 @@ fn run_l0017_variable_shadowing(program: &Node, out: &mut Vec<Lint>) {
     }
 }
 
-fn l0017_walk(
-    node: &Node,
-    scopes: &mut Vec<std::collections::HashSet<String>>,
+fn l0017_walk<'a>(
+    node: &'a Node,
+    scopes: &mut Vec<std::collections::HashSet<&'a str>>,
     out: &mut Vec<Lint>,
 ) {
     match node {
@@ -4139,7 +4146,7 @@ fn l0017_walk(
                 }
             }
             if let Some(top) = scopes.last_mut() {
-                top.insert(name.clone());
+                top.insert(name.as_str());
             }
             l0017_walk(value, scopes, out);
         }

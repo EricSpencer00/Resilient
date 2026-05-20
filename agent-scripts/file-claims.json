@@ -456,10 +456,6 @@
       "branch": "res-2268-smtlib2-direct-write",
       "claimed_at": "2026-05-20T08:29:05Z"
     },
-    "resilient/src/lint.rs": {
-      "branch": "res-2272-lint-clause-text-direct",
-      "claimed_at": "2026-05-20T08:36:08Z"
-    },
     "resilient/src/formatter.rs": {
       "branch": "res-2274-formatter-write-direct",
       "claimed_at": "2026-05-20T08:42:42Z"
@@ -467,6 +463,10 @@
     "resilient/src/verifier_loop_invariants.rs": {
       "branch": "res-2280-wp-substitute-skip",
       "claimed_at": "2026-05-20T09:12:26Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "res-2286-l0017-borrow-names",
+      "claimed_at": "2026-05-20T09:40:13Z"
     }
   }
 }
