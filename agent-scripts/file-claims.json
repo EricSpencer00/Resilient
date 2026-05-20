@@ -443,6 +443,10 @@
     "resilient/src/const_fn.rs": {
       "branch": "res-2182-const-fn-drop-dead-struct",
       "claimed_at": "2026-05-20T04:19:17Z"
+    },
+    "resilient/src/property_tests.rs": {
+      "branch": "res-2186-property-tests-cleanup",
+      "claimed_at": "2026-05-20T04:27:32Z"
     }
   }
 }
