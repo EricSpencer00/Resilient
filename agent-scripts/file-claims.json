@@ -252,10 +252,6 @@
       "branch": "res-1802-traits-presize",
       "claimed_at": "2026-05-13T13:02:04Z"
     },
-    "resilient/src/verifier_actors.rs": {
-      "branch": "res-1808-flatten-body-presize",
-      "claimed_at": "2026-05-13T13:17:34Z"
-    },
     "resilient/src/format_builtin.rs": {
       "branch": "res-1816-format-template-fast-reject",
       "claimed_at": "2026-05-13T13:34:15Z"
@@ -455,6 +451,10 @@
     "resilient/src/semantic_regression.rs": {
       "branch": "res-2372-semantic-regression-borrow-guard",
       "claimed_at": "2026-05-20T15:31:40Z"
+    },
+    "resilient/src/verifier_actors.rs": {
+      "branch": "res-2380-verifier-actors-render-direct",
+      "claimed_at": "2026-05-20T15:58:41Z"
     }
   }
 }

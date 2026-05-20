@@ -387,38 +387,66 @@ fn prove_or_unsupported(_expr: &Node, _timeout_ms: u32) -> ActorProofResult {
 /// full pretty-printer lives in `formatter.rs`; this is the minimum
 /// needed so users can distinguish which invariant a verdict is about.
 fn render_clause(node: &Node) -> String {
+    // RES-2380: pre-allocate one buffer and recurse via `render_into`
+    // so nested expressions write directly into the same `String`.
+    // The previous shape allocated a fresh `String` per recursive call
+    // and joined them via `format!` — for an obligation of depth D
+    // the parent calls re-copied all the child text, costing
+    // O(D × total_text). The buffer reuse drops it to O(total_text).
+    // Same direct-write shape as RES-2322 / RES-2330 / RES-2270 /
+    // RES-2262.
+    let mut out = String::with_capacity(64);
+    render_into(node, &mut out);
+    out
+}
+
+fn render_into(node: &Node, out: &mut String) {
+    use std::fmt::Write as _;
     match node {
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!(
-            "{} {} {}",
-            render_clause(left),
-            operator,
-            render_clause(right)
-        ),
+        } => {
+            render_into(left, out);
+            let _ = write!(out, " {} ", operator);
+            render_into(right, out);
+        }
         Node::PrefixExpression {
             operator, right, ..
         } => {
-            format!("{}{}", operator, render_clause(right))
+            out.push_str(operator);
+            render_into(right, out);
         }
-        Node::Identifier { name, .. } => name.clone(),
-        Node::IntegerLiteral { value, .. } => value.to_string(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
+        Node::Identifier { name, .. } => out.push_str(name),
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
         Node::FieldAccess { target, field, .. } => {
-            format!("{}.{}", render_clause(target), field)
+            render_into(target, out);
+            out.push('.');
+            out.push_str(field);
         }
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            let args: Vec<String> = arguments.iter().map(render_clause).collect();
-            format!("{}({})", render_clause(function), args.join(", "))
+            render_into(function, out);
+            out.push('(');
+            for (i, a) in arguments.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                render_into(a, out);
+            }
+            out.push(')');
         }
-        _ => "<expr>".to_string(),
+        _ => out.push_str("<expr>"),
     }
 }
 
