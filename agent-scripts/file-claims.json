@@ -312,10 +312,6 @@
       "branch": "res-2014-assoc-const-nested-map",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/rate_limit_static.rs": {
-      "branch": "res-1962-reentrancy-rate-limit-presize",
-      "claimed_at": "2026-05-19T18:59:39Z"
-    },
     "resilient/src/sum_types.rs": {
       "branch": "res-1788-rate-limit-presize",
       "claimed_at": "2026-05-13T12:35:40Z"
@@ -416,10 +412,6 @@
       "branch": "res-1958-assume-axioms-presize",
       "claimed_at": "2026-05-19T18:52:28Z"
     },
-    "resilient/src/reentrancy_guard.rs": {
-      "branch": "res-1962-reentrancy-rate-limit-presize",
-      "claimed_at": "2026-05-19T18:59:39Z"
-    },
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-1966-isr-bfs-reuse",
       "claimed_at": "2026-05-19T19:06:11Z"
@@ -463,6 +455,10 @@
     "resilient/src/labeled_break.rs": {
       "branch": "res-2220-labeled-break-borrow-fn-name",
       "claimed_at": "2026-05-20T05:55:47Z"
+    },
+    "resilient/src/reentrancy_guard.rs": {
+      "branch": "res-2228-reentrancy-borrow-callees",
+      "claimed_at": "2026-05-20T06:17:05Z"
     }
   }
 }
