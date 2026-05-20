@@ -116,10 +116,6 @@
       "branch": "res-1752-lock-ordering-presize",
       "claimed_at": "2026-05-13T11:18:18Z"
     },
-    "resilient/src/power_contracts.rs": {
-      "branch": "res-2018-attr-move-item",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/wcet_contracts.rs": {
       "branch": "res-2190-wcet-contracts-drop-fn-name",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -459,6 +455,10 @@
     "resilient/src/bytecode.rs": {
       "branch": "res-2378-bytecode-constant-pool-index",
       "claimed_at": "2026-05-20T15:51:09Z"
+    },
+    "resilient/src/power_contracts.rs": {
+      "branch": "res-2386-power-contracts-drop-fn-name",
+      "claimed_at": "2026-05-20T16:11:58Z"
     }
   }
 }

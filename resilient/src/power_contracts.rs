@@ -16,13 +16,20 @@
 use crate::Node;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+/// RES-2386: dropped the redundant `fn_name: String` field. The two
+/// readers in `check` (`bodies.get(spec.fn_name.as_str())` lookup +
+/// the budget-exceeded error format) used it strictly as a name tied
+/// to the attribute owner. The field stored exactly what the
+/// attribute key encoded. Pipeline now carries `(String, PowerSpec)`
+/// tuples from `collect()` to `check()`, matching the shape that
+/// `wcet_contracts` (RES-2190) and `probabilistic_contracts` (RES-2170)
+/// already use. Same dead-field pattern as RES-2106 / RES-2168 / etc.
+#[derive(Debug, Clone, Copy)]
 pub struct PowerSpec {
-    pub fn_name: String,
     pub budget_uj: f64,
 }
 
-pub fn collect() -> Vec<PowerSpec> {
+pub fn collect() -> Vec<(String, PowerSpec)> {
     let attrs = crate::feature_attrs::find_kind("power");
     // RES-1754: pre-size to attrs.len() — the inner loop conditionally
     // pushes one entry per attribute (when the `uj` chunk parses), so
@@ -50,10 +57,7 @@ pub fn collect() -> Vec<PowerSpec> {
             }
         }
         if let Some(n) = budget_uj {
-            out.push(PowerSpec {
-                fn_name: item,
-                budget_uj: n,
-            });
+            out.push((item, PowerSpec { budget_uj: n }));
         }
     }
     out
@@ -120,13 +124,13 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             _ => None,
         })
         .collect();
-    for spec in &specs {
-        if let Some(body) = bodies.get(spec.fn_name.as_str()) {
+    for (fn_name, spec) in &specs {
+        if let Some(body) = bodies.get(fn_name.as_str()) {
             let est = estimate_uj(body);
             if est > spec.budget_uj {
                 return Err(format!(
                     "{}:0:0: error: `{}` energy budget exceeded: {:.3} µJ > declared {} µJ",
-                    source_path, spec.fn_name, est, spec.budget_uj
+                    source_path, fn_name, est, spec.budget_uj
                 ));
             }
         }
