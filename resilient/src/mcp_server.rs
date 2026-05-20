@@ -1292,6 +1292,12 @@ fn tool_vm_run(args: &Value) -> Result<String, String> {
     let (vm_result, captured) =
         crate::output_sink::with_captured_output(|| crate::vm::run(&compiled));
 
+    // RES-2324: write directly via `std::fmt::Write` instead of the
+    // `push_str(&format!(...))` antipattern. Each `format!()`
+    // previously allocated an intermediate `String` only to be
+    // immediately `push_str`'d into the response buffer. Same shape
+    // as RES-2256 / RES-2258 / RES-2260 / RES-2322.
+    use std::fmt::Write as _;
     match vm_result {
         Ok(value) => {
             let mut out = String::new();
@@ -1304,7 +1310,8 @@ fn tool_vm_run(args: &Value) -> Result<String, String> {
                 if !out.is_empty() {
                     out.push('\n');
                 }
-                out.push_str(&format!("Result: {val_str}"));
+                out.push_str("Result: ");
+                out.push_str(&val_str);
             }
             if out.is_empty() {
                 out.push_str("OK — program exited with no output.");
@@ -1318,7 +1325,7 @@ fn tool_vm_run(args: &Value) -> Result<String, String> {
                 msg.push_str(&captured);
                 msg.push('\n');
             }
-            msg.push_str(&format!("VM error: {e}"));
+            let _ = write!(msg, "VM error: {e}");
             Err(msg)
         }
     }

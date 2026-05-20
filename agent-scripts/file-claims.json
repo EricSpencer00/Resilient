@@ -455,6 +455,10 @@
     "resilient/src/idempotent_handler.rs": {
       "branch": "res-2308-idempotent-handler-drop-prescan",
       "claimed_at": "2026-05-20T10:53:02Z"
+    },
+    "resilient/src/mcp_server.rs": {
+      "branch": "res-2324-mcp-server-write-direct",
+      "claimed_at": "2026-05-20T12:01:58Z"
     }
   }
 }
