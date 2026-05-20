@@ -396,10 +396,6 @@
       "branch": "res-2280-wp-substitute-skip",
       "claimed_at": "2026-05-20T09:12:26Z"
     },
-    "resilient/src/mutation_testing.rs": {
-      "branch": "res-2288-mutation-fn-name-borrow",
-      "claimed_at": "2026-05-20T09:50:03Z"
-    },
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
@@ -467,6 +463,10 @@
     "resilient/src/behavioral_fingerprint.rs": {
       "branch": "res-2424-node-text-direct",
       "claimed_at": "2026-05-20T18:13:31Z"
+    },
+    "resilient/src/mutation_testing.rs": {
+      "branch": "res-2432-contract-coverage-borrow",
+      "claimed_at": "2026-05-20T18:37:49Z"
     }
   }
 }

@@ -467,7 +467,15 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 
 /// Returns the set of function names that have at least one
 /// `requires` or `ensures` contract clause.
-fn contract_coverage(program: &Node) -> std::collections::HashSet<String> {
+///
+/// RES-2432: borrows names from the AST. The only production caller
+/// (`check`) probes the set via `contracted_fns.contains(name.as_str())`
+/// — `HashSet<&str>::contains(&str)` works via the existing
+/// `&str: Borrow<str>` impl, so the API surface is unchanged. The
+/// previous `HashSet<String>` shape paid one `String::clone` per
+/// contracted function for no consumer that actually needed owned
+/// strings.
+fn contract_coverage(program: &Node) -> std::collections::HashSet<&str> {
     let mut out = std::collections::HashSet::new();
     if let Node::Program(stmts) = program {
         for s in stmts {
@@ -479,7 +487,7 @@ fn contract_coverage(program: &Node) -> std::collections::HashSet<String> {
             } = &s.node
             {
                 if !requires.is_empty() || !ensures.is_empty() {
-                    out.insert(name.clone());
+                    out.insert(name.as_str());
                 }
             }
         }
