@@ -252,17 +252,9 @@
       "branch": "res-1766-typechecker-hot-presize",
       "claimed_at": "2026-05-13T11:55:37Z"
     },
-    "resilient/src/supervisor.rs": {
-      "branch": "res-1770-verifier-presize",
-      "claimed_at": "2026-05-13T11:59:58Z"
-    },
     "resilient/src/cluster_verifier.rs": {
       "branch": "res-2150-cluster-verifier-borrow-actor-table",
       "claimed_at": "2026-05-19T00:00:00Z"
-    },
-    "resilient/src/verifier_liveness.rs": {
-      "branch": "res-1770-verifier-presize",
-      "claimed_at": "2026-05-13T11:59:58Z"
     },
     "resilient/src/hw_state_machine.rs": {
       "branch": "res-2010-hw-state-nested-map",
@@ -463,6 +455,10 @@
     "resilient/src/lint.rs": {
       "branch": "res-2272-lint-clause-text-direct",
       "claimed_at": "2026-05-20T08:36:08Z"
+    },
+    "resilient/src/verifier_liveness.rs": {
+      "branch": "res-2278-verifier-liveness-render-direct",
+      "claimed_at": "2026-05-20T09:02:37Z"
     }
   }
 }

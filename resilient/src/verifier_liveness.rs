@@ -469,29 +469,52 @@ fn implies_node(a: Node, b: Node) -> Node {
 }
 
 /// Best-effort rendering for diagnostics. Mirrors `verifier_actors`.
+///
+/// RES-2278: routes recursion through `write_clause(node, &mut String)`
+/// so the public entry point owns a single shared buffer instead of
+/// allocating an intermediate `String` per arm. Same byte output;
+/// O(depth) fewer allocations. Mirrors the shape applied to
+/// `verifier_actors::render_clause` in RES-2276.
 fn render_clause(node: &Node) -> String {
+    let mut out = String::new();
+    write_clause(node, &mut out);
+    out
+}
+
+fn write_clause(node: &Node, out: &mut String) {
+    use std::fmt::Write as _;
     match node {
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!(
-            "{} {} {}",
-            render_clause(left),
-            operator,
-            render_clause(right)
-        ),
+        } => {
+            write_clause(left, out);
+            out.push(' ');
+            out.push_str(operator);
+            out.push(' ');
+            write_clause(right, out);
+        }
         Node::PrefixExpression {
             operator, right, ..
-        } => format!("{}{}", operator, render_clause(right)),
-        Node::Identifier { name, .. } => name.clone(),
-        Node::IntegerLiteral { value, .. } => value.to_string(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::FieldAccess { target, field, .. } => {
-            format!("{}.{}", render_clause(target), field)
+        } => {
+            out.push_str(operator);
+            write_clause(right, out);
         }
-        _ => "<expr>".to_string(),
+        Node::Identifier { name, .. } => out.push_str(name),
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::FieldAccess { target, field, .. } => {
+            write_clause(target, out);
+            out.push('.');
+            out.push_str(field);
+        }
+        _ => out.push_str("<expr>"),
     }
 }
 
