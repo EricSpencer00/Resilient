@@ -88,6 +88,11 @@ fn remove_unreachable(chunk: &mut Chunk) {
     let mut old_to_new = vec![usize::MAX; n + 1];
     let mut new_code: Vec<Op> = Vec::with_capacity(n);
     let mut new_line_info: Vec<u32> = Vec::with_capacity(n);
+    // RES-2356: parallel `new_to_old[new_pc] = old_pc` lookup avoids
+    // the O(n) `(0..n).find(...)` per surviving jump in the relink
+    // pass. Building it during compaction is free; the lookup is
+    // then O(1).
+    let mut new_to_old: Vec<usize> = Vec::with_capacity(n);
 
     // Capture jump targets from original offsets BEFORE we mutate.
     let orig_targets: Vec<Option<usize>> = chunk
@@ -100,6 +105,7 @@ fn remove_unreachable(chunk: &mut Chunk) {
     for (pc, &op) in chunk.code.iter().enumerate() {
         if reachable[pc] {
             old_to_new[pc] = new_code.len();
+            new_to_old.push(pc);
             new_code.push(op);
             new_line_info.push(chunk.line_info[pc]);
         }
@@ -112,10 +118,9 @@ fn remove_unreachable(chunk: &mut Chunk) {
         if !is_jump_op(*op) {
             continue;
         }
-        // Find the old PC that produced this new_pc position.
-        let Some(old_pc) = (0..n).find(|&p| old_to_new[p] == new_pc) else {
-            continue;
-        };
+        // RES-2356: O(1) parallel-vec lookup replaces the prior
+        // `(0..n).find(|&p| old_to_new[p] == new_pc)` linear scan.
+        let old_pc = new_to_old[new_pc];
         let Some(old_target) = orig_targets[old_pc] else {
             continue;
         };
@@ -233,6 +238,14 @@ fn fold_constant_branches(chunk: &mut Chunk) {
     let mut old_to_new: Vec<usize> = vec![usize::MAX; chunk.code.len() + 1];
     // For folded Const+cond-jump → Jump replacements: (new_pc, orig_abs_target).
     let mut replacement_jumps: Vec<(usize, usize)> = Vec::new();
+    // RES-2356: parallel `new_to_old[new_pc] = old_pc` table avoids
+    // the O(n) `(0..chunk.code.len()).find(...)` per surviving jump
+    // in the relink pass. For RemoveBoth we push nothing; for
+    // ReplaceWithJump we push the Const's old_pc (the relink path
+    // skips replacement-Jump entries via the `replacement_jumps`
+    // check above and re-targets them through `replacement_jumps`
+    // below).
+    let mut new_to_old: Vec<usize> = Vec::with_capacity(chunk.code.len());
     // RES-1415: track whether any fold fired so the jump-fixup pass
     // (O(jumps × code.len()) per the post-pass linear scan below)
     // can be skipped when no Const+cond-jump pair matched. Mirrors
@@ -260,6 +273,7 @@ fn fold_constant_branches(chunk: &mut Chunk) {
                     let new_pc = new_code.len();
                     new_code.push(Op::Jump(0));
                     new_line_info.push(chunk.line_info[i]);
+                    new_to_old.push(i);
                     replacement_jumps.push((new_pc, old_target_pc));
                     old_to_new[i + 1] = new_code.len(); // second op is dropped
                     folded_any = true;
@@ -272,6 +286,7 @@ fn fold_constant_branches(chunk: &mut Chunk) {
         // No fold — copy verbatim.
         new_code.push(chunk.code[i]);
         new_line_info.push(chunk.line_info[i]);
+        new_to_old.push(i);
         i += 1;
     }
     // Sentinel: end-of-code target.
@@ -296,10 +311,10 @@ fn fold_constant_branches(chunk: &mut Chunk) {
         if replacement_jumps.iter().any(|(rp, _)| *rp == new_pc) {
             continue;
         }
-        // Find the originating old PC by scanning old_to_new.
-        let Some(old_pc) = (0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc) else {
-            continue;
-        };
+        // RES-2356: O(1) parallel-vec lookup replaces the prior
+        // `(0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc)`
+        // linear scan.
+        let old_pc = new_to_old[new_pc];
         let Some(old_target) = orig_targets[old_pc] else {
             continue;
         };

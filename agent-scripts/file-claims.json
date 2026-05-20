@@ -463,6 +463,10 @@
     "resilient/src/audit_log_required.rs": {
       "branch": "res-2342-audit-log-short-circuit",
       "claimed_at": "2026-05-20T13:29:31Z"
+    },
+    "resilient/src/dce.rs": {
+      "branch": "res-2356-dce-relink-on-square",
+      "claimed_at": "2026-05-20T14:35:57Z"
     }
   }
 }
