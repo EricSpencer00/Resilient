@@ -33,9 +33,23 @@ fn collect_newtypes_from_program(program: &Node) -> HashMap<String, String> {
     let Node::Program(statements) = program else {
         return HashMap::new();
     };
-    // RES-1764: pre-size to statements.len() — at most one insert per
-    // top-level NewtypeDecl, upper-bounded by the statement count.
-    let mut map = HashMap::with_capacity(statements.len());
+    // RES-2246: lazy-alloc. The previous RES-1764 pre-size to
+    // `statements.len()` made `lower_program` allocate a HashMap of
+    // ~200 buckets on every parse — but the function is called by
+    // `parse()` unconditionally (not gated by markers, which only
+    // exist at typecheck time). For programs with 0 newtypes (the
+    // overwhelming majority — `examples/` shows < 5% use the
+    // feature), that's a per-parse waste of HashMap bucket
+    // allocation that's immediately discarded by `lower_program`'s
+    // `if newtypes.is_empty() { return; }` early-exit.
+    //
+    // For 0 newtypes: HashMap::new() = 0 alloc.
+    // For 1-3 newtypes (typical when present): doubling chain ends
+    // at capacity 4-8, ~1 small alloc.
+    // For 4+ newtypes (rare): doubling chain, marginally worse.
+    //
+    // Same right-size-the-common-case pattern as RES-2242 / RES-2244.
+    let mut map = HashMap::new();
     for spanned in statements {
         if let Node::NewtypeDecl {
             name, base_type, ..
