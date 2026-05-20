@@ -288,14 +288,6 @@
       "branch": "res-1770-verifier-presize",
       "claimed_at": "2026-05-13T11:59:58Z"
     },
-    "resilient/src/recovery_checker.rs": {
-      "branch": "res-1774-recovery-lint-presize",
-      "claimed_at": "2026-05-13T12:06:03Z"
-    },
-    "resilient/src/lint.rs": {
-      "branch": "res-1774-recovery-lint-presize",
-      "claimed_at": "2026-05-13T12:06:03Z"
-    },
     "resilient/src/hw_state_machine.rs": {
       "branch": "res-2010-hw-state-nested-map",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -463,6 +455,10 @@
     "resilient/src/struct_exhaustiveness.rs": {
       "branch": "res-2224-struct-exhaust-borrow-fn-name",
       "claimed_at": "2026-05-20T06:03:00Z"
+    },
+    "resilient/src/recovery_checker.rs": {
+      "branch": "res-2238-recovery-checker-borrow",
+      "claimed_at": "2026-05-20T06:46:59Z"
     }
   }
 }
