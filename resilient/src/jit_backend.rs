@@ -1390,10 +1390,18 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
+        // RES-2412: move the program-wide function maps into `lctx`
+        // instead of cloning. Pass 2 above has already consumed every
+        // by-reference use; the fall-through path (define_function,
+        // finalize_definitions, function-pointer invoke) never reads
+        // the original locals. `fn_asts` in particular carries a full
+        // AST body per user-defined function — the previous clone
+        // copied every parameter list and every body Node tree per
+        // JIT invocation.
         let mut lctx = LowerCtx::new(imports);
-        lctx.functions = functions.clone();
-        lctx.function_arities = function_arities.clone();
-        lctx.fn_asts = fn_asts.clone();
+        lctx.functions = functions;
+        lctx.function_arities = function_arities;
+        lctx.fn_asts = fn_asts;
         compile_statements(stmts, &mut bcx, &mut lctx, &mut module)?;
         bcx.finalize();
     }
@@ -1583,11 +1591,16 @@ pub(crate) fn jit_run_ast_with_entries(
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
+        // RES-2412: same move-instead-of-clone as `run_internal`,
+        // with `foreign_entries` (declared `mut` in the function
+        // signature) added — pass 0 + pass 2 have consumed all
+        // by-reference uses, and the post-block compile/run path
+        // never reads them again.
         let mut lctx = LowerCtx::new(imports);
-        lctx.functions = functions.clone();
-        lctx.function_arities = function_arities.clone();
-        lctx.fn_asts = fn_asts.clone();
-        lctx.foreign_entries = foreign_entries.clone();
+        lctx.functions = functions;
+        lctx.function_arities = function_arities;
+        lctx.fn_asts = fn_asts;
+        lctx.foreign_entries = foreign_entries;
         compile_statements(stmts, &mut bcx, &mut lctx, &mut module)?;
         bcx.finalize();
     }
