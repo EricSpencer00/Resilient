@@ -43,15 +43,16 @@ const CLOSE_METHODS: &[&str] = &["commit", "rollback", "abort", "finish", "close
 const CLOSE_FREE_FNS: &[&str] = &["commit", "rollback", "abort_tx", "commit_tx"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1218: fast-reject — skip allocation for programs with no Transaction params.
-    let Node::Program(stmts) = program else {
-        return Ok(());
-    };
-    let has_tx = stmts.iter().any(|s| {
-        matches!(&s.node, Node::Function { parameters, .. }
-            if parameters.iter().any(|(ty, _)| TX_TYPES.contains(&ty.as_str())))
-    });
-    if !has_tx {
+    // RES-1218 / RES-2296: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind `markers.any_param_type_in(&[
+    // "Transaction", "Tx", "&Transaction", "&mut Transaction",
+    // "&Tx", "&mut Tx"])`, so the program is guaranteed to contain
+    // at least one Transaction-typed parameter. The previous internal
+    // `stmts.iter().any(...)` pre-scan walked the full top-level
+    // statement list a second time for the same signal Markers
+    // already computed during the shared whole-AST walk. Mirrors
+    // RES-1916 / RES-1917 / RES-2292 / RES-2294.
+    if !matches!(program, Node::Program(_)) {
         return Ok(());
     }
     for_each_function(program, |fname, params, body| {

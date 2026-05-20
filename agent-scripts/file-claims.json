@@ -20,18 +20,6 @@
       "branch": "res-2166-incremental-verify-nested-map",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/watchdog_feed.rs": {
-      "branch": "res-1218-param-type-fast-reject",
-      "claimed_at": "2026-05-12T02:11:38Z"
-    },
-    "resilient/src/sensor_freshness.rs": {
-      "branch": "res-1218-param-type-fast-reject",
-      "claimed_at": "2026-05-12T02:11:38Z"
-    },
-    "resilient/src/transaction_commit.rs": {
-      "branch": "res-1218-param-type-fast-reject",
-      "claimed_at": "2026-05-12T02:11:38Z"
-    },
     "resilient/src/backpressure_safe.rs": {
       "branch": "res-1217-handler-suffix-fast-reject",
       "claimed_at": "2026-05-12T02:07:46Z"
@@ -467,6 +455,10 @@
     "resilient/src/mutation_testing.rs": {
       "branch": "res-2288-mutation-fn-name-borrow",
       "claimed_at": "2026-05-20T09:50:03Z"
+    },
+    "resilient/src/transaction_commit.rs": {
+      "branch": "res-2296-tx-commit-drop-prescan",
+      "claimed_at": "2026-05-20T10:16:14Z"
     }
   }
 }
