@@ -20,10 +20,14 @@
 use crate::Node;
 use std::collections::HashMap;
 
+/// RES-2384: dropped the dead `raw_args: String` field — `pub` but
+/// never read by any consumer (including in-file tests). `collect()`
+/// previously paid one `rec.args.clone()` per `#[intent(...)]` attribute
+/// to populate this. Same dead-field elimination pattern as RES-2106 /
+/// RES-2168 / RES-2170 / RES-2190.
 #[derive(Debug, Clone)]
 pub struct IntentSpec {
     pub item_name: String,
-    pub raw_args: String,
     pub property: Option<String>,
     pub enforcers: Vec<String>,
 }
@@ -35,7 +39,6 @@ pub fn collect() -> Vec<IntentSpec> {
     for (item, rec) in attrs {
         let mut spec = IntentSpec {
             item_name: item,
-            raw_args: rec.args.clone(),
             property: None,
             enforcers: Vec::new(),
         };
