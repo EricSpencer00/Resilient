@@ -36,6 +36,7 @@ use crate::Node;
 use crate::span::Span;
 #[cfg(feature = "z3")]
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Outcome of a per-clause proof attempt.
 #[derive(Debug, Clone)]
@@ -57,15 +58,27 @@ pub(crate) enum ActorProofResult {
 }
 
 /// One proof obligation produced for an actor.
+///
+/// RES-2124: `actor_name` is `Arc<str>` — a single actor produces
+/// `C × (1 + H)` obligations (clauses × (init + handlers)), and every
+/// one carries the same actor name. The previous shape allocated a
+/// fresh `String` per obligation; the new shape allocates once per
+/// `verify_actor` call and refcount-bumps for each push. Same idea
+/// for `invariant_label`, which is constant across the per-clause
+/// fan-out of `(1 + H)` obligations: one allocation per clause,
+/// refcount-bump per obligation.
+///
+/// `handler_name` stays owned `String` because every obligation carries
+/// a distinct value (`"<init>"` for the base case, `h.name` per handler).
 #[derive(Debug, Clone)]
 pub(crate) struct ActorObligation {
-    pub actor_name: String,
+    pub actor_name: Arc<str>,
     /// Either a handler name (`"enqueue"`) for inductive steps or
     /// the literal string `"<init>"` for the base case.
     pub handler_name: String,
     /// Human-readable rendering of the `always` clause — used in
     /// diagnostics so users know which invariant failed.
-    pub invariant_label: String,
+    pub invariant_label: Arc<str>,
     pub invariant_span: Span,
     pub result: ActorProofResult,
 }
@@ -94,16 +107,20 @@ pub(crate) fn verify_actor(
         return out;
     };
 
+    // RES-2124: allocate the actor name once and `Arc::clone` it into
+    // every obligation we push. Same idea for each clause's label.
+    let actor_name: Arc<str> = Arc::from(name);
+
     for clause in always_clauses {
-        let label = render_clause(clause);
+        let label: Arc<str> = Arc::from(render_clause(clause).as_str());
         let span = clause_span(clause);
 
         // --- Base case: P[state := init] ---
         let base = substitute_state(clause, state_name, state_init);
         out.push(ActorObligation {
-            actor_name: name.to_string(),
+            actor_name: Arc::clone(&actor_name),
             handler_name: "<init>".to_string(),
-            invariant_label: label.clone(),
+            invariant_label: Arc::clone(&label),
             invariant_span: span,
             result: prove_or_unsupported(&base, timeout_ms),
         });
@@ -112,9 +129,9 @@ pub(crate) fn verify_actor(
         for h in receive_handlers {
             let Some(post_expr) = straight_line_post(&h.body, state_name) else {
                 out.push(ActorObligation {
-                    actor_name: name.to_string(),
+                    actor_name: Arc::clone(&actor_name),
                     handler_name: h.name.clone(),
-                    invariant_label: label.clone(),
+                    invariant_label: Arc::clone(&label),
                     invariant_span: span,
                     result: ActorProofResult::Unsupported {
                         reason: format!(
@@ -134,9 +151,9 @@ pub(crate) fn verify_actor(
             }
             let obligation = implies_node(antecedent, post);
             out.push(ActorObligation {
-                actor_name: name.to_string(),
+                actor_name: Arc::clone(&actor_name),
                 handler_name: h.name.clone(),
-                invariant_label: label.clone(),
+                invariant_label: Arc::clone(&label),
                 invariant_span: span,
                 result: prove_or_unsupported(&obligation, timeout_ms),
             });
