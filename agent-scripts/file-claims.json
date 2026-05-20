@@ -192,10 +192,6 @@
       "branch": "res-2170-prob-contracts-drop-fn-name",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/typestate_types.rs": {
-      "branch": "res-1756-program-collect-presize",
-      "claimed_at": "2026-05-13T11:30:51Z"
-    },
     "resilient/src/behavioral_fingerprint.rs": {
       "branch": "res-2122-fingerprint-drop-function-name",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -203,10 +199,6 @@
     "resilient/src/contract_inference.rs": {
       "branch": "res-2210-contract-inference-option-complex",
       "claimed_at": "2026-05-19T00:00:00Z"
-    },
-    "resilient/src/vibe_debt.rs": {
-      "branch": "res-1756-program-collect-presize",
-      "claimed_at": "2026-05-13T11:30:51Z"
     },
     "resilient/src/resilience_score.rs": {
       "branch": "res-1990-resilience-buffer-reuse",
@@ -463,6 +455,10 @@
     "resilient/src/fmt_validation.rs": {
       "branch": "res-2248-fmt-validation-cow-template",
       "claimed_at": "2026-05-20T07:26:07Z"
+    },
+    "resilient/src/vibe_debt.rs": {
+      "branch": "res-2252-vibe-debt-reuse-tmp",
+      "claimed_at": "2026-05-20T07:50:25Z"
     }
   }
 }

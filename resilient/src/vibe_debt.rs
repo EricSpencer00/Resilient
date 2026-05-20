@@ -74,6 +74,18 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
     // RES-1756: pre-size to stmts.len() — every top-level statement
     // is potentially a function and pushes one entry.
     let mut entries = Vec::with_capacity(stmts.len());
+    // RES-2252: lift the per-fn `tmp` HashMap outside the loop and
+    // `clear()` between iterations. `HashMap::clear` retains the
+    // bucket allocation, so the second-and-later functions reuse
+    // the buffer instead of paying a fresh first-push doubling
+    // chain each iteration. For an N-function program, this is
+    // ~N-1 HashMap allocations eliminated. Mirrors the buffer-
+    // reuse shape applied to:
+    //   * RES-1966 (isr_call_graph BFS state)
+    //   * RES-1988 (vibe_debt's outer `refs` lift — different map)
+    //   * RES-1990 (resilience_score self_call_buf)
+    //   * RES-1944 (graph_connected_components)
+    let mut tmp: HashMap<&str, u32> = HashMap::new();
     for s in stmts {
         if let Node::Function {
             name,
@@ -85,11 +97,9 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
             ..
         } = &s.node
         {
-            let self_calls = {
-                let mut tmp: HashMap<&str, u32> = HashMap::new();
-                collect_refs(body, &mut tmp);
-                tmp.get(name.as_str()).copied().unwrap_or(0)
-            };
+            tmp.clear();
+            collect_refs(body, &mut tmp);
+            let self_calls = tmp.get(name.as_str()).copied().unwrap_or(0);
             let external = refs
                 .get(name.as_str())
                 .copied()
