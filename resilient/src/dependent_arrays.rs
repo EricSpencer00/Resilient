@@ -20,16 +20,23 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2392: dropped the redundant `item_name: String` field. The
+/// previous shape used it as the HashMap key in `install()` (every
+/// registered entry stored the item name twice) and as a linear-find
+/// key in `check()`. Pipeline now carries `(String, DependentSpec)`
+/// tuples from `collect()` to both consumers — matches the shape used
+/// by wcet_contracts (RES-2190), probabilistic_contracts (RES-2170),
+/// power_contracts (RES-2386), stack_contracts (RES-2388), and
+/// phantom_types (RES-2390).
 #[derive(Debug, Clone)]
 pub struct DependentSpec {
-    pub item_name: String,
     pub length_var: String,
 }
 
 static SPECS: LazyLock<RwLock<HashMap<String, DependentSpec>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<DependentSpec> {
+pub fn collect() -> Vec<(String, DependentSpec)> {
     let attrs = crate::feature_attrs::find_kind("dependent");
     // RES-1764: pre-size to attrs.len() — conditional push (only when
     // the `length` chunk parsed non-empty), so this is an upper bound.
@@ -45,21 +52,18 @@ pub fn collect() -> Vec<DependentSpec> {
             }
         }
         if !length.is_empty() {
-            out.push(DependentSpec {
-                item_name: item,
-                length_var: length,
-            });
+            out.push((item, DependentSpec { length_var: length }));
         }
     }
     out
 }
 
-pub fn install(specs: Vec<DependentSpec>) {
+pub fn install(specs: Vec<(String, DependentSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         g.clear();
-        for s in specs {
-            g.insert(s.item_name.clone(), s);
-        }
+        // RES-2392: move (item_name, spec) tuples straight from
+        // `collect()` — no per-spec clone for the key.
+        g.extend(specs);
     }
 }
 
@@ -88,7 +92,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             if let Node::Function {
                 name, type_params, ..
             } = &s.node
-                && let Some(spec) = specs.iter().find(|sp| sp.item_name == *name)
+                && let Some((_, spec)) = specs.iter().find(|(item, _)| item == name)
                 && !type_params.contains(&spec.length_var)
             {
                 eprintln!(
@@ -120,7 +124,8 @@ mod tests {
         );
         let s = collect();
         assert_eq!(s.len(), 1);
-        assert_eq!(s[0].length_var, "M+N");
+        assert_eq!(s[0].0, "concat");
+        assert_eq!(s[0].1.length_var, "M+N");
         crate::feature_attrs::reset();
     }
 
@@ -149,7 +154,6 @@ mod tests {
         );
         install(collect());
         let spec = lookup("zip").expect("zip must be found after install");
-        assert_eq!(spec.item_name, "zip");
         assert_eq!(spec.length_var, "N");
         assert!(
             lookup("nonexistent").is_none(),
