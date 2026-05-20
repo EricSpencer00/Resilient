@@ -20,7 +20,7 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{for_each_function, visit};
+use crate::uniqueness_walk::{any_node, for_each_function};
 
 const LOW_PRI_PREFIXES: &[&str] = &["low_pri_", "bg_", "idle_"];
 const PI_VARIANTS: &[&str] = &["pi_lock", "pi_acquire", "with_priority_inherit"];
@@ -58,21 +58,36 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         if !LOW_PRI_PREFIXES.iter().any(|p| fname.starts_with(*p)) {
             return;
         }
-        let mut raw_lock_seen = false;
-        let mut pi_seen = false;
-        visit(body, &mut |n| {
-            if let Node::CallExpression { function, .. } = n {
-                if let Node::Identifier { name, .. } = function.as_ref() {
-                    if RAW_LOCKS.contains(&name.as_str()) {
-                        raw_lock_seen = true;
-                    }
-                    if PI_VARIANTS.contains(&name.as_str()) {
-                        pi_seen = true;
-                    }
-                }
-            }
+        // RES-2232: short-circuit both walks. The previous `visit`
+        // call traversed the whole body unconditionally just to set
+        // two boolean flags. We only warn when `raw_lock_seen &&
+        // !pi_seen`, so:
+        //   1. If any PI variant appears anywhere in the body, we
+        //      never warn — bail out the moment we see one.
+        //   2. Otherwise check for any raw lock; warn on first hit.
+        // `any_node` (RES-1238 early-terminating) propagates the
+        // first match upward and skips the rest of the tree. For
+        // bodies that either use PI (correct case) or hit a raw lock
+        // early (warning case), the walk stops at a handful of nodes
+        // instead of the full body.
+        let pi_seen = any_node(body, |n| match n {
+            Node::CallExpression { function, .. } => match function.as_ref() {
+                Node::Identifier { name, .. } => PI_VARIANTS.contains(&name.as_str()),
+                _ => false,
+            },
+            _ => false,
         });
-        if raw_lock_seen && !pi_seen {
+        if pi_seen {
+            return;
+        }
+        let raw_lock_seen = any_node(body, |n| match n {
+            Node::CallExpression { function, .. } => match function.as_ref() {
+                Node::Identifier { name, .. } => RAW_LOCKS.contains(&name.as_str()),
+                _ => false,
+            },
+            _ => false,
+        });
+        if raw_lock_seen {
             eprintln!(
                 "warning: low-priority fn '{fname}' acquires a non-PI lock — \
                  will cause priority inversion. Use pi_lock/pi_acquire/with_priority_inherit"
