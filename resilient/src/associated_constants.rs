@@ -20,14 +20,17 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-#[derive(Debug, Clone)]
-pub struct AssocConstant {
-    pub type_name: String,
-    pub trait_name: String,
-    pub const_name: String,
-    pub value: String,
-}
-
+/// RES-2184: dropped the `AssocConstant` struct entirely. Its three
+/// name fields (`type_name`, `trait_name`, `const_name`) had zero
+/// readers after install — `lookup` only returns `a.value.clone()`,
+/// and external grep returned no other consumers. The registry now
+/// stores the value directly. The collect/install pipeline carries
+/// `(type, const, value)` triples; `trait` is still parsed (for
+/// backward compat with existing attribute syntax) but discarded.
+/// Same dead-field-cleanup sentiment as the RES-2106 / … / RES-2182
+/// series, applied more aggressively here since *three* fields per
+/// entry were unread.
+///
 /// RES-2014: nested map — outer key `type_name`, inner key `const_name`.
 /// The flat `HashMap<(String, String), V>` shape forced `lookup` to
 /// allocate two transient `String`s per call (stdlib's `Borrow`
@@ -36,16 +39,16 @@ pub struct AssocConstant {
 /// `String: Borrow<str>` impl. Same fix as RES-2008 / RES-2010 /
 /// RES-2012 — completes the (String, String) HashMap key conversion
 /// across all four registries in the codebase.
-static ASSOC: LazyLock<RwLock<HashMap<String, HashMap<String, AssocConstant>>>> =
+static ASSOC: LazyLock<RwLock<HashMap<String, HashMap<String, String>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<AssocConstant> {
+/// Returns `(type_name, const_name, value)` triples.
+pub fn collect() -> Vec<(String, String, String)> {
     let attrs = crate::feature_attrs::find_kind("assoc_const");
     // RES-1782: pre-size to attrs.len() — at most one push per
-    // attribute record (skipped when tr/name/val don't parse).
+    // attribute record (skipped when `name` doesn't parse).
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
-        let mut tr = String::new();
         let mut name = String::new();
         let mut val = String::new();
         for chunk in rec.args.split(',') {
@@ -54,32 +57,32 @@ pub fn collect() -> Vec<AssocConstant> {
                 let k = k.trim();
                 let v = v.trim().trim_matches('"');
                 match k {
-                    "trait" => tr = v.to_string(),
                     "name" => name = v.to_string(),
                     "value" => val = v.to_string(),
+                    // "trait" key is accepted in the attribute syntax
+                    // for forward-compat but has no reader anywhere;
+                    // discard without allocating.
                     _ => {}
                 }
             }
         }
         if !name.is_empty() {
-            out.push(AssocConstant {
-                type_name: item,
-                trait_name: tr,
-                const_name: name,
-                value: val,
-            });
+            out.push((item, name, val));
         }
     }
     out
 }
 
-pub fn install(items: Vec<AssocConstant>) {
+pub fn install(items: Vec<(String, String, String)>) {
     if let Ok(mut g) = ASSOC.write() {
         g.clear();
-        for a in items {
-            g.entry(a.type_name.clone())
-                .or_default()
-                .insert(a.const_name.clone(), a);
+        // RES-2184: move `type_name` into the outer `entry` slot (no
+        // clone) and `(const_name, value)` straight into the inner
+        // map. The previous shape per-item cloned `a.type_name` and
+        // `a.const_name` to produce keys whose values then duplicated
+        // those same strings inside the stored `AssocConstant`.
+        for (type_name, const_name, value) in items {
+            g.entry(type_name).or_default().insert(const_name, value);
         }
     }
 }
@@ -89,11 +92,10 @@ pub fn lookup(type_name: &str, const_name: &str) -> Option<String> {
     // the existing `String: Borrow<str>` impl. Zero per-call
     // allocations (the previous flat `(String, String)` key forced
     // two transient `String::to_string()` allocs per call).
-    ASSOC.read().ok().and_then(|g| {
-        g.get(type_name)
-            .and_then(|m| m.get(const_name))
-            .map(|a| a.value.clone())
-    })
+    ASSOC
+        .read()
+        .ok()
+        .and_then(|g| g.get(type_name).and_then(|m| m.get(const_name)).cloned())
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
