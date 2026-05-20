@@ -139,17 +139,44 @@ pub fn reset() {
 /// Record an attribute against an item name. Idempotent if called
 /// before [`reset`] — multiple identical entries are allowed (each
 /// feature module decides whether duplicates are an error).
+///
+/// RES-2088: the dual-index write previously called `item_name.to_string()`
+/// twice (once as `by_item`'s entry key, once as the tuple value pushed
+/// into `by_kind`) and `record.name.clone()` once for `by_kind`'s entry
+/// key — three `String` allocations per call, two of which were thrown
+/// away whenever the relevant key was already present. Each typecheck
+/// records ~50 annotated items × ~21 known attribute kinds, with
+/// `record.name` repeating heavily across items.
+///
+/// New shape: probe each map with `get_mut(&str)` first (`String: Borrow<str>`
+/// makes the borrow lookup free), only allocate when the key is genuinely
+/// absent, and move `record` into the second map's tuple to skip the
+/// trailing clone. Worst case one allocation per call (the value-side
+/// `item_name.to_string()` that lives in the `by_kind` tuple), down from
+/// three.
 pub fn record(item_name: &str, record: AttrRecord) {
     if let Ok(mut g) = ATTR_REGISTRY.write() {
         let reg = g.get_or_insert_with(Registry::default);
-        reg.by_item
-            .entry(item_name.to_string())
-            .or_default()
-            .push(record.clone());
-        reg.by_kind
-            .entry(record.name.clone())
-            .or_default()
-            .push((item_name.to_string(), record));
+
+        // by_item: borrow for the lookup; allocate the key only if absent.
+        match reg.by_item.get_mut(item_name) {
+            Some(entries) => entries.push(record.clone()),
+            None => {
+                reg.by_item
+                    .insert(item_name.to_string(), vec![record.clone()]);
+            }
+        }
+
+        // by_kind: same trick on the kind key. Moves `record` into the
+        // tuple so the trailing `record.clone()` allocation disappears.
+        match reg.by_kind.get_mut(record.name.as_str()) {
+            Some(entries) => entries.push((item_name.to_string(), record)),
+            None => {
+                let kind = record.name.clone();
+                reg.by_kind
+                    .insert(kind, vec![(item_name.to_string(), record)]);
+            }
+        }
     }
     // RES-1374: signal "registry now has entries" after the write
     // commits. Release ordering pairs with the Acquire load in
