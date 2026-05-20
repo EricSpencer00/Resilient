@@ -241,8 +241,8 @@
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/mutual_recursion_scc.rs": {
-      "branch": "res-1760-callgraph-presize",
-      "claimed_at": "2026-05-13T11:42:08Z"
+      "branch": "res-2086-mutual-recursion-scc-borrow",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/set_result_option.rs": {
       "branch": "res-1760-callgraph-presize",
