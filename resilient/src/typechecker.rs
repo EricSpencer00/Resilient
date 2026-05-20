@@ -5184,10 +5184,17 @@ impl TypeChecker {
                 // binding-type push), so the 0→4→8 doubling chain
                 // was paid per struct-pattern-match. Hot path:
                 // every Struct match arm runs this.
-                let mut seen: HashSet<String> = HashSet::with_capacity(fields.len());
+                // RES-2156: borrow `fname` into the `seen` HashSet as
+                // `&str` instead of cloning. The set is local to this
+                // arm (dropped at the end of the for-loop), and
+                // `fname` lives behind `&pat` for the entire scope.
+                // Eliminates one `String::clone()` per struct-pattern
+                // field — a hot path that fires for every struct
+                // match arm in the program.
+                let mut seen: HashSet<&str> = HashSet::with_capacity(fields.len());
                 let mut out = Vec::with_capacity(fields.len());
                 for (fname, sub) in fields {
-                    if !seen.insert(fname.clone()) {
+                    if !seen.insert(fname.as_str()) {
                         return Err(format!(
                             "duplicate field `{}` in struct match pattern",
                             fname
