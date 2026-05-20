@@ -177,8 +177,8 @@
       "claimed_at": "2026-05-13T11:45:18Z"
     },
     "resilient/src/stack_contracts.rs": {
-      "branch": "res-1784-attr-collects-3",
-      "claimed_at": "2026-05-13T12:28:38Z"
+      "branch": "res-2192-stack-contracts-drop-fn-name",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/intent_blocks.rs": {
       "branch": "res-1994-intent-blocks-drop-fnames",
