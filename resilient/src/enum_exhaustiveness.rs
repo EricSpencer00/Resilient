@@ -30,11 +30,18 @@
 use crate::Node;
 use std::collections::{HashMap, HashSet};
 
+// RES-2222: borrow all three fields as `&'a str` from the program
+// AST. `check()` only reads them once each to build its formatted
+// error string, so owned `String`s + `Vec<String>` paid one
+// `to_string()` per field per non-exhaustive match — pure overhead.
+// `<[&str]>::join` works on `&[&str]`, so the consumer needs no
+// changes. Same shape as RES-2204 (coverage_warnings) and
+// RES-2220 (labeled_break::DeepBreakWarning).
 #[derive(Debug, Clone)]
-pub struct ExhaustivenessError {
-    pub context: String,
-    pub enum_name: String,
-    pub missing: Vec<String>,
+pub struct ExhaustivenessError<'a> {
+    pub context: &'a str,
+    pub enum_name: &'a str,
+    pub missing: Vec<&'a str>,
 }
 
 /// Build a map of `enum_name → Vec<variant_name>` from all `Node::EnumDecl`
@@ -67,11 +74,11 @@ fn is_catch_all(pattern: &crate::Pattern) -> bool {
 
 /// Analyze one `Node::Match` expression. Returns an `ExhaustivenessError`
 /// if the match is non-exhaustive over a known enum.
-fn check_match(
-    arms: &[(crate::Pattern, Option<Node>, Node)],
-    enum_map: &HashMap<&str, Vec<&str>>,
-    context: &str,
-) -> Option<ExhaustivenessError> {
+fn check_match<'a>(
+    arms: &'a [(crate::Pattern, Option<Node>, Node)],
+    enum_map: &HashMap<&'a str, Vec<&'a str>>,
+    context: &'a str,
+) -> Option<ExhaustivenessError<'a>> {
     // If any arm is a catch-all (with no guard), the match is exhaustive.
     for (pat, guard, _) in arms {
         if guard.is_none() && is_catch_all(pat) {
@@ -117,10 +124,10 @@ fn check_match(
     let enum_name = enum_name_seen?;
     let declared = enum_map.get(enum_name)?;
 
-    let missing: Vec<String> = declared
+    let missing: Vec<&'a str> = declared
         .iter()
-        .filter(|v| !matched_variants.contains(*v))
-        .map(|v| v.to_string())
+        .copied()
+        .filter(|v| !matched_variants.contains(v))
         .collect();
 
     if missing.is_empty() {
@@ -128,19 +135,19 @@ fn check_match(
     }
 
     Some(ExhaustivenessError {
-        context: context.to_string(),
-        enum_name: enum_name.to_string(),
+        context,
+        enum_name,
         missing,
     })
 }
 
 /// Walk a node tree collecting exhaustiveness errors. `context` is the
 /// enclosing function name (or `"<top-level>"`).
-fn walk(
-    node: &Node,
-    enum_map: &HashMap<&str, Vec<&str>>,
-    context: &str,
-    errors: &mut Vec<ExhaustivenessError>,
+fn walk<'a>(
+    node: &'a Node,
+    enum_map: &HashMap<&'a str, Vec<&'a str>>,
+    context: &'a str,
+    errors: &mut Vec<ExhaustivenessError<'a>>,
 ) {
     // Handle top-level function to track context name.
     if let Node::Function { name, body, .. } = node {
@@ -153,12 +160,11 @@ fn walk(
             errors.push(e);
         }
     }
-    // Recurse into children via uniqueness_walk. The closure captures
-    // `errors` by reference, but uniqueness_walk's visitor signature
-    // takes `&mut dyn FnMut(&Node)`, so we collect errors into a
-    // separate Vec and extend after the visit.
-    let mut nested: Vec<ExhaustivenessError> = Vec::new();
-    crate::uniqueness_walk::visit(node, &mut |n| {
+    // Recurse into children via uniqueness_walk. RES-1603 made the
+    // visitor lifetime-parameterized (`FnMut(&'a Node)`), so we can
+    // collect into the outer `errors` Vec directly — no longer need
+    // the intermediate `nested` buffer.
+    crate::uniqueness_walk::visit(node, &mut |n: &'a Node| {
         // Skip Function nodes — they will be handled by the outer walk
         // call in analyze() with the correct context name. Processing them
         // here would use the outer function's name instead.
@@ -167,16 +173,15 @@ fn walk(
         }
         if let Node::Match { arms, .. } = n {
             if let Some(e) = check_match(arms, enum_map, context) {
-                nested.push(e);
+                errors.push(e);
             }
         }
     });
-    errors.extend(nested);
 }
 
 /// Analyze the program for non-exhaustive enum matches. Returns one
 /// `ExhaustivenessError` per non-exhaustive `match` found.
-pub fn analyze(program: &Node) -> Vec<ExhaustivenessError> {
+pub fn analyze<'a>(program: &'a Node) -> Vec<ExhaustivenessError<'a>> {
     let enum_map = collect_enum_variants(program);
     if enum_map.is_empty() {
         return Vec::new();
@@ -304,7 +309,7 @@ fn describe(Color c) -> string {
         assert_eq!(errs.len(), 1, "expected exactly one exhaustiveness error");
         assert_eq!(errs[0].enum_name, "Color");
         assert!(
-            errs[0].missing.contains(&"Blue".to_string()),
+            errs[0].missing.contains(&"Blue"),
             "missing variants should include Blue; got: {:?}",
             errs[0].missing
         );

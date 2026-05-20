@@ -459,6 +459,10 @@
     "resilient/src/bounded_blocking.rs": {
       "branch": "res-2218-bounded-blocking-borrow-callees",
       "claimed_at": "2026-05-20T05:47:46Z"
+    },
+    "resilient/src/enum_exhaustiveness.rs": {
+      "branch": "res-2222-enum-exhaust-borrow-error",
+      "claimed_at": "2026-05-20T05:58:25Z"
     }
   }
 }
