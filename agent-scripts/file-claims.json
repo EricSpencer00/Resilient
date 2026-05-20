@@ -463,6 +463,10 @@
     "resilient/src/row_polymorphism.rs": {
       "branch": "res-2398-row-polymorphism-drop-fn-name",
       "claimed_at": "2026-05-20T16:41:54Z"
+    },
+    "resilient/src/linear.rs": {
+      "branch": "res-2414-linear-snap-clones",
+      "claimed_at": "2026-05-20T17:44:54Z"
     }
   }
 }

@@ -288,10 +288,18 @@ fn walk(
                 // Without Z3, use the conservative snapshot/restore
                 // approach: each branch starts fresh, consumption
                 // in one branch doesn't affect the merge.
+                //
+                // RES-2414: gate the inter-branch `snap.clone()` on
+                // there actually being an alternative branch. When
+                // `alternative` is `None`, the trailing
+                // `*bindings = snap;` already overwrites whatever
+                // bindings ended up as after `consequence`, so the
+                // intermediate clone was pure waste. Same shape as
+                // RES-1386's fix in `verifier_loop_invariants`.
                 let snap = bindings.clone();
                 walk(consequence, bindings, fn_name, source_path)?;
-                *bindings = snap.clone();
                 if let Some(alt) = alternative {
+                    *bindings = snap.clone();
                     walk(alt, bindings, fn_name, source_path)?;
                 }
                 *bindings = snap;
@@ -318,9 +326,20 @@ fn walk(
             scrutinee, arms, ..
         } => {
             walk(scrutinee, bindings, fn_name, source_path)?;
+            // RES-2414: the first arm walks against `bindings`
+            // directly — at this point it equals `snap`, so the
+            // previous `*bindings = snap.clone();` on the very
+            // first iteration was assigning a fresh copy of a value
+            // bindings already held. Only subsequent arms need the
+            // restore-from-snap; we skip the leading clone via an
+            // `is_first` gate.
             let snap = bindings.clone();
+            let mut is_first = true;
             for (_, guard, body) in arms {
-                *bindings = snap.clone();
+                if !is_first {
+                    *bindings = snap.clone();
+                }
+                is_first = false;
                 if let Some(g) = guard {
                     walk(g, bindings, fn_name, source_path)?;
                 }
