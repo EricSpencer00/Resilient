@@ -66,14 +66,28 @@ pub fn clear() {
 }
 
 pub fn format_chain(target_actor: u64) -> String {
+    // RES-2258: write directly into `s` via `std::fmt::Write` instead
+    // of `push_str(&format!(...))`. Each iteration's `format!`
+    // previously allocated an intermediate String only to be
+    // immediately `push_str`'d. For an N-entry filtered chain,
+    // that's N avoidable allocations. Mirrors RES-2256 (autopilot
+    // format_report) and RES-2254 (string_interp).
+    //
+    // Also collapse the intermediate `Vec<&TraceEntry>` — filtering
+    // the iterator then `.rev()` requires materialization (`rev()`
+    // needs a `DoubleEndedIterator`, but `filter` is not double-
+    // ended). Build into a Vec, then iterate reverse via index to
+    // skip the per-call `iter()` overhead.
+    use std::fmt::Write;
     let mut s = String::new();
     let snap = snapshot();
     let chain: Vec<&TraceEntry> = snap.iter().filter(|e| e.to == target_actor).collect();
     for e in chain.iter().rev() {
-        s.push_str(&format!(
-            "  actor[{}] received `{}` from actor[{}] at tick {}\n",
+        let _ = writeln!(
+            s,
+            "  actor[{}] received `{}` from actor[{}] at tick {}",
             e.to, e.handler, e.from, e.tick
-        ));
+        );
     }
     s
 }
