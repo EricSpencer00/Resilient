@@ -459,6 +459,10 @@
     "resilient/src/iterator_protocol.rs": {
       "branch": "res-2244-iterator-protocol-lazy",
       "claimed_at": "2026-05-20T07:11:33Z"
+    },
+    "resilient/src/fmt_validation.rs": {
+      "branch": "res-2248-fmt-validation-cow-template",
+      "claimed_at": "2026-05-20T07:26:07Z"
     }
   }
 }
