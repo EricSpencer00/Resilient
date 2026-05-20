@@ -15,13 +15,21 @@ use crate::{Node, Span};
 use std::collections::HashMap;
 
 /// Represents a control-flow node in the function's CFG.
+///
+/// RES-2130: dropped the `node: Option<Box<Node>>` field. No code path
+/// in this module — or any external consumer (`CfgNode` is module-
+/// private; only `check_recovers_to_bmc` is exported) — ever read it.
+/// Every `build_node` arm was paying for `Box::new(node.clone())` per
+/// CFG construction site, which on a function body with many control-
+/// flow nodes was a stack of dead deep-Node clones — the AST nodes
+/// were materialized into Boxes, indexed into the HashMap, and never
+/// touched again. Removing the field eliminates those clones outright
+/// (10+ per function body) and shrinks `CfgNode` from 56 to 32 bytes.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct CfgNode {
     /// Unique identifier for this node
     id: usize,
-    /// The AST node this represents (or None for synthetic nodes like entry/exit)
-    node: Option<Box<Node>>,
     /// Source span for diagnostics
     span: Span,
     /// Outgoing edges: (successor_id, edge_kind)
@@ -68,14 +76,13 @@ struct Builder {
 }
 
 impl Builder {
-    fn new_node(&mut self, node: Option<Box<Node>>, span: Span) -> usize {
+    fn new_node(&mut self, span: Span) -> usize {
         let id = self.next_id;
         self.next_id += 1;
         self.nodes.insert(
             id,
             CfgNode {
                 id,
-                node,
                 span,
                 successors: Vec::new(),
             },
@@ -119,7 +126,6 @@ impl Builder {
             }
 
             Node::IfStatement {
-                condition,
                 consequence,
                 alternative,
                 ..
@@ -133,18 +139,16 @@ impl Builder {
                 };
                 // condition node — taken (Branch) goes to consequence,
                 // not-taken (Fallthrough) goes to alternative / successor.
-                let cond_id = self.new_node(Some(Box::new(*condition.clone())), span);
+                let cond_id = self.new_node(span);
                 self.boundaries.push((cond_id, span));
                 self.add_edge(cond_id, cons_entry, EdgeKind::Branch);
                 self.add_edge(cond_id, alt_entry, EdgeKind::Fallthrough);
                 cond_id
             }
 
-            Node::WhileStatement {
-                condition, body, ..
-            } => {
+            Node::WhileStatement { body, .. } => {
                 // Header node evaluates the condition.
-                let header = self.new_node(Some(Box::new(*condition.clone())), span);
+                let header = self.new_node(span);
                 self.boundaries.push((header, span));
                 // Body: its last node loops back to the header.
                 let body_entry = self.build_node(body, header);
@@ -158,9 +162,9 @@ impl Builder {
                 header
             }
 
-            Node::ForInStatement { iterable, body, .. } => {
+            Node::ForInStatement { body, .. } => {
                 // Treat like while: iterable evaluation + body with back edge.
-                let header = self.new_node(Some(Box::new(*iterable.clone())), span);
+                let header = self.new_node(span);
                 self.boundaries.push((header, span));
                 let body_entry = self.build_node(body, header);
                 self.add_edge(header, body_entry, EdgeKind::Branch);
@@ -171,7 +175,7 @@ impl Builder {
             Node::ReturnStatement { .. } => {
                 // Return always transfers to the exit; the normal
                 // `successor` is unreachable from here.
-                let ret_id = self.new_node(Some(Box::new(node.clone())), span);
+                let ret_id = self.new_node(span);
                 self.boundaries.push((ret_id, span));
                 self.add_edge(ret_id, self.exit_id, EdgeKind::Exception);
                 ret_id
@@ -180,7 +184,7 @@ impl Builder {
             Node::Match { arms, .. } => {
                 // Each arm is an independent branch from the match node.
                 // Arms are (Pattern, Option<guard>, body_Node) tuples.
-                let match_id = self.new_node(Some(Box::new(node.clone())), span);
+                let match_id = self.new_node(span);
                 self.boundaries.push((match_id, span));
                 for arm in arms {
                     let arm_entry = self.build_node(&arm.2, successor);
@@ -195,7 +199,7 @@ impl Builder {
             // Any other statement (let, expr-stmt, assignment, etc.)
             // is a single basic-block node.
             _ => {
-                let id = self.new_node(Some(Box::new(node.clone())), span);
+                let id = self.new_node(span);
                 self.boundaries.push((id, span));
                 self.add_edge(id, successor, EdgeKind::Fallthrough);
                 id
@@ -241,7 +245,6 @@ impl ControlFlowGraph {
             0,
             CfgNode {
                 id: 0,
-                node: None,
                 span: Span::default(),
                 successors: Vec::new(),
             },
@@ -251,7 +254,6 @@ impl ControlFlowGraph {
             1,
             CfgNode {
                 id: 1,
-                node: None,
                 span: Span::default(),
                 successors: Vec::new(),
             },
