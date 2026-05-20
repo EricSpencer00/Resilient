@@ -204,9 +204,20 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
 
     // Compare against the installed baseline (if any) and warn on weakenings.
-    let baseline_snap = BASELINE.read().ok().and_then(|g| g.clone());
-    if let Some(baseline) = baseline_snap {
-        let changes = diff(&baseline, &current);
+    //
+    // RES-2372: hold the read guard through `diff` and materialise
+    // only the (small) `Vec<SemanticChange>` result. The previous
+    // shape did `g.clone()` to release the lock, which cloned every
+    // `FunctionContract` in the baseline `HashMap` — including its
+    // `fails_variants: Vec<String>` per entry — just to feed `diff`,
+    // which is pure and returns owned `SemanticChange` values.
+    // Same lock-then-borrow pattern as `semver_behavior` (RES-2006)
+    // and RES-1544 / RES-1547 / RES-2366.
+    let changes = BASELINE
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|baseline| diff(baseline, &current)));
+    if let Some(changes) = changes {
         for c in &changes {
             match c {
                 SemanticChange::Weakened {
