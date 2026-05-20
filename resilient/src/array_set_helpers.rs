@@ -16,23 +16,58 @@
 //! values raise a typed error).
 
 use crate::{RResult, Value};
+use std::collections::HashSet;
 
 /// Membership test using the existing `array_search_eq` /
 /// `array_member_of` helpers in `lib.rs`. Mirrors `array_union`'s
-/// equality semantics.
+/// equality semantics. Linear-scan fallback for arrays whose elements
+/// don't all coerce to `MapKey` (e.g. arrays containing `Float`,
+/// `Array`, `Map`, `Struct`).
 fn member_of(name: &str, v: &Value, set: &[Value]) -> RResult<bool> {
     crate::array_member_of(name, v, set)
+}
+
+/// RES-2136: try to pre-hash `set` into a `HashSet<MapKey>` so the
+/// per-element membership check becomes O(1). Returns `None` (forcing
+/// the caller to fall back to the linear `member_of` scan) when any
+/// element of `set` is not coercible to `MapKey` — e.g. `Float`
+/// (non-hashable), nested `Array`/`Map`/`Struct`/`Tuple`. The set is
+/// pre-sized to `set.len()` so the build itself is alloc-bounded.
+///
+/// Trade-off: `MapKey::from_value` clones the underlying `String` for
+/// `Value::String` entries, so this is an `O(M)` work pass with `M`
+/// String clones in the worst case. For `M ≥ 2` it still beats the
+/// `O(N×M)` linear scan as soon as `N > 1`, and for typical integer-
+/// keyed sets the conversion is trivial.
+fn try_hash_set(set: &[Value]) -> Option<HashSet<crate::MapKey>> {
+    let mut out = HashSet::with_capacity(set.len());
+    for v in set {
+        let k = crate::MapKey::from_value(v).ok()?;
+        out.insert(k);
+    }
+    Some(out)
 }
 
 /// `array_difference(a, b) -> Array` — elements of `a` that do not
 /// appear in `b`. Preserves `a`'s order. Duplicates in `a` are kept
 /// iff they don't appear in `b`.
+///
+/// RES-2136: pre-hash `b` into a `HashSet<MapKey>` when its elements
+/// are all hashable scalars. Drops the inner check from `O(|b|)` to
+/// `O(1)` and the overall pass from `O(|a|×|b|)` to `O(|a|+|b|)`.
+/// Falls back to the linear scan when any element of `b` is not
+/// MapKey-coercible (Float / nested collections).
 pub(crate) fn builtin_array_difference(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(a), Value::Array(b)] => {
             let mut out: Vec<Value> = Vec::with_capacity(a.len());
+            let hashed_b = try_hash_set(b);
             for v in a {
-                if !member_of("array_difference", v, b)? {
+                let present = match (&hashed_b, crate::MapKey::from_value(v).ok()) {
+                    (Some(h), Some(k)) => h.contains(&k),
+                    _ => member_of("array_difference", v, b)?,
+                };
+                if !present {
                     out.push(v.clone());
                 }
             }
@@ -51,12 +86,22 @@ pub(crate) fn builtin_array_difference(args: &[Value]) -> RResult<Value> {
 
 /// `array_intersection(a, b) -> Array` — elements of `a` that also
 /// appear in `b`. Preserves `a`'s order and duplicates.
+///
+/// RES-2136: same `HashSet` pre-hash as `array_difference`. Also
+/// pre-sizes `out` to `min(|a|, |b|)` — the intersection can be no
+/// larger than the smaller input, so we skip the 0→4→8 doubling chain
+/// the previous `Vec::new()` paid through.
 pub(crate) fn builtin_array_intersection(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(a), Value::Array(b)] => {
-            let mut out: Vec<Value> = Vec::new();
+            let mut out: Vec<Value> = Vec::with_capacity(a.len().min(b.len()));
+            let hashed_b = try_hash_set(b);
             for v in a {
-                if member_of("array_intersection", v, b)? {
+                let present = match (&hashed_b, crate::MapKey::from_value(v).ok()) {
+                    (Some(h), Some(k)) => h.contains(&k),
+                    _ => member_of("array_intersection", v, b)?,
+                };
+                if present {
                     out.push(v.clone());
                 }
             }
