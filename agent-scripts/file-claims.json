@@ -388,10 +388,6 @@
       "branch": "res-2268-smtlib2-direct-write",
       "claimed_at": "2026-05-20T08:29:05Z"
     },
-    "resilient/src/lint.rs": {
-      "branch": "res-2272-lint-clause-text-direct",
-      "claimed_at": "2026-05-20T08:36:08Z"
-    },
     "resilient/src/formatter.rs": {
       "branch": "res-2274-formatter-write-direct",
       "claimed_at": "2026-05-20T08:42:42Z"
@@ -463,6 +459,10 @@
     "resilient/src/row_polymorphism.rs": {
       "branch": "res-2398-row-polymorphism-drop-fn-name",
       "claimed_at": "2026-05-20T16:41:54Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "res-2418-lint-allows-line-keyed",
+      "claimed_at": "2026-05-20T17:59:11Z"
     }
   }
 }

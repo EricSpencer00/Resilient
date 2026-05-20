@@ -1804,15 +1804,22 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     // lint — early-out keeps every lint in that case too.
     let allows = collect_allow_comments(source);
     if !allows.is_empty() {
+        // RES-2418: per-lint probe is now one `HashMap::get(&u32)` —
+        // no tuple-key allocation, no `l.code.clone()`, no
+        // `"L0001".to_string()`. `HashSet<String>::contains` uses the
+        // existing `String: Borrow<str>` impl so the `&str` probe
+        // works without owning.
         out.retain(|l| {
             if safety_critical && l.code == "L0006" {
                 return true;
             }
-            if allows.contains(&(l.line, l.code.clone())) {
-                return false;
-            }
-            if l.code == "L0011" && allows.contains(&(l.line, "L0001".to_string())) {
-                return false;
+            if let Some(codes) = allows.get(&l.line) {
+                if codes.contains(l.code.as_str()) {
+                    return false;
+                }
+                if l.code == "L0011" && codes.contains("L0001") {
+                    return false;
+                }
             }
             true
         });
@@ -3244,8 +3251,17 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
 // K+1. Only `L` codes are recognized; `// resilient: allow foo`
 // is treated as ordinary text.
 
-fn collect_allow_comments(source: &str) -> std::collections::HashSet<(u32, String)> {
-    let mut out = std::collections::HashSet::new();
+/// RES-2418: re-keyed by line so the per-lint retention probe is one
+/// `HashMap::get(&u32)` followed by a `HashSet<String>::contains(&str)`
+/// — no `l.code.clone()` per lint, no `"L0001".to_string()` per L0011.
+/// The previous `HashSet<(u32, String)>` shape forced a tuple-key
+/// allocation on every probe because stdlib has no
+/// `Borrow<(u32, &str)>` impl for `(u32, String)`.
+fn collect_allow_comments(
+    source: &str,
+) -> std::collections::HashMap<u32, std::collections::HashSet<String>> {
+    let mut out: std::collections::HashMap<u32, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
     for (i, raw) in source.lines().enumerate() {
         let line_no = (i as u32) + 1;
         let Some(pos) = raw.find("// resilient: allow") else {
@@ -3256,7 +3272,7 @@ fn collect_allow_comments(source: &str) -> std::collections::HashSet<(u32, Strin
         for word in tail.split(|c: char| c == ',' || c.is_whitespace()) {
             let w = word.trim();
             if w.starts_with('L') && w.len() == 5 && w.chars().skip(1).all(|c| c.is_ascii_digit()) {
-                out.insert((line_no + 1, w.to_string()));
+                out.entry(line_no + 1).or_default().insert(w.to_string());
             }
         }
     }
