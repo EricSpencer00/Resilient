@@ -243,6 +243,7 @@ mod tests {
             code,
             constants,
             line_info: lines,
+            ..Default::default()
         }
     }
 

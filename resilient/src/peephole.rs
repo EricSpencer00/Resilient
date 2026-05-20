@@ -859,6 +859,7 @@ mod tests {
             code: code.to_vec(),
             constants,
             line_info: lines.to_vec(),
+            ..Default::default()
         }
     }
 
