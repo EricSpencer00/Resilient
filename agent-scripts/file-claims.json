@@ -21,8 +21,8 @@
       "claimed_at": "2026-05-12T01:09:57Z"
     },
     "resilient/src/incremental_verify.rs": {
-      "branch": "res-1210-incremental-verify-dead-work",
-      "claimed_at": "2026-05-12T01:53:15Z"
+      "branch": "res-2166-incremental-verify-nested-map",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/watchdog_feed.rs": {
       "branch": "res-1218-param-type-fast-reject",

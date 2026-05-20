@@ -24,9 +24,17 @@ pub enum ProofResult {
     Failed(String),
 }
 
+/// RES-2166: nested HashMap keyed on `fn_name` (outer) and
+/// `contract_digest` (inner). The previous shape was
+/// `HashMap<(String, u64), ProofResult>` which forced every
+/// lookup to allocate a fresh `String` for the tuple key — paid
+/// per Z3 obligation, hits *and* misses alike. The outer map
+/// keys on `String` so we can probe with `&str` via
+/// `Borrow<str>`; lookups walk two hash steps with zero
+/// allocations.
 #[derive(Debug, Clone, Default)]
 pub struct ProofCache {
-    pub entries: HashMap<(String, u64), ProofResult>,
+    pub entries: HashMap<String, HashMap<u64, ProofResult>>,
     pub hits: u64,
     pub misses: u64,
 }
@@ -42,8 +50,13 @@ pub fn reset() {
 pub fn lookup(fn_name: &str, contract_digest: u64) -> Option<ProofResult> {
     if let Ok(mut g) = CACHE.write() {
         let cache = g.get_or_insert_with(ProofCache::default);
-        let key = (fn_name.to_string(), contract_digest);
-        if let Some(r) = cache.entries.get(&key) {
+        // RES-2166: probe the outer map with `&str` (no allocation),
+        // then walk the inner `HashMap<u64, ProofResult>`. The
+        // previous shape allocated a `String` for the tuple key on
+        // every call — paid on every hit AND miss.
+        if let Some(inner) = cache.entries.get(fn_name)
+            && let Some(r) = inner.get(&contract_digest)
+        {
             cache.hits += 1;
             return Some(r.clone());
         }
@@ -55,9 +68,17 @@ pub fn lookup(fn_name: &str, contract_digest: u64) -> Option<ProofResult> {
 pub fn store(fn_name: &str, contract_digest: u64, result: ProofResult) {
     if let Ok(mut g) = CACHE.write() {
         let cache = g.get_or_insert_with(ProofCache::default);
-        cache
-            .entries
-            .insert((fn_name.to_string(), contract_digest), result);
+        // RES-2166: skip the `fn_name.to_string()` alloc on the hot
+        // path when an outer entry already exists. Only the cold
+        // branch (first digest stored for this fn) pays for an owned
+        // `String` key.
+        if let Some(inner) = cache.entries.get_mut(fn_name) {
+            inner.insert(contract_digest, result);
+        } else {
+            let mut inner = HashMap::new();
+            inner.insert(contract_digest, result);
+            cache.entries.insert(fn_name.to_string(), inner);
+        }
     }
 }
 
@@ -113,11 +134,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     };
     if let Ok(mut g) = CACHE.write() {
         if let Some(cache) = g.as_mut() {
-            let before = cache.entries.len();
+            // RES-2166: count by inner-map entries (each `(fn_name,
+            // digest)` pair was one entry in the old flat shape).
+            // Retention drops the entire outer entry when the fn is
+            // gone; the inner digests die with it.
+            let before: usize = cache.entries.values().map(|m| m.len()).sum();
             cache
                 .entries
-                .retain(|(fn_name, _), _| live_names.contains(fn_name.as_str()));
-            let evicted = before.saturating_sub(cache.entries.len());
+                .retain(|fn_name, _| live_names.contains(fn_name.as_str()));
+            let after: usize = cache.entries.values().map(|m| m.len()).sum();
+            let evicted = before.saturating_sub(after);
             if evicted > 0 {
                 eprintln!("incremental_verify: evicted {evicted} stale proof-cache entry/ies");
             }
