@@ -431,6 +431,10 @@
     "resilient/src/age_bounded_data.rs": {
       "branch": "res-2158-age-bounded-data-borrow",
       "claimed_at": "2026-05-20T03:38:49Z"
+    },
+    "resilient/src/derives.rs": {
+      "branch": "res-2174-derives-drop-type-name",
+      "claimed_at": "2026-05-20T04:08:32Z"
     }
   }
 }
