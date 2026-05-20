@@ -29,13 +29,16 @@ pub fn install(set: HashSet<String>) {
     }
 }
 
+/// RES-2114: hold the read guard for the contains check instead of deep-
+/// cloning the entire `HashSet<String>`. Same fix as RES-2074 / RES-2112.
+/// The typechecker calls `is_recursive` for every type reference whose
+/// name might be a recursive struct; on a 100-fn program with many
+/// struct refs that's a lot of needless `String` allocations.
 pub fn is_recursive(type_name: &str) -> bool {
-    RECURSIVE_TYPES
-        .read()
-        .ok()
-        .and_then(|g| g.clone())
-        .map(|s| s.contains(type_name))
-        .unwrap_or(false)
+    let Ok(g) = RECURSIVE_TYPES.read() else {
+        return false;
+    };
+    g.as_ref().is_some_and(|s| s.contains(type_name))
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
