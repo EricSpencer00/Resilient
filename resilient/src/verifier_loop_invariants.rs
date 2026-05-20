@@ -180,7 +180,12 @@ fn walk(
 
             // Compute the set of names assigned in the body — these
             // become free in the inductive step.
-            let mut assigned: BTreeSet<String> = BTreeSet::new();
+            //
+            // RES-2070: borrow names as `&str` from the body AST.
+            // The set is only consulted via `.contains(&str)` in
+            // try_prove_invariant; owned String keys were pure
+            // overhead since the body outlives the verifier call.
+            let mut assigned: BTreeSet<&str> = BTreeSet::new();
             collect_assigned_names(body, &mut assigned);
 
             for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
@@ -228,7 +233,7 @@ fn try_prove_invariant(
     condition: &Node,
     body: &Node,
     bindings: &HashMap<String, i64>,
-    assigned: &BTreeSet<String>,
+    assigned: &BTreeSet<&str>,
     loop_span: &Span,
     next_idx: &mut usize,
     timeout_ms: u32,
@@ -361,11 +366,16 @@ fn literal_int(node: &Node) -> Option<i64> {
 /// assignment counts. Unsupported assignment forms (`FieldAssignment`,
 /// `IndexAssignment`) record nothing; the WP step will bail on those
 /// bodies anyway.
+// RES-2070: borrow names as `&'a str` from the body AST. The
+// caller's only use of the set is `assigned.contains(&str)` in the
+// inductive-step `step_bindings` filter — owned String keys were
+// pure overhead. The body AST outlives this whole verifier call,
+// so the `&'a str` borrows are valid.
 #[cfg(feature = "z3")]
-fn collect_assigned_names(node: &Node, out: &mut BTreeSet<String>) {
+fn collect_assigned_names<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::Assignment { name, .. } => {
-            out.insert(name.clone());
+            out.insert(name.as_str());
         }
         Node::Block { stmts, .. } => {
             for s in stmts {
