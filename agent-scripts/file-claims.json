@@ -376,10 +376,6 @@
       "branch": "res-1942-data-utils-presize",
       "claimed_at": "2026-05-19T18:14:43Z"
     },
-    "resilient/src/json_builtins.rs": {
-      "branch": "res-1946-json-parser-presize",
-      "claimed_at": "2026-05-19T18:22:09Z"
-    },
     "resilient/src/numeric_units.rs": {
       "branch": "res-2162-numeric-units-borrow-keys",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -463,6 +459,10 @@
     "resilient/src/autopilot.rs": {
       "branch": "res-2256-autopilot-write-direct",
       "claimed_at": "2026-05-20T08:06:02Z"
+    },
+    "resilient/src/json_builtins.rs": {
+      "branch": "res-2260-json-escape-write-direct",
+      "claimed_at": "2026-05-20T08:12:01Z"
     }
   }
 }

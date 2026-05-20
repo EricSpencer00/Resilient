@@ -106,6 +106,14 @@ fn serialize_value(v: &Value) -> RResult<String> {
 }
 
 fn json_escape_string(s: &str) -> String {
+    // RES-2260: write the control-char escape directly via `std::fmt::
+    // Write` instead of `push_str(&format!(...))`. Each control
+    // character previously allocated a 6-char `String` only to be
+    // immediately `push_str`'d. For strings containing control bytes
+    // (binary blobs, structured logs), N control chars meant N
+    // avoidable allocations. Mirrors RES-2256 (autopilot format_report)
+    // and RES-2258 (causal_trace format_chain).
+    use std::fmt::Write;
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -116,7 +124,7 @@ fn json_escape_string(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+                let _ = write!(out, "\\u{:04x}", c as u32);
             }
             c => out.push(c),
         }
