@@ -1,5 +1,9 @@
 {
   "claims": {
+    "resilient/src/file_io.rs": {
+      "branch": "res-2144-file-io-borrow-bytes-whence",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     "resilient/src/array_set_helpers.rs": {
       "branch": "res-2136-array-set-hashset-membership",
       "claimed_at": "2026-05-19T00:00:00Z"
