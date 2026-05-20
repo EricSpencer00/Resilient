@@ -552,10 +552,30 @@ fn detect_hallucinated_idents(node: &Node, ctx: &mut FnContext) {
             ..
         } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
-                if !KNOWN_BUILTINS.contains(&name.as_str()) {
+                // RES-2284: pre-filter the candidate set before paying
+                // the O(L*M) `levenshtein` cost.
+                //
+                //   * The eventual gate is `name.len() > 3` — hoist it
+                //     so we never enter the loop for short identifiers
+                //     (which `KNOWN_BUILTINS` is full of false-positive
+                //     matches against — e.g. "x" vs "pow").
+                //   * `levenshtein(a, b) >= |a.len - b.len|`, so any
+                //     builtin whose length differs from `name` by more
+                //     than 2 cannot produce a verdict in the [1, 2]
+                //     window. Skip the inner call entirely.
+                //
+                // For a typical builtin list of ~20 names averaging
+                // ~5 chars and a non-builtin call name of e.g. 8 chars,
+                // the length-diff filter alone trims roughly half of
+                // the inner loop iterations.
+                let name_len = name.len();
+                if name_len > 3 && !KNOWN_BUILTINS.contains(&name.as_str()) {
                     for builtin in KNOWN_BUILTINS {
+                        if name_len.abs_diff(builtin.len()) > 2 {
+                            continue;
+                        }
                         let d = levenshtein(name, builtin);
-                        if d > 0 && d <= 2 && name.len() > 3 {
+                        if d > 0 && d <= 2 {
                             ctx.push(
                                 ThreatKind::HallucinatedIdent,
                                 format!(

@@ -64,10 +64,6 @@
       "branch": "res-2030-stats-single-pass",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/ai_threat_model.rs": {
-      "branch": "res-1986-block-shape-direct-write",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     ".github/workflows/playground.yml": {
       "branch": "res-1248-playground-rust-cache",
       "claimed_at": "2026-05-12T03:10:39Z"
@@ -467,6 +463,10 @@
     "resilient/src/verifier_loop_invariants.rs": {
       "branch": "res-2280-wp-substitute-skip",
       "claimed_at": "2026-05-20T09:12:26Z"
+    },
+    "resilient/src/ai_threat_model.rs": {
+      "branch": "res-2284-levenshtein-fast-reject",
+      "claimed_at": "2026-05-20T09:31:15Z"
     }
   }
 }
