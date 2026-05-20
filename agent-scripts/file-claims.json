@@ -56,10 +56,6 @@
       "branch": "res-1256-secret-erasure-fast-reject",
       "claimed_at": "2026-05-12T03:39:06Z"
     },
-    "resilient/src/monotonic_field.rs": {
-      "branch": "res-1262-monotonic-fast-reject",
-      "claimed_at": "2026-05-12T03:53:13Z"
-    },
     "resilient/src/unsafe_check.rs": {
       "branch": "res-1281-unsafe-check-fast-reject",
       "claimed_at": "2026-05-12T04:21:23Z"
@@ -215,10 +211,6 @@
     "resilient/src/monomorph.rs": {
       "branch": "res-1924-monomorph-presize",
       "claimed_at": "2026-05-19T17:31:00Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1766-typechecker-hot-presize",
-      "claimed_at": "2026-05-13T11:55:37Z"
     },
     "resilient/src/supervisor.rs": {
       "branch": "res-1770-verifier-presize",
@@ -467,6 +459,14 @@
     "resilient/src/epoch_ordering.rs": {
       "branch": "res-2346-epoch-ordering-stream-prev",
       "claimed_at": "2026-05-20T13:58:05Z"
+    },
+    "resilient/src/monotonic_field.rs": {
+      "branch": "res-2362-monotonic-field-marker-gate",
+      "claimed_at": "2026-05-20T14:51:04Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2362-monotonic-field-marker-gate",
+      "claimed_at": "2026-05-20T14:51:04Z"
     }
   }
 }

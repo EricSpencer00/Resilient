@@ -4826,8 +4826,19 @@ impl TypeChecker {
                     crate::backpressure_safe::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #10: monotonic-field invariant.
-                // RES-1585 gate: pass scans fn names with MONO_PREFIXES.
-                if markers.any_fn_name_with_prefix(&["last_", "latest_", "max_", "monotonic_"]) {
+                // RES-1585 / RES-2362 gate: pass only fires on
+                // `Node::FieldAssignment` whose field name has a
+                // monotonic prefix/suffix. The previous fn-name gate
+                // was a loose superset — programs with monotonic-named
+                // helpers but no monotonic field assignment entered the
+                // pass only to bail via an internal `any_node`. The
+                // `field_names_assigned` marker (already populated by
+                // `Markers::scan`) lets us gate on the exact condition
+                // in O(1).
+                if markers.any_field_assigned_with_prefix_or_suffix(
+                    &["last_", "latest_", "max_", "monotonic_"],
+                    &["_seq", "_clock", "_epoch", "_tick"],
+                ) {
                     crate::monotonic_field::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #11: saturation-required arithmetic.
