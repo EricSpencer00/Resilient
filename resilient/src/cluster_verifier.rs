@@ -81,22 +81,22 @@ use crate::span::Span;
 #[cfg(feature = "z3")]
 use crate::{ActorHandler, Node};
 
-// Helper: extract (field_name, init_expr) pairs from state_fields.
-// The cluster verifier only needs field names + initializers (not type names).
-#[cfg(feature = "z3")]
-fn extract_state(state_fields: &[(String, String, Node)]) -> Vec<(String, Node)> {
-    state_fields
-        .iter()
-        .map(|(_, n, v)| (n.clone(), v.clone()))
-        .collect()
-}
-
 /// RES-390: per-actor spec — (state fields, handlers) — used by the
 /// cluster verifier to resolve `member: ActorType` into its handler
 /// list. Extracted into a type alias so clippy stops yelling about
-/// the nested `HashMap<String, (Vec<...>, Vec<...>)>` shape.
+/// the nested `HashMap<&str, (&[...], &[...])>` shape.
+///
+/// RES-2150: entries now borrow slices into the AST instead of
+/// cloning each actor's `state_fields` and `handlers` vectors into
+/// the table. The cluster verifier only walks each handler body and
+/// reads its name — every byte of the source data is available
+/// behind `&spanned.node` for the duration of the pass. The
+/// previous shape paid a deep `handlers.clone()` (each handler
+/// carries a body `Node` tree) and a per-field `(name, init).clone()`
+/// per actor declared in the program, dropped immediately on the
+/// fast-reject path for any program with no `cluster` decl.
 #[cfg(feature = "z3")]
-type ActorTable = HashMap<String, (Vec<(String, Node)>, Vec<ActorHandler>)>;
+type ActorTable<'a> = HashMap<&'a str, (&'a [(String, String, Node)], &'a [ActorHandler])>;
 
 /// RES-390: one diagnostic produced by the cluster verifier.
 /// `actor` and `handler` identify the member whose handler broke
@@ -145,7 +145,9 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
     // cluster verifier can resolve member types.
     // RES-1762: pre-size to stmts.len() — every top-level statement
     // could be an ActorDecl and produce one insert.
-    let mut actors: ActorTable = HashMap::with_capacity(stmts.len());
+    // RES-2150: borrow `name` + slice handles directly from the AST;
+    // no deep clones of state_fields / handlers.
+    let mut actors: ActorTable<'_> = HashMap::with_capacity(stmts.len());
     for spanned in stmts {
         if let Node::ActorDecl {
             name,
@@ -155,8 +157,8 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
         } = &spanned.node
         {
             actors.insert(
-                name.clone(),
-                (extract_state(state_fields), handlers.clone()),
+                name.as_str(),
+                (state_fields.as_slice(), handlers.as_slice()),
             );
         }
     }
@@ -188,7 +190,7 @@ fn verify_cluster(
     members: &[(String, String)],
     invariants: &[Node],
     cluster_span: Span,
-    actors: &ActorTable,
+    actors: &ActorTable<'_>,
     timeout_ms: u32,
     out: &mut Vec<ClusterDiagnostic>,
 ) {
@@ -196,7 +198,7 @@ fn verify_cluster(
     // actors surface one diagnostic per invariant so the user sees
     // a concrete cause even without counterexample data.
     for (local, actor_ty) in members {
-        if !actors.contains_key(actor_ty) {
+        if !actors.contains_key(actor_ty.as_str()) {
             for inv in invariants {
                 out.push(ClusterDiagnostic {
                     cluster: cluster_name.to_string(),
@@ -235,7 +237,7 @@ fn verify_cluster(
         }
 
         for (local, actor_ty) in members {
-            let Some((_state, handlers)) = actors.get(actor_ty) else {
+            let Some(&(_state, handlers)) = actors.get(actor_ty.as_str()) else {
                 continue;
             };
             for handler in handlers {
