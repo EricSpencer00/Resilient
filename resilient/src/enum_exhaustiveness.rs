@@ -153,11 +153,13 @@ fn walk(
             errors.push(e);
         }
     }
-    // Recurse into children via uniqueness_walk. The closure captures
-    // `errors` by reference, but uniqueness_walk's visitor signature
-    // takes `&mut dyn FnMut(&Node)`, so we collect errors into a
-    // separate Vec and extend after the visit.
-    let mut nested: Vec<ExhaustivenessError> = Vec::new();
+    // Recurse into children via uniqueness_walk. The closure pushes
+    // directly into `errors` — `visit`'s actual signature is
+    // `fn visit<'a>(&'a Node, &mut impl FnMut(&'a Node))` (generic,
+    // not a trait object), so capturing `&mut errors` is fine.
+    // RES-2358: replaced a stale `let mut nested = Vec::new(); …
+    // errors.extend(nested);` workaround that dropped one Vec
+    // allocation + extend memcpy per walk call.
     crate::uniqueness_walk::visit(node, &mut |n| {
         // Skip Function nodes — they will be handled by the outer walk
         // call in analyze() with the correct context name. Processing them
@@ -167,11 +169,10 @@ fn walk(
         }
         if let Node::Match { arms, .. } = n {
             if let Some(e) = check_match(arms, enum_map, context) {
-                nested.push(e);
+                errors.push(e);
             }
         }
     });
-    errors.extend(nested);
 }
 
 /// Analyze the program for non-exhaustive enum matches. Returns one

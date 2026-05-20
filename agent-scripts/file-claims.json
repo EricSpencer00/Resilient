@@ -463,6 +463,10 @@
     "resilient/src/audit_log_required.rs": {
       "branch": "res-2342-audit-log-short-circuit",
       "claimed_at": "2026-05-20T13:29:31Z"
+    },
+    "resilient/src/enum_exhaustiveness.rs": {
+      "branch": "res-2358-enum-exhaustiveness-drop-nested",
+      "claimed_at": "2026-05-20T14:42:30Z"
     }
   }
 }
