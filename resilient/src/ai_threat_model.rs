@@ -858,26 +858,40 @@ pub fn collect_ai_review_fns() -> HashSet<String> {
 }
 
 /// `--ai-threats` CLI driver: returns a human-readable report.
+///
+/// RES-2330: build the report directly into a single `String` via
+/// `std::fmt::Write` instead of materialising a `Vec<String>` only
+/// to `.join("\n")` it. The previous shape allocated one
+/// intermediate `String` per threat (via `format!`), one for the
+/// header, plus the wrapping `Vec`, plus the join's output buffer —
+/// all transient. The new shape pays one `String` allocation +
+/// amortised grows. Same write-direct pattern as RES-2256
+/// (autopilot::format_report), RES-2258 (causal_trace::format_chain),
+/// RES-2322 (repl::contracts_output), RES-2326 (contract_inference).
 pub fn report(program: &Node, source_path: &str) -> String {
+    use std::fmt::Write as _;
     let threats = analyze_program(program);
     if threats.is_empty() {
         return format!("{source_path}: no AI threats detected");
     }
-    let mut lines = vec![format!(
+    let mut out = String::new();
+    let _ = write!(
+        out,
         "{source_path}: {} AI threat(s) detected",
         threats.len()
-    )];
+    );
     for t in &threats {
-        lines.push(format!(
-            "  in fn `{}`: [{}] {} (confidence={}%) — {}",
+        let _ = write!(
+            out,
+            "\n  in fn `{}`: [{}] {} (confidence={}%) — {}",
             t.function,
             t.kind.label(),
             t.description,
             t.confidence,
             t.kind.mitigation()
-        ));
+        );
     }
-    lines.join("\n")
+    out
 }
 
 /// Hard pass: every threat in a `#[ai_review_required]` function is an error.
