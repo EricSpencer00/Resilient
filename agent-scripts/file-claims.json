@@ -455,6 +455,10 @@
     "resilient/src/semantic_regression.rs": {
       "branch": "res-2372-semantic-regression-borrow-guard",
       "claimed_at": "2026-05-20T15:31:40Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-2378-bytecode-constant-pool-index",
+      "claimed_at": "2026-05-20T15:51:09Z"
     }
   }
 }

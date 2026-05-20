@@ -16,6 +16,7 @@
 #![allow(dead_code)] // populated incrementally — follow-ups will exercise everything
 
 use crate::Value;
+use std::collections::HashMap;
 
 /// A single instruction. The VM is stack-based: most ops pop their
 /// arguments and push their result. `LoadLocal`/`StoreLocal` read and
@@ -231,11 +232,37 @@ pub enum Op {
 /// `line_info` parallels `code` and stores the source line each
 /// instruction came from (RES-077-style spans get richer in
 /// follow-ups).
+///
+/// RES-2378: the four `*_idx` side maps below are O(1) dedup indexes
+/// for the hashable subset of `Value` the compiler emits into the
+/// constant pool (Int, Float, Bool, Void, String). `add_constant` and
+/// `add_string_constant` probe these maps first; only on a miss do
+/// they push to `constants` and record the new index. The previous
+/// shape did `self.constants.iter().position(...)` per call — O(N)
+/// per insert, O(N²) per chunk. Per-chunk savings scale with literal
+/// count; the side maps are private and reconstructed on `Clone`
+/// (they're cheap when sparse).
 #[derive(Debug, Clone, Default)]
 pub struct Chunk {
     pub code: Vec<Op>,
     pub constants: Vec<Value>,
     pub line_info: Vec<u32>,
+    /// RES-2378: O(1) lookup `Int(i)` → pool index.
+    pub(crate) int_idx: HashMap<i64, u16>,
+    /// RES-2378: O(1) lookup `Float(f)` → pool index, keyed by
+    /// `f64::to_bits()` so NaN/-0.0 hash consistently with the
+    /// existing `values_eq_for_constants` (which uses `to_bits`).
+    pub(crate) float_idx: HashMap<u64, u16>,
+    /// RES-2378: O(1) lookup `Bool(b)` → pool index. Only two slots
+    /// possible; flat array avoids the HashMap overhead.
+    pub(crate) bool_idx: [Option<u16>; 2],
+    /// RES-2378: O(1) lookup `Void` → pool index. Single slot.
+    pub(crate) void_idx: Option<u16>,
+    /// RES-2378: O(1) lookup `String(s)` → pool index. Keyed on
+    /// `String` so `get(&str)` works via `Borrow<str>` (cache-hit
+    /// path skips any allocation; `add_string_constant` already
+    /// avoided the up-front clone for hits since RES-1419).
+    pub(crate) string_idx: HashMap<String, u16>,
 }
 
 /// RES-081: a compiled function. Parameters occupy the first `arity`
@@ -295,6 +322,15 @@ impl Chunk {
             code: Vec::with_capacity(cap),
             constants: Vec::with_capacity(cap / 4),
             line_info: Vec::with_capacity(cap),
+            // RES-2378: pre-size the int/string side maps to match
+            // the constant pool. Empty HashMap has no backing buffer
+            // — `with_capacity` does the same alloc that the first
+            // insert would, just up front.
+            int_idx: HashMap::with_capacity(cap / 4),
+            float_idx: HashMap::default(),
+            bool_idx: [None; 2],
+            void_idx: None,
+            string_idx: HashMap::with_capacity(cap / 4),
         }
     }
 
@@ -334,45 +370,93 @@ impl Chunk {
     /// Intern a `Value` constant; returns the index for `Op::Const`.
     /// Reuses an existing slot if the constant is already present
     /// (cheap for small int chunks).
+    ///
+    /// RES-2378: the hashable subset of Value (Int/Float/Bool/Void/
+    /// String — exactly the variants `values_eq_for_constants`
+    /// recognizes) is looked up via side maps in O(1) instead of
+    /// scanning `self.constants`. For non-hashable variants
+    /// (Function/Array/Struct/...), `values_eq_for_constants`
+    /// returns `false` anyway, so the linear scan was always going
+    /// to miss — we just skip it and push directly.
     pub fn add_constant(&mut self, v: Value) -> Result<u16, CompileError> {
-        if let Some(existing) = self
-            .constants
-            .iter()
-            .position(|c| values_eq_for_constants(c, &v))
-        {
-            return Ok(existing as u16);
+        match &v {
+            Value::Int(i) => {
+                if let Some(&idx) = self.int_idx.get(i) {
+                    return Ok(idx);
+                }
+            }
+            Value::Float(f) => {
+                if let Some(&idx) = self.float_idx.get(&f.to_bits()) {
+                    return Ok(idx);
+                }
+            }
+            Value::Bool(b) => {
+                if let Some(idx) = self.bool_idx[*b as usize] {
+                    return Ok(idx);
+                }
+            }
+            Value::Void => {
+                if let Some(idx) = self.void_idx {
+                    return Ok(idx);
+                }
+            }
+            Value::String(s) => {
+                if let Some(&idx) = self.string_idx.get(s.as_str()) {
+                    return Ok(idx);
+                }
+            }
+            _ => {}
         }
         if self.constants.len() >= u16::MAX as usize {
             return Err(CompileError::TooManyConstants);
         }
         let idx = self.constants.len() as u16;
+        // Record the new entry in the side index BEFORE moving `v`
+        // into `constants`. For String we have to clone the key
+        // (HashMap owns its keys); for the scalar variants the key
+        // is `Copy`.
+        match &v {
+            Value::Int(i) => {
+                self.int_idx.insert(*i, idx);
+            }
+            Value::Float(f) => {
+                self.float_idx.insert(f.to_bits(), idx);
+            }
+            Value::Bool(b) => {
+                self.bool_idx[*b as usize] = Some(idx);
+            }
+            Value::Void => {
+                self.void_idx = Some(idx);
+            }
+            Value::String(s) => {
+                self.string_idx.insert(s.clone(), idx);
+            }
+            _ => {}
+        }
         self.constants.push(v);
         Ok(idx)
     }
 
     /// RES-1419: intern a `String` constant without the caller having
-    /// to clone the source first. The `add_constant(Value::String(s.clone()))`
-    /// callers cloned the source `String` unconditionally — even when
-    /// the constant was already in the pool. The cache-hit case
-    /// allocated and dropped the clone for nothing.
+    /// to clone the source first. Look up by `&str` (Rust's
+    /// `String == &str` comparison works via `Borrow<str>`), then
+    /// allocate the owned `String` only on cache miss.
     ///
-    /// Look up by `&str` (Rust's `String == &str` comparison works via
-    /// `Borrow<str>`), then allocate the owned `String` only on cache
-    /// miss. For programs with repeated string literals (assertion
-    /// messages, field name lookups in struct field-access code, etc.)
-    /// the savings compound across every duplicate.
+    /// RES-2378: the lookup hits the `string_idx` HashMap in O(1)
+    /// instead of linear-scanning `constants`. Cache hits remain
+    /// allocation-free; cache misses pay one `String::from(s)` plus
+    /// one HashMap insert and one Vec push.
     pub fn add_string_constant(&mut self, s: &str) -> Result<u16, CompileError> {
-        if let Some(existing) = self.constants.iter().position(|c| match c {
-            Value::String(x) => x == s,
-            _ => false,
-        }) {
-            return Ok(existing as u16);
+        if let Some(&existing) = self.string_idx.get(s) {
+            return Ok(existing);
         }
         if self.constants.len() >= u16::MAX as usize {
             return Err(CompileError::TooManyConstants);
         }
         let idx = self.constants.len() as u16;
-        self.constants.push(Value::String(s.to_string()));
+        let owned = s.to_string();
+        self.string_idx.insert(owned.clone(), idx);
+        self.constants.push(Value::String(owned));
         Ok(idx)
     }
 }
