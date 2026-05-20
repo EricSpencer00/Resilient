@@ -340,10 +340,6 @@
       "branch": "res-1962-reentrancy-rate-limit-presize",
       "claimed_at": "2026-05-19T18:59:39Z"
     },
-    "resilient/src/isr_call_graph.rs": {
-      "branch": "res-1966-isr-bfs-reuse",
-      "claimed_at": "2026-05-19T19:06:11Z"
-    },
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
       "claimed_at": "2026-05-19T22:27:31Z"
@@ -467,6 +463,10 @@
     "resilient/src/epoch_ordering.rs": {
       "branch": "res-2346-epoch-ordering-stream-prev",
       "claimed_at": "2026-05-20T13:58:05Z"
+    },
+    "resilient/src/isr_call_graph.rs": {
+      "branch": "res-2360-isr-call-graph-borrow",
+      "claimed_at": "2026-05-20T14:47:02Z"
     }
   }
 }
