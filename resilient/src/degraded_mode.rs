@@ -23,36 +23,18 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{any_node, for_each_function};
+use crate::uniqueness_walk::for_each_function;
 
 const CRITICAL_PREFIXES: &[&str] = &["assert_critical_", "abort_", "halt_"];
 const RECOVERY_PREFIXES: &[&str] = &["degraded_", "safe_mode_", "recover_"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1252: fast-reject. `scan_blocks` recursively visits every
-    // block in every function and runs `any_node` per statement just
-    // to find a `CRITICAL_PREFIXES`-named call. For programs that
-    // declare no `assert_critical_*` / `abort_*` / `halt_*` call (the
-    // overwhelming majority of `cargo test` inputs and the entire
-    // `examples/` tree), the entire triple loop produces nothing.
-    //
-    // Pre-scan the whole program once via `any_node` (RES-1238
-    // already made this early-terminating). If no critical call
-    // exists anywhere in the AST, the pass returns `Ok(())`
-    // immediately — strictly cheaper than the existing
-    // `for_each_function → scan_blocks(recursive) → per-stmt
-    // any_node` triple loop on the same input. If any critical call
-    // exists, the existing `scan_blocks` path runs unchanged.
-    let has_critical = any_node(program, |n| match n {
-        Node::CallExpression { function, .. } => match function.as_ref() {
-            Node::Identifier { name, .. } => CRITICAL_PREFIXES.iter().any(|p| name.starts_with(*p)),
-            _ => false,
-        },
-        _ => false,
-    });
-    if !has_critical {
-        return Ok(());
-    }
+    // RES-1252 / RES-2364: the typechecker gates this call behind
+    // `markers.any_call_ident_with_prefix(CRITICAL_PREFIXES)`, so
+    // the program is guaranteed to contain at least one
+    // `CallExpression` whose callee has a CRITICAL prefix. The
+    // previous internal `any_node` pre-scan was redundant — removed
+    // along with the `any_node` import.
     for_each_function(program, |fname, _params, body| {
         scan_blocks(fname, body);
     });

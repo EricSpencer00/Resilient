@@ -4904,10 +4904,16 @@ impl TypeChecker {
                     crate::audit_log_required::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #20: degraded mode after critical assert.
-                // RES-1585 gate: pass scans fn names with CRITICAL_PREFIXES
-                // (and RECOVERY_PREFIXES are looked up only when CRITICAL
-                // matches at least once, so the same gate covers both).
-                if markers.any_fn_name_with_prefix(&["assert_critical_", "abort_", "halt_"]) {
+                // RES-1585 / RES-2364 gate: the pass scans
+                // CallExpression callees (not function declarations)
+                // for CRITICAL_PREFIXES. The previous
+                // `any_fn_name_with_prefix` gate fired on
+                // declarations only, which both over-triggered
+                // (declared-but-uncalled helpers entered the pass)
+                // and under-triggered (calls to externally-declared
+                // critical fns were missed). `any_call_ident_with_prefix`
+                // matches the pass's actual trigger condition exactly.
+                if markers.any_call_ident_with_prefix(&["assert_critical_", "abort_", "halt_"]) {
                     crate::degraded_mode::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #21: crash-only modules.
