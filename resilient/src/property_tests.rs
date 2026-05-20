@@ -15,20 +15,19 @@
 
 use crate::Node;
 
+/// RES-2186: dropped the redundant `fn_name: String` field on
+/// `PropertySpec`. The two readers (`check`'s contract-presence
+/// lookup + warning format) both used it as a name tied to the
+/// attribute owner; the field stored exactly what the attribute key
+/// encoded. Pipeline now carries `(String, PropertySpec)` pairs from
+/// `collect()` to `check()`. Same dead-field pattern as RES-2106 / …
+/// / RES-2184.
 #[derive(Debug, Clone)]
 pub struct PropertySpec {
-    pub fn_name: String,
     pub samples: u32,
 }
 
-#[derive(Debug, Clone)]
-pub struct PropertyResult {
-    pub fn_name: String,
-    pub samples_run: u32,
-    pub failures: Vec<String>,
-}
-
-pub fn collect() -> Vec<PropertySpec> {
+pub fn collect() -> Vec<(String, PropertySpec)> {
     let attrs = crate::feature_attrs::find_kind("property_test");
     // RES-1762: pre-size to attrs.len() — exactly one push per
     // attribute record, exact bound. Same shape as RES-1754 / 1756.
@@ -45,10 +44,7 @@ pub fn collect() -> Vec<PropertySpec> {
                 }
             }
         }
-        out.push(PropertySpec {
-            fn_name: item,
-            samples,
-        });
+        out.push((item, PropertySpec { samples }));
     }
     out
 }
@@ -75,13 +71,11 @@ impl PropRng {
     }
 }
 
-pub fn run_property(spec: &PropertySpec) -> PropertyResult {
-    PropertyResult {
-        fn_name: spec.fn_name.clone(),
-        samples_run: spec.samples,
-        failures: Vec::new(),
-    }
-}
+// RES-2186: dropped `pub fn run_property(spec) -> PropertyResult`
+// and the entire `PropertyResult` struct. The function had no
+// callers anywhere in the workspace (the orchestrator that was
+// supposed to consume it is still a follow-up per the module doc),
+// and its return type was only constructed inside the dead fn.
 
 /// Validate `#[property_test]` annotations and verify their functions
 /// have contracts (`requires`/`ensures`) to actually test.
@@ -115,18 +109,18 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
 
     let mut warnings: Vec<String> = Vec::new();
-    for spec in &specs {
-        if !functions_with_contracts.contains(&spec.fn_name) {
+    for (fn_name, spec) in &specs {
+        if !functions_with_contracts.contains(fn_name.as_str()) {
             warnings.push(format!(
                 "{source_path}:0:0: warning[property_test]: \
                  `#[property_test]` on `{}` has no `requires`/`ensures` \
                  contracts — no properties will be checked",
-                spec.fn_name
+                fn_name
             ));
         } else {
             eprintln!(
                 "property_test: `{}` registered for {} sample(s)",
-                spec.fn_name, spec.samples
+                fn_name, spec.samples
             );
         }
     }
@@ -155,7 +149,8 @@ mod tests {
         );
         let specs = collect();
         assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].samples, 500);
+        assert_eq!(specs[0].0, "add_commutes");
+        assert_eq!(specs[0].1.samples, 500);
         crate::feature_attrs::reset();
     }
 
