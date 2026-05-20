@@ -14,30 +14,35 @@
 
 use crate::Node;
 
+// RES-2220: borrow `function` as `&'a str` from the AST. The only
+// reader of this field is `check`'s `eprintln!` formatter, which
+// only needs to print the name. The owned `String` was paying a
+// per-warning `to_string()` allocation for data already living
+// behind `&Node`. Same shape as RES-2204 (coverage_warnings).
 #[derive(Debug, Clone)]
-pub struct DeepBreakWarning {
-    pub function: String,
+pub struct DeepBreakWarning<'a> {
+    pub function: &'a str,
     pub depth: u32,
 }
 
-pub fn analyze(program: &Node) -> Vec<DeepBreakWarning> {
+pub fn analyze<'a>(program: &'a Node) -> Vec<DeepBreakWarning<'a>> {
     let mut out = Vec::new();
     let Node::Program(stmts) = program else {
         return out;
     };
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
-            walk(body, name, 0, &mut out);
+            walk(body, name.as_str(), 0, &mut out);
         }
     }
     out
 }
 
-fn walk(node: &Node, fn_name: &str, depth: u32, out: &mut Vec<DeepBreakWarning>) {
+fn walk<'a>(node: &'a Node, fn_name: &'a str, depth: u32, out: &mut Vec<DeepBreakWarning<'a>>) {
     match node {
         Node::Break { .. } | Node::Continue { .. } if depth >= 3 => {
             out.push(DeepBreakWarning {
-                function: fn_name.to_string(),
+                function: fn_name,
                 depth,
             });
         }
