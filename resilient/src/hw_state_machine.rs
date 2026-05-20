@@ -12,9 +12,14 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2400: dropped the redundant `name: String` field. The only
+/// reader was `install`'s key clone — the field stored exactly what
+/// the registry key encoded. Pipeline now carries `(String,
+/// PeripheralSpec)` tuples — matches wcet (RES-2190), prob (RES-2170),
+/// power (RES-2386), stack (RES-2388), phantom (RES-2390), dependent
+/// (RES-2392), mmio_regmap (RES-2394), row_polymorphism (RES-2398).
 #[derive(Debug, Clone)]
 pub struct PeripheralSpec {
-    pub name: String,
     pub states: Vec<String>,
     /// Nested map: `current_state -> (method -> next_state)`.
     ///
@@ -30,14 +35,13 @@ pub struct PeripheralSpec {
 static PERIPHERALS: LazyLock<RwLock<HashMap<String, PeripheralSpec>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<PeripheralSpec> {
+pub fn collect() -> Vec<(String, PeripheralSpec)> {
     let attrs = crate::feature_attrs::find_kind("peripheral");
     // RES-1784: pre-size to attrs.len() — exactly one push per
     // attribute record.
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = PeripheralSpec {
-            name: item,
             states: Vec::new(),
             transitions: HashMap::new(),
             initial_state: String::new(),
@@ -72,17 +76,17 @@ pub fn collect() -> Vec<PeripheralSpec> {
                 }
             }
         }
-        out.push(spec);
+        out.push((item, spec));
     }
     out
 }
 
-pub fn install(specs: Vec<PeripheralSpec>) {
+pub fn install(specs: Vec<(String, PeripheralSpec)>) {
     if let Ok(mut g) = PERIPHERALS.write() {
         g.clear();
-        for s in specs {
-            g.insert(s.name.clone(), s);
-        }
+        // RES-2400: move (name, spec) tuples straight from collect()
+        // — no per-spec clone for the key.
+        g.extend(specs);
     }
 }
 
