@@ -93,8 +93,8 @@
       "claimed_at": "2026-05-12T04:21:23Z"
     },
     "resilient/src/generics.rs": {
-      "branch": "res-1523-generics-locals-borrow",
-      "claimed_at": "2026-05-12T13:40:00Z"
+      "branch": "res-2108-substitution-bind-skip-redundant",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/feature_attrs.rs": {
       "branch": "res-1303-feature-attrs-kind-index",

@@ -76,13 +76,21 @@ impl Subst {
     /// was already bound to a different type — that's the
     /// "T must be both Int and String" inconsistency the diagnostic
     /// surface targets.
+    ///
+    /// RES-2108: only allocate the owned `String` key on the first
+    /// binding. When `tp_name` is already mapped to the consistent
+    /// `ty`, return `Ok(())` immediately — re-inserting the same
+    /// (key, value) pair re-allocates the `String` key for nothing.
+    /// Generic-heavy code triggers many redundant binds during
+    /// unification, so this is hot.
     pub fn bind(&mut self, tp_name: &str, ty: Type) -> Result<(), String> {
         match self.map.get(tp_name) {
             Some(existing) if existing != &ty => Err(format!(
                 "type parameter `{}` is inferred as both `{}` and `{}` — they must agree",
                 tp_name, existing, ty
             )),
-            _ => {
+            Some(_) => Ok(()),
+            None => {
                 self.map.insert(tp_name.to_string(), ty);
                 Ok(())
             }
