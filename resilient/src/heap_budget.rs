@@ -34,16 +34,16 @@ const ALLOC_FNS: &[&str] = &[
 ];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1222: fast-reject — see stack_budget for the same pattern.
-    // Skip the closure dispatch for programs that declare no
-    // `_alloc{N}` suffix.
-    let Node::Program(stmts) = program else {
-        return Ok(());
-    };
-    let has_budget = stmts
-        .iter()
-        .any(|s| matches!(&s.node, Node::Function { name, .. } if parse_budget(name).is_some()));
-    if !has_budget {
+    // RES-1222 / RES-2304: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.any_fn_name_with_suffix(&["_alloc0", "_alloc1",
+    // "_alloc2", "_alloc3", "_alloc4", "_alloc5"])`, so the program
+    // is guaranteed to contain at least one `_alloc{N}`-suffixed
+    // function. The previous internal `stmts.iter().any(...)`
+    // pre-scan walked the full top-level statement list a second
+    // time for the same signal Markers already computed. Mirrors
+    // RES-2292 / RES-2294 / RES-2296 / RES-2298 / RES-2300 / RES-2302.
+    if !matches!(program, Node::Program(_)) {
         return Ok(());
     }
     for_each_function(program, |fname, _params, body| {
