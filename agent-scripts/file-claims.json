@@ -459,6 +459,10 @@
     "resilient/src/vibe_debt.rs": {
       "branch": "res-2252-vibe-debt-reuse-tmp",
       "claimed_at": "2026-05-20T07:50:25Z"
+    },
+    "resilient/src/autopilot.rs": {
+      "branch": "res-2256-autopilot-write-direct",
+      "claimed_at": "2026-05-20T08:06:02Z"
     }
   }
 }

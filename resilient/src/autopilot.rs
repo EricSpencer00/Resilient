@@ -78,24 +78,34 @@ pub fn run(program: &Node) -> AutopilotReport {
 }
 
 pub fn format_report(report: &AutopilotReport) -> String {
+    // RES-2256: write directly into `s` via `std::fmt::Write` instead
+    // of the `push_str(&format!(...))` antipattern. Each `format!()`
+    // previously allocated an intermediate `String` only to be
+    // immediately `push_str`'d into `s`. For an N-entry report with
+    // K requires/ensures/actions per entry, that's ~N*(4+K) avoidable
+    // String allocations. Mirrors RES-1912 (string concatenation),
+    // RES-2254 (string_interp), and the diag.rs RES-1980 rewrite.
+    use std::fmt::Write;
     let mut s = String::new();
-    s.push_str(&format!(
+    let _ = write!(
+        s,
         "Autopilot report — program-wide vibe debt: {:.1}%\n\n",
         report.program_debt_pct
-    ));
+    );
     for e in &report.entries {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             "fn {}\n  resilience: {} / 100   {}\n  vibe-signals: {} / 4\n",
             e.function_name, e.resilience_total, e.grade, e.vibe_signals
-        ));
+        );
         for r in &e.inferred_requires {
-            s.push_str(&format!("  suggested: requires {}\n", r));
+            let _ = writeln!(s, "  suggested: requires {}", r);
         }
         for r in &e.inferred_ensures {
-            s.push_str(&format!("  suggested: ensures {}\n", r));
+            let _ = writeln!(s, "  suggested: ensures {}", r);
         }
         for a in &e.action_items {
-            s.push_str(&format!("  action: {}\n", a));
+            let _ = writeln!(s, "  action: {}", a);
         }
         s.push('\n');
     }
