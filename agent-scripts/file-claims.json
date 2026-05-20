@@ -467,6 +467,10 @@
     "resilient/src/mutation_testing.rs": {
       "branch": "res-2288-mutation-fn-name-borrow",
       "claimed_at": "2026-05-20T09:50:03Z"
+    },
+    "resilient/src/bandwidth_budget.rs": {
+      "branch": "res-2306-bandwidth-budget-drop-prescan",
+      "claimed_at": "2026-05-20T10:46:57Z"
     }
   }
 }

@@ -41,17 +41,16 @@ const BUDGETS: &[(usize, &str)] = &[
 ];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1222: fast-reject — see stack_budget for the same pattern.
-    // Skip the closure dispatch for programs that declare no
-    // `_iobytes{N}` suffix.
-    let Node::Program(stmts) = program else {
-        return Ok(());
-    };
-    let has_budget = stmts.iter().any(|s| {
-        matches!(&s.node, Node::Function { name, .. }
-            if BUDGETS.iter().any(|(_, suf)| name.ends_with(*suf)))
-    });
-    if !has_budget {
+    // RES-1222 / RES-2306: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.any_fn_name_with_suffix(&["_iobytes16", "_iobytes32",
+    // "_iobytes64", "_iobytes128", "_iobytes256", "_iobytes512"])`,
+    // so the program is guaranteed to contain at least one
+    // `_iobytes{N}`-suffixed function. The previous internal
+    // `stmts.iter().any(...)` pre-scan walked the full top-level
+    // statement list a second time for the same signal Markers
+    // already computed. Mirrors RES-2292 through RES-2304.
+    if !matches!(program, Node::Program(_)) {
         return Ok(());
     }
     for_each_function(program, |fname, _params, body| {
