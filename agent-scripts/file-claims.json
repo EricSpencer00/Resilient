@@ -336,10 +336,6 @@
       "branch": "res-1820-radix-int-fast-reject",
       "claimed_at": "2026-05-13T13:43:38Z"
     },
-    "resilient/src/string_interp.rs": {
-      "branch": "res-1822-string-interp-expr-presize",
-      "claimed_at": "2026-05-13T13:50:23Z"
-    },
     "resilient/src/vm.rs": {
       "branch": "res-1830-vm-run-direct-locals-presize",
       "claimed_at": "2026-05-13T14:15:49Z"
@@ -463,6 +459,10 @@
     "resilient/src/fmt_validation.rs": {
       "branch": "res-2248-fmt-validation-cow-template",
       "claimed_at": "2026-05-20T07:26:07Z"
+    },
+    "resilient/src/string_interp.rs": {
+      "branch": "res-2254-string-interp-direct-write",
+      "claimed_at": "2026-05-20T07:57:00Z"
     }
   }
 }

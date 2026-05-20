@@ -161,26 +161,47 @@ pub(crate) fn eval_interp(interp: &mut Interpreter, parts: &[StringPart]) -> RRe
             StringPart::Literal(s) => out.push_str(s),
             StringPart::Expr(expr) => {
                 let val = interp.eval(expr)?;
-                out.push_str(&value_to_string(val));
+                // RES-2254: append the value directly to `out` instead
+                // of materializing it into a `String` first. For
+                // numeric / bool / "other" arms, `value_to_string`
+                // previously allocated a fresh `String` (via
+                // `i.to_string()`, `format!()`) just to immediately
+                // copy it into `out` via `push_str`. `write!(out,
+                // "{}", x)` formats straight into `out`'s buffer.
+                append_value(&mut out, val);
             }
         }
     }
     Ok(Value::String(out))
 }
 
-/// Convert a [`Value`] to its plain text form for string interpolation.
+/// Append a [`Value`]'s plain text form directly to an output buffer.
 ///
 /// Strings yield their raw contents (no surrounding quotes).
-/// Integers, floats, and booleans convert via `Display`.
+/// Integers, floats, and booleans format via `Display`.
 /// All other values (arrays, structs, maps, etc.) use the `Display`
 /// implementation of `Value`, which matches what `println` would show.
-fn value_to_string(v: Value) -> String {
+///
+/// RES-2254: writes through `std::fmt::Write` instead of returning a
+/// fresh `String`. For interpolation-heavy code (log messages, debug
+/// prints), this eliminates one `String` allocation per interpolated
+/// expression of a non-String value.
+fn append_value(out: &mut String, v: Value) {
+    use std::fmt::Write;
     match v {
-        Value::String(s) => s,
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Bool(b) => b.to_string(),
-        other => format!("{}", other),
+        Value::String(s) => out.push_str(&s),
+        Value::Int(i) => {
+            let _ = write!(out, "{}", i);
+        }
+        Value::Float(f) => {
+            let _ = write!(out, "{}", f);
+        }
+        Value::Bool(b) => {
+            let _ = write!(out, "{}", b);
+        }
+        other => {
+            let _ = write!(out, "{}", other);
+        }
     }
 }
 
