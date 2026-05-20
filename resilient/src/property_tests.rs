@@ -96,7 +96,16 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
 
     // Build a set of functions that actually have requires/ensures clauses.
-    let mut functions_with_contracts: std::collections::HashSet<String> =
+    //
+    // RES-2094: borrow `&str` from the program AST instead of cloning each
+    // function name into the set. `functions_with_contracts` lives only for
+    // the duration of this `check` call, and every name it stores is owned
+    // by the `program: &Node` reference for that whole window. The previous
+    // shape allocated one `String` per contract-bearing function — typical
+    // safety-critical programs annotate most functions with `requires`/
+    // `ensures`, so on a 50-fn program that's ~50 wasted allocations per
+    // typecheck. `&str: Borrow<str>` keeps `contains(...)` working.
+    let mut functions_with_contracts: std::collections::HashSet<&str> =
         std::collections::HashSet::new();
     if let Node::Program(stmts) = program {
         for stmt in stmts {
@@ -108,7 +117,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             } = &stmt.node
             {
                 if !requires.is_empty() || !ensures.is_empty() {
-                    functions_with_contracts.insert(name.clone());
+                    functions_with_contracts.insert(name.as_str());
                 }
             }
         }
@@ -116,7 +125,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 
     let mut warnings: Vec<String> = Vec::new();
     for spec in &specs {
-        if !functions_with_contracts.contains(&spec.fn_name) {
+        if !functions_with_contracts.contains(spec.fn_name.as_str()) {
             warnings.push(format!(
                 "{source_path}:0:0: warning[property_test]: \
                  `#[property_test]` on `{}` has no `requires`/`ensures` \
