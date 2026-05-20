@@ -63,14 +63,24 @@ impl RegionTable {
     ///
     /// Follows variable chains until a `Region::Named` or an unbound
     /// `Region::Var` is reached.
-    pub fn resolve(&self, mut r: Region) -> Region {
+    ///
+    /// RES-2212: walk the union-find chain via `&Region` borrows from
+    /// the `parent` HashMap. The previous shape did `r = parent.clone()`
+    /// at every step — a fresh `Region` allocation per chain link
+    /// (including a `String` clone whenever a `Named(_)` was bumped
+    /// out by an intermediate `Var(_)`). For chain depth D with a
+    /// `Named` target, the new loop clones the final `String` exactly
+    /// once and otherwise just walks `u32` indices.
+    pub fn resolve(&self, r: Region) -> Region {
+        let mut current_var = match r {
+            Region::Var(v) => v.0,
+            Region::Named(_) => return r,
+        };
         loop {
-            match &r {
-                Region::Var(v) => match self.parent.get(&v.0) {
-                    Some(parent) => r = parent.clone(),
-                    None => return r,
-                },
-                Region::Named(_) => return r,
+            match self.parent.get(&current_var) {
+                None => return Region::Var(RegionVar(current_var)),
+                Some(Region::Var(v)) => current_var = v.0,
+                Some(Region::Named(name)) => return Region::Named(name.clone()),
             }
         }
     }
