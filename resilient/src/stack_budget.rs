@@ -29,20 +29,16 @@ const SUFFIXES: &[(&str, usize)] = &[
 ];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1222: fast-reject. The pass only emits diagnostics for
-    // functions whose name ends in a `_stack{N}` suffix. Programs
-    // that declare no such function get nothing back from the
-    // SUFFIX lookup inside the closure, yet still pay the
-    // `for_each_function` dispatch per function. Scan top-level
-    // names once up front.
-    let Node::Program(stmts) = program else {
-        return Ok(());
-    };
-    let has_budget = stmts.iter().any(|s| {
-        matches!(&s.node, Node::Function { name, .. }
-            if SUFFIXES.iter().any(|(suf, _)| name.ends_with(*suf)))
-    });
-    if !has_budget {
+    // RES-1222 / RES-2302: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.any_fn_name_with_suffix(&["_stack8", "_stack16",
+    // "_stack32", "_stack64"])`, so the program is guaranteed to
+    // contain at least one `_stack{N}`-suffixed function. The
+    // previous internal `stmts.iter().any(...)` pre-scan walked the
+    // full top-level statement list a second time for the same
+    // signal Markers already computed. Mirrors RES-1916 / RES-1917 /
+    // RES-2292 / RES-2294 / RES-2296 / RES-2298 / RES-2300.
+    if !matches!(program, Node::Program(_)) {
         return Ok(());
     }
     for_each_function(program, |fname, params, body| {
