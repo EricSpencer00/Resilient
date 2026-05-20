@@ -404,10 +404,6 @@
       "branch": "res-2162-numeric-units-borrow-keys",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/assume_axioms.rs": {
-      "branch": "res-1958-assume-axioms-presize",
-      "claimed_at": "2026-05-19T18:52:28Z"
-    },
     "resilient/src/reentrancy_guard.rs": {
       "branch": "res-1962-reentrancy-rate-limit-presize",
       "claimed_at": "2026-05-19T18:59:39Z"
@@ -463,6 +459,10 @@
     "resilient/src/full_modules.rs": {
       "branch": "res-2236-full-modules-build-skip-clone",
       "claimed_at": "2026-05-20T06:40:00Z"
+    },
+    "resilient/src/assume_axioms.rs": {
+      "branch": "res-2242-assume-axioms-lazy-alloc",
+      "claimed_at": "2026-05-20T07:06:32Z"
     }
   }
 }

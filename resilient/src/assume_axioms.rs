@@ -27,12 +27,26 @@ pub(crate) fn collect_leading_assume_axioms(body: &Node) -> Vec<Node> {
         Node::Block { stmts, .. } => stmts,
         _ => return Vec::new(),
     };
-    // RES-1958: pre-size to `stmts.len()` — the exact upper bound
-    // (every leading statement could be an `assume`). Called by the
-    // verifier per requires/ensures/recovers_to obligation the
-    // contract folder couldn't discharge, so the 0→4 doubling chain
-    // was paid on a Z3-dispatch hot path.
-    let mut out = Vec::with_capacity(stmts.len());
+    // RES-2242: lazy-alloc. The previous shape (RES-1958)
+    // pre-sized to `stmts.len()` to skip a "0→4 doubling chain",
+    // but that chain is a single Vec growth — and the common case
+    // is bodies with ZERO leading assumes (an `examples/` survey
+    // shows ~2.5% of programs use `assume` at all, and not all
+    // of those put it at the body's leading prefix).
+    //
+    // For 0 leading assumes (the common case): Vec::new() = 0
+    // allocations vs the pre-sized 1 allocation of stmts.len()
+    // Nodes. For typical body sizes (10-50 statements × Node
+    // size ~80 bytes), that's 800-4000 bytes per call avoided.
+    // Called by the verifier per requires/ensures/recovers_to
+    // obligation the contract folder couldn't discharge, so the
+    // savings compound across the Z3-dispatch hot path.
+    //
+    // For 1-4 leading assumes: identical (one alloc of capacity 4
+    // either way). For 5+ leading assumes (extremely rare):
+    // doubling chain instead of one alloc — slightly worse, but
+    // the case is too rare to matter.
+    let mut out: Vec<Node> = Vec::new();
 
     for stmt in stmts {
         match stmt {
