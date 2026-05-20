@@ -404,10 +404,6 @@
       "branch": "res-2214-try-catch-emitted-variants-borrow",
       "claimed_at": "2026-05-20T05:34:11Z"
     },
-    "resilient/src/bounded_blocking.rs": {
-      "branch": "res-2218-bounded-blocking-borrow-callees",
-      "claimed_at": "2026-05-20T05:47:46Z"
-    },
     "resilient/src/labeled_break.rs": {
       "branch": "res-2220-labeled-break-borrow-fn-name",
       "claimed_at": "2026-05-20T05:55:47Z"
@@ -467,6 +463,10 @@
     "resilient/src/mutation_testing.rs": {
       "branch": "res-2288-mutation-fn-name-borrow",
       "claimed_at": "2026-05-20T09:50:03Z"
+    },
+    "resilient/src/bounded_blocking.rs": {
+      "branch": "res-2298-bounded-blocking-drop-prescan",
+      "claimed_at": "2026-05-20T10:23:57Z"
     }
   }
 }

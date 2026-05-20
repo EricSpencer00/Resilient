@@ -38,26 +38,15 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    // RES-1218: fast-reject. The transitive-blocking analysis below
-    // only fires for functions whose name ends in one of the
-    // `_bound{N}` suffixes — the per-function `visit(body, ...)`
-    // walk that builds `callees` + `blocking_calls` is dead work for
-    // every other program. The overwhelming majority of `cargo test`
-    // inputs declare zero `_bound{N}` functions, so a cheap O(N)
-    // suffix scan over the top-level statement list short-circuits
-    // the entire AST walk in that case. Mirrors RES-1211's
-    // `isr_call_graph::check` fast-reject (which used the same shape
-    // for `is_isr_name`).
-    let has_bound_suffix = stmts.iter().any(|s| {
-        if let Node::Function { name, .. } = &s.node {
-            SUFFIXES.iter().any(|(suffix, _)| name.ends_with(*suffix))
-        } else {
-            false
-        }
-    });
-    if !has_bound_suffix {
-        return Ok(());
-    }
+    // RES-1218 / RES-2298: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.any_fn_name_with_suffix(&["_bound1", "_bound2",
+    // "_bound4", "_bound8"])`, so the program is guaranteed to
+    // contain at least one `_bound{N}`-suffixed function. The previous
+    // internal `stmts.iter().any(...)` pre-scan walked the full
+    // top-level statement list a second time for the same signal
+    // Markers already computed during the shared whole-AST walk.
+    // Mirrors RES-1916 / RES-1917 / RES-2292 / RES-2294 / RES-2296.
     // RES-1511: borrow each top-level fn name as `&str` from the
     // AST into the outer `callees` / `blocking_calls` HashMaps and
     // the `decls` Vec.
