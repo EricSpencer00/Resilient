@@ -431,6 +431,10 @@
     "resilient/src/age_bounded_data.rs": {
       "branch": "res-2158-age-bounded-data-borrow",
       "claimed_at": "2026-05-20T03:38:49Z"
+    },
+    "resilient/src/epoch_ordering.rs": {
+      "branch": "res-2164-epoch-ordering-borrow-seq",
+      "claimed_at": "2026-05-20T03:45:57Z"
     }
   }
 }

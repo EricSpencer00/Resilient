@@ -27,12 +27,17 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // identifier. The previous `any_node` pre-scan was redundant —
     // removed.
     for_each_function(program, |fname, _params, body| {
-        let mut sequence: Vec<(String, u32)> = Vec::new();
+        // RES-2164: borrow the call name as `&str` from the body AST.
+        // The sequence vector lives only inside this for_each_function
+        // callback iteration and the consumer just `eprintln!`s the
+        // name — the previous `name.clone()` per epoch-tagged call
+        // was throwaway.
+        let mut sequence: Vec<(&str, u32)> = Vec::new();
         visit(body, &mut |n| {
             if let Node::CallExpression { function, .. } = n {
                 if let Node::Identifier { name, .. } = function.as_ref() {
                     if let Some(e) = epoch_of(name) {
-                        sequence.push((name.clone(), e));
+                        sequence.push((name.as_str(), e));
                     }
                 }
             }
