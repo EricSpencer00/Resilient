@@ -470,28 +470,50 @@ fn implies_node(a: Node, b: Node) -> Node {
 
 /// Best-effort rendering for diagnostics. Mirrors `verifier_actors`.
 fn render_clause(node: &Node) -> String {
+    // RES-2382: pre-allocate one buffer and recurse via `render_into`
+    // so nested expressions write directly into the same `String`.
+    // The previous shape allocated a fresh `String` per recursive call
+    // and joined them via `format!` — for an obligation of depth D
+    // the parent calls re-copied all the child text, costing
+    // O(D × total_text). Buffer reuse drops it to O(total_text).
+    // Same shape as RES-2380 (`verifier_actors`), RES-2330, RES-2322.
+    let mut out = String::with_capacity(64);
+    render_into(node, &mut out);
+    out
+}
+
+fn render_into(node: &Node, out: &mut String) {
+    use std::fmt::Write as _;
     match node {
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!(
-            "{} {} {}",
-            render_clause(left),
-            operator,
-            render_clause(right)
-        ),
+        } => {
+            render_into(left, out);
+            let _ = write!(out, " {} ", operator);
+            render_into(right, out);
+        }
         Node::PrefixExpression {
             operator, right, ..
-        } => format!("{}{}", operator, render_clause(right)),
-        Node::Identifier { name, .. } => name.clone(),
-        Node::IntegerLiteral { value, .. } => value.to_string(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::FieldAccess { target, field, .. } => {
-            format!("{}.{}", render_clause(target), field)
+        } => {
+            out.push_str(operator);
+            render_into(right, out);
         }
-        _ => "<expr>".to_string(),
+        Node::Identifier { name, .. } => out.push_str(name),
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::FieldAccess { target, field, .. } => {
+            render_into(target, out);
+            out.push('.');
+            out.push_str(field);
+        }
+        _ => out.push_str("<expr>"),
     }
 }
 
