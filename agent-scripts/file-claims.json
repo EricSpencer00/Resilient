@@ -404,10 +404,6 @@
       "branch": "res-2224-struct-exhaust-borrow-fn-name",
       "claimed_at": "2026-05-20T06:03:00Z"
     },
-    "resilient/src/full_modules.rs": {
-      "branch": "res-2236-full-modules-build-skip-clone",
-      "claimed_at": "2026-05-20T06:40:00Z"
-    },
     "resilient/src/crash_only_cert.rs": {
       "branch": "res-2240-crash-only-cert-hashset",
       "claimed_at": "2026-05-20T07:01:18Z"
@@ -459,6 +455,10 @@
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
+    },
+    "resilient/src/full_modules.rs": {
+      "branch": "res-2316-full-modules-drop-prescan",
+      "claimed_at": "2026-05-20T11:22:37Z"
     }
   }
 }
