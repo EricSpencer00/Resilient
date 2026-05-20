@@ -90,7 +90,14 @@ pub fn expand(name: &str, args: &[String]) -> Option<String> {
 /// unexpanded — the typechecker will emit an "unknown function" error, which
 /// is more useful than a silent no-op.
 pub fn lower_program(program: &mut Node) {
-    let macros_snapshot: Vec<(String, MacroDef)> = {
+    // RES-2134: `lower_node` only consults a set of macro NAMES to gate
+    // expansion (see `expand()` for the actual MacroDef lookup, which
+    // re-reads `MACROS` directly). The previous shape snapshotted the
+    // full `Vec<(String, MacroDef)>` — cloning every `MacroDef`'s
+    // `name`/`pattern`/`expansion` String fields — just to derive a
+    // `HashSet<String>` of names from it on the very next line. Skip
+    // the unused payload entirely and build the name set in one pass.
+    let macro_names: std::collections::HashSet<String> = {
         let Ok(g) = MACROS.read() else { return };
         if g.is_empty() {
             // Fast path: no macros installed — also try feature_attrs
@@ -102,16 +109,14 @@ pub fn lower_program(program: &mut Node) {
                 return;
             }
             install(defs.clone());
-            defs.into_iter().map(|d| (d.name.clone(), d)).collect()
+            defs.into_iter().map(|d| d.name).collect()
         } else {
-            g.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            g.keys().cloned().collect()
         }
     };
-    if macros_snapshot.is_empty() {
+    if macro_names.is_empty() {
         return;
     }
-    let macro_names: std::collections::HashSet<String> =
-        macros_snapshot.iter().map(|(k, _)| k.clone()).collect();
     lower_node(program, &macro_names);
 }
 
