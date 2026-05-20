@@ -447,6 +447,10 @@
     "resilient/src/property_tests.rs": {
       "branch": "res-2186-property-tests-cleanup",
       "claimed_at": "2026-05-20T04:27:32Z"
+    },
+    "resilient/src/ghost_types.rs": {
+      "branch": "res-2208-ghost-types-is-ghost-borrow-guard",
+      "claimed_at": "2026-05-20T05:15:41Z"
     }
   }
 }

@@ -32,11 +32,19 @@ pub fn install(set: HashSet<String>) {
 }
 
 pub fn is_ghost(name: &str) -> bool {
+    // RES-2208: hold the read guard and probe the HashSet directly.
+    // The previous `and_then(|g| g.clone())` form cloned the
+    // entire `Option<HashSet<String>>` (deep-copying every ghost-fn
+    // name) just to call `.contains(&str)` on it. `is_ghost` runs
+    // per CallExpression during typecheck — for any program with
+    // call sites and at least one `#[ghost]` attribute, the deep
+    // clone fired on every call-site visit. Same lock-then-borrow
+    // shape as RES-1544 / RES-1547 / RES-1549 / RES-1552 / RES-2112
+    // / RES-2114 / RES-2116 / RES-2120.
     GHOST_FNS
         .read()
         .ok()
-        .and_then(|g| g.clone())
-        .map(|s| s.contains(name))
+        .map(|g| g.as_ref().is_some_and(|s| s.contains(name)))
         .unwrap_or(false)
 }
 
