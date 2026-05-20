@@ -42,7 +42,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // guaranteed to contain at least one Iterator impl. The previous
     // `any_node` pre-scan was redundant — removed. (The typechecker
     // else branch installs an empty set directly.)
-    let mut iters = HashSet::with_capacity(stmts.len());
+    // RES-2244: pre-size to 4 — typical Iterator impl count is 1-5
+    // even on iterator-heavy programs. The previous `with_capacity(
+    // stmts.len())` allocated bucket space for every top-level
+    // statement, ~95% of which are NOT Iterator impls (most stmts
+    // are Functions / StructDecls / TypeAliases). For a 100-stmt
+    // program with 2 Iterator impls, this drops the HashSet from
+    // ~200-slot pre-alloc to ~8-slot. Mirrors RES-2242
+    // (assume_axioms lazy alloc) — favour the common iterator-count
+    // case over the rare iterator-heavy upper bound.
+    let mut iters = HashSet::with_capacity(4);
     for s in stmts {
         if let Node::ImplBlock {
             trait_name,

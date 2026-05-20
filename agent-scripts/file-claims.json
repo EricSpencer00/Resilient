@@ -8,10 +8,6 @@
       "branch": "res-2136-array-set-hashset-membership",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/iterator_protocol.rs": {
-      "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:38:11Z"
-    },
     ".github/workflows/embedded.yml": {
       "branch": "res-1198-embedded-rust-cache",
       "claimed_at": "2026-05-12T01:23:24Z"
@@ -219,10 +215,6 @@
     "resilient/src/lean_spec.rs": {
       "branch": "res-1980-lean-spec-write",
       "claimed_at": "2026-05-19T00:00:00Z"
-    },
-    "resilient/src/autopilot.rs": {
-      "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:38:11Z"
     },
     "resilient/src/semver_behavior.rs": {
       "branch": "res-2006-semver-baseline-borrow",
@@ -463,6 +455,10 @@
     "resilient/src/crash_only_cert.rs": {
       "branch": "res-2240-crash-only-cert-hashset",
       "claimed_at": "2026-05-20T07:01:18Z"
+    },
+    "resilient/src/iterator_protocol.rs": {
+      "branch": "res-2244-iterator-protocol-lazy",
+      "claimed_at": "2026-05-20T07:11:33Z"
     }
   }
 }
