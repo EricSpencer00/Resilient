@@ -45,15 +45,16 @@ enum FreshOrder {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1218: fast-reject — skip for programs with no Sensor-typed parameters.
-    let Node::Program(stmts) = program else {
-        return Ok(());
-    };
-    let has_sensor = stmts.iter().any(|s| {
-        matches!(&s.node, Node::Function { parameters, .. }
-            if parameters.iter().any(|(ty, _)| SENSOR_TYPE_PREFIXES.iter().any(|p| ty.starts_with(*p))))
-    });
-    if !has_sensor {
+    // RES-1218 / RES-2292: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.any_param_type_with_prefix(&["Sensor", "&Sensor", "&mut Sensor"])`,
+    // so the program is guaranteed to contain at least one Sensor-
+    // typed parameter. The previous internal `stmts.iter().any(...)`
+    // pre-scan walked the full top-level statement list a second time
+    // for the same signal Markers already computed during the shared
+    // whole-AST walk. Mirrors RES-1916 / RES-1917's removal of
+    // redundant `any_node` pre-scans from marker-gated passes.
+    if !matches!(program, Node::Program(_)) {
         return Ok(());
     }
     for_each_function(program, |name, params, body| {
