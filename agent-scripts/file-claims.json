@@ -245,7 +245,7 @@
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/region_inference.rs": {
-      "branch": "res-1972-region-inference-borrow",
+      "branch": "res-2146-region-inference-callee-info-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/mutual_recursion_scc.rs": {
