@@ -88,7 +88,6 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // First pass: collect module name → exported item names.
     let mut module_items: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
         std::collections::HashMap::new();
-    let mut seen_order: Vec<&str> = Vec::new();
 
     for s in stmts {
         if let Node::ModuleDecl { name, body, .. } = &s.node {
@@ -100,7 +99,6 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                     source_path, n
                 ));
             }
-            seen_order.push(n);
             let mut exports: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for item in body {
                 match item {
@@ -124,15 +122,21 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // Second pass: walk all identifier nodes for `mod::item` references.
+    // Second pass: walk identifier nodes for `mod::item` references.
     // The typechecker's "undefined variable" check catches unresolved
-    // identifiers; we only want to surface a *better* message for the case
-    // where the module IS declared but the specific item IS NOT.
+    // identifiers; we only want to surface a *better* message for the
+    // case where the module IS declared but the specific item IS NOT.
+    //
+    // RES-2352: use `any_node` instead of `visit` so the walk
+    // terminates on the first unresolved reference. The previous shape
+    // toggled an `Option<String>` then checked it at the top of the
+    // closure, but `visit` still recurses through every remaining node
+    // — every post-match call paid the dispatch in `walk_children` for
+    // no reason. `any_node` (RES-1238) propagates `true` upward and
+    // short-circuits siblings/aunts/the rest of the tree. Same shape
+    // as RES-2340 (ghost_types) and RES-2342 (audit_log_required).
     let mut unresolved: Option<String> = None;
-    crate::uniqueness_walk::visit(program, &mut |n| {
-        if unresolved.is_some() {
-            return;
-        }
+    crate::uniqueness_walk::any_node(program, |n| {
         if let Node::Identifier { name, .. } = n
             && let Some((mod_name, item_name)) = name.split_once("::")
             && let Some(exports) = module_items.get(mod_name)
@@ -142,6 +146,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 "{}: error: module `{}` does not export `{}`",
                 source_path, mod_name, item_name
             ));
+            true
+        } else {
+            false
         }
     });
 
