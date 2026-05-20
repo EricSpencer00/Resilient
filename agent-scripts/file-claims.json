@@ -172,10 +172,6 @@
       "branch": "res-2122-fingerprint-drop-function-name",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/contract_inference.rs": {
-      "branch": "res-2210-contract-inference-option-complex",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/resilience_score.rs": {
       "branch": "res-1990-resilience-buffer-reuse",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -455,6 +451,10 @@
     "resilient/src/idempotent_handler.rs": {
       "branch": "res-2308-idempotent-handler-drop-prescan",
       "claimed_at": "2026-05-20T10:53:02Z"
+    },
+    "resilient/src/contract_inference.rs": {
+      "branch": "res-2326-contract-inference-parts-direct",
+      "claimed_at": "2026-05-20T12:09:01Z"
     }
   }
 }

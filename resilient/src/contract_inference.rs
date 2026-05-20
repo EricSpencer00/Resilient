@@ -617,18 +617,36 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         } else {
             "note[contract_infer]"
         };
-        let mut parts: Vec<String> = Vec::with_capacity(ic.requires.len() + ic.ensures.len());
+        // RES-2326: build the suggestion string directly into one
+        // `String` instead of materialising a `Vec<String>` only to
+        // `.join(", ")` it. The previous shape allocated one
+        // intermediate `String` per clause (via `format!("requires
+        // {r}")` / `format!("ensures {e}")`) plus the wrapping `Vec`
+        // and the join's output buffer. For an N-clause suggestion,
+        // that's N + 2 wasted allocations on every contract-inference
+        // emit. Same shape as the write-direct refactor series.
+        let mut parts = String::new();
+        let mut first = true;
         for r in &ic.requires {
-            parts.push(format!("requires {r}"));
+            if !first {
+                parts.push_str(", ");
+            }
+            parts.push_str("requires ");
+            parts.push_str(r);
+            first = false;
         }
         for e in &ic.ensures {
-            parts.push(format!("ensures {e}"));
+            if !first {
+                parts.push_str(", ");
+            }
+            parts.push_str("ensures ");
+            parts.push_str(e);
+            first = false;
         }
         eprintln!(
             "{source_path}:0:0: {label}: `{}` — \
              inferred suggestion: {}",
-            ic.function_name,
-            parts.join(", ")
+            ic.function_name, parts
         );
     }
     Ok(())
