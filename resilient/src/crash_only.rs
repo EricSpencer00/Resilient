@@ -24,20 +24,14 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    // RES-1224: fast-reject. The diagnostic only fires for functions
-    // whose name starts with `crash_`, so if none exists the
-    // `HashSet<String>` of every top-level function name (N string
-    // allocations plus bucket overhead) is pure waste. Programs
-    // without `crash_*` functions — basically everything in
-    // `examples/` and the test suite — get to skip the allocation
-    // entirely. Same shape as RES-1211 / RES-1214 / RES-1217 /
-    // RES-1218 / RES-1222.
-    let has_crash = stmts
-        .iter()
-        .any(|s| matches!(&s.node, Node::Function { name, .. } if name.starts_with("crash_")));
-    if !has_crash {
-        return Ok(());
-    }
+    // RES-1224 / RES-2310: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.any_fn_name_with_prefix(&["crash_"])`, so the program
+    // is guaranteed to contain at least one `crash_`-prefixed
+    // function. The previous internal `stmts.iter().any(...)`
+    // pre-scan walked the full top-level statement list a second
+    // time for the same signal Markers already computed. Mirrors
+    // RES-2292 through RES-2308.
     // RES-1520: borrow each top-level fn name as `&str` from the
     // AST into the lookup set. The contains check below uses
     // `&str` (via `Borrow<str>`), so the cloned `String` keys were

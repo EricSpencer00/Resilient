@@ -112,10 +112,6 @@
       "branch": "res-1523-imports-canon-move",
       "claimed_at": "2026-05-12T13:18:45Z"
     },
-    "resilient/src/crash_only.rs": {
-      "branch": "res-1520-crash-only-name-borrow",
-      "claimed_at": "2026-05-12T13:33:00Z"
-    },
     "resilient/src/deadlock_freedom.rs": {
       "branch": "res-1522-deadlock-actors-borrow",
       "claimed_at": "2026-05-12T13:34:45Z"
@@ -459,6 +455,10 @@
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
+    },
+    "resilient/src/crash_only.rs": {
+      "branch": "res-2310-crash-only-drop-prescan",
+      "claimed_at": "2026-05-20T11:00:18Z"
     }
   }
 }
