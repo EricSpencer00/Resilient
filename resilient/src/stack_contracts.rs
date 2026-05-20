@@ -10,15 +10,22 @@
 use crate::Node;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+/// RES-2388: dropped the redundant `fn_name: String` field. The two
+/// readers in `check` (`bodies.get(spec.fn_name.as_str())` lookup +
+/// the budget-exceeded error format) used it strictly as a name tied
+/// to the attribute owner. The field stored exactly what the
+/// attribute key encoded. Pipeline now carries `(String, StackSpec)`
+/// tuples from `collect()` to `check()`, matching the shape that
+/// `wcet_contracts` (RES-2190), `probabilistic_contracts` (RES-2170),
+/// and `power_contracts` (RES-2386) already use.
+#[derive(Debug, Clone, Copy)]
 pub struct StackSpec {
-    pub fn_name: String,
     pub budget_bytes: u64,
 }
 
 const FRAME_BYTES: u64 = 64;
 
-pub fn collect() -> Vec<StackSpec> {
+pub fn collect() -> Vec<(String, StackSpec)> {
     let attrs = crate::feature_attrs::find_kind("stack");
     // RES-1784: pre-size to attrs.len() — conditional push (only when
     // `bytes` chunk parses), so this is an upper bound.
@@ -40,10 +47,7 @@ pub fn collect() -> Vec<StackSpec> {
             }
         }
         if let Some(n) = budget_bytes {
-            out.push(StackSpec {
-                fn_name: item,
-                budget_bytes: n,
-            });
+            out.push((item, StackSpec { budget_bytes: n }));
         }
     }
     out
@@ -106,14 +110,14 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             _ => None,
         })
         .collect();
-    for spec in &specs {
-        if let Some(body) = bodies.get(spec.fn_name.as_str()) {
+    for (fn_name, spec) in &specs {
+        if let Some(body) = bodies.get(fn_name.as_str()) {
             let depth = max_call_depth(body, 1);
             let bytes = depth * FRAME_BYTES;
             if bytes > spec.budget_bytes {
                 return Err(format!(
                     "{}:0:0: error: `{}` stack budget exceeded: estimated {} bytes (depth {}) > declared {} bytes",
-                    source_path, spec.fn_name, bytes, depth, spec.budget_bytes
+                    source_path, fn_name, bytes, depth, spec.budget_bytes
                 ));
             }
         }
