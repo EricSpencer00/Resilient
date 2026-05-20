@@ -293,7 +293,13 @@ pub fn try_emit_for_fn(program: &Node, fn_name: &str) -> Result<String, String> 
     Err(format!("function `{fn_name}` not found"))
 }
 
-pub fn list_emittable(program: &Node) -> Vec<String> {
+/// RES-2216: borrow each emittable function name from the program AST.
+/// The two consumers (`check`'s `emittable.join(", ")` + the test's
+/// `names.contains(&"easy")`) both only read each name; the previous
+/// shape paid one `String::clone()` per Lean-emittable fn for data
+/// already living behind `&s.node`. `<&str>::join(", ")` returns a
+/// fresh `String` so the eprintln output is unchanged.
+pub fn list_emittable(program: &Node) -> Vec<&str> {
     let Node::Program(stmts) = program else {
         return Vec::new();
     };
@@ -303,7 +309,7 @@ pub fn list_emittable(program: &Node) -> Vec<String> {
     for s in stmts {
         if let Node::Function { name, .. } = &s.node {
             if lower_function(&s.node).is_ok() {
-                out.push(name.clone());
+                out.push(name.as_str());
             }
         }
     }
@@ -338,7 +344,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             ..
         } = &s.node
         {
-            if emittable.contains(name) && (!requires.is_empty() || !ensures.is_empty()) {
+            if emittable.contains(&name.as_str()) && (!requires.is_empty() || !ensures.is_empty()) {
                 eprintln!(
                     "lean-spec:   `{name}` has {} requires + {} ensures clause(s) — \
                      use `rz emit-lean {name}` to generate the theorem",
@@ -420,8 +426,8 @@ mod tests {
         "#;
         let (prog, _) = parse(src);
         let names = list_emittable(&prog);
-        assert!(names.contains(&"easy".to_string()));
-        assert!(!names.contains(&"hard".to_string()));
+        assert!(names.contains(&"easy"));
+        assert!(!names.contains(&"hard"));
     }
 
     #[test]

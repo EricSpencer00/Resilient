@@ -229,7 +229,7 @@
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/lean_spec.rs": {
-      "branch": "res-1980-lean-spec-write",
+      "branch": "res-2216-lean-spec-list-emittable-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/autopilot.rs": {
