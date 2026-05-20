@@ -82,6 +82,25 @@ impl Formatter {
         self.out.push_str(s);
     }
 
+    /// RES-2274: write through `std::fmt::Write` directly into the output
+    /// buffer, bypassing the `self.write(&format!(...))` antipattern that
+    /// allocates an intermediate `String` per call site. The indent
+    /// prelude is emitted before the format args are streamed in. All
+    /// call sites in this module construct format strings with at least
+    /// one literal character, so the "empty-output" guard from `write`
+    /// is unnecessary here. `String`'s `write_fmt` impl is infallible —
+    /// the discarded `Result` cannot encode any error.
+    fn write_args(&mut self, args: std::fmt::Arguments<'_>) {
+        use std::fmt::Write as _;
+        if self.at_line_start {
+            for _ in 0..self.depth {
+                self.out.push_str(INDENT);
+            }
+            self.at_line_start = false;
+        }
+        let _ = self.out.write_fmt(args);
+    }
+
     fn newline(&mut self) {
         // Strip trailing spaces from the current line before the
         // newline so we never emit trailing whitespace.
@@ -141,9 +160,9 @@ impl Formatter {
         match node {
             Node::Use { path, alias, .. } => {
                 if let Some(ns) = alias {
-                    self.write(&format!("use \"{}\" as {};", path, ns));
+                    self.write_args(format_args!("use \"{}\" as {};", path, ns));
                 } else {
-                    self.write(&format!("use \"{}\";", path));
+                    self.write_args(format_args!("use \"{}\";", path));
                 }
                 self.newline();
             }
@@ -166,11 +185,11 @@ impl Formatter {
                 );
             }
             Node::StructDecl { name, fields, .. } => {
-                self.write(&format!("struct {} {{", name));
+                self.write_args(format_args!("struct {} {{", name));
                 self.newline();
                 self.indent();
                 for (ty, fname) in fields {
-                    self.write(&format!("{} {},", ty, fname));
+                    self.write_args(format_args!("{} {},", ty, fname));
                     self.newline();
                 }
                 self.dedent();
@@ -183,11 +202,10 @@ impl Formatter {
                 methods,
                 ..
             } => {
-                let header = match trait_name {
-                    Some(t) => format!("impl {} for {} {{", t, struct_name),
-                    None => format!("impl {} {{", struct_name),
-                };
-                self.write(&header);
+                match trait_name {
+                    Some(t) => self.write_args(format_args!("impl {} for {} {{", t, struct_name)),
+                    None => self.write_args(format_args!("impl {} {{", struct_name)),
+                }
                 self.newline();
                 self.indent();
                 for (i, m) in methods.iter().enumerate() {
@@ -201,7 +219,7 @@ impl Formatter {
                 self.newline();
             }
             Node::TraitDecl { name, methods, .. } => {
-                self.write(&format!("trait {} {{", name));
+                self.write_args(format_args!("trait {} {{", name));
                 self.newline();
                 self.indent();
                 for sig in methods {
@@ -221,7 +239,10 @@ impl Formatter {
                         .map(|i| format!("_{}", i))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    self.write(&format!("fn {}({}{});", sig.name, self_token, placeholders));
+                    self.write_args(format_args!(
+                        "fn {}({}{});",
+                        sig.name, self_token, placeholders
+                    ));
                     self.newline();
                 }
                 self.dedent();
@@ -229,7 +250,7 @@ impl Formatter {
                 self.newline();
             }
             Node::TypeAlias { name, target, .. } => {
-                self.write(&format!("type {} = {};", name, target));
+                self.write_args(format_args!("type {} = {};", name, target));
                 self.newline();
             }
             // RES-406: re-emit `unsafe { ... }`. The body is a regular
@@ -243,7 +264,7 @@ impl Formatter {
             // and tuple-style); the format follows Rust convention so
             // upstream IDE tooling can reuse syntax-highlighting.
             Node::EnumDecl { name, variants, .. } => {
-                self.write(&format!("enum {} {{", name));
+                self.write_args(format_args!("enum {} {{", name));
                 self.newline();
                 self.indent();
                 for (i, v) in variants.iter().enumerate() {
@@ -258,14 +279,14 @@ impl Formatter {
                 self.newline();
             }
             Node::RegionDecl { name, .. } => {
-                self.write(&format!("region {};", name));
+                self.write_args(format_args!("region {};", name));
                 self.newline();
             }
             // RES-319: re-emit a newtype declaration.
             Node::NewtypeDecl {
                 name, base_type, ..
             } => {
-                self.write(&format!("newtype {} = {};", name, base_type));
+                self.write_args(format_args!("newtype {} = {};", name, base_type));
                 self.newline();
             }
             // RES-386: re-emit a commutativity-style actor block.
@@ -277,10 +298,10 @@ impl Formatter {
                 handlers,
                 ..
             } => {
-                self.write(&format!("actor {} {{", name));
+                self.write_args(format_args!("actor {} {{", name));
                 self.newline();
                 self.indent();
-                self.write(&format!("state: {} = ", state_type));
+                self.write_args(format_args!("state: {} = ", state_type));
                 self.fmt_expr(state_init);
                 self.write(";");
                 self.newline();
@@ -291,7 +312,7 @@ impl Formatter {
                     self.newline();
                 }
                 for h in handlers {
-                    self.write(&format!("receive {}()", h.name));
+                    self.write_args(format_args!("receive {}()", h.name));
                     for e in &h.ensures {
                         self.newline();
                         self.indent();
@@ -318,11 +339,11 @@ impl Formatter {
                 receive_handlers,
                 ..
             } => {
-                self.write(&format!("actor {} {{", name));
+                self.write_args(format_args!("actor {} {{", name));
                 self.newline();
                 self.indent();
                 for (ty, field, init) in state_fields {
-                    self.write(&format!("{}: {} = ", field, ty));
+                    self.write_args(format_args!("{}: {} = ", field, ty));
                     self.fmt_expr(init);
                     self.write(";");
                     self.newline();
@@ -334,19 +355,19 @@ impl Formatter {
                     self.newline();
                 }
                 for ev in eventually_clauses {
-                    self.write(&format!("eventually(after: {}): ", ev.target_handler));
+                    self.write_args(format_args!("eventually(after: {}): ", ev.target_handler));
                     self.fmt_expr(&ev.post);
                     self.write(";");
                     self.newline();
                 }
                 for h in receive_handlers {
                     self.blank_line();
-                    self.write(&format!("receive {}(", h.name));
+                    self.write_args(format_args!("receive {}(", h.name));
                     for (i, (pty, pname)) in h.parameters.iter().enumerate() {
                         if i > 0 {
                             self.write(", ");
                         }
-                        self.write(&format!("{} {}", pty, pname));
+                        self.write_args(format_args!("{} {}", pty, pname));
                     }
                     self.write(")");
                     for r in &h.requires {
@@ -378,11 +399,11 @@ impl Formatter {
                 invariants,
                 ..
             } => {
-                self.write(&format!("cluster {} {{", name));
+                self.write_args(format_args!("cluster {} {{", name));
                 self.newline();
                 self.indent();
                 for (local, actor_ty) in members {
-                    self.write(&format!("{}: {};", local, actor_ty));
+                    self.write_args(format_args!("{}: {};", local, actor_ty));
                     self.newline();
                 }
                 for inv in invariants {
@@ -401,17 +422,16 @@ impl Formatter {
                 type_annot,
                 ..
             } => {
-                let ann = match type_annot {
-                    Some(t) => format!(": {}", t),
-                    None => String::new(),
-                };
-                self.write(&format!("let {}{} = ", name, ann));
+                match type_annot {
+                    Some(t) => self.write_args(format_args!("let {}: {} = ", name, t)),
+                    None => self.write_args(format_args!("let {} = ", name)),
+                }
                 self.fmt_expr(value);
                 self.write(";");
                 self.newline();
             }
             Node::StaticLet { name, value, .. } => {
-                self.write(&format!("static let {} = ", name));
+                self.write_args(format_args!("static let {} = ", name));
                 self.fmt_expr(value);
                 self.write(";");
                 self.newline();
@@ -424,9 +444,9 @@ impl Formatter {
                 ..
             } => {
                 if let Some(ty) = type_annot {
-                    self.write(&format!("const {}: {} = ", name, ty));
+                    self.write_args(format_args!("const {}: {} = ", name, ty));
                 } else {
-                    self.write(&format!("const {} = ", name));
+                    self.write_args(format_args!("const {} = ", name));
                 }
                 self.fmt_expr(value);
                 self.write(";");
@@ -439,7 +459,7 @@ impl Formatter {
                 value,
                 ..
             } => {
-                self.write(&format!("let {} {{ ", struct_name));
+                self.write_args(format_args!("let {} {{ ", struct_name));
                 let mut parts: Vec<String> = Vec::new();
                 for (field, local) in fields {
                     if field == local {
@@ -458,7 +478,7 @@ impl Formatter {
                 self.newline();
             }
             Node::Assignment { name, value, .. } => {
-                self.write(&format!("{} = ", name));
+                self.write_args(format_args!("{} = ", name));
                 self.fmt_expr(value);
                 self.write(";");
                 self.newline();
@@ -486,11 +506,11 @@ impl Formatter {
             }
             // RES-2653: labeled break/continue.
             Node::BreakLabel { label, .. } => {
-                self.write(&format!("break {label};"));
+                self.write_args(format_args!("break {label};"));
                 self.newline();
             }
             Node::ContinueLabel { label, .. } => {
-                self.write(&format!("continue {label};"));
+                self.write_args(format_args!("continue {label};"));
                 self.newline();
             }
             Node::IfStatement {
@@ -548,7 +568,7 @@ impl Formatter {
                 invariants,
                 ..
             } => {
-                self.write(&format!("for {} in ", name));
+                self.write_args(format_args!("for {} in ", name));
                 self.fmt_expr(iterable);
                 if !invariants.is_empty() {
                     self.newline();
@@ -577,7 +597,7 @@ impl Formatter {
             } => {
                 self.write("live");
                 if let Some(bo) = backoff {
-                    self.write(&format!(
+                    self.write_args(format_args!(
                         " backoff(base_ms={}, factor={}, max_ms={})",
                         bo.base_ms, bo.factor, bo.max_ms
                     ));
@@ -656,7 +676,7 @@ impl Formatter {
                 self.dedent();
                 self.write("}");
                 for (variant, handler_body) in handlers {
-                    self.write(&format!(" catch {} {{", variant));
+                    self.write_args(format_args!(" catch {} {{", variant));
                     self.newline();
                     self.indent();
                     for s in handler_body {
@@ -668,20 +688,20 @@ impl Formatter {
                 self.newline();
             }
             Node::Extern { library, decls, .. } => {
-                self.write(&format!("extern \"{}\" {{", library));
+                self.write_args(format_args!("extern \"{}\" {{", library));
                 self.newline();
                 self.indent();
                 for decl in decls {
                     if decl.trusted {
                         self.write("@trusted ");
                     }
-                    self.write(&format!("fn {}(", decl.resilient_name));
+                    self.write_args(format_args!("fn {}(", decl.resilient_name));
                     for (i, (ty, name)) in decl.parameters.iter().enumerate() {
                         if i > 0 {
                             self.write(", ");
                         }
                         // extern fn uses `name: Type` (not `Type name`).
-                        self.write(&format!("{}: {}", name, ty));
+                        self.write_args(format_args!("{}: {}", name, ty));
                     }
                     if decl.is_variadic {
                         if !decl.parameters.is_empty() {
@@ -689,9 +709,9 @@ impl Formatter {
                         }
                         self.write("...");
                     }
-                    self.write(&format!(") -> {}", decl.return_type));
+                    self.write_args(format_args!(") -> {}", decl.return_type));
                     if decl.c_name != decl.resilient_name {
-                        self.write(&format!(" = \"{}\"", decl.c_name));
+                        self.write_args(format_args!(" = \"{}\"", decl.c_name));
                     }
                     for req in &decl.requires {
                         self.write(" requires ");
@@ -710,7 +730,7 @@ impl Formatter {
             }
             // RES-324: `mod name { ... }` namespace block.
             Node::ModuleDecl { name, body, .. } => {
-                self.write(&format!("mod {} {{", name));
+                self.write_args(format_args!("mod {} {{", name));
                 self.newline();
                 self.indent();
                 for s in body {
@@ -727,13 +747,13 @@ impl Formatter {
                 self.write("supervisor {");
                 self.newline();
                 self.indent();
-                self.write(&format!("strategy: {},", strategy));
+                self.write_args(format_args!("strategy: {},", strategy));
                 self.newline();
                 self.write("children: [");
                 self.newline();
                 self.indent();
                 for child in children {
-                    self.write(&format!(
+                    self.write_args(format_args!(
                         "{{ id: \"{}\", fn: {}, restart: {} }},",
                         child.id, child.fn_name, child.restart
                     ));
@@ -799,17 +819,18 @@ impl Formatter {
     ) {
         self.write("fn");
         if let Some(n) = name {
-            self.write(&format!(" {}", n));
+            self.write_args(format_args!(" {}", n));
         }
         self.write("(");
-        let params: Vec<String> = parameters
-            .iter()
-            .map(|(ty, pname)| format!("{} {}", ty, pname))
-            .collect();
-        self.write(&params.join(", "));
+        for (i, (ty, pname)) in parameters.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write_args(format_args!("{} {}", ty, pname));
+        }
         self.write(")");
         if let Some(rt) = return_type {
-            self.write(&format!(" -> {}", rt));
+            self.write_args(format_args!(" -> {}", rt));
         }
 
         if !requires.is_empty() || !ensures.is_empty() {
@@ -843,7 +864,7 @@ impl Formatter {
     fn fmt_expr(&mut self, node: &Node) {
         match node {
             Node::Identifier { name, .. } => self.write(name),
-            Node::IntegerLiteral { value, .. } => self.write(&value.to_string()),
+            Node::IntegerLiteral { value, .. } => self.write_args(format_args!("{}", value)),
             Node::FloatLiteral { value, .. } => {
                 // Always include a decimal point so the literal round-
                 // trips as a float, not an int.
@@ -851,11 +872,11 @@ impl Formatter {
                 if s.contains('.') || s.contains('e') || s.contains('E') {
                     self.write(&s);
                 } else {
-                    self.write(&format!("{}.0", s));
+                    self.write_args(format_args!("{}.0", s));
                 }
             }
             Node::StringLiteral { value, .. } => {
-                self.write(&format!("\"{}\"", escape_string(value)));
+                self.write_args(format_args!("\"{}\"", escape_string(value)));
             }
             Node::BooleanLiteral { value, .. } => {
                 self.write(if *value { "true" } else { "false" });
@@ -871,9 +892,9 @@ impl Formatter {
                         b'\r' => self.write("\\r"),
                         0 => self.write("\\0"),
                         x if x.is_ascii_graphic() || x == b' ' => {
-                            self.write(&char::from(x).to_string());
+                            self.write_args(format_args!("{}", char::from(x)));
                         }
-                        x => self.write(&format!("\\x{:02x}", x)),
+                        x => self.write_args(format_args!("\\x{:02x}", x)),
                     }
                 }
                 self.write("\"");
@@ -891,7 +912,7 @@ impl Formatter {
                 ..
             } => {
                 self.fmt_expr(left);
-                self.write(&format!(" {} ", operator));
+                self.write_args(format_args!(" {} ", operator));
                 self.fmt_expr(right);
             }
             Node::CallExpression {
@@ -911,7 +932,7 @@ impl Formatter {
             }
             // RES-325: `name: value` inside a call argument list.
             Node::NamedArg { name, value, .. } => {
-                self.write(&format!("{}: ", name));
+                self.write_args(format_args!("{}: ", name));
                 self.fmt_expr(value);
             }
             // RES-319: newtype constructor — re-emit as `Name(value)`.
@@ -932,10 +953,10 @@ impl Formatter {
                 self.fmt_expr(object);
                 match access {
                     crate::ChainAccess::Field(f) => {
-                        self.write(&format!("?.{}", f));
+                        self.write_args(format_args!("?.{}", f));
                     }
                     crate::ChainAccess::Method(m, args) => {
-                        self.write(&format!("?.{}(", m));
+                        self.write_args(format_args!("?.{}(", m));
                         for (i, a) in args.iter().enumerate() {
                             if i > 0 {
                                 self.write(", ");
@@ -948,7 +969,7 @@ impl Formatter {
             }
             Node::FieldAccess { target, field, .. } => {
                 self.fmt_expr(target);
-                self.write(&format!(".{}", field));
+                self.write_args(format_args!(".{}", field));
             }
             Node::FieldAssignment {
                 target,
@@ -957,7 +978,7 @@ impl Formatter {
                 ..
             } => {
                 self.fmt_expr(target);
-                self.write(&format!(".{} = ", field));
+                self.write_args(format_args!(".{} = ", field));
                 self.fmt_expr(value);
             }
             Node::IndexExpression { target, index, .. } => {
@@ -1036,12 +1057,12 @@ impl Formatter {
                 self.write("}");
             }
             Node::StructLiteral { name, fields, .. } => {
-                self.write(&format!("new {} {{", name));
+                self.write_args(format_args!("new {} {{", name));
                 for (i, (fname, v)) in fields.iter().enumerate() {
                     if i > 0 {
                         self.write(",");
                     }
-                    self.write(&format!(" {}: ", fname));
+                    self.write_args(format_args!(" {}: ", fname));
                     self.fmt_expr(v);
                 }
                 if !fields.is_empty() {
@@ -1094,13 +1115,13 @@ impl Formatter {
                 // Collapse back to the smallest whole-unit form we can.
                 // Fall back to `ns` when divisibility fails.
                 if *nanos % 1_000_000_000 == 0 {
-                    self.write(&format!("{}s", nanos / 1_000_000_000));
+                    self.write_args(format_args!("{}s", nanos / 1_000_000_000));
                 } else if *nanos % 1_000_000 == 0 {
-                    self.write(&format!("{}ms", nanos / 1_000_000));
+                    self.write_args(format_args!("{}ms", nanos / 1_000_000));
                 } else if *nanos % 1_000 == 0 {
-                    self.write(&format!("{}us", nanos / 1_000));
+                    self.write_args(format_args!("{}us", nanos / 1_000));
                 } else {
-                    self.write(&format!("{}ns", nanos));
+                    self.write_args(format_args!("{}ns", nanos));
                 }
             }
             // RES-330: `(forall|exists) v in <range>: <body>`.
@@ -1214,7 +1235,7 @@ impl Formatter {
             }
             Node::TupleIndex { tuple, index, .. } => {
                 self.fmt_expr(tuple);
-                self.write(&format!(".{}", index));
+                self.write_args(format_args!(".{}", index));
             }
             Node::LetTupleDestructure { names, value, .. } => {
                 self.write("let (");
@@ -1238,9 +1259,9 @@ impl Formatter {
             Pattern::Literal(node) => self.fmt_expr(node),
             // RES-915: range patterns — `lo..hi` / `lo..=hi`.
             Pattern::Range { lo, hi, inclusive } => {
-                self.write(&lo.to_string());
+                self.write_args(format_args!("{}", lo));
                 self.write(if *inclusive { "..=" } else { ".." });
-                self.write(&hi.to_string());
+                self.write_args(format_args!("{}", hi));
             }
             Pattern::Or(branches) => {
                 for (i, b) in branches.iter().enumerate() {

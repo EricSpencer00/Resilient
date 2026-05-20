@@ -463,6 +463,10 @@
     "resilient/src/lint.rs": {
       "branch": "res-2272-lint-clause-text-direct",
       "claimed_at": "2026-05-20T08:36:08Z"
+    },
+    "resilient/src/formatter.rs": {
+      "branch": "res-2274-formatter-write-direct",
+      "claimed_at": "2026-05-20T08:42:42Z"
     }
   }
 }
