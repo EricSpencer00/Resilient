@@ -15,16 +15,24 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2110: dropped the redundant `type_name: String` field. The
+/// `SPECS` HashMap already keys each spec by type name, and no
+/// caller (in-tree or external) reads `PhantomSpec::type_name` — the
+/// only consumers are `unit_of` and `compatible`, both of which look
+/// up by `&str` and read the `unit` field. The field was pure
+/// duplication and forced `install` to clone the type name for the
+/// map key. The new shape pairs `(type_name, spec)` as a tuple in the
+/// `Vec` returned by `collect`, letting `install` move the name
+/// straight into the map key with zero allocations.
 #[derive(Debug, Clone)]
 pub struct PhantomSpec {
-    pub type_name: String,
     pub unit: String,
 }
 
 static SPECS: LazyLock<RwLock<HashMap<String, PhantomSpec>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<PhantomSpec> {
+pub fn collect() -> Vec<(String, PhantomSpec)> {
     let attrs = crate::feature_attrs::find_kind("phantom");
     // RES-1754: pre-size to attrs.len() — conditional push (only when
     // the `units` chunk parsed non-empty), so this is an upper bound.
@@ -40,20 +48,17 @@ pub fn collect() -> Vec<PhantomSpec> {
             }
         }
         if !unit.is_empty() {
-            out.push(PhantomSpec {
-                type_name: item,
-                unit,
-            });
+            out.push((item, PhantomSpec { unit }));
         }
     }
     out
 }
 
-pub fn install(specs: Vec<PhantomSpec>) {
+pub fn install(specs: Vec<(String, PhantomSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         g.clear();
-        for s in specs {
-            g.insert(s.type_name.clone(), s);
+        for (name, spec) in specs {
+            g.insert(name, spec);
         }
     }
 }

@@ -177,8 +177,8 @@
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/phantom_types.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
+      "branch": "res-2110-phantom-drop-redundant-type-name",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/lock_priority.rs": {
       "branch": "res-1754-collect-presize",
