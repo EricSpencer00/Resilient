@@ -471,6 +471,10 @@
     "resilient/src/peephole.rs": {
       "branch": "res-2368-peephole-relink-on-square",
       "claimed_at": "2026-05-20T15:20:44Z"
+    },
+    "resilient/src/info_flow.rs": {
+      "branch": "res-2376-info-flow-walk-filter",
+      "claimed_at": "2026-05-20T15:46:52Z"
     }
   }
 }

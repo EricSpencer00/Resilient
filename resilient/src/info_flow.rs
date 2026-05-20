@@ -67,16 +67,21 @@ pub fn check_program(program: &Node) -> Vec<String> {
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
             if public_fns.contains(name.as_str()) {
-                // walk body: any call to a secret-tagged fn is a leak.
+                // RES-2376: walk body collecting only secret callees.
+                // The previous shape pushed every callee identifier
+                // into `leaks: Vec<&str>` then filtered against
+                // `secret_fns` on the next line — for typical
+                // public-fn bodies (many calls, few secrets) the Vec
+                // held data that was immediately discarded. Filter
+                // inside the walk so `leaks` stops at the actual leak
+                // set (usually empty → no allocations).
                 let mut leaks: Vec<&str> = Vec::new();
-                walk_calls(body, &mut leaks);
+                walk_calls(body, &secret_fns, &mut leaks);
                 for callee in leaks {
-                    if secret_fns.contains(callee) {
-                        errors.push(format!(
-                            "info-flow: `{}` is `#[public]` but transitively calls `#[secret]` fn `{}`",
-                            name, callee
-                        ));
-                    }
+                    errors.push(format!(
+                        "info-flow: `{}` is `#[public]` but transitively calls `#[secret]` fn `{}`",
+                        name, callee
+                    ));
                 }
             }
         }
@@ -84,38 +89,40 @@ pub fn check_program(program: &Node) -> Vec<String> {
     errors
 }
 
-fn walk_calls<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
+fn walk_calls<'a>(node: &'a Node, secret_fns: &HashSet<&str>, out: &mut Vec<&'a str>) {
     match node {
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
+            if let Node::Identifier { name, .. } = function.as_ref()
+                && secret_fns.contains(name.as_str())
+            {
                 out.push(name.as_str());
             }
             for a in arguments {
-                walk_calls(a, out);
+                walk_calls(a, secret_fns, out);
             }
         }
         Node::Block { stmts, .. } => {
             for s in stmts {
-                walk_calls(s, out);
+                walk_calls(s, secret_fns, out);
             }
         }
-        Node::ReturnStatement { value: Some(e), .. } => walk_calls(e, out),
-        Node::LetStatement { value, .. } => walk_calls(value, out),
-        Node::ExpressionStatement { expr, .. } => walk_calls(expr, out),
+        Node::ReturnStatement { value: Some(e), .. } => walk_calls(e, secret_fns, out),
+        Node::LetStatement { value, .. } => walk_calls(value, secret_fns, out),
+        Node::ExpressionStatement { expr, .. } => walk_calls(expr, secret_fns, out),
         Node::IfStatement {
             condition,
             consequence,
             alternative,
             ..
         } => {
-            walk_calls(condition, out);
-            walk_calls(consequence, out);
+            walk_calls(condition, secret_fns, out);
+            walk_calls(consequence, secret_fns, out);
             if let Some(e) = alternative {
-                walk_calls(e, out);
+                walk_calls(e, secret_fns, out);
             }
         }
         _ => {}
