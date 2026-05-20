@@ -55,10 +55,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     for_each_function(program, |fname, _params, body| {
-        let mut leaks = Vec::new();
+        let mut leaks: Vec<&str> = Vec::new();
         collect_local_secrets(body, &mut leaks);
         for var in leaks {
-            if !is_wiped(body, &var) && !is_returned(body, &var) {
+            if !is_wiped(body, var) && !is_returned(body, var) {
                 eprintln!(
                     "warning: function '{fname}' binds secret '{var}' but never \
                      calls zeroize()/zero_out()/wipe() on it before exit — \
@@ -70,9 +70,17 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn collect_local_secrets(body: &Node, out: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::new();
-    let mut sink = |n: &Node| {
+/// RES-2104: `seen` and `out` borrow `&'a str` from `body`'s AST nodes
+/// instead of cloning each let-bound name. `uniqueness_walk::visit` is
+/// `visit<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node))` — the AST
+/// borrow propagates through the closure, so both the dedup set and the
+/// caller-owned `leaks` Vec can hold `&'a str` directly. The caller
+/// uses each `var` as `&str` to drive `is_wiped` / `is_returned`, so no
+/// downstream `String` is needed. Per crypto-handling function with
+/// `K` secret bindings, drops `2K` transient allocations.
+fn collect_local_secrets<'a>(body: &'a Node, out: &mut Vec<&'a str>) {
+    let mut seen: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    let mut sink = |n: &'a Node| {
         let (name, type_annot) = match n {
             Node::LetStatement {
                 name, type_annot, ..
@@ -80,13 +88,13 @@ fn collect_local_secrets(body: &Node, out: &mut Vec<String>) {
             Node::StaticLet { name, .. } => (name, None),
             _ => return,
         };
-        if !seen.insert(name.clone()) {
+        if !seen.insert(name.as_str()) {
             return;
         }
         let by_name = SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(*p));
         let by_type = type_annot.map(is_secret_type).unwrap_or(false);
         if by_name || by_type {
-            out.push(name.clone());
+            out.push(name.as_str());
         }
     };
     crate::uniqueness_walk::visit(body, &mut sink);
