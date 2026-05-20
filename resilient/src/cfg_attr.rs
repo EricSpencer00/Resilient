@@ -361,7 +361,7 @@ fn parse_feature_attribute(parser: &mut Parser, name: String) -> Option<crate::N
         && let Some(item_name) = node_item_name(node)
     {
         crate::feature_attrs::record(
-            &item_name,
+            item_name,
             crate::feature_attrs::AttrRecord {
                 name,
                 args: args.trim().to_string(),
@@ -375,15 +375,22 @@ fn parse_feature_attribute(parser: &mut Parser, name: String) -> Option<crate::N
 /// Best-effort: extract the declared name from a top-level node so the
 /// attribute registry can key its entry. Returns `None` for unnamed
 /// statements (let-bindings, expressions).
-fn node_item_name(node: &crate::Node) -> Option<String> {
+///
+/// RES-2338: returns `&str` borrowed from the AST instead of an owned
+/// `String`. The sole caller passes the name straight into
+/// `feature_attrs::record(item_name, ...)`, which already takes
+/// `&str` — the per-attribute `name.clone()` was pure overhead.
+/// Saves one `String` allocation per `#[cfg(...)]` / `#[refinement]`
+/// / `#[recursive]` / etc. attribute record.
+fn node_item_name(node: &crate::Node) -> Option<&str> {
     match node {
-        crate::Node::Function { name, .. } => Some(name.clone()),
-        crate::Node::StructDecl { name, .. } => Some(name.clone()),
-        crate::Node::TypeAlias { name, .. } => Some(name.clone()),
-        crate::Node::NewtypeDecl { name, .. } => Some(name.clone()),
-        crate::Node::EnumDecl { name, .. } => Some(name.clone()),
-        crate::Node::TraitDecl { name, .. } => Some(name.clone()),
-        crate::Node::ActorDecl { name, .. } => Some(name.clone()),
+        crate::Node::Function { name, .. } => Some(name.as_str()),
+        crate::Node::StructDecl { name, .. } => Some(name.as_str()),
+        crate::Node::TypeAlias { name, .. } => Some(name.as_str()),
+        crate::Node::NewtypeDecl { name, .. } => Some(name.as_str()),
+        crate::Node::EnumDecl { name, .. } => Some(name.as_str()),
+        crate::Node::TraitDecl { name, .. } => Some(name.as_str()),
+        crate::Node::ActorDecl { name, .. } => Some(name.as_str()),
         _ => None,
     }
 }

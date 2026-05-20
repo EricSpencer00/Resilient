@@ -459,6 +459,10 @@
     "resilient/src/blame_attribution.rs": {
       "branch": "res-2334-blame-attribution-entry-skip",
       "claimed_at": "2026-05-20T12:52:54Z"
+    },
+    "resilient/src/cfg_attr.rs": {
+      "branch": "res-2338-cfg-attr-item-name-borrow",
+      "claimed_at": "2026-05-20T13:09:36Z"
     }
   }
 }
