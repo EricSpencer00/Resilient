@@ -463,6 +463,10 @@
     "resilient/src/audit_log_required.rs": {
       "branch": "res-2342-audit-log-short-circuit",
       "claimed_at": "2026-05-20T13:29:31Z"
+    },
+    "resilient/src/epoch_ordering.rs": {
+      "branch": "res-2346-epoch-ordering-stream-prev",
+      "claimed_at": "2026-05-20T13:58:05Z"
     }
   }
 }

@@ -27,26 +27,32 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // identifier. The previous `any_node` pre-scan was redundant —
     // removed.
     for_each_function(program, |fname, _params, body| {
-        let mut sequence: Vec<(String, u32)> = Vec::new();
+        // RES-2346: stream the previous epoch call instead of
+        // collecting every match into `Vec<(String, u32)>`. The
+        // pairwise check only ever consults the immediately
+        // preceding call (the `windows(2)` loop), so a running
+        // `Option<(&str, u32)>` produces the same diagnostics
+        // without per-call `String::clone` and without the Vec
+        // allocation/second pass. `visit<'a>(…, FnMut(&'a Node))`
+        // (RES-1238) propagates the AST lifetime so `name.as_str()`
+        // is valid across closure invocations.
+        let mut prev: Option<(&str, u32)> = None;
         visit(body, &mut |n| {
-            if let Node::CallExpression { function, .. } = n {
-                if let Node::Identifier { name, .. } = function.as_ref() {
-                    if let Some(e) = epoch_of(name) {
-                        sequence.push((name.clone(), e));
-                    }
+            if let Node::CallExpression { function, .. } = n
+                && let Node::Identifier { name, .. } = function.as_ref()
+                && let Some(e) = epoch_of(name)
+            {
+                if let Some((a, ea)) = prev
+                    && ea > e
+                {
+                    eprintln!(
+                        "warning: in '{fname}', epoch-ordered call '{a}' (epoch {ea}) \
+                         precedes '{name}' (epoch {e}) — epochs must be non-decreasing"
+                    );
                 }
+                prev = Some((name.as_str(), e));
             }
         });
-        for w in sequence.windows(2) {
-            let (a, ea) = &w[0];
-            let (b, eb) = &w[1];
-            if ea > eb {
-                eprintln!(
-                    "warning: in '{fname}', epoch-ordered call '{a}' (epoch {ea}) \
-                     precedes '{b}' (epoch {eb}) — epochs must be non-decreasing"
-                );
-            }
-        }
     });
     Ok(())
 }
