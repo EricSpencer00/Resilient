@@ -20,7 +20,8 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::sync::RwLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct RefinementSpec {
@@ -29,7 +30,15 @@ pub struct RefinementSpec {
     pub predicate: String,
 }
 
-static REFINEMENTS: RwLock<Vec<RefinementSpec>> = RwLock::new(Vec::new());
+/// RES-2140: keyed by refinement name so `lookup(name)` is O(1) instead
+/// of the O(N) linear scan the previous `Vec<RefinementSpec>` shape
+/// forced. `refine_int(value, refinement_name)` is called from
+/// generated runtime guard code on every refinement-typed assignment,
+/// so the lookup is hot — on a program with 50 declared refinements,
+/// every guard ran a 50-entry linear scan to discover the matching
+/// spec.
+static REFINEMENTS: LazyLock<RwLock<HashMap<String, RefinementSpec>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn collect_specs() -> Vec<RefinementSpec> {
     let attrs = crate::feature_attrs::find_kind("refinement");
@@ -71,15 +80,19 @@ pub fn collect_specs() -> Vec<RefinementSpec> {
 
 pub fn install(specs: Vec<RefinementSpec>) {
     if let Ok(mut g) = REFINEMENTS.write() {
-        *g = specs;
+        // RES-2140: replace with a fresh name-indexed map.
+        g.clear();
+        g.reserve(specs.len());
+        for s in specs {
+            g.insert(s.name.clone(), s);
+        }
     }
 }
 
 pub fn lookup(name: &str) -> Option<RefinementSpec> {
-    REFINEMENTS
-        .read()
-        .ok()
-        .and_then(|g| g.iter().find(|s| s.name == name).cloned())
+    // RES-2140: `HashMap::get(&str)` via `String: Borrow<str>` — O(1)
+    // lookup, no allocation.
+    REFINEMENTS.read().ok().and_then(|g| g.get(name).cloned())
 }
 
 /// Trivial runtime guard: evaluates a refinement predicate against an

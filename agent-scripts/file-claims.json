@@ -157,8 +157,8 @@
       "claimed_at": "2026-05-13T11:18:18Z"
     },
     "resilient/src/refinement_types.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
+      "branch": "res-2140-refinement-types-hashmap-lookup",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/power_contracts.rs": {
       "branch": "res-2018-attr-move-item",
