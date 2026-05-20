@@ -42,15 +42,33 @@ pub fn run(program: &Node) -> AutopilotReport {
     let vibe = crate::vibe_debt::analyze(program);
     let inferred = crate::contract_inference::infer_program(program);
 
+    // RES-2138: index `vibe` and `inferred` by function name once
+    // upfront. The previous shape ran `.iter().find(...)` per score
+    // entry — `O(S × (V + I))` for `S` scores and `V`/`I` vibe and
+    // inferred entries. For a 100-fn program where typically every
+    // function shows up in all three lists, that's `~30 000` per-call
+    // string-equality comparisons. HashMap lookups drop the loop to
+    // `O(S + V + I)` while still letting the score iteration drive
+    // the result ordering.
+    let vibe_by_name: std::collections::HashMap<&str, &crate::vibe_debt::VibeDebtEntry> = vibe
+        .entries
+        .iter()
+        .map(|v| (v.function_name.as_str(), v))
+        .collect();
+    let inferred_by_name: std::collections::HashMap<
+        &str,
+        &crate::contract_inference::InferredContracts,
+    > = inferred
+        .iter()
+        .map(|i| (i.function_name.as_str(), i))
+        .collect();
+
     // RES-1758: pre-size to scores.len() — exactly one push per
     // score entry, exact bound.
     let mut entries = Vec::with_capacity(scores.len());
     for s in &scores {
-        let v = vibe
-            .entries
-            .iter()
-            .find(|v| v.function_name == s.function_name);
-        let inf = inferred.iter().find(|i| i.function_name == s.function_name);
+        let v = vibe_by_name.get(s.function_name.as_str()).copied();
+        let inf = inferred_by_name.get(s.function_name.as_str()).copied();
         let mut actions = Vec::new();
         if s.contracts_pts < 40 {
             actions.push("add `requires` and `ensures` clauses".to_string());
