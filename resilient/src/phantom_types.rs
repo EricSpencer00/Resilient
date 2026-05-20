@@ -15,16 +15,22 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2390: dropped the redundant `type_name: String` field. The
+/// only consumer was `install()`, which used it as the HashMap key
+/// — every registered entry stored the type name twice. Pipeline now
+/// carries `(String, PhantomSpec)` tuples from `collect()` to
+/// `install()`, matching the shape that `wcet_contracts` (RES-2190),
+/// `probabilistic_contracts` (RES-2170), `power_contracts` (RES-2386),
+/// and `stack_contracts` (RES-2388) use.
 #[derive(Debug, Clone)]
 pub struct PhantomSpec {
-    pub type_name: String,
     pub unit: String,
 }
 
 static SPECS: LazyLock<RwLock<HashMap<String, PhantomSpec>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<PhantomSpec> {
+pub fn collect() -> Vec<(String, PhantomSpec)> {
     let attrs = crate::feature_attrs::find_kind("phantom");
     // RES-1754: pre-size to attrs.len() — conditional push (only when
     // the `units` chunk parsed non-empty), so this is an upper bound.
@@ -40,21 +46,20 @@ pub fn collect() -> Vec<PhantomSpec> {
             }
         }
         if !unit.is_empty() {
-            out.push(PhantomSpec {
-                type_name: item,
-                unit,
-            });
+            out.push((item, PhantomSpec { unit }));
         }
     }
     out
 }
 
-pub fn install(specs: Vec<PhantomSpec>) {
+pub fn install(specs: Vec<(String, PhantomSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         g.clear();
-        for s in specs {
-            g.insert(s.type_name.clone(), s);
-        }
+        // RES-2390: move (type_name, spec) tuples straight from
+        // `collect()`. The previous shape cloned `s.type_name` to
+        // produce the key, since the field and the key encoded the
+        // same string.
+        g.extend(specs);
     }
 }
 
