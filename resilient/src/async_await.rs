@@ -36,11 +36,16 @@ pub fn install(set: HashSet<String>) {
 }
 
 pub fn is_async(name: &str) -> bool {
+    // RES-2366: hold the read guard and borrow through the
+    // `Option<HashSet<String>>` instead of cloning the whole set per
+    // lookup. `HashSet::contains` accepts a `&str` via `Borrow<str>`
+    // on `String` keys; the previous `g.clone()` materialized an
+    // owned copy of every entry for nothing. Same lock-then-borrow
+    // shape as RES-1544 / RES-1547 / RES-2006.
     ASYNC_FNS
         .read()
         .ok()
-        .and_then(|g| g.clone())
-        .map(|s| s.contains(name))
+        .and_then(|g| g.as_ref().map(|s| s.contains(name)))
         .unwrap_or(false)
 }
 

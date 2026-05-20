@@ -30,11 +30,17 @@ pub fn install(set: HashSet<String>) {
 }
 
 pub fn is_recursive(type_name: &str) -> bool {
+    // RES-2366: hold the read guard and borrow through the
+    // `Option<HashSet<String>>` instead of cloning the whole set per
+    // lookup. The previous `g.clone()` materialized an owned copy of
+    // every entry just to call `.contains()` on it; `HashSet::contains`
+    // accepts a `&str` via `Borrow<str>` on `String` keys, so the
+    // clone was pure overhead. Same lock-then-borrow shape as
+    // RES-1544 / RES-1547 / RES-2006.
     RECURSIVE_TYPES
         .read()
         .ok()
-        .and_then(|g| g.clone())
-        .map(|s| s.contains(type_name))
+        .and_then(|g| g.as_ref().map(|s| s.contains(type_name)))
         .unwrap_or(false)
 }
 

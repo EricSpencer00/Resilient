@@ -467,6 +467,14 @@
     "resilient/src/epoch_ordering.rs": {
       "branch": "res-2346-epoch-ordering-stream-prev",
       "claimed_at": "2026-05-20T13:58:05Z"
+    },
+    "resilient/src/async_await.rs": {
+      "branch": "res-2366-is-x-rwlock-no-clone",
+      "claimed_at": "2026-05-20T15:16:39Z"
+    },
+    "resilient/src/recursive_types.rs": {
+      "branch": "res-2366-is-x-rwlock-no-clone",
+      "claimed_at": "2026-05-20T15:16:39Z"
     }
   }
 }
