@@ -33,14 +33,24 @@ use std::collections::HashMap;
 /// kept the kind in a `Vec<String>`; switching to `Vec<&'static str>`
 /// drops both the per-push alloc AND the per-summarize-push
 /// `m.kind.clone()` (now a `Copy` of a `&str`).
+/// RES-2288: `fn_name` is `&'a str` borrowed from the AST (top-level
+/// Function name slot, or the mangled `Struct$method` ident inside an
+/// ImplBlock). The previous `String` shape paid a per-mutation
+/// `to_string()` allocation in `push` — for a typical function with
+/// dozens of mutation sites, that's dozens of wasted heap allocations
+/// per fn during the `generate_in` walk. Same shape as RES-2220
+/// (labeled_break::DeepBreakWarning) / RES-2204 (coverage_warnings).
+/// `kind` keeps its `&'static str` form (RES-2202); `description`
+/// stays `String` because most call sites produce computed text via
+/// `format!(...)`.
 #[derive(Debug, Clone)]
-pub struct Mutation {
-    pub fn_name: String,
+pub struct Mutation<'a> {
+    pub fn_name: &'a str,
     pub kind: &'static str,
     pub description: String,
 }
 
-pub fn generate(program: &Node) -> Vec<Mutation> {
+pub fn generate(program: &Node) -> Vec<Mutation<'_>> {
     let mut out = Vec::new();
     let Node::Program(stmts) = program else {
         return out;
@@ -48,7 +58,7 @@ pub fn generate(program: &Node) -> Vec<Mutation> {
     for s in stmts {
         match &s.node {
             Node::Function { name, body, .. } => {
-                generate_in(body, name, &mut out);
+                generate_in(body, name.as_str(), &mut out);
             }
             // RES-1918: impl-block methods are parsed as `Node::Function`
             // values with mangled names (`<StructName>$<method>`); without
@@ -57,7 +67,7 @@ pub fn generate(program: &Node) -> Vec<Mutation> {
             Node::ImplBlock { methods, .. } => {
                 for method in methods {
                     if let Node::Function { name, body, .. } = method {
-                        generate_in(body, name, &mut out);
+                        generate_in(body, name.as_str(), &mut out);
                     }
                 }
             }
@@ -67,20 +77,20 @@ pub fn generate(program: &Node) -> Vec<Mutation> {
     out
 }
 
-fn push(
-    out: &mut Vec<Mutation>,
-    fn_name: &str,
+fn push<'a>(
+    out: &mut Vec<Mutation<'a>>,
+    fn_name: &'a str,
     kind: &'static str,
     description: impl Into<String>,
 ) {
     out.push(Mutation {
-        fn_name: fn_name.to_string(),
+        fn_name,
         kind,
         description: description.into(),
     });
 }
 
-fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
+fn generate_in<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<Mutation<'a>>) {
     match node {
         Node::InfixExpression {
             operator,
@@ -363,16 +373,16 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
 /// `entry(m.fn_name.clone()).or_default()` so the `String` is only
 /// allocated on the cold first-mutation-for-this-fn branch.
 /// Subsequent mutations for the same fn pay zero allocations.
-pub fn summarize(mutations: &[Mutation]) -> HashMap<String, (usize, Vec<&'static str>)> {
+pub fn summarize(mutations: &[Mutation<'_>]) -> HashMap<String, (usize, Vec<&'static str>)> {
     let mut map: HashMap<String, (usize, Vec<&'static str>)> = HashMap::new();
     for m in mutations {
-        if let Some(e) = map.get_mut(m.fn_name.as_str()) {
+        if let Some(e) = map.get_mut(m.fn_name) {
             e.0 += 1;
             if !e.1.contains(&m.kind) {
                 e.1.push(m.kind);
             }
         } else {
-            map.insert(m.fn_name.clone(), (1, vec![m.kind]));
+            map.insert(m.fn_name.to_string(), (1, vec![m.kind]));
         }
     }
     map

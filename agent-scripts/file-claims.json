@@ -324,10 +324,6 @@
       "branch": "res-1901-hof-clone-elim",
       "claimed_at": "2026-05-19T05:02:34Z"
     },
-    "resilient/src/mutation_testing.rs": {
-      "branch": "res-2202-mutation-static-kind",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/verifier_z3.rs": {
       "branch": "res-1920-collect-cert-idents-single-walk",
       "claimed_at": "2026-05-19T17:06:58Z"
@@ -467,6 +463,10 @@
     "resilient/src/ai_threat_model.rs": {
       "branch": "res-2284-levenshtein-fast-reject",
       "claimed_at": "2026-05-20T09:31:15Z"
+    },
+    "resilient/src/mutation_testing.rs": {
+      "branch": "res-2288-mutation-fn-name-borrow",
+      "claimed_at": "2026-05-20T09:50:03Z"
     }
   }
 }
