@@ -39,6 +39,17 @@ impl BlameMap {
     ///
     /// Example: for `main → process → validate`, calling
     /// `blame_chain("validate", 3)` returns `[("process", 0), ("main", 0)]`.
+    ///
+    /// RES-2090: BFS state (queue, visited set) borrows `&str` from
+    /// `self.edges`'s owned `String`s instead of cloning per hop. The
+    /// previous shape paid three `String` allocations per visited node —
+    /// one to enqueue (`caller.clone()`), one to gate via the visited
+    /// set (`visited.insert(node.clone())`), and one to push into the
+    /// result (`result.push((node.clone(), ...))`). Only the
+    /// result-side allocation is intrinsic to the public return type;
+    /// the queue/visited pair can borrow through the owning map for
+    /// the duration of the call. `&str: Borrow<str>` preserves the
+    /// `self.edges.get(node)` lookup semantics.
     pub fn blame_chain(&self, callee: &str, max_depth: usize) -> Vec<(String, usize)> {
         // RES-1968: pre-size BFS state to the upper bound for visited
         // nodes (`self.edges.len() + 1` — every callee key plus the
@@ -48,15 +59,15 @@ impl BlameMap {
         // `requires` clause calls into here.
         let n_cap = self.edges.len().saturating_add(1);
         let mut result: Vec<(String, usize)> = Vec::with_capacity(n_cap);
-        let mut visited: HashSet<String> = HashSet::with_capacity(n_cap);
-        visited.insert(callee.to_string());
+        let mut visited: HashSet<&str> = HashSet::with_capacity(n_cap);
+        visited.insert(callee);
 
         // BFS queue: (fn_name, arg_idx_that_brought_us_here, depth)
-        let mut queue: VecDeque<(String, usize, usize)> = VecDeque::with_capacity(n_cap);
+        let mut queue: VecDeque<(&str, usize, usize)> = VecDeque::with_capacity(n_cap);
         if let Some(callers) = self.edges.get(callee) {
             for (caller, idx) in callers {
-                if !visited.contains(caller) {
-                    queue.push_back((caller.clone(), *idx, 1));
+                if !visited.contains(caller.as_str()) {
+                    queue.push_back((caller.as_str(), *idx, 1));
                 }
             }
         }
@@ -66,16 +77,16 @@ impl BlameMap {
         // Eliminates the redundant `contains` probe that previously
         // sat in front of the same hash key.
         while let Some((node, arg_idx, depth)) = queue.pop_front() {
-            if !visited.insert(node.clone()) {
+            if !visited.insert(node) {
                 continue;
             }
-            result.push((node.clone(), arg_idx));
+            result.push((node.to_string(), arg_idx));
 
             if depth < max_depth {
-                if let Some(callers) = self.edges.get(&node) {
+                if let Some(callers) = self.edges.get(node) {
                     for (caller, idx) in callers {
-                        if !visited.contains(caller) {
-                            queue.push_back((caller.clone(), *idx, depth + 1));
+                        if !visited.contains(caller.as_str()) {
+                            queue.push_back((caller.as_str(), *idx, depth + 1));
                         }
                     }
                 }
@@ -127,9 +138,28 @@ fn walk(node: &Node, caller: &str, map: &mut BlameMap) {
             ..
         } => {
             if let Node::Identifier { name: callee, .. } = function.as_ref() {
-                let entry = map.edges.entry(callee.clone()).or_default();
-                for (idx, _) in arguments.iter().enumerate() {
-                    entry.push((caller.to_string(), idx));
+                // RES-2090: skip the `callee.clone()` entry-key alloc
+                // whenever the callee is already in the edges map.
+                // `walk` is called per AST node during `build`; common
+                // helpers (`println`, `assert`, `panic`, every user
+                // helper called from multiple sites) hit the same
+                // callee key dozens of times per program. `get_mut`
+                // borrows the key via `String: Borrow<str>` and only
+                // the genuinely-first sighting pays for the owned
+                // String key insertion.
+                match map.edges.get_mut(callee.as_str()) {
+                    Some(entry) => {
+                        entry.reserve(arguments.len());
+                        for (idx, _) in arguments.iter().enumerate() {
+                            entry.push((caller.to_string(), idx));
+                        }
+                    }
+                    None => {
+                        let v: Vec<(String, usize)> = (0..arguments.len())
+                            .map(|idx| (caller.to_string(), idx))
+                            .collect();
+                        map.edges.insert(callee.clone(), v);
+                    }
                 }
             }
             for a in arguments {

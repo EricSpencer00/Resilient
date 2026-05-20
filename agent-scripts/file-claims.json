@@ -141,7 +141,7 @@
       "claimed_at": "2026-05-12T13:34:45Z"
     },
     "resilient/src/blame_attribution.rs": {
-      "branch": "res-1968-blame-chain-perf",
+      "branch": "res-2090-blame-bfs-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/termination.rs": {
