@@ -58,8 +58,13 @@ pub(crate) fn builtin_array_frequency_map(args: &[Value]) -> RResult<Value> {
 /// // by_name == {"alice" -> ["alice",30], "bob" -> ["bob",25]}
 /// ```
 pub(crate) fn builtin_array_key_by(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2078: borrow `arr` and `f` instead of cloning. Same pattern
+    // as RES-1934 / RES-2036 for array_combinators. The previous shape
+    // deep-cloned the whole Vec<Value> + the Value::Function (with
+    // deep requires/ensures clones) per call — both wasted; we only
+    // need owned Values at the per-element insert into the output map.
     let (arr, f) = match args {
-        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [Value::Array(a), f] => (a, f),
         [a, _] => {
             return Err(format!(
                 "array_key_by: first argument must be an Array, got {a}"
@@ -76,11 +81,11 @@ pub(crate) fn builtin_array_key_by(interp: &mut Interpreter, args: &[Value]) -> 
     let mut map: std::collections::HashMap<MapKey, Value> =
         std::collections::HashMap::with_capacity(arr.len());
 
-    for elem in arr {
-        let key_val = interp.apply_function(&f, vec![elem.clone()])?;
+    for elem in arr.iter() {
+        let key_val = interp.apply_function(f, vec![elem.clone()])?;
         let mk = MapKey::from_value(&key_val)
             .map_err(|e| format!("array_key_by: key function returned non-hashable value: {e}"))?;
-        map.insert(mk, elem);
+        map.insert(mk, elem.clone());
     }
 
     Ok(Value::Map(map))
@@ -97,8 +102,12 @@ pub(crate) fn builtin_array_key_by(interp: &mut Interpreter, args: &[Value]) -> 
 /// // powers == [1, 2, 4, 8, 16, 32]
 /// ```
 pub(crate) fn builtin_array_iterate(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2078: borrow `f` instead of cloning. `apply_function` takes
+    // `&Value` so the function never needed to be owned. `init` is
+    // cloned once (necessary for ownership of the accumulator that
+    // mutates each iteration). Same pattern as RES-2076.
     let (init, n, f) = match args {
-        [init, Value::Int(n), f] => (init.clone(), *n, f.clone()),
+        [init, Value::Int(n), f] => (init.clone(), *n, f),
         [_, n, _] => {
             return Err(format!(
                 "array_iterate: second argument must be an int, got {n}"
@@ -120,7 +129,7 @@ pub(crate) fn builtin_array_iterate(interp: &mut Interpreter, args: &[Value]) ->
     let mut current = init;
     out.push(current.clone());
     for _ in 0..n {
-        current = interp.apply_function(&f, vec![current])?;
+        current = interp.apply_function(f, vec![current])?;
         out.push(current.clone());
     }
     Ok(Value::Array(out))
