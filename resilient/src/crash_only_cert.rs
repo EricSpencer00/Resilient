@@ -67,15 +67,24 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-2240: collapse the per-Function `attrs.iter().any(|(item, _)|
+    // item == name)` linear search into an O(1) HashSet probe. With
+    // N functions and A crash_only_cert attributes, the previous shape
+    // was O(N×A). For programs that declare even a handful of certified
+    // fns, the HashSet build amortises after a few function visits;
+    // for non-certified fns (the bulk of the walk in mixed programs)
+    // the lookup is now constant-time. Mirrors RES-2138 (autopilot
+    // HashMap-index lookups) and RES-2140 (refinement_types HashMap
+    // registry).
+    let certified: std::collections::HashSet<&str> =
+        attrs.iter().map(|(item, _)| item.as_str()).collect();
     for s in stmts {
         if let Node::Function { name, .. } = &s.node {
-            if attrs.iter().any(|(item, _)| item == name) {
-                if !is_crash_only_certified(&s.node) {
-                    return Err(format!(
-                        "{}:0:0: error: `{}` is `#[crash_only_cert]` but contains a return that is not Err/Ok/result",
-                        _source_path, name
-                    ));
-                }
+            if certified.contains(name.as_str()) && !is_crash_only_certified(&s.node) {
+                return Err(format!(
+                    "{}:0:0: error: `{}` is `#[crash_only_cert]` but contains a return that is not Err/Ok/result",
+                    _source_path, name
+                ));
             }
         }
     }

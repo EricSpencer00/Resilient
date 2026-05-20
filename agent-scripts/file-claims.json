@@ -48,10 +48,6 @@
       "branch": "res-1232-priority-fast-reject",
       "claimed_at": "2026-05-12T02:35:05Z"
     },
-    "resilient/src/crash_only_cert.rs": {
-      "branch": "res-1236-crash-only-cert-fast-reject",
-      "claimed_at": "2026-05-12T02:42:33Z"
-    },
     "resilient/src/actor_drain.rs": {
       "branch": "res-2002-actor-drain-single-pass",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -463,6 +459,10 @@
     "resilient/src/full_modules.rs": {
       "branch": "res-2236-full-modules-build-skip-clone",
       "claimed_at": "2026-05-20T06:40:00Z"
+    },
+    "resilient/src/crash_only_cert.rs": {
+      "branch": "res-2240-crash-only-cert-hashset",
+      "claimed_at": "2026-05-20T07:01:18Z"
     }
   }
 }
