@@ -510,7 +510,14 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
                     let h2 = chars.next();
                     match (h1, h2) {
                         (Some(a), Some(b)) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => {
-                            let byte = u8::from_str_radix(&format!("{a}{b}"), 16).unwrap();
+                            // RES-2262: compute the byte directly from the
+                            // two hex digits instead of formatting them
+                            // into a `String` and re-parsing via
+                            // `u8::from_str_radix`. Both `a` and `b` are
+                            // ASCII hex per the guard above, so
+                            // `to_digit(16)` is infallible.
+                            let byte = ((a.to_digit(16).unwrap() << 4)
+                                | b.to_digit(16).unwrap()) as u8;
                             out.push(byte as char);
                         }
                         (h1, h2) => {
@@ -550,10 +557,15 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
                                 out.push(ch);
                             } else {
                                 // Invalid code point — preserve literally.
-                                out.push_str(&format!("\\u{{{hex}}}"));
+                                // RES-2262: write directly into `out`
+                                // instead of `push_str(&format!())`.
+                                use std::fmt::Write;
+                                let _ = write!(out, "\\u{{{hex}}}");
                             }
                         } else {
-                            out.push_str(&format!("\\u{{{hex}}}"));
+                            // RES-2262: same direct-write fix.
+                            use std::fmt::Write;
+                            let _ = write!(out, "\\u{{{hex}}}");
                         }
                     } else {
                         // `\u` not followed by `{` — preserve.
