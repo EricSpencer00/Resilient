@@ -165,6 +165,18 @@ fn nth_line(src: &str, n: usize) -> Option<&str> {
 /// underline lines up visually. Non-tab characters are preserved
 /// byte-for-byte (no UTF-8 normalisation).
 fn expand_tabs(line: &str) -> String {
+    // RES-2396: fast-path when the line carries no tab characters
+    // — the overwhelming common case for editor / CI source output.
+    // `str::contains('\t')` is a single SIMD-optimized scan; the
+    // subsequent `to_string()` is one `memcpy` of the source bytes.
+    // The per-char `out.push(c)` loop below is only reached when at
+    // least one tab needs widening.
+    //
+    // `format_diagnostic` calls this on every compiler error / warning,
+    // so the fast-path savings apply to every emitted diagnostic.
+    if !line.contains('\t') {
+        return line.to_string();
+    }
     let mut out = String::with_capacity(line.len());
     for c in line.chars() {
         if c == '\t' {

@@ -32,10 +32,6 @@
       "branch": "res-1238-any-node-early-terminate",
       "claimed_at": "2026-05-12T02:48:11Z"
     },
-    "resilient/src/diag.rs": {
-      "branch": "res-1984-diag-presize-write",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/array_argminmax.rs": {
       "branch": "res-2026-argminmax-single-pass",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -459,6 +455,10 @@
     "resilient/src/intent_blocks.rs": {
       "branch": "res-2384-intent-blocks-drop-raw-args",
       "claimed_at": "2026-05-20T16:08:40Z"
+    },
+    "resilient/src/diag.rs": {
+      "branch": "res-2396-diag-expand-tabs-fastpath",
+      "claimed_at": "2026-05-20T16:37:00Z"
     }
   }
 }
