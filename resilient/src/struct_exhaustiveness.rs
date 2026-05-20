@@ -17,9 +17,13 @@
 
 use crate::Node;
 
+// RES-2224: borrow `function` as `&'a str` from the program AST.
+// The walker already had `fn_name: &str`, so the per-warning
+// `fn_name.to_string()` was pure overhead. Same shape as
+// RES-2204 (coverage_warnings) and RES-2220 (labeled_break::DeepBreakWarning).
 #[derive(Debug, Clone)]
-pub struct ExhaustivenessWarning {
-    pub function: String,
+pub struct ExhaustivenessWarning<'a> {
+    pub function: &'a str,
     /// RES-2022: `&'static str` because the sole push site populates
     /// this from a string literal. The previous `String` shape forced
     /// a `.into()` allocation per push for content that already lived
@@ -51,20 +55,20 @@ fn struct_arm_is_unguarded_catch_all(
     }
 }
 
-pub fn analyze(program: &Node) -> Vec<ExhaustivenessWarning> {
+pub fn analyze<'a>(program: &'a Node) -> Vec<ExhaustivenessWarning<'a>> {
     let mut out = Vec::new();
     let Node::Program(stmts) = program else {
         return out;
     };
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
-            walk(body, name, &mut out);
+            walk(body, name.as_str(), &mut out);
         }
     }
     out
 }
 
-fn walk(node: &Node, fn_name: &str, out: &mut Vec<ExhaustivenessWarning>) {
+fn walk<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<ExhaustivenessWarning<'a>>) {
     match node {
         Node::Match { arms, .. } => {
             let all_struct = arms
@@ -75,7 +79,7 @@ fn walk(node: &Node, fn_name: &str, out: &mut Vec<ExhaustivenessWarning>) {
                 .any(|(p, g, _)| struct_arm_is_unguarded_catch_all(p, g));
             if all_struct && !arms.is_empty() && !has_cover {
                 out.push(ExhaustivenessWarning {
-                    function: fn_name.to_string(),
+                    function: fn_name,
                     message: "Non-exhaustive match on struct — add a wildcard arm \
                               (`_`, an identifier, or `StructName { .. }`)",
                 });
