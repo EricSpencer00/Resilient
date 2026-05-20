@@ -327,14 +327,25 @@ pub fn infer(_program: &crate::Node, _source_path: &str) -> Result<(), String> {
 // ============================================================
 
 /// A lightweight record of a callee function's region interface.
-struct CalleeInfo {
-    type_params: Vec<String>,
-    param_types: Vec<(String, String)>,
+///
+/// RES-2146: borrows `type_params` and `param_types` directly from the
+/// caller's AST instead of owning `Vec<String>` / `Vec<(String, String)>`
+/// clones. The consumer (`check_call_site_aliasing`) only reads these
+/// slices via `infer_region_subst_from_call`, which already takes them
+/// as `&[…]`. The historical owned shape was forcing one
+/// `type_params.clone()` plus one `parameters.clone()` (the parameter
+/// list is a `Vec<(String, String)>` of `(type, name)` pairs) per
+/// region-typed function in the program — every region-substitution
+/// pass paid that allocator cost even though every byte of it was
+/// available behind `&spanned.node`.
+struct CalleeInfo<'a> {
+    type_params: &'a [String],
+    param_types: &'a [(String, String)],
 }
 
 /// Build a table from function name → `CalleeInfo` for all top-level
 /// functions with region type params.
-fn build_callee_table(stmts: &[crate::Spanned<crate::Node>]) -> HashMap<String, CalleeInfo> {
+fn build_callee_table(stmts: &[crate::Spanned<crate::Node>]) -> HashMap<&str, CalleeInfo<'_>> {
     // RES-1760: pre-size to stmts.len() — at most one insert per
     // top-level statement (when it's a function with region type
     // params). Same shape as the pre-size series for call-graph
@@ -349,11 +360,15 @@ fn build_callee_table(stmts: &[crate::Spanned<crate::Node>]) -> HashMap<String, 
         } = &spanned.node
             && !type_params.is_empty()
         {
+            // RES-2146: borrow name + slices from the AST. The lookup
+            // call site below (`callee_table.get(*callee_name)`) passes
+            // a `&str` and works unchanged thanks to the
+            // `&str: Borrow<str>` blanket impl.
             table.insert(
-                name.clone(),
+                name.as_str(),
                 CalleeInfo {
-                    type_params: type_params.clone(),
-                    param_types: parameters.clone(),
+                    type_params,
+                    param_types: parameters,
                 },
             );
         }
@@ -498,8 +513,8 @@ pub fn check_call_site_region_aliasing(program: &crate::Node, source_path: &str)
 
                 // Build the region substitution.
                 let subst = match infer_region_subst_from_call(
-                    &info.type_params,
-                    &info.param_types,
+                    info.type_params,
+                    info.param_types,
                     &actual_labels,
                 ) {
                     Ok(s) => s,
