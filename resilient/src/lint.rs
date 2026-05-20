@@ -6595,30 +6595,68 @@ fn run_l0073_duplicate_contract_clause(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn clause_text(n: &Node) -> String {
+    // RES-2272: route through a `&mut String` helper so the recursive
+    // walk writes into one buffer instead of allocating a fresh
+    // `String` at every nesting level. For a depth-N expression the
+    // old shape allocated O(N) intermediate Strings (each
+    // `clause_text(left)` / `clause_text(right)` result, plus the
+    // per-level `format!()` output); the new shape allocates 1.
+    // Same recursive-direct-write pattern as RES-2268 (smtlib2) and
+    // RES-2270 (behavioral_fingerprint::node_text).
+    let mut out = String::new();
+    write_clause_text(n, &mut out);
+    out
+}
+
+/// Write the lint-canonical text encoding of `n` into `out`. Each
+/// recursive arm appends to the shared buffer, eliminating per-
+/// level `String` allocations. Same textual output as the
+/// `String`-returning shape — `check_duplicate_clauses`'s `HashSet`
+/// lookups continue to match identical clauses.
+fn write_clause_text(n: &Node, out: &mut String) {
+    use std::fmt::Write;
     match n {
-        Node::Identifier { name, .. } => name.clone(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::IntegerLiteral { value, .. } => value.to_string(),
+        Node::Identifier { name, .. } => out.push_str(name),
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!("{} {operator} {}", clause_text(left), clause_text(right)),
+        } => {
+            write_clause_text(left, out);
+            let _ = write!(out, " {operator} ");
+            write_clause_text(right, out);
+        }
         Node::PrefixExpression {
             operator, right, ..
         } => {
-            format!("{operator}{}", clause_text(right))
+            out.push_str(operator);
+            write_clause_text(right, out);
         }
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            let args: Vec<String> = arguments.iter().map(clause_text).collect();
-            format!("{}({})", clause_text(function), args.join(", "))
+            write_clause_text(function, out);
+            out.push('(');
+            for (i, a) in arguments.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_clause_text(a, out);
+            }
+            out.push(')');
         }
-        _ => format!("{:?}", n as *const _),
+        _ => {
+            let _ = write!(out, "{:?}", n as *const _);
+        }
     }
 }
 

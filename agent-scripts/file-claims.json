@@ -264,14 +264,6 @@
       "branch": "res-1770-verifier-presize",
       "claimed_at": "2026-05-13T11:59:58Z"
     },
-    "resilient/src/recovery_checker.rs": {
-      "branch": "res-1774-recovery-lint-presize",
-      "claimed_at": "2026-05-13T12:06:03Z"
-    },
-    "resilient/src/lint.rs": {
-      "branch": "res-1774-recovery-lint-presize",
-      "claimed_at": "2026-05-13T12:06:03Z"
-    },
     "resilient/src/hw_state_machine.rs": {
       "branch": "res-2010-hw-state-nested-map",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -467,6 +459,10 @@
     "resilient/src/recovers_to_bmc.rs": {
       "branch": "res-2268-smtlib2-direct-write",
       "claimed_at": "2026-05-20T08:29:05Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "res-2272-lint-clause-text-direct",
+      "claimed_at": "2026-05-20T08:36:08Z"
     }
   }
 }
