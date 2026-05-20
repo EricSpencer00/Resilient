@@ -76,8 +76,15 @@ pub(crate) fn builtin_quota_set(args: &[Value]) -> RResult<Value> {
 }
 
 pub(crate) fn builtin_quota_charge(args: &[Value]) -> RResult<Value> {
+    // RES-2128: borrow the name as `&str` from `args` instead of cloning.
+    // `BTreeMap::get_mut(&Q)` uses `String: Borrow<str>`, so the lookup
+    // is allocation-free; `quota_charge` does not insert into `QUOTAS`,
+    // it only reads-or-updates an existing entry. Same for `quota_remaining`,
+    // `quota_reset`, and `quota_used` below. `quota_set` (above) keeps
+    // its clone because `q.insert(name, …)` consumes an owned `String`
+    // key.
     let (name, amount) = match args {
-        [Value::String(n), Value::Int(a)] => (n.clone(), *a),
+        [Value::String(n), Value::Int(a)] => (n.as_str(), *a),
         [a, b] => {
             return Err(format!(
                 "quota_charge: expected (String, Int), got ({}, {})",
@@ -92,7 +99,7 @@ pub(crate) fn builtin_quota_charge(args: &[Value]) -> RResult<Value> {
     }
     let granted = QUOTAS.with(|q| {
         let mut q = q.borrow_mut();
-        match q.get_mut(&name) {
+        match q.get_mut(name) {
             Some(quota) => {
                 let next = quota.used.saturating_add(amount);
                 if next <= quota.limit {
@@ -110,7 +117,7 @@ pub(crate) fn builtin_quota_charge(args: &[Value]) -> RResult<Value> {
 
 pub(crate) fn builtin_quota_remaining(args: &[Value]) -> RResult<Value> {
     let name = match args {
-        [Value::String(n)] => n.clone(),
+        [Value::String(n)] => n.as_str(),
         [a] => {
             return Err(format!(
                 "quota_remaining: expected String, got {}",
@@ -124,18 +131,13 @@ pub(crate) fn builtin_quota_remaining(args: &[Value]) -> RResult<Value> {
             ));
         }
     };
-    let remaining = QUOTAS.with(|q| {
-        q.borrow()
-            .get(&name)
-            .map(|q| q.limit - q.used)
-            .unwrap_or(-1)
-    });
+    let remaining = QUOTAS.with(|q| q.borrow().get(name).map(|q| q.limit - q.used).unwrap_or(-1));
     Ok(Value::Int(remaining))
 }
 
 pub(crate) fn builtin_quota_reset(args: &[Value]) -> RResult<Value> {
     let name = match args {
-        [Value::String(n)] => n.clone(),
+        [Value::String(n)] => n.as_str(),
         [a] => {
             return Err(format!(
                 "quota_reset: expected String, got {}",
@@ -146,7 +148,7 @@ pub(crate) fn builtin_quota_reset(args: &[Value]) -> RResult<Value> {
     };
     let prior = QUOTAS.with(|q| {
         let mut q = q.borrow_mut();
-        match q.get_mut(&name) {
+        match q.get_mut(name) {
             Some(quota) => {
                 let prior = quota.used;
                 quota.used = 0;
@@ -160,13 +162,13 @@ pub(crate) fn builtin_quota_reset(args: &[Value]) -> RResult<Value> {
 
 pub(crate) fn builtin_quota_used(args: &[Value]) -> RResult<Value> {
     let name = match args {
-        [Value::String(n)] => n.clone(),
+        [Value::String(n)] => n.as_str(),
         [a] => {
             return Err(format!("quota_used: expected String, got {}", type_name(a)));
         }
         _ => return Err(format!("quota_used: expected 1 arg, got {}", args.len())),
     };
-    let used = QUOTAS.with(|q| q.borrow().get(&name).map(|q| q.used).unwrap_or(-1));
+    let used = QUOTAS.with(|q| q.borrow().get(name).map(|q| q.used).unwrap_or(-1));
     Ok(Value::Int(used))
 }
 
