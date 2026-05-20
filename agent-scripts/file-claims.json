@@ -205,8 +205,8 @@
       "claimed_at": "2026-05-13T11:24:43Z"
     },
     "resilient/src/probabilistic_contracts.rs": {
-      "branch": "res-1756-program-collect-presize",
-      "claimed_at": "2026-05-13T11:30:51Z"
+      "branch": "res-2170-prob-contracts-drop-fn-name",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/typestate_types.rs": {
       "branch": "res-1756-program-collect-presize",
