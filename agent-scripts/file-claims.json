@@ -76,10 +76,6 @@
       "branch": "res-1281-unsafe-check-fast-reject",
       "claimed_at": "2026-05-12T04:21:23Z"
     },
-    "resilient/src/generics.rs": {
-      "branch": "res-1523-generics-locals-borrow",
-      "claimed_at": "2026-05-12T13:40:00Z"
-    },
     "resilient/src/feature_attrs.rs": {
       "branch": "res-2088-feature-attrs-record-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -459,6 +455,10 @@
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
+    },
+    "resilient/src/generics.rs": {
+      "branch": "res-2314-generics-drop-prescan",
+      "claimed_at": "2026-05-20T11:14:54Z"
     }
   }
 }

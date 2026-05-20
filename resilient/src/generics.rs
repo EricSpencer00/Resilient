@@ -192,22 +192,13 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         Node::Program(stmts) => stmts,
         _ => return Ok(()),
     };
-    // RES-1288: fast-reject. The per-function work in `check_node`
-    // — the duplicate-type-parameter scan and the body-consistency
-    // walk — only fires for functions that declare type parameters.
-    // For programs that declare zero generic functions (the
-    // overwhelming majority of `cargo test` inputs and the entire
-    // `examples/` tree), the outer iteration destructures every
-    // `Node::Function` and allocates a per-function `HashSet`
-    // before discovering `type_params` is empty. Pre-scan once for
-    // any `Function` with non-empty `type_params` and skip the
-    // entire pass when none exists.
-    let has_generic_fn = stmts
-        .iter()
-        .any(|s| matches!(&s.node, Node::Function { type_params, .. } if !type_params.is_empty()));
-    if !has_generic_fn {
-        return Ok(());
-    }
+    // RES-1288 / RES-2314: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind `markers.has_generic_fn`, so
+    // the program is guaranteed to contain at least one Function
+    // with non-empty `type_params`. The previous internal
+    // `stmts.iter().any(...)` pre-scan walked the full top-level
+    // statement list a second time for the same signal Markers
+    // already computed. Mirrors RES-2292 through RES-2312.
     for stmt in stmts {
         check_node(&stmt.node)?;
     }
