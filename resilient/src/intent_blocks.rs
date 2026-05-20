@@ -23,7 +23,6 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct IntentSpec {
     pub item_name: String,
-    pub raw_args: String,
     pub property: Option<String>,
     pub enforcers: Vec<String>,
 }
@@ -33,9 +32,13 @@ pub fn collect() -> Vec<IntentSpec> {
     // RES-1754: pre-size to attrs.len() — exactly one push per attribute record.
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
+        // RES-2168: drop the `raw_args` field — it was set from
+        // `rec.args.clone()` but had zero readers anywhere in the
+        // workspace, so the per-attr String clone was pure overhead.
+        // The parse loop below walks `rec.args.split(',')` directly;
+        // it never touched `spec.raw_args`.
         let mut spec = IntentSpec {
             item_name: item,
-            raw_args: rec.args.clone(),
             property: None,
             enforcers: Vec::new(),
         };

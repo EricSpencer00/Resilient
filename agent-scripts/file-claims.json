@@ -181,7 +181,7 @@
       "claimed_at": "2026-05-13T12:28:38Z"
     },
     "resilient/src/intent_blocks.rs": {
-      "branch": "res-1994-intent-blocks-drop-fnames",
+      "branch": "res-2168-intent-blocks-drop-raw-args",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/row_polymorphism.rs": {
