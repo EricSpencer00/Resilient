@@ -1,5 +1,9 @@
 {
   "claims": {
+    "resilient/src/snapshot_regression.rs": {
+      "branch": "res-2120-snapshot-baseline-borrow-guard",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     ".github/workflows/embedded.yml": {
       "branch": "res-1198-embedded-rust-cache",
       "claimed_at": "2026-05-12T01:23:24Z"

@@ -98,24 +98,38 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
 
     // Compare against baseline and emit regressions.
-    let baseline = SNAPSHOT_BASELINE.read().ok().and_then(|g| g.clone());
-    if let Some(baseline) = baseline {
-        let changed = diff(&baseline, &current);
-        if !changed.is_empty() {
-            eprintln!(
-                "snapshot-regression: {} function(s) have changed behavioral \
-                 fingerprints: [{}]",
-                changed.len(),
-                changed.join(", ")
-            );
-            for name in &changed {
-                if let (Some(old), Some(new)) = (baseline.get(name), current.get(name)) {
+    //
+    // RES-2120: hold the read guard for the diff + diagnostic emission
+    // instead of deep-cloning the entire baseline `HashMap<String, Snapshot>`.
+    // The previous shape called `g.clone()` on the read guard's payload
+    // every typecheck, cloning every `String` key + every `Snapshot`
+    // value just so the diff function could borrow them. The guard is
+    // dropped at the end of the inner block before `install_snapshot_baseline`
+    // takes the write lock. Same pattern as RES-2074 / RES-2112 / RES-2114
+    // / RES-2116.
+    {
+        if let Ok(g) = SNAPSHOT_BASELINE.read() {
+            if let Some(baseline) = g.as_ref() {
+                let changed = diff(baseline, &current);
+                if !changed.is_empty() {
                     eprintln!(
-                        "snapshot-regression:   `{name}`: {} → {}",
-                        old.fingerprint_digest, new.fingerprint_digest
+                        "snapshot-regression: {} function(s) have changed behavioral \
+                         fingerprints: [{}]",
+                        changed.len(),
+                        changed.join(", ")
                     );
+                    for name in &changed {
+                        if let (Some(old), Some(new)) = (baseline.get(name), current.get(name)) {
+                            eprintln!(
+                                "snapshot-regression:   `{name}`: {} → {}",
+                                old.fingerprint_digest, new.fingerprint_digest
+                            );
+                        }
+                    }
                 }
             }
+            // `g` (read guard) drops here before `install_snapshot_baseline`
+            // takes the write lock below.
         }
     }
 
