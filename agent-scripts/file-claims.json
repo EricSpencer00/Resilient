@@ -200,10 +200,6 @@
       "branch": "res-1770-verifier-presize",
       "claimed_at": "2026-05-13T11:59:58Z"
     },
-    "resilient/src/cluster_verifier.rs": {
-      "branch": "res-2150-cluster-verifier-borrow-actor-table",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/verifier_liveness.rs": {
       "branch": "res-1770-verifier-presize",
       "claimed_at": "2026-05-13T11:59:58Z"
@@ -463,6 +459,10 @@
     "resilient/src/phantom_types.rs": {
       "branch": "res-2390-phantom-types-drop-type-name",
       "claimed_at": "2026-05-20T16:19:52Z"
+    },
+    "resilient/src/cluster_verifier.rs": {
+      "branch": "res-2406-cluster-verifier-move-clones",
+      "claimed_at": "2026-05-20T17:21:32Z"
     }
   }
 }

@@ -384,14 +384,26 @@ fn verify_handler_against_invariant(
     // comparison / arithmetic operators the subset covers — so
     // implication gets desugared as `!pre || post`, keeping us
     // inside the supported grammar.
+    // RES-2408: build `axioms` from a single `pre_invariant.clone()`
+    // first, then move both owned locals into the implication —
+    // the previous shape paid three Node clones per `(handler,
+    // invariant)` iteration (pre into impl + pre into axioms +
+    // post into impl) when only one is actually required, since
+    // neither local is read after the prove call. Each clone is
+    // a deep Node tree (InfixExpression + Identifier + IntegerLiteral
+    // chain after `rewrite_field_refs` rewriting) — for an M*N*K
+    // cluster iteration, dropping two clones per call removes the
+    // bulk of the AST-allocation overhead around the Z3 solver run.
+    let bindings: HashMap<String, i64> = HashMap::new();
+    let axioms = vec![pre_invariant.clone()];
     let implication = Node::InfixExpression {
         left: Box::new(Node::PrefixExpression {
             operator: "!",
-            right: Box::new(pre_invariant.clone()),
+            right: Box::new(pre_invariant),
             span: Span::default(),
         }),
         operator: "||",
-        right: Box::new(post_invariant.clone()),
+        right: Box::new(post_invariant),
         span: Span::default(),
     };
 
@@ -402,8 +414,6 @@ fn verify_handler_against_invariant(
     // (otherwise Z3 trivially finds counterexamples in states
     // that already violated the invariant before the handler ran —
     // those aren't real failures of the handler).
-    let bindings: HashMap<String, i64> = HashMap::new();
-    let axioms = vec![pre_invariant.clone()];
     let (verdict, _cert, counterexample, timed_out) =
         crate::verifier_z3::prove_with_axioms_and_timeout(
             &implication,
