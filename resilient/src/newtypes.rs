@@ -25,26 +25,27 @@
 //! thread stack.
 
 use crate::Node;
-use std::collections::HashMap;
+use std::collections::HashSet;
 
-/// Collect all newtype declarations from the program's statement list into
-/// a `name → base_type` map.
-fn collect_newtypes_from_program(program: &Node) -> HashMap<String, String> {
+/// Collect newtype declaration names from the program's statement list.
+///
+/// RES-2402: switched from `HashMap<String, String>` to `HashSet<String>`.
+/// The previous map's `base_type` values were never read — `lower_program`
+/// only consults `newtypes.contains_key(name)` / `is_empty()`. Each
+/// `#[newtype]` declaration paid for a discarded `base_type.clone()`.
+fn collect_newtypes_from_program(program: &Node) -> HashSet<String> {
     let Node::Program(statements) = program else {
-        return HashMap::new();
+        return HashSet::new();
     };
     // RES-1764: pre-size to statements.len() — at most one insert per
     // top-level NewtypeDecl, upper-bounded by the statement count.
-    let mut map = HashMap::with_capacity(statements.len());
+    let mut set = HashSet::with_capacity(statements.len());
     for spanned in statements {
-        if let Node::NewtypeDecl {
-            name, base_type, ..
-        } = &spanned.node
-        {
-            map.insert(name.clone(), base_type.clone());
+        if let Node::NewtypeDecl { name, .. } = &spanned.node {
+            set.insert(name.clone());
         }
     }
-    map
+    set
 }
 
 /// Post-parse lowering: rewrite every `Foo(expr)` `CallExpression` node
@@ -68,7 +69,7 @@ pub fn lower_program(program: &mut Node) {
     }
 }
 
-fn lower_node(node: &mut Node, newtypes: &HashMap<String, String>) {
+fn lower_node(node: &mut Node, newtypes: &HashSet<String>) {
     match node {
         Node::CallExpression {
             function,
@@ -76,7 +77,7 @@ fn lower_node(node: &mut Node, newtypes: &HashMap<String, String>) {
             span,
         } => {
             if let Node::Identifier { name, .. } = function.as_ref()
-                && newtypes.contains_key(name)
+                && newtypes.contains(name)
                 && arguments.len() == 1
             {
                 // Lower the inner argument first so nested constructors work.

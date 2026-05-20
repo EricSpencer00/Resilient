@@ -1,9 +1,5 @@
 {
   "claims": {
-    "resilient/src/distributed_invariants.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
-    },
     "resilient/src/array_set_helpers.rs": {
       "branch": "res-2136-array-set-hashset-membership",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -168,25 +164,9 @@
       "branch": "res-1760-callgraph-presize",
       "claimed_at": "2026-05-13T11:42:08Z"
     },
-    "resilient/src/dependent_arrays.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
-    },
-    "resilient/src/newtypes.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
-    },
     "resilient/src/session_types.rs": {
       "branch": "res-2198-session-types-drop-channel-name",
       "claimed_at": "2026-05-19T00:00:00Z"
-    },
-    "resilient/src/mmio_regmap.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
-    },
-    "resilient/src/macros.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
     },
     "resilient/src/monomorph.rs": {
       "branch": "res-1924-monomorph-presize",
@@ -463,6 +443,10 @@
     "resilient/src/phantom_types.rs": {
       "branch": "res-2390-phantom-types-drop-type-name",
       "claimed_at": "2026-05-20T16:19:52Z"
+    },
+    "resilient/src/newtypes.rs": {
+      "branch": "res-2402-newtypes-drop-base-type",
+      "claimed_at": "2026-05-20T16:51:02Z"
     }
   }
 }
