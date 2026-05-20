@@ -41,28 +41,32 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // a combined check on `markers.call_idents` for LOCK_FNS/UNLOCK_FNS
     // names and `lock_`/`unlock_` prefixes. The previous `any_node`
     // pre-scan was redundant — removed.
-    let mut pair_sites: HashMap<(String, String), Vec<String>> = HashMap::new();
+    // RES-2230: borrow lock names and fn names from the AST throughout
+    // the pair-collection + reporting flow. The previous shape paid:
+    //   * one `lk.clone()` per lock/unlock call site (acts.push)
+    //   * one `(prior.clone(), lk.clone())` per ordered pair recorded
+    //   * one `fn_name.to_string()` per pair recorded
+    //   * one `(b.clone(), a.clone())` per reverse-key lookup
+    // None of those allocations outlives the program AST. The
+    // hashmap-of-tuples-of-borrows lookup works via stdlib's
+    // `Borrow<(&str, &str)>` on `(String, String)` is NOT supported,
+    // but `HashMap<(&'a str, &'a str), _>` lookups with `(&'a str,
+    // &'a str)` keys are direct.
+    let mut pair_sites: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
-            collect_pairs(name, body, &mut pair_sites);
+            collect_pairs(name.as_str(), body, &mut pair_sites);
         }
     }
     // RES-1524: borrow lock-name pairs into the dedup set instead
     // of cloning. The `pair_sites` map already owns the strings;
     // `reported` only checks "have I warned on this canonical
     // pair before". Same pattern as RES-1495 / RES-1500 / RES-1520
-    // applied to a tuple key. The `key_ba` lookup also doesn't
-    // need owned strings — `(&str, &str)` works via `Borrow` on
-    // tuple-of-borrows.
+    // applied to a tuple key.
     let mut reported: HashSet<(&str, &str)> = HashSet::new();
-    for ((a, b), fns_ab) in &pair_sites {
-        let key_ba = (b.clone(), a.clone());
-        if let Some(fns_ba) = pair_sites.get(&key_ba) {
-            let canon: (&str, &str) = if a < b {
-                (a.as_str(), b.as_str())
-            } else {
-                (b.as_str(), a.as_str())
-            };
+    for (&(a, b), fns_ab) in &pair_sites {
+        if let Some(fns_ba) = pair_sites.get(&(b, a)) {
+            let canon: (&str, &str) = if a < b { (a, b) } else { (b, a) };
             if !reported.insert(canon) {
                 continue;
             }
@@ -77,13 +81,20 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn collect_pairs(fn_name: &str, body: &Node, pairs: &mut HashMap<(String, String), Vec<String>>) {
+fn collect_pairs<'a>(
+    fn_name: &'a str,
+    body: &'a Node,
+    pairs: &mut HashMap<(&'a str, &'a str), Vec<&'a str>>,
+) {
     // RES-1752: pre-size — a fn body typically has a small handful
     // of lock/unlock calls. 8 covers the common case without
     // doubling growth from 0.
-    let mut held: Vec<String> = Vec::with_capacity(8);
-    let mut acts: Vec<(bool, String)> = Vec::with_capacity(8); // (is_lock, name)
-    visit(body, &mut |n| {
+    // RES-2230: held / acts now hold `&'a str` borrows from the AST.
+    // `uniqueness_walk::visit<'a>` (RES-1603) propagates the AST
+    // lifetime into the closure, so `lk.as_str()` is captured directly.
+    let mut held: Vec<&'a str> = Vec::with_capacity(8);
+    let mut acts: Vec<(bool, &'a str)> = Vec::with_capacity(8); // (is_lock, name)
+    visit(body, &mut |n: &'a Node| {
         if let Node::CallExpression {
             function,
             arguments,
@@ -95,7 +106,7 @@ fn collect_pairs(fn_name: &str, body: &Node, pairs: &mut HashMap<(String, String
                 let is_unlock = UNLOCK_FNS.contains(&name.as_str()) || name.starts_with("unlock_");
                 if (is_lock || is_unlock) && !arguments.is_empty() {
                     if let Node::Identifier { name: lk, .. } = &arguments[0] {
-                        acts.push((is_lock, lk.clone()));
+                        acts.push((is_lock, lk.as_str()));
                     }
                 }
             }
@@ -103,17 +114,14 @@ fn collect_pairs(fn_name: &str, body: &Node, pairs: &mut HashMap<(String, String
     });
     for (is_lock, lk) in acts {
         if is_lock {
-            for prior in &held {
-                if prior != &lk {
-                    pairs
-                        .entry((prior.clone(), lk.clone()))
-                        .or_default()
-                        .push(fn_name.to_string());
+            for &prior in &held {
+                if prior != lk {
+                    pairs.entry((prior, lk)).or_default().push(fn_name);
                 }
             }
             held.push(lk);
         } else {
-            held.retain(|h| h != &lk);
+            held.retain(|h| *h != lk);
         }
     }
 }
