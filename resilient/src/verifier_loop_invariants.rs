@@ -399,6 +399,16 @@ fn collect_assigned_names<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
 /// Build WP(body, post). The body must be a block of supported
 /// statements (assignments + invariant no-ops); anything else
 /// returns `None` so the caller treats this loop as unprovable.
+///
+/// RES-2280: fast-reject assignments whose LHS is not referenced in
+/// the current postcondition. `substitute` is otherwise forced to
+/// walk the whole AST and clone every node it visits — for a body
+/// of S assignments and a postcondition of P nodes, that's O(S*P)
+/// deep clones even when most assignments target variables the
+/// postcondition never mentions. Probing with `contains_ident`
+/// (a non-allocating walker) lets the unreferenced-name case skip
+/// the clone storm entirely; the referenced-name path still pays
+/// the full substitute cost.
 #[cfg(feature = "z3")]
 fn weakest_precondition(body: &Node, post: &Node) -> Option<Node> {
     let stmts = match body {
@@ -409,6 +419,9 @@ fn weakest_precondition(body: &Node, post: &Node) -> Option<Node> {
     for stmt in stmts.iter().rev() {
         match stmt {
             Node::Assignment { name, value, .. } => {
+                if !contains_ident(&current, name) {
+                    continue;
+                }
                 current = substitute(&current, name, value);
             }
             Node::InvariantStatement { .. } => {
@@ -418,6 +431,18 @@ fn weakest_precondition(body: &Node, post: &Node) -> Option<Node> {
         }
     }
     Some(current)
+}
+
+/// Non-allocating walker — returns `true` as soon as a free
+/// occurrence of `name` is found in `node`. Mirrors the helper of
+/// the same name in `secret_erasure`, scoped to the WP module so
+/// the LIA / BV32 translator subset stays self-contained.
+#[cfg(feature = "z3")]
+fn contains_ident(node: &Node, name: &str) -> bool {
+    crate::uniqueness_walk::any_node(
+        node,
+        |n| matches!(n, Node::Identifier { name: n_name, .. } if n_name == name),
+    )
 }
 
 /// Substitute every free occurrence of `name` in `node` with a clone
