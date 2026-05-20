@@ -277,8 +277,15 @@ impl ControlFlowGraph {
     }
 
     /// Enumerate all instruction-boundary prefixes in the CFG.
-    fn enumerate_prefixes(&self) -> Vec<(usize, Span)> {
-        self.prefix_boundaries.clone()
+    ///
+    /// RES-2416: returns a borrowed slice — every caller (production
+    /// `bmc_check` and the three test helpers below) only iterates
+    /// the result or reads its `.len()`. The previous owned-`Vec`
+    /// return cloned `prefix_boundaries` for nothing per call.
+    /// `(usize, Span)` is `Copy`, so consumers can still destructure
+    /// without lifetime gymnastics.
+    fn enumerate_prefixes(&self) -> &[(usize, Span)] {
+        &self.prefix_boundaries
     }
 }
 
@@ -500,7 +507,7 @@ pub(crate) fn check_recovers_to_bmc(
     let cfg = ControlFlowGraph::from_body(fn_body);
     let prefixes = cfg.enumerate_prefixes();
 
-    for (prefix_id, span) in &prefixes {
+    for (prefix_id, span) in prefixes {
         let obligation = generate_prefix_obligation(*prefix_id, requires_clauses, recovers_clause);
         // RES-1857 Phase 3: invoke Z3 on the obligation string.
         solve_bmc_obligation(fn_name, *prefix_id, span, &obligation)?;
