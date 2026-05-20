@@ -40,9 +40,20 @@ pub fn collect_names() -> Vec<String> {
 // the actual insert. One acquire is enough.
 
 pub fn declare(name: &str, initial: i64) {
+    declare_owned(name.to_string(), initial);
+}
+
+/// RES-2206: inner helper that consumes an owned `String` instead of
+/// cloning from a borrow. The `check` path below collects owned
+/// names from `feature_attrs::find_kind("atomic")` and immediately
+/// throws them away — moving each name straight into the registry
+/// avoids the `name.to_string()` clone that the previous shape paid
+/// per `#[atomic]` attribute on top of the `collect_names` owned
+/// strings the attribute walker had already produced.
+fn declare_owned(name: String, initial: i64) {
     if let Ok(mut g) = REGISTRY.write() {
         let r = g.get_or_insert_with(AtomicRegistry::default);
-        r.cells.insert(name.to_string(), AtomicI64::new(initial));
+        r.cells.insert(name, AtomicI64::new(initial));
     }
 }
 
@@ -76,8 +87,13 @@ pub fn fetch_add(name: &str, delta: i64) -> Option<i64> {
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-2206: move each owned `String` straight into the registry
+    // via `declare_owned`. The previous `declare(&n, 0)` form borrowed
+    // `n` into `declare`, which then called `name.to_string()` —
+    // paying a fresh allocation per `#[atomic]` name on top of the
+    // one `collect_names` already produced.
     for n in collect_names() {
-        declare(&n, 0);
+        declare_owned(n, 0);
     }
     Ok(())
 }
