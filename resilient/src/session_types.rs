@@ -28,9 +28,14 @@ pub enum SessionOp {
     Close,
 }
 
+/// RES-2198: dropped the redundant `channel_name: String` field. The
+/// only reader was `install`'s key clone (`g.insert(s.channel_name.clone(), s)`),
+/// which used it strictly as the HashMap key the spec was stored
+/// under. The field stored exactly what the registry key encoded.
+/// Pipeline now carries `(String, SessionSpec)` tuples from `collect()`
+/// to `install()`. Same dead-field pattern as RES-2106 / … / RES-2196.
 #[derive(Debug, Clone)]
 pub struct SessionSpec {
-    pub channel_name: String,
     pub protocol: Vec<SessionOp>,
 }
 
@@ -59,7 +64,7 @@ pub fn parse_protocol(s: &str) -> Vec<SessionOp> {
     out
 }
 
-pub fn collect() -> Vec<SessionSpec> {
+pub fn collect() -> Vec<(String, SessionSpec)> {
     let attrs = crate::feature_attrs::find_kind("session");
     // RES-1764: pre-size to attrs.len() — exactly one push per
     // attribute record.
@@ -74,20 +79,24 @@ pub fn collect() -> Vec<SessionSpec> {
                 }
             }
         }
-        out.push(SessionSpec {
-            channel_name: item,
-            protocol: parse_protocol(&proto_str),
-        });
+        out.push((
+            item,
+            SessionSpec {
+                protocol: parse_protocol(&proto_str),
+            },
+        ));
     }
     out
 }
 
-pub fn install(specs: Vec<SessionSpec>) {
+pub fn install(specs: Vec<(String, SessionSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         g.clear();
-        for s in specs {
-            g.insert(s.channel_name.clone(), s);
-        }
+        // RES-2198: move (channel_name, spec) pairs straight from
+        // `collect()` into the map. The previous shape per-spec cloned
+        // `s.channel_name` to produce the key, since the field and
+        // the key encoded the same string.
+        g.extend(specs);
     }
 }
 
