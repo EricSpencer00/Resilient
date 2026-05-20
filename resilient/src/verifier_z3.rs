@@ -2609,7 +2609,7 @@ fn check_pair_commute(a: &ActorHandler, b: &ActorHandler) -> CommutativityResult
         }
     };
 
-    Z3_CTX.with(|ctx| check_pair_commute_in(ctx, &a_rhs, &b_rhs, &a.name, &b.name))
+    Z3_CTX.with(|ctx| check_pair_commute_in(ctx, a_rhs, b_rhs, &a.name, &b.name))
 }
 
 fn check_pair_commute_in(
@@ -2709,7 +2709,17 @@ fn check_pair_commute_in(
 /// minimum slice deliberately narrows the accepted form rather
 /// than silently proving trivial-seeming commutativity on
 /// unrepresented control flow.
-fn extract_state_rhs(body: &Node) -> Result<Node, String> {
+///
+/// RES-2408: the returned `&Node` borrows from `body`. Both callers
+/// in `check_pair_commute` immediately re-borrow the result when
+/// forwarding it into `check_pair_commute_in(&Node, ...)`, so the
+/// previous `(**value).clone()` only existed to satisfy an
+/// owned-return signature that nothing in the call chain required.
+/// Dropping the clone removes one deep `Node` allocation per
+/// `extract_state_rhs` call; the commutativity verifier walks
+/// N*(N-1)/2 handler pairs per actor declaration, each one calling
+/// this twice.
+fn extract_state_rhs(body: &Node) -> Result<&Node, String> {
     let stmts: &[Node] = match body {
         Node::Block { stmts, .. } => stmts,
         _ => {
@@ -2744,7 +2754,7 @@ fn extract_state_rhs(body: &Node) -> Result<Node, String> {
                     name, field
                 ));
             }
-            Ok((**value).clone())
+            Ok(value.as_ref())
         }
         _ => Err("body statement must be `self.state = <int_expr>;`".to_string()),
     }

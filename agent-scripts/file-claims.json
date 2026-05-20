@@ -272,10 +272,6 @@
       "branch": "res-1901-hof-clone-elim",
       "claimed_at": "2026-05-19T05:02:34Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-1920-collect-cert-idents-single-walk",
-      "claimed_at": "2026-05-19T17:06:58Z"
-    },
     "resilient/src/compiler.rs": {
       "branch": "res-1922-compile-match-presize",
       "claimed_at": "2026-05-19T17:22:52Z"
@@ -463,6 +459,10 @@
     "resilient/src/phantom_types.rs": {
       "branch": "res-2390-phantom-types-drop-type-name",
       "claimed_at": "2026-05-20T16:19:52Z"
+    },
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-2408-extract-state-rhs-borrow",
+      "claimed_at": "2026-05-20T17:28:22Z"
     }
   }
 }
