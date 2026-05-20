@@ -269,8 +269,8 @@
       "claimed_at": "2026-05-13T11:45:18Z"
     },
     "resilient/src/monomorph.rs": {
-      "branch": "res-1924-monomorph-presize",
-      "claimed_at": "2026-05-19T17:31:00Z"
+      "branch": "res-2084-monomorph-borrow-instantiations",
+      "claimed_at": "2026-05-20T07:30:00Z"
     },
     "resilient/src/typechecker.rs": {
       "branch": "res-1766-typechecker-hot-presize",

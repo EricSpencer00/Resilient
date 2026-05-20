@@ -58,9 +58,17 @@ pub fn lower(program: &Node) -> Node {
     // RES-1924: pre-size to `generic_fns.len()` — the upper bound on
     // distinct generic-fn names that can land as `instantiations`
     // keys. `generic_fns.is_empty()` is guarded by the early-return
-    // above, so the capacity is always ≥ 1 on the live path. Mirrors
-    // RES-1764 / RES-1796 / RES-1800 pre-sizes.
-    let mut instantiations: HashMap<String, Vec<Vec<Type>>> =
+    // above, so the capacity is always ≥ 1 on the live path.
+    //
+    // RES-2084: keys are `&str` borrowed from the program AST. The
+    // previous `HashMap<String, ...>` shape paid one String clone per
+    // call site at the `entry(name.clone()).or_default()` site — even
+    // for keys that already existed. The downstream consumers
+    // (`generic_fns.get(name)`, `mangle_name(name, ...)`,
+    // `specialize_fn(fn_node, mangled, ...)`) all accept `&str` so
+    // the owned String storage was over-conservative; `stmts`
+    // outlives this whole `lower` call.
+    let mut instantiations: HashMap<&str, Vec<Vec<Type>>> =
         HashMap::with_capacity(generic_fns.len());
     for spanned in stmts {
         collect_in_node(&spanned.node, &generic_fns, &mut instantiations);
@@ -82,8 +90,10 @@ pub fn lower(program: &Node) -> Node {
     }
 
     // Append specialized monomorphic clones after the existing declarations.
+    // RES-2084: `fn_name` is `&&str` from iter over `&HashMap<&str, _>`;
+    // deref once with `*fn_name` to feed `&str` to lookups + manglers.
     for (fn_name, instances) in &instantiations {
-        if let Some(fn_node) = generic_fns.get(fn_name.as_str()) {
+        if let Some(fn_node) = generic_fns.get(*fn_name) {
             // RES-1924: pre-size to `instances.len()` — exact upper
             // bound, one mangled name per type-args tuple. Skips the
             // default 0→4 grow for fns with ≥ 4 distinct instantiations.
@@ -135,10 +145,13 @@ fn collect_generic_fns(stmts: &[span::Spanned<Node>]) -> HashMap<&str, &Node> {
 // Phase 2: collect instantiations
 // ---------------------------------------------------------------------------
 
-fn collect_in_node(
-    node: &Node,
+// RES-2084: `out` borrows `&str` keys from the program AST. The
+// caller (`lower`) ensures the AST outlives the map; the consumers
+// (mangle_name, specialize_fn, generic_fns lookups) all accept &str.
+fn collect_in_node<'a>(
+    node: &'a Node,
     generic_fns: &HashMap<&str, &Node>,
-    out: &mut HashMap<String, Vec<Vec<Type>>>,
+    out: &mut HashMap<&'a str, Vec<Vec<Type>>>,
 ) {
     match node {
         Node::Program(stmts) => {
@@ -183,7 +196,7 @@ fn collect_in_node(
             if let Node::Identifier { name, .. } = function.as_ref()
                 && let Some(type_args) = try_infer_call(name, arguments, generic_fns)
             {
-                out.entry(name.clone()).or_default().push(type_args);
+                out.entry(name.as_str()).or_default().push(type_args);
             }
         }
         Node::LetStatement { value, .. } => collect_in_node(value, generic_fns, out),
@@ -288,7 +301,7 @@ fn infer_literal_type(node: &Node) -> Option<Type> {
 fn rewrite_node(
     node: &Node,
     generic_fns: &HashMap<&str, &Node>,
-    instantiations: &HashMap<String, Vec<Vec<Type>>>,
+    instantiations: &HashMap<&str, Vec<Vec<Type>>>,
 ) -> Node {
     match node {
         Node::Program(stmts) => Node::Program(
