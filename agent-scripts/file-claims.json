@@ -97,8 +97,8 @@
       "claimed_at": "2026-05-12T13:40:00Z"
     },
     "resilient/src/feature_attrs.rs": {
-      "branch": "res-1303-feature-attrs-kind-index",
-      "claimed_at": "2026-05-12T05:08:27Z"
+      "branch": "res-2088-feature-attrs-record-borrow",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/const_fold.rs": {
       "branch": "res-1341-cache-opt-env-vars",
