@@ -373,8 +373,8 @@
       "claimed_at": "2026-05-19T17:06:58Z"
     },
     "resilient/src/compiler.rs": {
-      "branch": "res-1922-compile-match-presize",
-      "claimed_at": "2026-05-19T17:22:52Z"
+      "branch": "res-2098-free-vars-borrow-seen",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/string_hof.rs": {
       "branch": "res-1928-string-hof-clone-elim",

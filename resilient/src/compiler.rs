@@ -2509,7 +2509,13 @@ fn compile_expr(
             let param_names: std::collections::HashSet<&str> =
                 parameters.iter().map(|(_, n)| n.as_str()).collect();
             let mut captured: Vec<(u16, String)> = Vec::new(); // (outer slot, name)
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // RES-2098: dedup via borrowed `&str` into the body AST instead of
+            // cloning. `seen` lives only for this `collect_free_vars` call;
+            // every name it stores comes from a `Node::Identifier { name, .. }`
+            // inside `body`, which outlives the walk. The output `captured`
+            // Vec still owns its `String` payload — that one is needed by the
+            // downstream upvalue rewriter past the body borrow.
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             collect_free_vars(body, &param_names, locals, &mut captured, &mut seen);
 
             // Build the closure's local map: params at 0..arity, then upvalues
@@ -2815,21 +2821,23 @@ fn compile_expr(
 /// Walk `node` collecting identifiers that are free in the expression (not
 /// in `param_names`) and bound in `outer_locals`. Results go into `out` in
 /// first-seen order; `seen` tracks which names we've already added.
-fn collect_free_vars(
-    node: &Node,
+fn collect_free_vars<'a>(
+    node: &'a Node,
     param_names: &std::collections::HashSet<&str>,
     outer_locals: &HashMap<String, u16>,
     out: &mut Vec<(u16, String)>,
-    seen: &mut std::collections::HashSet<String>,
+    seen: &mut std::collections::HashSet<&'a str>,
 ) {
     match node {
         Node::Identifier { name, .. }
             if !param_names.contains(name.as_str())
-                && !seen.contains(name)
+                && !seen.contains(name.as_str())
                 && outer_locals.contains_key(name) =>
         {
             let slot = outer_locals[name];
-            seen.insert(name.clone());
+            // RES-2098: insert the borrowed `&str` into `seen`. The output
+            // Vec still allocates an owned `String` for downstream use.
+            seen.insert(name.as_str());
             out.push((slot, name.clone()));
         }
         Node::Identifier { .. } => {}
