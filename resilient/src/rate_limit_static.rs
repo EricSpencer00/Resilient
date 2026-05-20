@@ -45,33 +45,28 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if !has_rate_limited {
         return Ok(());
     }
-    // RES-1515: borrow the top-level fn names into `decls` as `&str`
-    // instead of cloning. The `counts` HashMap still needs owned
-    // String keys because `uniqueness_walk::visit` uses a HRTB
-    // closure that can't bind the outer AST lifetime (same
-    // limitation hit by RES-1509 / RES-1511). For the counts
-    // map, apply the RES-1505 entry-clone gate: only allocate
-    // when the callee is new, falling back to `get_mut` for repeat
-    // hits. Mirrors RES-1495 / RES-1500 / RES-1503 / RES-1507 /
-    // RES-1508 / RES-1509 / RES-1511.
+    // RES-2102: the historical comment claimed `uniqueness_walk::visit`
+    // forced an owned `HashMap<String, usize>` here because its closure
+    // was a HRTB. It isn't — `visit<'a>(node: &'a Node, f: &mut impl
+    // FnMut(&'a Node))` is a regular lifetime parameter that propagates
+    // the AST borrow through the closure, so the per-new-callee
+    // `callee.clone()` was pure overhead. Same fix and rationale as
+    // RES-2060 / RES-2062 / RES-2100.
+    //
     // RES-1788: pre-size decls to stmts.len() (every top-level
     // statement could be a Function, one push each).
     let mut decls: Vec<&str> = Vec::with_capacity(stmts.len());
     // RES-1962: pre-size to 8 — distinct callee counts in real
     // programs are typically 5-20, dominated by stdlib + user-fn
     // names. Skips the 0-bucket initial rehash for the common case.
-    let mut counts: HashMap<String, usize> = HashMap::with_capacity(8);
+    let mut counts: HashMap<&str, usize> = HashMap::with_capacity(8);
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             decls.push(name.as_str());
             visit(body, &mut |n| {
                 if let Node::CallExpression { function, .. } = n {
                     if let Node::Identifier { name: callee, .. } = function.as_ref() {
-                        if let Some(c) = counts.get_mut(callee.as_str()) {
-                            *c += 1;
-                        } else {
-                            counts.insert(callee.clone(), 1);
-                        }
+                        *counts.entry(callee.as_str()).or_insert(0) += 1;
                     }
                 }
             });
