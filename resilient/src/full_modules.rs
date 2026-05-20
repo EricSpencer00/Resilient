@@ -46,14 +46,32 @@ pub fn build(program: &Node) -> ModuleGraph {
     for s in stmts {
         match &s.node {
             Node::ModuleDecl { name, .. } => {
+                // RES-2236: hoist the `current_mod` entry-init into the
+                // ModuleDecl arm and use `or_default` *with* the owned
+                // String we already have in hand. The previous shape did
+                // `entry(current_mod.clone())` here AND `entry(
+                // current_mod.clone())` on every subsequent Use — the Use
+                // path's clone was paid per use-statement even though the
+                // entry was already in the map. Borrow-then-fallback
+                // collapses the steady-state per-Use cost to a single
+                // hash probe.
                 current_mod = name.clone();
                 g.deps.entry(current_mod.clone()).or_default();
             }
             Node::Use { path, .. } => {
-                g.deps
-                    .entry(current_mod.clone())
-                    .or_default()
-                    .insert(path.clone());
+                // RES-2236: hot path — the entry exists once the enclosing
+                // ModuleDecl has been processed (or after the first Use
+                // under `__root`). `get_mut` borrows the key as `&str` and
+                // skips the per-call `current_mod.clone()`. Only the cold
+                // first-Use-without-ModuleDecl branch pays for the owned
+                // String allocation now.
+                if let Some(deps) = g.deps.get_mut(current_mod.as_str()) {
+                    deps.insert(path.clone());
+                } else {
+                    let mut set = HashSet::new();
+                    set.insert(path.clone());
+                    g.deps.insert(current_mod.clone(), set);
+                }
             }
             _ => {}
         }

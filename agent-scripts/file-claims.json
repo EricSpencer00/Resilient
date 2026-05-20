@@ -136,10 +136,6 @@
       "branch": "res-1523-imports-canon-move",
       "claimed_at": "2026-05-12T13:18:45Z"
     },
-    "resilient/src/full_modules.rs": {
-      "branch": "res-1517-full-modules-dfs-borrow",
-      "claimed_at": "2026-05-12T13:25:00Z"
-    },
     "resilient/src/crash_only.rs": {
       "branch": "res-1520-crash-only-name-borrow",
       "claimed_at": "2026-05-12T13:33:00Z"
@@ -463,6 +459,10 @@
     "resilient/src/struct_exhaustiveness.rs": {
       "branch": "res-2224-struct-exhaust-borrow-fn-name",
       "claimed_at": "2026-05-20T06:03:00Z"
+    },
+    "resilient/src/full_modules.rs": {
+      "branch": "res-2236-full-modules-build-skip-clone",
+      "claimed_at": "2026-05-20T06:40:00Z"
     }
   }
 }
