@@ -51,9 +51,18 @@ pub fn analyze(program: &Node) -> Vec<String> {
 ///
 /// Returns `None` for dynamic templates — runtime values that cannot
 /// be validated at compile time.
-fn static_template(node: &Node) -> Option<String> {
+///
+/// RES-2248: returns `Cow<str>` so the StringLiteral arm (the common
+/// case — `format("hello {}", x)` style) can borrow directly from the
+/// AST instead of cloning the template into a fresh `String`. The
+/// InterpolatedString arm still allocates (we need to concatenate the
+/// literal parts), but `Cow::Owned` wraps the produced `String`
+/// transparently for the caller. The caller's only consumer is
+/// `parse_template(&tmpl)`, which takes `&str` — works identically
+/// for both `Cow::Borrowed` and `Cow::Owned` via `Deref`.
+fn static_template(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
     match node {
-        Node::StringLiteral { value, .. } => Some(value.clone()),
+        Node::StringLiteral { value, .. } => Some(std::borrow::Cow::Borrowed(value.as_str())),
         Node::InterpolatedString { parts, .. } => {
             let mut buf = String::new();
             for p in parts {
@@ -62,7 +71,7 @@ fn static_template(node: &Node) -> Option<String> {
                     crate::string_interp::StringPart::Expr(_) => return None,
                 }
             }
-            Some(buf)
+            Some(std::borrow::Cow::Owned(buf))
         }
         _ => None,
     }
