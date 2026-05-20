@@ -388,25 +388,56 @@ fn single_return_expr(node: &Node) -> Option<String> {
 /// zero allocations, and removes the equally-allocating `==` checks
 /// against the sentinel.
 fn format_simple_expr(node: &Node) -> Option<String> {
+    let mut out = String::new();
+    format_simple_expr_into(node, &mut out)?;
+    Some(out)
+}
+
+/// RES-2422: direct-write helper for `format_simple_expr`. Recursion
+/// allocates one buffer total (the outer `String`) instead of one
+/// `String` per sub-expression via `format!`. Same shape as RES-2380
+/// (verifier_actors render_clause) and RES-2326 (contract_inference's
+/// per-clause emit). Returns `Option<()>` so an unsupported sub-node
+/// still propagates `None` via `?`, preserving the previous
+/// "any-sub-failure means the whole expression is too complex"
+/// semantics.
+fn format_simple_expr_into(node: &Node, out: &mut String) -> Option<()> {
+    use std::fmt::Write;
     match node {
-        Node::Identifier { name, .. } => Some(name.clone()),
-        Node::IntegerLiteral { value, .. } => Some(value.to_string()),
-        Node::BooleanLiteral { value, .. } => Some(value.to_string()),
+        Node::Identifier { name, .. } => {
+            out.push_str(name);
+            Some(())
+        }
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+            Some(())
+        }
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+            Some(())
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
         } => {
-            let l = format_simple_expr(left)?;
-            let r = format_simple_expr(right)?;
-            Some(format!("({l} {operator} {r})"))
+            out.push('(');
+            format_simple_expr_into(left, out)?;
+            out.push(' ');
+            out.push_str(operator);
+            out.push(' ');
+            format_simple_expr_into(right, out)?;
+            out.push(')');
+            Some(())
         }
         Node::PrefixExpression {
             operator, right, ..
         } if *operator == "-" => {
-            let inner = format_simple_expr(right)?;
-            Some(format!("(-{inner})"))
+            out.push_str("(-");
+            format_simple_expr_into(right, out)?;
+            out.push(')');
+            Some(())
         }
         // Well-known pure functions: one-arg (len, abs) and two-arg (min, max, clamp).
         Node::CallExpression {
@@ -417,19 +448,30 @@ fn format_simple_expr(node: &Node) -> Option<String> {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 match (name.as_str(), arguments.len()) {
                     ("len" | "abs", 1) => {
-                        let arg = format_simple_expr(&arguments[0])?;
-                        return Some(format!("{name}({arg})"));
+                        out.push_str(name);
+                        out.push('(');
+                        format_simple_expr_into(&arguments[0], out)?;
+                        out.push(')');
+                        return Some(());
                     }
                     ("min" | "max", 2) => {
-                        let a = format_simple_expr(&arguments[0])?;
-                        let b = format_simple_expr(&arguments[1])?;
-                        return Some(format!("{name}({a}, {b})"));
+                        out.push_str(name);
+                        out.push('(');
+                        format_simple_expr_into(&arguments[0], out)?;
+                        out.push_str(", ");
+                        format_simple_expr_into(&arguments[1], out)?;
+                        out.push(')');
+                        return Some(());
                     }
                     ("clamp", 3) => {
-                        let v = format_simple_expr(&arguments[0])?;
-                        let lo = format_simple_expr(&arguments[1])?;
-                        let hi = format_simple_expr(&arguments[2])?;
-                        return Some(format!("clamp({v}, {lo}, {hi})"));
+                        out.push_str("clamp(");
+                        format_simple_expr_into(&arguments[0], out)?;
+                        out.push_str(", ");
+                        format_simple_expr_into(&arguments[1], out)?;
+                        out.push_str(", ");
+                        format_simple_expr_into(&arguments[2], out)?;
+                        out.push(')');
+                        return Some(());
                     }
                     _ => {}
                 }
