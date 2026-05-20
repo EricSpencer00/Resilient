@@ -14,9 +14,14 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-#[derive(Debug, Clone)]
+/// RES-2394: dropped the redundant `struct_name: String` field.
+/// `install` previously used it as the HashMap key, duplicating the
+/// name in both the key AND the value's field. Pipeline now carries
+/// `(String, MmioRegmap)` tuples — matches wcet (RES-2190), prob
+/// (RES-2170), power (RES-2386), stack (RES-2388), phantom (RES-2390),
+/// dependent (RES-2392). `MmioRegmap` becomes `Copy` (just two `u64`s).
+#[derive(Debug, Clone, Copy)]
 pub struct MmioRegmap {
-    pub struct_name: String,
     pub base_addr: u64,
     pub size_bytes: u64,
 }
@@ -33,7 +38,7 @@ fn parse_addr(s: &str) -> Option<u64> {
     }
 }
 
-pub fn collect() -> Vec<MmioRegmap> {
+pub fn collect() -> Vec<(String, MmioRegmap)> {
     let attrs = crate::feature_attrs::find_kind("mmio");
     // RES-1764: pre-size to attrs.len() — conditional push (only when
     // both base and size parse non-zero), upper bound.
@@ -60,29 +65,34 @@ pub fn collect() -> Vec<MmioRegmap> {
                 }
             }
         }
-        out.push(MmioRegmap {
-            struct_name: item,
-            base_addr: base,
-            size_bytes: size,
-        });
+        out.push((
+            item,
+            MmioRegmap {
+                base_addr: base,
+                size_bytes: size,
+            },
+        ));
     }
     out
 }
 
-pub fn install(maps: Vec<MmioRegmap>) {
+pub fn install(maps: Vec<(String, MmioRegmap)>) {
     if let Ok(mut g) = REGMAPS.write() {
         g.clear();
-        for m in maps {
-            g.insert(m.struct_name.clone(), m);
-        }
+        // RES-2394: move (name, map) tuples straight from collect()
+        // — no per-spec clone for the key.
+        g.extend(maps);
     }
 }
 
 pub fn lookup(struct_name: &str) -> Option<MmioRegmap> {
+    // RES-2394: MmioRegmap is now Copy — `.copied()` replaces the
+    // previous `.cloned()` which paid for a String clone of the
+    // removed `struct_name` field.
     REGMAPS
         .read()
         .ok()
-        .and_then(|g| g.get(struct_name).cloned())
+        .and_then(|g| g.get(struct_name).copied())
 }
 
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
@@ -100,15 +110,15 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     // overlap check returns Err on real bug — install never runs on
     // failure, which is the right behavior (don't pollute the
     // registry with overlapping maps).
-    for (i, a) in maps.iter().enumerate() {
-        for b in &maps[i + 1..] {
+    for (i, (a_name, a)) in maps.iter().enumerate() {
+        for (b_name, b) in &maps[i + 1..] {
             let a_end = a.base_addr.saturating_add(a.size_bytes);
             let b_end = b.base_addr.saturating_add(b.size_bytes);
             let overlap = a.base_addr < b_end && b.base_addr < a_end;
             if overlap {
                 return Err(format!(
                     "{}:0:0: error: MMIO regmaps `{}` and `{}` overlap in address space",
-                    source_path, a.struct_name, b.struct_name
+                    source_path, a_name, b_name
                 ));
             }
         }
@@ -134,8 +144,9 @@ mod tests {
             },
         );
         let m = collect();
-        assert_eq!(m[0].base_addr, 0x40010800);
-        assert_eq!(m[0].size_bytes, 0x400);
+        assert_eq!(m[0].0, "GPIOA");
+        assert_eq!(m[0].1.base_addr, 0x40010800);
+        assert_eq!(m[0].1.size_bytes, 0x400);
         crate::feature_attrs::reset();
     }
 
