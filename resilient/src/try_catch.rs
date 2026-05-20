@@ -212,7 +212,10 @@ fn walk(
                     // Parser already emitted a recovery diagnostic.
                     continue;
                 }
-                if !emitted.iter().any(|v| v == variant) {
+                // RES-2214: `emitted` now holds `&str`; use
+                // `Vec::contains` directly to drop the per-call
+                // `String` clone the previous shape paid.
+                if !emitted.contains(&variant.as_str()) {
                     return Err(format_error(
                         source_path,
                         span,
@@ -260,21 +263,31 @@ fn walk(
 /// callee. Calls to unknown (non-user-declared) functions contribute
 /// nothing — those never carry a `fails` obligation in the current
 /// MVP, so a `catch` arm covering them would always be spurious.
-fn collect_emitted_variants(
-    body: &[Node],
-    fn_fails: &std::collections::HashMap<&str, &[String]>,
-) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// RES-2214: collected variant names borrow from `fn_fails` (which
+/// already lives at the program-AST lifetime). The previous shape
+/// produced `Vec<String>` by cloning each `v: &String` from the
+/// fails slice — paid per call-expression discovered, per
+/// `TryCatch` body traversed. The two consumers
+/// (`walk::TryCatch` arm, recursive `collect_from_node` inside a
+/// nested `TryCatch`) only ever `==`-compare entries against owned
+/// `String`s; borrowed `&'a str` comparison via the
+/// `PartialEq<String> for &str` impl is the same logical
+/// predicate.
+fn collect_emitted_variants<'a>(
+    body: &'a [Node],
+    fn_fails: &std::collections::HashMap<&'a str, &'a [String]>,
+) -> Vec<&'a str> {
+    let mut out: Vec<&'a str> = Vec::new();
     for stmt in body {
         collect_from_node(stmt, fn_fails, &mut out);
     }
     out
 }
 
-fn collect_from_node(
-    node: &Node,
-    fn_fails: &std::collections::HashMap<&str, &[String]>,
-    out: &mut Vec<String>,
+fn collect_from_node<'a>(
+    node: &'a Node,
+    fn_fails: &std::collections::HashMap<&'a str, &'a [String]>,
+    out: &mut Vec<&'a str>,
 ) {
     match node {
         Node::CallExpression {
@@ -286,8 +299,9 @@ fn collect_from_node(
                 && let Some(variants) = fn_fails.get(name.as_str()).copied()
             {
                 for v in variants {
-                    if !out.iter().any(|x| x == v) {
-                        out.push(v.clone());
+                    let v_str = v.as_str();
+                    if !out.contains(&v_str) {
+                        out.push(v_str);
                     }
                 }
             }
@@ -339,9 +353,9 @@ fn collect_from_node(
             let inner_emitted = collect_emitted_variants(body, fn_fails);
             let caught: std::collections::HashSet<&str> =
                 handlers.iter().map(|(v, _)| v.as_str()).collect();
-            for v in &inner_emitted {
-                if !caught.contains(v.as_str()) && !out.iter().any(|x| x == v) {
-                    out.push(v.clone());
+            for &v in &inner_emitted {
+                if !caught.contains(v) && !out.contains(&v) {
+                    out.push(v);
                 }
             }
             for (_, hbody) in handlers {
