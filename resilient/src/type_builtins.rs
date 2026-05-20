@@ -115,8 +115,14 @@ pub(crate) fn builtin_result_collect(args: &[Value]) -> RResult<Value> {
 /// // squares == [0, 1, 4, 9, 16]
 /// ```
 pub(crate) fn builtin_array_from_fn(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
+    // RES-2080: borrow `f` instead of cloning. `apply_function` takes
+    // `&Value`, so the function never needed to be owned. Same
+    // pattern as RES-2076 (result_option_hof), RES-2078
+    // (collection_extras). The eliminated clone is a deep Value::Function
+    // clone (Box alloc + FunctionValue clone with deep requires/ensures
+    // Vec<Node> clones).
     let (n, f) = match args {
-        [Value::Int(n), f] => (*n, f.clone()),
+        [Value::Int(n), f] => (*n, f),
         [n, _] => {
             return Err(format!(
                 "array_from_fn: first argument must be an int, got {n}"
@@ -136,7 +142,7 @@ pub(crate) fn builtin_array_from_fn(interp: &mut Interpreter, args: &[Value]) ->
 
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
-        out.push(interp.apply_function(&f, vec![Value::Int(i)])?);
+        out.push(interp.apply_function(f, vec![Value::Int(i)])?);
     }
     Ok(Value::Array(out))
 }
