@@ -18,7 +18,7 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{any_node, for_each_function, visit};
+use crate::uniqueness_walk::{any_node, for_each_function};
 
 const AUDIT_FNS: &[&str] = &["audit_log", "journal", "record_event", "emit_audit"];
 
@@ -29,13 +29,21 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // least one audited-prefixed/suffixed field assignment. The
     // previous `any_node` pre-scan was redundant — removed.
     for_each_function(program, |fname, _params, body| {
-        let mut has_audited_write = false;
-        visit(body, &mut |n| {
-            if let Node::FieldAssignment { field, .. } = n {
-                if field.starts_with("audited_") || field.ends_with("_audited") {
-                    has_audited_write = true;
-                }
+        // RES-2226: switch the audited-write detector from `visit`
+        // (unconditional whole-body walk) to `any_node` (early-
+        // terminating). `visit` set a `has_audited_write` flag mid-
+        // walk and continued visiting siblings/cousins until the
+        // entire body had been traversed. `any_node` propagates the
+        // hit upward and skips the rest of the tree. For functions
+        // with even a single audited write, the walk now stops at
+        // the first match — typically after a handful of nodes
+        // instead of the full body. Mirrors the audit pass's own
+        // `logged` detector below, which already uses `any_node`.
+        let has_audited_write = any_node(body, |n| match n {
+            Node::FieldAssignment { field, .. } => {
+                field.starts_with("audited_") || field.ends_with("_audited")
             }
+            _ => false,
         });
         if !has_audited_write {
             return;
