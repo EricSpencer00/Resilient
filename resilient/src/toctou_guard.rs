@@ -32,28 +32,36 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // `markers.any_call_ident_with_suffix` with the same CHECK_SUFFIXES.
     // The previous `any_node` pre-scan was redundant — removed.
     for_each_function(program, |fname, _params, body| {
-        let mut events: Vec<(bool, String, Option<String>)> = Vec::new();
-        // (is_check, fn_name, first_ident_arg)
+        // RES-2348: borrow callee names and first-arg names/values
+        // directly from the AST instead of cloning into `String`.
+        // `visit<'a>(&'a Node, &mut impl FnMut(&'a Node))` (RES-1238)
+        // threads the AST lifetime through the closure, so
+        // `name.as_str()` / `value.as_str()` are valid for the lifetime
+        // of `body` — i.e., across all closure invocations and the
+        // pair-search loop that follows. Drops two `String::clone`s
+        // per matched call and shrinks each Vec entry from
+        // `(bool, String, Option<String>)` to `(bool, &str, Option<&str>)`.
+        let mut events: Vec<(bool, &str, Option<&str>)> = Vec::new();
+        // (is_check, fn_name, first_ident_or_strlit_arg)
         visit(body, &mut |n| {
             if let Node::CallExpression {
                 function,
                 arguments,
                 ..
             } = n
+                && let Node::Identifier { name, .. } = function.as_ref()
             {
-                if let Node::Identifier { name, .. } = function.as_ref() {
-                    let arg = arguments.first().and_then(|a| match a {
-                        Node::Identifier { name, .. } => Some(name.clone()),
-                        Node::StringLiteral { value, .. } => Some(value.clone()),
-                        _ => None,
-                    });
-                    if CHECK_SUFFIXES.iter().any(|s| name.ends_with(*s)) {
-                        events.push((true, name.clone(), arg));
-                    } else if USE_SUFFIXES.iter().any(|s| name.ends_with(*s))
-                        && !name.starts_with("atomic_")
-                    {
-                        events.push((false, name.clone(), arg));
-                    }
+                let arg = arguments.first().and_then(|a| match a {
+                    Node::Identifier { name, .. } => Some(name.as_str()),
+                    Node::StringLiteral { value, .. } => Some(value.as_str()),
+                    _ => None,
+                });
+                if CHECK_SUFFIXES.iter().any(|s| name.ends_with(*s)) {
+                    events.push((true, name.as_str(), arg));
+                } else if USE_SUFFIXES.iter().any(|s| name.ends_with(*s))
+                    && !name.starts_with("atomic_")
+                {
+                    events.push((false, name.as_str(), arg));
                 }
             }
         });
@@ -62,12 +70,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             if !*is_check {
                 continue;
             }
-            let Some(carg) = carg else { continue };
+            let Some(carg) = *carg else { continue };
             for (is_check2, uname, uarg) in events.iter().skip(i + 1) {
                 if *is_check2 {
                     continue;
                 }
-                if uarg.as_deref() == Some(carg) {
+                if *uarg == Some(carg) {
                     eprintln!(
                         "warning: in '{fname}', TOCTOU: '{cname}({carg})' followed \
                          by '{uname}({carg})' — use atomic_{uname} or wrap both \
