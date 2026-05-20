@@ -55,10 +55,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     for_each_function(program, |fname, _params, body| {
-        let mut leaks = Vec::new();
+        let mut leaks: Vec<&str> = Vec::new();
         collect_local_secrets(body, &mut leaks);
         for var in leaks {
-            if !is_wiped(body, &var) && !is_returned(body, &var) {
+            if !is_wiped(body, var) && !is_returned(body, var) {
                 eprintln!(
                     "warning: function '{fname}' binds secret '{var}' but never \
                      calls zeroize()/zero_out()/wipe() on it before exit — \
@@ -70,9 +70,17 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn collect_local_secrets(body: &Node, out: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::new();
-    let mut sink = |n: &Node| {
+/// RES-2426: borrow each candidate-secret binding's name out of the
+/// AST instead of cloning into owned `String`s. `uniqueness_walk::visit`
+/// propagates the lifetime (RES-1238), so both the dedup `HashSet` and
+/// the output `Vec` can hold `&'a str` borrowed from the inner
+/// `String` in the AST. Callers (`is_wiped`, `is_returned`) already
+/// take `var: &str`, so the for-loop just passes `var` directly
+/// instead of `&var`. Drops 2N `String::clone` allocations per
+/// function for N candidate-secret bindings.
+fn collect_local_secrets<'a>(body: &'a Node, out: &mut Vec<&'a str>) {
+    let mut seen: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    let mut sink = |n: &'a Node| {
         let (name, type_annot) = match n {
             Node::LetStatement {
                 name, type_annot, ..
@@ -80,13 +88,13 @@ fn collect_local_secrets(body: &Node, out: &mut Vec<String>) {
             Node::StaticLet { name, .. } => (name, None),
             _ => return,
         };
-        if !seen.insert(name.clone()) {
+        if !seen.insert(name.as_str()) {
             return;
         }
         let by_name = SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(*p));
         let by_type = type_annot.map(is_secret_type).unwrap_or(false);
         if by_name || by_type {
-            out.push(name.clone());
+            out.push(name.as_str());
         }
     };
     crate::uniqueness_walk::visit(body, &mut sink);

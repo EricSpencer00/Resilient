@@ -52,10 +52,6 @@
       "branch": "res-1252-degraded-mode-fast-reject",
       "claimed_at": "2026-05-12T03:27:30Z"
     },
-    "resilient/src/secret_erasure.rs": {
-      "branch": "res-1256-secret-erasure-fast-reject",
-      "claimed_at": "2026-05-12T03:39:06Z"
-    },
     "resilient/src/monotonic_field.rs": {
       "branch": "res-1262-monotonic-fast-reject",
       "claimed_at": "2026-05-12T03:53:13Z"
@@ -467,6 +463,10 @@
     "resilient/src/jit_backend.rs": {
       "branch": "res-2412-jit-move-maps",
       "claimed_at": "2026-05-20T17:38:14Z"
+    },
+    "resilient/src/secret_erasure.rs": {
+      "branch": "res-2426-secret-erasure-borrow",
+      "claimed_at": "2026-05-20T18:21:21Z"
     }
   }
 }
