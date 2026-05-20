@@ -463,6 +463,10 @@
     "resilient/src/row_polymorphism.rs": {
       "branch": "res-2398-row-polymorphism-drop-fn-name",
       "claimed_at": "2026-05-20T16:41:54Z"
+    },
+    "resilient/src/jit_backend.rs": {
+      "branch": "res-2412-jit-move-maps",
+      "claimed_at": "2026-05-20T17:38:14Z"
     }
   }
 }
