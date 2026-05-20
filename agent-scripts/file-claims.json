@@ -217,8 +217,8 @@
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/contract_inference.rs": {
-      "branch": "res-1756-program-collect-presize",
-      "claimed_at": "2026-05-13T11:30:51Z"
+      "branch": "res-2210-contract-inference-option-complex",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/vibe_debt.rs": {
       "branch": "res-1756-program-collect-presize",

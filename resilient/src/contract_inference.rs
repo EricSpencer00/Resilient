@@ -98,13 +98,14 @@ pub fn infer_program(program: &Node) -> Vec<InferredContracts> {
                 }
             }
             if ensures.is_empty() {
-                match single_return_expr(body) {
-                    Some(e) if e != "<complex>" => ens.push(format!("result == {e}")),
-                    _ => {
-                        if all_returns_non_negative(body) {
-                            ens.push("result >= 0".to_string());
-                        }
-                    }
+                // RES-2210: `single_return_expr` now returns `None` for
+                // unsupported AST shapes (was: `Some("<complex>")` —
+                // the previous code compared against the sentinel
+                // string and discarded it after every match arm).
+                if let Some(e) = single_return_expr(body) {
+                    ens.push(format!("result == {e}"));
+                } else if all_returns_non_negative(body) {
+                    ens.push("result >= 0".to_string());
                 }
                 // Additional: `ensures result > 0` when all returns are strictly positive.
                 if ens.is_empty() && all_returns_strictly_positive(body) {
@@ -364,39 +365,48 @@ fn single_return_expr(node: &Node) -> Option<String> {
         return None;
     }
     if let Node::ReturnStatement { value: Some(e), .. } = returns[0] {
-        return Some(format_simple_expr(e));
+        // RES-2210: forward the inner `Option` directly. The previous
+        // shape wrapped `format_simple_expr`'s sentinel `"<complex>"`
+        // in `Some(...)`, forcing every caller to compare-and-discard.
+        return format_simple_expr(e);
     }
     None
 }
 
-fn format_simple_expr(node: &Node) -> String {
+/// Render a node as a simple-expression source string, or return
+/// `None` if the node falls outside the supported grammar
+/// (compositions of identifiers, integer / boolean literals, infix /
+/// prefix arithmetic, and the curated builtin set).
+///
+/// RES-2210: returns `Option<String>` instead of a sentinel
+/// `"<complex>"` String. The previous shape allocated one
+/// `"<complex>".to_string()` per unsupported sub-node — paid on every
+/// branch of the recursion that hit a non-simple AST shape — even
+/// though no caller ever needed the string itself (every consumer
+/// compared against the literal `"<complex>"`). Switching to
+/// `Option<String>` lets the recursion propagate failure via `?` with
+/// zero allocations, and removes the equally-allocating `==` checks
+/// against the sentinel.
+fn format_simple_expr(node: &Node) -> Option<String> {
     match node {
-        Node::Identifier { name, .. } => name.clone(),
-        Node::IntegerLiteral { value, .. } => value.to_string(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
+        Node::Identifier { name, .. } => Some(name.clone()),
+        Node::IntegerLiteral { value, .. } => Some(value.to_string()),
+        Node::BooleanLiteral { value, .. } => Some(value.to_string()),
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
         } => {
-            let l = format_simple_expr(left);
-            let r = format_simple_expr(right);
-            if l == "<complex>" || r == "<complex>" {
-                "<complex>".to_string()
-            } else {
-                format!("({l} {operator} {r})")
-            }
+            let l = format_simple_expr(left)?;
+            let r = format_simple_expr(right)?;
+            Some(format!("({l} {operator} {r})"))
         }
         Node::PrefixExpression {
             operator, right, ..
         } if *operator == "-" => {
-            let inner = format_simple_expr(right);
-            if inner == "<complex>" {
-                "<complex>".to_string()
-            } else {
-                format!("(-{inner})")
-            }
+            let inner = format_simple_expr(right)?;
+            Some(format!("(-{inner})"))
         }
         // Well-known pure functions: one-arg (len, abs) and two-arg (min, max, clamp).
         Node::CallExpression {
@@ -407,32 +417,26 @@ fn format_simple_expr(node: &Node) -> String {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 match (name.as_str(), arguments.len()) {
                     ("len" | "abs", 1) => {
-                        let arg = format_simple_expr(&arguments[0]);
-                        if arg != "<complex>" {
-                            return format!("{name}({arg})");
-                        }
+                        let arg = format_simple_expr(&arguments[0])?;
+                        return Some(format!("{name}({arg})"));
                     }
                     ("min" | "max", 2) => {
-                        let a = format_simple_expr(&arguments[0]);
-                        let b = format_simple_expr(&arguments[1]);
-                        if a != "<complex>" && b != "<complex>" {
-                            return format!("{name}({a}, {b})");
-                        }
+                        let a = format_simple_expr(&arguments[0])?;
+                        let b = format_simple_expr(&arguments[1])?;
+                        return Some(format!("{name}({a}, {b})"));
                     }
                     ("clamp", 3) => {
-                        let v = format_simple_expr(&arguments[0]);
-                        let lo = format_simple_expr(&arguments[1]);
-                        let hi = format_simple_expr(&arguments[2]);
-                        if v != "<complex>" && lo != "<complex>" && hi != "<complex>" {
-                            return format!("clamp({v}, {lo}, {hi})");
-                        }
+                        let v = format_simple_expr(&arguments[0])?;
+                        let lo = format_simple_expr(&arguments[1])?;
+                        let hi = format_simple_expr(&arguments[2])?;
+                        return Some(format!("clamp({v}, {lo}, {hi})"));
                     }
                     _ => {}
                 }
             }
-            "<complex>".to_string()
+            None
         }
-        _ => "<complex>".to_string(),
+        _ => None,
     }
 }
 
