@@ -23,9 +23,15 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2398: dropped the redundant `fn_name: String` field. The two
+/// readers in this module used it strictly as the attribute key
+/// (HashMap lookup in `install`, borrowed-map construction in
+/// `check`). Pipeline now carries `(String, RowSpec)` tuples —
+/// matches wcet (RES-2190), prob (RES-2170), power (RES-2386), stack
+/// (RES-2388), phantom (RES-2390), dependent (RES-2392), mmio_regmap
+/// (RES-2394).
 #[derive(Debug, Clone)]
 pub struct RowSpec {
-    pub fn_name: String,
     /// Required (field_name, type_name) pairs.
     pub required: Vec<(String, String)>,
 }
@@ -33,14 +39,13 @@ pub struct RowSpec {
 static SPECS: LazyLock<RwLock<HashMap<String, RowSpec>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<RowSpec> {
+pub fn collect() -> Vec<(String, RowSpec)> {
     let attrs = crate::feature_attrs::find_kind("row_poly");
     // RES-1754: pre-size to attrs.len() — exactly one push per
     // attribute record.
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = RowSpec {
-            fn_name: item,
             required: Vec::new(),
         };
         if let Some(rest) = rec.args.split_once('=').map(|(_, r)| r) {
@@ -51,17 +56,17 @@ pub fn collect() -> Vec<RowSpec> {
                 }
             }
         }
-        out.push(spec);
+        out.push((item, spec));
     }
     out
 }
 
-pub fn install(specs: Vec<RowSpec>) {
+pub fn install(specs: Vec<(String, RowSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         g.clear();
-        for s in specs {
-            g.insert(s.fn_name.clone(), s);
-        }
+        // RES-2398: move (name, spec) tuples straight from collect()
+        // — no per-spec clone for the key.
+        g.extend(specs);
     }
 }
 
@@ -239,7 +244,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // shape as RES-1996 (refinement_types).
     let result = {
         let specs_map: HashMap<&str, &RowSpec> =
-            specs.iter().map(|s| (s.fn_name.as_str(), s)).collect();
+            specs.iter().map(|(name, s)| (name.as_str(), s)).collect();
         walk_calls(program, &specs_map, &struct_fields, source_path)
     };
     install(specs);

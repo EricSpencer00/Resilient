@@ -128,10 +128,6 @@
       "branch": "res-1784-attr-collects-3",
       "claimed_at": "2026-05-13T12:28:38Z"
     },
-    "resilient/src/row_polymorphism.rs": {
-      "branch": "res-1998-row-poly-spec-borrow",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/probabilistic_contracts.rs": {
       "branch": "res-2170-prob-contracts-drop-fn-name",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -463,6 +459,10 @@
     "resilient/src/phantom_types.rs": {
       "branch": "res-2390-phantom-types-drop-type-name",
       "claimed_at": "2026-05-20T16:19:52Z"
+    },
+    "resilient/src/row_polymorphism.rs": {
+      "branch": "res-2398-row-polymorphism-drop-fn-name",
+      "claimed_at": "2026-05-20T16:41:54Z"
     }
   }
 }
