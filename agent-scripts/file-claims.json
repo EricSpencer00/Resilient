@@ -423,6 +423,10 @@
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
       "claimed_at": "2026-05-19T22:27:31Z"
+    },
+    "resilient/src/ghost_types.rs": {
+      "branch": "res-2074-ghost-types-early-exit-and-borrow",
+      "claimed_at": "2026-05-20T00:11:58Z"
     }
   }
 }

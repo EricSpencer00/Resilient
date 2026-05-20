@@ -31,12 +31,15 @@ pub fn install(set: HashSet<String>) {
     }
 }
 
+// RES-2074: borrow through the read guard instead of cloning the
+// entire `Option<HashSet<String>>` just to call `.contains()`. Same
+// pattern as RES-1547 (causal_trace::snapshot) / RES-1566
+// (incremental_verify::stats).
 pub fn is_ghost(name: &str) -> bool {
     GHOST_FNS
         .read()
         .ok()
-        .and_then(|g| g.clone())
-        .map(|s| s.contains(name))
+        .and_then(|g| g.as_ref().map(|s| s.contains(name)))
         .unwrap_or(false)
 }
 
@@ -60,19 +63,13 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     };
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
-            if !ghosts.contains(name) {
-                // RES-1441: collect leaks as `&str` borrows from the
-                // AST instead of cloning callee names into owned
-                // `String`s. Only the first leak ever makes it into
-                // the error message; the rest were always discarded.
-                let mut leaks: Vec<&str> = Vec::new();
-                walk_calls(body, &ghosts, &mut leaks);
-                if !leaks.is_empty() {
-                    return Err(format!(
-                        "{}:0:0: error: non-ghost fn `{}` calls ghost fn `{}` — ghost code cannot be reached at runtime",
-                        source_path, name, leaks[0]
-                    ));
-                }
+            if !ghosts.contains(name)
+                && let Some(leak) = walk_calls(body, &ghosts)
+            {
+                return Err(format!(
+                    "{}:0:0: error: non-ghost fn `{}` calls ghost fn `{}` — ghost code cannot be reached at runtime",
+                    source_path, name, leak
+                ));
             }
         }
     }
@@ -80,43 +77,51 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn walk_calls<'a>(node: &'a Node, ghosts: &HashSet<String>, out: &mut Vec<&'a str>) {
+// RES-2074: returns the first ghost-fn leak found (early-exit) instead
+// of collecting every leak into a Vec. The caller only uses the first
+// leak in the error message — every subsequent leak the previous walker
+// pushed was wasted work. RES-1441 had already switched the storage to
+// `&str` borrows; this completes that effort by abandoning the rest
+// of the walk on first match.
+fn walk_calls<'a>(node: &'a Node, ghosts: &HashSet<String>) -> Option<&'a str> {
     match node {
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                if ghosts.contains(name) {
-                    out.push(name.as_str());
-                }
+            if let Node::Identifier { name, .. } = function.as_ref()
+                && ghosts.contains(name)
+            {
+                return Some(name.as_str());
             }
             for a in arguments {
-                walk_calls(a, ghosts, out);
+                if let Some(leak) = walk_calls(a, ghosts) {
+                    return Some(leak);
+                }
             }
+            None
         }
         Node::Block { stmts, .. } => {
             for s in stmts {
-                walk_calls(s, ghosts, out);
+                if let Some(leak) = walk_calls(s, ghosts) {
+                    return Some(leak);
+                }
             }
+            None
         }
-        Node::ReturnStatement { value: Some(e), .. } => walk_calls(e, ghosts, out),
-        Node::LetStatement { value, .. } => walk_calls(value, ghosts, out),
-        Node::ExpressionStatement { expr, .. } => walk_calls(expr, ghosts, out),
+        Node::ReturnStatement { value: Some(e), .. } => walk_calls(e, ghosts),
+        Node::LetStatement { value, .. } => walk_calls(value, ghosts),
+        Node::ExpressionStatement { expr, .. } => walk_calls(expr, ghosts),
         Node::IfStatement {
             condition,
             consequence,
             alternative,
             ..
-        } => {
-            walk_calls(condition, ghosts, out);
-            walk_calls(consequence, ghosts, out);
-            if let Some(e) = alternative {
-                walk_calls(e, ghosts, out);
-            }
-        }
-        _ => {}
+        } => walk_calls(condition, ghosts)
+            .or_else(|| walk_calls(consequence, ghosts))
+            .or_else(|| alternative.as_ref().and_then(|e| walk_calls(e, ghosts))),
+        _ => None,
     }
 }
 
