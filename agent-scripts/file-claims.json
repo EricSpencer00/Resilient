@@ -72,10 +72,6 @@
       "branch": "res-2030-stats-single-pass",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/struct_exhaustiveness.rs": {
-      "branch": "res-2022-exhaustiveness-static-msg",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/ai_threat_model.rs": {
       "branch": "res-1986-block-shape-direct-write",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -463,6 +459,10 @@
     "resilient/src/labeled_break.rs": {
       "branch": "res-2220-labeled-break-borrow-fn-name",
       "claimed_at": "2026-05-20T05:55:47Z"
+    },
+    "resilient/src/struct_exhaustiveness.rs": {
+      "branch": "res-2224-struct-exhaust-borrow-fn-name",
+      "claimed_at": "2026-05-20T06:03:00Z"
     }
   }
 }
