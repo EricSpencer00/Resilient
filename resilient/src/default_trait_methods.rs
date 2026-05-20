@@ -24,32 +24,49 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, RwLock};
 
-#[derive(Debug, Clone)]
-pub struct DefaultMethod {
-    pub trait_name: String,
-    pub method_name: String,
-}
-
-static DEFAULTS: LazyLock<RwLock<HashMap<(String, String), DefaultMethod>>> =
+/// RES-2194: dropped the `DefaultMethod` struct and the flat
+/// `HashMap<(String, String), DefaultMethod>` registry shape. The
+/// struct's two String fields (`trait_name`, `method_name`)
+/// duplicated exactly what the tuple key already encoded, and the
+/// only consumer (`has_default`) just returns `bool`. The flat
+/// tuple-key shape ALSO forced `has_default` to allocate two
+/// transient `String`s per call because stdlib's `Borrow` impls
+/// don't allow `(String, String): Borrow<(&str, &str)>`.
+///
+/// New shape: nested `HashMap<String, HashSet<String>>` (trait → set
+/// of default-bodied method names). Two-step lookup with zero
+/// allocations on the hot path. Same fix as RES-2008 / RES-2010 /
+/// RES-2012 / RES-2014 (nested-map for the rest of the tuple-keyed
+/// registries) and RES-2184 (associated_constants — drop value
+/// struct that just duplicated keys).
+static DEFAULTS: LazyLock<RwLock<HashMap<String, HashSet<String>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn install(items: Vec<DefaultMethod>) {
+pub fn install(items: Vec<(String, String)>) {
     if let Ok(mut g) = DEFAULTS.write() {
         g.clear();
-        for d in items {
-            g.insert((d.trait_name.clone(), d.method_name.clone()), d);
+        // RES-2194: move (trait_name, method_name) pairs straight into
+        // the nested map. The previous shape per-item cloned both
+        // strings to produce the tuple key, then duplicated them
+        // again inside the stored DefaultMethod value.
+        for (trait_name, method_name) in items {
+            g.entry(trait_name).or_default().insert(method_name);
         }
     }
 }
 
 pub fn has_default(trait_name: &str, method: &str) -> bool {
+    // RES-2194: two-step lookup — `cache.get(&str)` on each level uses
+    // the existing `String: Borrow<str>` impl. Zero allocations per
+    // call. The previous flat `(String, String)` key forced
+    // `(trait_name.to_string(), method.to_string())` per call.
     DEFAULTS
         .read()
         .ok()
-        .map(|g| g.contains_key(&(trait_name.to_string(), method.to_string())))
+        .map(|g| g.get(trait_name).is_some_and(|m| m.contains(method)))
         .unwrap_or(false)
 }
 
@@ -71,7 +88,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // is registered here.
     // RES-1784: pre-size to attrs.len() — exactly one push per
     // attribute record.
-    let mut items = Vec::with_capacity(attrs.len());
+    let mut items: Vec<(String, String)> = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut trait_name = String::new();
         let mut method_name = item;
@@ -88,10 +105,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             }
         }
         if !trait_name.is_empty() {
-            items.push(DefaultMethod {
-                trait_name,
-                method_name,
-            });
+            items.push((trait_name, method_name));
         }
     }
     if items.is_empty() {
@@ -109,10 +123,7 @@ mod tests {
     fn registers_default_method() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        install(vec![DefaultMethod {
-            trait_name: "Printable".into(),
-            method_name: "print".into(),
-        }]);
+        install(vec![("Printable".into(), "print".into())]);
         assert!(has_default("Printable", "print"));
         assert!(!has_default("Printable", "to_string"));
         crate::feature_attrs::reset();
