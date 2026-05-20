@@ -694,18 +694,25 @@ fn compile_assert(
     )?;
     let jt = chunk.emit(Op::JumpIfTrue(0), line);
     // Push the failure message string.
-    let msg_str = if let Some(msg_node) = message {
+    // RES-2406: borrow the literal from the AST (or use a static
+    // `&'static str` fallback) and hand `add_string_constant` the
+    // `&str` directly. The previous shape allocated a fresh `String`
+    // via `s.clone()` or `"…".to_string()` only to drop it after the
+    // `add_string_constant(&msg_str)` call. `add_string_constant`
+    // (RES-1419 / RES-2378) takes `&str` and clones only on cache
+    // miss.
+    let msg_str: &str = if let Some(msg_node) = message {
         // If the message is a string literal we can embed it directly;
         // otherwise fall back to a generic message (complex expressions
         // aren't evaluated at compile time).
         match msg_node.as_ref() {
-            Node::StringLiteral { value: s, .. } => s.clone(),
-            _ => "assertion failed".to_string(),
+            Node::StringLiteral { value: s, .. } => s,
+            _ => "assertion failed",
         }
     } else {
-        "assertion failed".to_string()
+        "assertion failed"
     };
-    let msg_idx = chunk.add_string_constant(&msg_str)?;
+    let msg_idx = chunk.add_string_constant(msg_str)?;
     chunk.emit(Op::Const(msg_idx), line);
     chunk.emit(Op::AssertFail, line);
     let past_fail = chunk.code.len();
