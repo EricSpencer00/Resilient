@@ -467,6 +467,10 @@
     "resilient/src/formatter.rs": {
       "branch": "res-2274-formatter-write-direct",
       "claimed_at": "2026-05-20T08:42:42Z"
+    },
+    "resilient/src/info_flow.rs": {
+      "branch": "res-2282-info-flow-walk-filter",
+      "claimed_at": "2026-05-20T09:23:02Z"
     }
   }
 }
