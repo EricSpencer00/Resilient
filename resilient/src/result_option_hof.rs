@@ -25,7 +25,7 @@ type RResult<T> = Result<T, String>;
 /// unchanged. Analogous to `Result::map` in Rust.
 pub(crate) fn builtin_result_map(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (r, f) = match args {
-        [Value::Result { .. }, f] => (args[0].clone(), f.clone()),
+        [Value::Result { .. }, f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "result_map: first argument must be a Result, got {a}"
@@ -40,7 +40,7 @@ pub(crate) fn builtin_result_map(interp: &mut Interpreter, args: &[Value]) -> RR
     };
     match r {
         Value::Result { ok: true, payload } => {
-            let mapped = interp.apply_function(&f, vec![*payload])?;
+            let mapped = interp.apply_function(f, vec![*payload])?;
             Ok(Value::Result {
                 ok: true,
                 payload: Box::new(mapped),
@@ -58,7 +58,7 @@ pub(crate) fn builtin_result_map(interp: &mut Interpreter, args: &[Value]) -> RR
 /// bind / flatMap for `Result`.
 pub(crate) fn builtin_result_and_then(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (r, f) = match args {
-        [Value::Result { .. }, f] => (args[0].clone(), f.clone()),
+        [Value::Result { .. }, f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "result_and_then: first argument must be a Result, got {a}"
@@ -73,7 +73,7 @@ pub(crate) fn builtin_result_and_then(interp: &mut Interpreter, args: &[Value]) 
     };
     match r {
         Value::Result { ok: true, payload } => {
-            let out = interp.apply_function(&f, vec![*payload])?;
+            let out = interp.apply_function(f, vec![*payload])?;
             match out {
                 r @ Value::Result { .. } => Ok(r),
                 other => Err(format!(
@@ -92,7 +92,7 @@ pub(crate) fn builtin_result_and_then(interp: &mut Interpreter, args: &[Value]) 
 /// unchanged.
 pub(crate) fn builtin_result_map_err(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (r, f) = match args {
-        [Value::Result { .. }, f] => (args[0].clone(), f.clone()),
+        [Value::Result { .. }, f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "result_map_err: first argument must be a Result, got {a}"
@@ -108,7 +108,7 @@ pub(crate) fn builtin_result_map_err(interp: &mut Interpreter, args: &[Value]) -
     match r {
         ok @ Value::Result { ok: true, .. } => Ok(ok),
         Value::Result { ok: false, payload } => {
-            let mapped = interp.apply_function(&f, vec![*payload])?;
+            let mapped = interp.apply_function(f, vec![*payload])?;
             Ok(Value::Result {
                 ok: false,
                 payload: Box::new(mapped),
@@ -124,7 +124,7 @@ pub(crate) fn builtin_result_map_err(interp: &mut Interpreter, args: &[Value]) -
 /// `Result`). If `r` is `Ok(v)`, returns it unchanged.
 pub(crate) fn builtin_result_or_else(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (r, f) = match args {
-        [Value::Result { .. }, f] => (args[0].clone(), f.clone()),
+        [Value::Result { .. }, f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "result_or_else: first argument must be a Result, got {a}"
@@ -140,7 +140,7 @@ pub(crate) fn builtin_result_or_else(interp: &mut Interpreter, args: &[Value]) -
     match r {
         ok @ Value::Result { ok: true, .. } => Ok(ok),
         Value::Result { ok: false, payload } => {
-            let out = interp.apply_function(&f, vec![*payload])?;
+            let out = interp.apply_function(f, vec![*payload])?;
             match out {
                 r @ Value::Result { .. } => Ok(r),
                 other => Err(format!(
@@ -160,7 +160,7 @@ pub(crate) fn builtin_result_or_else(interp: &mut Interpreter, args: &[Value]) -
 /// `None`. Analogous to `Option::map` in Rust.
 pub(crate) fn builtin_option_map(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (o, f) = match args {
-        [Value::Option(_), f] => (args[0].clone(), f.clone()),
+        [Value::Option(_), f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "option_map: first argument must be an Option, got {a}"
@@ -175,7 +175,7 @@ pub(crate) fn builtin_option_map(interp: &mut Interpreter, args: &[Value]) -> RR
     };
     match o {
         Value::Option(Some(inner)) => {
-            let mapped = interp.apply_function(&f, vec![*inner])?;
+            let mapped = interp.apply_function(f, vec![*inner])?;
             Ok(Value::Option(Some(Box::new(mapped))))
         }
         none @ Value::Option(None) => Ok(none),
@@ -189,7 +189,7 @@ pub(crate) fn builtin_option_map(interp: &mut Interpreter, args: &[Value]) -> RR
 /// an `Option`). If `o` is `None`, returns `None`. Monadic bind for `Option`.
 pub(crate) fn builtin_option_and_then(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (o, f) = match args {
-        [Value::Option(_), f] => (args[0].clone(), f.clone()),
+        [Value::Option(_), f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "option_and_then: first argument must be an Option, got {a}"
@@ -204,7 +204,7 @@ pub(crate) fn builtin_option_and_then(interp: &mut Interpreter, args: &[Value]) 
     };
     match o {
         Value::Option(Some(inner)) => {
-            let out = interp.apply_function(&f, vec![*inner])?;
+            let out = interp.apply_function(f, vec![*inner])?;
             match out {
                 o @ Value::Option(_) => Ok(o),
                 other => Err(format!(
@@ -223,7 +223,7 @@ pub(crate) fn builtin_option_and_then(interp: &mut Interpreter, args: &[Value]) 
 /// other cases (None, or predicate returned false) returns `None`.
 pub(crate) fn builtin_option_filter(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (o, f) = match args {
-        [Value::Option(_), f] => (args[0].clone(), f.clone()),
+        [Value::Option(_), f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "option_filter: first argument must be an Option, got {a}"
@@ -237,7 +237,7 @@ pub(crate) fn builtin_option_filter(interp: &mut Interpreter, args: &[Value]) ->
         }
     };
     match o {
-        Value::Option(Some(inner)) => match interp.apply_function(&f, vec![*inner.clone()])? {
+        Value::Option(Some(inner)) => match interp.apply_function(f, vec![*inner.clone()])? {
             Value::Bool(true) => Ok(Value::Option(Some(inner))),
             Value::Bool(false) => Ok(Value::Option(None)),
             other => Err(format!(
@@ -255,7 +255,7 @@ pub(crate) fn builtin_option_filter(interp: &mut Interpreter, args: &[Value]) ->
 /// must be an `Option`). If `o` is `Some(v)`, returns it unchanged.
 pub(crate) fn builtin_option_or_else(interp: &mut Interpreter, args: &[Value]) -> RResult<Value> {
     let (o, f) = match args {
-        [Value::Option(_), f] => (args[0].clone(), f.clone()),
+        [Value::Option(_), f] => (args[0].clone(), f),
         [a, _] => {
             return Err(format!(
                 "option_or_else: first argument must be an Option, got {a}"
@@ -271,7 +271,7 @@ pub(crate) fn builtin_option_or_else(interp: &mut Interpreter, args: &[Value]) -
     match o {
         some @ Value::Option(Some(_)) => Ok(some),
         Value::Option(None) => {
-            let out = interp.apply_function(&f, vec![])?;
+            let out = interp.apply_function(f, vec![])?;
             match out {
                 o @ Value::Option(_) => Ok(o),
                 other => Err(format!(

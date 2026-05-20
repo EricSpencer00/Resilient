@@ -423,6 +423,10 @@
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
       "claimed_at": "2026-05-19T22:27:31Z"
+    },
+    "resilient/src/result_option_hof.rs": {
+      "branch": "res-2076-result-option-hof-borrow-f",
+      "claimed_at": "2026-05-20T00:17:14Z"
     }
   }
 }
