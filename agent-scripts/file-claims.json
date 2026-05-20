@@ -459,6 +459,10 @@
     "resilient/src/blame_attribution.rs": {
       "branch": "res-2334-blame-attribution-entry-skip",
       "claimed_at": "2026-05-20T12:52:54Z"
+    },
+    "resilient/src/ghost_types.rs": {
+      "branch": "res-2340-ghost-types-short-circuit",
+      "claimed_at": "2026-05-20T13:18:39Z"
     }
   }
 }

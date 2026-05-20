@@ -61,16 +61,20 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
             if !ghosts.contains(name) {
-                // RES-1441: collect leaks as `&str` borrows from the
-                // AST instead of cloning callee names into owned
-                // `String`s. Only the first leak ever makes it into
-                // the error message; the rest were always discarded.
-                let mut leaks: Vec<&str> = Vec::new();
-                walk_calls(body, &ghosts, &mut leaks);
-                if !leaks.is_empty() {
+                // RES-2340: short-circuit on the first ghost call
+                // found. The previous shape walked the entire body
+                // collecting every leak into a `Vec<&str>`, then
+                // formatted only `leaks[0]` and discarded the rest.
+                // For a body that calls multiple ghost fns, the
+                // remaining walks past the first hit were pure
+                // overhead. `find_first_ghost_call` returns
+                // `Option<&str>` instead and stops the recursion at
+                // the first match. Mirrors the early-termination
+                // pattern in `uniqueness_walk::any_node` (RES-1238).
+                if let Some(leak) = find_first_ghost_call(body, &ghosts) {
                     return Err(format!(
                         "{}:0:0: error: non-ghost fn `{}` calls ghost fn `{}` — ghost code cannot be reached at runtime",
-                        source_path, name, leaks[0]
+                        source_path, name, leak
                     ));
                 }
             }
@@ -80,43 +84,55 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn walk_calls<'a>(node: &'a Node, ghosts: &HashSet<String>, out: &mut Vec<&'a str>) {
+/// RES-2340: walk `node` looking for the first call to a fn name
+/// in `ghosts`. Returns `Some(callee)` on the first hit, `None` if
+/// no ghost call is reached. Recursion short-circuits via the
+/// `?`-then-return shape, so a body with N call sites and a ghost
+/// call at position K bails after K steps instead of always
+/// walking to N.
+fn find_first_ghost_call<'a>(node: &'a Node, ghosts: &HashSet<String>) -> Option<&'a str> {
     match node {
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                if ghosts.contains(name) {
-                    out.push(name.as_str());
-                }
+            if let Node::Identifier { name, .. } = function.as_ref()
+                && ghosts.contains(name)
+            {
+                return Some(name.as_str());
             }
             for a in arguments {
-                walk_calls(a, ghosts, out);
+                if let Some(hit) = find_first_ghost_call(a, ghosts) {
+                    return Some(hit);
+                }
             }
+            None
         }
         Node::Block { stmts, .. } => {
             for s in stmts {
-                walk_calls(s, ghosts, out);
+                if let Some(hit) = find_first_ghost_call(s, ghosts) {
+                    return Some(hit);
+                }
             }
+            None
         }
-        Node::ReturnStatement { value: Some(e), .. } => walk_calls(e, ghosts, out),
-        Node::LetStatement { value, .. } => walk_calls(value, ghosts, out),
-        Node::ExpressionStatement { expr, .. } => walk_calls(expr, ghosts, out),
+        Node::ReturnStatement { value: Some(e), .. } => find_first_ghost_call(e, ghosts),
+        Node::LetStatement { value, .. } => find_first_ghost_call(value, ghosts),
+        Node::ExpressionStatement { expr, .. } => find_first_ghost_call(expr, ghosts),
         Node::IfStatement {
             condition,
             consequence,
             alternative,
             ..
-        } => {
-            walk_calls(condition, ghosts, out);
-            walk_calls(consequence, ghosts, out);
-            if let Some(e) = alternative {
-                walk_calls(e, ghosts, out);
-            }
-        }
-        _ => {}
+        } => find_first_ghost_call(condition, ghosts)
+            .or_else(|| find_first_ghost_call(consequence, ghosts))
+            .or_else(|| {
+                alternative
+                    .as_ref()
+                    .and_then(|a| find_first_ghost_call(a, ghosts))
+            }),
+        _ => None,
     }
 }
 
