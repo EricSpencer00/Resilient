@@ -192,10 +192,6 @@
       "branch": "res-2170-prob-contracts-drop-fn-name",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/behavioral_fingerprint.rs": {
-      "branch": "res-2122-fingerprint-drop-function-name",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/contract_inference.rs": {
       "branch": "res-2210-contract-inference-option-complex",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -467,6 +463,10 @@
     "resilient/src/recovers_to_bmc.rs": {
       "branch": "res-2264-bmc-write-direct",
       "claimed_at": "2026-05-20T08:18:41Z"
+    },
+    "resilient/src/behavioral_fingerprint.rs": {
+      "branch": "res-2270-fingerprint-node-text-direct",
+      "claimed_at": "2026-05-20T08:32:47Z"
     }
   }
 }

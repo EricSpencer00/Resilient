@@ -114,32 +114,79 @@ fn compute_fingerprint(
 }
 
 fn node_text(n: &Node) -> String {
+    // RES-2270: keep the public `String`-returning signature stable
+    // for `compute_fingerprint`'s downstream `Vec<String>::sort` +
+    // `hash`, but route through a `&mut String` helper so the
+    // recursive walk writes into one buffer instead of allocating a
+    // fresh `String` at every nesting level. For a depth-N
+    // expression the old shape allocated O(N) intermediate Strings
+    // (each `node_text(left)` / `node_text(right)` recursive
+    // result, plus the per-level `format!()` output); the new
+    // shape allocates exactly 1.
+    //
+    // Same hash output is preserved — the textual encoding is
+    // identical, just written into a shared buffer.
+    let mut out = String::new();
+    write_node_text(n, &mut out);
+    out
+}
+
+/// Write the contract-fingerprint textual encoding of `n` directly
+/// into `out`. Each recursive arm appends to the shared buffer,
+/// eliminating per-level `String` allocations.
+fn write_node_text(n: &Node, out: &mut String) {
+    use std::fmt::Write;
     match n {
-        Node::Identifier { name, .. } => name.clone(),
-        Node::IntegerLiteral { value, .. } => value.to_string(),
-        Node::FloatLiteral { value, .. } => value.to_string(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::StringLiteral { value, .. } => format!("{value:?}"),
+        Node::Identifier { name, .. } => out.push_str(name),
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::FloatLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::StringLiteral { value, .. } => {
+            let _ = write!(out, "{value:?}");
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!("({} {operator} {})", node_text(left), node_text(right)),
+        } => {
+            out.push('(');
+            write_node_text(left, out);
+            let _ = write!(out, " {operator} ");
+            write_node_text(right, out);
+            out.push(')');
+        }
         Node::PrefixExpression {
             operator, right, ..
         } => {
-            format!("({operator}{})", node_text(right))
+            let _ = write!(out, "({operator}");
+            write_node_text(right, out);
+            out.push(')');
         }
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            let args: Vec<String> = arguments.iter().map(node_text).collect();
-            format!("{}({})", node_text(function), args.join(", "))
+            write_node_text(function, out);
+            out.push('(');
+            for (i, a) in arguments.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_node_text(a, out);
+            }
+            out.push(')');
         }
-        _ => format!("{:?}", std::ptr::addr_of!(*n)),
+        _ => {
+            let _ = write!(out, "{:?}", std::ptr::addr_of!(*n));
+        }
     }
 }
 
