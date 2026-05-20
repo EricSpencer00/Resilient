@@ -253,8 +253,8 @@
       "claimed_at": "2026-05-13T11:42:08Z"
     },
     "resilient/src/dependent_arrays.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
+      "branch": "res-2176-dependent-arrays-drop-item-name",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/newtypes.rs": {
       "branch": "res-1764-attr-collect-presize",
