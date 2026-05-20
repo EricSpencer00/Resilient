@@ -439,6 +439,10 @@
     "resilient/src/anti_regression.rs": {
       "branch": "res-2178-anti-regression-drop-item-name",
       "claimed_at": "2026-05-20T04:14:09Z"
+    },
+    "resilient/src/const_fn.rs": {
+      "branch": "res-2182-const-fn-drop-dead-struct",
+      "claimed_at": "2026-05-20T04:19:17Z"
     }
   }
 }

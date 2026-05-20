@@ -18,11 +18,12 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-#[derive(Debug, Clone)]
-pub struct ConstFnSpec {
-    pub fn_name: String,
-}
-
+// RES-2182: dropped `pub struct ConstFnSpec { pub fn_name: String }`.
+// The struct had zero readers anywhere in the workspace — nothing
+// constructed it, destructured it, or referenced its field.
+// `pub fn collect_names()` already returns `Vec<String>` directly from
+// the attribute walker; the dead struct was pure dead code that
+// derived `Debug + Clone` and carried an owned `String` for no reason.
 static CONST_FNS: LazyLock<RwLock<HashMap<String, Node>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
