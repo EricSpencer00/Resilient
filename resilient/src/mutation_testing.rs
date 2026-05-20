@@ -339,13 +339,22 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
 }
 
 /// Per-function mutation summary: function name → (total sites, kinds).
-pub fn summarize(mutations: &[Mutation]) -> HashMap<String, (usize, Vec<String>)> {
-    let mut map: HashMap<String, (usize, Vec<String>)> = HashMap::new();
+///
+/// RES-2082: borrows fn_name and kind as `&str` into the mutations
+/// slice. The previous shape's `m.fn_name.clone()` allocated a fresh
+/// String on every `map.entry(...)` call (even when the key already
+/// existed — `HashMap::entry` requires owned keys), plus
+/// `m.kind.clone()` allocated per new kind. The sole caller (`check`
+/// in the same file) only reads names for diagnostic formatting;
+/// no consumer takes ownership.
+pub fn summarize(mutations: &[Mutation]) -> HashMap<&str, (usize, Vec<&str>)> {
+    let mut map: HashMap<&str, (usize, Vec<&str>)> = HashMap::new();
     for m in mutations {
-        let e = map.entry(m.fn_name.clone()).or_default();
+        let e = map.entry(m.fn_name.as_str()).or_default();
         e.0 += 1;
-        if !e.1.contains(&m.kind) {
-            e.1.push(m.kind.clone());
+        let kind_ref = m.kind.as_str();
+        if !e.1.contains(&kind_ref) {
+            e.1.push(kind_ref);
         }
     }
     map
@@ -387,7 +396,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         summary.len()
     );
     let mut fns: Vec<_> = summary.iter().collect();
-    fns.sort_by_key(|(n, _)| n.as_str());
+    // RES-2082: keys are now `&str` (borrowed from mutations). The
+    // `&&str` from iter() derefs through to `&str` for sort_by_key.
+    fns.sort_by_key(|(n, _)| *n);
     for (fn_name, (count, kinds)) in &fns {
         let mut kinds_sorted = kinds.clone();
         kinds_sorted.sort();
@@ -402,8 +413,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let unconstrained: Vec<(&str, usize)> = fns
         .iter()
         .filter_map(|(name, (count, _))| {
-            if !contracted_fns.contains(name.as_str()) {
-                Some((name.as_str(), *count))
+            // RES-2082: `name: &&&str` — deref to `&str` for the
+            // HashSet<&str> contains lookup and the output tuple.
+            if !contracted_fns.contains(**name) {
+                Some((**name, *count))
             } else {
                 None
             }

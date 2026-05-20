@@ -365,8 +365,8 @@
       "claimed_at": "2026-05-19T05:02:34Z"
     },
     "resilient/src/mutation_testing.rs": {
-      "branch": "res-1918-mutation-testing-walker-coverage",
-      "claimed_at": "2026-05-19T16:38:37Z"
+      "branch": "res-2082-mutation-testing-summarize-borrow",
+      "claimed_at": "2026-05-20T07:00:00Z"
     },
     "resilient/src/verifier_z3.rs": {
       "branch": "res-1920-collect-cert-idents-single-walk",
