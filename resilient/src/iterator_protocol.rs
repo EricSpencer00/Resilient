@@ -63,9 +63,25 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    /// RES-2126: serialize tests that mutate the process-wide
+    /// `ITERATORS` registry. Without this lock, `cargo test` runs
+    /// `manual_install_registers` and other reader/writer pairs in
+    /// parallel — and another thread can replace the set between
+    /// this test's `install_iterator_impls` and its `is_iterator`
+    /// assertion, flaking the JIT-feature CI gate (observed on
+    /// auto-merge of #2089-2125, which silently blocked the queue).
+    /// Mirrors the `TEST_LOCK` pattern in `feature_attrs`.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn manual_install_registers() {
+        let _g = lock_for_test();
         let mut s = HashSet::new();
         s.insert("MyRange".to_string());
         install_iterator_impls(s);
@@ -75,13 +91,17 @@ mod tests {
     }
     #[test]
     fn is_iterator_returns_false_for_unregistered_type() {
+        let _g = lock_for_test();
+        install_iterator_impls(HashSet::new());
         assert!(!is_iterator("UnregisteredType12345"));
     }
 
     #[test]
     fn check_ok_without_attributes() {
-        let _g = crate::feature_attrs::lock_for_test();
+        let _g = lock_for_test();
+        let _fa = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
+        install_iterator_impls(HashSet::new());
         let src = "fn f(int x) -> int { return x; }\n";
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test").is_ok());
