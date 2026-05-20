@@ -32,9 +32,21 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+/// RES-2122: dropped the redundant `function_name: String` field.
+/// The `HashMap<String, Fingerprint>` key already stores the name,
+/// and no caller — in-tree (`snapshot_regression`, `semver_behavior`,
+/// `mcp_server`) or external — reads `Fingerprint::function_name`.
+/// Every consumer iterates the map and reads `name` from the
+/// `(name, fp)` tuple. The field was pure duplication and forced
+/// `fingerprint_program` to clone the name and `compute_fingerprint`
+/// to `to_string` it.
+///
+/// The new shape lets `fingerprint_program` move `name.clone()` into
+/// the map key (one allocation instead of two — the `to_string()`
+/// inside `compute_fingerprint` is gone). Same fix pattern as
+/// RES-2106 (snapshot_regression) and RES-2110 (phantom_types).
 #[derive(Debug, Clone)]
 pub struct Fingerprint {
-    pub function_name: String,
     pub digest: u64,
     pub has_recovery: bool,
     pub fails_variants: Vec<String>,
@@ -95,7 +107,6 @@ fn compute_fingerprint(
     has_recovery.hash(&mut hasher);
 
     Fingerprint {
-        function_name: name.to_string(),
         digest: hasher.finish(),
         has_recovery,
         fails_variants: fails_sorted,
