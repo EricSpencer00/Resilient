@@ -179,6 +179,13 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
     let mut new_code: Vec<Op> = Vec::with_capacity(chunk.code.len());
     let mut new_line_info: Vec<u32> = Vec::with_capacity(chunk.code.len());
     let mut old_to_new: Vec<usize> = vec![usize::MAX; chunk.code.len() + 1];
+    // RES-2370: parallel `new_to_old[new_pc] = old_pc` lookup avoids
+    // the O(n) `(0..chunk.code.len()).find(...)` per surviving jump
+    // in the relink pass. Every fold path here emits exactly one new
+    // op, so each push is paired with a `new_to_old.push(i)`. Same
+    // shape as the dce relink fix (RES-2356) and the peephole one
+    // (RES-2368).
+    let mut new_to_old: Vec<usize> = Vec::with_capacity(chunk.code.len());
     let mut folded_any = false;
 
     let mut i = 0;
@@ -201,6 +208,7 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
             old_to_new[i + 2] = new_code.len();
             new_code.push(Op::Const(k));
             new_line_info.push(line);
+            new_to_old.push(i);
             i += 3;
             folded_any = true;
             continue;
@@ -213,6 +221,7 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
             old_to_new[i + 2] = new_code.len();
             new_code.push(Op::Const(k));
             new_line_info.push(line);
+            new_to_old.push(i);
             i += 3;
             folded_any = true;
             continue;
@@ -226,6 +235,7 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
             old_to_new[i + 1] = new_code.len();
             new_code.push(Op::Const(k));
             new_line_info.push(line);
+            new_to_old.push(i);
             i += 2;
             folded_any = true;
             continue;
@@ -238,6 +248,7 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
             old_to_new[i + 1] = new_code.len();
             new_code.push(Op::Const(k));
             new_line_info.push(line);
+            new_to_old.push(i);
             i += 2;
             folded_any = true;
             continue;
@@ -249,6 +260,7 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
             old_to_new[i + 1] = new_code.len();
             new_code.push(Op::Const(k));
             new_line_info.push(line);
+            new_to_old.push(i);
             i += 2;
             folded_any = true;
             continue;
@@ -257,6 +269,7 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
         // No rule fired — copy verbatim.
         new_code.push(chunk.code[i]);
         new_line_info.push(chunk.line_info[i]);
+        new_to_old.push(i);
         i += 1;
     }
     old_to_new[chunk.code.len()] = new_code.len();
@@ -266,18 +279,19 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
     }
 
     // Re-link jump offsets in the rewritten stream. Identical
-    // mechanic to peephole.rs::optimize: find the originating old
-    // PC for each new jump, look up its original target, map
-    // through old_to_new, and recompute the relative offset.
+    // mechanic to peephole.rs::optimize.
+    //
+    // RES-2370: O(1) parallel-vec lookup replaces the prior
+    // `(0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc)`
+    // linear scan. Same shape as RES-2356 (dce) and RES-2368
+    // (peephole). The InternalError("new_pc with no originating
+    // old_pc") path is unreachable — `new_to_old` has an entry for
+    // every `new_code` slot by construction.
     for (new_pc, op) in new_code.iter_mut().enumerate() {
         if !is_jump_op(*op) {
             continue;
         }
-        let Some(old_pc) = (0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc) else {
-            return Err(FoldError::InternalError(
-                "constant fold: new_pc with no originating old_pc",
-            ));
-        };
+        let old_pc = new_to_old[new_pc];
         let Some(old_target) = orig_targets[old_pc] else {
             continue;
         };

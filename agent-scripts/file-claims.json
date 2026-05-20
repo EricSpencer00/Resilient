@@ -7,6 +7,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-2444-builtin-env-outer-scope",
       "claimed_at": "2026-05-23T08:00:00Z"
+    },
+    "resilient/src/const_fold.rs": {
+      "branch": "res-2370-const-fold-relink-on-square",
+      "claimed_at": "2026-05-20T15:26:47Z"
     }
   }
 }
