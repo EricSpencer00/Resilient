@@ -116,10 +116,6 @@
       "branch": "res-1752-lock-ordering-presize",
       "claimed_at": "2026-05-13T11:18:18Z"
     },
-    "resilient/src/refinement_types.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
-    },
     "resilient/src/power_contracts.rs": {
       "branch": "res-2018-attr-move-item",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -139,22 +135,6 @@
     "resilient/src/row_polymorphism.rs": {
       "branch": "res-1998-row-poly-spec-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
-    },
-    "resilient/src/phantom_types.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
-    },
-    "resilient/src/lock_priority.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
-    },
-    "resilient/src/snapshot_regression.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
-    },
-    "resilient/src/semantic_regression.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
     },
     "resilient/src/probabilistic_contracts.rs": {
       "branch": "res-2170-prob-contracts-drop-fn-name",
@@ -471,6 +451,10 @@
     "resilient/src/peephole.rs": {
       "branch": "res-2368-peephole-relink-on-square",
       "claimed_at": "2026-05-20T15:20:44Z"
+    },
+    "resilient/src/semantic_regression.rs": {
+      "branch": "res-2372-semantic-regression-borrow-guard",
+      "claimed_at": "2026-05-20T15:31:40Z"
     }
   }
 }
