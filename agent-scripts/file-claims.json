@@ -52,10 +52,6 @@
       "branch": "res-1252-degraded-mode-fast-reject",
       "claimed_at": "2026-05-12T03:27:30Z"
     },
-    "resilient/src/audit_log_required.rs": {
-      "branch": "res-1254-audit-log-fast-reject",
-      "claimed_at": "2026-05-12T03:32:45Z"
-    },
     "resilient/src/secret_erasure.rs": {
       "branch": "res-1256-secret-erasure-fast-reject",
       "claimed_at": "2026-05-12T03:39:06Z"
@@ -463,6 +459,10 @@
     "resilient/src/cfg_attr.rs": {
       "branch": "res-2338-cfg-attr-item-name-borrow",
       "claimed_at": "2026-05-20T13:09:36Z"
+    },
+    "resilient/src/audit_log_required.rs": {
+      "branch": "res-2342-audit-log-short-circuit",
+      "claimed_at": "2026-05-20T13:29:31Z"
     }
   }
 }

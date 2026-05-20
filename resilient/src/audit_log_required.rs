@@ -18,7 +18,7 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{any_node, for_each_function, visit};
+use crate::uniqueness_walk::{any_node, for_each_function};
 
 const AUDIT_FNS: &[&str] = &["audit_log", "journal", "record_event", "emit_audit"];
 
@@ -29,13 +29,18 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // least one audited-prefixed/suffixed field assignment. The
     // previous `any_node` pre-scan was redundant — removed.
     for_each_function(program, |fname, _params, body| {
-        let mut has_audited_write = false;
-        visit(body, &mut |n| {
-            if let Node::FieldAssignment { field, .. } = n {
-                if field.starts_with("audited_") || field.ends_with("_audited") {
-                    has_audited_write = true;
-                }
-            }
+        // RES-2342: short-circuit the audited-write detector via
+        // `any_node` instead of `visit`. The previous shape walked
+        // the entire body and toggled a `has_audited_write` boolean
+        // — every node past the first hit was wasted work, since
+        // the boolean only ever flipped once. `any_node` returns
+        // `true` on the first match and propagates upward.
+        // Mirrors the early-termination pattern in
+        // `uniqueness_walk::any_node` (RES-1238) and the
+        // RES-2226 / RES-2232 short-circuit shape.
+        let has_audited_write = any_node(body, |n| {
+            matches!(n, Node::FieldAssignment { field, .. }
+                if field.starts_with("audited_") || field.ends_with("_audited"))
         });
         if !has_audited_write {
             return;
