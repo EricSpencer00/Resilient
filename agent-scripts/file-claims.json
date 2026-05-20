@@ -268,14 +268,6 @@
       "branch": "res-1788-rate-limit-presize",
       "claimed_at": "2026-05-13T12:35:40Z"
     },
-    "resilient/src/type_aliases.rs": {
-      "branch": "res-1790-type-aliases-tuples-presize",
-      "claimed_at": "2026-05-13T12:39:38Z"
-    },
-    "resilient/src/tuples.rs": {
-      "branch": "res-1790-type-aliases-tuples-presize",
-      "claimed_at": "2026-05-13T12:39:38Z"
-    },
     "resilient/src/infer.rs": {
       "branch": "res-1794-infer-named-args-presize",
       "claimed_at": "2026-05-13T12:47:28Z"
@@ -459,6 +451,10 @@
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
+    },
+    "resilient/src/type_aliases.rs": {
+      "branch": "res-2312-type-aliases-drop-prescan",
+      "claimed_at": "2026-05-20T11:09:11Z"
     }
   }
 }

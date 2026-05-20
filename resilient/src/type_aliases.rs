@@ -66,18 +66,13 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     };
 
-    // RES-1230: fast-reject. The cycle detector only has work to do
-    // when the program declares at least one `type X = Y`. For every
-    // other program — basically every test — the three allocations
-    // below (`aliases` HashMap, `decl_order` Vec, the `color`
-    // HashMap built from `aliases.keys()`) and the DFS loop run for
-    // nothing. Same shape as RES-1211 .. RES-1228.
-    if !statements
-        .iter()
-        .any(|s| matches!(&s.node, Node::TypeAlias { .. }))
-    {
-        return Ok(());
-    }
+    // RES-1230 / RES-2312: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind `markers.has_type_alias`, so
+    // the program is guaranteed to contain at least one
+    // `Node::TypeAlias`. The previous internal `stmts.iter().any(...)`
+    // pre-scan walked the full top-level statement list a second
+    // time for the same signal Markers already computed during the
+    // shared whole-AST walk. Mirrors RES-2292 through RES-2310.
 
     // RES-1537: borrow alias/target names from the AST throughout the
     // cycle detector. The previous shape cloned each alias name into
