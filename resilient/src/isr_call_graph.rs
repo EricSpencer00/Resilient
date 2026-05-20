@@ -65,13 +65,18 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
     // RES-1509: borrow each top-level fn name as `&str` from the
     // AST instead of cloning into the `callees` HashMap key and
-    // `isr_roots` Vec. `collect_callees` inside the visit closure
-    // still produces owned Strings (HRTB closure can't bind the
-    // outer `'a`), but the *outer* map keys and root list don't
-    // need ownership — same pattern as RES-1495 / RES-1500 etc.
+    // `isr_roots` Vec.
+    // RES-2234: also borrow inner callee names as `&'a str` from
+    // the AST. The stale comment from RES-1509 said the HRTB closure
+    // shape prevented the inner HashSet from holding borrows —
+    // RES-1603 long ago gave `uniqueness_walk::visit<'a>` an
+    // explicit `FnMut(&'a Node)` signature, so the visit closure
+    // captures `&'a str` from `name.as_str()` directly. Mirrors
+    // RES-2218 (bounded_blocking) and RES-2228 (reentrancy_guard)
+    // which retired the same myth.
     // RES-1744: pre-size the call-graph map to stmts.len() (upper
     // bound). Same shape as RES-1742 for reentrancy_guard.
-    let mut callees: HashMap<&str, HashSet<String>> = HashMap::with_capacity(stmts.len());
+    let mut callees: HashMap<&str, HashSet<&str>> = HashMap::with_capacity(stmts.len());
     // RES-1966: pre-size to 4 — typical ISR count is 1-5.
     let mut isr_roots: Vec<&str> = Vec::with_capacity(4);
     for stmt in stmts {
@@ -104,14 +109,14 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                 continue;
             }
             if let Some(cs) = callees.get(fname) {
-                for c in cs {
+                for &c in cs {
                     if is_isr_unsafe_call(c) {
                         eprintln!(
                             "warning: ISR '{root}' transitively calls ISR-hostile '{c}' \
                              via '{fname}' — interrupt context must not block or allocate"
                         );
                     }
-                    q.push_back(c.as_str());
+                    q.push_back(c);
                 }
             }
         }
@@ -128,14 +133,17 @@ fn is_isr_unsafe_call(name: &str) -> bool {
     UNSAFE_PRIMS.contains(&name) || UNSAFE_NAME_SUFFIXES.iter().any(|s| name.ends_with(*s))
 }
 
-fn collect_callees(body: &Node) -> HashSet<String> {
+// RES-2234: return `HashSet<&'a str>` borrowed from the body AST.
+// `uniqueness_walk::visit<'a>` (RES-1603) propagates the AST lifetime
+// into the closure, so the inner HashSet can hold borrows directly.
+fn collect_callees<'a>(body: &'a Node) -> HashSet<&'a str> {
     // RES-1966: pre-size to 8 — typical fn bodies have 1-10 call
     // sites.
-    let mut out = HashSet::with_capacity(8);
-    visit(body, &mut |n| {
+    let mut out: HashSet<&'a str> = HashSet::with_capacity(8);
+    visit(body, &mut |n: &'a Node| {
         if let Node::CallExpression { function, .. } = n {
             if let Node::Identifier { name, .. } = function.as_ref() {
-                out.insert(name.clone());
+                out.insert(name.as_str());
             }
         }
     });
