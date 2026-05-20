@@ -42,17 +42,23 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         // series across the per-fn passes.
         // RES-1950: values are `&'static str` from the static
         // UNIT_SUFFIXES table — no per-binding String allocation.
-        let mut units: std::collections::HashMap<String, &'static str> =
+        // RES-2162: keys now borrow `&str` from the AST (params +
+        // body) instead of cloning per insert. The map dies at the
+        // end of this for_each_function callback iteration; every
+        // entry lives behind `&params` / `&body` for the entire
+        // scope. Eliminates one `String::clone()` per param + per
+        // matching let-binding.
+        let mut units: std::collections::HashMap<&str, &'static str> =
             std::collections::HashMap::with_capacity(params.len() + 8);
         for (_ty, name) in params {
             if let Some(u) = unit_of(name) {
-                units.insert(name.clone(), u);
+                units.insert(name.as_str(), u);
             }
         }
         visit(body, &mut |n| {
             if let Node::LetStatement { name, value, .. } = n {
                 if let Some(u) = unit_of(name) {
-                    units.insert(name.clone(), u);
+                    units.insert(name.as_str(), u);
                 }
                 check_expr(fname, name, value, &units);
             }
@@ -74,7 +80,7 @@ fn check_expr(
     fname: &str,
     var: &str,
     expr: &Node,
-    units: &std::collections::HashMap<String, &'static str>,
+    units: &std::collections::HashMap<&str, &'static str>,
 ) {
     if let Node::InfixExpression {
         operator,
@@ -103,10 +109,10 @@ fn check_expr(
 // a String clone on lookup hit.
 fn ident_unit(
     node: &Node,
-    units: &std::collections::HashMap<String, &'static str>,
+    units: &std::collections::HashMap<&str, &'static str>,
 ) -> Option<&'static str> {
     if let Node::Identifier { name, .. } = node {
-        return units.get(name).copied().or_else(|| unit_of(name));
+        return units.get(name.as_str()).copied().or_else(|| unit_of(name));
     }
     None
 }
