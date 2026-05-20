@@ -420,14 +420,6 @@
       "branch": "res-2248-fmt-validation-cow-template",
       "claimed_at": "2026-05-20T07:26:07Z"
     },
-    "resilient/src/vibe_debt.rs": {
-      "branch": "res-2252-vibe-debt-reuse-tmp",
-      "claimed_at": "2026-05-20T07:50:25Z"
-    },
-    "resilient/src/autopilot.rs": {
-      "branch": "res-2256-autopilot-write-direct",
-      "claimed_at": "2026-05-20T08:06:02Z"
-    },
     "resilient/src/json_builtins.rs": {
       "branch": "res-2260-json-escape-write-direct",
       "claimed_at": "2026-05-20T08:12:01Z"
@@ -459,6 +451,10 @@
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
+    },
+    "resilient/src/autopilot.rs": {
+      "branch": "res-2320-vibe-debt-borrow",
+      "claimed_at": "2026-05-20T11:43:23Z"
     }
   }
 }

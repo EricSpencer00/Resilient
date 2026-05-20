@@ -26,16 +26,23 @@
 use crate::Node;
 use std::collections::HashMap;
 
+/// RES-2320: `function_name` borrows from the AST instead of owning a
+/// fresh `String`. The previous shape paid one `String::clone` per
+/// top-level Function in `analyze` (per-entry), even though every
+/// consumer (`check`'s eprintln format, autopilot's equality compare,
+/// the test helpers) only reads the name. Same pattern as RES-2204
+/// (coverage_warnings), RES-2220 (labeled_break), and RES-2288
+/// (mutation_testing).
 #[derive(Debug, Clone, Default)]
-pub struct VibeDebtEntry {
-    pub function_name: String,
+pub struct VibeDebtEntry<'a> {
+    pub function_name: &'a str,
     pub has_requires: bool,
     pub has_ensures: bool,
     pub is_referenced: bool,
     pub has_effect_annotation: bool,
 }
 
-impl VibeDebtEntry {
+impl<'a> VibeDebtEntry<'a> {
     pub fn signals_present(&self) -> u32 {
         self.has_requires as u32
             + self.has_ensures as u32
@@ -49,14 +56,14 @@ impl VibeDebtEntry {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct VibeDebtReport {
-    pub entries: Vec<VibeDebtEntry>,
+pub struct VibeDebtReport<'a> {
+    pub entries: Vec<VibeDebtEntry<'a>>,
     /// Program-wide percentage [0.0, 100.0]. 0% = nothing is verified.
     pub debt_percent: f64,
     pub fully_vibe_count: usize,
 }
 
-pub fn analyze(program: &Node) -> VibeDebtReport {
+pub fn analyze(program: &Node) -> VibeDebtReport<'_> {
     let Node::Program(stmts) = program else {
         return VibeDebtReport::default();
     };
@@ -106,7 +113,7 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
                 .unwrap_or(0)
                 .saturating_sub(self_calls);
             entries.push(VibeDebtEntry {
-                function_name: name.clone(),
+                function_name: name.as_str(),
                 has_requires: !requires.is_empty(),
                 has_ensures: !ensures.is_empty(),
                 is_referenced: external > 0,
