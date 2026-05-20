@@ -1,16 +1,16 @@
 {
   "claims": {
     "resilient/src/distributed_invariants.rs": {
-      "branch": "res-2142-distributed-invariants-borrow-actor",
-      "claimed_at": "2026-05-19T00:00:00Z"
+      "branch": "res-1764-attr-collect-presize",
+      "claimed_at": "2026-05-13T11:45:18Z"
     },
     "resilient/src/array_set_helpers.rs": {
       "branch": "res-2136-array-set-hashset-membership",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/iterator_protocol.rs": {
-      "branch": "res-2126-iterator-protocol-test-lock",
-      "claimed_at": "2026-05-19T00:00:00Z"
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:38:11Z"
     },
     ".github/workflows/embedded.yml": {
       "branch": "res-1198-embedded-rust-cache",
@@ -236,10 +236,6 @@
       "branch": "res-1758-more-collect-presize",
       "claimed_at": "2026-05-13T11:38:11Z"
     },
-    "resilient/src/iterator_protocol.rs": {
-      "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:38:11Z"
-    },
     "resilient/src/semver_behavior.rs": {
       "branch": "res-2006-semver-baseline-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -269,10 +265,6 @@
       "claimed_at": "2026-05-13T11:45:18Z"
     },
     "resilient/src/mmio_regmap.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
-    },
-    "resilient/src/distributed_invariants.rs": {
       "branch": "res-1764-attr-collect-presize",
       "claimed_at": "2026-05-13T11:45:18Z"
     },
@@ -435,6 +427,10 @@
     "resilient/src/array_binary_search.rs": {
       "branch": "res-2034-binary-search-no-intermediate-vec",
       "claimed_at": "2026-05-19T22:27:31Z"
+    },
+    "resilient/src/toctou_guard.rs": {
+      "branch": "res-2160-toctou-guard-borrow-events",
+      "claimed_at": "2026-05-20T03:41:00Z"
     }
   }
 }

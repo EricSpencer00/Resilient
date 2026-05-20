@@ -32,7 +32,14 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // `markers.any_call_ident_with_suffix` with the same CHECK_SUFFIXES.
     // The previous `any_node` pre-scan was redundant — removed.
     for_each_function(program, |fname, _params, body| {
-        let mut events: Vec<(bool, String, Option<String>)> = Vec::new();
+        // RES-2160: borrow fn_name + first-ident-arg directly from the
+        // body AST. The events vector lives only inside this callback,
+        // and `visit<'a>` already threads the AST lifetime through the
+        // closure call. Previously the loop cloned `name` for every
+        // events push and cloned `name`/`value` from the first argument
+        // — four `String::clone()` per matching CallExpression, all
+        // thrown away at the end of the callback iteration.
+        let mut events: Vec<(bool, &str, Option<&str>)> = Vec::new();
         // (is_check, fn_name, first_ident_arg)
         visit(body, &mut |n| {
             if let Node::CallExpression {
@@ -43,16 +50,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             {
                 if let Node::Identifier { name, .. } = function.as_ref() {
                     let arg = arguments.first().and_then(|a| match a {
-                        Node::Identifier { name, .. } => Some(name.clone()),
-                        Node::StringLiteral { value, .. } => Some(value.clone()),
+                        Node::Identifier { name, .. } => Some(name.as_str()),
+                        Node::StringLiteral { value, .. } => Some(value.as_str()),
                         _ => None,
                     });
                     if CHECK_SUFFIXES.iter().any(|s| name.ends_with(*s)) {
-                        events.push((true, name.clone(), arg));
+                        events.push((true, name.as_str(), arg));
                     } else if USE_SUFFIXES.iter().any(|s| name.ends_with(*s))
                         && !name.starts_with("atomic_")
                     {
-                        events.push((false, name.clone(), arg));
+                        events.push((false, name.as_str(), arg));
                     }
                 }
             }
@@ -67,7 +74,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                 if *is_check2 {
                     continue;
                 }
-                if uarg.as_deref() == Some(carg) {
+                if *uarg == Some(*carg) {
                     eprintln!(
                         "warning: in '{fname}', TOCTOU: '{cname}({carg})' followed \
                          by '{uname}({carg})' — use atomic_{uname} or wrap both \
