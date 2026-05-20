@@ -465,8 +465,8 @@
       "claimed_at": "2026-05-20T08:12:01Z"
     },
     "resilient/src/recovers_to_bmc.rs": {
-      "branch": "res-2264-bmc-write-direct",
-      "claimed_at": "2026-05-20T08:18:41Z"
+      "branch": "res-2268-smtlib2-direct-write",
+      "claimed_at": "2026-05-20T08:29:05Z"
     }
   }
 }
