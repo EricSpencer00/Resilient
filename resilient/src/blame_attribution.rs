@@ -127,7 +127,24 @@ fn walk(node: &Node, caller: &str, map: &mut BlameMap) {
             ..
         } => {
             if let Node::Identifier { name: callee, .. } = function.as_ref() {
-                let entry = map.edges.entry(callee.clone()).or_default();
+                // RES-2334: probe the edges map with `&str` (no
+                // allocation) on the hot path where the callee was
+                // already seen. The previous shape did
+                // `entry(callee.clone()).or_default()` — paying a
+                // `String::clone` per call expression even when the
+                // callee was already in the map. For programs that
+                // call common functions (`println`, `len`, user
+                // helpers) repeatedly, the steady-state cost drops
+                // from O(N) clones to a single allocation per unique
+                // callee. Same get-or-clone-fallback pattern as
+                // RES-2138 (autopilot) / RES-2140 (refinement
+                // registry) / RES-2240 (crash_only_cert) / RES-2290
+                // (monomorph mangled).
+                let entry = if let Some(e) = map.edges.get_mut(callee.as_str()) {
+                    e
+                } else {
+                    map.edges.entry(callee.clone()).or_default()
+                };
                 for (idx, _) in arguments.iter().enumerate() {
                     entry.push((caller.to_string(), idx));
                 }

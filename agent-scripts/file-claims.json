@@ -112,10 +112,6 @@
       "branch": "res-1522-deadlock-actors-borrow",
       "claimed_at": "2026-05-12T13:34:45Z"
     },
-    "resilient/src/blame_attribution.rs": {
-      "branch": "res-1968-blame-chain-perf",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/termination.rs": {
       "branch": "res-1538-termination-fn-info-borrow",
       "claimed_at": "2026-05-12T15:15:14Z"
@@ -459,6 +455,10 @@
     "resilient/src/ai_threat_model.rs": {
       "branch": "res-2330-ai-threat-report-write-direct",
       "claimed_at": "2026-05-20T12:32:53Z"
+    },
+    "resilient/src/blame_attribution.rs": {
+      "branch": "res-2334-blame-attribution-entry-skip",
+      "claimed_at": "2026-05-20T12:52:54Z"
     }
   }
 }
