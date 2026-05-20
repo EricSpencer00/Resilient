@@ -114,32 +114,78 @@ fn compute_fingerprint(
 }
 
 fn node_text(n: &Node) -> String {
+    let mut out = String::new();
+    node_text_into(n, &mut out);
+    out
+}
+
+/// RES-2424: direct-write helper for `node_text`. Recursion allocates
+/// one buffer total (the outer `String`) instead of O(depth)
+/// intermediate `String`s via `format!`. Output is byte-identical to
+/// the previous shape — important because the result feeds the
+/// fingerprint digest and any drift would invalidate stored
+/// `fingerprints.lock` snapshots. Same shape as RES-2422
+/// (contract_inference::format_simple_expr), RES-2380 (verifier_actors
+/// render_clause), RES-2382 (verifier_liveness).
+fn node_text_into(n: &Node, out: &mut String) {
+    use std::fmt::Write;
     match n {
-        Node::Identifier { name, .. } => name.clone(),
-        Node::IntegerLiteral { value, .. } => value.to_string(),
-        Node::FloatLiteral { value, .. } => value.to_string(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::StringLiteral { value, .. } => format!("{value:?}"),
+        Node::Identifier { name, .. } => out.push_str(name),
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::FloatLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::StringLiteral { value, .. } => {
+            let _ = write!(out, "{value:?}");
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!("({} {operator} {})", node_text(left), node_text(right)),
+        } => {
+            out.push('(');
+            node_text_into(left, out);
+            out.push(' ');
+            out.push_str(operator);
+            out.push(' ');
+            node_text_into(right, out);
+            out.push(')');
+        }
         Node::PrefixExpression {
             operator, right, ..
         } => {
-            format!("({operator}{})", node_text(right))
+            out.push('(');
+            out.push_str(operator);
+            node_text_into(right, out);
+            out.push(')');
         }
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            let args: Vec<String> = arguments.iter().map(node_text).collect();
-            format!("{}({})", node_text(function), args.join(", "))
+            node_text_into(function, out);
+            out.push('(');
+            for (i, a) in arguments.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                node_text_into(a, out);
+            }
+            out.push(')');
         }
-        _ => format!("{:?}", std::ptr::addr_of!(*n)),
+        // Preserve the (non-deterministic) pointer-address fallback
+        // from the original — orthogonal to the perf fix, and
+        // changing it would alter the fingerprint digest.
+        _ => {
+            let _ = write!(out, "{:?}", std::ptr::addr_of!(*n));
+        }
     }
 }
 
