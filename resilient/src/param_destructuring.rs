@@ -16,9 +16,15 @@
 
 use crate::Node;
 
+/// RES-2180: dropped the redundant `fn_name: String` field. It was
+/// set from `name.clone()` per matched parameter in `analyze()`. The
+/// only reader was the `check` loop's eprintln (a name tied to the
+/// function the request was discovered on). The field stored exactly
+/// what the outer iteration already carried. Same dead-field pattern
+/// as RES-2106 / RES-2110 / RES-2122 / RES-2168 / RES-2170 / RES-2172 /
+/// RES-2174 / RES-2176 / RES-2178.
 #[derive(Debug, Clone)]
 pub struct DestructureRequest {
-    pub fn_name: String,
     pub param_index: usize,
     pub locals: Vec<String>,
 }
@@ -26,7 +32,7 @@ pub struct DestructureRequest {
 /// Convention: a parameter declared with type `"(T1,T2,...)"` is
 /// recognised as a tuple destructure target. The locals list is the
 /// underscore-stripped param-name segments.
-pub fn analyze(program: &Node) -> Vec<DestructureRequest> {
+pub fn analyze(program: &Node) -> Vec<(String, DestructureRequest)> {
     let mut out = Vec::new();
     let Node::Program(stmts) = program else {
         return out;
@@ -44,11 +50,13 @@ pub fn analyze(program: &Node) -> Vec<DestructureRequest> {
                         .map(|s| s.to_string())
                         .filter(|s| !s.is_empty())
                         .collect::<Vec<_>>();
-                    out.push(DestructureRequest {
-                        fn_name: name.clone(),
-                        param_index: i,
-                        locals,
-                    });
+                    out.push((
+                        name.clone(),
+                        DestructureRequest {
+                            param_index: i,
+                            locals,
+                        },
+                    ));
                 }
             }
         }
@@ -58,12 +66,12 @@ pub fn analyze(program: &Node) -> Vec<DestructureRequest> {
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let reqs = analyze(program);
-    for r in &reqs {
+    for (fn_name, r) in &reqs {
         eprintln!(
             "note: `{}` parameter {} is a tuple destructure; lowering to \
              `let ({}) = param;` at call sites is not yet supported — \
              use explicit binding in the function body",
-            r.fn_name,
+            fn_name,
             r.param_index,
             r.locals.join(", ")
         );

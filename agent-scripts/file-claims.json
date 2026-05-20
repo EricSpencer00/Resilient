@@ -435,6 +435,10 @@
     "resilient/src/derives.rs": {
       "branch": "res-2174-derives-drop-type-name",
       "claimed_at": "2026-05-20T04:08:32Z"
+    },
+    "resilient/src/param_destructuring.rs": {
+      "branch": "res-2180-param-destructure-drop-fn-name",
+      "claimed_at": "2026-05-20T04:16:18Z"
     }
   }
 }
