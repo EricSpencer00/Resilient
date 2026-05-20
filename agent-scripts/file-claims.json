@@ -308,10 +308,6 @@
       "branch": "res-1802-traits-presize",
       "claimed_at": "2026-05-13T13:02:04Z"
     },
-    "resilient/src/verifier_actors.rs": {
-      "branch": "res-1808-flatten-body-presize",
-      "claimed_at": "2026-05-13T13:17:34Z"
-    },
     "resilient/src/format_builtin.rs": {
       "branch": "res-1816-format-template-fast-reject",
       "claimed_at": "2026-05-13T13:34:15Z"
@@ -463,6 +459,10 @@
     "resilient/src/lint.rs": {
       "branch": "res-2272-lint-clause-text-direct",
       "claimed_at": "2026-05-20T08:36:08Z"
+    },
+    "resilient/src/verifier_actors.rs": {
+      "branch": "res-2276-verifier-actors-render-direct",
+      "claimed_at": "2026-05-20T08:56:57Z"
     }
   }
 }
