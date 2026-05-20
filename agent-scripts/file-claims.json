@@ -455,6 +455,10 @@
     "resilient/src/try_catch.rs": {
       "branch": "res-2214-try-catch-emitted-variants-borrow",
       "claimed_at": "2026-05-20T05:34:11Z"
+    },
+    "resilient/src/bounded_blocking.rs": {
+      "branch": "res-2218-bounded-blocking-borrow-callees",
+      "claimed_at": "2026-05-20T05:47:46Z"
     }
   }
 }

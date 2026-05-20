@@ -60,26 +60,30 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
     // RES-1511: borrow each top-level fn name as `&str` from the
     // AST into the outer `callees` / `blocking_calls` HashMaps and
-    // the `decls` Vec. The inner `cs: Vec<String>` keeps owned
-    // Strings because `uniqueness_walk::visit` uses a HRTB closure
-    // that can't bind the AST lifetime (same limitation as
-    // RES-1509 for `isr_call_graph::collect_callees`). Mirror of
-    // RES-1495 / RES-1500 / RES-1503 / RES-1507 / RES-1509.
+    // the `decls` Vec.
+    // RES-2218: also borrow inner callee names as `&'a str` from the
+    // AST. `uniqueness_walk::visit<'a>` propagates the AST lifetime
+    // into the closure (`FnMut(&'a Node)`, RES-1603), so the closure
+    // can capture `cs: &mut Vec<&'a str>` and push `fname.as_str()`.
+    // This eliminates one `String::clone()` per call expression per
+    // `_bound{N}`-triggered check (the prior comment about HRTB
+    // closures preventing this was stale — `visit` was made
+    // lifetime-parameterized in RES-1603).
     // RES-1746: pre-size the three call-graph collections to stmts.len()
     // (upper bound). Same shape as RES-1742 / RES-1744 for the
     // sibling call-graph passes.
-    let mut callees: HashMap<&str, Vec<String>> = HashMap::with_capacity(stmts.len());
+    let mut callees: HashMap<&str, Vec<&str>> = HashMap::with_capacity(stmts.len());
     let mut blocking_calls: HashMap<&str, usize> = HashMap::with_capacity(stmts.len());
     let mut decls: Vec<&str> = Vec::with_capacity(stmts.len());
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             decls.push(name.as_str());
-            let mut cs = Vec::new();
+            let mut cs: Vec<&str> = Vec::new();
             let mut bn = 0;
             visit(body, &mut |n| {
                 if let Node::CallExpression { function, .. } = n {
                     if let Node::Identifier { name: fname, .. } = function.as_ref() {
-                        cs.push(fname.clone());
+                        cs.push(fname.as_str());
                         if BLOCKING_PRIMS.contains(&fname.as_str()) || fname.ends_with("_blocking")
                         {
                             bn += 1;
@@ -114,9 +118,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 // one into the `seen` set and the BFS queue. All three parameters
 // share lifetime `'a` so the borrows from `callees` and `start` can
 // flow through `q` and `seen` without per-iteration `String::clone`.
+// RES-2218: callees values are now `Vec<&'a str>` (was `Vec<String>`),
+// so the per-edge `c.as_str()` step is gone — push the borrow directly.
 fn transitive_blocking<'a>(
     start: &'a str,
-    callees: &'a HashMap<&'a str, Vec<String>>,
+    callees: &HashMap<&'a str, Vec<&'a str>>,
     bn: &HashMap<&str, usize>,
 ) -> usize {
     let mut total = 0;
@@ -129,8 +135,8 @@ fn transitive_blocking<'a>(
         }
         total += bn.get(f).copied().unwrap_or(0);
         if let Some(cs) = callees.get(f) {
-            for c in cs {
-                q.push_back(c.as_str());
+            for &c in cs {
+                q.push_back(c);
             }
         }
     }
