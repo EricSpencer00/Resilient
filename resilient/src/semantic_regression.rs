@@ -203,39 +203,52 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         );
     }
 
-    // Compare against the installed baseline (if any) and warn on weakenings.
-    let baseline_snap = BASELINE.read().ok().and_then(|g| g.clone());
-    if let Some(baseline) = baseline_snap {
-        let changes = diff(&baseline, &current);
-        for c in &changes {
-            match c {
-                SemanticChange::Weakened {
-                    function,
-                    old_count,
-                    new_count,
-                    kind,
-                } => {
-                    let kind_str = match kind {
-                        ContractKind::Requires => "requires",
-                        ContractKind::Ensures => "ensures",
-                        ContractKind::Fails => "fails",
-                    };
-                    eprintln!(
-                        "semantic-regression: `{function}` {kind_str} weakened \
-                         ({old_count} → {new_count} clause(s))"
-                    );
+    // RES-2116: Compare against the installed baseline (if any) and warn
+    // on weakenings. The previous shape called `g.clone()` on the read
+    // guard's payload — deep-cloning every `FunctionContract` in the
+    // baseline `HashMap` just so `diff(...)` could borrow it. With
+    // potentially dozens of contracted functions per program, that was
+    // a meaningful allocation cost per typecheck. Hold the read guard
+    // for the duration of the diff + diagnostic emission instead, then
+    // drop it explicitly before re-acquiring the lock as a writer in
+    // `install_baseline`.
+    {
+        if let Ok(g) = BASELINE.read() {
+            if let Some(baseline) = g.as_ref() {
+                let changes = diff(baseline, &current);
+                for c in &changes {
+                    match c {
+                        SemanticChange::Weakened {
+                            function,
+                            old_count,
+                            new_count,
+                            kind,
+                        } => {
+                            let kind_str = match kind {
+                                ContractKind::Requires => "requires",
+                                ContractKind::Ensures => "ensures",
+                                ContractKind::Fails => "fails",
+                            };
+                            eprintln!(
+                                "semantic-regression: `{function}` {kind_str} weakened \
+                                 ({old_count} → {new_count} clause(s))"
+                            );
+                        }
+                        SemanticChange::Removed(name) => {
+                            eprintln!(
+                                "semantic-regression: function `{name}` removed — \
+                                 any callers relied on its contracts"
+                            );
+                        }
+                        _ => {}
+                    }
                 }
-                SemanticChange::Removed(name) => {
-                    eprintln!(
-                        "semantic-regression: function `{name}` removed — \
-                         any callers relied on its contracts"
-                    );
+                if has_weakening(&changes) {
+                    eprintln!("semantic-regression: contract weakening detected — review required");
                 }
-                _ => {}
             }
-        }
-        if has_weakening(&changes) {
-            eprintln!("semantic-regression: contract weakening detected — review required");
+            // `g` (read guard) is dropped here before `install_baseline`
+            // takes the write lock below.
         }
     }
 
