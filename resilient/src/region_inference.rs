@@ -63,14 +63,23 @@ impl RegionTable {
     ///
     /// Follows variable chains until a `Region::Named` or an unbound
     /// `Region::Var` is reached.
-    pub fn resolve(&self, mut r: Region) -> Region {
+    ///
+    /// RES-2410: input is borrowed and intermediate parent links are
+    /// followed by reference into `self.parent`. Only the final
+    /// representative is cloned (callers like `unify`'s match arms
+    /// need an owned `Region`). The previous shape paid one
+    /// `Region::clone` per chain link, each of which allocates a
+    /// `String` for `Region::Named` parents — pure plumbing overhead
+    /// for chains formed by transitive `unify`.
+    pub fn resolve(&self, r: &Region) -> Region {
+        let mut cur = r;
         loop {
-            match &r {
+            match cur {
                 Region::Var(v) => match self.parent.get(&v.0) {
-                    Some(parent) => r = parent.clone(),
-                    None => return r,
+                    Some(parent) => cur = parent,
+                    None => return cur.clone(),
                 },
-                Region::Named(_) => return r,
+                Region::Named(_) => return cur.clone(),
             }
         }
     }
@@ -80,8 +89,8 @@ impl RegionTable {
     /// Returns `Err` if both regions resolve to different concrete labels
     /// (i.e. the user labeled them differently and they truly cannot alias).
     pub fn unify(&mut self, a: Region, b: Region) -> Result<(), String> {
-        let ra = self.resolve(a);
-        let rb = self.resolve(b);
+        let ra = self.resolve(&a);
+        let rb = self.resolve(&b);
 
         if ra == rb {
             return Ok(());
@@ -159,15 +168,13 @@ impl RegionMap {
     /// Look up the region for a parameter, resolving any inference
     /// variable to its canonical representative.
     pub fn get_resolved(&self, key: &ParamKey) -> Option<Region> {
-        self.entries.get(key).map(|r| self.table.resolve(r.clone()))
+        self.entries.get(key).map(|r| self.table.resolve(r))
     }
 
     /// RES-773: look up the region for a local variable, resolving any
     /// inference variable to its canonical representative.
     pub fn get_local_resolved(&self, key: &LocalKey) -> Option<Region> {
-        self.local_entries
-            .get(key)
-            .map(|r| self.table.resolve(r.clone()))
+        self.local_entries.get(key).map(|r| self.table.resolve(r))
     }
 }
 
@@ -675,7 +682,7 @@ mod tests {
     fn unbound_var_resolves_to_itself() {
         let mut table = RegionTable::new();
         let v = table.fresh();
-        assert_eq!(table.resolve(Region::Var(v)), Region::Var(v));
+        assert_eq!(table.resolve(&Region::Var(v)), Region::Var(v));
     }
 
     #[test]
@@ -686,7 +693,7 @@ mod tests {
             .unify(Region::Var(v), Region::named("A"))
             .expect("unify");
         assert_eq!(
-            table.resolve(Region::Var(v)),
+            table.resolve(&Region::Var(v)),
             Region::Named("A".to_string())
         );
     }
@@ -703,7 +710,7 @@ mod tests {
             .unify(Region::Var(v2), Region::named("B"))
             .expect("unify v2=B");
         assert_eq!(
-            table.resolve(Region::Var(v1)),
+            table.resolve(&Region::Var(v1)),
             Region::Named("B".to_string())
         );
     }

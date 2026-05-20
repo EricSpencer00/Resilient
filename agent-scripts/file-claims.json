@@ -156,10 +156,6 @@
       "branch": "res-2006-semver-baseline-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/region_inference.rs": {
-      "branch": "res-2146-region-inference-callee-info-borrow",
-      "claimed_at": "2026-05-19T00:00:00Z"
-    },
     "resilient/src/mutual_recursion_scc.rs": {
       "branch": "res-2086-mutual-recursion-scc-borrow",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -463,6 +459,10 @@
     "resilient/src/phantom_types.rs": {
       "branch": "res-2390-phantom-types-drop-type-name",
       "claimed_at": "2026-05-20T16:19:52Z"
+    },
+    "resilient/src/region_inference.rs": {
+      "branch": "res-2410-region-resolve-borrow",
+      "claimed_at": "2026-05-20T17:33:41Z"
     }
   }
 }
