@@ -455,6 +455,10 @@
     "resilient/src/idempotent_handler.rs": {
       "branch": "res-2308-idempotent-handler-drop-prescan",
       "claimed_at": "2026-05-20T10:53:02Z"
+    },
+    "resilient/src/repl.rs": {
+      "branch": "res-2322-repl-contracts-write-direct",
+      "claimed_at": "2026-05-20T11:55:36Z"
     }
   }
 }

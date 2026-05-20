@@ -589,6 +589,15 @@ impl EnhancedREPL {
         let mut names: Vec<&String> = map.keys().collect();
         names.sort();
 
+        // RES-2322: write directly via `std::fmt::Write` instead of
+        // the `push_str(&format!(...))` antipattern. Each `format!()`
+        // previously allocated an intermediate `String` only to be
+        // immediately `push_str`'d into `out`. For an N-fn program
+        // with K total `requires`/`ensures` clauses, that's N + K
+        // wasted String allocations on the `.contracts` table-emit
+        // path. Mirrors RES-2256 (autopilot::format_report) /
+        // RES-2258 (causal_trace).
+        use std::fmt::Write;
         let mut out = String::new();
         let mut any = false;
 
@@ -601,19 +610,19 @@ impl EnhancedREPL {
             let (requires, ensures) = &map[name];
             for clause in requires {
                 let expr = Self::format_contract_node(clause);
-                out.push_str(&format!("{}  requires  {}  unverified\n", name, expr));
+                let _ = writeln!(out, "{}  requires  {}  unverified", name, expr);
                 any = true;
             }
             for clause in ensures {
                 let expr = Self::format_contract_node(clause);
-                out.push_str(&format!("{}  ensures   {}  unverified\n", name, expr));
+                let _ = writeln!(out, "{}  ensures   {}  unverified", name, expr);
                 any = true;
             }
         }
 
         if !any {
             if let Some(f) = filter {
-                out.push_str(&format!("(no contracts for '{}')\n", f));
+                let _ = writeln!(out, "(no contracts for '{}')", f);
             } else {
                 out.push_str("(no contracts defined)\n");
             }
