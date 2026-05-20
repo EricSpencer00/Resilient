@@ -22,12 +22,19 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-struct Context {
-    extern_fns: HashSet<String>,
-    current_fn: Option<String>,
+// RES-2354: borrow extern fn names and the current-fn name from the
+// AST instead of cloning them per declaration/visit. `HashSet<&'a str>`
+// works for membership lookup the same as `HashSet<String>` did (both
+// answer `contains(&str)`), and `Option<&'a str>` lets the equality
+// check + warning eprintln consume the borrow directly. Drops one
+// `String::clone` per extern decl and one per function visit — both
+// are on the hot path for programs with many `live { … }` blocks.
+struct Context<'a> {
+    extern_fns: HashSet<&'a str>,
+    current_fn: Option<&'a str>,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     fn new() -> Self {
         Context {
             extern_fns: HashSet::new(),
@@ -35,7 +42,7 @@ impl Context {
         }
     }
 
-    fn collect_declarations(&mut self, program: &Node) {
+    fn collect_declarations(&mut self, program: &'a Node) {
         let Node::Program(statements) = program else {
             return;
         };
@@ -54,13 +61,13 @@ impl Context {
         for stmt in statements {
             if let Node::Extern { decls, .. } = &stmt.node {
                 for decl in decls {
-                    self.extern_fns.insert(decl.resilient_name.clone());
+                    self.extern_fns.insert(decl.resilient_name.as_str());
                 }
             }
         }
     }
 
-    fn check_live_blocks(&mut self, program: &Node) {
+    fn check_live_blocks(&mut self, program: &'a Node) {
         let Node::Program(statements) = program else {
             return;
         };
@@ -69,11 +76,11 @@ impl Context {
         }
     }
 
-    fn walk_for_live_blocks(&mut self, node: &Node) {
+    fn walk_for_live_blocks(&mut self, node: &'a Node) {
         match node {
             Node::Function { name, body, .. } => {
                 let prev_fn = self.current_fn.take();
-                self.current_fn = Some(name.clone());
+                self.current_fn = Some(name.as_str());
                 self.walk_for_live_blocks(body);
                 self.current_fn = prev_fn;
             }
@@ -137,7 +144,7 @@ impl Context {
                             cannot be modeled as TLA+ action",
                             fn_name
                         );
-                    } else if let Some(current) = self.current_fn.as_deref()
+                    } else if let Some(current) = self.current_fn
                         && fn_name == current
                     {
                         eprintln!(
