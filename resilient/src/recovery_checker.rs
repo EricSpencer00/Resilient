@@ -22,12 +22,20 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-struct Context {
-    extern_fns: HashSet<String>,
-    current_fn: Option<String>,
+/// RES-2092: `extern_fns` and `current_fn` borrow `&'a str` directly from the
+/// program AST instead of cloning. The two-pass design (`collect_declarations`
+/// then `check_live_blocks`) walks the same `program` reference twice;
+/// every name stored in the context already lives in the AST for the
+/// duration of `check`. The previous shape allocated one `String` per
+/// extern declaration plus one per visited `Function` node — wasted
+/// work for a pass whose entire lifetime is bounded by a single
+/// `&'a Node` argument.
+struct Context<'a> {
+    extern_fns: HashSet<&'a str>,
+    current_fn: Option<&'a str>,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     fn new() -> Self {
         Context {
             extern_fns: HashSet::new(),
@@ -35,7 +43,7 @@ impl Context {
         }
     }
 
-    fn collect_declarations(&mut self, program: &Node) {
+    fn collect_declarations(&mut self, program: &'a Node) {
         let Node::Program(statements) = program else {
             return;
         };
@@ -54,13 +62,13 @@ impl Context {
         for stmt in statements {
             if let Node::Extern { decls, .. } = &stmt.node {
                 for decl in decls {
-                    self.extern_fns.insert(decl.resilient_name.clone());
+                    self.extern_fns.insert(decl.resilient_name.as_str());
                 }
             }
         }
     }
 
-    fn check_live_blocks(&mut self, program: &Node) {
+    fn check_live_blocks(&mut self, program: &'a Node) {
         let Node::Program(statements) = program else {
             return;
         };
@@ -69,11 +77,11 @@ impl Context {
         }
     }
 
-    fn walk_for_live_blocks(&mut self, node: &Node) {
+    fn walk_for_live_blocks(&mut self, node: &'a Node) {
         match node {
             Node::Function { name, body, .. } => {
                 let prev_fn = self.current_fn.take();
-                self.current_fn = Some(name.clone());
+                self.current_fn = Some(name.as_str());
                 self.walk_for_live_blocks(body);
                 self.current_fn = prev_fn;
             }
@@ -116,7 +124,7 @@ impl Context {
         }
     }
 
-    fn check_node(&mut self, node: &Node) {
+    fn check_node(&mut self, node: &'a Node) {
         match node {
             Node::CallExpression {
                 function,
@@ -137,7 +145,7 @@ impl Context {
                             cannot be modeled as TLA+ action",
                             fn_name
                         );
-                    } else if let Some(current) = self.current_fn.as_deref()
+                    } else if let Some(current) = self.current_fn
                         && fn_name == current
                     {
                         eprintln!(
