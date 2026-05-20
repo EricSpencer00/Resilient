@@ -406,15 +406,25 @@ pub(crate) fn generate_prefix_obligation(
     ids.sort();
     ids.dedup();
 
+    // RES-2264: write directly into `buf` via `std::fmt::Write` instead
+    // of `push_str(&format!(...))`. Each call previously allocated an
+    // intermediate `String` only to be immediately `push_str`'d. For
+    // an N-identifier program with K requires clauses, that's
+    // 2 + N + K allocations per per-prefix obligation. The per-prefix
+    // BMC is called once per `recovers_to` clause × CFG prefix, so
+    // savings scale with verification surface. Same pattern as
+    // RES-2256 / RES-2258 / RES-2260 / RES-2262.
+    use std::fmt::Write;
     let mut buf = String::with_capacity(256);
-    buf.push_str(&format!(
-        "; RES-392b: per-prefix obligation for prefix {prefix_id}\n"
-    ));
+    let _ = writeln!(
+        buf,
+        "; RES-392b: per-prefix obligation for prefix {prefix_id}"
+    );
 
     // Declare each free variable as an Int (conservative: the solver
     // will accept Int arithmetic for most embedded numeric programs).
     for id in &ids {
-        buf.push_str(&format!("(declare-const {id} Int)\n"));
+        let _ = writeln!(buf, "(declare-const {id} Int)");
     }
 
     // Assert each requires clause as a precondition axiom. The recovery
@@ -423,7 +433,7 @@ pub(crate) fn generate_prefix_obligation(
     for req in requires_clauses {
         let req_smt = node_to_smtlib2(req);
         if !req_smt.is_empty() && req_smt != "true" {
-            buf.push_str(&format!("(assert {req_smt})\n"));
+            let _ = writeln!(buf, "(assert {req_smt})");
         }
     }
 
@@ -432,7 +442,7 @@ pub(crate) fn generate_prefix_obligation(
     // Note: no (check-sat) or (push)/(pop) here — check_smtlib2 creates
     // a fresh Solver and calls solver.check() itself, so those wrappers
     // would incorrectly reset the solver state before the check fires.
-    buf.push_str(&format!("(assert (not {recovers_smt}))\n"));
+    let _ = writeln!(buf, "(assert (not {recovers_smt}))");
     buf
 }
 
