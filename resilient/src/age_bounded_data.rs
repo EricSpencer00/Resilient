@@ -30,15 +30,23 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     for_each_function(program, |fname, _params, body| {
         // RES-1750: pre-size per-fn collections to 8 — typical fn
         // body has a handful of field reads / age comparisons.
-        let mut reads_value: Vec<(String, String)> = Vec::with_capacity(8); // (target, field)
-        let mut compares_age: std::collections::HashSet<(String, String)> =
+        // RES-2158: borrow target + field names directly from the
+        // body AST. The two collections live only for the duration of
+        // this for_each_function callback, so the strings can borrow
+        // through `body`'s lifetime. The previous shape paid
+        // `t.clone() + field.clone()` per matching FieldAccess +
+        // InfixExpression — pure overhead since downstream consumers
+        // (`reads_value` for-loop, `compares_age.iter().any(...)`)
+        // only read.
+        let mut reads_value: Vec<(&str, &str)> = Vec::with_capacity(8); // (target, field)
+        let mut compares_age: std::collections::HashSet<(&str, &str)> =
             std::collections::HashSet::with_capacity(8);
 
         visit(body, &mut |n| match n {
             Node::FieldAccess { target, field, .. } => {
                 if let Node::Identifier { name: t, .. } = target.as_ref() {
                     if !field.ends_with("_at") {
-                        reads_value.push((t.clone(), field.clone()));
+                        reads_value.push((t.as_str(), field.as_str()));
                     }
                 }
             }
@@ -52,7 +60,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     if let Node::FieldAccess { target, field, .. } = side {
                         if field.ends_with("_at") {
                             if let Node::Identifier { name: t, .. } = target.as_ref() {
-                                compares_age.insert((t.clone(), field.clone()));
+                                compares_age.insert((t.as_str(), field.as_str()));
                             }
                         }
                     }
@@ -64,7 +72,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         for (target, field) in reads_value {
             // If we read `target.field` and never compared `target.<anything>_at`,
             // that's an unguarded read.
-            let saw_age = compares_age.iter().any(|(t, _)| t == &target);
+            let saw_age = compares_age.iter().any(|(t, _)| *t == target);
             if !saw_age {
                 eprintln!(
                     "warning: in '{fname}', value '{target}.{field}' is read with \
