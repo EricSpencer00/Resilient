@@ -28,23 +28,16 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    // RES-1228: fast-reject. The diagnostic only fires for functions
-    // whose name ends in `_oncepertick` / `_singleshot` / `_few`.
-    // Programs without any such suffix don't need the program-wide
-    // call-site count — yet the existing code walks every function
-    // body and populates a `HashMap<String, usize>` of every callee
-    // first, then loops `decls` looking for the suffix. Pre-scan
-    // top-level names for the suffix once up front; if none match,
-    // return immediately and skip both the AST traversals and the
-    // HashMap allocation. Same shape as RES-1211 / RES-1214 /
-    // RES-1217 / RES-1218 / RES-1222 / RES-1224.
-    let has_rate_limited = stmts.iter().any(|s| {
-        matches!(&s.node, Node::Function { name, .. }
-            if ONCE_SUFFIXES.iter().any(|suf| name.ends_with(*suf)) || name.ends_with(FEW_SUFFIX))
-    });
-    if !has_rate_limited {
-        return Ok(());
-    }
+    // RES-1228 / RES-2300: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.any_fn_name_with_suffix(&["_oncepertick",
+    // "_singleshot", "_few"])`, so the program is guaranteed to
+    // contain at least one rate-limited-suffixed function. The
+    // previous internal `stmts.iter().any(...)` pre-scan walked the
+    // full top-level statement list a second time for the same
+    // signal Markers already computed during the shared whole-AST
+    // walk. Mirrors RES-1916 / RES-1917 / RES-2292 / RES-2294 /
+    // RES-2296 / RES-2298.
     // RES-1515: borrow the top-level fn names into `decls` as `&str`
     // instead of cloning. The `counts` HashMap still needs owned
     // String keys because `uniqueness_walk::visit` uses a HRTB
