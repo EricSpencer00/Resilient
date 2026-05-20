@@ -23,9 +23,16 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2172: dropped the redundant `fn_name: String` field. It was
+/// set from the attribute's owning-item name in `collect()`. Two
+/// readers — `install`'s key clone and the `specs_map` build in
+/// `check` — both used it as a HashMap key. The field stored exactly
+/// what the key encoded. Same dead-field pattern as RES-2106
+/// (snapshot fn_name), RES-2110 (PhantomSpec type_name), RES-2122
+/// (Fingerprint function_name), RES-2168 (IntentSpec raw_args),
+/// RES-2170 (ProbContract fn_name).
 #[derive(Debug, Clone)]
 pub struct RowSpec {
-    pub fn_name: String,
     /// Required (field_name, type_name) pairs.
     pub required: Vec<(String, String)>,
 }
@@ -33,14 +40,13 @@ pub struct RowSpec {
 static SPECS: LazyLock<RwLock<HashMap<String, RowSpec>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<RowSpec> {
+pub fn collect() -> Vec<(String, RowSpec)> {
     let attrs = crate::feature_attrs::find_kind("row_poly");
     // RES-1754: pre-size to attrs.len() — exactly one push per
     // attribute record.
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = RowSpec {
-            fn_name: item,
             required: Vec::new(),
         };
         if let Some(rest) = rec.args.split_once('=').map(|(_, r)| r) {
@@ -51,17 +57,19 @@ pub fn collect() -> Vec<RowSpec> {
                 }
             }
         }
-        out.push(spec);
+        out.push((item, spec));
     }
     out
 }
 
-pub fn install(specs: Vec<RowSpec>) {
+pub fn install(specs: Vec<(String, RowSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         g.clear();
-        for s in specs {
-            g.insert(s.fn_name.clone(), s);
-        }
+        // RES-2172: move (name, spec) pairs straight from `collect()`
+        // into the map. The previous shape per-spec cloned
+        // `s.fn_name` to produce the key, since the field and the key
+        // encoded the same string.
+        g.extend(specs);
     }
 }
 
@@ -237,9 +245,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // The borrowed view lives only during `walk_calls`; once that
     // returns, ownership of `specs` is handed to `install`. Same
     // shape as RES-1996 (refinement_types).
+    // RES-2172: `specs` is now `Vec<(String, RowSpec)>` after dropping
+    // the redundant `fn_name` field; the borrow map builds from the
+    // tuple's name component directly.
     let result = {
         let specs_map: HashMap<&str, &RowSpec> =
-            specs.iter().map(|s| (s.fn_name.as_str(), s)).collect();
+            specs.iter().map(|(n, s)| (n.as_str(), s)).collect();
         walk_calls(program, &specs_map, &struct_fields, source_path)
     };
     install(specs);

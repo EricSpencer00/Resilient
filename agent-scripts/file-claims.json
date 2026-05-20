@@ -185,7 +185,7 @@
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/row_polymorphism.rs": {
-      "branch": "res-1998-row-poly-spec-borrow",
+      "branch": "res-2172-row-poly-drop-fn-name",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/phantom_types.rs": {
