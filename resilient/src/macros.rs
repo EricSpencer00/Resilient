@@ -110,12 +110,17 @@ pub fn lower_program(program: &mut Node) {
     if macros_snapshot.is_empty() {
         return;
     }
-    let macro_names: std::collections::HashSet<String> =
-        macros_snapshot.iter().map(|(k, _)| k.clone()).collect();
+    // RES-2420: borrow the macro names from `macros_snapshot`'s keys
+    // — the snapshot outlives `macro_names`, both die at function end,
+    // and `lower_node` only reads `macro_names`. The previous
+    // `k.clone()` per entry cost one `String` allocation per
+    // registered macro for nothing.
+    let macro_names: std::collections::HashSet<&str> =
+        macros_snapshot.iter().map(|(k, _)| k.as_str()).collect();
     lower_node(program, &macro_names);
 }
 
-fn lower_node(node: &mut Node, macro_names: &std::collections::HashSet<String>) {
+fn lower_node(node: &mut Node, macro_names: &std::collections::HashSet<&str>) {
     match node {
         Node::CallExpression {
             function,
@@ -127,7 +132,7 @@ fn lower_node(node: &mut Node, macro_names: &std::collections::HashSet<String>) 
                 lower_node(arg, macro_names);
             }
             if let Node::Identifier { name, .. } = function.as_ref() {
-                if macro_names.contains(name) {
+                if macro_names.contains(name.as_str()) {
                     let arg_strs: Vec<String> = arguments.iter().map(node_to_source).collect();
                     if let Some(expanded) = expand(name, &arg_strs) {
                         if let Some(expanded_node) = crate::parse_single_expression(&expanded) {
