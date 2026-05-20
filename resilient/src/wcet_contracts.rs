@@ -19,13 +19,19 @@
 use crate::Node;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+/// RES-2190: dropped the redundant `fn_name: String` field. The two
+/// readers in `check` (`bodies.get(spec.fn_name.as_str())` lookup +
+/// the error-message format) used it strictly as a name tied to the
+/// attribute owner. The field stored exactly what the attribute key
+/// encoded. Pipeline now carries `(String, WcetSpec)` tuples from
+/// `collect()` to `check()`. Same dead-field pattern as RES-2106 / …
+/// / RES-2188.
+#[derive(Debug, Clone, Copy)]
 pub struct WcetSpec {
-    pub fn_name: String,
     pub budget_cycles: u64,
 }
 
-pub fn collect() -> Vec<WcetSpec> {
+pub fn collect() -> Vec<(String, WcetSpec)> {
     let attrs = crate::feature_attrs::find_kind("wcet");
     // RES-1764: pre-size to attrs.len() — conditional push (only when
     // the `cycles` chunk parses), upper bound.
@@ -48,10 +54,7 @@ pub fn collect() -> Vec<WcetSpec> {
             }
         }
         if let Some(n) = budget_cycles {
-            out.push(WcetSpec {
-                fn_name: item,
-                budget_cycles: n,
-            });
+            out.push((item, WcetSpec { budget_cycles: n }));
         }
     }
     out
@@ -104,13 +107,13 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             _ => None,
         })
         .collect();
-    for spec in &specs {
-        if let Some(body) = bodies.get(spec.fn_name.as_str()) {
+    for (fn_name, spec) in &specs {
+        if let Some(body) = bodies.get(fn_name.as_str()) {
             let est = estimate_wcet(body);
             if est > spec.budget_cycles {
                 return Err(format!(
                     "{}:0:0: error: `{}` WCET budget exceeded: estimated {} > declared {}",
-                    source_path, spec.fn_name, est, spec.budget_cycles
+                    source_path, fn_name, est, spec.budget_cycles
                 ));
             }
         }

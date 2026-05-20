@@ -173,8 +173,8 @@
       "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/wcet_contracts.rs": {
-      "branch": "res-1764-attr-collect-presize",
-      "claimed_at": "2026-05-13T11:45:18Z"
+      "branch": "res-2190-wcet-contracts-drop-fn-name",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/stack_contracts.rs": {
       "branch": "res-1784-attr-collects-3",
