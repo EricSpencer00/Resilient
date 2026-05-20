@@ -284,10 +284,6 @@
       "branch": "res-1794-infer-named-args-presize",
       "claimed_at": "2026-05-13T12:47:28Z"
     },
-    "resilient/src/traits.rs": {
-      "branch": "res-1802-traits-presize",
-      "claimed_at": "2026-05-13T13:02:04Z"
-    },
     "resilient/src/verifier_actors.rs": {
       "branch": "res-1808-flatten-body-presize",
       "claimed_at": "2026-05-13T13:17:34Z"
@@ -459,6 +455,10 @@
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
+    },
+    "resilient/src/traits.rs": {
+      "branch": "res-2318-traits-drop-prescan",
+      "claimed_at": "2026-05-20T11:29:04Z"
     }
   }
 }

@@ -329,38 +329,21 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         _ => return Ok(()),
     };
 
-    // RES-1391: complete fast-reject. The earlier RES-1230 draft
-    // checked only `TraitDecl` and broke the unknown-trait
-    // diagnostics, because the pass also validates trait *references*
-    // in `impl Trait for Type` blocks and `<T: Trait>` bounds — both
-    // of which can appear in programs without any TraitDecl.
+    // RES-1391 / RES-2318: the typechecker's `<EXTENSION_PASSES>`
+    // dispatch gates this call behind
+    // `markers.has_trait_decl || !markers.impl_trait_names.is_empty()
+    // || markers.has_generic_fn`, which covers exactly the three
+    // signals the internal pre-scan checks. The previous internal
+    // `stmts.iter().any(...)` pre-scan walked the full top-level
+    // statement list a second time for the same signals Markers
+    // already computed during the shared whole-AST walk. Mirrors
+    // RES-2292 through RES-2316.
     //
-    // A correct fast-reject needs all three signals: any TraitDecl,
-    // any ImplBlock carrying a `trait_name`, or any Function with
-    // type-params / non-empty type-param bounds. Programs without
-    // any of these have no trait-validation work to do — Pass 1's
-    // collection is empty, Pass 2's impl scan finds nothing to
-    // validate, Pass 3 has no bounds to check, and
-    // `walk_call_sites` would early-return at
-    // `if type_params.is_empty()` for every callee. Same
-    // fast-reject pattern as RES-1281 / RES-1290 / RES-1294 /
-    // RES-1297 / RES-1311 / RES-1316 / RES-1320 / RES-1376.
-    let has_trait_work = stmts.iter().any(|s| match &s.node {
-        Node::TraitDecl { .. } => true,
-        Node::ImplBlock {
-            trait_name: Some(_),
-            ..
-        } => true,
-        Node::Function {
-            type_params,
-            type_param_bounds,
-            ..
-        } => !type_params.is_empty() || type_param_bounds.iter().any(|bs| !bs.is_empty()),
-        _ => false,
-    });
-    if !has_trait_work {
-        return Ok(());
-    }
+    // Note: `type_param_bounds.iter().any(|bs| !bs.is_empty())` was
+    // a strictly weaker condition than `!type_params.is_empty()`
+    // given the parser's parallel-Vec invariant — both checks
+    // collapse to "any fn has type params" which is exactly
+    // `markers.has_generic_fn`.
 
     // Pass 1: collect trait declarations.
     let mut traits: HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)> =
