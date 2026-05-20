@@ -20,14 +20,6 @@
       "branch": "res-2166-incremental-verify-nested-map",
       "claimed_at": "2026-05-19T00:00:00Z"
     },
-    "resilient/src/backpressure_safe.rs": {
-      "branch": "res-1217-handler-suffix-fast-reject",
-      "claimed_at": "2026-05-12T02:07:46Z"
-    },
-    "resilient/src/idempotent_handler.rs": {
-      "branch": "res-1217-handler-suffix-fast-reject",
-      "claimed_at": "2026-05-12T02:07:46Z"
-    },
     "resilient/src/priority_inheritance.rs": {
       "branch": "res-1232-priority-fast-reject",
       "claimed_at": "2026-05-12T02:35:05Z"
@@ -459,6 +451,10 @@
     "resilient/src/sensor_freshness.rs": {
       "branch": "res-2292-sensor-freshness-drop-prescan",
       "claimed_at": "2026-05-20T10:04:18Z"
+    },
+    "resilient/src/idempotent_handler.rs": {
+      "branch": "res-2308-idempotent-handler-drop-prescan",
+      "claimed_at": "2026-05-20T10:53:02Z"
     }
   }
 }
