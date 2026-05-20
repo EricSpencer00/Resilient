@@ -58,28 +58,29 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if !has_bound_suffix {
         return Ok(());
     }
-    // RES-1511: borrow each top-level fn name as `&str` from the
-    // AST into the outer `callees` / `blocking_calls` HashMaps and
-    // the `decls` Vec. The inner `cs: Vec<String>` keeps owned
-    // Strings because `uniqueness_walk::visit` uses a HRTB closure
-    // that can't bind the AST lifetime (same limitation as
-    // RES-1509 for `isr_call_graph::collect_callees`). Mirror of
-    // RES-1495 / RES-1500 / RES-1503 / RES-1507 / RES-1509.
+    // RES-2100: the historical comment claimed `uniqueness_walk::visit`
+    // forced an owned `Vec<String>` because its closure was a HRTB.
+    // It isn't — `visit<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node))`
+    // is a regular lifetime parameter that propagates the AST borrow
+    // through the closure, so the per-call `fname.clone()` was pure
+    // overhead. Same fix and rationale as RES-2060 (isr_call_graph) and
+    // RES-2062 (reentrancy_guard).
+    //
     // RES-1746: pre-size the three call-graph collections to stmts.len()
     // (upper bound). Same shape as RES-1742 / RES-1744 for the
     // sibling call-graph passes.
-    let mut callees: HashMap<&str, Vec<String>> = HashMap::with_capacity(stmts.len());
+    let mut callees: HashMap<&str, Vec<&str>> = HashMap::with_capacity(stmts.len());
     let mut blocking_calls: HashMap<&str, usize> = HashMap::with_capacity(stmts.len());
     let mut decls: Vec<&str> = Vec::with_capacity(stmts.len());
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             decls.push(name.as_str());
-            let mut cs = Vec::new();
+            let mut cs: Vec<&str> = Vec::new();
             let mut bn = 0;
             visit(body, &mut |n| {
                 if let Node::CallExpression { function, .. } = n {
                     if let Node::Identifier { name: fname, .. } = function.as_ref() {
-                        cs.push(fname.clone());
+                        cs.push(fname.as_str());
                         if BLOCKING_PRIMS.contains(&fname.as_str()) || fname.ends_with("_blocking")
                         {
                             bn += 1;
@@ -116,7 +117,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 // flow through `q` and `seen` without per-iteration `String::clone`.
 fn transitive_blocking<'a>(
     start: &'a str,
-    callees: &'a HashMap<&'a str, Vec<String>>,
+    callees: &HashMap<&'a str, Vec<&'a str>>,
     bn: &HashMap<&str, usize>,
 ) -> usize {
     let mut total = 0;
@@ -129,8 +130,11 @@ fn transitive_blocking<'a>(
         }
         total += bn.get(f).copied().unwrap_or(0);
         if let Some(cs) = callees.get(f) {
-            for c in cs {
-                q.push_back(c.as_str());
+            // RES-2100: `cs: &Vec<&'a str>` — iterate and copy the
+            // borrowed `&'a str` directly. Previously `Vec<String>`
+            // forced a `c.as_str()` per element.
+            for &c in cs {
+                q.push_back(c);
             }
         }
     }
