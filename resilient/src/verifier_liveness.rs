@@ -166,7 +166,14 @@ pub(crate) fn verify_actor_liveness(
         // pushes at most one entry per handler (skipping only the
         // target). Saves the 0→4 doubling chain on actors with many
         // receive handlers.
-        let mut other_posts: Vec<(String, Node, Vec<Node>)> =
+        // RES-2152: `h_name` and `req_h` now borrow directly from the
+        // AST. `post` stays owned because it's a fresh substitution
+        // tree produced by `straight_line_post_public`. The previous
+        // shape paid `h.name.clone()` (String) plus `h.requires.clone()`
+        // (deep Vec<Node> clone — each requires clause is a full AST)
+        // per non-target handler, just to feed a downstream consumer
+        // that only reads through borrowed slices.
+        let mut other_posts: Vec<(&str, Node, &[Node])> =
             Vec::with_capacity(receive_handlers.len());
         let mut bailed = false;
         for h in receive_handlers {
@@ -190,7 +197,7 @@ pub(crate) fn verify_actor_liveness(
                 bailed = true;
                 break;
             };
-            other_posts.push((h.name.clone(), post, h.requires.clone()));
+            other_posts.push((h.name.as_str(), post, h.requires.as_slice()));
         }
         if bailed {
             continue;
@@ -259,7 +266,7 @@ fn try_rank_search(
     post: &Node,
     target_post: &Node,
     target_requires: &[Node],
-    other_posts: &[(String, Node, Vec<Node>)],
+    other_posts: &[(&str, Node, &[Node])],
     timeout_ms: u32,
 ) -> LivenessResult {
     let mut last_reason = String::from("no ranking candidate discharged the obligations");
@@ -299,7 +306,7 @@ fn check_candidate(
     post: &Node,
     target_post: &Node,
     target_requires: &[Node],
-    other_posts: &[(String, Node, Vec<Node>)],
+    other_posts: &[(&str, Node, &[Node])],
     timeout_ms: u32,
 ) -> CandidateVerdict {
     // Constraint — target handler strictly decreases or reaches zero:
@@ -337,7 +344,7 @@ fn check_candidate(
     for (h_name, post_h, req_h) in other_posts {
         let mu_post_h = crate::verifier_actors::substitute_state_public(mu, state_name, post_h);
         let mut ant = mk_true();
-        for r in req_h {
+        for r in *req_h {
             ant = and_node(ant, r.clone());
         }
         let non_increase = infix(mu_post_h, "<=", mu_pre.clone());
