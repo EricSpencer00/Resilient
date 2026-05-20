@@ -295,32 +295,51 @@ impl ControlFlowGraph {
 /// Unsupported nodes return a conservative `true` so the obligation
 /// remains satisfiable (safe default: never emit a false counterexample).
 pub(crate) fn node_to_smtlib2(node: &Node) -> String {
+    // RES-2268: keep the existing String-returning signature for
+    // public/test consumers, but route through a `&mut String`
+    // helper so the recursive walk writes into one buffer instead
+    // of allocating a fresh `String` per nesting level. For a
+    // depth-N expression, the old shape allocated O(N) intermediate
+    // Strings (`l`, `r`, the `format!()` result at each level);
+    // the new shape allocates exactly 1.
+    let mut out = String::new();
+    write_smtlib2(node, &mut out);
+    out
+}
+
+/// Write the SMT-LIB2 rendering of `node` directly into `out`. This
+/// is the recursive workhorse — every leaf and combinator appends
+/// to the same buffer, eliminating the per-level `format!()`
+/// allocations the old `String`-returning shape paid. Unsupported
+/// nodes (operators outside the LIA subset, parenthesised
+/// expressions we can't translate) write `"true"` to keep the
+/// caller's SMT well-formed — same fallback as the previous shape.
+fn write_smtlib2(node: &Node, out: &mut String) {
+    use std::fmt::Write;
     match node {
-        Node::IntegerLiteral { value, .. } => value.to_string(),
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
         Node::FloatLiteral { value, .. } => {
             // SMT-LIB2 requires explicit decimal point for Reals.
             if value.fract() == 0.0 {
-                format!("{}.0", value)
+                let _ = write!(out, "{}.0", value);
             } else {
-                format!("{}", value)
+                let _ = write!(out, "{}", value);
             }
         }
         Node::BooleanLiteral { value, .. } => {
-            if *value {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
+            out.push_str(if *value { "true" } else { "false" });
         }
-        Node::Identifier { name, .. } => name.clone(),
+        Node::Identifier { name, .. } => {
+            out.push_str(name);
+        }
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
         } => {
-            let l = node_to_smtlib2(left);
-            let r = node_to_smtlib2(right);
             let op = match *operator {
                 "+" => "+",
                 "-" => "-",
@@ -335,22 +354,36 @@ pub(crate) fn node_to_smtlib2(node: &Node) -> String {
                 ">=" => ">=",
                 "&&" => "and",
                 "||" => "or",
-                _ => return "true".to_string(),
+                _ => {
+                    out.push_str("true");
+                    return;
+                }
             };
-            format!("({op} {l} {r})")
+            out.push('(');
+            out.push_str(op);
+            out.push(' ');
+            write_smtlib2(left, out);
+            out.push(' ');
+            write_smtlib2(right, out);
+            out.push(')');
         }
         Node::PrefixExpression {
             operator, right, ..
-        } => {
-            let r = node_to_smtlib2(right);
-            match *operator {
-                "!" => format!("(not {r})"),
-                "-" => format!("(- {r})"),
-                _ => "true".to_string(),
+        } => match *operator {
+            "!" => {
+                out.push_str("(not ");
+                write_smtlib2(right, out);
+                out.push(')');
             }
-        }
+            "-" => {
+                out.push_str("(- ");
+                write_smtlib2(right, out);
+                out.push(')');
+            }
+            _ => out.push_str("true"),
+        },
         // Parenthesised expressions are transparent in the AST.
-        _ => "true".to_string(),
+        _ => out.push_str("true"),
     }
 }
 
