@@ -176,14 +176,26 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if specs.is_empty() {
         return Ok(());
     }
-    // Build a name-indexed map for O(1) annotation lookups before
-    // install() moves the Vec.
-    let spec_map: std::collections::HashMap<String, RefinementSpec> =
-        specs.iter().map(|s| (s.name.clone(), s.clone())).collect();
+    // RES-2374: build the lookup map as `&str → &RefinementSpec`
+    // borrows into `specs` before calling `install`, then run the
+    // check and install afterward. The previous shape cloned each
+    // RefinementSpec twice (once for the key, once for the value —
+    // and RefinementSpec carries three Strings) to satisfy the
+    // ordering constraint that `install(specs)` moves the Vec before
+    // the check ran. By scoping the borrowed map and dropping it at
+    // end of block, install can take ownership of `specs` next.
+    //
+    // Same install-after-validate shape as
+    // `recursive_types::check` (RES-1485), `ghost_types::check` /
+    // `async_await::check` (RES-1487), and
+    // `distributed_invariants::check` (RES-1491).
+    let result = {
+        let spec_map: std::collections::HashMap<&str, &RefinementSpec> =
+            specs.iter().map(|s| (s.name.as_str(), s)).collect();
+        check_let_obligations(program, source_path, &spec_map)
+    };
     install(specs);
-    // Compile-time predicate verification: scan for `let x: Refined = CONST`
-    // bindings and reject those whose constant value violates the predicate.
-    check_let_obligations(program, source_path, &spec_map)
+    result
 }
 
 /// Walk the program and emit a compile-time error for any `let` binding
@@ -196,7 +208,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 fn check_let_obligations(
     program: &Node,
     source_path: &str,
-    specs: &std::collections::HashMap<String, RefinementSpec>,
+    specs: &std::collections::HashMap<&str, &RefinementSpec>,
 ) -> Result<(), String> {
     // Walk only the top-level function bodies — LetStatements inside
     // function bodies are the primary refinement obligation sites.
@@ -212,7 +224,7 @@ fn check_let_obligations(
 fn check_node_obligations(
     node: &Node,
     source_path: &str,
-    specs: &std::collections::HashMap<String, RefinementSpec>,
+    specs: &std::collections::HashMap<&str, &RefinementSpec>,
 ) -> Result<(), String> {
     match node {
         Node::LetStatement {
@@ -320,20 +332,16 @@ mod tests {
 
     // ── compile-time obligation checks ─────────────────────────────────────
 
-    fn make_spec_map(
-        name: &str,
-        predicate: &str,
-    ) -> std::collections::HashMap<String, RefinementSpec> {
-        let mut m = std::collections::HashMap::new();
-        m.insert(
-            name.to_string(),
-            RefinementSpec {
-                name: name.to_string(),
-                base: "int".to_string(),
-                predicate: predicate.to_string(),
-            },
-        );
-        m
+    fn make_specs(name: &str, predicate: &str) -> Vec<RefinementSpec> {
+        vec![RefinementSpec {
+            name: name.to_string(),
+            base: "int".to_string(),
+            predicate: predicate.to_string(),
+        }]
+    }
+
+    fn borrow_specs(specs: &[RefinementSpec]) -> std::collections::HashMap<&str, &RefinementSpec> {
+        specs.iter().map(|s| (s.name.as_str(), s)).collect()
     }
 
     fn make_let(ty_name: &str, int_val: i64) -> Node {
@@ -359,7 +367,8 @@ mod tests {
     #[test]
     fn check_let_obligation_passes_for_valid_value() {
         let _g = crate::feature_attrs::lock_for_test();
-        let specs = make_spec_map("Positive", "self > 0");
+        let specs_vec = make_specs("Positive", "self > 0");
+        let specs = borrow_specs(&specs_vec);
         let program = make_let("Positive", 5);
         assert!(check_let_obligations(&program, "test.rz", &specs).is_ok());
     }
@@ -367,7 +376,8 @@ mod tests {
     #[test]
     fn check_let_obligation_fails_for_invalid_value() {
         let _g = crate::feature_attrs::lock_for_test();
-        let specs = make_spec_map("Positive", "self > 0");
+        let specs_vec = make_specs("Positive", "self > 0");
+        let specs = borrow_specs(&specs_vec);
         let program = make_let("Positive", -1);
         let result = check_let_obligations(&program, "test.rz", &specs);
         assert!(result.is_err(), "expected error, got Ok");
@@ -379,7 +389,8 @@ mod tests {
     #[test]
     fn check_let_obligation_ignores_unknown_type_annotations() {
         let _g = crate::feature_attrs::lock_for_test();
-        let specs = make_spec_map("Positive", "self > 0");
+        let specs_vec = make_specs("Positive", "self > 0");
+        let specs = borrow_specs(&specs_vec);
         // `let x: MyStruct = 0` — MyStruct is not a refinement type, should pass.
         let program = make_let("MyStruct", 0);
         assert!(check_let_obligations(&program, "test.rz", &specs).is_ok());
@@ -388,7 +399,8 @@ mod tests {
     #[test]
     fn check_empty_program_is_noop() {
         let _g = crate::feature_attrs::lock_for_test();
-        let specs = make_spec_map("Positive", "self > 0");
+        let specs_vec = make_specs("Positive", "self > 0");
+        let specs = borrow_specs(&specs_vec);
         let program = Node::Program(vec![]);
         assert!(check_let_obligations(&program, "test.rz", &specs).is_ok());
     }
