@@ -23,24 +23,29 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+/// RES-2404: dropped the redundant `struct_name: String` field. The
+/// only reader was `validate_call`'s linear `find(|s| s.struct_name
+/// == struct_name)`. Pipeline now carries `(String, TypestateSpec)`
+/// tuples — matches wcet (RES-2190), prob (RES-2170), power (RES-2386),
+/// stack (RES-2388), phantom (RES-2390), dependent (RES-2392),
+/// mmio_regmap (RES-2394), row_polymorphism (RES-2398),
+/// hw_state_machine (RES-2400).
 #[derive(Debug, Clone)]
 pub struct TypestateSpec {
-    pub struct_name: String,
     pub states: Vec<String>,
     /// Map of (current_state, method) -> next_state.
     pub transitions: HashMap<(String, String), String>,
 }
 
-static SPECS: RwLock<Vec<TypestateSpec>> = RwLock::new(Vec::new());
+static SPECS: RwLock<Vec<(String, TypestateSpec)>> = RwLock::new(Vec::new());
 
-pub fn collect() -> Vec<TypestateSpec> {
+pub fn collect() -> Vec<(String, TypestateSpec)> {
     let attrs = crate::feature_attrs::find_kind("typestate");
     // RES-1756: pre-size to attrs.len() — exactly one push per
     // attribute record. Same shape as RES-1754.
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = TypestateSpec {
-            struct_name: item,
             states: Vec::new(),
             transitions: HashMap::new(),
         };
@@ -70,12 +75,12 @@ pub fn collect() -> Vec<TypestateSpec> {
                 }
             }
         }
-        out.push(spec);
+        out.push((item, spec));
     }
     out
 }
 
-pub fn install(specs: Vec<TypestateSpec>) {
+pub fn install(specs: Vec<(String, TypestateSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         *g = specs;
     }
@@ -94,9 +99,9 @@ pub fn validate_call(
     let g = SPECS
         .read()
         .map_err(|_| format!("no typestate for {struct_name}"))?;
-    let spec = g
+    let (_, spec) = g
         .iter()
-        .find(|s| s.struct_name == struct_name)
+        .find(|(name, _)| name == struct_name)
         .ok_or_else(|| format!("no typestate for {struct_name}"))?;
     spec.transitions
         .get(&(current_state.to_string(), method.to_string()))

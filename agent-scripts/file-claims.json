@@ -463,6 +463,10 @@
     "resilient/src/phantom_types.rs": {
       "branch": "res-2390-phantom-types-drop-type-name",
       "claimed_at": "2026-05-20T16:19:52Z"
+    },
+    "resilient/src/typestate_types.rs": {
+      "branch": "res-2404-typestate-drop-struct-name",
+      "claimed_at": "2026-05-20T16:55:48Z"
     }
   }
 }
