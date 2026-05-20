@@ -64,6 +64,10 @@ use crate::bytecode::{Chunk, Op};
 /// Errors that the peephole optimizer can return.
 #[derive(Debug)]
 pub enum OptimizeError {
+    /// Reserved for future error paths. No longer constructed since
+    /// RES-2368 (`new_to_old` indexing replaced the lossy `find`
+    /// lookup that previously could fail).
+    #[allow(dead_code)]
     InternalError(&'static str),
 }
 
@@ -101,10 +105,16 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
     let mut new_code: Vec<Op> = Vec::with_capacity(chunk.code.len());
     let mut new_line_info: Vec<u32> = Vec::with_capacity(chunk.code.len());
     let mut old_to_new: Vec<usize> = vec![usize::MAX; chunk.code.len() + 1];
+    // RES-2368: parallel `new_to_old[new_pc] = old_pc` lookup avoids
+    // the O(n) `(0..chunk.code.len()).find(...)` per surviving jump
+    // in the relink pass. Every rule that emits a new op pushes
+    // `i` (the start of the consumed window); rules that pop +
+    // replace pop here too. Mirrors the dce relink shape (RES-2356).
+    let mut new_to_old: Vec<usize> = Vec::with_capacity(chunk.code.len());
     // RES-1407: track whether any rule fired so the jump-fixup loop
-    // (O(n²) worst case per the comment below) can be skipped when
-    // no rewrite happened. Mirrors `const_fold.rs::fold_pass`'s
-    // `folded_any` early-out at line 230.
+    // (O(n) per RES-2368) can be skipped when no rewrite happened.
+    // Mirrors `const_fold.rs::fold_pass`'s `folded_any` early-out at
+    // line 230.
     let mut optimized_any = false;
     let mut i = 0;
     while i < chunk.code.len() {
@@ -126,6 +136,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(idx) = rule_inc_local(chunk, i, &targets) {
             new_code.push(Op::IncLocal(idx));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 4;
             continue;
@@ -140,6 +151,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_not_jif_to_jit(chunk, i, &targets) {
             new_code.push(Op::JumpIfTrue(off));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 2;
             continue;
@@ -156,6 +168,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             // Pop the preceding pure load from the output we already emitted.
             new_code.pop();
             new_line_info.pop();
+            new_to_old.pop();
             // Push Const(0) — reuse the same constant-pool index we already
             // have in the pattern (the zero constant at chunk.code[i]).
             let Op::Const(zero_k) = chunk.code[i] else {
@@ -163,6 +176,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             };
             new_code.push(Op::Const(zero_k));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 2;
             continue;
@@ -203,11 +217,13 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if rule_band_zero(chunk, i, &targets, &new_code) {
             new_code.pop();
             new_line_info.pop();
+            new_to_old.pop();
             let Op::Const(zero_k) = chunk.code[i] else {
                 unreachable!()
             };
             new_code.push(Op::Const(zero_k));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 2;
             continue;
@@ -217,11 +233,13 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if rule_bor_neg_one(chunk, i, &targets, &new_code) {
             new_code.pop();
             new_line_info.pop();
+            new_to_old.pop();
             let Op::Const(neg1_k) = chunk.code[i] else {
                 unreachable!()
             };
             new_code.push(Op::Const(neg1_k));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 2;
             continue;
@@ -256,6 +274,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_not_jit_to_jif(chunk, i, &targets) {
             new_code.push(Op::JumpIfFalse(off));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 2;
             continue;
@@ -273,6 +292,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_const_branch_always(chunk, i, &targets, true, Op::JumpIfTrue(0)) {
             new_code.push(Op::Jump(off));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 2;
             continue;
@@ -282,6 +302,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_const_branch_always(chunk, i, &targets, false, Op::JumpIfFalse(0)) {
             new_code.push(Op::Jump(off));
             new_line_info.push(chunk.line_info[i]);
+            new_to_old.push(i);
             optimized_any = true;
             i += 2;
             continue;
@@ -304,6 +325,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         // No rule fired — copy the instruction verbatim.
         new_code.push(chunk.code[i]);
         new_line_info.push(chunk.line_info[i]);
+        new_to_old.push(i);
         i += 1;
     }
     // Sentinel for "end of code" target (fall-off-end PC).
@@ -322,29 +344,21 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
     }
 
     // Re-link jump offsets. For each JUMP op in new_code, look up
-    // which old PC it originated from (scan old_to_new), fetch
-    // that old op's original target, map through old_to_new, and
+    // which old PC it originated from via `new_to_old`, fetch that
+    // old op's original target, map through old_to_new, and
     // compute the new offset.
     //
-    // Scanning old_to_new to find the originating old PC per new
-    // op is O(n²) worst-case. For the chunk sizes we see today
-    // (hundreds of ops max) that's irrelevant; a future pass can
-    // carry old_pc alongside each emitted new op if it ever
-    // matters. Keep the simple version here.
+    // RES-2368: O(1) parallel-vec lookup replaces the prior
+    // `(0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc)`
+    // linear scan. Same shape as dce (RES-2356). The
+    // InternalError path is now unreachable: `new_to_old` has an
+    // entry for every `new_code` slot by construction.
     for (new_pc, op) in new_code.iter_mut().enumerate() {
         // Only recompute for jump-carrying ops.
         if !is_jump_op(*op) {
             continue;
         }
-        // Find the old PC that maps to this new PC. The
-        // rewriting loop only inserts one new op per old
-        // position (never reorders), so the first old_pc with
-        // `old_to_new[old_pc] == new_pc` is the right one.
-        let Some(old_pc) = (0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc) else {
-            return Err(OptimizeError::InternalError(
-                "peephole: new_pc with no originating old_pc",
-            ));
-        };
+        let old_pc = new_to_old[new_pc];
         let Some(old_target) = orig_targets[old_pc] else {
             continue; // not actually a jump (shouldn't happen)
         };

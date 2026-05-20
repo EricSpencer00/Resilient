@@ -467,6 +467,10 @@
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-2360-isr-call-graph-borrow",
       "claimed_at": "2026-05-20T14:47:02Z"
+    },
+    "resilient/src/peephole.rs": {
+      "branch": "res-2368-peephole-relink-on-square",
+      "claimed_at": "2026-05-20T15:20:44Z"
     }
   }
 }
