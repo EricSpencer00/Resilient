@@ -435,6 +435,10 @@
     "resilient/src/derives.rs": {
       "branch": "res-2174-derives-drop-type-name",
       "claimed_at": "2026-05-20T04:08:32Z"
+    },
+    "resilient/src/anti_regression.rs": {
+      "branch": "res-2178-anti-regression-drop-item-name",
+      "claimed_at": "2026-05-20T04:14:09Z"
     }
   }
 }

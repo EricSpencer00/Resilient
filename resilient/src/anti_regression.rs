@@ -16,19 +16,24 @@
 
 use crate::Node;
 
+/// RES-2178: dropped the redundant `item_name: String` field. It was
+/// set from the attribute's owning-item name in `collect_stable_specs()`.
+/// Two readers — the fingerprint lookup `fps.get(&s.item_name)` and the
+/// error-message format — both used it as a name keyed off the registry
+/// entry. The field stored exactly what the (collected) attribute owner
+/// already encodes. Same dead-field pattern as RES-2106 / RES-2110 /
+/// RES-2122 / RES-2168 / RES-2170 / RES-2172 / RES-2174 / RES-2176.
 #[derive(Debug, Clone)]
 pub struct StableSpec {
-    pub item_name: String,
     pub since: Option<String>,
     pub locked_digest: Option<u64>,
 }
 
-pub fn collect_stable_specs() -> Vec<StableSpec> {
+pub fn collect_stable_specs() -> Vec<(String, StableSpec)> {
     let attrs = crate::feature_attrs::find_kind("stable");
     let mut out = Vec::new();
     for (item, rec) in attrs {
         let mut s = StableSpec {
-            item_name: item,
             since: None,
             locked_digest: None,
         };
@@ -44,7 +49,7 @@ pub fn collect_stable_specs() -> Vec<StableSpec> {
                 }
             }
         }
-        out.push(s);
+        out.push((item, s));
     }
     out
 }
@@ -57,17 +62,17 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1529: skip the expensive fingerprint walk when no spec has a
     // locked digest — the walk is only useful when at least one `#[stable]`
     // attribute carries a `behavior = "..."` argument.
-    if !specs.iter().any(|s| s.locked_digest.is_some()) {
+    if !specs.iter().any(|(_, s)| s.locked_digest.is_some()) {
         return Ok(());
     }
     let fps = crate::behavioral_fingerprint::fingerprint_program(program);
-    for s in &specs {
+    for (item_name, s) in &specs {
         if let Some(locked) = s.locked_digest {
-            if let Some(current) = fps.get(&s.item_name) {
+            if let Some(current) = fps.get(item_name.as_str()) {
                 if current.digest != locked {
                     return Err(format!(
                         "{}:0:0: error: `{}` is `#[stable]` (since={:?}) but its behavior digest changed: {} → {}. Either revert the change or update the digest.",
-                        source_path, s.item_name, s.since, locked, current.digest
+                        source_path, item_name, s.since, locked, current.digest
                     ));
                 }
             }
