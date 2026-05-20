@@ -186,17 +186,25 @@ fn walk_toplevel(node: &Node, source_path: &str, errors: &mut Vec<String>) {
 fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<String>) {
     match node {
         Node::Block { stmts, .. } => {
-            // Track literal-length lets introduced in this block so
-            // subsequent statements can use them as a fast path.
-            let mut block_ctx = ctx.clone();
+            // RES-2344: lazy-clone the context — only allocate a fresh
+            // `BoundsCtx` when a literal-length `let` actually needs
+            // to extend `literal_len`. The previous shape did
+            // `let mut block_ctx = ctx.clone()` unconditionally, which
+            // deep-cloned the axioms `Vec<Node>` + `literal_len`
+            // `HashMap<String, i64>` for every Block visited — most
+            // blocks (function bodies without literal-array lets)
+            // never write to either, so the clone was pure waste.
+            // For a deeply-nested program, this drops O(depth) full
+            // ctx clones to O(blocks-that-introduce-literal-lens).
+            let mut block_ctx: Option<BoundsCtx> = None;
             for stmt in stmts {
-                walk_node(stmt, &block_ctx, source_path, errors);
+                let ctx_ref = block_ctx.as_ref().unwrap_or(ctx);
+                walk_node(stmt, ctx_ref, source_path, errors);
                 if let Node::LetStatement { name, value, .. } = stmt
                     && let Node::ArrayLiteral { items, .. } = value.as_ref()
                 {
-                    block_ctx
-                        .literal_len
-                        .insert(name.clone(), items.len() as i64);
+                    let c = block_ctx.get_or_insert_with(|| ctx.clone());
+                    c.literal_len.insert(name.clone(), items.len() as i64);
                 }
             }
         }

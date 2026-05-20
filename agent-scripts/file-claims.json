@@ -463,6 +463,10 @@
     "resilient/src/cfg_attr.rs": {
       "branch": "res-2338-cfg-attr-item-name-borrow",
       "claimed_at": "2026-05-20T13:09:36Z"
+    },
+    "resilient/src/bounds_check.rs": {
+      "branch": "res-2344-bounds-check-lazy-ctx-clone",
+      "claimed_at": "2026-05-20T13:41:01Z"
     }
   }
 }
