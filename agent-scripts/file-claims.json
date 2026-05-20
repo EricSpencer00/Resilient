@@ -451,6 +451,10 @@
     "resilient/src/atomic_types.rs": {
       "branch": "res-2206-atomic-types-skip-declare-clone",
       "claimed_at": "2026-05-20T05:12:29Z"
+    },
+    "resilient/src/try_catch.rs": {
+      "branch": "res-2214-try-catch-emitted-variants-borrow",
+      "claimed_at": "2026-05-20T05:34:11Z"
     }
   }
 }
