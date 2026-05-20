@@ -60,12 +60,18 @@ pub fn install(invs: Vec<DistributedInvariant>) {
 }
 
 pub fn for_actor(actor: &str) -> Vec<DistributedInvariant> {
+    // RES-2142: borrow `actor` into the membership check. The previous
+    // `i.actors.contains(&actor.to_string())` allocated a fresh `String`
+    // per invariant just so `Vec<String>::contains(&String)` had its
+    // expected argument type. `iter().any(|a| a == actor)` compares
+    // `&String` against `&str` via `PartialEq<str> for String` — same
+    // logical predicate, zero allocations on the lookup side.
     INVARIANTS
         .read()
         .ok()
         .map(|g| {
             g.iter()
-                .filter(|i| i.actors.contains(&actor.to_string()))
+                .filter(|i| i.actors.iter().any(|a| a == actor))
                 .cloned()
                 .collect()
         })

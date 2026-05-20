@@ -1,5 +1,9 @@
 {
   "claims": {
+    "resilient/src/distributed_invariants.rs": {
+      "branch": "res-2142-distributed-invariants-borrow-actor",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     "resilient/src/array_set_helpers.rs": {
       "branch": "res-2136-array-set-hashset-membership",
       "claimed_at": "2026-05-19T00:00:00Z"
