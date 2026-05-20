@@ -185,8 +185,8 @@
       "claimed_at": "2026-05-13T11:24:43Z"
     },
     "resilient/src/snapshot_regression.rs": {
-      "branch": "res-1754-collect-presize",
-      "claimed_at": "2026-05-13T11:24:43Z"
+      "branch": "res-2106-snapshot-drop-fn-name",
+      "claimed_at": "2026-05-19T00:00:00Z"
     },
     "resilient/src/semantic_regression.rs": {
       "branch": "res-1754-collect-presize",

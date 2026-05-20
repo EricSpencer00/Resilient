@@ -19,9 +19,14 @@ use std::sync::RwLock;
 /// subsequent calls diff against it and report changed fingerprints.
 static SNAPSHOT_BASELINE: RwLock<Option<HashMap<String, Snapshot>>> = RwLock::new(None);
 
+/// RES-2106: dropped the redundant `fn_name: String` field. The HashMap
+/// key already stores the name, and no caller (in-tree or external)
+/// referenced `Snapshot::fn_name` — every consumer iterates the map
+/// and reads `name` from the `(name, snap)` tuple. The field was pure
+/// duplication, costing one `String` allocation per fingerprinted
+/// function for `build_snapshots`.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    pub fn_name: String,
     pub fingerprint_digest: u64,
     pub golden_output_hash: u64,
 }
@@ -33,9 +38,8 @@ pub fn build_snapshots(program: &Node) -> HashMap<String, Snapshot> {
     let mut out = HashMap::with_capacity(fps.len());
     for (name, fp) in fps {
         out.insert(
-            name.clone(),
+            name,
             Snapshot {
-                fn_name: name,
                 fingerprint_digest: fp.digest,
                 golden_output_hash: 0, // populated when golden output is present
             },
