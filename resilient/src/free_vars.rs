@@ -63,11 +63,19 @@ use crate::{Node, Pattern};
 ///
 /// `BTreeSet` keeps the output deterministic for golden-test
 /// style assertions.
+///
+/// RES-2148: the walker maintains `bound` and `free` as
+/// `BTreeSet<&'a str>` borrowed from the AST. The public return
+/// type stays `BTreeSet<String>` (the sole external consumer joins
+/// the names into an error string), so we materialise owned
+/// `String`s only on the way out — eliminating the ~20 `String`
+/// clones the previous owning-set shape paid per identifier
+/// reference + binder.
 pub fn free_vars(node: &Node) -> BTreeSet<String> {
-    let mut free = BTreeSet::new();
-    let mut bound = BTreeSet::new();
+    let mut free: BTreeSet<&str> = BTreeSet::new();
+    let mut bound: BTreeSet<&str> = BTreeSet::new();
     walk(node, &mut bound, &mut free);
-    free
+    free.into_iter().map(str::to_string).collect()
 }
 
 /// Shared walker. `bound` is the set of names currently in scope
@@ -77,12 +85,12 @@ pub fn free_vars(node: &Node) -> BTreeSet<String> {
 /// Each recursive call must restore `bound` to its entry value
 /// before returning (we model scope exit by snapshotting the
 /// bound-set length and truncating back).
-fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) {
+fn walk<'a>(node: &'a Node, bound: &mut BTreeSet<&'a str>, free: &mut BTreeSet<&'a str>) {
     match node {
         // ---- Leaves ----
         Node::Identifier { name, .. } => {
-            if !bound.contains(name) {
-                free.insert(name.clone());
+            if !bound.contains(name.as_str()) {
+                free.insert(name.as_str());
             }
         }
         Node::IntegerLiteral { .. }
@@ -149,11 +157,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 // itself so the RHS sees the outer scope.
                 match s {
                     Node::LetStatement { name, .. } | Node::StaticLet { name, .. } => {
-                        bound.insert(name.clone());
+                        bound.insert(name.as_str());
                     }
                     Node::LetDestructureStruct { fields, .. } => {
                         for (_, local) in fields {
-                            bound.insert(local.clone());
+                            bound.insert(local.as_str());
                         }
                     }
                     _ => {}
@@ -177,9 +185,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             // recursion) and in `requires` / `ensures` (for
             // contract recursion). Parameter names are in scope
             // for all three.
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
             for (_, param_name) in parameters {
-                bound.insert(param_name.clone());
+                bound.insert(param_name.as_str());
             }
             for clause in requires {
                 walk(clause, bound, free);
@@ -188,7 +196,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             // `result` is a magic name visible in `ensures`
             // clauses — treat it as bound for those walks.
             let pre_ensures = bound.len();
-            bound.insert("result".into());
+            bound.insert("result");
             for clause in ensures {
                 walk(clause, bound, free);
             }
@@ -210,14 +218,14 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         } => {
             let snapshot = bound.len();
             for (_, param_name) in parameters {
-                bound.insert(param_name.clone());
+                bound.insert(param_name.as_str());
             }
             for clause in requires {
                 walk(clause, bound, free);
             }
             walk(body, bound, free);
             let pre_ensures = bound.len();
-            bound.insert("result".into());
+            bound.insert("result");
             for clause in ensures {
                 walk(clause, bound, free);
             }
@@ -252,7 +260,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::LetTupleDestructure { names, value, .. } => {
             walk(value, bound, free);
             for n in names {
-                bound.insert(n.clone());
+                bound.insert(n.as_str());
             }
         }
         Node::NewtypeConstruct { value, .. } => walk(value, bound, free),
@@ -271,7 +279,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             let snapshot = bound.len();
             for (_, field, init) in state_fields {
                 walk(init, bound, free);
-                bound.insert(field.clone());
+                bound.insert(field.as_str());
             }
             for clause in always_clauses {
                 walk(clause, bound, free);
@@ -279,13 +287,13 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             for handler in receive_handlers {
                 let handler_snapshot = bound.len();
                 for (_, pname) in &handler.parameters {
-                    bound.insert(pname.clone());
+                    bound.insert(pname.as_str());
                 }
                 for r in &handler.requires {
                     walk(r, bound, free);
                 }
                 walk(&handler.body, bound, free);
-                bound.insert("result".into());
+                bound.insert("result");
                 for e in &handler.ensures {
                     walk(e, bound, free);
                 }
@@ -308,8 +316,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::Assignment { name, value, .. } => {
             // LHS is a read of `name` in Resilient's scoping model —
             // you can't assign to a name you haven't declared.
-            if !bound.contains(name) {
-                free.insert(name.clone());
+            if !bound.contains(name.as_str()) {
+                free.insert(name.as_str());
             }
             walk(value, bound, free);
         }
@@ -352,7 +360,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         } => {
             walk(iterable, bound, free);
             let snapshot = bound.len();
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
             for inv in invariants {
                 walk(inv, bound, free);
             }
@@ -485,7 +493,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 }
             }
             let snapshot = bound.len();
-            bound.insert(var.clone());
+            bound.insert(var.as_str());
             walk(body, bound, free);
             truncate_to(bound, snapshot);
         }
@@ -525,10 +533,10 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
 /// `Wildcard` and `Literal` don't bind. `Or` branches are required
 /// to bind the same set of names (enforced elsewhere — RES-160), so
 /// we just union what each branch introduces.
-fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
+fn bind_pattern<'a>(pat: &'a Pattern, bound: &mut BTreeSet<&'a str>) {
     match pat {
         Pattern::Identifier(name) => {
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         // RES-915: range patterns bind no names today.
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
@@ -539,7 +547,7 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
         }
         // RES-161a: outer name + whatever the inner pattern binds.
         Pattern::Bind(outer, inner) => {
-            bound.insert(outer.clone());
+            bound.insert(outer.as_str());
             bind_pattern(inner, bound);
         }
         Pattern::Struct { fields, .. } => {
@@ -584,38 +592,38 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
 /// Prepass over `Program` statements: register every top-level
 /// declaration name so sibling statements can forward-reference.
 /// Mirrors what the interpreter does in its hoisting pass.
-fn collect_top_level_binder(node: &Node, bound: &mut BTreeSet<String>) {
+fn collect_top_level_binder<'a>(node: &'a Node, bound: &mut BTreeSet<&'a str>) {
     match node {
         Node::Function { name, .. } => {
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         Node::StructDecl { name, .. } => {
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         Node::TypeAlias { name, .. } => {
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         Node::RegionDecl { name, .. } => {
             // RES-391: region declarations introduce a compile-time
             // name (consumed by the borrow checker). No runtime
             // binding, but treat it like other declarations for the
             // scoping walk so sibling statements see the name.
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         Node::ActorDecl { name, .. } => {
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         Node::ClusterDecl { name, .. } => {
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         Node::LetStatement { name, .. }
         | Node::StaticLet { name, .. }
         | Node::Const { name, .. } => {
-            bound.insert(name.clone());
+            bound.insert(name.as_str());
         }
         Node::LetDestructureStruct { fields, .. } => {
             for (_, local) in fields {
-                bound.insert(local.clone());
+                bound.insert(local.as_str());
             }
         }
         _ => {}
@@ -626,7 +634,7 @@ fn collect_top_level_binder(node: &Node, bound: &mut BTreeSet<String>) {
 /// stable-ordered set into a Vec, keeping the first `len` entries,
 /// and reinserting. The sets are small (scope depth * per-frame
 /// binders) so the cost is negligible.
-fn truncate_to(set: &mut BTreeSet<String>, len: usize) {
+fn truncate_to(set: &mut BTreeSet<&str>, len: usize) {
     if set.len() <= len {
         return;
     }
@@ -634,10 +642,13 @@ fn truncate_to(set: &mut BTreeSet<String>, len: usize) {
     // place. The previous shape cloned every entry into a Vec,
     // cleared the set, and reinserted the prefix — N String clones
     // plus N reinserts for an N-entry set. `split_off(&pivot)`
-    // splits the BTreeSet in-place; we clone exactly one String
-    // (the pivot at index `len`).
-    if let Some(pivot) = set.iter().nth(len).cloned() {
-        let _tail = set.split_off(&pivot);
+    // splits the BTreeSet in-place; we copy exactly one `&str`
+    // pivot (the entry at index `len`).
+    // RES-2148: the set now holds `&'a str` borrowed from the AST;
+    // the pivot is a `Copy` shared reference rather than an owned
+    // `String`, so the per-truncate clone is gone entirely.
+    if let Some(&pivot) = set.iter().nth(len) {
+        let _tail = set.split_off(pivot);
     }
 }
 
