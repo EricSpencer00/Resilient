@@ -91,10 +91,21 @@ pub fn lower(program: &Node) -> Node {
                 std::collections::HashSet::with_capacity(instances.len());
             for type_args in instances {
                 let mangled = mangle_name(fn_name, type_args);
-                if seen.insert(mangled.clone()) {
-                    let specialized = specialize_fn(fn_node, &mangled, type_args);
-                    new_stmts.push(span::Spanned::new(specialized, span::Span::default()));
+                // RES-2290: skip the duplicate-mangled-name clone by
+                // probing `seen` with `&str` (HashSet::contains accepts
+                // `&str` via `Borrow<str>`) and only moving the owned
+                // `String` into the set on the first-time-seen branch.
+                // The previous shape did `seen.insert(mangled.clone())`
+                // — one `String` allocation per instantiation, even for
+                // duplicates whose clone is immediately discarded. For
+                // a fn instantiated K times across M distinct type
+                // tuples (M ≤ K), this drops `K - M` wasted allocs.
+                if seen.contains(mangled.as_str()) {
+                    continue;
                 }
+                let specialized = specialize_fn(fn_node, &mangled, type_args);
+                new_stmts.push(span::Spanned::new(specialized, span::Span::default()));
+                seen.insert(mangled);
             }
         }
     }

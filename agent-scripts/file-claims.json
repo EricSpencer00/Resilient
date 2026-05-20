@@ -240,10 +240,6 @@
       "branch": "res-1764-attr-collect-presize",
       "claimed_at": "2026-05-13T11:45:18Z"
     },
-    "resilient/src/monomorph.rs": {
-      "branch": "res-1924-monomorph-presize",
-      "claimed_at": "2026-05-19T17:31:00Z"
-    },
     "resilient/src/typechecker.rs": {
       "branch": "res-1766-typechecker-hot-presize",
       "claimed_at": "2026-05-13T11:55:37Z"
@@ -467,6 +463,10 @@
     "resilient/src/ai_threat_model.rs": {
       "branch": "res-2284-levenshtein-fast-reject",
       "claimed_at": "2026-05-20T09:31:15Z"
+    },
+    "resilient/src/monomorph.rs": {
+      "branch": "res-2290-monomorph-mangled-no-clone",
+      "claimed_at": "2026-05-20T09:58:05Z"
     }
   }
 }
