@@ -1,5 +1,9 @@
 {
   "claims": {
+    "resilient/src/data_utils.rs": {
+      "branch": "res-2118-rle-decode-move-on-last",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     ".github/workflows/embedded.yml": {
       "branch": "res-1198-embedded-rust-cache",
       "claimed_at": "2026-05-12T01:23:24Z"

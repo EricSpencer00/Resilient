@@ -515,6 +515,19 @@ pub(crate) fn builtin_rle_encode(args: &[Value]) -> RResult<Value> {
 /// `rle_decode(arr) -> Array`
 ///
 /// Decodes a run-length encoded array (list of `[count, value]` pairs).
+///
+/// RES-2118: two micro-optimizations on the decode loop.
+///
+/// 1. **Pre-size `out`**: sum the counts in one pass before allocating,
+///    so the output `Vec` is allocated exactly once instead of growing
+///    through the 0→4→8→16... doubling cascade. For decoded arrays with
+///    100+ elements this avoids 5+ reallocations + element copies.
+///
+/// 2. **Move the value on the last push**: the previous shape did
+///    `out.push(val.clone())` for *every* iteration including the last,
+///    so for a run of length N it cloned the value N times even though
+///    `val` is only used once more. Cloning N-1 times and moving the
+///    last keeps the value count the same as the run count itself.
 pub(crate) fn builtin_rle_decode(args: &[Value]) -> RResult<Value> {
     match args {
         [arr] => {
@@ -522,7 +535,22 @@ pub(crate) fn builtin_rle_decode(args: &[Value]) -> RResult<Value> {
                 Value::Array(a) => a,
                 other => return Err(format!("rle_decode: expected Array, got {other}")),
             };
-            let mut out: Vec<Value> = Vec::new();
+
+            // Pre-size the output by summing run lengths in one cheap pass.
+            // Negative or non-int counts will be caught in the main loop below
+            // — here we just collect a tight capacity estimate.
+            let cap: usize = runs
+                .iter()
+                .filter_map(|run| match run {
+                    Value::Array(pair) if pair.len() == 2 => match &pair[0] {
+                        Value::Int(n) if *n >= 0 => Some(*n as usize),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .sum();
+            let mut out: Vec<Value> = Vec::with_capacity(cap);
+
             for (i, run) in runs.iter().enumerate() {
                 match run {
                     Value::Array(pair) if pair.len() == 2 => {
@@ -539,10 +567,16 @@ pub(crate) fn builtin_rle_decode(args: &[Value]) -> RResult<Value> {
                                 ));
                             }
                         };
+                        if count == 0 {
+                            continue;
+                        }
                         let val = pair[1].clone();
-                        for _ in 0..count {
+                        // Clone for the first `count - 1` repeats; move
+                        // the owned `val` into the final slot.
+                        for _ in 0..count - 1 {
                             out.push(val.clone());
                         }
+                        out.push(val);
                     }
                     Value::Array(pair) => {
                         return Err(format!(
