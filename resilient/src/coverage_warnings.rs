@@ -22,13 +22,20 @@
 
 use crate::Node;
 
+/// RES-2350: borrow `function` from the AST (`&'a str` of
+/// `Node::Function::name`) and use `&'static str` for `message` since
+/// every diagnostic in this module is a string literal. The previous
+/// `(String, String)` shape paid two heap allocations per warning —
+/// one to clone the fn name out of the AST, one to copy a static
+/// message literal into an owned `String` — for data that never
+/// escapes `check`.
 #[derive(Debug, Clone)]
-pub struct CoverageWarning {
-    pub function: String,
-    pub message: String,
+pub struct CoverageWarning<'a> {
+    pub function: &'a str,
+    pub message: &'static str,
 }
 
-pub fn analyze(program: &Node) -> Vec<CoverageWarning> {
+pub fn analyze(program: &Node) -> Vec<CoverageWarning<'_>> {
     let mut out = Vec::new();
     let Node::Program(stmts) = program else {
         return out;
@@ -41,7 +48,7 @@ pub fn analyze(program: &Node) -> Vec<CoverageWarning> {
     out
 }
 
-fn walk(node: &Node, fn_name: &str, out: &mut Vec<CoverageWarning>) {
+fn walk<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<CoverageWarning<'a>>) {
     match node {
         Node::IfStatement {
             consequence,
@@ -51,16 +58,16 @@ fn walk(node: &Node, fn_name: &str, out: &mut Vec<CoverageWarning>) {
             let cons_returns_err = block_returns_err(consequence);
             if cons_returns_err {
                 out.push(CoverageWarning {
-                    function: fn_name.to_string(),
-                    message: "if-branch returns Err but no test exercises this path".into(),
+                    function: fn_name,
+                    message: "if-branch returns Err but no test exercises this path",
                 });
             }
             walk(consequence, fn_name, out);
             if let Some(alt) = alternative {
                 if block_returns_err(alt) {
                     out.push(CoverageWarning {
-                        function: fn_name.to_string(),
-                        message: "else-branch returns Err — verify a test exercises it".into(),
+                        function: fn_name,
+                        message: "else-branch returns Err — verify a test exercises it",
                     });
                 }
                 walk(alt, fn_name, out);
@@ -107,15 +114,19 @@ fn is_err_call(node: &Node) -> bool {
 
 /// Warn when a Block has a `return` statement followed by non-trivial
 /// statements (unreachable code after return).
-fn check_unreachable_after_return(stmts: &[Node], fn_name: &str, out: &mut Vec<CoverageWarning>) {
+fn check_unreachable_after_return<'a>(
+    stmts: &'a [Node],
+    fn_name: &'a str,
+    out: &mut Vec<CoverageWarning<'a>>,
+) {
     let mut saw_return = false;
     for stmt in stmts {
         if saw_return {
             // Any statement after an unconditional return is unreachable.
             if !is_trivial_stmt(stmt) {
                 out.push(CoverageWarning {
-                    function: fn_name.to_string(),
-                    message: "unreachable code after `return` statement".into(),
+                    function: fn_name,
+                    message: "unreachable code after `return` statement",
                 });
                 return; // one warning per block is enough
             }
@@ -135,10 +146,10 @@ fn is_trivial_stmt(node: &Node) -> bool {
 /// Warn when all match arms are literal patterns (integer, bool, or string)
 /// and there is no catch-all arm (`_`, identifier binding, or `..`).
 /// Such a match silently falls through if the scrutinee takes any unlisted value.
-fn check_all_literal_match_no_wildcard(
-    arms: &[(crate::Pattern, Option<Node>, Node)],
-    fn_name: &str,
-    out: &mut Vec<CoverageWarning>,
+fn check_all_literal_match_no_wildcard<'a>(
+    arms: &'a [(crate::Pattern, Option<Node>, Node)],
+    fn_name: &'a str,
+    out: &mut Vec<CoverageWarning<'a>>,
 ) {
     if arms.is_empty() {
         return;
@@ -147,10 +158,9 @@ fn check_all_literal_match_no_wildcard(
     let has_wildcard = arms.iter().any(|(p, g, _)| is_catch_all_arm(p, g));
     if all_literals && !has_wildcard {
         out.push(CoverageWarning {
-            function: fn_name.to_string(),
+            function: fn_name,
             message: "match covers only literal values with no wildcard arm — \
-                      unhandled values will fall through at runtime"
-                .into(),
+                      unhandled values will fall through at runtime",
         });
     }
 }
