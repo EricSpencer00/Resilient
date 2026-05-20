@@ -1,5 +1,9 @@
 {
   "claims": {
+    "resilient/src/cfg_attr.rs": {
+      "branch": "res-2132-cfg-attr-node-item-name-borrow",
+      "claimed_at": "2026-05-19T00:00:00Z"
+    },
     "resilient/src/iterator_protocol.rs": {
       "branch": "res-2126-iterator-protocol-test-lock",
       "claimed_at": "2026-05-19T00:00:00Z"
