@@ -205,42 +205,88 @@ fn lower_node(node: &mut Node, macro_names: &std::collections::HashSet<String>) 
 /// Handles the common cases used in macro arguments. Complex sub-
 /// expressions fall back to a placeholder that will produce a parse
 /// error in the expansion, making the failure explicit.
+///
+/// RES-2332: routes recursion through `write_node_source(node, &mut
+/// String)` so the entire serialization is built into a single shared
+/// buffer. The previous shape allocated one intermediate `String` per
+/// interior node (InfixExpression / PrefixExpression / FieldAccess
+/// via `format!`) plus a `Vec<String>` + `.join(", ")` for every
+/// `CallExpression`. For a deeply-nested macro argument, that's
+/// O(depth) wasted heap allocations per `node_to_source` call.
+/// Mirrors RES-2268 (recovers_to_bmc::node_to_smtlib2), RES-2270
+/// (behavioral_fingerprint::node_text), RES-2272 (lint::clause_text),
+/// RES-2276 / RES-2278 (verifier render_clause).
 fn node_to_source(node: &Node) -> String {
+    let mut out = String::new();
+    write_node_source(node, &mut out);
+    out
+}
+
+fn write_node_source(node: &Node, out: &mut String) {
+    use std::fmt::Write as _;
     match node {
-        Node::IntegerLiteral { value, .. } => value.to_string(),
-        Node::FloatLiteral { value, .. } => value.to_string(),
-        Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::StringLiteral { value, .. } => format!("\"{}\"", value.replace('"', "\\\"")),
-        Node::Identifier { name, .. } => name.clone(),
+        Node::IntegerLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::FloatLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            let _ = write!(out, "{}", value);
+        }
+        Node::StringLiteral { value, .. } => {
+            out.push('"');
+            for c in value.chars() {
+                if c == '"' {
+                    out.push_str("\\\"");
+                } else {
+                    out.push(c);
+                }
+            }
+            out.push('"');
+        }
+        Node::Identifier { name, .. } => out.push_str(name),
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
-        } => format!(
-            "({} {} {})",
-            node_to_source(left),
-            operator,
-            node_to_source(right)
-        ),
+        } => {
+            out.push('(');
+            write_node_source(left, out);
+            out.push(' ');
+            out.push_str(operator);
+            out.push(' ');
+            write_node_source(right, out);
+            out.push(')');
+        }
         Node::PrefixExpression {
             operator, right, ..
         } => {
-            format!("{}{}", operator, node_to_source(right))
+            out.push_str(operator);
+            write_node_source(right, out);
         }
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
-            let fname = node_to_source(function);
-            let args: Vec<String> = arguments.iter().map(node_to_source).collect();
-            format!("{}({})", fname, args.join(", "))
+            write_node_source(function, out);
+            out.push('(');
+            for (i, a) in arguments.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_node_source(a, out);
+            }
+            out.push(')');
         }
         Node::FieldAccess { target, field, .. } => {
-            format!("{}.{}", node_to_source(target), field)
+            write_node_source(target, out);
+            out.push('.');
+            out.push_str(field);
         }
-        _ => "__macro_arg__".to_string(),
+        _ => out.push_str("__macro_arg__"),
     }
 }
 
