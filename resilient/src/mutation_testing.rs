@@ -24,10 +24,19 @@
 use crate::Node;
 use std::collections::HashMap;
 
+/// RES-2202: `kind` is now `&'static str`. Every call site in
+/// `generate_in` passes a string literal ("arithmetic", "boundary",
+/// "relational", "logical", "bitwise", "shift", "unary"), so there
+/// was never a runtime-computed kind value — the previous `String`
+/// shape forced a `kind.into()` allocation per Mutation push for
+/// data that lives at static lifetime. Downstream `summarize`
+/// kept the kind in a `Vec<String>`; switching to `Vec<&'static str>`
+/// drops both the per-push alloc AND the per-summarize-push
+/// `m.kind.clone()` (now a `Copy` of a `&str`).
 #[derive(Debug, Clone)]
 pub struct Mutation {
     pub fn_name: String,
-    pub kind: String,
+    pub kind: &'static str,
     pub description: String,
 }
 
@@ -58,10 +67,15 @@ pub fn generate(program: &Node) -> Vec<Mutation> {
     out
 }
 
-fn push(out: &mut Vec<Mutation>, fn_name: &str, kind: &str, description: impl Into<String>) {
+fn push(
+    out: &mut Vec<Mutation>,
+    fn_name: &str,
+    kind: &'static str,
+    description: impl Into<String>,
+) {
     out.push(Mutation {
         fn_name: fn_name.to_string(),
-        kind: kind.into(),
+        kind,
         description: description.into(),
     });
 }
@@ -339,13 +353,26 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
 }
 
 /// Per-function mutation summary: function name → (total sites, kinds).
-pub fn summarize(mutations: &[Mutation]) -> HashMap<String, (usize, Vec<String>)> {
-    let mut map: HashMap<String, (usize, Vec<String>)> = HashMap::new();
+///
+/// RES-2202: `kinds` is `Vec<&'static str>` because `Mutation::kind`
+/// is `&'static str` (mutation categories are compile-time literals).
+/// The previous `Vec<String>` shape paid a per-push `m.kind.clone()`
+/// for data with static lifetime.
+///
+/// The fn-name lookup uses a get-or-insert dance instead of
+/// `entry(m.fn_name.clone()).or_default()` so the `String` is only
+/// allocated on the cold first-mutation-for-this-fn branch.
+/// Subsequent mutations for the same fn pay zero allocations.
+pub fn summarize(mutations: &[Mutation]) -> HashMap<String, (usize, Vec<&'static str>)> {
+    let mut map: HashMap<String, (usize, Vec<&'static str>)> = HashMap::new();
     for m in mutations {
-        let e = map.entry(m.fn_name.clone()).or_default();
-        e.0 += 1;
-        if !e.1.contains(&m.kind) {
-            e.1.push(m.kind.clone());
+        if let Some(e) = map.get_mut(m.fn_name.as_str()) {
+            e.0 += 1;
+            if !e.1.contains(&m.kind) {
+                e.1.push(m.kind);
+            }
+        } else {
+            map.insert(m.fn_name.clone(), (1, vec![m.kind]));
         }
     }
     map
