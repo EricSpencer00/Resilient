@@ -42,25 +42,65 @@ pub(crate) fn builtin_to_json(args: &[Value]) -> RResult<Value> {
     }
 }
 
+/// RES-2328: public entry point. The previous `serialize_value`
+/// recursively built fresh `String`s at every level — Array/Tuple
+/// arms collected `Vec<String>` then `.join(", ")`'d, Map arms paid
+/// the same Vec+join plus a per-pair `format!` for `"{}: {}"`, and
+/// Result arms paid a `format!` to wrap the payload. For an N-element
+/// container with K children, that's roughly O(N+K) wasted
+/// `String`s + the outer Vec + the join buffer.
+///
+/// Route everything through `serialize_into(v, &mut String)` so the
+/// entire JSON document is built into a single shared buffer.
+/// Same byte output; one `String` allocation per top-level call
+/// instead of one per nested value. Mirrors the direct-write pattern
+/// applied to `recovers_to_bmc::node_to_smtlib2` (RES-2268),
+/// `behavioral_fingerprint::node_text` (RES-2270), and
+/// `lint::clause_text` (RES-2272).
 fn serialize_value(v: &Value) -> RResult<String> {
+    let mut out = String::new();
+    serialize_into(v, &mut out)?;
+    Ok(out)
+}
+
+fn serialize_into(v: &Value, out: &mut String) -> RResult<()> {
+    use std::fmt::Write as _;
     match v {
-        Value::Int(n) => Ok(n.to_string()),
+        Value::Int(n) => {
+            let _ = write!(out, "{}", n);
+            Ok(())
+        }
         Value::Float(f) => {
             if f.is_nan() {
                 Err("to_json: NaN is not a valid JSON value".to_string())
             } else if f.is_infinite() {
                 Err("to_json: Infinity is not a valid JSON value".to_string())
             } else if f.fract() == 0.0 && f.abs() < 1e15 {
-                Ok(format!("{:.1}", f))
+                let _ = write!(out, "{:.1}", f);
+                Ok(())
             } else {
-                Ok(format!("{}", f))
+                let _ = write!(out, "{}", f);
+                Ok(())
             }
         }
-        Value::Bool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
-        Value::String(s) => Ok(json_escape_string(s)),
+        Value::Bool(b) => {
+            out.push_str(if *b { "true" } else { "false" });
+            Ok(())
+        }
+        Value::String(s) => {
+            json_escape_into(s, out);
+            Ok(())
+        }
         Value::Array(arr) => {
-            let items: RResult<Vec<String>> = arr.iter().map(serialize_value).collect();
-            Ok(format!("[{}]", items?.join(", ")))
+            out.push('[');
+            for (i, item) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                serialize_into(item, out)?;
+            }
+            out.push(']');
+            Ok(())
         }
         Value::Map(m) => {
             // Sort keys for deterministic output
@@ -70,33 +110,55 @@ fn serialize_value(v: &Value) -> RResult<String> {
                 MapKey::Int(n) => format!("i:{n}"),
                 MapKey::Bool(b) => format!("b:{b}"),
             });
-            let pairs: RResult<Vec<String>> = sorted
-                .iter()
-                .map(|(k, v)| {
-                    let key_str = match k {
-                        MapKey::Str(s) => json_escape_string(s),
-                        MapKey::Int(n) => format!("\"{}\"", n),
-                        MapKey::Bool(b) => format!("\"{}\"", b),
-                    };
-                    serialize_value(v).map(|vs| format!("{}: {}", key_str, vs))
-                })
-                .collect();
-            Ok(format!("{{{}}}", pairs?.join(", ")))
-        }
-        Value::Void => Ok("null".to_string()),
-        Value::Option(None) => Ok("null".to_string()),
-        Value::Option(Some(inner)) => serialize_value(inner),
-        Value::Result { ok, payload } => {
-            let payload_json = serialize_value(payload)?;
-            if *ok {
-                Ok(format!("{{\"ok\": true, \"value\": {}}}", payload_json))
-            } else {
-                Ok(format!("{{\"ok\": false, \"error\": {}}}", payload_json))
+            out.push('{');
+            for (i, (k, val)) in sorted.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                match k {
+                    MapKey::Str(s) => json_escape_into(s, out),
+                    MapKey::Int(n) => {
+                        let _ = write!(out, "\"{}\"", n);
+                    }
+                    MapKey::Bool(b) => {
+                        let _ = write!(out, "\"{}\"", b);
+                    }
+                }
+                out.push_str(": ");
+                serialize_into(val, out)?;
             }
+            out.push('}');
+            Ok(())
+        }
+        Value::Void => {
+            out.push_str("null");
+            Ok(())
+        }
+        Value::Option(None) => {
+            out.push_str("null");
+            Ok(())
+        }
+        Value::Option(Some(inner)) => serialize_into(inner, out),
+        Value::Result { ok, payload } => {
+            if *ok {
+                out.push_str("{\"ok\": true, \"value\": ");
+            } else {
+                out.push_str("{\"ok\": false, \"error\": ");
+            }
+            serialize_into(payload, out)?;
+            out.push('}');
+            Ok(())
         }
         Value::Tuple(items) => {
-            let parts: RResult<Vec<String>> = items.iter().map(serialize_value).collect();
-            Ok(format!("[{}]", parts?.join(", ")))
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                serialize_into(item, out)?;
+            }
+            out.push(']');
+            Ok(())
         }
         other => Err(format!(
             "to_json: cannot serialize value of type {}",
@@ -105,16 +167,15 @@ fn serialize_value(v: &Value) -> RResult<String> {
     }
 }
 
-fn json_escape_string(s: &str) -> String {
-    // RES-2260: write the control-char escape directly via `std::fmt::
-    // Write` instead of `push_str(&format!(...))`. Each control
-    // character previously allocated a 6-char `String` only to be
-    // immediately `push_str`'d. For strings containing control bytes
-    // (binary blobs, structured logs), N control chars meant N
-    // avoidable allocations. Mirrors RES-2256 (autopilot format_report)
-    // and RES-2258 (causal_trace format_chain).
+/// RES-2260: write the control-char escape directly via `std::fmt::
+/// Write` instead of `push_str(&format!(...))`. Each control
+/// character previously allocated a 6-char `String` only to be
+/// immediately `push_str`'d.
+///
+/// RES-2328: appends directly into the serializer's shared output
+/// buffer instead of returning an owned `String` per nested value.
+fn json_escape_into(s: &str, out: &mut String) {
     use std::fmt::Write;
-    let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
         match c {
@@ -130,7 +191,6 @@ fn json_escape_string(s: &str) -> String {
         }
     }
     out.push('"');
-    out
 }
 
 fn type_name(v: &Value) -> &'static str {
