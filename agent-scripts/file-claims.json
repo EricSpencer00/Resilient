@@ -344,10 +344,6 @@
       "branch": "res-1830-vm-run-direct-locals-presize",
       "claimed_at": "2026-05-13T14:15:49Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-1901-hof-clone-elim",
-      "claimed_at": "2026-05-19T05:02:34Z"
-    },
     "resilient/src/mutation_testing.rs": {
       "branch": "res-2202-mutation-static-kind",
       "claimed_at": "2026-05-19T00:00:00Z"
@@ -459,6 +455,10 @@
     "resilient/src/iterator_protocol.rs": {
       "branch": "res-2244-iterator-protocol-lazy",
       "claimed_at": "2026-05-20T07:11:33Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-2250-eval-for-in-reuse-binding",
+      "claimed_at": "2026-05-20T07:40:06Z"
     }
   }
 }

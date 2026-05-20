@@ -24140,8 +24140,21 @@ impl Interpreter {
                 Value::Int(n) => n,
                 other => return Err(format!("range upper bound must be Int, got {}", other)),
             };
+            // RES-2250: pre-seed the loop binding once so subsequent
+            // iterations can `reassign(&str, value)` in place instead
+            // of `set(String, value)` allocating a fresh `String` per
+            // iteration. The outer `eval_for_in` already pushed a
+            // fresh inner env, so reassign finds the local slot and
+            // updates it without walking outward. Saves N-1 String
+            // allocations on an N-iteration range loop.
+            let mut seeded = false;
             for i in crate::ranges::iterate_range(lo_i, hi_i, *inclusive) {
-                self.env.set(name.to_string(), Value::Int(i));
+                if !seeded {
+                    self.env.set(name.to_string(), Value::Int(i));
+                    seeded = true;
+                } else {
+                    self.env.reassign(name, Value::Int(i));
+                }
                 crate::loop_invariants::check_invariants_at_iteration(
                     self, invariants, &body_invs, span,
                 )?;
@@ -24174,8 +24187,19 @@ impl Interpreter {
             Value::Array(v) => v,
             other => return Err(format!("`for` iterable must be an array, got {}", other)),
         };
+        // RES-2250: pre-seed the loop binding on the first iteration,
+        // then reuse the slot via `reassign(&str, value)` instead of
+        // re-allocating the binding key per iteration. Mirrors the
+        // range fast-path above. Saves N-1 String allocations on an
+        // N-element array iteration.
+        let mut seeded = false;
         for item in items {
-            self.env.set(name.to_string(), item);
+            if !seeded {
+                self.env.set(name.to_string(), item);
+                seeded = true;
+            } else {
+                self.env.reassign(name, item);
+            }
             crate::loop_invariants::check_invariants_at_iteration(
                 self, invariants, &body_invs, span,
             )?;
