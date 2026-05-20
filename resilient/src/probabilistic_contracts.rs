@@ -13,9 +13,15 @@ use crate::Node;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+/// RES-2170: dropped the redundant `fn_name: String` field. It was
+/// set from the attribute's owning item name and the only reader was
+/// the `install` loop, which used it as the HashMap key — so the
+/// field stored exactly what the key already encoded. Same dead-field
+/// pattern as RES-2106 (snapshot fn_name), RES-2110 (PhantomSpec
+/// type_name), RES-2122 (Fingerprint function_name), RES-2168
+/// (IntentSpec raw_args).
 #[derive(Debug, Clone)]
 pub struct ProbContract {
-    pub fn_name: String,
     pub clause: String,
     pub probability: f64,
     pub trials: u64,
@@ -25,7 +31,7 @@ pub struct ProbContract {
 static CONTRACTS: LazyLock<RwLock<HashMap<String, ProbContract>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-pub fn collect() -> Vec<ProbContract> {
+pub fn collect() -> Vec<(String, ProbContract)> {
     let attrs = crate::feature_attrs::find_kind("probabilistic");
     // RES-1756: pre-size to attrs.len() — exactly one push per
     // attribute record, exact bound. Same shape as RES-1754.
@@ -45,23 +51,27 @@ pub fn collect() -> Vec<ProbContract> {
                 }
             }
         }
-        out.push(ProbContract {
-            fn_name: item,
-            clause,
-            probability: p,
-            trials: 0,
-            successes: 0,
-        });
+        out.push((
+            item,
+            ProbContract {
+                clause,
+                probability: p,
+                trials: 0,
+                successes: 0,
+            },
+        ));
     }
     out
 }
 
-pub fn install(contracts: Vec<ProbContract>) {
+pub fn install(contracts: Vec<(String, ProbContract)>) {
     if let Ok(mut g) = CONTRACTS.write() {
         g.clear();
-        for c in contracts {
-            g.insert(c.fn_name.clone(), c);
-        }
+        // RES-2170: move (name, contract) pairs straight from
+        // `collect()` into the map. The previous shape per-contract
+        // cloned `c.fn_name` to produce the key, since the field and
+        // the key encoded the same string.
+        g.extend(contracts);
     }
 }
 
