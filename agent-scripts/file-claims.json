@@ -1,20 +1,3 @@
 {
-  "claims": {
-    "resilient/src/feature_attrs.rs": {
-      "branch": "res-2438-reset-fast-reject",
-      "claimed_at": "2026-05-23T06:47:30Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-2444-builtin-env-outer-scope",
-      "claimed_at": "2026-05-23T08:00:00Z"
-    },
-    "resilient/src/const_fold.rs": {
-      "branch": "res-2370-const-fold-relink-on-square",
-      "claimed_at": "2026-05-20T15:26:47Z"
-    },
-    "resilient/src/graph_algorithms.rs": {
-      "branch": "res-1944-graph-presize",
-      "claimed_at": "2026-05-19T18:18:16Z"
-    }
-  }
+  "claims": {}
 }
