@@ -24975,20 +24975,8 @@ impl Interpreter {
             "+" => mode.add_for_eval(left, right, "+").map(Value::Int),
             "-" => mode.sub_for_eval(left, right, "-").map(Value::Int),
             "*" => mode.mul_for_eval(left, right, "*").map(Value::Int),
-            "/" => {
-                if right == 0 {
-                    Err("Division by zero".to_string())
-                } else {
-                    Ok(Value::Int(left / right))
-                }
-            }
-            "%" => {
-                if right == 0 {
-                    Err("Modulo by zero".to_string())
-                } else {
-                    Ok(Value::Int(left % right))
-                }
-            }
+            "/" => mode.div_for_eval(left, right).map(Value::Int),
+            "%" => mode.rem_for_eval(left, right).map(Value::Int),
             "&" => Ok(Value::Int(left & right)),
             "|" => Ok(Value::Int(left | right)),
             "^" => Ok(Value::Int(left ^ right)),
@@ -53628,6 +53616,66 @@ mod tests {
         );
         assert!(e.contains("Division by zero"), "got: {:?}", e);
         assert!(e.starts_with("5:"), "expected line 5 prefix, got: {:?}", e);
+    }
+
+    #[test]
+    fn div_i64_min_by_neg1_does_not_panic() {
+        let src = "fn go() { return int_min() / -1; }\nreturn go();";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let mut interp = Interpreter::new();
+        let result = interp.eval(&program);
+        match result {
+            Ok(Value::Int(v)) => assert_eq!(v, i64::MIN),
+            Ok(other) => panic!("expected Int, got {:?}", other),
+            Err(e) => {
+                assert!(
+                    e.contains("overflow"),
+                    "expected overflow or wrapped result, got: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mod_i64_min_by_neg1_does_not_panic() {
+        let src = "fn go() { return int_min() % -1; }\nreturn go();";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let mut interp = Interpreter::new();
+        let result = interp.eval(&program);
+        match result {
+            Ok(Value::Int(v)) => assert_eq!(v, 0),
+            Ok(other) => panic!("expected Int(0), got {:?}", other),
+            Err(e) => {
+                assert!(
+                    e.contains("overflow"),
+                    "expected overflow or zero result, got: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compound_div_assign_i64_min_by_neg1_does_not_panic() {
+        let src = "fn go() { let x = int_min(); x /= -1; return x; }\nreturn go();";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let mut interp = Interpreter::new();
+        let result = interp.eval(&program);
+        match result {
+            Ok(Value::Int(v)) => assert_eq!(v, i64::MIN),
+            Ok(other) => panic!("expected Int, got {:?}", other),
+            Err(e) => {
+                assert!(
+                    e.contains("overflow"),
+                    "expected overflow or wrapped, got: {}",
+                    e
+                );
+            }
+        }
     }
 
     #[test]
