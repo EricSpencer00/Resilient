@@ -215,6 +215,34 @@ impl OverflowMode {
         }
     }
 
+    fn div(self, a: i64, b: i64) -> Result<i64, VmError> {
+        if b == 0 {
+            return Err(VmError::DivideByZero);
+        }
+        if a == i64::MIN && b == -1 {
+            return match self {
+                OverflowMode::Wrap => Ok(a.wrapping_div(b)),
+                OverflowMode::Saturate => Ok(i64::MAX),
+                OverflowMode::Trap => Err(VmError::IntegerOverflow("Div")),
+            };
+        }
+        Ok(a / b)
+    }
+
+    fn rem(self, a: i64, b: i64) -> Result<i64, VmError> {
+        if b == 0 {
+            return Err(VmError::DivideByZero);
+        }
+        if a == i64::MIN && b == -1 {
+            return match self {
+                OverflowMode::Wrap => Ok(0),
+                OverflowMode::Saturate => Ok(0),
+                OverflowMode::Trap => Err(VmError::IntegerOverflow("Mod")),
+            };
+        }
+        Ok(a % b)
+    }
+
     /// RES-349: tree-walker variant. The interpreter in `main.rs`
     /// reports errors as `String`, not `VmError`, so the trap path
     /// formats a matching diagnostic.
@@ -259,6 +287,33 @@ impl OverflowMode {
                 .checked_neg()
                 .ok_or_else(|| format!("integer overflow in unary - ({})", a)),
         }
+    }
+
+    pub fn div_for_eval(self, a: i64, b: i64) -> Result<i64, String> {
+        if b == 0 {
+            return Err("Division by zero".to_string());
+        }
+        if a == i64::MIN && b == -1 {
+            return match self {
+                OverflowMode::Wrap => Ok(a.wrapping_div(b)),
+                OverflowMode::Saturate => Ok(i64::MAX),
+                OverflowMode::Trap => Err(format!("integer overflow in / ({} / {})", a, b)),
+            };
+        }
+        Ok(a / b)
+    }
+
+    pub fn rem_for_eval(self, a: i64, b: i64) -> Result<i64, String> {
+        if b == 0 {
+            return Err("Modulo by zero".to_string());
+        }
+        if a == i64::MIN && b == -1 {
+            return match self {
+                OverflowMode::Wrap | OverflowMode::Saturate => Ok(0),
+                OverflowMode::Trap => Err(format!("integer overflow in % ({} % {})", a, b)),
+            };
+        }
+        Ok(a % b)
     }
 }
 
@@ -476,17 +531,11 @@ fn run_inner(
             }
             Op::Div => {
                 let (a, b) = pop_two_ints(&mut stack, "Div")?;
-                if b == 0 {
-                    return Err(VmError::DivideByZero);
-                }
-                stack.push(Value::Int(a / b));
+                stack.push(Value::Int(overflow_mode.div(a, b)?));
             }
             Op::Mod => {
                 let (a, b) = pop_two_ints(&mut stack, "Mod")?;
-                if b == 0 {
-                    return Err(VmError::DivideByZero);
-                }
-                stack.push(Value::Int(a % b));
+                stack.push(Value::Int(overflow_mode.rem(a, b)?));
             }
             Op::Neg => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1456,20 +1505,14 @@ fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 #[inline(never)]
 fn h_div(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let (a, b) = pop_two_ints(&mut state.stack, "Div")?;
-    if b == 0 {
-        return Err(VmError::DivideByZero);
-    }
-    state.stack.push(Value::Int(a / b));
+    state.stack.push(Value::Int(state.overflow_mode.div(a, b)?));
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_mod(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let (a, b) = pop_two_ints(&mut state.stack, "Mod")?;
-    if b == 0 {
-        return Err(VmError::DivideByZero);
-    }
-    state.stack.push(Value::Int(a % b));
+    state.stack.push(Value::Int(state.overflow_mode.rem(a, b)?));
     Ok(Step::Continue)
 }
 
@@ -4029,5 +4072,77 @@ mod tests {
         // A 3-tuple doesn't match (a, b) — falls through to Wildcard.
         let v = compile_run("let t = (1, 2, 3); return match t { (a, b) => 0, _ => 1 };").unwrap();
         assert_int(v, 1);
+    }
+
+    #[test]
+    fn div_min_by_neg1_wrap_mode() {
+        let src = "return int_min() / -1;";
+        let (program, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&program).unwrap();
+        let v = run(&prog).unwrap();
+        assert_int(v, i64::MIN);
+    }
+
+    #[test]
+    fn mod_min_by_neg1_wrap_mode() {
+        let src = "return int_min() % -1;";
+        let (program, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&program).unwrap();
+        let v = run(&prog).unwrap();
+        assert_int(v, 0);
+    }
+
+    #[test]
+    fn div_normal_case_unaffected() {
+        let v = compile_run("return 10 / 3;").unwrap();
+        assert_int(v, 3);
+    }
+
+    #[test]
+    fn mod_normal_case_unaffected() {
+        let v = compile_run("return 10 % 3;").unwrap();
+        assert_int(v, 1);
+    }
+
+    #[test]
+    fn overflow_mode_div_zero_error() {
+        let mode = OverflowMode::Wrap;
+        assert!(mode.div(42, 0).is_err());
+    }
+
+    #[test]
+    fn overflow_mode_rem_zero_error() {
+        let mode = OverflowMode::Wrap;
+        assert!(mode.rem(42, 0).is_err());
+    }
+
+    #[test]
+    fn overflow_mode_div_min_neg1_saturate() {
+        let mode = OverflowMode::Saturate;
+        assert_eq!(mode.div(i64::MIN, -1).unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn overflow_mode_rem_min_neg1_saturate() {
+        let mode = OverflowMode::Saturate;
+        assert_eq!(mode.rem(i64::MIN, -1).unwrap(), 0);
+    }
+
+    #[test]
+    fn overflow_mode_div_min_neg1_trap() {
+        let mode = OverflowMode::Trap;
+        assert!(matches!(
+            mode.div(i64::MIN, -1),
+            Err(VmError::IntegerOverflow(_))
+        ));
+    }
+
+    #[test]
+    fn overflow_mode_rem_min_neg1_trap() {
+        let mode = OverflowMode::Trap;
+        assert!(matches!(
+            mode.rem(i64::MIN, -1),
+            Err(VmError::IntegerOverflow(_))
+        ));
     }
 }
