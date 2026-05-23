@@ -128,6 +128,14 @@ pub fn lock_for_test() -> MutexGuard<'static, ()> {
 /// previous compile.
 #[allow(dead_code)]
 pub fn reset() {
+    // RES-2438: if the atomic flag is already false, no `record()` call
+    // has fired since the last reset (or since process start). The
+    // registry is already empty (or `None`) — skip the write-lock
+    // acquisition and the `Registry::default()` allocation entirely.
+    // Same fast-reject pattern that `find_kind` uses (RES-1374).
+    if !ATTR_REGISTRY_HAS_ENTRIES.load(Ordering::Acquire) {
+        return;
+    }
     if let Ok(mut g) = ATTR_REGISTRY.write() {
         *g = Some(Registry::default());
     }
