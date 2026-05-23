@@ -4958,10 +4958,23 @@ impl TypeChecker {
                     crate::vibe_debt::check(program, source_path)?;
                     crate::contract_inference::check(program, source_path)?;
                 }
-                crate::behavioral_fingerprint::check(program, source_path)?;
-                // RES-2645: mutation_testing cross-references mutation
-                // sites with contract declarations; warns on unconstrained.
-                crate::mutation_testing::check(program, source_path)?;
+                // RES-2436 gate: behavioral_fingerprint only processes
+                // `Node::Function` nodes (fingerprint_program iterates
+                // top-level Functions). Programs with no functions have
+                // no fingerprints to check, so skip the filesystem I/O
+                // (Path::exists + read_to_string) that check() does on
+                // every invocation.
+                if !markers.fn_names.is_empty() {
+                    crate::behavioral_fingerprint::check(program, source_path)?;
+                }
+                // RES-2436 gate: mutation_testing::generate walks
+                // `Node::Function` and `Node::ImplBlock` bodies for
+                // arithmetic/logical/comparison operators. Programs with
+                // no functions produce zero mutation sites — skip the
+                // unconditional O(N) AST walk.
+                if !markers.fn_names.is_empty() {
+                    crate::mutation_testing::check(program, source_path)?;
+                }
                 // RES-1629 gate: pass walks bodies for `CallExpression`
                 // to build the (caller, callee) blame map. Without any
                 // call expressions, `build` returns an empty `BlameMap`

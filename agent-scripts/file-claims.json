@@ -184,10 +184,6 @@
       "branch": "res-1924-monomorph-presize",
       "claimed_at": "2026-05-19T17:31:00Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1766-typechecker-hot-presize",
-      "claimed_at": "2026-05-13T11:55:37Z"
-    },
     "resilient/src/supervisor.rs": {
       "branch": "res-1770-verifier-presize",
       "claimed_at": "2026-05-13T11:59:58Z"
@@ -463,6 +459,10 @@
     "resilient/src/vm.rs": {
       "branch": "res-2434-div-overflow-guard",
       "claimed_at": "2026-05-23T06:00:46Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2436-gate-mutation-fingerprint",
+      "claimed_at": "2026-05-23T06:28:25Z"
     }
   }
 }
