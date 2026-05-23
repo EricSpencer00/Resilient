@@ -693,6 +693,16 @@ impl TypeEnvironment {
         }
     }
 
+    /// RES-2444: variant of `new_enclosed` that accepts a pre-existing
+    /// `Arc<TypeEnvironment>` as the outer scope — avoids a deep-clone
+    /// when the outer is shared (e.g. the process-wide BUILTIN_ENV).
+    fn new_with_outer_arc(outer: std::sync::Arc<TypeEnvironment>) -> Self {
+        TypeEnvironment {
+            store: HashMap::new(),
+            outer: Some(outer),
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<Type> {
         match self.store.get(name) {
             Some(typ) => Some(typ.clone()),
@@ -1316,2819 +1326,2822 @@ pub struct TypeChecker {
 
 impl TypeChecker {
     pub fn new() -> Self {
-        // RES-1349: cache the built-in env once per process and clone
-        // it per `TypeChecker::new()`. The built-in set is invariant
-        // (~490 fixed `(name, type)` pairs); rebuilding from scratch
-        // on every test/REPL/typecheck invocation paid for ~1500
-        // heap allocations and several HashMap rehashes. Cloning a
-        // populated `HashMap` is one bulk allocation plus per-entry
-        // clones (~970 heap allocs) — ~30-50% faster.
-        static BUILTIN_ENV: std::sync::LazyLock<TypeEnvironment> = std::sync::LazyLock::new(|| {
-            // RES-1698: pre-size to fit the ~490 builtin entries.
-            // Saves 9 rehash rounds on the one-time LazyLock init;
-            // every cloned `TypeChecker` env inherits the capacity.
-            let mut env = TypeEnvironment::with_capacity(512);
+        // RES-1349 + RES-2444: cache the built-in env once per
+        // process as an `Arc<TypeEnvironment>`. Each `TypeChecker`
+        // gets the builtins as the *outer* scope of its env instead
+        // of cloning ~490 `(String, Type)` pairs into the local
+        // store. User-defined bindings go into the (initially
+        // empty) local store and shadow builtins via the normal
+        // scope-chain lookup. Effect: `TypeChecker::new()` does
+        // one `Arc::clone` (refcount bump) instead of ~970 heap
+        // allocations, and every scope entry (function body, block,
+        // loop) likewise skips re-cloning the builtin entries.
+        static BUILTIN_ENV: std::sync::LazyLock<std::sync::Arc<TypeEnvironment>> =
+            std::sync::LazyLock::new(|| {
+                // RES-1698: pre-size to fit the ~490 builtin entries.
+                // Saves 9 rehash rounds on the one-time LazyLock init.
+                let mut env = TypeEnvironment::with_capacity(512);
 
-            // Built-in function signatures. Any-typed parameters keep the
-            // type checker permissive for heterogeneous inputs until real
-            // generics arrive (RES-055).
-            let fn_any_to_void = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Void),
-            };
-            let fn_any_any_to_any = || Type::Function {
-                params: vec![Type::Any, Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            let fn_any_to_any = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            let fn_any_to_int = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Int),
-            };
-            let fn_any_any_to_bool = || Type::Function {
-                params: vec![Type::Any, Type::Any],
-                return_type: Box::new(Type::Bool),
-            };
-            let fn_any_any_to_int = || Type::Function {
-                params: vec![Type::Any, Type::Any],
-                return_type: Box::new(Type::Int),
-            };
-            let fn_any_any_to_array = || Type::Function {
-                params: vec![Type::Any, Type::Any],
-                return_type: Box::new(Type::Array),
-            };
-            let fn_any_to_result = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Result),
-            };
-            let fn_result_to_bool = || Type::Function {
-                params: vec![Type::Result],
-                return_type: Box::new(Type::Bool),
-            };
-            let fn_result_to_any = || Type::Function {
-                params: vec![Type::Result],
-                return_type: Box::new(Type::Any),
-            };
-
-            // I/O
-            env.set("println".to_string(), fn_any_to_void());
-            env.set("print".to_string(), fn_any_to_void());
-
-            // RES-385: `drop(v)` — explicit single-use consumption
-            // of a linear value. Accepts any type; the linearity pass
-            // (see `crate::linear`) is what enforces the single-use
-            // rule on the argument.
-            env.set("drop".to_string(), fn_any_to_void());
-
-            // Math (single-arg — int/float passed as Any)
-            env.set("abs".to_string(), fn_any_to_any());
-
-            // RES-422: sign(x) always returns -1, 0, or +1 — that's Int.
-            env.set(
-                "sign".to_string(),
-                Type::Function {
+                // Built-in function signatures. Any-typed parameters keep the
+                // type checker permissive for heterogeneous inputs until real
+                // generics arrive (RES-055).
+                let fn_any_to_void = || Type::Function {
                     params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-
-            // RES-411: float predicates — return Bool; math functions return Float.
-            // (Parameter is kept as Any so both Int and Float are accepted.)
-            let fn_any_to_bool = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Bool),
-            };
-            let fn_any_to_float = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Float),
-            };
-            env.set("is_nan".to_string(), fn_any_to_bool());
-            env.set("is_inf".to_string(), fn_any_to_bool());
-            env.set("is_finite".to_string(), fn_any_to_bool());
-            env.set("sqrt".to_string(), fn_any_to_float());
-            env.set("floor".to_string(), fn_any_to_float());
-            env.set("ceil".to_string(), fn_any_to_float());
-            env.set("min".to_string(), fn_any_any_to_any());
-            env.set("max".to_string(), fn_any_any_to_any());
-            // RES-415: gcd/lcm — strict (Int, Int) -> Int.
-            env.set(
-                "gcd".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "lcm".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-536: gcd / lcm reduction over an integer array.
-            let arr_to_int = Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("gcd_array".to_string(), arr_to_int.clone());
-            env.set("lcm_array".to_string(), arr_to_int);
-            // RES-567: factorial with overflow detection.
-            env.set(
-                "factorial".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-568: binomial coefficient C(n, k).
-            env.set(
-                "binomial".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-569: n-th Fibonacci with overflow detection.
-            env.set(
-                "fibonacci".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-570: trial-division primality test.
-            env.set(
-                "is_prime".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-571: smallest prime greater than n.
-            env.set(
-                "next_prime".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set("pow".to_string(), fn_any_any_to_any());
-            // RES-295: clamp(x, lo, hi) — type-preserving for Int triples,
-            // promoted to Float if any arg is Float. Signed as
-            // (Any, Any, Any) -> Any to match abs/min/max precedent.
-            env.set(
-                "clamp".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-
-            // RES-146: transcendentals. Float-in / Float-out per
-            // RES-130 (no implicit int↔float coercion).
-            let fn_float_to_float = || Type::Function {
-                params: vec![Type::Float],
-                return_type: Box::new(Type::Float),
-            };
-            env.set("sin".to_string(), fn_float_to_float());
-            env.set("cos".to_string(), fn_float_to_float());
-            env.set("tan".to_string(), fn_float_to_float());
-            // RES-894.
-            env.set("to_radians".to_string(), fn_float_to_float());
-            // RES-895.
-            env.set("to_degrees".to_string(), fn_float_to_float());
-            env.set("ln".to_string(), fn_float_to_float());
-            // RES-889.
-            env.set("log10".to_string(), fn_float_to_float());
-            // RES-890.
-            env.set("log2".to_string(), fn_float_to_float());
-            env.set("exp".to_string(), fn_float_to_float());
-            // RES-891.
-            env.set("exp2".to_string(), fn_float_to_float());
-            // RES-896.
-            env.set("sinh".to_string(), fn_float_to_float());
-            // RES-897.
-            env.set("cosh".to_string(), fn_float_to_float());
-            // RES-898.
-            env.set("tanh".to_string(), fn_float_to_float());
-            // RES-899.
-            env.set("asinh".to_string(), fn_float_to_float());
-            // RES-900.
-            env.set("acosh".to_string(), fn_float_to_float());
-            // RES-901.
-            env.set("atanh".to_string(), fn_float_to_float());
-            // RES-902.
-            env.set("asin".to_string(), fn_float_to_float());
-            // RES-903.
-            env.set("acos".to_string(), fn_float_to_float());
-            // RES-904.
-            env.set("atan".to_string(), fn_float_to_float());
-            // RES-905.
-            env.set("cbrt".to_string(), fn_float_to_float());
-            // RES-907: bit-counting integer builtins (Int -> Int).
-            let fn_int_to_int = || Type::Function {
-                params: vec![Type::Int],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("count_ones".to_string(), fn_int_to_int());
-            env.set("count_zeros".to_string(), fn_int_to_int());
-            env.set("leading_zeros".to_string(), fn_int_to_int());
-            env.set("trailing_zeros".to_string(), fn_int_to_int());
-            // RES-1115..1118: overflow-safe integer arithmetic. The
-            // checked_* family returns Option<int>; the type system has
-            // no Option<T> yet, so we use Type::Any for the return slot
-            // — the runtime check (`Value::Option`) is strict.
-            let fn_int_int_to_int = || Type::Function {
-                params: vec![Type::Int, Type::Int],
-                return_type: Box::new(Type::Int),
-            };
-            let fn_int_int_to_any = || Type::Function {
-                params: vec![Type::Int, Type::Int],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("saturating_add".to_string(), fn_int_int_to_int());
-            env.set("saturating_sub".to_string(), fn_int_int_to_int());
-            env.set("saturating_mul".to_string(), fn_int_int_to_int());
-            env.set("wrapping_add".to_string(), fn_int_int_to_int());
-            env.set("wrapping_sub".to_string(), fn_int_int_to_int());
-            env.set("wrapping_mul".to_string(), fn_int_int_to_int());
-            env.set("checked_add".to_string(), fn_int_int_to_any());
-            env.set("checked_sub".to_string(), fn_int_int_to_any());
-            env.set("checked_mul".to_string(), fn_int_int_to_any());
-            env.set("checked_div".to_string(), fn_int_int_to_any());
-            // RES-1119..1121: bit manipulation.
-            env.set("rotate_left_int".to_string(), fn_int_int_to_int());
-            env.set("rotate_right_int".to_string(), fn_int_int_to_int());
-            env.set("reverse_bits".to_string(), fn_int_to_int());
-            env.set("swap_bytes".to_string(), fn_int_to_int());
-            // RES-1122..1123: int ↔ bytes endianness conversion.
-            env.set(
-                "to_be_bytes".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Bytes),
-                },
-            );
-            env.set(
-                "to_le_bytes".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Bytes),
-                },
-            );
-            env.set(
-                "from_be_bytes".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "from_le_bytes".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-1124: integer-only math primitives.
-            env.set("isqrt".to_string(), fn_int_to_int());
-            env.set("ipow".to_string(), fn_int_int_to_int());
-            // RES-1126..1128: direction-rounded + Euclidean + midpoint.
-            env.set("div_ceil".to_string(), fn_int_int_to_int());
-            env.set("div_floor".to_string(), fn_int_int_to_int());
-            env.set("div_euclid".to_string(), fn_int_int_to_int());
-            env.set("rem_euclid".to_string(), fn_int_int_to_int());
-            env.set("midpoint".to_string(), fn_int_int_to_int());
-            // RES-1129: integer logarithms.
-            env.set("ilog2".to_string(), fn_int_to_int());
-            env.set("ilog10".to_string(), fn_int_to_int());
-            // RES-1130: IEEE 754 bit reinterpret cast.
-            env.set(
-                "float_to_bits".to_string(),
-                Type::Function {
-                    params: vec![Type::Float],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "float_from_bits".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            // RES-1134: bitwise + construction ops on Bytes.
-            let fn_bytes_bytes_to_bytes = || Type::Function {
-                params: vec![Type::Bytes, Type::Bytes],
-                return_type: Box::new(Type::Bytes),
-            };
-            let fn_bytes_to_bytes = || Type::Function {
-                params: vec![Type::Bytes],
-                return_type: Box::new(Type::Bytes),
-            };
-            env.set("bytes_xor".to_string(), fn_bytes_bytes_to_bytes());
-            env.set("bytes_and".to_string(), fn_bytes_bytes_to_bytes());
-            env.set("bytes_or".to_string(), fn_bytes_bytes_to_bytes());
-            env.set("bytes_not".to_string(), fn_bytes_to_bytes());
-            env.set(
-                "bytes_fill".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Bytes),
-                },
-            );
-            env.set("bytes_reverse".to_string(), fn_bytes_to_bytes());
-            // RES-1136: alignment helpers.
-            env.set("next_multiple_of".to_string(), fn_int_int_to_int());
-            env.set(
-                "is_multiple_of".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-1138: IEEE 754 classification + total order + sign-bit
-            // predicates.
-            let fn_float_to_bool = || Type::Function {
-                params: vec![Type::Float],
-                return_type: Box::new(Type::Bool),
-            };
-            env.set(
-                "float_classify".to_string(),
-                Type::Function {
-                    params: vec![Type::Float],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "float_total_cmp".to_string(),
-                Type::Function {
-                    params: vec![Type::Float, Type::Float],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set("float_is_normal".to_string(), fn_float_to_bool());
-            env.set("float_is_subnormal".to_string(), fn_float_to_bool());
-            env.set("float_sign_bit".to_string(), fn_float_to_bool());
-            // RES-1142: array chunking + striding + rotation primitives.
-            let fn_array_int_to_array = || Type::Function {
-                params: vec![Type::Array, Type::Int],
-                return_type: Box::new(Type::Array),
-            };
-            env.set("array_chunks".to_string(), fn_array_int_to_array());
-            env.set("array_chunks_exact".to_string(), fn_array_int_to_array());
-            env.set("array_step".to_string(), fn_array_int_to_array());
-            env.set("array_rotate_left".to_string(), fn_array_int_to_array());
-            env.set("array_rotate_right".to_string(), fn_array_int_to_array());
-            // RES-1140: ASCII char-class predicates.
-            let fn_string_to_bool = || Type::Function {
-                params: vec![Type::String],
-                return_type: Box::new(Type::Bool),
-            };
-            env.set("is_ascii".to_string(), fn_string_to_bool());
-            env.set("is_ascii_whitespace".to_string(), fn_string_to_bool());
-            env.set("is_ascii_hexdigit".to_string(), fn_string_to_bool());
-            env.set("is_ascii_uppercase".to_string(), fn_string_to_bool());
-            env.set("is_ascii_lowercase".to_string(), fn_string_to_bool());
-            env.set("is_ascii_punctuation".to_string(), fn_string_to_bool());
-            env.set("is_ascii_control".to_string(), fn_string_to_bool());
-            // RES-1146: float / string sort + array_is_sorted predicates.
-            let fn_array_to_array = || Type::Function {
-                params: vec![Type::Array],
-                return_type: Box::new(Type::Array),
-            };
-            let fn_array_to_bool = || Type::Function {
-                params: vec![Type::Array],
-                return_type: Box::new(Type::Bool),
-            };
-            env.set("array_sort_float".to_string(), fn_array_to_array());
-            env.set("array_sort_string".to_string(), fn_array_to_array());
-            env.set("array_is_sorted".to_string(), fn_array_to_bool());
-            env.set("array_is_sorted_float".to_string(), fn_array_to_bool());
-            env.set("array_is_sorted_string".to_string(), fn_array_to_bool());
-            // RES-1148: binary search on sorted int / float / string arrays.
-            // Return type is Value::Result (ok/err) — now typed as Type::Result
-            // since the runtime confirmed returns Value::Result { ok, payload }.
-            env.set(
-                "array_binary_search".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Int],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "array_binary_search_float".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Float],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "array_binary_search_string".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::String],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            // RES-1150: statistical reductions — variance, stddev,
-            // median_float, range_float. All return Float.
-            let fn_array_to_float = || Type::Function {
-                params: vec![Type::Array],
-                return_type: Box::new(Type::Float),
-            };
-            env.set("array_variance_int".to_string(), fn_array_to_float());
-            env.set("array_variance_float".to_string(), fn_array_to_float());
-            env.set("array_stddev_int".to_string(), fn_array_to_float());
-            env.set("array_stddev_float".to_string(), fn_array_to_float());
-            env.set("array_median_float".to_string(), fn_array_to_float());
-            env.set("array_range_float".to_string(), fn_array_to_float());
-            // RES-1152: per-byte helpers — repeat / count_byte / replace_byte.
-            env.set(
-                "bytes_repeat".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Int],
-                    return_type: Box::new(Type::Bytes),
-                },
-            );
-            env.set(
-                "bytes_count_byte".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "bytes_replace_byte".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Bytes),
-                },
-            );
-            // RES-1156: per-bit accessors on i64.
-            env.set("set_bit".to_string(), fn_int_int_to_int());
-            env.set("clear_bit".to_string(), fn_int_int_to_int());
-            env.set(
-                "get_bit".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set("flip_bit".to_string(), fn_int_int_to_int());
-            // RES-1158: array set-style helpers + fallback-safe first/last
-            // + index_of_last.
-            let fn_array_array_to_array = || Type::Function {
-                params: vec![Type::Array, Type::Array],
-                return_type: Box::new(Type::Array),
-            };
-            env.set("array_difference".to_string(), fn_array_array_to_array());
-            env.set("array_intersection".to_string(), fn_array_array_to_array());
-            env.set(
-                "array_index_of_last".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "array_first_or".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "array_last_or".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-1162: deterministic hash builtins.
-            env.set(
-                "hash_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "hash_string".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "hash_bytes".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set("hash_combine".to_string(), fn_int_int_to_int());
-            // RES-1164: iteration helpers.
-            env.set(
-                "enumerate".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "array_zip3".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Array, Type::Array],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "string_truncate".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-1166: rounding builtins.
-            let fn_float_to_float = || Type::Function {
-                params: vec![Type::Float],
-                return_type: Box::new(Type::Float),
-            };
-            let fn_float_to_int = || Type::Function {
-                params: vec![Type::Float],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("round".to_string(), fn_float_to_float());
-            env.set("trunc".to_string(), fn_float_to_float());
-            env.set("round_to_int".to_string(), fn_float_to_int());
-            env.set("trunc_to_int".to_string(), fn_float_to_int());
-            // RES-1170: cumulative reductions + combined min/max.
-            let fn_array_to_array_int = || Type::Function {
-                params: vec![Type::Array],
-                return_type: Box::new(Type::Array),
-            };
-            env.set("array_cumsum".to_string(), fn_array_to_array_int());
-            env.set("array_cumprod".to_string(), fn_array_to_array_int());
-            env.set("array_diffs".to_string(), fn_array_to_array_int());
-            env.set("array_min_max".to_string(), fn_array_to_array_int());
-            // RES-1172: small string + array gaps.
-            let fn_string_to_array = || Type::Function {
-                params: vec![Type::String],
-                return_type: Box::new(Type::Array),
-            };
-            let fn_string_string_to_array = || Type::Function {
-                params: vec![Type::String, Type::String],
-                return_type: Box::new(Type::Array),
-            };
-            env.set("string_split_once".to_string(), fn_string_string_to_array());
-            env.set(
-                "string_rsplit_once".to_string(),
-                fn_string_string_to_array(),
-            );
-            env.set(
-                "string_from_chars".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "array_is_empty".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-1174: wall-clock unix time. @io / impure.
-            let fn_zero_to_int = || Type::Function {
-                params: vec![],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("unix_time_s".to_string(), fn_zero_to_int());
-            env.set("unix_time_ms".to_string(), fn_zero_to_int());
-            env.set("unix_time_ns".to_string(), fn_zero_to_int());
-            // RES-1176: bytes ↔ string conversions.
-            let fn_bytes_bytes_to_bytes_strip = || Type::Function {
-                params: vec![Type::Bytes, Type::Bytes],
-                return_type: Box::new(Type::Bytes),
-            };
-            env.set(
-                "bytes_strip_prefix".to_string(),
-                fn_bytes_bytes_to_bytes_strip(),
-            );
-            env.set(
-                "bytes_strip_suffix".to_string(),
-                fn_bytes_bytes_to_bytes_strip(),
-            );
-            // RES-1178: bytes_to_string always produces a String value on
-            // the success path (invalid UTF-8 returns a lossy string, not a
-            // different type). Promote from Any → String so the typechecker
-            // can verify that callers don't treat the result as an int/bool.
-            env.set(
-                "bytes_to_string".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-1178: bytes slicing primitives — (Bytes, Int) -> Bytes.
-            let fn_bytes_int_to_bytes = || Type::Function {
-                params: vec![Type::Bytes, Type::Int],
-                return_type: Box::new(Type::Bytes),
-            };
-            env.set("bytes_take".to_string(), fn_bytes_int_to_bytes());
-            env.set("bytes_drop".to_string(), fn_bytes_int_to_bytes());
-            env.set("bytes_take_last".to_string(), fn_bytes_int_to_bytes());
-            env.set("bytes_drop_last".to_string(), fn_bytes_int_to_bytes());
-            // RES-1182: integer bit rotation + scalar signum.
-            let fn_int_int_to_int = || Type::Function {
-                params: vec![Type::Int, Type::Int],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("rotate_left".to_string(), fn_int_int_to_int());
-            env.set("rotate_right".to_string(), fn_int_int_to_int());
-            env.set(
-                "signum".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "log".to_string(),
-                Type::Function {
-                    params: vec![Type::Float, Type::Float],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            // RES-295: atan2(y, x) — Float-only per RES-130.
-            env.set(
-                "atan2".to_string(),
-                Type::Function {
-                    params: vec![Type::Float, Type::Float],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            // RES-892.
-            env.set(
-                "hypot".to_string(),
-                Type::Function {
-                    params: vec![Type::Float, Type::Float],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            // RES-893.
-            env.set(
-                "copysign".to_string(),
-                Type::Function {
-                    params: vec![Type::Float, Type::Float],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-
-            // RES-147: monotonic ms-clock builtin. std-only.
-            env.set(
-                "clock_ms".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-
-            // RES-150: seedable random builtins. std-only.
-            env.set(
-                "random_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "random_float".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-
-            // len: any -> int
-            env.set(
-                "len".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-
-            // Array builtins: any -> array / (array,int,int) -> array
-            env.set(
-                "push".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "pop".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "slice".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-
-            // String builtins
-            env.set(
-                "split".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-1859: `string_split` — explicit-name alias for `split`.
-            env.set(
-                "string_split".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-535: split with a maximum number-of-splits limit.
-            env.set(
-                "string_split_n".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-545: split on the last occurrence of the separator.
-            env.set(
-                "string_split_last".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "trim".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "contains".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "to_upper".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "to_lower".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-412: reverse a string (chars) or an array (clones).
-            env.set(
-                "string_reverse".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set("array_reverse".to_string(), fn_array_to_array());
-            // RES-1859: higher-order array builtins — callback is typed
-            // as Any because we have no generic function type yet.
-            env.set(
-                "array_map".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "array_filter".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "array_reduce".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-507: generic callback-based search/predicate builtins.
-            env.set(
-                "array_find".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "array_find_index".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "array_any".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "array_all".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-
-            // RES-2647: map functional operations (callback-taking).
-            // Return types use the same permissive-Any convention as map_keys/map_values.
-            env.set(
-                "map_filter".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "map_map_values".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "map_for_each".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
                     return_type: Box::new(Type::Void),
-                },
-            );
-            env.set(
-                "map_to_pairs".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "map_invert".to_string(),
-                Type::Function {
+                };
+                let fn_any_any_to_any = || Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                };
+                let fn_any_to_any = || Type::Function {
                     params: vec![Type::Any],
                     return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-2646: higher-order functional array operations.
-            env.set(
-                "array_flat_map".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // array_group_by returns a Map (unparameterised, same convention
-            // as other map builtins — Type::Any until Map<K,V> lands).
-            env.set(
-                "array_group_by".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // array_partition returns [[passing], [failing]] — two-element array.
-            env.set(
-                "array_partition".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // map_from_pairs(pairs) -> Map (Any until Map<K,V> lands).
-            env.set(
-                "map_from_pairs".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-2646: array_scan(arr, init, fn) -> Array of all prefix accumulator values.
-            env.set(
-                "array_scan".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-2648: array combinators with arbitrary callbacks.
-            let arr_fn_to_arr = Type::Function {
-                params: vec![Type::Array, Type::Any],
-                return_type: Box::new(Type::Array),
-            };
-            env.set("array_sort_by".to_string(), arr_fn_to_arr.clone());
-            env.set("array_take_while".to_string(), arr_fn_to_arr.clone());
-            env.set("array_drop_while".to_string(), arr_fn_to_arr);
-            env.set(
-                "array_min_by".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "array_max_by".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "array_count_if".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
+                };
+                let fn_any_to_int = || Type::Function {
+                    params: vec![Type::Any],
                     return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "array_zip_with".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Array, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "array_windows".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "array_sum_by".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "array_product_by".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-2649: map higher-order operations.
-            env.set(
-                "map_merge_with".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "map_update_with".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-2649: string higher-order operations.
-            env.set(
-                "string_map_chars".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Any],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "string_filter_by".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Any],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "string_fold".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "string_for_each_char".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Any],
-                    return_type: Box::new(Type::Void),
-                },
-            );
-            // RES-2650: numeric utilities.
-            env.set(
-                "lerp".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            env.set(
-                "remap".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            env.set(
-                "float_approx_eq".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any],
+                };
+                let fn_any_any_to_bool = || Type::Function {
+                    params: vec![Type::Any, Type::Any],
                     return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "round_to".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            env.set(
-                "int_pow".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-2650: collection extras.
-            env.set(
-                "array_frequency_map".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "array_key_by".to_string(),
-                Type::Function {
-                    params: vec![Type::Array, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "array_iterate".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-2651: Result/Option HOF.
-            let result_fn_2 = Type::Function {
-                params: vec![Type::Any, Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("result_map".to_string(), result_fn_2.clone());
-            env.set("result_and_then".to_string(), result_fn_2.clone());
-            env.set("result_map_err".to_string(), result_fn_2.clone());
-            env.set("result_or_else".to_string(), result_fn_2);
-            let option_fn_2 = Type::Function {
-                params: vec![Type::Any, Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("option_map".to_string(), option_fn_2.clone());
-            env.set("option_and_then".to_string(), option_fn_2.clone());
-            env.set("option_filter".to_string(), option_fn_2.clone());
-            env.set("option_or_else".to_string(), option_fn_2);
-            env.set(
-                "option_ok_or".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-2652: type introspection + collection ergonomics.
-            env.set(
-                "type_of".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "result_collect".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "array_from_fn".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-
-            // RES-416: integer-array reductions.
-            env.set("array_sum".to_string(), fn_any_to_int());
-            env.set("array_product".to_string(), fn_any_to_int());
-            // RES-417: array min/max.
-            env.set("array_min".to_string(), fn_any_to_int());
-            env.set("array_max".to_string(), fn_any_to_int());
-            // RES-543: empty-safe min/max with fallback default.
-            let arr_int_to_int = Type::Function {
-                params: vec![Type::Any, Type::Int],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("array_max_or".to_string(), arr_int_to_int.clone());
-            env.set("array_min_or".to_string(), arr_int_to_int);
-            // RES-549: integer mean (truncating toward zero).
-            env.set(
-                "array_mean_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-550: integer median (truncating mean for even len).
-            env.set(
-                "array_median_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-551: integer mode (most-common; smallest on ties).
-            env.set(
-                "array_mode_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-552: peak-to-peak range (max − min).
-            env.set(
-                "array_range_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-553: consecutive pairwise differences.
-            env.set(
-                "array_diff_consec_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-554: per-element clamp to [lo, hi].
-            env.set(
-                "array_clamp_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-555: per-element sign (-1/0/1).
-            env.set(
-                "array_signum_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-556: per-element absolute value.
-            env.set(
-                "array_abs_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-557: dot product of two equal-length int arrays.
-            env.set(
-                "array_dot_int".to_string(),
-                Type::Function {
+                };
+                let fn_any_any_to_int = || Type::Function {
                     params: vec![Type::Any, Type::Any],
                     return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-558: sum of squares (Σ x²).
-            env.set(
-                "array_sum_squares_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-559: running prefix sum.
-            env.set(
-                "array_cumsum_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
+                };
+                let fn_any_any_to_array = || Type::Function {
+                    params: vec![Type::Any, Type::Any],
                     return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-560: running max.
-            env.set(
-                "array_cummax_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-561: running min.
-            env.set(
-                "array_cummin_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-562: running product.
-            env.set(
-                "array_cumprod_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-563: count elements in inclusive [lo, hi].
-            env.set(
-                "array_count_in_range_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-503: index of max/min element.
-            env.set(
-                "array_argmax_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "array_argmin_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-418: element search.
-            env.set("array_contains".to_string(), fn_any_any_to_bool());
-            env.set("array_index_of".to_string(), fn_any_any_to_int());
-            // RES-544: every index where element equals x.
-            env.set("array_index_of_all".to_string(), fn_any_any_to_array());
-            // RES-541: set-like operations on arrays.
-            env.set("array_intersect".to_string(), fn_any_any_to_array());
-            env.set("array_diff".to_string(), fn_any_any_to_array());
-            // RES-542: order-preserving global-dedup union.
-            env.set("array_union".to_string(), fn_any_any_to_array());
-            // RES-419: Unicode-scalar ↔ char conversions.
-            env.set(
-                "chr".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "ord".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-505: parse single char to base-36 digit.
-            env.set(
-                "char_to_digit".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-513: int 0..=35 → base-36 digit char.
-            env.set(
-                "digit_to_char".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-420: concatenate two arrays.
-            env.set("array_concat".to_string(), fn_any_any_to_array());
-            // RES-515: three-way concatenation.
-            env.set(
-                "array_concat3".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-421: take/drop first n.
-            env.set("array_take".to_string(), fn_any_any_to_array());
-            env.set("array_drop".to_string(), fn_any_any_to_array());
-            // RES-537: take/drop trailing n elements.
-            env.set("array_take_last".to_string(), fn_any_any_to_array());
-            env.set("array_drop_last".to_string(), fn_any_any_to_array());
-            // RES-514: pick every nth element.
-            env.set("array_step".to_string(), fn_any_any_to_array());
-            // RES-422: integer sort ascending.
-            env.set("array_sort".to_string(), fn_array_to_array());
-            // RES-443: integer sort descending.
-            env.set("array_sort_desc".to_string(), fn_array_to_array());
-            // RES-444: Fisher-Yates shuffle (impure: uses RNG).
-            env.set("array_shuffle".to_string(), fn_array_to_array());
-            // RES-445: array prefix/suffix predicates.
-            env.set("array_starts_with".to_string(), fn_any_any_to_bool());
-            env.set("array_ends_with".to_string(), fn_any_any_to_bool());
-            // RES-446: all match indices.
-            env.set("string_find_all".to_string(), fn_any_any_to_array());
-            // RES-546: first byte index of substring, -1 if missing.
-            env.set(
-                "string_find".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-547: last byte index of substring, -1 if missing.
-            env.set(
-                "string_rfind".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-548: split string at byte index → [before, after].
-            env.set(
-                "string_split_at".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-447: i64 boundary constants — zero-arg → Int.
-            env.set(
-                "int_min".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "int_max".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-448: array_position(arr, x, start).
-            env.set(
-                "array_position".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-449: array padding (3-arg: arr, n, fill).
-            let fn_any_int_any_to_any = Type::Function {
-                params: vec![Type::Any, Type::Int, Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
-            env.set("array_pad_right".to_string(), fn_any_int_any_to_any);
-            // RES-450: array_swap(arr, i, j) — 3-arg.
-            // RES-1859: return_type was Type::Any; swapping elements
-            // produces an array of the same type, so Array is correct.
-            env.set(
-                "array_swap".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-451: insert/remove at index.
-            // RES-1859: both produce a new array of the same element type.
-            env.set(
-                "array_insert_at".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "array_remove_at".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-452: replace element at index.
-            // RES-1859: produces a new array — return_type was Type::Any.
-            env.set(
-                "array_set_at".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-453: total Unicode-scalar at index.
-            env.set(
-                "string_at".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-454: Unicode-scalar substring.
-            env.set(
-                "string_substring".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-455: sliding windows.
-            env.set("array_window".to_string(), fn_any_any_to_array());
-            // RES-456: rotation.
-            env.set("array_rotate_left".to_string(), fn_any_any_to_array());
-            env.set("array_rotate_right".to_string(), fn_any_any_to_array());
-            // RES-457: capitalize.
-            env.set(
-                "string_capitalize".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-458: array_cycle.
-            env.set("array_cycle".to_string(), fn_any_any_to_array());
-            // RES-459: ASCII-class string predicates.
-            let str_to_bool = Type::Function {
-                params: vec![Type::String],
-                return_type: Box::new(Type::Bool),
-            };
-            env.set("is_ascii_alpha".to_string(), str_to_bool.clone());
-            env.set("is_ascii_digit".to_string(), str_to_bool.clone());
-            env.set("is_ascii_alnum".to_string(), str_to_bool);
-            // RES-460: trim arbitrary char set.
-            env.set(
-                "trim_chars".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-461: indent every line with n spaces.
-            env.set(
-                "string_indent".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-462: adjacent pairs as tuples.
-            env.set("array_pairs".to_string(), fn_array_to_array());
-            // RES-463: UTF-8 byte length.
-            env.set(
-                "string_bytes_len".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-564: byte at index, -1 if out of range.
-            env.set(
-                "string_byte_at".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-565: string → array of UTF-8 bytes.
-            env.set(
-                "string_to_bytes".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-566: array of bytes → Result<String, String>.
-            // RES-1859: return_type was Type::Any; the builtin returns a
-            // Result (Ok(string) on success, Err(string) on invalid UTF-8).
-            env.set(
-                "string_from_bytes".to_string(),
-                Type::Function {
+                };
+                let fn_any_to_result = || Type::Function {
                     params: vec![Type::Any],
                     return_type: Box::new(Type::Result),
-                },
-            );
-            // RES-464: parse int with explicit radix → Result<Int, String>.
-            env.set(
-                "parse_int_base".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            // RES-465: render int in given radix → String.
-            env.set(
-                "int_to_base".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-466: remove first matching element.
-            env.set("array_remove".to_string(), fn_any_any_to_array());
-            // RES-467: remove all matching elements.
-            env.set("array_remove_all".to_string(), fn_any_any_to_array());
-            // RES-468: collapse adjacent duplicates.
-            env.set("array_dedup".to_string(), fn_array_to_array());
-            // RES-504: partition into maximal runs of equal int elements.
-            // RES-2645: returns an array of groups (array of arrays).
-            env.set(
-                "array_group_by_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-533: count of maximal runs.
-            env.set(
-                "array_count_runs".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-469: scalar all/any equality predicates.
-            env.set("array_all_eq".to_string(), fn_any_any_to_bool());
-            env.set("array_any_eq".to_string(), fn_any_any_to_bool());
-            // RES-471: prefix/suffix strippers.
-            let str_str_to_str = Type::Function {
-                params: vec![Type::String, Type::String],
-                return_type: Box::new(Type::String),
-            };
-            env.set("string_strip_prefix".to_string(), str_str_to_str.clone());
-            env.set("string_strip_suffix".to_string(), str_str_to_str);
-            // RES-472: element-wise array equality.
-            env.set("array_eq".to_string(), fn_any_any_to_bool());
-            // RES-473: ternary numeric min/max.
-            let any3_to_any = Type::Function {
-                params: vec![Type::Any, Type::Any, Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("min3".to_string(), any3_to_any.clone());
-            env.set("max3".to_string(), any3_to_any);
-            // RES-474: array_ne.
-            env.set("array_ne".to_string(), fn_any_any_to_bool());
-            // RES-475: fixed-op integer fold.
-            env.set(
-                "array_fold_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-502: running-fold (intermediate accumulators).
-            env.set(
-                "array_scan_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::String],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-521: element-wise binary op on two int arrays.
-            env.set(
-                "array_zip_with_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::String],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-477: one-sided char-set trimmers.
-            let str_str_to_str_b = Type::Function {
-                params: vec![Type::String, Type::String],
-                return_type: Box::new(Type::String),
-            };
-            env.set("trim_start_chars".to_string(), str_str_to_str_b.clone());
-            env.set("trim_end_chars".to_string(), str_str_to_str_b);
-            // RES-478: array_count_eq alias. RES-2645: count is always Int.
-            env.set("array_count_eq".to_string(), fn_any_any_to_int());
-            // RES-479: string predicates.
-            let str_to_bool_b = Type::Function {
-                params: vec![Type::String],
-                return_type: Box::new(Type::Bool),
-            };
-            env.set("is_empty".to_string(), str_to_bool_b.clone());
-            env.set("is_blank".to_string(), str_to_bool_b);
-            // RES-480: replace only first occurrence.
-            env.set(
-                "string_replace_first".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-481: drop first / drop last.
-            env.set("array_rest".to_string(), fn_array_to_array());
-            env.set("array_init".to_string(), fn_array_to_array());
-            // RES-482: replace up to n occurrences.
-            env.set(
-                "string_replace_n".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String, Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-483: named-predicate take/drop on int arrays.
-            let arr_str_to_arr = Type::Function {
-                params: vec![Type::Any, Type::String],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("array_take_while_int".to_string(), arr_str_to_arr.clone());
-            env.set("array_drop_while_int".to_string(), arr_str_to_arr.clone());
-            // RES-484: named-predicate filter / partition on int arrays.
-            env.set("array_filter_int".to_string(), arr_str_to_arr.clone());
-            env.set("array_partition_int".to_string(), arr_str_to_arr);
-            // RES-500: named-predicate any-element on int arrays.
-            env.set(
-                "array_any_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::String],
+                };
+                let fn_result_to_bool = || Type::Function {
+                    params: vec![Type::Result],
                     return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-501: named-predicate every-element on int arrays.
-            env.set(
-                "array_all_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::String],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-530: named-predicate count on int arrays.
-            env.set(
-                "array_count_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-539: indices of int elements matching named predicate.
-            env.set(
-                "array_indices_where".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::String],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-485: |a - b|.
-            env.set(
-                "abs_diff".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-486: (quotient, remainder) tuple — returns an Array of two Ints.
-            env.set(
-                "divmod".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-423: flatten one level.
-            env.set("array_flatten".to_string(), fn_array_to_array());
-            // RES-424: join string array with separator.
-            env.set(
-                "array_join".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-425: scalar-to-string conversion.
-            env.set(
-                "to_string".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-426: first-occurrence dedupe.
-            env.set("array_unique".to_string(), fn_array_to_array());
-            // RES-427: count element occurrences.
-            env.set("array_count".to_string(), fn_any_any_to_int());
-            // RES-428: array first/last accessors.
-            env.set("array_first".to_string(), fn_any_to_any());
-            env.set("array_last".to_string(), fn_any_to_any());
-            // RES-528: bounded indexing with fallback default.
-            env.set(
-                "array_get_or".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-429: string padding to Unicode-scalar width.
-            env.set(
-                "string_pad_left".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "string_pad_right".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-540: center-pad a string to a Unicode-scalar width.
-            env.set(
-                "string_pad_center".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-430: pair elements as tuples; truncate to shorter array.
-            env.set("array_zip".to_string(), fn_any_any_to_array());
-            // RES-531: split an array of 2-tuples into two parallel arrays — returns Array.
-            env.set(
-                "array_unzip".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-431: integer range [start, end).
-            env.set(
-                "array_range".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-921: array_slice(arr, lo, hi, inclusive) — sub-array.
-
-            // RES-1859: a slice is still an array — return_type was Type::Any.
-
-            env.set(
-                "array_slice".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any, Type::Bool],
-
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-522: indices of an array as a new array.
-            env.set("array_indices".to_string(), fn_array_to_array());
-            // RES-432: array of n copies.
-            env.set("array_repeat".to_string(), fn_any_any_to_array());
-            // RES-433: split string into single-char strings.
-            env.set("string_chars".to_string(), fn_string_to_array());
-            // RES-434: split string into lines (LF, CRLF).
-            env.set("string_lines".to_string(), fn_string_to_array());
-            // RES-496: split on Unicode whitespace.
-            env.set("string_words".to_string(), fn_string_to_array());
-            // RES-497: join string array with newline.
-            env.set(
-                "string_join_lines".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-498: join string array with single space.
-            env.set(
-                "string_unwords".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-499: take first n Unicode scalars.
-            env.set(
-                "string_take".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-506: drop first n Unicode scalars.
-            env.set(
-                "string_drop".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-435: split array into fixed-size chunks.
-            env.set("array_chunk".to_string(), fn_any_any_to_array());
-            // RES-436: non-overlapping substring count.
-            env.set(
-                "string_count".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-523: count occurrences of a single character.
-            env.set(
-                "string_count_char".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-524: char-index of a single character (-1 if absent).
-            env.set(
-                "string_find_char".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-525: named-predicate prefix slicing on strings.
-            let str_str_to_str = Type::Function {
-                params: vec![Type::String, Type::String],
-                return_type: Box::new(Type::String),
-            };
-            env.set("string_take_while_char".to_string(), str_str_to_str.clone());
-            env.set("string_drop_while_char".to_string(), str_str_to_str.clone());
-            // RES-526: named-predicate global char filter.
-            env.set("string_filter_char".to_string(), str_str_to_str);
-            // RES-527: ASCII case-insensitive string equality.
-            env.set(
-                "string_eq_ignore_case".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-437: insert separator between adjacent elements.
-            env.set("array_intersperse".to_string(), fn_any_any_to_array());
-            // RES-516: alternate elements from two arrays.
-            env.set("array_interleave".to_string(), fn_any_any_to_array());
-            // RES-438: one-sided trimmers.
-            env.set(
-                "trim_start".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "trim_end".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-439: bisect array at index → tuple.
-            env.set("array_split_at".to_string(), fn_any_any_to_array());
-            // RES-440: integer bitwise ops — strict (Int) -> Int / (Int, Int) -> Int.
-            let int_int_to_int = Type::Function {
-                params: vec![Type::Int, Type::Int],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("bit_and".to_string(), int_int_to_int.clone());
-            env.set("bit_or".to_string(), int_int_to_int.clone());
-            env.set("bit_xor".to_string(), int_int_to_int.clone());
-            env.set("bit_shl".to_string(), int_int_to_int.clone());
-            env.set("bit_shr".to_string(), int_int_to_int);
-            env.set(
-                "bit_not".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-488: popcount.
-            env.set(
-                "bit_count".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-489: count leading zero bits.
-            env.set(
-                "bit_leading_zeros".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-490: count trailing zero bits.
-            env.set(
-                "bit_trailing_zeros".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-511: single-bit test / set / clear / toggle.
-            let int_int_to_int = Type::Function {
-                params: vec![Type::Int, Type::Int],
-                return_type: Box::new(Type::Int),
-            };
-            env.set(
-                "bit_test".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set("bit_set".to_string(), int_int_to_int.clone());
-            env.set("bit_clear".to_string(), int_int_to_int.clone());
-            env.set("bit_toggle".to_string(), int_int_to_int.clone());
-            // RES-520: circular bit rotation.
-            env.set("bit_rotate_left".to_string(), int_int_to_int.clone());
-            env.set("bit_rotate_right".to_string(), int_int_to_int.clone());
-            // RES-534: extract a single byte from an i64.
-            env.set("bit_byte".to_string(), int_int_to_int);
-            // RES-538: set a single byte of an i64.
-            env.set(
-                "bit_set_byte".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-491: integer floor sqrt.
-            env.set(
-                "int_sqrt".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-517: integer exponentiation.
-            env.set(
-                "pow_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-518: integer division with explicit rounding.
-            let int_int_to_int = Type::Function {
-                params: vec![Type::Int, Type::Int],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("ceil_div".to_string(), int_int_to_int.clone());
-            env.set("floor_div".to_string(), int_int_to_int.clone());
-            // RES-519: Python-style modulo (sign of divisor).
-            env.set("modulo".to_string(), int_int_to_int);
-            // RES-492: floor log base 2.
-            env.set(
-                "int_log2".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-493: power-of-two predicate.
-            env.set(
-                "is_pow2".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-494: round up to next power of two.
-            env.set(
-                "next_pow2".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-495: int → lowercase hex string.
-            env.set(
-                "int_to_hex".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-512: int → binary string.
-            env.set(
-                "int_to_bin".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-442: last byte index of substring.
-            env.set(
-                "last_index_of".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-413: repeat a string n times.
-            env.set(
-                "string_repeat".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-414: first byte index of sub in s, or -1.
-            env.set(
-                "index_of".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-145: replace + format.
-            env.set(
-                "replace".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // `format`'s second argument is `Array<?>` — the prelude
-            // `Type::Array` is untyped (no element-type parameter yet),
-            // which fits the ticket's `Array<?>` signature.
-            env.set(
-                "format".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Array],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-213: prefix/suffix tests + string repetition.
-            env.set(
-                "starts_with".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "ends_with".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "repeat".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            // RES-339: string parsing and formatting.
-            env.set(
-                "parse_int".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            // RES-529: non-erroring parse with fallback default.
-            env.set(
-                "parse_int_or".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-532: non-erroring float parse with fallback default.
-            env.set(
-                "parse_float_or".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Float],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            env.set(
-                "parse_float".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "char_at".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "pad_left".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "pad_right".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::Int, Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-
-            // RES-130: explicit int ↔ float conversions. These are the
-            // only supported bridge between the two numeric types —
-            // arithmetic and literal-match pattern equality both reject
-            // implicit coercion (see `check_numeric_same_type`).
-            env.set(
-                "to_float".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            env.set(
-                "to_int".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-
-            // RES-366: pinned-width integer cast builtins. All accept
-            // Any (the call site holds whatever the source width is) and
-            // return the target type so the typechecker propagates the
-            // narrowed type into the surrounding expression.
-            let fn_any_to_int8 = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Int8),
-            };
-            let fn_any_to_int16 = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Int16),
-            };
-            let fn_any_to_int32 = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Int32),
-            };
-            let fn_any_to_int = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Int),
-            };
-            let fn_any_to_uint8 = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::UInt8),
-            };
-            let fn_any_to_uint16 = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::UInt16),
-            };
-            let fn_any_to_uint32 = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::UInt32),
-            };
-            let fn_any_to_uint64 = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::UInt64),
-            };
-            env.set("as_int8".to_string(), fn_any_to_int8());
-            env.set("as_int16".to_string(), fn_any_to_int16());
-            env.set("as_int32".to_string(), fn_any_to_int32());
-            env.set("as_int64".to_string(), fn_any_to_int());
-            env.set("as_uint8".to_string(), fn_any_to_uint8());
-            env.set("as_uint16".to_string(), fn_any_to_uint16());
-            env.set("as_uint32".to_string(), fn_any_to_uint32());
-            env.set("as_uint64".to_string(), fn_any_to_uint64());
-
-            // RES-138: current retry counter of the enclosing live block.
-            env.set(
-                "live_retries".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-
-            // RES-141: process-wide live-block telemetry.
-            env.set(
-                "live_total_retries".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "live_total_exhaustions".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-
-            // RES-144: one-line stdin reader (std-only).
-            env.set(
-                "input".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-
-            // RES-1100: `version()` returns the compiler's
-            // CARGO_PKG_VERSION so programs can embed the toolchain
-            // version in build manifests / provenance certificates.
-            env.set(
-                "version".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::String),
-                },
-            );
-
-            // RES-143: file I/O builtins (std-only; the resilient-runtime
-            // sibling crate has no builtins table so its no_std posture is
-            // unaffected).
-            env.set(
-                "file_read".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "file_write".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Void),
-                },
-            );
-
-            // RES-409: streaming file I/O — `file_open`, `file_read_chunk`,
-            // `file_write_chunk`, `file_seek`, `file_close`. The `File`
-            // handle is a `Type::Any` (a struct in disguise) until the type
-            // system grows a dedicated linear-resource form. Each builtin
-            // returns `Type::Result` so the user is forced to handle errors.
-            env.set(
-                "file_open".to_string(),
-                Type::Function {
-                    params: vec![Type::String, Type::String],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "file_read_chunk".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "file_write_chunk".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Bytes],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "file_seek".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::String],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "file_close".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-
-            // RES-151: read-only env-var accessor. `Result<String, String>`
-            // — absence is a first-class outcome, not a runtime halt.
-            env.set(
-                "env".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-
-            // RES-148: Map builtins. The typechecker doesn't (yet) carry
-            // a dedicated `Type::Map<K, V>` constructor — following the
-            // same permissive-Any convention as the Array / Result
-            // builtins until G7 inference lands.
-            env.set(
-                "map_new".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "map_insert".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "map_get".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "map_remove".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "map_keys".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "map_len".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-883.
-            env.set(
-                "map_values".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-884.
-            env.set(
-                "map_contains_key".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-1144: map_entries / map_merge / map_is_empty.
-            env.set(
-                "map_entries".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "map_merge".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "map_is_empty".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-
-            // RES-293: HashMap stdlib builtins. Same permissive-Any
-            // shape as the Map builtins above — once G7 inference lands
-            // these tighten to `HashMap<K, V>`.
-            env.set(
-                "hashmap_new".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "hashmap_insert".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "hashmap_get".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            env.set(
-                "hashmap_remove".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "hashmap_contains".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "hashmap_keys".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-885.
-            env.set(
-                "hashmap_len".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-886.
-            env.set(
-                "hashmap_values".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-1144: hashmap_entries / hashmap_merge / hashmap_is_empty.
-            env.set(
-                "hashmap_entries".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            env.set(
-                "hashmap_merge".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "hashmap_is_empty".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-1154: set_is_empty / set_from_array / result_and / option_and.
-            env.set(
-                "set_is_empty".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "set_from_array".to_string(),
-                Type::Function {
-                    params: vec![Type::Array],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "result_and".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "option_and".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-1160: argmax / argmin for float and string arrays.
-            let fn_array_to_int = || Type::Function {
-                params: vec![Type::Array],
-                return_type: Box::new(Type::Int),
-            };
-            env.set("array_argmax_float".to_string(), fn_array_to_int());
-            env.set("array_argmin_float".to_string(), fn_array_to_int());
-            env.set("array_argmax_string".to_string(), fn_array_to_int());
-            env.set("array_argmin_string".to_string(), fn_array_to_int());
-            // RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
-            let fn_float_to_float_p = || Type::Function {
-                params: vec![Type::Float],
-                return_type: Box::new(Type::Float),
-            };
-            env.set("expm1".to_string(), fn_float_to_float_p());
-            env.set("ln_1p".to_string(), fn_float_to_float_p());
-            env.set(
-                "mul_add".to_string(),
-                Type::Function {
-                    params: vec![Type::Float, Type::Float, Type::Float],
-                    return_type: Box::new(Type::Float),
-                },
-            );
-            env.set("recip".to_string(), fn_float_to_float_p());
-
-            // RES-149: Set builtins. Same permissive-Any convention as
-            // Map — no dedicated `Type::Set<T>` until inference lands.
-            env.set(
-                "set_new".to_string(),
-                Type::Function {
-                    params: vec![],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "set_insert".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "set_remove".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "set_has".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "set_len".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "set_items".to_string(),
-                Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Array),
-                },
-            );
-            // RES-876: set algebra primitives.
-            env.set(
-                "set_union".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-877.
-            env.set(
-                "set_intersection".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-878.
-            env.set(
-                "set_difference".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-            // RES-879.
-            env.set(
-                "set_is_subset".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-880.
-            env.set(
-                "set_is_superset".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-881.
-            env.set(
-                "set_is_disjoint".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            // RES-882.
-            env.set(
-                "set_symmetric_difference".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Any),
-                },
-            );
-
-            // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
-            // `byte_at` returns Int — the language has no `u8` yet.
-            env.set(
-                "bytes_len".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            env.set(
-                "bytes_slice".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Bytes),
-                },
-            );
-            env.set(
-                "byte_at".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-887.
-            env.set(
-                "bytes_concat".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Bytes],
-                    return_type: Box::new(Type::Bytes),
-                },
-            );
-            // RES-888.
-            env.set(
-                "bytes_eq".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Bytes],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-
-            // Result builtins
-            env.set("Ok".to_string(), fn_any_to_result());
-            env.set("Err".to_string(), fn_any_to_result());
-            env.set("is_ok".to_string(), fn_result_to_bool());
-            env.set("is_err".to_string(), fn_result_to_bool());
-            env.set("unwrap".to_string(), fn_result_to_any());
-            env.set("unwrap_err".to_string(), fn_result_to_any());
-
-            // RES-936/937: Result fallback variants — Result + default → Any.
-            let fn_result_any_to_any = || Type::Function {
-                params: vec![Type::Result, Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("result_unwrap_or".to_string(), fn_result_any_to_any());
-            env.set("result_unwrap_or_err".to_string(), fn_result_any_to_any());
-            // RES-938: Result <-> Option conversion.
-            env.set(
-                "result_to_option".to_string(),
-                Type::Function {
+                };
+                let fn_result_to_any = || Type::Function {
                     params: vec![Type::Result],
                     return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "option_to_result".to_string(),
-                Type::Function {
-                    params: vec![Type::Any, Type::Any],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            // RES-939: chain alternatives.
-            env.set(
-                "option_or".to_string(),
-                Type::Function {
+                };
+
+                // I/O
+                env.set("println".to_string(), fn_any_to_void());
+                env.set("print".to_string(), fn_any_to_void());
+
+                // RES-385: `drop(v)` — explicit single-use consumption
+                // of a linear value. Accepts any type; the linearity pass
+                // (see `crate::linear`) is what enforces the single-use
+                // rule on the argument.
+                env.set("drop".to_string(), fn_any_to_void());
+
+                // Math (single-arg — int/float passed as Any)
+                env.set("abs".to_string(), fn_any_to_any());
+
+                // RES-422: sign(x) always returns -1, 0, or +1 — that's Int.
+                env.set(
+                    "sign".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // RES-411: float predicates — return Bool; math functions return Float.
+                // (Parameter is kept as Any so both Int and Float are accepted.)
+                let fn_any_to_bool = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Bool),
+                };
+                let fn_any_to_float = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Float),
+                };
+                env.set("is_nan".to_string(), fn_any_to_bool());
+                env.set("is_inf".to_string(), fn_any_to_bool());
+                env.set("is_finite".to_string(), fn_any_to_bool());
+                env.set("sqrt".to_string(), fn_any_to_float());
+                env.set("floor".to_string(), fn_any_to_float());
+                env.set("ceil".to_string(), fn_any_to_float());
+                env.set("min".to_string(), fn_any_any_to_any());
+                env.set("max".to_string(), fn_any_any_to_any());
+                // RES-415: gcd/lcm — strict (Int, Int) -> Int.
+                env.set(
+                    "gcd".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "lcm".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-536: gcd / lcm reduction over an integer array.
+                let arr_to_int = Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("gcd_array".to_string(), arr_to_int.clone());
+                env.set("lcm_array".to_string(), arr_to_int);
+                // RES-567: factorial with overflow detection.
+                env.set(
+                    "factorial".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-568: binomial coefficient C(n, k).
+                env.set(
+                    "binomial".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-569: n-th Fibonacci with overflow detection.
+                env.set(
+                    "fibonacci".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-570: trial-division primality test.
+                env.set(
+                    "is_prime".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-571: smallest prime greater than n.
+                env.set(
+                    "next_prime".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set("pow".to_string(), fn_any_any_to_any());
+                // RES-295: clamp(x, lo, hi) — type-preserving for Int triples,
+                // promoted to Float if any arg is Float. Signed as
+                // (Any, Any, Any) -> Any to match abs/min/max precedent.
+                env.set(
+                    "clamp".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
+                // RES-146: transcendentals. Float-in / Float-out per
+                // RES-130 (no implicit int↔float coercion).
+                let fn_float_to_float = || Type::Function {
+                    params: vec![Type::Float],
+                    return_type: Box::new(Type::Float),
+                };
+                env.set("sin".to_string(), fn_float_to_float());
+                env.set("cos".to_string(), fn_float_to_float());
+                env.set("tan".to_string(), fn_float_to_float());
+                // RES-894.
+                env.set("to_radians".to_string(), fn_float_to_float());
+                // RES-895.
+                env.set("to_degrees".to_string(), fn_float_to_float());
+                env.set("ln".to_string(), fn_float_to_float());
+                // RES-889.
+                env.set("log10".to_string(), fn_float_to_float());
+                // RES-890.
+                env.set("log2".to_string(), fn_float_to_float());
+                env.set("exp".to_string(), fn_float_to_float());
+                // RES-891.
+                env.set("exp2".to_string(), fn_float_to_float());
+                // RES-896.
+                env.set("sinh".to_string(), fn_float_to_float());
+                // RES-897.
+                env.set("cosh".to_string(), fn_float_to_float());
+                // RES-898.
+                env.set("tanh".to_string(), fn_float_to_float());
+                // RES-899.
+                env.set("asinh".to_string(), fn_float_to_float());
+                // RES-900.
+                env.set("acosh".to_string(), fn_float_to_float());
+                // RES-901.
+                env.set("atanh".to_string(), fn_float_to_float());
+                // RES-902.
+                env.set("asin".to_string(), fn_float_to_float());
+                // RES-903.
+                env.set("acos".to_string(), fn_float_to_float());
+                // RES-904.
+                env.set("atan".to_string(), fn_float_to_float());
+                // RES-905.
+                env.set("cbrt".to_string(), fn_float_to_float());
+                // RES-907: bit-counting integer builtins (Int -> Int).
+                let fn_int_to_int = || Type::Function {
+                    params: vec![Type::Int],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("count_ones".to_string(), fn_int_to_int());
+                env.set("count_zeros".to_string(), fn_int_to_int());
+                env.set("leading_zeros".to_string(), fn_int_to_int());
+                env.set("trailing_zeros".to_string(), fn_int_to_int());
+                // RES-1115..1118: overflow-safe integer arithmetic. The
+                // checked_* family returns Option<int>; the type system has
+                // no Option<T> yet, so we use Type::Any for the return slot
+                // — the runtime check (`Value::Option`) is strict.
+                let fn_int_int_to_int = || Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Int),
+                };
+                let fn_int_int_to_any = || Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("saturating_add".to_string(), fn_int_int_to_int());
+                env.set("saturating_sub".to_string(), fn_int_int_to_int());
+                env.set("saturating_mul".to_string(), fn_int_int_to_int());
+                env.set("wrapping_add".to_string(), fn_int_int_to_int());
+                env.set("wrapping_sub".to_string(), fn_int_int_to_int());
+                env.set("wrapping_mul".to_string(), fn_int_int_to_int());
+                env.set("checked_add".to_string(), fn_int_int_to_any());
+                env.set("checked_sub".to_string(), fn_int_int_to_any());
+                env.set("checked_mul".to_string(), fn_int_int_to_any());
+                env.set("checked_div".to_string(), fn_int_int_to_any());
+                // RES-1119..1121: bit manipulation.
+                env.set("rotate_left_int".to_string(), fn_int_int_to_int());
+                env.set("rotate_right_int".to_string(), fn_int_int_to_int());
+                env.set("reverse_bits".to_string(), fn_int_to_int());
+                env.set("swap_bytes".to_string(), fn_int_to_int());
+                // RES-1122..1123: int ↔ bytes endianness conversion.
+                env.set(
+                    "to_be_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Bytes),
+                    },
+                );
+                env.set(
+                    "to_le_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Bytes),
+                    },
+                );
+                env.set(
+                    "from_be_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "from_le_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-1124: integer-only math primitives.
+                env.set("isqrt".to_string(), fn_int_to_int());
+                env.set("ipow".to_string(), fn_int_int_to_int());
+                // RES-1126..1128: direction-rounded + Euclidean + midpoint.
+                env.set("div_ceil".to_string(), fn_int_int_to_int());
+                env.set("div_floor".to_string(), fn_int_int_to_int());
+                env.set("div_euclid".to_string(), fn_int_int_to_int());
+                env.set("rem_euclid".to_string(), fn_int_int_to_int());
+                env.set("midpoint".to_string(), fn_int_int_to_int());
+                // RES-1129: integer logarithms.
+                env.set("ilog2".to_string(), fn_int_to_int());
+                env.set("ilog10".to_string(), fn_int_to_int());
+                // RES-1130: IEEE 754 bit reinterpret cast.
+                env.set(
+                    "float_to_bits".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "float_from_bits".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                // RES-1134: bitwise + construction ops on Bytes.
+                let fn_bytes_bytes_to_bytes = || Type::Function {
+                    params: vec![Type::Bytes, Type::Bytes],
+                    return_type: Box::new(Type::Bytes),
+                };
+                let fn_bytes_to_bytes = || Type::Function {
+                    params: vec![Type::Bytes],
+                    return_type: Box::new(Type::Bytes),
+                };
+                env.set("bytes_xor".to_string(), fn_bytes_bytes_to_bytes());
+                env.set("bytes_and".to_string(), fn_bytes_bytes_to_bytes());
+                env.set("bytes_or".to_string(), fn_bytes_bytes_to_bytes());
+                env.set("bytes_not".to_string(), fn_bytes_to_bytes());
+                env.set(
+                    "bytes_fill".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Bytes),
+                    },
+                );
+                env.set("bytes_reverse".to_string(), fn_bytes_to_bytes());
+                // RES-1136: alignment helpers.
+                env.set("next_multiple_of".to_string(), fn_int_int_to_int());
+                env.set(
+                    "is_multiple_of".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-1138: IEEE 754 classification + total order + sign-bit
+                // predicates.
+                let fn_float_to_bool = || Type::Function {
+                    params: vec![Type::Float],
+                    return_type: Box::new(Type::Bool),
+                };
+                env.set(
+                    "float_classify".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "float_total_cmp".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float, Type::Float],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set("float_is_normal".to_string(), fn_float_to_bool());
+                env.set("float_is_subnormal".to_string(), fn_float_to_bool());
+                env.set("float_sign_bit".to_string(), fn_float_to_bool());
+                // RES-1142: array chunking + striding + rotation primitives.
+                let fn_array_int_to_array = || Type::Function {
+                    params: vec![Type::Array, Type::Int],
+                    return_type: Box::new(Type::Array),
+                };
+                env.set("array_chunks".to_string(), fn_array_int_to_array());
+                env.set("array_chunks_exact".to_string(), fn_array_int_to_array());
+                env.set("array_step".to_string(), fn_array_int_to_array());
+                env.set("array_rotate_left".to_string(), fn_array_int_to_array());
+                env.set("array_rotate_right".to_string(), fn_array_int_to_array());
+                // RES-1140: ASCII char-class predicates.
+                let fn_string_to_bool = || Type::Function {
+                    params: vec![Type::String],
+                    return_type: Box::new(Type::Bool),
+                };
+                env.set("is_ascii".to_string(), fn_string_to_bool());
+                env.set("is_ascii_whitespace".to_string(), fn_string_to_bool());
+                env.set("is_ascii_hexdigit".to_string(), fn_string_to_bool());
+                env.set("is_ascii_uppercase".to_string(), fn_string_to_bool());
+                env.set("is_ascii_lowercase".to_string(), fn_string_to_bool());
+                env.set("is_ascii_punctuation".to_string(), fn_string_to_bool());
+                env.set("is_ascii_control".to_string(), fn_string_to_bool());
+                // RES-1146: float / string sort + array_is_sorted predicates.
+                let fn_array_to_array = || Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Array),
+                };
+                let fn_array_to_bool = || Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Bool),
+                };
+                env.set("array_sort_float".to_string(), fn_array_to_array());
+                env.set("array_sort_string".to_string(), fn_array_to_array());
+                env.set("array_is_sorted".to_string(), fn_array_to_bool());
+                env.set("array_is_sorted_float".to_string(), fn_array_to_bool());
+                env.set("array_is_sorted_string".to_string(), fn_array_to_bool());
+                // RES-1148: binary search on sorted int / float / string arrays.
+                // Return type is Value::Result (ok/err) — now typed as Type::Result
+                // since the runtime confirmed returns Value::Result { ok, payload }.
+                env.set(
+                    "array_binary_search".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Int],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "array_binary_search_float".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Float],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "array_binary_search_string".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                // RES-1150: statistical reductions — variance, stddev,
+                // median_float, range_float. All return Float.
+                let fn_array_to_float = || Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Float),
+                };
+                env.set("array_variance_int".to_string(), fn_array_to_float());
+                env.set("array_variance_float".to_string(), fn_array_to_float());
+                env.set("array_stddev_int".to_string(), fn_array_to_float());
+                env.set("array_stddev_float".to_string(), fn_array_to_float());
+                env.set("array_median_float".to_string(), fn_array_to_float());
+                env.set("array_range_float".to_string(), fn_array_to_float());
+                // RES-1152: per-byte helpers — repeat / count_byte / replace_byte.
+                env.set(
+                    "bytes_repeat".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Int],
+                        return_type: Box::new(Type::Bytes),
+                    },
+                );
+                env.set(
+                    "bytes_count_byte".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "bytes_replace_byte".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Int, Type::Int],
+                        return_type: Box::new(Type::Bytes),
+                    },
+                );
+                // RES-1156: per-bit accessors on i64.
+                env.set("set_bit".to_string(), fn_int_int_to_int());
+                env.set("clear_bit".to_string(), fn_int_int_to_int());
+                env.set(
+                    "get_bit".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set("flip_bit".to_string(), fn_int_int_to_int());
+                // RES-1158: array set-style helpers + fallback-safe first/last
+                // + index_of_last.
+                let fn_array_array_to_array = || Type::Function {
+                    params: vec![Type::Array, Type::Array],
+                    return_type: Box::new(Type::Array),
+                };
+                env.set("array_difference".to_string(), fn_array_array_to_array());
+                env.set("array_intersection".to_string(), fn_array_array_to_array());
+                env.set(
+                    "array_index_of_last".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "array_first_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "array_last_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-1162: deterministic hash builtins.
+                env.set(
+                    "hash_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "hash_string".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "hash_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set("hash_combine".to_string(), fn_int_int_to_int());
+                // RES-1164: iteration helpers.
+                env.set(
+                    "enumerate".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "array_zip3".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Array, Type::Array],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "string_truncate".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-1166: rounding builtins.
+                let fn_float_to_float = || Type::Function {
+                    params: vec![Type::Float],
+                    return_type: Box::new(Type::Float),
+                };
+                let fn_float_to_int = || Type::Function {
+                    params: vec![Type::Float],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("round".to_string(), fn_float_to_float());
+                env.set("trunc".to_string(), fn_float_to_float());
+                env.set("round_to_int".to_string(), fn_float_to_int());
+                env.set("trunc_to_int".to_string(), fn_float_to_int());
+                // RES-1170: cumulative reductions + combined min/max.
+                let fn_array_to_array_int = || Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Array),
+                };
+                env.set("array_cumsum".to_string(), fn_array_to_array_int());
+                env.set("array_cumprod".to_string(), fn_array_to_array_int());
+                env.set("array_diffs".to_string(), fn_array_to_array_int());
+                env.set("array_min_max".to_string(), fn_array_to_array_int());
+                // RES-1172: small string + array gaps.
+                let fn_string_to_array = || Type::Function {
+                    params: vec![Type::String],
+                    return_type: Box::new(Type::Array),
+                };
+                let fn_string_string_to_array = || Type::Function {
+                    params: vec![Type::String, Type::String],
+                    return_type: Box::new(Type::Array),
+                };
+                env.set("string_split_once".to_string(), fn_string_string_to_array());
+                env.set(
+                    "string_rsplit_once".to_string(),
+                    fn_string_string_to_array(),
+                );
+                env.set(
+                    "string_from_chars".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "array_is_empty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-1174: wall-clock unix time. @io / impure.
+                let fn_zero_to_int = || Type::Function {
+                    params: vec![],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("unix_time_s".to_string(), fn_zero_to_int());
+                env.set("unix_time_ms".to_string(), fn_zero_to_int());
+                env.set("unix_time_ns".to_string(), fn_zero_to_int());
+                // RES-1176: bytes ↔ string conversions.
+                let fn_bytes_bytes_to_bytes_strip = || Type::Function {
+                    params: vec![Type::Bytes, Type::Bytes],
+                    return_type: Box::new(Type::Bytes),
+                };
+                env.set(
+                    "bytes_strip_prefix".to_string(),
+                    fn_bytes_bytes_to_bytes_strip(),
+                );
+                env.set(
+                    "bytes_strip_suffix".to_string(),
+                    fn_bytes_bytes_to_bytes_strip(),
+                );
+                // RES-1178: bytes_to_string always produces a String value on
+                // the success path (invalid UTF-8 returns a lossy string, not a
+                // different type). Promote from Any → String so the typechecker
+                // can verify that callers don't treat the result as an int/bool.
+                env.set(
+                    "bytes_to_string".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-1178: bytes slicing primitives — (Bytes, Int) -> Bytes.
+                let fn_bytes_int_to_bytes = || Type::Function {
+                    params: vec![Type::Bytes, Type::Int],
+                    return_type: Box::new(Type::Bytes),
+                };
+                env.set("bytes_take".to_string(), fn_bytes_int_to_bytes());
+                env.set("bytes_drop".to_string(), fn_bytes_int_to_bytes());
+                env.set("bytes_take_last".to_string(), fn_bytes_int_to_bytes());
+                env.set("bytes_drop_last".to_string(), fn_bytes_int_to_bytes());
+                // RES-1182: integer bit rotation + scalar signum.
+                let fn_int_int_to_int = || Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("rotate_left".to_string(), fn_int_int_to_int());
+                env.set("rotate_right".to_string(), fn_int_int_to_int());
+                env.set(
+                    "signum".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "log".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float, Type::Float],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                // RES-295: atan2(y, x) — Float-only per RES-130.
+                env.set(
+                    "atan2".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float, Type::Float],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                // RES-892.
+                env.set(
+                    "hypot".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float, Type::Float],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                // RES-893.
+                env.set(
+                    "copysign".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float, Type::Float],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+
+                // RES-147: monotonic ms-clock builtin. std-only.
+                env.set(
+                    "clock_ms".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // RES-150: seedable random builtins. std-only.
+                env.set(
+                    "random_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "random_float".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+
+                // len: any -> int
+                env.set(
+                    "len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // Array builtins: any -> array / (array,int,int) -> array
+                env.set(
+                    "push".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "pop".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "slice".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Int, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+
+                // String builtins
+                env.set(
+                    "split".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-1859: `string_split` — explicit-name alias for `split`.
+                env.set(
+                    "string_split".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-535: split with a maximum number-of-splits limit.
+                env.set(
+                    "string_split_n".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-545: split on the last occurrence of the separator.
+                env.set(
+                    "string_split_last".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "trim".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "contains".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "to_upper".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "to_lower".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-412: reverse a string (chars) or an array (clones).
+                env.set(
+                    "string_reverse".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set("array_reverse".to_string(), fn_array_to_array());
+                // RES-1859: higher-order array builtins — callback is typed
+                // as Any because we have no generic function type yet.
+                env.set(
+                    "array_map".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "array_filter".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "array_reduce".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-507: generic callback-based search/predicate builtins.
+                env.set(
+                    "array_find".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "array_find_index".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "array_any".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "array_all".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+
+                // RES-2647: map functional operations (callback-taking).
+                // Return types use the same permissive-Any convention as map_keys/map_values.
+                env.set(
+                    "map_filter".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "map_map_values".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "map_for_each".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Void),
+                    },
+                );
+                env.set(
+                    "map_to_pairs".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "map_invert".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-2646: higher-order functional array operations.
+                env.set(
+                    "array_flat_map".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // array_group_by returns a Map (unparameterised, same convention
+                // as other map builtins — Type::Any until Map<K,V> lands).
+                env.set(
+                    "array_group_by".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // array_partition returns [[passing], [failing]] — two-element array.
+                env.set(
+                    "array_partition".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // map_from_pairs(pairs) -> Map (Any until Map<K,V> lands).
+                env.set(
+                    "map_from_pairs".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-2646: array_scan(arr, init, fn) -> Array of all prefix accumulator values.
+                env.set(
+                    "array_scan".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-2648: array combinators with arbitrary callbacks.
+                let arr_fn_to_arr = Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                };
+                env.set("array_sort_by".to_string(), arr_fn_to_arr.clone());
+                env.set("array_take_while".to_string(), arr_fn_to_arr.clone());
+                env.set("array_drop_while".to_string(), arr_fn_to_arr);
+                env.set(
+                    "array_min_by".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "array_max_by".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "array_count_if".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "array_zip_with".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Array, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "array_windows".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "array_sum_by".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "array_product_by".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-2649: map higher-order operations.
+                env.set(
+                    "map_merge_with".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "map_update_with".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-2649: string higher-order operations.
+                env.set(
+                    "string_map_chars".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "string_filter_by".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "string_fold".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "string_for_each_char".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Any],
+                        return_type: Box::new(Type::Void),
+                    },
+                );
+                // RES-2650: numeric utilities.
+                env.set(
+                    "lerp".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                env.set(
+                    "remap".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                env.set(
+                    "float_approx_eq".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "round_to".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                env.set(
+                    "int_pow".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-2650: collection extras.
+                env.set(
+                    "array_frequency_map".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "array_key_by".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "array_iterate".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-2651: Result/Option HOF.
+                let result_fn_2 = Type::Function {
                     params: vec![Type::Any, Type::Any],
                     return_type: Box::new(Type::Any),
-                },
-            );
-            env.set(
-                "result_or".to_string(),
-                Type::Function {
-                    params: vec![Type::Result, Type::Result],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            // RES-940: power-of-two helpers.
-            env.set(
-                "is_power_of_two".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Bool),
-                },
-            );
-            env.set(
-                "next_power_of_two".to_string(),
-                Type::Function {
-                    params: vec![Type::Int],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-941: int-array statistics → Float.
-            let fn_array_to_float = || Type::Function {
-                params: vec![Type::Any],
-                return_type: Box::new(Type::Float),
-            };
-            env.set("array_average".to_string(), fn_array_to_float());
-            env.set("array_median".to_string(), fn_array_to_float());
-            // RES-942: float-array reductions.
-            env.set("array_sum_float".to_string(), fn_array_to_float());
-            env.set("array_product_float".to_string(), fn_array_to_float());
-            env.set("array_min_float".to_string(), fn_array_to_float());
-            env.set("array_max_float".to_string(), fn_array_to_float());
-            env.set("array_average_float".to_string(), fn_array_to_float());
-            // RES-943: hex encoding.
-            env.set(
-                "bytes_to_hex".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes],
-                    return_type: Box::new(Type::String),
-                },
-            );
-            env.set(
-                "bytes_from_hex".to_string(),
-                Type::Function {
-                    params: vec![Type::String],
-                    return_type: Box::new(Type::Result),
-                },
-            );
-            // RES-944: bytes search.
-            let fn_bytes_bytes_to_bool = || Type::Function {
-                params: vec![Type::Bytes, Type::Bytes],
-                return_type: Box::new(Type::Bool),
-            };
-            env.set("bytes_starts_with".to_string(), fn_bytes_bytes_to_bool());
-            env.set("bytes_ends_with".to_string(), fn_bytes_bytes_to_bool());
-            env.set(
-                "bytes_index_of".to_string(),
-                Type::Function {
-                    params: vec![Type::Bytes, Type::Bytes],
-                    return_type: Box::new(Type::Int),
-                },
-            );
-            // RES-945: default-fallback map accessors.
-            let fn_map_key_default = || Type::Function {
-                params: vec![Type::Any, Type::Any, Type::Any],
-                return_type: Box::new(Type::Any),
-            };
-            env.set("map_get_or".to_string(), fn_map_key_default());
-            env.set("hashmap_get_or".to_string(), fn_map_key_default());
+                };
+                env.set("result_map".to_string(), result_fn_2.clone());
+                env.set("result_and_then".to_string(), result_fn_2.clone());
+                env.set("result_map_err".to_string(), result_fn_2.clone());
+                env.set("result_or_else".to_string(), result_fn_2);
+                let option_fn_2 = Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("option_map".to_string(), option_fn_2.clone());
+                env.set("option_and_then".to_string(), option_fn_2.clone());
+                env.set("option_filter".to_string(), option_fn_2.clone());
+                env.set("option_or_else".to_string(), option_fn_2);
+                env.set(
+                    "option_ok_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-2652: type introspection + collection ergonomics.
+                env.set(
+                    "type_of".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "result_collect".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "array_from_fn".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
 
-            // RES-328: `cell(initial)` — shared mutable container.
-            // Element type isn't tracked at the type-system layer (the
-            // generic story lands with G7); the runtime enforces that
-            // `.set` rebinds the inner value, and the inner value's
-            // dynamic type flows through `Type::Any`.
-            env.set("cell".to_string(), fn_any_to_any());
-            env
-        });
+                // RES-416: integer-array reductions.
+                env.set("array_sum".to_string(), fn_any_to_int());
+                env.set("array_product".to_string(), fn_any_to_int());
+                // RES-417: array min/max.
+                env.set("array_min".to_string(), fn_any_to_int());
+                env.set("array_max".to_string(), fn_any_to_int());
+                // RES-543: empty-safe min/max with fallback default.
+                let arr_int_to_int = Type::Function {
+                    params: vec![Type::Any, Type::Int],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("array_max_or".to_string(), arr_int_to_int.clone());
+                env.set("array_min_or".to_string(), arr_int_to_int);
+                // RES-549: integer mean (truncating toward zero).
+                env.set(
+                    "array_mean_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-550: integer median (truncating mean for even len).
+                env.set(
+                    "array_median_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-551: integer mode (most-common; smallest on ties).
+                env.set(
+                    "array_mode_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-552: peak-to-peak range (max − min).
+                env.set(
+                    "array_range_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-553: consecutive pairwise differences.
+                env.set(
+                    "array_diff_consec_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-554: per-element clamp to [lo, hi].
+                env.set(
+                    "array_clamp_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-555: per-element sign (-1/0/1).
+                env.set(
+                    "array_signum_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-556: per-element absolute value.
+                env.set(
+                    "array_abs_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-557: dot product of two equal-length int arrays.
+                env.set(
+                    "array_dot_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-558: sum of squares (Σ x²).
+                env.set(
+                    "array_sum_squares_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-559: running prefix sum.
+                env.set(
+                    "array_cumsum_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-560: running max.
+                env.set(
+                    "array_cummax_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-561: running min.
+                env.set(
+                    "array_cummin_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-562: running product.
+                env.set(
+                    "array_cumprod_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-563: count elements in inclusive [lo, hi].
+                env.set(
+                    "array_count_in_range_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-503: index of max/min element.
+                env.set(
+                    "array_argmax_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "array_argmin_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-418: element search.
+                env.set("array_contains".to_string(), fn_any_any_to_bool());
+                env.set("array_index_of".to_string(), fn_any_any_to_int());
+                // RES-544: every index where element equals x.
+                env.set("array_index_of_all".to_string(), fn_any_any_to_array());
+                // RES-541: set-like operations on arrays.
+                env.set("array_intersect".to_string(), fn_any_any_to_array());
+                env.set("array_diff".to_string(), fn_any_any_to_array());
+                // RES-542: order-preserving global-dedup union.
+                env.set("array_union".to_string(), fn_any_any_to_array());
+                // RES-419: Unicode-scalar ↔ char conversions.
+                env.set(
+                    "chr".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "ord".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-505: parse single char to base-36 digit.
+                env.set(
+                    "char_to_digit".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-513: int 0..=35 → base-36 digit char.
+                env.set(
+                    "digit_to_char".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-420: concatenate two arrays.
+                env.set("array_concat".to_string(), fn_any_any_to_array());
+                // RES-515: three-way concatenation.
+                env.set(
+                    "array_concat3".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-421: take/drop first n.
+                env.set("array_take".to_string(), fn_any_any_to_array());
+                env.set("array_drop".to_string(), fn_any_any_to_array());
+                // RES-537: take/drop trailing n elements.
+                env.set("array_take_last".to_string(), fn_any_any_to_array());
+                env.set("array_drop_last".to_string(), fn_any_any_to_array());
+                // RES-514: pick every nth element.
+                env.set("array_step".to_string(), fn_any_any_to_array());
+                // RES-422: integer sort ascending.
+                env.set("array_sort".to_string(), fn_array_to_array());
+                // RES-443: integer sort descending.
+                env.set("array_sort_desc".to_string(), fn_array_to_array());
+                // RES-444: Fisher-Yates shuffle (impure: uses RNG).
+                env.set("array_shuffle".to_string(), fn_array_to_array());
+                // RES-445: array prefix/suffix predicates.
+                env.set("array_starts_with".to_string(), fn_any_any_to_bool());
+                env.set("array_ends_with".to_string(), fn_any_any_to_bool());
+                // RES-446: all match indices.
+                env.set("string_find_all".to_string(), fn_any_any_to_array());
+                // RES-546: first byte index of substring, -1 if missing.
+                env.set(
+                    "string_find".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-547: last byte index of substring, -1 if missing.
+                env.set(
+                    "string_rfind".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-548: split string at byte index → [before, after].
+                env.set(
+                    "string_split_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-447: i64 boundary constants — zero-arg → Int.
+                env.set(
+                    "int_min".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "int_max".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-448: array_position(arr, x, start).
+                env.set(
+                    "array_position".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-449: array padding (3-arg: arr, n, fill).
+                let fn_any_int_any_to_any = Type::Function {
+                    params: vec![Type::Any, Type::Int, Type::Any],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
+                env.set("array_pad_right".to_string(), fn_any_int_any_to_any);
+                // RES-450: array_swap(arr, i, j) — 3-arg.
+                // RES-1859: return_type was Type::Any; swapping elements
+                // produces an array of the same type, so Array is correct.
+                env.set(
+                    "array_swap".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-451: insert/remove at index.
+                // RES-1859: both produce a new array of the same element type.
+                env.set(
+                    "array_insert_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "array_remove_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-452: replace element at index.
+                // RES-1859: produces a new array — return_type was Type::Any.
+                env.set(
+                    "array_set_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-453: total Unicode-scalar at index.
+                env.set(
+                    "string_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-454: Unicode-scalar substring.
+                env.set(
+                    "string_substring".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-455: sliding windows.
+                env.set("array_window".to_string(), fn_any_any_to_array());
+                // RES-456: rotation.
+                env.set("array_rotate_left".to_string(), fn_any_any_to_array());
+                env.set("array_rotate_right".to_string(), fn_any_any_to_array());
+                // RES-457: capitalize.
+                env.set(
+                    "string_capitalize".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-458: array_cycle.
+                env.set("array_cycle".to_string(), fn_any_any_to_array());
+                // RES-459: ASCII-class string predicates.
+                let str_to_bool = Type::Function {
+                    params: vec![Type::String],
+                    return_type: Box::new(Type::Bool),
+                };
+                env.set("is_ascii_alpha".to_string(), str_to_bool.clone());
+                env.set("is_ascii_digit".to_string(), str_to_bool.clone());
+                env.set("is_ascii_alnum".to_string(), str_to_bool);
+                // RES-460: trim arbitrary char set.
+                env.set(
+                    "trim_chars".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-461: indent every line with n spaces.
+                env.set(
+                    "string_indent".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-462: adjacent pairs as tuples.
+                env.set("array_pairs".to_string(), fn_array_to_array());
+                // RES-463: UTF-8 byte length.
+                env.set(
+                    "string_bytes_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-564: byte at index, -1 if out of range.
+                env.set(
+                    "string_byte_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-565: string → array of UTF-8 bytes.
+                env.set(
+                    "string_to_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-566: array of bytes → Result<String, String>.
+                // RES-1859: return_type was Type::Any; the builtin returns a
+                // Result (Ok(string) on success, Err(string) on invalid UTF-8).
+                env.set(
+                    "string_from_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                // RES-464: parse int with explicit radix → Result<Int, String>.
+                env.set(
+                    "parse_int_base".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                // RES-465: render int in given radix → String.
+                env.set(
+                    "int_to_base".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-466: remove first matching element.
+                env.set("array_remove".to_string(), fn_any_any_to_array());
+                // RES-467: remove all matching elements.
+                env.set("array_remove_all".to_string(), fn_any_any_to_array());
+                // RES-468: collapse adjacent duplicates.
+                env.set("array_dedup".to_string(), fn_array_to_array());
+                // RES-504: partition into maximal runs of equal int elements.
+                // RES-2645: returns an array of groups (array of arrays).
+                env.set(
+                    "array_group_by_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-533: count of maximal runs.
+                env.set(
+                    "array_count_runs".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-469: scalar all/any equality predicates.
+                env.set("array_all_eq".to_string(), fn_any_any_to_bool());
+                env.set("array_any_eq".to_string(), fn_any_any_to_bool());
+                // RES-471: prefix/suffix strippers.
+                let str_str_to_str = Type::Function {
+                    params: vec![Type::String, Type::String],
+                    return_type: Box::new(Type::String),
+                };
+                env.set("string_strip_prefix".to_string(), str_str_to_str.clone());
+                env.set("string_strip_suffix".to_string(), str_str_to_str);
+                // RES-472: element-wise array equality.
+                env.set("array_eq".to_string(), fn_any_any_to_bool());
+                // RES-473: ternary numeric min/max.
+                let any3_to_any = Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("min3".to_string(), any3_to_any.clone());
+                env.set("max3".to_string(), any3_to_any);
+                // RES-474: array_ne.
+                env.set("array_ne".to_string(), fn_any_any_to_bool());
+                // RES-475: fixed-op integer fold.
+                env.set(
+                    "array_fold_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-502: running-fold (intermediate accumulators).
+                env.set(
+                    "array_scan_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-521: element-wise binary op on two int arrays.
+                env.set(
+                    "array_zip_with_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-477: one-sided char-set trimmers.
+                let str_str_to_str_b = Type::Function {
+                    params: vec![Type::String, Type::String],
+                    return_type: Box::new(Type::String),
+                };
+                env.set("trim_start_chars".to_string(), str_str_to_str_b.clone());
+                env.set("trim_end_chars".to_string(), str_str_to_str_b);
+                // RES-478: array_count_eq alias. RES-2645: count is always Int.
+                env.set("array_count_eq".to_string(), fn_any_any_to_int());
+                // RES-479: string predicates.
+                let str_to_bool_b = Type::Function {
+                    params: vec![Type::String],
+                    return_type: Box::new(Type::Bool),
+                };
+                env.set("is_empty".to_string(), str_to_bool_b.clone());
+                env.set("is_blank".to_string(), str_to_bool_b);
+                // RES-480: replace only first occurrence.
+                env.set(
+                    "string_replace_first".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-481: drop first / drop last.
+                env.set("array_rest".to_string(), fn_array_to_array());
+                env.set("array_init".to_string(), fn_array_to_array());
+                // RES-482: replace up to n occurrences.
+                env.set(
+                    "string_replace_n".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-483: named-predicate take/drop on int arrays.
+                let arr_str_to_arr = Type::Function {
+                    params: vec![Type::Any, Type::String],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("array_take_while_int".to_string(), arr_str_to_arr.clone());
+                env.set("array_drop_while_int".to_string(), arr_str_to_arr.clone());
+                // RES-484: named-predicate filter / partition on int arrays.
+                env.set("array_filter_int".to_string(), arr_str_to_arr.clone());
+                env.set("array_partition_int".to_string(), arr_str_to_arr);
+                // RES-500: named-predicate any-element on int arrays.
+                env.set(
+                    "array_any_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-501: named-predicate every-element on int arrays.
+                env.set(
+                    "array_all_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-530: named-predicate count on int arrays.
+                env.set(
+                    "array_count_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-539: indices of int elements matching named predicate.
+                env.set(
+                    "array_indices_where".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-485: |a - b|.
+                env.set(
+                    "abs_diff".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-486: (quotient, remainder) tuple — returns an Array of two Ints.
+                env.set(
+                    "divmod".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-423: flatten one level.
+                env.set("array_flatten".to_string(), fn_array_to_array());
+                // RES-424: join string array with separator.
+                env.set(
+                    "array_join".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-425: scalar-to-string conversion.
+                env.set(
+                    "to_string".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-426: first-occurrence dedupe.
+                env.set("array_unique".to_string(), fn_array_to_array());
+                // RES-427: count element occurrences.
+                env.set("array_count".to_string(), fn_any_any_to_int());
+                // RES-428: array first/last accessors.
+                env.set("array_first".to_string(), fn_any_to_any());
+                env.set("array_last".to_string(), fn_any_to_any());
+                // RES-528: bounded indexing with fallback default.
+                env.set(
+                    "array_get_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-429: string padding to Unicode-scalar width.
+                env.set(
+                    "string_pad_left".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "string_pad_right".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-540: center-pad a string to a Unicode-scalar width.
+                env.set(
+                    "string_pad_center".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-430: pair elements as tuples; truncate to shorter array.
+                env.set("array_zip".to_string(), fn_any_any_to_array());
+                // RES-531: split an array of 2-tuples into two parallel arrays — returns Array.
+                env.set(
+                    "array_unzip".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-431: integer range [start, end).
+                env.set(
+                    "array_range".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-921: array_slice(arr, lo, hi, inclusive) — sub-array.
+
+                // RES-1859: a slice is still an array — return_type was Type::Any.
+
+                env.set(
+                    "array_slice".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any, Type::Bool],
+
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-522: indices of an array as a new array.
+                env.set("array_indices".to_string(), fn_array_to_array());
+                // RES-432: array of n copies.
+                env.set("array_repeat".to_string(), fn_any_any_to_array());
+                // RES-433: split string into single-char strings.
+                env.set("string_chars".to_string(), fn_string_to_array());
+                // RES-434: split string into lines (LF, CRLF).
+                env.set("string_lines".to_string(), fn_string_to_array());
+                // RES-496: split on Unicode whitespace.
+                env.set("string_words".to_string(), fn_string_to_array());
+                // RES-497: join string array with newline.
+                env.set(
+                    "string_join_lines".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-498: join string array with single space.
+                env.set(
+                    "string_unwords".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-499: take first n Unicode scalars.
+                env.set(
+                    "string_take".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-506: drop first n Unicode scalars.
+                env.set(
+                    "string_drop".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-435: split array into fixed-size chunks.
+                env.set("array_chunk".to_string(), fn_any_any_to_array());
+                // RES-436: non-overlapping substring count.
+                env.set(
+                    "string_count".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-523: count occurrences of a single character.
+                env.set(
+                    "string_count_char".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-524: char-index of a single character (-1 if absent).
+                env.set(
+                    "string_find_char".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-525: named-predicate prefix slicing on strings.
+                let str_str_to_str = Type::Function {
+                    params: vec![Type::String, Type::String],
+                    return_type: Box::new(Type::String),
+                };
+                env.set("string_take_while_char".to_string(), str_str_to_str.clone());
+                env.set("string_drop_while_char".to_string(), str_str_to_str.clone());
+                // RES-526: named-predicate global char filter.
+                env.set("string_filter_char".to_string(), str_str_to_str);
+                // RES-527: ASCII case-insensitive string equality.
+                env.set(
+                    "string_eq_ignore_case".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-437: insert separator between adjacent elements.
+                env.set("array_intersperse".to_string(), fn_any_any_to_array());
+                // RES-516: alternate elements from two arrays.
+                env.set("array_interleave".to_string(), fn_any_any_to_array());
+                // RES-438: one-sided trimmers.
+                env.set(
+                    "trim_start".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "trim_end".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-439: bisect array at index → tuple.
+                env.set("array_split_at".to_string(), fn_any_any_to_array());
+                // RES-440: integer bitwise ops — strict (Int) -> Int / (Int, Int) -> Int.
+                let int_int_to_int = Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("bit_and".to_string(), int_int_to_int.clone());
+                env.set("bit_or".to_string(), int_int_to_int.clone());
+                env.set("bit_xor".to_string(), int_int_to_int.clone());
+                env.set("bit_shl".to_string(), int_int_to_int.clone());
+                env.set("bit_shr".to_string(), int_int_to_int);
+                env.set(
+                    "bit_not".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-488: popcount.
+                env.set(
+                    "bit_count".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-489: count leading zero bits.
+                env.set(
+                    "bit_leading_zeros".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-490: count trailing zero bits.
+                env.set(
+                    "bit_trailing_zeros".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-511: single-bit test / set / clear / toggle.
+                let int_int_to_int = Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set(
+                    "bit_test".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set("bit_set".to_string(), int_int_to_int.clone());
+                env.set("bit_clear".to_string(), int_int_to_int.clone());
+                env.set("bit_toggle".to_string(), int_int_to_int.clone());
+                // RES-520: circular bit rotation.
+                env.set("bit_rotate_left".to_string(), int_int_to_int.clone());
+                env.set("bit_rotate_right".to_string(), int_int_to_int.clone());
+                // RES-534: extract a single byte from an i64.
+                env.set("bit_byte".to_string(), int_int_to_int);
+                // RES-538: set a single byte of an i64.
+                env.set(
+                    "bit_set_byte".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-491: integer floor sqrt.
+                env.set(
+                    "int_sqrt".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-517: integer exponentiation.
+                env.set(
+                    "pow_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-518: integer division with explicit rounding.
+                let int_int_to_int = Type::Function {
+                    params: vec![Type::Int, Type::Int],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("ceil_div".to_string(), int_int_to_int.clone());
+                env.set("floor_div".to_string(), int_int_to_int.clone());
+                // RES-519: Python-style modulo (sign of divisor).
+                env.set("modulo".to_string(), int_int_to_int);
+                // RES-492: floor log base 2.
+                env.set(
+                    "int_log2".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-493: power-of-two predicate.
+                env.set(
+                    "is_pow2".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-494: round up to next power of two.
+                env.set(
+                    "next_pow2".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-495: int → lowercase hex string.
+                env.set(
+                    "int_to_hex".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-512: int → binary string.
+                env.set(
+                    "int_to_bin".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-442: last byte index of substring.
+                env.set(
+                    "last_index_of".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-413: repeat a string n times.
+                env.set(
+                    "string_repeat".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-414: first byte index of sub in s, or -1.
+                env.set(
+                    "index_of".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-145: replace + format.
+                env.set(
+                    "replace".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // `format`'s second argument is `Array<?>` — the prelude
+                // `Type::Array` is untyped (no element-type parameter yet),
+                // which fits the ticket's `Array<?>` signature.
+                env.set(
+                    "format".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Array],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-213: prefix/suffix tests + string repetition.
+                env.set(
+                    "starts_with".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "ends_with".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "repeat".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-339: string parsing and formatting.
+                env.set(
+                    "parse_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                // RES-529: non-erroring parse with fallback default.
+                env.set(
+                    "parse_int_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-532: non-erroring float parse with fallback default.
+                env.set(
+                    "parse_float_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Float],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                env.set(
+                    "parse_float".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "char_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "pad_left".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "pad_right".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+
+                // RES-130: explicit int ↔ float conversions. These are the
+                // only supported bridge between the two numeric types —
+                // arithmetic and literal-match pattern equality both reject
+                // implicit coercion (see `check_numeric_same_type`).
+                env.set(
+                    "to_float".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                env.set(
+                    "to_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // RES-366: pinned-width integer cast builtins. All accept
+                // Any (the call site holds whatever the source width is) and
+                // return the target type so the typechecker propagates the
+                // narrowed type into the surrounding expression.
+                let fn_any_to_int8 = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Int8),
+                };
+                let fn_any_to_int16 = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Int16),
+                };
+                let fn_any_to_int32 = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Int32),
+                };
+                let fn_any_to_int = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Int),
+                };
+                let fn_any_to_uint8 = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::UInt8),
+                };
+                let fn_any_to_uint16 = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::UInt16),
+                };
+                let fn_any_to_uint32 = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::UInt32),
+                };
+                let fn_any_to_uint64 = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::UInt64),
+                };
+                env.set("as_int8".to_string(), fn_any_to_int8());
+                env.set("as_int16".to_string(), fn_any_to_int16());
+                env.set("as_int32".to_string(), fn_any_to_int32());
+                env.set("as_int64".to_string(), fn_any_to_int());
+                env.set("as_uint8".to_string(), fn_any_to_uint8());
+                env.set("as_uint16".to_string(), fn_any_to_uint16());
+                env.set("as_uint32".to_string(), fn_any_to_uint32());
+                env.set("as_uint64".to_string(), fn_any_to_uint64());
+
+                // RES-138: current retry counter of the enclosing live block.
+                env.set(
+                    "live_retries".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // RES-141: process-wide live-block telemetry.
+                env.set(
+                    "live_total_retries".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "live_total_exhaustions".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // RES-144: one-line stdin reader (std-only).
+                env.set(
+                    "input".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+
+                // RES-1100: `version()` returns the compiler's
+                // CARGO_PKG_VERSION so programs can embed the toolchain
+                // version in build manifests / provenance certificates.
+                env.set(
+                    "version".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+
+                // RES-143: file I/O builtins (std-only; the resilient-runtime
+                // sibling crate has no builtins table so its no_std posture is
+                // unaffected).
+                env.set(
+                    "file_read".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "file_write".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Void),
+                    },
+                );
+
+                // RES-409: streaming file I/O — `file_open`, `file_read_chunk`,
+                // `file_write_chunk`, `file_seek`, `file_close`. The `File`
+                // handle is a `Type::Any` (a struct in disguise) until the type
+                // system grows a dedicated linear-resource form. Each builtin
+                // returns `Type::Result` so the user is forced to handle errors.
+                env.set(
+                    "file_open".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "file_read_chunk".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "file_write_chunk".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Bytes],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "file_seek".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "file_close".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+
+                // RES-151: read-only env-var accessor. `Result<String, String>`
+                // — absence is a first-class outcome, not a runtime halt.
+                env.set(
+                    "env".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+
+                // RES-148: Map builtins. The typechecker doesn't (yet) carry
+                // a dedicated `Type::Map<K, V>` constructor — following the
+                // same permissive-Any convention as the Array / Result
+                // builtins until G7 inference lands.
+                env.set(
+                    "map_new".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "map_insert".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "map_get".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "map_remove".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "map_keys".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "map_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-883.
+                env.set(
+                    "map_values".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-884.
+                env.set(
+                    "map_contains_key".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-1144: map_entries / map_merge / map_is_empty.
+                env.set(
+                    "map_entries".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "map_merge".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "map_is_empty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+
+                // RES-293: HashMap stdlib builtins. Same permissive-Any
+                // shape as the Map builtins above — once G7 inference lands
+                // these tighten to `HashMap<K, V>`.
+                env.set(
+                    "hashmap_new".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "hashmap_insert".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "hashmap_get".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "hashmap_remove".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "hashmap_contains".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "hashmap_keys".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-885.
+                env.set(
+                    "hashmap_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-886.
+                env.set(
+                    "hashmap_values".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-1144: hashmap_entries / hashmap_merge / hashmap_is_empty.
+                env.set(
+                    "hashmap_entries".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "hashmap_merge".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "hashmap_is_empty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-1154: set_is_empty / set_from_array / result_and / option_and.
+                env.set(
+                    "set_is_empty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "set_from_array".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "result_and".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "option_and".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-1160: argmax / argmin for float and string arrays.
+                let fn_array_to_int = || Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Int),
+                };
+                env.set("array_argmax_float".to_string(), fn_array_to_int());
+                env.set("array_argmin_float".to_string(), fn_array_to_int());
+                env.set("array_argmax_string".to_string(), fn_array_to_int());
+                env.set("array_argmin_string".to_string(), fn_array_to_int());
+                // RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
+                let fn_float_to_float_p = || Type::Function {
+                    params: vec![Type::Float],
+                    return_type: Box::new(Type::Float),
+                };
+                env.set("expm1".to_string(), fn_float_to_float_p());
+                env.set("ln_1p".to_string(), fn_float_to_float_p());
+                env.set(
+                    "mul_add".to_string(),
+                    Type::Function {
+                        params: vec![Type::Float, Type::Float, Type::Float],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
+                env.set("recip".to_string(), fn_float_to_float_p());
+
+                // RES-149: Set builtins. Same permissive-Any convention as
+                // Map — no dedicated `Type::Set<T>` until inference lands.
+                env.set(
+                    "set_new".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "set_insert".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "set_remove".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "set_has".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "set_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "set_items".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                // RES-876: set algebra primitives.
+                env.set(
+                    "set_union".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-877.
+                env.set(
+                    "set_intersection".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-878.
+                env.set(
+                    "set_difference".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                // RES-879.
+                env.set(
+                    "set_is_subset".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-880.
+                env.set(
+                    "set_is_superset".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-881.
+                env.set(
+                    "set_is_disjoint".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-882.
+                env.set(
+                    "set_symmetric_difference".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
+                // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
+                // `byte_at` returns Int — the language has no `u8` yet.
+                env.set(
+                    "bytes_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "bytes_slice".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Int, Type::Int],
+                        return_type: Box::new(Type::Bytes),
+                    },
+                );
+                env.set(
+                    "byte_at".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-887.
+                env.set(
+                    "bytes_concat".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Bytes],
+                        return_type: Box::new(Type::Bytes),
+                    },
+                );
+                // RES-888.
+                env.set(
+                    "bytes_eq".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Bytes],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+
+                // Result builtins
+                env.set("Ok".to_string(), fn_any_to_result());
+                env.set("Err".to_string(), fn_any_to_result());
+                env.set("is_ok".to_string(), fn_result_to_bool());
+                env.set("is_err".to_string(), fn_result_to_bool());
+                env.set("unwrap".to_string(), fn_result_to_any());
+                env.set("unwrap_err".to_string(), fn_result_to_any());
+
+                // RES-936/937: Result fallback variants — Result + default → Any.
+                let fn_result_any_to_any = || Type::Function {
+                    params: vec![Type::Result, Type::Any],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("result_unwrap_or".to_string(), fn_result_any_to_any());
+                env.set("result_unwrap_or_err".to_string(), fn_result_any_to_any());
+                // RES-938: Result <-> Option conversion.
+                env.set(
+                    "result_to_option".to_string(),
+                    Type::Function {
+                        params: vec![Type::Result],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "option_to_result".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                // RES-939: chain alternatives.
+                env.set(
+                    "option_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "result_or".to_string(),
+                    Type::Function {
+                        params: vec![Type::Result, Type::Result],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                // RES-940: power-of-two helpers.
+                env.set(
+                    "is_power_of_two".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "next_power_of_two".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-941: int-array statistics → Float.
+                let fn_array_to_float = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Float),
+                };
+                env.set("array_average".to_string(), fn_array_to_float());
+                env.set("array_median".to_string(), fn_array_to_float());
+                // RES-942: float-array reductions.
+                env.set("array_sum_float".to_string(), fn_array_to_float());
+                env.set("array_product_float".to_string(), fn_array_to_float());
+                env.set("array_min_float".to_string(), fn_array_to_float());
+                env.set("array_max_float".to_string(), fn_array_to_float());
+                env.set("array_average_float".to_string(), fn_array_to_float());
+                // RES-943: hex encoding.
+                env.set(
+                    "bytes_to_hex".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "bytes_from_hex".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                // RES-944: bytes search.
+                let fn_bytes_bytes_to_bool = || Type::Function {
+                    params: vec![Type::Bytes, Type::Bytes],
+                    return_type: Box::new(Type::Bool),
+                };
+                env.set("bytes_starts_with".to_string(), fn_bytes_bytes_to_bool());
+                env.set("bytes_ends_with".to_string(), fn_bytes_bytes_to_bool());
+                env.set(
+                    "bytes_index_of".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes, Type::Bytes],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                // RES-945: default-fallback map accessors.
+                let fn_map_key_default = || Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("map_get_or".to_string(), fn_map_key_default());
+                env.set("hashmap_get_or".to_string(), fn_map_key_default());
+
+                // RES-328: `cell(initial)` — shared mutable container.
+                // Element type isn't tracked at the type-system layer (the
+                // generic story lands with G7); the runtime enforces that
+                // `.set` rebinds the inner value, and the inner value's
+                // dynamic type flows through `Type::Any`.
+                env.set("cell".to_string(), fn_any_to_any());
+                std::sync::Arc::new(env)
+            });
 
         // RES-1692: pre-size the per-typecheck HashMaps that grow
         // once per top-level fn / struct during the hoist pass.
@@ -4139,7 +4152,7 @@ impl TypeChecker {
         // slower but cost a fixed small allocation each anyway.
         const PRESIZE: usize = 32;
         TypeChecker {
-            env: BUILTIN_ENV.clone(),
+            env: TypeEnvironment::new_with_outer_arc(std::sync::Arc::clone(&BUILTIN_ENV)),
             contract_table: HashMap::with_capacity(PRESIZE),
             fn_decl_spans: HashMap::with_capacity(PRESIZE),
             const_bindings: HashMap::with_capacity(PRESIZE),

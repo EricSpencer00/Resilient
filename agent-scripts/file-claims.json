@@ -3,6 +3,10 @@
     "resilient/src/feature_attrs.rs": {
       "branch": "res-2438-reset-fast-reject",
       "claimed_at": "2026-05-23T06:47:30Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2444-builtin-env-outer-scope",
+      "claimed_at": "2026-05-23T08:00:00Z"
     }
   }
 }
