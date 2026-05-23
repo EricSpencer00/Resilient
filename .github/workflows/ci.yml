@@ -69,6 +69,13 @@ jobs:
         with:
           workspaces: resilient
 
+      # RES-2446: fmt before build — fail fast on formatting issues
+      # before waiting for the expensive compilation steps. rustfmt
+      # needs only the toolchain, not any compiled artifacts.
+      - name: cargo fmt
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo fmt --check
+
       # RES-1263 + RES-1300: build with `--timings` so Cargo writes
       # `target/cargo-timings/cargo-timing-<timestamp>.html` during
       # the first (and only) compile of the workspace. The earlier
@@ -87,10 +94,6 @@ jobs:
       - name: cargo test
         if: needs.changes.outputs.docs_only != 'true'
         run: cargo test --locked --verbose
-
-      - name: cargo fmt
-        if: needs.changes.outputs.docs_only != 'true'
-        run: cargo fmt --check
 
       - name: Upload cargo --timings report
         if: needs.changes.outputs.docs_only != 'true' && always()
@@ -137,10 +140,10 @@ jobs:
           workspaces: resilient
           key: z3
 
-      - name: cargo build
-        if: needs.changes.outputs.docs_only != 'true'
-        run: cargo build --locked --features z3 --verbose
-
+      # RES-2446: `cargo test` compiles the library + test harness
+      # in one pass, so a separate `cargo build` step is redundant —
+      # it only warms the cache that `cargo test` will populate
+      # anyway. Removing it saves ~1-2s of cargo startup overhead.
       - name: cargo test
         if: needs.changes.outputs.docs_only != 'true'
         run: cargo test --locked --features z3 --verbose
