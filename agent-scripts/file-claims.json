@@ -463,6 +463,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-2436-gate-mutation-fingerprint",
       "claimed_at": "2026-05-23T06:28:25Z"
+    },
+    ".github/workflows/ci.yml": {
+      "branch": "res-2440-clippy-all-targets",
+      "claimed_at": "2026-05-23T07:01:46Z"
     }
   }
 }

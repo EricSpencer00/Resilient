@@ -82,7 +82,7 @@ jobs:
 
       - name: cargo clippy
         if: needs.changes.outputs.docs_only != 'true'
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
         if: needs.changes.outputs.docs_only != 'true'
