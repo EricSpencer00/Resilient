@@ -556,6 +556,16 @@ fn run_inner(
                     (Value::Float(x), Value::Float(y)) => {
                         stack.push(Value::Float(x * y));
                     }
+                    (Value::String(ref s), Value::Int(n))
+                    | (Value::Int(n), Value::String(ref s)) => {
+                        if n < 0 {
+                            return Err(VmError::BuiltinCallFailed(format!(
+                                "string repetition count must be >= 0, got {}",
+                                n
+                            )));
+                        }
+                        stack.push(Value::String(s.repeat(n as usize)));
+                    }
                     _ => return Err(VmError::TypeMismatch("Mul")),
                 }
             }
@@ -1644,6 +1654,15 @@ fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         }
         (Value::Float(x), Value::Float(y)) => {
             state.stack.push(Value::Float(x * y));
+        }
+        (Value::String(ref s), Value::Int(n)) | (Value::Int(n), Value::String(ref s)) => {
+            if n < 0 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "string repetition count must be >= 0, got {}",
+                    n
+                )));
+            }
+            state.stack.push(Value::String(s.repeat(n as usize)));
         }
         _ => return Err(VmError::TypeMismatch("Mul")),
     }
@@ -4574,6 +4593,57 @@ mod tests {
         match run(&prog).unwrap() {
             Value::String(s) => assert_eq!(s, "b:true"),
             other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_mul() {
+        let prog = const_program(
+            &[Value::String("ab".into()), Value::Int(3)],
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, "ababab"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_mul_commutative() {
+        let prog = const_program(
+            &[Value::Int(2), Value::String("xy".into())],
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, "xyxy"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_mul_zero() {
+        let prog = const_program(
+            &[Value::String("abc".into()), Value::Int(0)],
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, ""),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_mul_negative_errors() {
+        let prog = const_program(
+            &[Value::String("x".into()), Value::Int(-1)],
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+        );
+        let err = run(&prog).unwrap_err();
+        match err.kind() {
+            VmError::BuiltinCallFailed(msg) => {
+                assert!(msg.contains("must be >= 0"), "got: {}", msg);
+            }
+            other => panic!("expected BuiltinCallFailed, got {:?}", other),
         }
     }
 }
