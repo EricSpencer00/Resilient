@@ -2780,8 +2780,11 @@ fn compile_expr(
                     line,
                 )?,
                 None => {
-                    // -1 sentinel = "up to end of array"
-                    let idx = chunk.add_constant(Value::Int(-1))?;
+                    // RES-2518: use Void as sentinel for "no upper bound" —
+                    // Int(-1) collided with the user value -1, causing
+                    // xs[0..-1] to return the full array instead of
+                    // excluding the last element.
+                    let idx = chunk.add_constant(Value::Void)?;
                     chunk.emit(Op::Const(idx), line);
                 }
             }
@@ -5153,6 +5156,28 @@ x;
                 assert!(matches!(v[1], Value::Int(30)));
             }
             other => panic!("expected [20,30], got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn slice_negative_hi_not_confused_with_sentinel() {
+        let src = "let a = [10, 20, 30, 40, 50]; a[0..-1];";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 4, "xs[0..-1] must exclude the last element");
+                assert!(matches!(v[0], Value::Int(10)));
+                assert!(matches!(v[3], Value::Int(40)));
+            }
+            other => panic!("expected [10,20,30,40], got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn slice_no_hi_gives_full_array() {
+        let src = "let a = [10, 20, 30]; a[0..];";
+        match vm_ok(src) {
+            Value::Array(v) => assert_eq!(v.len(), 3),
+            other => panic!("expected 3-element array, got {:?}", other),
         }
     }
 
