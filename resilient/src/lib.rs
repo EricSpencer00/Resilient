@@ -19158,6 +19158,8 @@ struct FormatSpec {
 
 /// RES-404: parse the inside of `{:...}` (the part after the colon).
 fn parse_format_spec(spec_src: &str) -> Result<FormatSpec, String> {
+    const MAX_FORMAT_DIM: usize = 65535;
+
     let mut spec = FormatSpec::default();
     let mut s = spec_src;
 
@@ -19183,11 +19185,16 @@ fn parse_format_spec(spec_src: &str) -> Result<FormatSpec, String> {
         .position(|b| !b.is_ascii_digit())
         .unwrap_or(s.len());
     if digit_end > 0 {
-        spec.width = Some(
-            s[..digit_end]
-                .parse::<usize>()
-                .map_err(|_| format!("format: invalid width in spec `{}`", spec_src))?,
-        );
+        let w: usize = s[..digit_end]
+            .parse()
+            .map_err(|_| format!("format: invalid width in spec `{}`", spec_src))?;
+        if w > MAX_FORMAT_DIM {
+            return Err(format!(
+                "format: width {} exceeds maximum {} in spec `{}`",
+                w, MAX_FORMAT_DIM, spec_src
+            ));
+        }
+        spec.width = Some(w);
         s = &s[digit_end..];
     }
 
@@ -19203,7 +19210,16 @@ fn parse_format_spec(spec_src: &str) -> Result<FormatSpec, String> {
                 spec_src
             ));
         }
-        spec.precision = Some(rest[..pdigit_end].parse::<usize>().unwrap());
+        let p: usize = rest[..pdigit_end]
+            .parse()
+            .map_err(|_| format!("format: invalid precision in spec `{}`", spec_src))?;
+        if p > MAX_FORMAT_DIM {
+            return Err(format!(
+                "format: precision {} exceeds maximum {} in spec `{}`",
+                p, MAX_FORMAT_DIM, spec_src
+            ));
+        }
+        spec.precision = Some(p);
         s = &rest[pdigit_end..];
     }
 
@@ -36012,6 +36028,63 @@ mod tests {
     fn format_zero_width_no_pad() {
         // `{:0}` is degenerate but legal: width 0, no padding.
         assert_eq!(fmt("{:0}", vec![Value::Int(7)]), "7");
+    }
+
+    #[test]
+    fn format_precision_overflow_is_error_not_panic() {
+        let huge = format!("{{:.{}}}", "9".repeat(30));
+        let err = builtin_format(&[Value::String(huge), Value::Array(vec![Value::Float(1.0)])])
+            .unwrap_err();
+        assert!(
+            err.contains("invalid precision"),
+            "expected precision parse error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_width_overflow_is_error_not_panic() {
+        let huge = format!("{{:{}}}", "9".repeat(30));
+        let err =
+            builtin_format(&[Value::String(huge), Value::Array(vec![Value::Int(1)])]).unwrap_err();
+        assert!(
+            err.contains("invalid width"),
+            "expected width parse error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_width_exceeds_cap_is_error() {
+        let err = builtin_format(&[
+            Value::String("{:99999}".into()),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("exceeds maximum"),
+            "expected cap error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_precision_exceeds_cap_is_error() {
+        let err = builtin_format(&[
+            Value::String("{:.99999}".into()),
+            Value::Array(vec![Value::Float(1.0)]),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("exceeds maximum"),
+            "expected cap error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_normal_precision_still_works() {
+        assert_eq!(fmt("{:.2}", vec![Value::Float(1.23456)]), "1.23");
     }
 
     // --- RES-144: input() builtin ---
