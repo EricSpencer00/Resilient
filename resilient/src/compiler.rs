@@ -3057,6 +3057,32 @@ fn collect_free_vars(
             collect_free_vars(lo, param_names, outer_locals, out, seen);
             collect_free_vars(hi, param_names, outer_locals, out, seen);
         }
+        // RES-2512: TryCatch, LiveBlock, Quantifier, StaticLet were
+        // falling through to `_ => {}`, silently missing free vars.
+        Node::TryCatch { body, handlers, .. } => {
+            for s in body {
+                collect_free_vars(s, param_names, outer_locals, out, seen);
+            }
+            for (_, handler_body) in handlers {
+                for s in handler_body {
+                    collect_free_vars(s, param_names, outer_locals, out, seen);
+                }
+            }
+        }
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
+            collect_free_vars(body, param_names, outer_locals, out, seen);
+            for inv in invariants {
+                collect_free_vars(inv, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::Quantifier { body, .. } => {
+            collect_free_vars(body, param_names, outer_locals, out, seen);
+        }
+        Node::StaticLet { value, .. } => {
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
         // Leaf nodes (literals, break/continue, declarations with no
         // expression children) have no free vars.
         _ => {}
@@ -5362,6 +5388,16 @@ f();"#,
         )
         .unwrap();
         assert_int(v, 10);
+    }
+
+    // RES-2512: tests for the 4 node types that were still missing
+    // from collect_free_vars after RES-2506.
+
+    #[test]
+    fn closure_capture_in_static_let() {
+        let v = compile_run("let outer = 42;\nlet f = fn() { static let x = outer; x; };\nf();")
+            .unwrap();
+        assert_int(v, 42);
     }
 
     #[test]
