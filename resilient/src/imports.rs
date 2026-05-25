@@ -1,30 +1,26 @@
-//! RES-073: minimum-viable module imports for Resilient.
+//! Module imports for Resilient.
 //!
-//! `use "path/to/other.rz";` at the top level of a file imports every
-//! top-level `fn` declaration of the referenced file into the current
-//! scope. Resolution is path-based and relative to the file containing
-//! the `use`. This module performs that expansion BEFORE the program
-//! ever reaches the typechecker or interpreter, so by the time eval
-//! starts there are no `Node::Use` nodes left and the imported
-//! functions are simply prepended to the program's top-level statement
-//! list.
+//! Supports three forms of import:
 //!
-//! RES-360: `use "path" as name;` — scoped imports. When an alias is
-//! present, each imported top-level `fn` (and `Struct`) is renamed to
-//! `"name::original"` before being spliced. Call sites write
-//! `name::fn()` which the parser represents as `Node::Identifier {
-//! name: "name::fn" }` (a plain dotted name produced by the `::` token
-//! handling in `parse_expression`). The interpreter looks up the key
-//! `"name::fn"` in the environment — no extra runtime machinery needed.
+//! 1. **File imports**: `use "path/to/other.rz";` — imports `pub` declarations
+//!    from the referenced file. Without `pub`, declarations are private.
+//!    Legacy behaviour: if no declarations are marked `pub`, all are imported
+//!    (backward compatibility with pre-visibility code).
 //!
-//! Cycles are detected via an in-flight set and produce a clean
-//! diagnostic. Files already loaded once are skipped on re-import
-//! (dedup by canonicalized path).
+//! 2. **Namespaced file imports**: `use "path" as name;` — like above but
+//!    declarations are scoped under `name::`.
 //!
-//! NOT in scope here:
-//! - Visibility modifiers (`pub`)
-//! - Submodules / packages
-//! - Re-exports
+//! 3. **Standard library imports**: `use std::http;` / `use std::json as j;`
+//!    — imports a built-in standard library module.
+//!
+//! Cycles are detected via an in-flight set and produce a clean diagnostic.
+//! Files already loaded once are skipped on re-import (dedup by canonical path).
+//!
+//! Visibility:
+//! - `pub fn name(...)` marks a function as exported.
+//! - `pub struct Name { ... }` marks a struct as exported.
+//! - Declarations without `pub` are private to their file.
+//! - If NO declarations have `pub` in a file, ALL are exported (legacy mode).
 
 use crate::span::Spanned;
 use crate::{Node, parse};
@@ -32,39 +28,43 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Expand every `Node::Use` in `program`'s top level by loading the
-/// referenced file, recursively expanding ITS uses, and prepending
-/// the resulting top-level `Function` (and `Struct` decl) nodes.
+/// Tracks pending standard library imports discovered during expansion.
+/// These are collected and returned so the caller can inject bindings
+/// into the interpreter environment after parsing.
+#[derive(Debug, Clone)]
+pub struct StdImport {
+    pub module: String,
+    pub alias: Option<String>,
+}
+
+/// Expand every `Node::Use` in `program`'s top level.
 ///
-/// `base_dir` is the directory paths in `use` clauses are resolved
-/// against — typically the parent of the file currently being parsed.
+/// File-based imports are resolved, parsed, and spliced in.
+/// Standard library imports (`use std::X;`) are collected into `std_imports`
+/// for the caller to inject at runtime.
 ///
-/// `loaded` is the set of canonicalized paths already pulled in (used
-/// for both dedup and cycle detection).
+/// `base_dir` is the directory file paths are resolved against.
+/// `loaded` tracks files already pulled in (dedup + cycle detection).
 pub fn expand_uses(
     program: &mut Node,
     base_dir: &Path,
     loaded: &mut HashSet<PathBuf>,
 ) -> Result<(), String> {
-    // RES-077: top-level statements are now Spanned<Node>. Destructure
-    // each `Spanned` to inspect / route the inner node, but preserve
-    // the span on whatever we keep (so once RES-078..080 add spans to
-    // sub-expressions the diagnostic chain stays intact end-to-end).
+    expand_uses_with_std(program, base_dir, loaded, &mut Vec::new())
+}
+
+/// Like `expand_uses` but also collects `use std::X;` imports.
+pub fn expand_uses_with_std(
+    program: &mut Node,
+    base_dir: &Path,
+    loaded: &mut HashSet<PathBuf>,
+    std_imports: &mut Vec<StdImport>,
+) -> Result<(), String> {
     let stmts = match program {
         Node::Program(stmts) => stmts,
         _ => return Ok(()),
     };
 
-    // RES-1327: fast-reject. Every full-compile entry point in
-    // `lib.rs` invokes `expand_uses` unconditionally before the
-    // typechecker runs. The loop below drains every top-level
-    // statement and rebuilds the `expanded` Vec — for programs that
-    // contain no `Node::Use`, the rebuild is a pure copy: every
-    // statement is moved out and moved back. The overwhelming
-    // majority of `cargo test` inputs and every fixture in
-    // `examples/` outside the import feature tests fall into that
-    // case. A single `iter().any` pre-scan returns `Ok(())` before
-    // we touch the Vec.
     if !stmts.iter().any(|s| matches!(&s.node, Node::Use { .. })) {
         return Ok(());
     }
@@ -72,29 +72,24 @@ pub fn expand_uses(
     let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
         if let Node::Use { path, alias, .. } = &stmt.node {
-            let alias = alias.clone(); // borrow ends before we mutate `expanded`
+            let alias = alias.clone();
+
+            // Check for standard library import: `use std::module;`
+            if let Some(module_name) = path.strip_prefix("std::") {
+                std_imports.push(StdImport {
+                    module: module_name.to_string(),
+                    alias,
+                });
+                continue;
+            }
+
             let target = resolve_use_path(base_dir, path)?;
 
-            // Cycle / already-loaded check: canonicalize so that
-            // `./helpers.rz` and `helpers.rz` collapse to one entry.
-            //
-            // RES-360: scoped imports (`use "f" as a; use "f" as b;`) must
-            // NOT collapse — the same file can be imported under two
-            // different aliases without conflict. Only unaliased re-imports
-            // are dedup'd.
             let canon = canonicalize_or_self(&target);
             if alias.is_none() {
                 if loaded.contains(&canon) {
-                    // Already loaded once. Re-importing is a no-op — same
-                    // semantics as Rust's `use` after a `mod` was already
-                    // brought in.
                     continue;
                 }
-                // RES-1523: move `canon` into the `loaded` set instead of
-                // cloning. `canon` isn't referenced again on this branch
-                // — only `target` is used to load and parse the file
-                // below — so the historic `canon.clone()` was a
-                // per-import wasted `PathBuf` allocation.
                 loaded.insert(canon);
             }
 
@@ -104,21 +99,24 @@ pub fn expand_uses(
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
 
-            // Recursively expand imports of the imported file FIRST,
-            // so by the time we splice we have only top-level decls.
             let mut imported_program = imported_program;
-            expand_uses(&mut imported_program, &imported_dir, loaded)?;
+            expand_uses_with_std(&mut imported_program, &imported_dir, loaded, std_imports)?;
 
-            // Splice in the resulting top-level decls (everything
-            // except residual Node::Use, which expand_uses already
-            // drained).
+            // Filter by visibility: only export `pub` declarations.
+            // Legacy mode: if no `pub` decls exist, export everything.
             if let Node::Program(imported_stmts) = imported_program {
+                let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
+
                 for s in imported_stmts {
                     if matches!(s.node, Node::Use { .. }) {
                         continue;
                     }
-                    // RES-360: if an alias was given, prefix every
-                    // imported declaration name with `"alias::"`.
+
+                    // Skip non-pub declarations (unless legacy mode)
+                    if has_any_pub && is_exportable_decl(&s.node) && !is_pub_decl(&s.node) {
+                        continue;
+                    }
+
                     if let Some(ref ns) = alias {
                         let renamed = rename_decl(s, ns);
                         expanded.push(renamed);
@@ -135,10 +133,21 @@ pub fn expand_uses(
     Ok(())
 }
 
-/// RES-360: rename an imported top-level declaration by prepending `ns::`
-/// to its name. Only `Function` and `Struct` nodes carry a mutable `name`
-/// field at the top level; other node kinds (already-evaluated expressions,
-/// etc.) are returned unchanged so the splice stays clean.
+/// Check if a node is marked with `pub` visibility.
+fn is_pub_decl(node: &Node) -> bool {
+    match node {
+        Node::Function { is_pub, .. } => *is_pub,
+        Node::StructDecl { is_pub, .. } => *is_pub,
+        _ => false,
+    }
+}
+
+/// Check if a node is a declaration that could be exported.
+fn is_exportable_decl(node: &Node) -> bool {
+    matches!(node, Node::Function { .. } | Node::StructDecl { .. })
+}
+
+/// Rename an imported declaration by prepending `ns::` to its name.
 fn rename_decl(mut s: Spanned<Node>, ns: &str) -> Spanned<Node> {
     match &mut s.node {
         Node::Function { name, .. } => {
@@ -211,5 +220,31 @@ mod tests {
         let err = expand_uses(&mut program, Path::new("."), &mut loaded)
             .expect_err("missing file must error");
         assert!(err.contains("could not be resolved"), "got: {}", err);
+    }
+
+    #[test]
+    fn std_imports_are_collected() {
+        let (mut program, _) = crate::parse("use std::http;\nuse std::json as j;");
+        let mut loaded = HashSet::new();
+        let mut std_imports = Vec::new();
+        expand_uses_with_std(&mut program, Path::new("."), &mut loaded, &mut std_imports).unwrap();
+        assert_eq!(std_imports.len(), 2);
+        assert_eq!(std_imports[0].module, "http");
+        assert_eq!(std_imports[0].alias, None);
+        assert_eq!(std_imports[1].module, "json");
+        assert_eq!(std_imports[1].alias, Some("j".to_string()));
+    }
+
+    #[test]
+    fn pub_visibility_filters_private_decls() {
+        let (program, errs) =
+            crate::parse("pub fn exported() { return 1; }\nfn private() { return 2; }");
+        assert!(errs.is_empty());
+        if let Node::Program(stmts) = &program {
+            assert!(is_pub_decl(&stmts[0].node));
+            assert!(!is_pub_decl(&stmts[1].node));
+        } else {
+            panic!("expected Program");
+        }
     }
 }

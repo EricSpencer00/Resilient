@@ -1,0 +1,5 @@
+3.141592653589793
+12
+1024
+42
+Program executed successfully

@@ -1,0 +1,11 @@
+use std::json;
+
+fn main() {
+    let text = json_stringify(42);
+    println(text);
+    let valid = json_valid(text);
+    println(valid);
+    let parsed = json_parse("[1,2,3]");
+    println(parsed);
+}
+main();

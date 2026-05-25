@@ -1,0 +1,13 @@
+use std::math;
+
+fn main() {
+    let pi = math_pi();
+    println(pi);
+    let root = math_sqrt(144.0);
+    println(root);
+    let powered = math_pow(2.0, 10.0);
+    println(powered);
+    let absolute = math_abs(-42.0);
+    println(absolute);
+}
+main();

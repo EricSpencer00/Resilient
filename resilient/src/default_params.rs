@@ -528,7 +528,6 @@ mod tests {
     }
 
     fn make_fn(name: &str, param_count: usize, defaults: Vec<Option<Box<Node>>>) -> Node {
-        // Build a dummy parameter list of `(int, pN)` pairs.
         let parameters: Vec<(String, String)> = (0..param_count)
             .map(|i| ("int".to_string(), format!("p{}", i)))
             .collect();
@@ -550,6 +549,7 @@ mod tests {
             type_params: Vec::new(),
             type_param_bounds: Vec::new(),
             fails: Vec::new(),
+            is_pub: false,
         }
     }
 
