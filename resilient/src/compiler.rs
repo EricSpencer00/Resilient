@@ -2928,7 +2928,116 @@ fn collect_free_vars(
             collect_free_vars(condition, param_names, outer_locals, out, seen);
             collect_free_vars(body, param_names, outer_locals, out, seen);
         }
-        // Leaf nodes (literals, etc.) have no free vars.
+        // RES-2506: walk all remaining expression-bearing node types so
+        // that outer variables referenced inside them are captured.
+        Node::ForInStatement { iterable, body, .. } => {
+            collect_free_vars(iterable, param_names, outer_locals, out, seen);
+            collect_free_vars(body, param_names, outer_locals, out, seen);
+        }
+        Node::Assignment { value, .. } => {
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            collect_free_vars(target, param_names, outer_locals, out, seen);
+            collect_free_vars(index, param_names, outer_locals, out, seen);
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            collect_free_vars(target, param_names, outer_locals, out, seen);
+            collect_free_vars(index, param_names, outer_locals, out, seen);
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::ArrayLiteral { items, .. }
+        | Node::SetLiteral { items, .. }
+        | Node::TupleLiteral { items, .. } => {
+            for item in items {
+                collect_free_vars(item, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_free_vars(k, param_names, outer_locals, out, seen);
+                collect_free_vars(v, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    collect_free_vars(expr, param_names, outer_locals, out, seen);
+                }
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_free_vars(scrutinee, param_names, outer_locals, out, seen);
+            for (_, guard, body) in arms {
+                if let Some(g) = guard {
+                    collect_free_vars(g, param_names, outer_locals, out, seen);
+                }
+                collect_free_vars(body, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            collect_free_vars(target, param_names, outer_locals, out, seen);
+            if let Some(lo) = lo {
+                collect_free_vars(lo, param_names, outer_locals, out, seen);
+            }
+            if let Some(hi) = hi {
+                collect_free_vars(hi, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::FieldAccess { target, .. } => {
+            collect_free_vars(target, param_names, outer_locals, out, seen);
+        }
+        Node::FieldAssignment { target, value, .. } => {
+            collect_free_vars(target, param_names, outer_locals, out, seen);
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::LetTupleDestructure { value, .. } => {
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::LetDestructureStruct { value, .. } => {
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::TupleIndex { tuple, .. } => {
+            collect_free_vars(tuple, param_names, outer_locals, out, seen);
+        }
+        Node::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                collect_free_vars(v, param_names, outer_locals, out, seen);
+            }
+        }
+        Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
+            collect_free_vars(condition, param_names, outer_locals, out, seen);
+        }
+        Node::TryExpression { expr, .. } => {
+            collect_free_vars(expr, param_names, outer_locals, out, seen);
+        }
+        Node::NamedArg { value, .. } | Node::NewtypeConstruct { value, .. } => {
+            collect_free_vars(value, param_names, outer_locals, out, seen);
+        }
+        Node::FunctionLiteral { body, .. } => {
+            collect_free_vars(body, param_names, outer_locals, out, seen);
+        }
+        Node::OptionalChain { object, access, .. } => {
+            collect_free_vars(object, param_names, outer_locals, out, seen);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    collect_free_vars(a, param_names, outer_locals, out, seen);
+                }
+            }
+        }
+        Node::Range { lo, hi, .. } => {
+            collect_free_vars(lo, param_names, outer_locals, out, seen);
+            collect_free_vars(hi, param_names, outer_locals, out, seen);
+        }
+        // Leaf nodes (literals, break/continue, declarations with no
+        // expression children) have no free vars.
         _ => {}
     }
 }
@@ -5091,6 +5200,80 @@ search([0, 1, 2, 3], [0, 1, 2, 3]);"#,
     fn closure_capture_only_no_body_locals() {
         let v = compile_run("let outer = 42;\nlet f = fn() { outer; };\nf();").unwrap();
         assert_int(v, 42);
+    }
+
+    // RES-2506: tests for collect_free_vars coverage — each test
+    // exercises a node type that was previously missed by the catch-all.
+
+    #[test]
+    fn closure_capture_in_for_in() {
+        let v = compile_run(
+            "let arr = [10, 20, 30];\nlet f = fn() {\n  let sum = 0;\n  for x in arr { sum = sum + x; }\n  sum;\n};\nf();",
+        ).unwrap();
+        assert_int(v, 60);
+    }
+
+    #[test]
+    fn closure_capture_in_index_expr() {
+        let v =
+            compile_run("let arr = [10, 20, 30];\nlet f = fn(Int i) { arr[i]; };\nf(2);").unwrap();
+        assert_int(v, 30);
+    }
+
+    #[test]
+    fn closure_capture_in_array_literal() {
+        let v = compile_run(
+            "let a = 1;\nlet b = 2;\nlet f = fn() { let arr = [a, b, 3]; arr[0] + arr[1] + arr[2]; };\nf();",
+        ).unwrap();
+        assert_int(v, 6);
+    }
+
+    #[test]
+    fn closure_capture_in_assignment() {
+        let v = compile_run("let outer = 10;\nlet f = fn(Int x) { outer = x; outer; };\nf(77);")
+            .unwrap();
+        assert_int(v, 77);
+    }
+
+    #[test]
+    fn closure_capture_in_interpolated_string() {
+        let v = compile_run(
+            r#"let name = "world";
+let f = fn() { "hello {name}"; };
+f();"#,
+        )
+        .unwrap();
+        match v {
+            Value::String(s) => assert_eq!(s, "hello world"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn closure_capture_in_match_expr() {
+        let v = compile_run(
+            "let outer = 100;\nlet f = fn(Int x) { match x { 1 => outer, _ => 0 }; };\nf(1);",
+        )
+        .unwrap();
+        assert_int(v, 100);
+    }
+
+    #[test]
+    fn closure_capture_in_field_access() {
+        let v = compile_run(
+            "struct Point { int x, int y }\nlet p = new Point { x: 5, y: 10 };\nlet f = fn() { p.x + p.y; };\nf();",
+        )
+        .unwrap();
+        assert_int(v, 15);
+    }
+
+    #[test]
+    fn closure_capture_in_struct_literal() {
+        let v = compile_run(
+            "struct Pair { int a, int b }\nlet x = 3;\nlet y = 7;\nlet f = fn() { let p = new Pair { a: x, b: y }; p.a + p.b; };\nf();",
+        )
+        .unwrap();
+        assert_int(v, 10);
     }
 
     #[test]
