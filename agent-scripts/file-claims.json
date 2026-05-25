@@ -1,12 +1,20 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2526-int-overflow-diagnostic",
-      "claimed_at": "2026-05-25T13:35:06Z"
+      "branch": "res-2528-map-iteration",
+      "claimed_at": "2026-05-25T13:53:15Z"
     },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-2526-int-overflow-diagnostic",
-      "claimed_at": "2026-05-25T13:35:06Z"
+    "resilient/src/compiler.rs": {
+      "branch": "res-2528-map-iteration",
+      "claimed_at": "2026-05-25T13:53:15Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-2528-map-iteration",
+      "claimed_at": "2026-05-25T13:53:15Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-2528-map-iteration",
+      "claimed_at": "2026-05-25T13:53:15Z"
     }
   }
 }

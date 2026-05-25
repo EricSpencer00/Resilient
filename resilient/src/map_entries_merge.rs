@@ -18,6 +18,10 @@ use crate::{MapKey, RResult, Value};
 
 /// Deterministic ordering matching `map_keys`. Sorts `Int` < `Str` <
 /// `Bool` cross-variant; within each variant uses the natural order.
+pub(crate) fn cmp_map_keys(a: &MapKey, b: &MapKey) -> std::cmp::Ordering {
+    cmp_keys(a, b)
+}
+
 fn cmp_keys(a: &MapKey, b: &MapKey) -> std::cmp::Ordering {
     match (a, b) {
         (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
