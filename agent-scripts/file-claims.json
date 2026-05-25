@@ -9,8 +9,8 @@
       "claimed_at": "2026-05-25T12:30:00Z"
     },
     "resilient/src/compiler.rs": {
-      "branch": "res-2502-labeled-break-compile",
-      "claimed_at": "2026-05-25T09:24:24Z"
+      "branch": "res-2486-closure-upvalue-slot-collision",
+      "claimed_at": "2026-05-25T15:00:00Z"
     }
   }
 }
