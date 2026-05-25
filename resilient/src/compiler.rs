@@ -17,10 +17,10 @@ use std::collections::HashMap;
 
 /// Tracks break/continue patch sites accumulated while compiling a loop body.
 ///
-/// Created fresh for each While/ForIn loop. Nested loops create their own
-/// inner LoopState, shadowing the outer one, so `break`/`continue` always
-/// target the *innermost* enclosing loop — matching the tree-walker's
-/// `Value::Break`/`Value::Continue` bubble-up semantics.
+/// Created fresh for each While/ForIn loop. A `Vec<LoopState>` stack is
+/// threaded through the compilation so labeled `break`/`continue` can
+/// target an enclosing loop by name. Unlabeled break/continue always
+/// targets the *innermost* (last) entry.
 struct LoopState {
     /// PC of the back-edge target. For `while` this is the condition check;
     /// for `for-in` it's the index-increment code (set after body compilation
@@ -33,6 +33,8 @@ struct LoopState {
     /// patched to `continue_target`. Used by `for-in` loops, where the target
     /// is not yet known when the body is compiled.
     continue_patches: Vec<usize>,
+    /// RES-2502: optional label for labeled break/continue.
+    label: Option<String>,
 }
 
 impl LoopState {
@@ -41,6 +43,16 @@ impl LoopState {
             continue_target,
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
+            label: None,
+        }
+    }
+
+    fn with_label(continue_target: usize, label: Option<String>) -> Self {
+        LoopState {
+            continue_target,
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+            label,
         }
     }
 
@@ -216,7 +228,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     &mut functions,
                     &mut next_fn_idx,
                     line,
-                    None,
+                    &mut Vec::new(),
                 )?;
             }
             chunk.emit(Op::ReturnFromCall, 0);
@@ -295,7 +307,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             &mut functions,
             &mut next_fn_idx,
             line,
-            None,
+            &mut Vec::new(),
         )?;
     }
     main.emit(Op::Return, 0);
@@ -331,8 +343,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
 /// picks up as the program result — useful for the RES-076 smoke
 /// test that parses `2 + 3 * 4;`.
 ///
-/// `loop_state` is `Some` when this statement is nested inside a loop
-/// body and carries the break/continue patch sites for that loop.
+/// `loop_stack` holds the stack of enclosing loop states so that labeled
+/// break/continue can target an outer loop by name.
 #[allow(clippy::too_many_arguments)]
 fn compile_stmt(
     node: &Node,
@@ -344,7 +356,7 @@ fn compile_stmt(
     fns: &mut Vec<Function>,
     next_fn_idx: &mut u16,
     line: u32,
-    loop_state: Option<&mut LoopState>,
+    loop_stack: &mut Vec<LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
@@ -445,7 +457,7 @@ fn compile_stmt(
             fns,
             next_fn_idx,
             line,
-            loop_state,
+            loop_stack,
         ),
         Node::Assignment { name, value, .. } => {
             // RES-083: re-bind an existing local. Compile the RHS,
@@ -536,23 +548,38 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
-        // RES-break-continue: `break;` exits the innermost loop. Emit a
-        // forward Jump(0) placeholder and register its PC in the
-        // enclosing loop's break_patches list for back-patching once
-        // the loop-exit PC is known.
         Node::Break { .. } => {
-            let ls = loop_state.ok_or(CompileError::Unsupported("break outside loop"))?;
+            let ls = loop_stack
+                .last_mut()
+                .ok_or(CompileError::Unsupported("break outside loop"))?;
             let patch = chunk.emit(Op::Jump(0), line);
             ls.break_patches.push(patch);
             Ok(())
         }
-        // RES-break-continue: `continue;` restarts the innermost loop.
-        // For while loops the target is already known (the condition
-        // check); for for-in loops the target is the index increment,
-        // set after body compilation. Either way we emit Jump(0) and
-        // let patch_loop_exits handle it.
         Node::Continue { .. } => {
-            let ls = loop_state.ok_or(CompileError::Unsupported("continue outside loop"))?;
+            let ls = loop_stack
+                .last_mut()
+                .ok_or(CompileError::Unsupported("continue outside loop"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.continue_patches.push(patch);
+            Ok(())
+        }
+        Node::BreakLabel { label, .. } => {
+            let ls = loop_stack
+                .iter_mut()
+                .rev()
+                .find(|ls| ls.label.as_deref() == Some(label.as_str()))
+                .ok_or(CompileError::Unsupported("break label not found"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.break_patches.push(patch);
+            Ok(())
+        }
+        Node::ContinueLabel { label, .. } => {
+            let ls = loop_stack
+                .iter_mut()
+                .rev()
+                .find(|ls| ls.label.as_deref() == Some(label.as_str()))
+                .ok_or(CompileError::Unsupported("continue label not found"))?;
             let patch = chunk.emit(Op::Jump(0), line);
             ls.continue_patches.push(patch);
             Ok(())
@@ -644,7 +671,7 @@ fn compile_stmt(
             fns,
             next_fn_idx,
             line,
-            loop_state,
+            loop_stack,
         ),
         // Verification-only constructs: emit nothing at runtime.
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
@@ -773,10 +800,9 @@ fn compile_let_destructure_struct(
 /// its inner statements are compiled inline (no new scope frame yet
 /// — matches the tree walker's semantics).
 ///
-/// `loop_state` threads break/continue patch sites from the innermost
-/// enclosing loop down through Block and IfStatement arms; WhileStatement
-/// and ForInStatement create a fresh inner `LoopState` and do not
-/// propagate the outer one into the loop body.
+/// `loop_stack` threads the stack of enclosing loop states down through
+/// Block and IfStatement arms; WhileStatement and ForInStatement push
+/// a fresh entry and pop it after the body is compiled.
 #[allow(clippy::too_many_arguments)]
 fn compile_control_flow(
     node: &Node,
@@ -788,14 +814,11 @@ fn compile_control_flow(
     fns: &mut Vec<Function>,
     next_fn_idx: &mut u16,
     line: u32,
-    mut loop_state: Option<&mut LoopState>,
+    loop_stack: &mut Vec<LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::Block { stmts, .. } => {
-            // Reborrow loop_state for each stmt sequentially.
-            let mut ls = loop_state;
             for s in stmts {
-                let ls_ref = ls.as_deref_mut();
                 compile_stmt(
                     s,
                     chunk,
@@ -806,7 +829,7 @@ fn compile_control_flow(
                     fns,
                     next_fn_idx,
                     line,
-                    ls_ref,
+                    loop_stack,
                 )?;
             }
             Ok(())
@@ -817,7 +840,6 @@ fn compile_control_flow(
             alternative,
             ..
         } => {
-            // cond
             compile_expr(
                 condition,
                 chunk,
@@ -829,9 +851,7 @@ fn compile_control_flow(
                 next_fn_idx,
                 line,
             )?;
-            // JumpIfFalse to else-or-end (placeholder 0 offset)
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            // consequence — pass loop_state so inner break/continue work
             compile_stmt(
                 consequence,
                 chunk,
@@ -842,12 +862,10 @@ fn compile_control_flow(
                 fns,
                 next_fn_idx,
                 line,
-                loop_state.as_deref_mut(),
+                loop_stack,
             )?;
             if let Some(alt) = alternative {
-                // Unconditional jump past the else branch
                 let jmp_end = chunk.emit(Op::Jump(0), line);
-                // JumpIfFalse lands here (start of else)
                 let else_target = chunk.code.len();
                 chunk.patch_jump(jif, else_target)?;
                 compile_stmt(
@@ -860,20 +878,21 @@ fn compile_control_flow(
                     fns,
                     next_fn_idx,
                     line,
-                    loop_state,
+                    loop_stack,
                 )?;
-                // And the skip-over-else lands here (end)
                 let end = chunk.code.len();
                 chunk.patch_jump(jmp_end, end)?;
             } else {
-                // No else — JumpIfFalse lands after the consequence.
                 let end = chunk.code.len();
                 chunk.patch_jump(jif, end)?;
             }
             Ok(())
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            label,
+            ..
         } => {
             let loop_start = chunk.code.len();
             compile_expr(
@@ -888,9 +907,7 @@ fn compile_control_flow(
                 line,
             )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            // Create a fresh inner LoopState — break/continue target THIS loop,
-            // not any outer loop.
-            let mut inner = LoopState::new(loop_start);
+            loop_stack.push(LoopState::with_label(loop_start, label.clone()));
             compile_stmt(
                 body,
                 chunk,
@@ -901,19 +918,16 @@ fn compile_control_flow(
                 fns,
                 next_fn_idx,
                 line,
-                Some(&mut inner),
+                loop_stack,
             )?;
-            // Unconditional loop back to cond
+            let inner = loop_stack.pop().unwrap();
             let jmp = chunk.emit(Op::Jump(0), line);
             chunk.patch_jump(jmp, loop_start)?;
-            // JumpIfFalse lands after the loop
             let end = chunk.code.len();
             chunk.patch_jump(jif, end)?;
-            // Patch all break sites to the exit PC.
             for p in inner.break_patches {
                 chunk.patch_jump(p, end)?;
             }
-            // Patch all continue sites to the loop condition check.
             for p in inner.continue_patches {
                 chunk.patch_jump(p, loop_start)?;
             }
@@ -923,11 +937,13 @@ fn compile_control_flow(
             name,
             iterable,
             body,
+            label,
             ..
         } => compile_for_in(
             name,
             iterable,
             body,
+            label,
             chunk,
             locals,
             next_local,
@@ -937,6 +953,7 @@ fn compile_control_flow(
             next_fn_idx,
             line,
             /* in_fn */ false,
+            loop_stack,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -946,9 +963,6 @@ fn compile_control_flow(
 /// except `return EXPR;` emits `ReturnFromCall` instead of `Return`
 /// — a bare `return` at program scope halts the VM; one inside a
 /// function returns to the caller.
-///
-/// `loop_state` threads break/continue patch sites from the enclosing
-/// loop; same semantics as `compile_stmt`.
 #[allow(clippy::too_many_arguments)]
 fn compile_stmt_in_fn(
     node: &Node,
@@ -960,7 +974,7 @@ fn compile_stmt_in_fn(
     fns: &mut Vec<Function>,
     next_fn_idx: &mut u16,
     line: u32,
-    loop_state: Option<&mut LoopState>,
+    loop_stack: &mut Vec<LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
@@ -1065,7 +1079,7 @@ fn compile_stmt_in_fn(
             fns,
             next_fn_idx,
             line,
-            loop_state,
+            loop_stack,
         ),
         Node::Assignment { name, value, .. } => {
             compile_expr(
@@ -1150,13 +1164,37 @@ fn compile_stmt_in_fn(
             Ok(())
         }
         Node::Break { .. } => {
-            let ls = loop_state.ok_or(CompileError::Unsupported("break outside loop"))?;
+            let ls = loop_stack
+                .last_mut()
+                .ok_or(CompileError::Unsupported("break outside loop"))?;
             let patch = chunk.emit(Op::Jump(0), line);
             ls.break_patches.push(patch);
             Ok(())
         }
         Node::Continue { .. } => {
-            let ls = loop_state.ok_or(CompileError::Unsupported("continue outside loop"))?;
+            let ls = loop_stack
+                .last_mut()
+                .ok_or(CompileError::Unsupported("continue outside loop"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.continue_patches.push(patch);
+            Ok(())
+        }
+        Node::BreakLabel { label, .. } => {
+            let ls = loop_stack
+                .iter_mut()
+                .rev()
+                .find(|ls| ls.label.as_deref() == Some(label.as_str()))
+                .ok_or(CompileError::Unsupported("break label not found"))?;
+            let patch = chunk.emit(Op::Jump(0), line);
+            ls.break_patches.push(patch);
+            Ok(())
+        }
+        Node::ContinueLabel { label, .. } => {
+            let ls = loop_stack
+                .iter_mut()
+                .rev()
+                .find(|ls| ls.label.as_deref() == Some(label.as_str()))
+                .ok_or(CompileError::Unsupported("continue label not found"))?;
             let patch = chunk.emit(Op::Jump(0), line);
             ls.continue_patches.push(patch);
             Ok(())
@@ -1224,7 +1262,7 @@ fn compile_stmt_in_fn(
             fns,
             next_fn_idx,
             line,
-            loop_state,
+            loop_stack,
         ),
         // Verification-only constructs: emit nothing at runtime.
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
@@ -1260,13 +1298,11 @@ fn compile_control_flow_in_fn(
     fns: &mut Vec<Function>,
     next_fn_idx: &mut u16,
     line: u32,
-    mut loop_state: Option<&mut LoopState>,
+    loop_stack: &mut Vec<LoopState>,
 ) -> Result<(), CompileError> {
     match node {
         Node::Block { stmts, .. } => {
-            let mut ls = loop_state;
             for s in stmts {
-                let ls_ref = ls.as_deref_mut();
                 compile_stmt_in_fn(
                     s,
                     chunk,
@@ -1277,7 +1313,7 @@ fn compile_control_flow_in_fn(
                     fns,
                     next_fn_idx,
                     line,
-                    ls_ref,
+                    loop_stack,
                 )?;
             }
             Ok(())
@@ -1310,7 +1346,7 @@ fn compile_control_flow_in_fn(
                 fns,
                 next_fn_idx,
                 line,
-                loop_state.as_deref_mut(),
+                loop_stack,
             )?;
             if let Some(alt) = alternative {
                 let jmp_end = chunk.emit(Op::Jump(0), line);
@@ -1326,7 +1362,7 @@ fn compile_control_flow_in_fn(
                     fns,
                     next_fn_idx,
                     line,
-                    loop_state,
+                    loop_stack,
                 )?;
                 let end = chunk.code.len();
                 chunk.patch_jump(jmp_end, end)?;
@@ -1337,7 +1373,10 @@ fn compile_control_flow_in_fn(
             Ok(())
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            label,
+            ..
         } => {
             let loop_start = chunk.code.len();
             compile_expr(
@@ -1352,7 +1391,7 @@ fn compile_control_flow_in_fn(
                 line,
             )?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            let mut inner = LoopState::new(loop_start);
+            loop_stack.push(LoopState::with_label(loop_start, label.clone()));
             compile_stmt_in_fn(
                 body,
                 chunk,
@@ -1363,8 +1402,9 @@ fn compile_control_flow_in_fn(
                 fns,
                 next_fn_idx,
                 line,
-                Some(&mut inner),
+                loop_stack,
             )?;
+            let inner = loop_stack.pop().unwrap();
             let jmp = chunk.emit(Op::Jump(0), line);
             chunk.patch_jump(jmp, loop_start)?;
             let end = chunk.code.len();
@@ -1381,11 +1421,13 @@ fn compile_control_flow_in_fn(
             name,
             iterable,
             body,
+            label,
             ..
         } => compile_for_in(
             name,
             iterable,
             body,
+            label,
             chunk,
             locals,
             next_local,
@@ -1395,6 +1437,7 @@ fn compile_control_flow_in_fn(
             next_fn_idx,
             line,
             /* in_fn */ true,
+            loop_stack,
         ),
         // Type-level / declaration-only constructs: no runtime bytecode.
         Node::StructDecl { .. }
@@ -1466,6 +1509,7 @@ fn compile_for_in(
     name: &str,
     iterable: &Node,
     body: &Node,
+    label: &Option<String>,
     chunk: &mut Chunk,
     locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
@@ -1475,6 +1519,7 @@ fn compile_for_in(
     next_fn_idx: &mut u16,
     line: u32,
     in_fn: bool,
+    loop_stack: &mut Vec<LoopState>,
 ) -> Result<(), CompileError> {
     // Allocate three hidden locals for the iteration state plus
     // one user-visible slot for the loop variable. Hidden slots
@@ -1556,10 +1601,11 @@ fn compile_for_in(
     chunk.emit(Op::LoadIndex, line);
     chunk.emit(Op::StoreLocal(name_slot), line);
 
-    // 6. Body. A fresh LoopState collects break/continue patch sites.
-    //    `continue` in a for-in loop skips to the index increment (step 7),
-    //    whose PC is not yet known — continue_patches are back-patched below.
-    let mut inner = LoopState::new(0); // continue_target set after body
+    // 6. Body. Push a LoopState onto the stack so break/continue (including
+    //    labeled variants) can find this loop. `continue` in a for-in loop
+    //    skips to the index increment (step 7), whose PC is not yet known —
+    //    continue_patches are back-patched below.
+    loop_stack.push(LoopState::with_label(0, label.clone())); // continue_target set after body
     if in_fn {
         compile_stmt_in_fn(
             body,
@@ -1571,7 +1617,7 @@ fn compile_for_in(
             fns,
             next_fn_idx,
             line,
-            Some(&mut inner),
+            loop_stack,
         )?;
     } else {
         compile_stmt(
@@ -1584,9 +1630,10 @@ fn compile_for_in(
             fns,
             next_fn_idx,
             line,
-            Some(&mut inner),
+            loop_stack,
         )?;
     }
+    let inner = loop_stack.pop().unwrap();
 
     // 7. idx = idx + 1 (peephole folds this to IncLocal).
     // This is the `continue` target for this loop — record the PC before
@@ -2564,7 +2611,7 @@ fn compile_expr(
                     fns,
                     next_fn_idx,
                     stmt_line,
-                    None,
+                    &mut Vec::new(),
                 )?;
             }
             fn_chunk.emit(Op::ReturnFromCall, 0);
@@ -4886,5 +4933,148 @@ x;
             Value::Int(7) => {}
             other => panic!("expected Int(7), got {:?}", other),
         }
+    }
+
+    // ── RES-2502: labeled break/continue ────────────────────────────────────
+
+    fn compile_run(src: &str) -> Result<Value, String> {
+        let prog = parse_and_compile(src)?;
+        crate::vm::run(&prog).map_err(|e| format!("{e:?}"))
+    }
+
+    fn assert_int(v: Value, expected: i64) {
+        match v {
+            Value::Int(n) => assert_eq!(n, expected),
+            other => panic!("expected Int({expected}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn labeled_break_exits_outer_for() {
+        let v = compile_run(
+            r#"let found = 0;
+outer: for i in [0, 1, 2, 3, 4] {
+    for j in [0, 1, 2, 3, 4] {
+        if i == 2 && j == 3 {
+            found = i * 10 + j;
+            break outer;
+        }
+    }
+}
+found;"#,
+        )
+        .unwrap();
+        assert_int(v, 23);
+    }
+
+    #[test]
+    fn labeled_break_exits_outer_while() {
+        let v = compile_run(
+            r#"let i = 0;
+let found = 0;
+outer: while i < 5 {
+    let j = 0;
+    while j < 5 {
+        if i == 1 && j == 2 {
+            found = i * 10 + j;
+            break outer;
+        }
+        j = j + 1;
+    }
+    i = i + 1;
+}
+found;"#,
+        )
+        .unwrap();
+        assert_int(v, 12);
+    }
+
+    #[test]
+    fn labeled_continue_skips_outer_iteration() {
+        let v = compile_run(
+            r#"let sum = 0;
+outer: for i in [0, 1, 2, 3] {
+    for j in [0, 1, 2] {
+        if j == 1 {
+            continue outer;
+        }
+        sum = sum + 1;
+    }
+}
+sum;"#,
+        )
+        .unwrap();
+        assert_int(v, 4);
+    }
+
+    #[test]
+    fn unlabeled_break_inside_labeled_loop() {
+        let v = compile_run(
+            r#"let count = 0;
+outer: for i in [0, 1, 2] {
+    for j in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] {
+        if j == 2 { break; }
+        count = count + 1;
+    }
+}
+count;"#,
+        )
+        .unwrap();
+        assert_int(v, 6);
+    }
+
+    #[test]
+    fn labeled_break_inner_named_loop() {
+        let v = compile_run(
+            r#"let x = 0;
+outer: for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] {
+    inner: for j in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] {
+        if j == 5 { break inner; }
+        x = x + 1;
+    }
+    if i == 2 { break outer; }
+}
+x;"#,
+        )
+        .unwrap();
+        assert_int(v, 15);
+    }
+
+    #[test]
+    fn labeled_break_in_fn_body() {
+        let v = compile_run(
+            r#"fn search(IntArr xs, IntArr ys) -> int {
+    outer: for i in xs {
+        for j in ys {
+            if i == 2 && j == 3 {
+                return i * 10 + j;
+            }
+        }
+    }
+    return 0;
+}
+search([0, 1, 2, 3], [0, 1, 2, 3]);"#,
+        )
+        .unwrap();
+        assert_int(v, 23);
+    }
+
+    #[test]
+    fn labeled_continue_in_fn_body() {
+        let v = compile_run(
+            r#"fn count_first_cols(IntArr rows, IntArr cols) -> int {
+    let sum = 0;
+    outer: for i in rows {
+        for j in cols {
+            if j == 1 { continue outer; }
+            sum = sum + 1;
+        }
+    }
+    return sum;
+}
+count_first_cols([0, 1, 2, 3], [0, 1, 2]);"#,
+        )
+        .unwrap();
+        assert_int(v, 4);
     }
 }
