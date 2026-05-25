@@ -13134,6 +13134,9 @@ fn builtin_div_euclid(args: &[Value]) -> RResult<Value> {
             if *b == 0 {
                 return Err("div_euclid: division by zero".to_string());
             }
+            if *a == i64::MIN && *b == -1 {
+                return Err("div_euclid: overflow (i64::MIN / -1)".to_string());
+            }
             Ok(Value::Int(a.div_euclid(*b)))
         }
         [a, b] => Err(format!(
@@ -13155,6 +13158,9 @@ fn builtin_rem_euclid(args: &[Value]) -> RResult<Value> {
         [Value::Int(a), Value::Int(b)] => {
             if *b == 0 {
                 return Err("rem_euclid: division by zero".to_string());
+            }
+            if *a == i64::MIN && *b == -1 {
+                return Err("rem_euclid: overflow (i64::MIN % -1)".to_string());
             }
             Ok(Value::Int(a.rem_euclid(*b)))
         }
@@ -19467,7 +19473,10 @@ fn replace_at_path(items: &mut [Value], indices: &[i64], value: Value) -> RResul
 /// `abs(x)` — absolute value for `int` and `float`.
 fn builtin_abs(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Int(i)] => Ok(Value::Int(i.abs())),
+        [Value::Int(i)] => match i.checked_abs() {
+            Some(v) => Ok(Value::Int(v)),
+            None => Err(format!("abs: |{}| overflows i64", i)),
+        },
         [Value::Float(f)] => Ok(Value::Float(f.abs())),
         [other] => Err(format!("abs: expected int or float, got {}", other)),
         _ => Err(format!("abs: expected 1 argument, got {}", args.len())),
@@ -36632,6 +36641,21 @@ mod tests {
         );
     }
 
+    // RES-2464: div_euclid / rem_euclid must guard i64::MIN / -1.
+    #[test]
+    fn euclid_i64_min_overflow_errors() {
+        let err = builtin_div_euclid(&[Value::Int(i64::MIN), Value::Int(-1)]).unwrap_err();
+        assert!(
+            err.contains("overflow"),
+            "expected overflow error, got: {err}"
+        );
+        let err = builtin_rem_euclid(&[Value::Int(i64::MIN), Value::Int(-1)]).unwrap_err();
+        assert!(
+            err.contains("overflow"),
+            "expected overflow error, got: {err}"
+        );
+    }
+
     // RES-1128: midpoint — overflow-safe arithmetic mean.
     #[test]
     fn midpoint_basic() {
@@ -41855,6 +41879,16 @@ mod tests {
             Value::Int(7) => {}
             other => panic!("max: expected Int(7), got {:?}", other),
         }
+    }
+
+    // RES-2464: abs(i64::MIN) must return a typed error, not panic.
+    #[test]
+    fn abs_i64_min_overflow_errors() {
+        let err = builtin_abs(&[Value::Int(i64::MIN)]).unwrap_err();
+        assert!(
+            err.contains("overflows"),
+            "expected overflow error, got: {err}"
+        );
     }
 
     // ---------- RES-410: sign(x) ----------
