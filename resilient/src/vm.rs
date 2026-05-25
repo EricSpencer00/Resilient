@@ -5709,4 +5709,51 @@ mod tests {
         let src = "fn fib(int n) -> int { fn go(int a, int b, int c) -> int { if c <= 0 { return a; } return go(b, a + b, c - 1); } return go(0, 1, n); } fib(10)";
         assert_int(compile_run(src).unwrap(), 55);
     }
+
+    // ── RES-2540: struct/enum match patterns ──────────────────────────────
+
+    #[test]
+    fn res2540_struct_match_field_binding() {
+        let src = r#"struct Point { int x, int y, }
+let p = new Point { x: 3, y: 5 };
+match p { Point { x, y } => x + y, _ => -1, }"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 8);
+    }
+
+    #[test]
+    fn res2540_struct_match_literal_field() {
+        let src = r#"struct Point { int x, int y, }
+let p = new Point { x: 0, y: 7 };
+match p { Point { x: 0, y } => y, _ => -1, }"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 7);
+    }
+
+    #[test]
+    fn res2540_struct_match_fallthrough() {
+        let src = r#"struct Point { int x, int y, }
+let p = new Point { x: 5, y: 5 };
+match p { Point { x: 0, y } => y, _ => 99, }"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 99);
+    }
+
+    #[test]
+    fn res2540_enum_match_unit_variant() {
+        let src = r#"enum Dir { N, S, E, W, }
+let d = Dir::W;
+match d { Dir::N => 1, Dir::S => 2, Dir::E => 3, Dir::W => 4, }"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 4);
+    }
+
+    #[test]
+    fn res2540_enum_match_first_variant() {
+        let src = r#"enum Dir { N, S, E, W, }
+let d = Dir::N;
+match d { Dir::N => 10, Dir::S => 20, Dir::E => 30, Dir::W => 40, }"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 10);
+    }
 }

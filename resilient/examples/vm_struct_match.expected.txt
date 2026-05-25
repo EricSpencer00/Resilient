@@ -1,0 +1,4 @@
+point(3,5)
+y-axis at 42
+blue
+Program executed successfully

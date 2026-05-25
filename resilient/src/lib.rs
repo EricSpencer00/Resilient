@@ -11833,6 +11833,7 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ),
     // RES-2652: type introspection + result_collect (pure).
     ("type_of", crate::type_builtins::builtin_type_of),
+    ("struct_name", crate::type_builtins::builtin_struct_name),
     (
         "result_collect",
         crate::type_builtins::builtin_result_collect,

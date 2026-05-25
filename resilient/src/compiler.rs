@@ -776,8 +776,10 @@ fn compile_stmt(
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
         // All type information is handled at parse/typecheck time.
+        Node::EnumDecl { name, variants, .. } => {
+            emit_unit_enum_variants(name, variants, chunk, locals, next_local, line)
+        }
         Node::StructDecl { .. }
-        | Node::EnumDecl { .. }
         | Node::TraitDecl { .. }
         | Node::ImplBlock { .. }
         | Node::TypeAlias { .. }
@@ -792,6 +794,38 @@ fn compile_stmt(
 }
 
 /// Shared assert-lowering logic used by both `compile_stmt` and
+/// RES-2540: bind unit enum variants as locals so `Color::Green` resolves.
+fn emit_unit_enum_variants(
+    enum_name: &str,
+    variants: &[crate::EnumVariant],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    for v in variants {
+        if !matches!(v.payload, crate::EnumPayload::None) {
+            continue;
+        }
+        let key = format!("{}::{}", enum_name, v.name);
+        let val = Value::EnumVariant {
+            type_name: enum_name.to_string(),
+            variant: v.name.clone(),
+            payload: crate::EnumValuePayload::None,
+        };
+        let const_idx = chunk.add_constant(val)?;
+        chunk.emit(Op::Const(const_idx), line);
+        let slot = *next_local;
+        if slot == u16::MAX {
+            return Err(CompileError::TooManyLocals);
+        }
+        *next_local += 1;
+        locals.insert(key, slot);
+        chunk.emit(local_store_op(slot), line);
+    }
+    Ok(())
+}
+
 /// `compile_stmt_in_fn`. Emits:
 ///   `<cond>; JumpIfTrue(past_fail); Const(msg); AssertFail`
 #[allow(clippy::too_many_arguments)]
@@ -1472,8 +1506,10 @@ fn compile_stmt_in_fn(
         // Verification-only constructs: emit nothing at runtime.
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
+        Node::EnumDecl { name, variants, .. } => {
+            emit_unit_enum_variants(name, variants, chunk, locals, next_local, line)
+        }
         Node::StructDecl { .. }
-        | Node::EnumDecl { .. }
         | Node::TraitDecl { .. }
         | Node::ImplBlock { .. }
         | Node::TypeAlias { .. }
@@ -1663,9 +1699,11 @@ fn compile_control_flow_in_fn(
             /* in_fn */ true,
             loop_stack,
         ),
+        Node::EnumDecl { name, variants, .. } => {
+            emit_unit_enum_variants(name, variants, chunk, locals, next_local, line)
+        }
         // Type-level / declaration-only constructs: no runtime bytecode.
         Node::StructDecl { .. }
-        | Node::EnumDecl { .. }
         | Node::TraitDecl { .. }
         | Node::ImplBlock { .. }
         | Node::TypeAlias { .. }
@@ -3959,8 +3997,184 @@ fn compile_pattern_check(
                 )?;
             }
         }
-        _ => {
-            return Err(CompileError::Unsupported("complex match pattern"));
+        Pattern::Struct {
+            struct_name,
+            fields,
+            ..
+        } => {
+            let sn_const = chunk.add_string_constant("struct_name")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: sn_const,
+                    arity: 1,
+                },
+                line,
+            );
+            let expected = chunk.add_string_constant(struct_name)?;
+            chunk.emit(Op::Const(expected), line);
+            chunk.emit(Op::Eq, line);
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            for (fname, sub_pat) in fields {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let field_slot = *next_local;
+                *next_local += 1;
+                let fname_idx = chunk.add_string_constant(fname)?;
+                chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+                chunk.emit(
+                    Op::GetField {
+                        name_const: fname_idx,
+                    },
+                    line,
+                );
+                chunk.emit(Op::StoreLocal(field_slot), line);
+                compile_pattern_check(
+                    sub_pat,
+                    field_slot,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    next_arm_patches,
+                )?;
+            }
+        }
+        Pattern::TupleStruct { name, fields } => {
+            let sn_const = chunk.add_string_constant("struct_name")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: sn_const,
+                    arity: 1,
+                },
+                line,
+            );
+            let expected = chunk.add_string_constant(name)?;
+            chunk.emit(Op::Const(expected), line);
+            chunk.emit(Op::Eq, line);
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            for (i, sub_pat) in fields.iter().enumerate() {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let field_slot = *next_local;
+                *next_local += 1;
+                let fname_idx = chunk.add_string_constant(&i.to_string())?;
+                chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+                chunk.emit(
+                    Op::GetField {
+                        name_const: fname_idx,
+                    },
+                    line,
+                );
+                chunk.emit(Op::StoreLocal(field_slot), line);
+                compile_pattern_check(
+                    sub_pat,
+                    field_slot,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    next_arm_patches,
+                )?;
+            }
+        }
+        Pattern::EnumVariant {
+            variant_name,
+            payload,
+            ..
+        } => {
+            let sn_const = chunk.add_string_constant("struct_name")?;
+            chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: sn_const,
+                    arity: 1,
+                },
+                line,
+            );
+            let expected = chunk.add_string_constant(variant_name)?;
+            chunk.emit(Op::Const(expected), line);
+            chunk.emit(Op::Eq, line);
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+            match payload {
+                crate::EnumPatternPayload::None => {}
+                crate::EnumPatternPayload::Named(fields) => {
+                    for (fname, sub_pat) in fields {
+                        if *next_local == u16::MAX {
+                            return Err(CompileError::TooManyLocals);
+                        }
+                        let field_slot = *next_local;
+                        *next_local += 1;
+                        let fname_idx = chunk.add_string_constant(fname)?;
+                        chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+                        chunk.emit(
+                            Op::GetField {
+                                name_const: fname_idx,
+                            },
+                            line,
+                        );
+                        chunk.emit(Op::StoreLocal(field_slot), line);
+                        compile_pattern_check(
+                            sub_pat,
+                            field_slot,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                            next_arm_patches,
+                        )?;
+                    }
+                }
+                crate::EnumPatternPayload::Tuple(sub_pats) => {
+                    for (i, sub_pat) in sub_pats.iter().enumerate() {
+                        if *next_local == u16::MAX {
+                            return Err(CompileError::TooManyLocals);
+                        }
+                        let field_slot = *next_local;
+                        *next_local += 1;
+                        let fname_idx = chunk.add_string_constant(&i.to_string())?;
+                        chunk.emit(Op::LoadLocal(scrutinee_slot), line);
+                        chunk.emit(
+                            Op::GetField {
+                                name_const: fname_idx,
+                            },
+                            line,
+                        );
+                        chunk.emit(Op::StoreLocal(field_slot), line);
+                        compile_pattern_check(
+                            sub_pat,
+                            field_slot,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                            next_arm_patches,
+                        )?;
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -4449,11 +4663,8 @@ mod tests {
     }
 
     #[test]
-    fn compile_unsupported_construct_is_clean_error() {
-        // RES-163: basic match (literal/wildcard arms) is now compiled.
-        // Structural patterns (struct destructuring) are still unsupported.
-        // Use a struct pattern as the "unsupported construct" canary until
-        // struct-pattern lowering ships.
+    fn compile_struct_match_pattern_compiles() {
+        // RES-2540: struct match patterns now compile successfully.
         let p = parse_one(
             r#"struct Point { int x, int y }
             fn classify(Point p) -> int {
@@ -4463,8 +4674,7 @@ mod tests {
                 };
             }"#,
         );
-        let err = compile(&p).unwrap_err();
-        assert!(matches!(err, CompileError::Unsupported(_)), "{:?}", err);
+        assert!(compile(&p).is_ok());
     }
 
     // ---------- RES-334: for-in lowering ----------
