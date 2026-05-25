@@ -19439,7 +19439,9 @@ fn replace_at_path(items: &mut [Value], indices: &[i64], value: Value) -> RResul
             Some(pair) => pair,
             None => unreachable!("replace_at_path called with zero indices"),
         };
-        if *i < 0 || (*i as usize) >= items.len() {
+        let len = items.len() as i64;
+        let resolved = if *i < 0 { *i + len } else { *i };
+        if resolved < 0 || resolved >= len {
             return Err(format!(
                 "Index {} out of bounds for array of length {} at dim {}",
                 i,
@@ -19447,16 +19449,12 @@ fn replace_at_path(items: &mut [Value], indices: &[i64], value: Value) -> RResul
                 depth
             ));
         }
+        let idx = resolved as usize;
         if rest.is_empty() {
-            items[*i as usize] = value;
+            items[idx] = value;
             return Ok(());
         }
-        // Need to dive into the inner array. Move it out, recurse on
-        // the inner Vec, then put the rebuilt array back. Cloning is
-        // unnecessary because `items[i]` will be overwritten with
-        // exactly the same Value::Array variant once the inner call
-        // returns.
-        let mut inner = std::mem::replace(&mut items[*i as usize], Value::Void);
+        let mut inner = std::mem::replace(&mut items[idx], Value::Void);
         let Value::Array(inner_items) = &mut inner else {
             return Err(format!(
                 "Cannot index into non-array at dim {}: {:?}",
@@ -19464,7 +19462,7 @@ fn replace_at_path(items: &mut [Value], indices: &[i64], value: Value) -> RResul
             ));
         };
         let result = recurse(inner_items, rest, value, depth + 1);
-        items[*i as usize] = inner;
+        items[idx] = inner;
         result
     }
     recurse(items, indices, value, 1)
@@ -40462,6 +40460,66 @@ mod tests {
                 assert!(matches!(items[0], Value::Int(99)));
                 assert!(matches!(items[1], Value::Int(2)));
             }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn negative_index_assignment_wraps() {
+        let src = "let a = [10, 20, 30]; a[-1] = 99;";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("a").unwrap() {
+            Value::Array(items) => {
+                assert!(matches!(items[0], Value::Int(10)));
+                assert!(matches!(items[1], Value::Int(20)));
+                assert!(matches!(items[2], Value::Int(99)));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn negative_index_assignment_first_element() {
+        let src = "let a = [10, 20, 30]; a[-3] = 99;";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("a").unwrap() {
+            Value::Array(items) => {
+                assert!(matches!(items[0], Value::Int(99)));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn negative_index_assignment_out_of_range_errors() {
+        let src = "let a = [10, 20, 30]; a[-4] = 99;";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("out of bounds"), "got: {}", err);
+    }
+
+    #[test]
+    fn negative_index_assignment_2d() {
+        let src = "let m = [[1,2],[3,4]]; m[-1][-1] = 99;";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("m").unwrap() {
+            Value::Array(rows) => match &rows[1] {
+                Value::Array(cols) => {
+                    assert!(matches!(cols[1], Value::Int(99)));
+                }
+                other => panic!("expected inner Array, got {:?}", other),
+            },
             other => panic!("expected Array, got {:?}", other),
         }
     }
