@@ -2593,6 +2593,19 @@ fn compile_expr(
             for (i, (_, name)) in captured.iter().enumerate() {
                 fn_locals.insert(name.clone(), upvalue_base + i as u16);
             }
+            // RES-2504: advance fn_next_local past the upvalue pseudo-slots
+            // so that body `let` bindings don't collide with them.
+            fn_next_local += captured.len() as u16;
+
+            // RES-2504: copy upvalues into real local slots at function
+            // entry. This replaces the old post-hoc LoadLocal→LoadUpvalue
+            // rewrite and also makes mutations to captured variables
+            // visible within the closure body (both reads and writes use
+            // normal LoadLocal/StoreLocal on the copied slots).
+            for i in 0..upvalue_count {
+                fn_chunk.emit(Op::LoadUpvalue(i as u16), line);
+                fn_chunk.emit(Op::StoreLocal(upvalue_base + i as u16), line);
+            }
 
             // Compile the body statements.
             let inner_stmts = match body.as_ref() {
@@ -2615,22 +2628,6 @@ fn compile_expr(
                 )?;
             }
             fn_chunk.emit(Op::ReturnFromCall, 0);
-
-            // Rewrite LoadLocal(upvalue_base + i) → LoadUpvalue(i).
-            // Any slot in [upvalue_base, upvalue_base + upvalue_count) was
-            // injected for a capture. Rewrite those slots in-place.
-            for op in &mut fn_chunk.code {
-                // `if let … { if … }` form is intentional: stable Rust doesn't
-                // have let_chains, so suppress the collapsible_if lint here.
-                #[allow(clippy::collapsible_if)]
-                if let Op::LoadLocal(slot) = op {
-                    if *slot >= upvalue_base
-                        && (*slot as usize) < upvalue_base as usize + upvalue_count
-                    {
-                        *op = Op::LoadUpvalue(*slot - upvalue_base);
-                    }
-                }
-            }
 
             let local_count = fn_next_local;
             // Insert at fn_idx (pre-allocated index). fns may have grown via
@@ -5057,6 +5054,43 @@ search([0, 1, 2, 3], [0, 1, 2, 3]);"#,
         )
         .unwrap();
         assert_int(v, 23);
+    }
+
+    #[test]
+    fn closure_capture_with_body_local() {
+        let v = compile_run(
+            "let outer = 10;\nlet f = fn(Int x) { let local = x + 1; local + outer; };\nf(5);",
+        )
+        .unwrap();
+        assert_int(v, 16);
+    }
+
+    #[test]
+    fn closure_capture_two_vars_with_body_local() {
+        let v = compile_run(
+            "let a = 3;\nlet b = 7;\nlet f = fn(Int x) { let c = x * 2; c + a + b; };\nf(4);",
+        )
+        .unwrap();
+        assert_int(v, 18);
+    }
+
+    #[test]
+    fn closure_capture_mutation_visible() {
+        let v = compile_run("let outer = 10;\nlet f = fn() { outer = 99; outer; };\nf();").unwrap();
+        assert_int(v, 99);
+    }
+
+    #[test]
+    fn closure_no_capture_with_locals() {
+        let v =
+            compile_run("let f = fn(Int x) { let a = x + 1; let b = a * 2; b; };\nf(5);").unwrap();
+        assert_int(v, 12);
+    }
+
+    #[test]
+    fn closure_capture_only_no_body_locals() {
+        let v = compile_run("let outer = 42;\nlet f = fn() { outer; };\nf();").unwrap();
+        assert_int(v, 42);
     }
 
     #[test]
