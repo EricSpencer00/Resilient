@@ -1,8 +1,8 @@
 {
   "claims": {
     "resilient/src/vm.rs": {
-      "branch": "res-2478-vm-string-repetition",
-      "claimed_at": "2026-05-25T06:47:29Z"
+      "branch": "res-2486-vm-structural-equality",
+      "claimed_at": "2026-05-25T09:30:00Z"
     }
   }
 }
