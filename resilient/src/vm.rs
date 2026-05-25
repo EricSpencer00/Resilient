@@ -961,6 +961,59 @@ fn run_inner(
                 });
                 continue;
             }
+            Op::CallMethod {
+                method_const,
+                arity,
+            } => {
+                let method = match &chunk.constants[method_const as usize] {
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(VmError::TypeMismatch(
+                            "CallMethod: bad method name constant",
+                        ));
+                    }
+                };
+                if stack.len() < arity as usize + 1 {
+                    return Err(VmError::EmptyStack);
+                }
+                if frames.len() >= MAX_CALL_DEPTH {
+                    return Err(VmError::CallStackOverflow);
+                }
+                let split = stack.len() - arity as usize;
+                let args: Vec<Value> = stack.drain(split..).collect();
+                let receiver = stack.pop().ok_or(VmError::EmptyStack)?;
+                let struct_name = match &receiver {
+                    Value::Struct { name, .. } => name.clone(),
+                    Value::EnumVariant { type_name, .. } => type_name.clone(),
+                    _ => {
+                        return Err(VmError::TypeMismatch(
+                            "CallMethod: receiver is not a struct or enum",
+                        ));
+                    }
+                };
+                let mangled = format!("{}${}", struct_name, method);
+                let fn_idx = program
+                    .functions
+                    .iter()
+                    .position(|f| f.name == mangled)
+                    .ok_or(VmError::TypeMismatch("CallMethod: method not found"))?;
+                let func = &program.functions[fn_idx];
+                let base = locals.len();
+                locals.resize(base + func.local_count as usize, Value::Void);
+                locals[base] = receiver;
+                for (i, v) in args.into_iter().enumerate() {
+                    locals[base + 1 + i] = v;
+                }
+                frames.push(CallFrame {
+                    chunk_idx: fn_idx,
+                    pc: 0,
+                    locals_base: base,
+                    upvalues: Box::default(),
+                    closure_home: None,
+                    source_slots: Box::default(),
+                });
+                continue;
+            }
             #[cfg(feature = "ffi")]
             Op::CallForeign(idx) => {
                 let sym = program
@@ -1592,6 +1645,7 @@ fn op_to_index(op: Op) -> usize {
         Op::LoadGlobal(_) => OP_KIND_LOAD_GLOBAL,
         Op::StoreGlobal(_) => OP_KIND_STORE_GLOBAL,
         Op::StoreUpvalue { .. } => OP_KIND_STORE_UPVALUE,
+        Op::CallMethod { .. } => OP_KIND_CALL_METHOD,
     }
 }
 
@@ -1612,7 +1666,8 @@ const OP_KIND_ITER_PREPARE: usize = 44;
 const OP_KIND_LOAD_GLOBAL: usize = 45;
 const OP_KIND_STORE_GLOBAL: usize = 46;
 const OP_KIND_STORE_UPVALUE: usize = 47;
-const HANDLER_TABLE_LEN: usize = 48;
+const OP_KIND_CALL_METHOD: usize = 48;
+const HANDLER_TABLE_LEN: usize = 49;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1666,6 +1721,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_LOAD_GLOBAL] = h_load_global;
     table[OP_KIND_STORE_GLOBAL] = h_store_global;
     table[OP_KIND_STORE_UPVALUE] = h_store_upvalue;
+    table[OP_KIND_CALL_METHOD] = h_call_method;
     table
 };
 
@@ -2757,6 +2813,69 @@ fn h_store_upvalue(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     if let Some(uv) = frame.upvalues.get_mut(upvalue_idx as usize) {
         *uv = v;
     }
+    Ok(Step::Continue)
+}
+
+fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::CallMethod {
+        method_const,
+        arity,
+    } = op
+    else {
+        unreachable!()
+    };
+    let chunk = state.current_chunk();
+    let method = match &chunk.constants[method_const as usize] {
+        Value::String(s) => s.clone(),
+        _ => {
+            return Err(VmError::TypeMismatch(
+                "CallMethod: bad method name constant",
+            ));
+        }
+    };
+    let arity = arity as usize;
+    if state.stack.len() < arity + 1 {
+        return Err(VmError::EmptyStack);
+    }
+    if state.frames.len() >= MAX_CALL_DEPTH {
+        return Err(VmError::CallStackOverflow);
+    }
+    let split = state.stack.len() - arity;
+    let args: Vec<Value> = state.stack.drain(split..).collect();
+    let receiver = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let struct_name = match &receiver {
+        Value::Struct { name, .. } => name.clone(),
+        Value::EnumVariant { type_name, .. } => type_name.clone(),
+        _ => {
+            return Err(VmError::TypeMismatch(
+                "CallMethod: receiver is not a struct",
+            ));
+        }
+    };
+    let mangled = format!("{}${}", struct_name, method);
+    let fn_idx = state
+        .program
+        .functions
+        .iter()
+        .position(|f| f.name == mangled)
+        .ok_or(VmError::TypeMismatch("CallMethod: method not found"))?;
+    let func = &state.program.functions[fn_idx];
+    let base = state.locals.len();
+    state
+        .locals
+        .resize(base + func.local_count as usize, Value::Void);
+    state.locals[base] = receiver;
+    for (i, v) in args.into_iter().enumerate() {
+        state.locals[base + 1 + i] = v;
+    }
+    state.frames.push(CallFrame {
+        chunk_idx: fn_idx,
+        pc: 0,
+        locals_base: base,
+        upvalues: Box::default(),
+        closure_home: None,
+        source_slots: Box::default(),
+    });
     Ok(Step::Continue)
 }
 
@@ -5755,5 +5874,51 @@ let d = Dir::N;
 match d { Dir::N => 10, Dir::S => 20, Dir::E => 30, Dir::W => 40, }"#;
         assert_both_eq(src);
         assert_int(compile_run(src).unwrap(), 10);
+    }
+
+    // ── RES-2542: impl method calls ──────────────────────────────────────
+
+    #[test]
+    fn res2542_impl_method_no_args() {
+        let src = r#"struct Counter { int value, }
+impl Counter { fn get(self) -> int { return self.value; } }
+let c = new Counter { value: 42 };
+c.get()"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 42);
+    }
+
+    #[test]
+    fn res2542_impl_method_with_arg() {
+        let src = r#"struct Counter { int value, }
+impl Counter { fn add(self, int n) -> int { return self.value + n; } }
+let c = new Counter { value: 10 };
+c.add(5)"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 15);
+    }
+
+    #[test]
+    fn res2542_impl_multiple_methods() {
+        let src = r#"struct Point { int x, int y, }
+impl Point {
+    fn sum(self) -> int { return self.x + self.y; }
+    fn scale(self, int factor) -> int { return self.sum() * factor; }
+}
+let p = new Point { x: 3, y: 4 };
+p.scale(2)"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 14);
+    }
+
+    #[test]
+    fn res2542_impl_method_chaining() {
+        let src = r#"struct Val { int n, }
+impl Val { fn doubled(self) -> int { return self.n * 2; } }
+let a = new Val { n: 5 };
+let b = new Val { n: a.doubled() };
+b.doubled()"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 20);
     }
 }

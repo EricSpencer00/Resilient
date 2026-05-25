@@ -252,25 +252,51 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     // resolved_fields pre-size.
     let fn_count = stmts
         .iter()
-        .filter(|s| matches!(&s.node, Node::Function { .. }))
-        .count();
+        .map(|s| match &s.node {
+            Node::Function { .. } => 1,
+            Node::ImplBlock { methods, .. } => methods
+                .iter()
+                .filter(|m| matches!(m, Node::Function { .. }))
+                .count(),
+            _ => 0,
+        })
+        .sum::<usize>();
 
     // Pre-pass: function name → index in the `functions` table.
     let mut fn_index: HashMap<String, u16> = HashMap::with_capacity(fn_count);
     let mut next_fn_idx: u16 = 0;
     for spanned in stmts {
-        if let Node::Function {
-            name, parameters, ..
-        } = &spanned.node
-        {
-            if parameters.len() > u8::MAX as usize {
-                return Err(CompileError::Unsupported("fn with >255 params"));
+        match &spanned.node {
+            Node::Function {
+                name, parameters, ..
+            } => {
+                if parameters.len() > u8::MAX as usize {
+                    return Err(CompileError::Unsupported("fn with >255 params"));
+                }
+                if next_fn_idx == u16::MAX {
+                    return Err(CompileError::Unsupported("program has > 65535 functions"));
+                }
+                fn_index.insert(name.clone(), next_fn_idx);
+                next_fn_idx += 1;
             }
-            if next_fn_idx == u16::MAX {
-                return Err(CompileError::Unsupported("program has > 65535 functions"));
+            Node::ImplBlock { methods, .. } => {
+                for m in methods {
+                    if let Node::Function {
+                        name, parameters, ..
+                    } = m
+                    {
+                        if parameters.len() > u8::MAX as usize {
+                            return Err(CompileError::Unsupported("fn with >255 params"));
+                        }
+                        if next_fn_idx == u16::MAX {
+                            return Err(CompileError::Unsupported("program has > 65535 functions"));
+                        }
+                        fn_index.insert(name.clone(), next_fn_idx);
+                        next_fn_idx += 1;
+                    }
+                }
             }
-            fn_index.insert(name.clone(), next_fn_idx);
-            next_fn_idx += 1;
+            _ => {}
         }
     }
 
@@ -295,61 +321,101 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         functions.push(placeholder());
     }
     let mut top_idx: usize = 0;
+    let mut compile_fn_body = |name: &str,
+                               parameters: &[(String, String)],
+                               body: &Node,
+                               fn_line: u32,
+                               functions: &mut Vec<Function>,
+                               next_fn_idx: &mut u16|
+     -> Result<(), CompileError> {
+        let arity = parameters.len() as u8;
+        let mut chunk = Chunk::with_capacity(128);
+        let cap = parameters.len().saturating_mul(2).max(8) + globals.len();
+        let mut locals: HashMap<String, u16> = HashMap::with_capacity(cap);
+        for (gname, &gslot) in &globals {
+            locals.insert(gname.clone(), gslot | GLOBAL_FLAG);
+        }
+        let mut next_local: u16 = 0;
+        for (_type_name, pname) in parameters {
+            locals.insert(pname.clone(), next_local);
+            next_local += 1;
+        }
+        let inner = match body {
+            Node::Block { stmts: b, .. } => b.as_slice(),
+            single => std::slice::from_ref(single),
+        };
+        for stmt in inner {
+            let line = node_line(stmt).unwrap_or(fn_line);
+            compile_stmt_in_fn(
+                stmt,
+                &mut chunk,
+                &mut locals,
+                &mut next_local,
+                &fn_index,
+                &ffi_index,
+                functions,
+                next_fn_idx,
+                line,
+                &mut Vec::new(),
+            )?;
+        }
+        chunk.emit(Op::ReturnFromCall, 0);
+        let own_fn_idx = top_idx as u16;
+        rewrite_tail_calls(&mut chunk, own_fn_idx);
+        crate::const_fold::optimize_if_enabled(&mut chunk)
+            .map_err(|_| CompileError::InternalError("constant folder failed"))?;
+        crate::peephole::optimize(&mut chunk)
+            .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
+        crate::dce::eliminate(&mut chunk);
+        functions[top_idx] = Function {
+            name: name.to_string(),
+            arity,
+            chunk,
+            local_count: next_local,
+            upvalue_source_slots: Box::default(),
+        };
+        top_idx += 1;
+        Ok(())
+    };
     for spanned in stmts {
-        if let Node::Function {
-            name,
-            parameters,
-            body,
-            ..
-        } = &spanned.node
-        {
-            let arity = parameters.len() as u8;
-            let mut chunk = Chunk::with_capacity(128);
-            let cap = parameters.len().saturating_mul(2).max(8) + globals.len();
-            let mut locals: HashMap<String, u16> = HashMap::with_capacity(cap);
-            for (gname, &gslot) in &globals {
-                locals.insert(gname.clone(), gslot | GLOBAL_FLAG);
-            }
-            let mut next_local: u16 = 0;
-            for (_type_name, pname) in parameters {
-                locals.insert(pname.clone(), next_local);
-                next_local += 1;
-            }
-            let inner = match body.as_ref() {
-                Node::Block { stmts: b, .. } => b,
-                single => std::slice::from_ref(single),
-            };
-            for stmt in inner {
-                let line = node_line(stmt).unwrap_or(spanned.span.start.line as u32);
-                compile_stmt_in_fn(
-                    stmt,
-                    &mut chunk,
-                    &mut locals,
-                    &mut next_local,
-                    &fn_index,
-                    &ffi_index,
+        match &spanned.node {
+            Node::Function {
+                name,
+                parameters,
+                body,
+                ..
+            } => {
+                compile_fn_body(
+                    name,
+                    parameters,
+                    body,
+                    spanned.span.start.line as u32,
                     &mut functions,
                     &mut next_fn_idx,
-                    line,
-                    &mut Vec::new(),
                 )?;
             }
-            chunk.emit(Op::ReturnFromCall, 0);
-            let own_fn_idx = top_idx as u16;
-            rewrite_tail_calls(&mut chunk, own_fn_idx);
-            crate::const_fold::optimize_if_enabled(&mut chunk)
-                .map_err(|_| CompileError::InternalError("constant folder failed"))?;
-            crate::peephole::optimize(&mut chunk)
-                .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
-            crate::dce::eliminate(&mut chunk);
-            functions[top_idx] = Function {
-                name: name.clone(),
-                arity,
-                chunk,
-                local_count: next_local,
-                upvalue_source_slots: Box::default(),
-            };
-            top_idx += 1;
+            Node::ImplBlock { methods, .. } => {
+                for m in methods {
+                    if let Node::Function {
+                        name,
+                        parameters,
+                        body,
+                        ..
+                    } = m
+                    {
+                        let line = node_line(m).unwrap_or(spanned.span.start.line as u32);
+                        compile_fn_body(
+                            name,
+                            parameters,
+                            body,
+                            line,
+                            &mut functions,
+                            &mut next_fn_idx,
+                        )?;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -376,8 +442,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 | Node::Extern { .. }
                 | Node::RegionDecl { .. }
                 | Node::StructDecl { .. }
-                // RES-319: newtype declarations are compile-time metadata;
-                // constructor calls are already lowered to NewtypeConstruct.
+                | Node::ImplBlock { .. }
                 | Node::NewtypeDecl { .. }
         ) {
             continue;
@@ -2409,6 +2474,48 @@ fn compile_expr(
                     );
                     return Ok(());
                 }
+            }
+            // RES-2542: method call — `target.method(args)` compiles to
+            // `CallMethod { method_const, arity }`. The receiver is pushed
+            // first, then the arguments, so the VM can prepend it as `self`.
+            if let Node::FieldAccess { target, field, .. } = function.as_ref() {
+                compile_expr(
+                    target,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
+                for arg in arguments {
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                }
+                let method_const = chunk.add_string_constant(field)?;
+                let arity = arguments.len();
+                if arity > u8::MAX as usize {
+                    return Err(CompileError::Unsupported("method call with > 255 args"));
+                }
+                chunk.emit(
+                    Op::CallMethod {
+                        method_const,
+                        arity: arity as u8,
+                    },
+                    line,
+                );
+                return Ok(());
             }
             let callee_name: &str = match function.as_ref() {
                 Node::Identifier { name, .. } => name.as_str(),
