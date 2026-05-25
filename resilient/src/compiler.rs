@@ -1909,10 +1909,20 @@ fn compile_expr(
             Ok(())
         }
         Node::Identifier { name, .. } => {
-            let idx = *locals
-                .get(name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
-            chunk.emit(Op::LoadLocal(idx), line);
+            if let Some(&idx) = locals.get(name) {
+                chunk.emit(Op::LoadLocal(idx), line);
+            } else if crate::lookup_builtin(name).is_some() {
+                let name_const = chunk.add_string_constant(name)?;
+                chunk.emit(
+                    Op::CallBuiltin {
+                        name_const,
+                        arity: 0,
+                    },
+                    line,
+                );
+            } else {
+                return Err(CompileError::UnknownIdentifier(name.clone()));
+            }
             Ok(())
         }
         Node::PrefixExpression {
@@ -5652,5 +5662,50 @@ abs_val(-7);"#,
         )
         .unwrap();
         assert_int(v, 7);
+    }
+
+    #[test]
+    fn bare_none_compiles_as_builtin() {
+        let v = compile_run("None;").unwrap();
+        assert!(
+            matches!(v, Value::Option(None)),
+            "expected None, got {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn none_in_function_return() {
+        let v = compile_run(
+            r#"
+fn maybe(int x) {
+    if x > 0 { return Some(x); }
+    return None;
+}
+maybe(-1);"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(v, Value::Option(None)),
+            "expected None, got {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn none_vs_some_round_trip() {
+        let v = compile_run(
+            r#"
+fn maybe(int x) {
+    if x > 0 { return Some(x); }
+    return None;
+}
+maybe(5);"#,
+        )
+        .unwrap();
+        match v {
+            Value::Option(Some(inner)) => assert_int(*inner, 5),
+            other => panic!("expected Some(5), got {:?}", other),
+        }
     }
 }
