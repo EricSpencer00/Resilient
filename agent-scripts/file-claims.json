@@ -1,8 +1,8 @@
 {
   "claims": {
     "resilient/src/compiler.rs": {
-      "branch": "res-2506-collect-free-vars-coverage",
-      "claimed_at": "2026-05-25T10:26:25Z"
+      "branch": "res-2508-assert-message-compile",
+      "claimed_at": "2026-05-25T15:30:00Z"
     }
   }
 }
