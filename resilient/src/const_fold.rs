@@ -14,9 +14,9 @@
 //!
 //! | Pattern | Result |
 //! |---|---|
-//! | `Const(i); Const(j); Add` | `Const(i + j)` (wrapping) |
-//! | `Const(i); Const(j); Sub` | `Const(i - j)` (wrapping) |
-//! | `Const(i); Const(j); Mul` | `Const(i * j)` (wrapping) |
+//! | `Const(i); Const(j); Add` | `Const(i + j)` — skipped on overflow |
+//! | `Const(i); Const(j); Sub` | `Const(i - j)` — skipped on overflow |
+//! | `Const(i); Const(j); Mul` | `Const(i * j)` — skipped on overflow |
 //! | `Const(i); Const(j); Div` | `Const(i / j)` — skipped if `j == 0` |
 //! | `Const(i); Const(j); Mod` | `Const(i % j)` — skipped if `j == 0` |
 //! | `Const(i); Const(j); Eq`/`Neq`/`Lt`/`Le`/`Gt`/`Ge` | `Const(bool)` |
@@ -25,7 +25,7 @@
 //!
 //! | Pattern | Result |
 //! |---|---|
-//! | `Const(i); Neg` | `Const(-i)` (wrapping) |
+//! | `Const(i); Neg` | `Const(-i)` — skipped on overflow |
 //! | `Const(b); Not` | `Const(!b)` |
 //!
 //! Pure-builtin folds (2 ops → 1):
@@ -44,9 +44,10 @@
 //!
 //! ## Semantic fidelity
 //!
-//! - Integer arithmetic is folded with `wrapping_*`, matching the
-//!   VM's dispatch (`Op::Add` etc. use `wrapping_add` / `wrapping_sub`
-//!   / `wrapping_mul`). Overflow does not trap at the VM, so folding
+//! - Integer arithmetic is folded with `checked_*`. If the operation
+//!   overflows, the fold is skipped so the runtime handles it per the
+//!   configured overflow mode (Wrap/Saturate/Trap). Non-overflowing
+//!   operations produce identical results under all modes, so folding
 //!   does not change observable behavior.
 //! - `Div` and `Mod` are NOT folded when the divisor is `0`: the VM
 //!   raises `VmError::DivideByZero`. Leaving the op in place preserves
@@ -378,9 +379,13 @@ pub(crate) fn try_fold_binop(chunk: &Chunk, i: usize, targets: &[bool]) -> Optio
     let rhs = chunk.constants.get(k1 as usize)?;
 
     let folded = match (lhs, rhs, op) {
-        (Value::Int(a), Value::Int(b), Op::Add) => Value::Int(a.wrapping_add(*b)),
-        (Value::Int(a), Value::Int(b), Op::Sub) => Value::Int(a.wrapping_sub(*b)),
-        (Value::Int(a), Value::Int(b), Op::Mul) => Value::Int(a.wrapping_mul(*b)),
+        // RES-2500: use checked arithmetic instead of wrapping. If overflow
+        // occurs, skip the fold so the runtime handles it per the configured
+        // overflow mode (Wrap/Saturate/Trap). Non-overflowing operations
+        // produce identical results under all modes, so folding them is safe.
+        (Value::Int(a), Value::Int(b), Op::Add) => Value::Int(a.checked_add(*b)?),
+        (Value::Int(a), Value::Int(b), Op::Sub) => Value::Int(a.checked_sub(*b)?),
+        (Value::Int(a), Value::Int(b), Op::Mul) => Value::Int(a.checked_mul(*b)?),
         // Skip div/mod by zero — preserve runtime trap & its source line.
         (Value::Int(_), Value::Int(0), Op::Div) | (Value::Int(_), Value::Int(0), Op::Mod) => {
             return None;
@@ -437,8 +442,9 @@ pub(crate) fn try_fold_unop(chunk: &Chunk, i: usize, targets: &[bool]) -> Option
 
     let v = chunk.constants.get(k as usize)?;
     let folded = match (v, op) {
-        // `i64::MIN.wrapping_neg() == i64::MIN`, matches VM behavior.
-        (Value::Int(a), Op::Neg) => Value::Int(a.wrapping_neg()),
+        // RES-2500: skip fold when negation overflows (i64::MIN) so the
+        // runtime handles it per the configured overflow mode.
+        (Value::Int(a), Op::Neg) => Value::Int(a.checked_neg()?),
         (Value::Bool(b), Op::Not) => Value::Bool(!b),
         _ => return None,
     };
@@ -687,19 +693,16 @@ mod tests {
     }
 
     #[test]
-    fn folds_int_add_with_overflow_wraps() {
-        // Wrapping arithmetic at fold time matches the VM's
-        // `wrapping_add` dispatch — no observable behavior change.
+    fn does_not_fold_int_add_with_overflow() {
+        // RES-2500: overflowing add must NOT be folded — the result
+        // differs across overflow modes (Wrap/Saturate/Trap).
         let mut chunk = mk_chunk(
             &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
             vec![Value::Int(i64::MAX), Value::Int(1)],
             &[1, 1, 1, 1],
         );
         optimize(&mut chunk).unwrap();
-        let Op::Const(k) = chunk.code[0] else {
-            panic!("expected Const");
-        };
-        assert_eq!(unwrap_int(&chunk.constants[k as usize]), i64::MIN);
+        assert_eq!(chunk.code.len(), 4, "overflowing add must not be folded");
     }
 
     #[test]
@@ -772,6 +775,42 @@ mod tests {
             panic!("expected Const");
         };
         assert!(!unwrap_bool(&chunk.constants[k as usize]));
+    }
+
+    #[test]
+    fn does_not_fold_neg_on_int_min() {
+        // RES-2500: -(i64::MIN) overflows — must not fold.
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Neg, Op::Return],
+            vec![Value::Int(i64::MIN)],
+            &[1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 3, "-(i64::MIN) must not be folded");
+    }
+
+    #[test]
+    fn does_not_fold_sub_with_overflow() {
+        // RES-2500: i64::MIN - 1 overflows — must not fold.
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Sub, Op::Return],
+            vec![Value::Int(i64::MIN), Value::Int(1)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 4, "overflowing sub must not be folded");
+    }
+
+    #[test]
+    fn does_not_fold_mul_with_overflow() {
+        // RES-2500: i64::MAX * 2 overflows — must not fold.
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+            vec![Value::Int(i64::MAX), Value::Int(2)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 4, "overflowing mul must not be folded");
     }
 
     #[test]
