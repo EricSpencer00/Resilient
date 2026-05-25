@@ -48,6 +48,26 @@ static STD_MODULES: &[&StdModule] = &[
     &STD_TIME,
     &STD_NET,
     &STD_COLLECTIONS,
+    &STD_STRING,
+    &STD_FMT,
+    &STD_PATH,
+    &STD_CONVERT,
+    &STD_BIT,
+    &STD_LOG,
+    &STD_TESTING,
+    &STD_CSV,
+    &STD_HEX,
+    &STD_RANDOM,
+    &STD_COLOR,
+    &STD_PROCESS,
+    &STD_INI,
+    &STD_ITER,
+    &STD_BUFFER,
+    &STD_HASH,
+    &STD_SORT,
+    &STD_UUID,
+    &STD_ENCODING,
+    &STD_URL,
 ];
 
 /// Look up a standard library module by name.
@@ -1453,6 +1473,2728 @@ static STD_COLLECTIONS: StdModule = StdModule {
     ],
 };
 
+// ─── Standard Library: String ──────────────────────────────────────
+
+fn string_trim(args: &[Value]) -> RResult<Value> {
+    require_args("string::trim", args, 1)?;
+    Ok(Value::String(
+        extract_string("string::trim", &args[0])?.trim().to_string(),
+    ))
+}
+fn string_trim_start(args: &[Value]) -> RResult<Value> {
+    require_args("string::trim_start", args, 1)?;
+    Ok(Value::String(
+        extract_string("string::trim_start", &args[0])?
+            .trim_start()
+            .to_string(),
+    ))
+}
+fn string_trim_end(args: &[Value]) -> RResult<Value> {
+    require_args("string::trim_end", args, 1)?;
+    Ok(Value::String(
+        extract_string("string::trim_end", &args[0])?
+            .trim_end()
+            .to_string(),
+    ))
+}
+fn string_upper(args: &[Value]) -> RResult<Value> {
+    require_args("string::upper", args, 1)?;
+    Ok(Value::String(
+        extract_string("string::upper", &args[0])?.to_uppercase(),
+    ))
+}
+fn string_lower(args: &[Value]) -> RResult<Value> {
+    require_args("string::lower", args, 1)?;
+    Ok(Value::String(
+        extract_string("string::lower", &args[0])?.to_lowercase(),
+    ))
+}
+fn string_repeat(args: &[Value]) -> RResult<Value> {
+    require_args("string::repeat", args, 2)?;
+    Ok(Value::String(
+        extract_string("string::repeat", &args[0])?
+            .repeat(extract_int("string::repeat", &args[1])? as usize),
+    ))
+}
+fn string_chars(args: &[Value]) -> RResult<Value> {
+    require_args("string::chars", args, 1)?;
+    Ok(Value::Array(
+        extract_string("string::chars", &args[0])?
+            .chars()
+            .map(|c| Value::String(c.to_string()))
+            .collect(),
+    ))
+}
+fn string_char_at(args: &[Value]) -> RResult<Value> {
+    require_args("string::char_at", args, 2)?;
+    let s = extract_string("string::char_at", &args[0])?;
+    let idx = extract_int("string::char_at", &args[1])? as usize;
+    s.chars()
+        .nth(idx)
+        .map(|c| Value::String(c.to_string()))
+        .ok_or_else(|| {
+            format!(
+                "string::char_at: index {} out of bounds (len {})",
+                idx,
+                s.chars().count()
+            )
+        })
+}
+fn string_contains(args: &[Value]) -> RResult<Value> {
+    require_args("string::contains", args, 2)?;
+    Ok(Value::Bool(
+        extract_string("string::contains", &args[0])?
+            .contains(&extract_string("string::contains", &args[1])?),
+    ))
+}
+fn string_starts_with(args: &[Value]) -> RResult<Value> {
+    require_args("string::starts_with", args, 2)?;
+    Ok(Value::Bool(
+        extract_string("string::starts_with", &args[0])?
+            .starts_with(&extract_string("string::starts_with", &args[1])?),
+    ))
+}
+fn string_ends_with(args: &[Value]) -> RResult<Value> {
+    require_args("string::ends_with", args, 2)?;
+    Ok(Value::Bool(
+        extract_string("string::ends_with", &args[0])?
+            .ends_with(&extract_string("string::ends_with", &args[1])?),
+    ))
+}
+fn string_replace_all(args: &[Value]) -> RResult<Value> {
+    require_args("string::replace", args, 3)?;
+    Ok(Value::String(
+        extract_string("string::replace", &args[0])?.replace(
+            &extract_string("string::replace", &args[1])?,
+            &extract_string("string::replace", &args[2])?,
+        ),
+    ))
+}
+fn string_split(args: &[Value]) -> RResult<Value> {
+    require_args("string::split", args, 2)?;
+    let s = extract_string("string::split", &args[0])?;
+    let d = extract_string("string::split", &args[1])?;
+    Ok(Value::Array(
+        s.split(&d).map(|p| Value::String(p.to_string())).collect(),
+    ))
+}
+fn string_join(args: &[Value]) -> RResult<Value> {
+    require_args("string::join", args, 2)?;
+    let arr = extract_array("string::join", &args[0])?;
+    let sep = extract_string("string::join", &args[1])?;
+    Ok(Value::String(
+        arr.iter().map(value_display).collect::<Vec<_>>().join(&sep),
+    ))
+}
+fn string_reverse(args: &[Value]) -> RResult<Value> {
+    require_args("string::reverse", args, 1)?;
+    Ok(Value::String(
+        extract_string("string::reverse", &args[0])?
+            .chars()
+            .rev()
+            .collect(),
+    ))
+}
+fn string_index_of(args: &[Value]) -> RResult<Value> {
+    require_args("string::index_of", args, 2)?;
+    Ok(Value::Int(
+        extract_string("string::index_of", &args[0])?
+            .find(&extract_string("string::index_of", &args[1])?)
+            .map(|i| i as i64)
+            .unwrap_or(-1),
+    ))
+}
+fn string_substring(args: &[Value]) -> RResult<Value> {
+    require_args("string::substring", args, 3)?;
+    let chars: Vec<char> = extract_string("string::substring", &args[0])?
+        .chars()
+        .collect();
+    let end = (extract_int("string::substring", &args[2])? as usize).min(chars.len());
+    let start = (extract_int("string::substring", &args[1])? as usize).min(end);
+    Ok(Value::String(chars[start..end].iter().collect()))
+}
+fn string_is_empty(args: &[Value]) -> RResult<Value> {
+    require_args("string::is_empty", args, 1)?;
+    Ok(Value::Bool(
+        extract_string("string::is_empty", &args[0])?.is_empty(),
+    ))
+}
+fn string_char_count(args: &[Value]) -> RResult<Value> {
+    require_args("string::char_count", args, 1)?;
+    Ok(Value::Int(
+        extract_string("string::char_count", &args[0])?
+            .chars()
+            .count() as i64,
+    ))
+}
+fn string_pad_left(args: &[Value]) -> RResult<Value> {
+    require_args("string::pad_left", args, 3)?;
+    let s = extract_string("string::pad_left", &args[0])?;
+    let width = extract_int("string::pad_left", &args[1])? as usize;
+    let pad = extract_string("string::pad_left", &args[2])?
+        .chars()
+        .next()
+        .unwrap_or(' ');
+    let len = s.chars().count();
+    if len >= width {
+        return Ok(Value::String(s));
+    }
+    Ok(Value::String(format!(
+        "{}{}",
+        std::iter::repeat_n(pad, width - len).collect::<String>(),
+        s
+    )))
+}
+fn string_pad_right(args: &[Value]) -> RResult<Value> {
+    require_args("string::pad_right", args, 3)?;
+    let s = extract_string("string::pad_right", &args[0])?;
+    let width = extract_int("string::pad_right", &args[1])? as usize;
+    let pad = extract_string("string::pad_right", &args[2])?
+        .chars()
+        .next()
+        .unwrap_or(' ');
+    let len = s.chars().count();
+    if len >= width {
+        return Ok(Value::String(s));
+    }
+    Ok(Value::String(format!(
+        "{}{}",
+        s,
+        std::iter::repeat_n(pad, width - len).collect::<String>()
+    )))
+}
+
+static STD_STRING: StdModule = StdModule {
+    name: "string",
+    description: "String manipulation utilities",
+    functions: &[
+        StdFn {
+            name: "trim",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: string_trim,
+        },
+        StdFn {
+            name: "trim_start",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: string_trim_start,
+        },
+        StdFn {
+            name: "trim_end",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: string_trim_end,
+        },
+        StdFn {
+            name: "upper",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: string_upper,
+        },
+        StdFn {
+            name: "lower",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: string_lower,
+        },
+        StdFn {
+            name: "repeat",
+            params: &[("string", "s"), ("int", "n")],
+            return_type: "string",
+            handler: string_repeat,
+        },
+        StdFn {
+            name: "chars",
+            params: &[("string", "s")],
+            return_type: "array",
+            handler: string_chars,
+        },
+        StdFn {
+            name: "char_at",
+            params: &[("string", "s"), ("int", "index")],
+            return_type: "string",
+            handler: string_char_at,
+        },
+        StdFn {
+            name: "contains",
+            params: &[("string", "haystack"), ("string", "needle")],
+            return_type: "bool",
+            handler: string_contains,
+        },
+        StdFn {
+            name: "starts_with",
+            params: &[("string", "s"), ("string", "prefix")],
+            return_type: "bool",
+            handler: string_starts_with,
+        },
+        StdFn {
+            name: "ends_with",
+            params: &[("string", "s"), ("string", "suffix")],
+            return_type: "bool",
+            handler: string_ends_with,
+        },
+        StdFn {
+            name: "replace",
+            params: &[("string", "s"), ("string", "from"), ("string", "to")],
+            return_type: "string",
+            handler: string_replace_all,
+        },
+        StdFn {
+            name: "split",
+            params: &[("string", "s"), ("string", "delim")],
+            return_type: "array",
+            handler: string_split,
+        },
+        StdFn {
+            name: "join",
+            params: &[("array", "arr"), ("string", "sep")],
+            return_type: "string",
+            handler: string_join,
+        },
+        StdFn {
+            name: "reverse",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: string_reverse,
+        },
+        StdFn {
+            name: "index_of",
+            params: &[("string", "s"), ("string", "needle")],
+            return_type: "int",
+            handler: string_index_of,
+        },
+        StdFn {
+            name: "substring",
+            params: &[("string", "s"), ("int", "start"), ("int", "end")],
+            return_type: "string",
+            handler: string_substring,
+        },
+        StdFn {
+            name: "is_empty",
+            params: &[("string", "s")],
+            return_type: "bool",
+            handler: string_is_empty,
+        },
+        StdFn {
+            name: "char_count",
+            params: &[("string", "s")],
+            return_type: "int",
+            handler: string_char_count,
+        },
+        StdFn {
+            name: "pad_left",
+            params: &[("string", "s"), ("int", "width"), ("string", "pad")],
+            return_type: "string",
+            handler: string_pad_left,
+        },
+        StdFn {
+            name: "pad_right",
+            params: &[("string", "s"), ("int", "width"), ("string", "pad")],
+            return_type: "string",
+            handler: string_pad_right,
+        },
+    ],
+};
+
+// ─── Standard Library: Fmt ─────────────────────────────────────────
+
+fn fmt_format(args: &[Value]) -> RResult<Value> {
+    require_args("fmt::format", args, 1)?;
+    let template = extract_string("fmt::format", &args[0])?;
+    let values = &args[1..];
+    let mut result = String::new();
+    let mut val_idx = 0;
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' && chars.peek() == Some(&'}') {
+            chars.next();
+            if val_idx < values.len() {
+                result.push_str(&value_display(&values[val_idx]));
+                val_idx += 1;
+            } else {
+                result.push_str("{}");
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    Ok(Value::String(result))
+}
+fn fmt_number(args: &[Value]) -> RResult<Value> {
+    require_args("fmt::number", args, 2)?;
+    Ok(Value::String(format!(
+        "{:.prec$}",
+        to_f64(&args[0])?,
+        prec = extract_int("fmt::number", &args[1])? as usize
+    )))
+}
+fn fmt_hex(args: &[Value]) -> RResult<Value> {
+    require_args("fmt::hex", args, 1)?;
+    Ok(Value::String(format!(
+        "{:x}",
+        extract_int("fmt::hex", &args[0])?
+    )))
+}
+fn fmt_oct(args: &[Value]) -> RResult<Value> {
+    require_args("fmt::oct", args, 1)?;
+    Ok(Value::String(format!(
+        "{:o}",
+        extract_int("fmt::oct", &args[0])?
+    )))
+}
+fn fmt_bin(args: &[Value]) -> RResult<Value> {
+    require_args("fmt::bin", args, 1)?;
+    Ok(Value::String(format!(
+        "{:b}",
+        extract_int("fmt::bin", &args[0])?
+    )))
+}
+fn fmt_center(args: &[Value]) -> RResult<Value> {
+    require_args("fmt::center", args, 2)?;
+    let s = extract_string("fmt::center", &args[0])?;
+    let width = extract_int("fmt::center", &args[1])? as usize;
+    let len = s.chars().count();
+    if len >= width {
+        return Ok(Value::String(s));
+    }
+    let left = (width - len) / 2;
+    let right = width - len - left;
+    Ok(Value::String(format!(
+        "{}{}{}",
+        " ".repeat(left),
+        s,
+        " ".repeat(right)
+    )))
+}
+
+static STD_FMT: StdModule = StdModule {
+    name: "fmt",
+    description: "String formatting utilities",
+    functions: &[
+        StdFn {
+            name: "format",
+            params: &[("string", "template")],
+            return_type: "string",
+            handler: fmt_format,
+        },
+        StdFn {
+            name: "number",
+            params: &[("float", "val"), ("int", "decimals")],
+            return_type: "string",
+            handler: fmt_number,
+        },
+        StdFn {
+            name: "hex",
+            params: &[("int", "n")],
+            return_type: "string",
+            handler: fmt_hex,
+        },
+        StdFn {
+            name: "oct",
+            params: &[("int", "n")],
+            return_type: "string",
+            handler: fmt_oct,
+        },
+        StdFn {
+            name: "bin",
+            params: &[("int", "n")],
+            return_type: "string",
+            handler: fmt_bin,
+        },
+        StdFn {
+            name: "center",
+            params: &[("string", "s"), ("int", "width")],
+            return_type: "string",
+            handler: fmt_center,
+        },
+    ],
+};
+
+// ─── Standard Library: Path ────────────────────────────────────────
+
+fn path_join(args: &[Value]) -> RResult<Value> {
+    require_args("path::join", args, 2)?;
+    Ok(Value::String(
+        std::path::Path::new(&extract_string("path::join", &args[0])?)
+            .join(&extract_string("path::join", &args[1])?)
+            .to_string_lossy()
+            .to_string(),
+    ))
+}
+fn path_dirname(args: &[Value]) -> RResult<Value> {
+    require_args("path::dirname", args, 1)?;
+    Ok(Value::String(
+        std::path::Path::new(&extract_string("path::dirname", &args[0])?)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    ))
+}
+fn path_basename(args: &[Value]) -> RResult<Value> {
+    require_args("path::basename", args, 1)?;
+    Ok(Value::String(
+        std::path::Path::new(&extract_string("path::basename", &args[0])?)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    ))
+}
+fn path_extension(args: &[Value]) -> RResult<Value> {
+    require_args("path::extension", args, 1)?;
+    Ok(Value::String(
+        std::path::Path::new(&extract_string("path::extension", &args[0])?)
+            .extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    ))
+}
+fn path_is_absolute(args: &[Value]) -> RResult<Value> {
+    require_args("path::is_absolute", args, 1)?;
+    Ok(Value::Bool(
+        std::path::Path::new(&extract_string("path::is_absolute", &args[0])?).is_absolute(),
+    ))
+}
+fn path_separator(_args: &[Value]) -> RResult<Value> {
+    Ok(Value::String(std::path::MAIN_SEPARATOR.to_string()))
+}
+fn path_with_extension(args: &[Value]) -> RResult<Value> {
+    require_args("path::with_extension", args, 2)?;
+    Ok(Value::String(
+        std::path::PathBuf::from(&extract_string("path::with_extension", &args[0])?)
+            .with_extension(&extract_string("path::with_extension", &args[1])?)
+            .to_string_lossy()
+            .to_string(),
+    ))
+}
+fn path_stem(args: &[Value]) -> RResult<Value> {
+    require_args("path::stem", args, 1)?;
+    Ok(Value::String(
+        std::path::Path::new(&extract_string("path::stem", &args[0])?)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    ))
+}
+
+static STD_PATH: StdModule = StdModule {
+    name: "path",
+    description: "File path manipulation utilities",
+    functions: &[
+        StdFn {
+            name: "join",
+            params: &[("string", "a"), ("string", "b")],
+            return_type: "string",
+            handler: path_join,
+        },
+        StdFn {
+            name: "dirname",
+            params: &[("string", "path")],
+            return_type: "string",
+            handler: path_dirname,
+        },
+        StdFn {
+            name: "basename",
+            params: &[("string", "path")],
+            return_type: "string",
+            handler: path_basename,
+        },
+        StdFn {
+            name: "extension",
+            params: &[("string", "path")],
+            return_type: "string",
+            handler: path_extension,
+        },
+        StdFn {
+            name: "is_absolute",
+            params: &[("string", "path")],
+            return_type: "bool",
+            handler: path_is_absolute,
+        },
+        StdFn {
+            name: "separator",
+            params: &[],
+            return_type: "string",
+            handler: path_separator,
+        },
+        StdFn {
+            name: "with_extension",
+            params: &[("string", "path"), ("string", "ext")],
+            return_type: "string",
+            handler: path_with_extension,
+        },
+        StdFn {
+            name: "stem",
+            params: &[("string", "path")],
+            return_type: "string",
+            handler: path_stem,
+        },
+    ],
+};
+
+// ─── Standard Library: Convert ─────────────────────────────────────
+
+fn convert_parse_int(args: &[Value]) -> RResult<Value> {
+    require_args("convert::parse_int", args, 1)?;
+    extract_string("convert::parse_int", &args[0])?
+        .trim()
+        .parse::<i64>()
+        .map(Value::Int)
+        .map_err(|e| format!("convert::parse_int: {}", e))
+}
+fn convert_parse_float(args: &[Value]) -> RResult<Value> {
+    require_args("convert::parse_float", args, 1)?;
+    extract_string("convert::parse_float", &args[0])?
+        .trim()
+        .parse::<f64>()
+        .map(Value::Float)
+        .map_err(|e| format!("convert::parse_float: {}", e))
+}
+fn convert_to_string(args: &[Value]) -> RResult<Value> {
+    require_args("convert::to_string", args, 1)?;
+    Ok(Value::String(value_display(&args[0])))
+}
+fn convert_to_int(args: &[Value]) -> RResult<Value> {
+    require_args("convert::to_int", args, 1)?;
+    match &args[0] {
+        Value::Int(n) => Ok(Value::Int(*n)),
+        Value::Float(f) => Ok(Value::Int(*f as i64)),
+        Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
+        Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|e| format!("convert::to_int: {}", e)),
+        other => Err(format!("convert::to_int: cannot convert {:?}", other)),
+    }
+}
+fn convert_to_float(args: &[Value]) -> RResult<Value> {
+    require_args("convert::to_float", args, 1)?;
+    match &args[0] {
+        Value::Float(f) => Ok(Value::Float(*f)),
+        Value::Int(n) => Ok(Value::Float(*n as f64)),
+        Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+        Value::String(s) => s
+            .trim()
+            .parse::<f64>()
+            .map(Value::Float)
+            .map_err(|e| format!("convert::to_float: {}", e)),
+        other => Err(format!("convert::to_float: cannot convert {:?}", other)),
+    }
+}
+fn convert_to_bool(args: &[Value]) -> RResult<Value> {
+    require_args("convert::to_bool", args, 1)?;
+    match &args[0] {
+        Value::Bool(b) => Ok(Value::Bool(*b)),
+        Value::Int(n) => Ok(Value::Bool(*n != 0)),
+        Value::Float(f) => Ok(Value::Bool(*f != 0.0)),
+        Value::String(s) => Ok(Value::Bool(!s.is_empty())),
+        Value::Void => Ok(Value::Bool(false)),
+        Value::Array(a) => Ok(Value::Bool(!a.is_empty())),
+        _ => Ok(Value::Bool(true)),
+    }
+}
+fn convert_int_to_char(args: &[Value]) -> RResult<Value> {
+    require_args("convert::int_to_char", args, 1)?;
+    let n = extract_int("convert::int_to_char", &args[0])?;
+    char::from_u32(n as u32)
+        .map(|c| Value::String(c.to_string()))
+        .ok_or_else(|| {
+            format!(
+                "convert::int_to_char: {} is not a valid Unicode codepoint",
+                n
+            )
+        })
+}
+fn convert_char_to_int(args: &[Value]) -> RResult<Value> {
+    require_args("convert::char_to_int", args, 1)?;
+    extract_string("convert::char_to_int", &args[0])?
+        .chars()
+        .next()
+        .map(|c| Value::Int(c as i64))
+        .ok_or_else(|| "convert::char_to_int: empty string".to_string())
+}
+fn convert_type_of(args: &[Value]) -> RResult<Value> {
+    require_args("convert::type_of", args, 1)?;
+    Ok(Value::String(
+        match &args[0] {
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::String(_) => "string",
+            Value::Bool(_) => "bool",
+            Value::Array(_) => "array",
+            Value::Map(_) => "map",
+            Value::Set(_) => "set",
+            Value::Bytes(_) => "bytes",
+            Value::Void => "void",
+            Value::Struct { .. } => "struct",
+            Value::Result { .. } => "result",
+            Value::Option(_) => "option",
+            Value::Function(_) | Value::Builtin { .. } => "function",
+            _ => "unknown",
+        }
+        .to_string(),
+    ))
+}
+
+static STD_CONVERT: StdModule = StdModule {
+    name: "convert",
+    description: "Type conversion and parsing utilities",
+    functions: &[
+        StdFn {
+            name: "parse_int",
+            params: &[("string", "s")],
+            return_type: "int",
+            handler: convert_parse_int,
+        },
+        StdFn {
+            name: "parse_float",
+            params: &[("string", "s")],
+            return_type: "float",
+            handler: convert_parse_float,
+        },
+        StdFn {
+            name: "to_string",
+            params: &[("any", "val")],
+            return_type: "string",
+            handler: convert_to_string,
+        },
+        StdFn {
+            name: "to_int",
+            params: &[("any", "val")],
+            return_type: "int",
+            handler: convert_to_int,
+        },
+        StdFn {
+            name: "to_float",
+            params: &[("any", "val")],
+            return_type: "float",
+            handler: convert_to_float,
+        },
+        StdFn {
+            name: "to_bool",
+            params: &[("any", "val")],
+            return_type: "bool",
+            handler: convert_to_bool,
+        },
+        StdFn {
+            name: "int_to_char",
+            params: &[("int", "codepoint")],
+            return_type: "string",
+            handler: convert_int_to_char,
+        },
+        StdFn {
+            name: "char_to_int",
+            params: &[("string", "c")],
+            return_type: "int",
+            handler: convert_char_to_int,
+        },
+        StdFn {
+            name: "type_of",
+            params: &[("any", "val")],
+            return_type: "string",
+            handler: convert_type_of,
+        },
+    ],
+};
+
+// ─── Standard Library: Bit ─────────────────────────────────────────
+
+fn bit_and(args: &[Value]) -> RResult<Value> {
+    require_args("bit::and", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::and", &args[0])? & extract_int("bit::and", &args[1])?,
+    ))
+}
+fn bit_or(args: &[Value]) -> RResult<Value> {
+    require_args("bit::or", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::or", &args[0])? | extract_int("bit::or", &args[1])?,
+    ))
+}
+fn bit_xor(args: &[Value]) -> RResult<Value> {
+    require_args("bit::xor", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::xor", &args[0])? ^ extract_int("bit::xor", &args[1])?,
+    ))
+}
+fn bit_not(args: &[Value]) -> RResult<Value> {
+    require_args("bit::not", args, 1)?;
+    Ok(Value::Int(!extract_int("bit::not", &args[0])?))
+}
+fn bit_shl(args: &[Value]) -> RResult<Value> {
+    require_args("bit::shl", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::shl", &args[0])?.wrapping_shl(extract_int("bit::shl", &args[1])? as u32),
+    ))
+}
+fn bit_shr(args: &[Value]) -> RResult<Value> {
+    require_args("bit::shr", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::shr", &args[0])?.wrapping_shr(extract_int("bit::shr", &args[1])? as u32),
+    ))
+}
+fn bit_popcount(args: &[Value]) -> RResult<Value> {
+    require_args("bit::popcount", args, 1)?;
+    Ok(Value::Int(
+        extract_int("bit::popcount", &args[0])?.count_ones() as i64,
+    ))
+}
+fn bit_leading_zeros(args: &[Value]) -> RResult<Value> {
+    require_args("bit::leading_zeros", args, 1)?;
+    Ok(Value::Int(
+        extract_int("bit::leading_zeros", &args[0])?.leading_zeros() as i64,
+    ))
+}
+fn bit_trailing_zeros(args: &[Value]) -> RResult<Value> {
+    require_args("bit::trailing_zeros", args, 1)?;
+    Ok(Value::Int(
+        extract_int("bit::trailing_zeros", &args[0])?.trailing_zeros() as i64,
+    ))
+}
+fn bit_test(args: &[Value]) -> RResult<Value> {
+    require_args("bit::test", args, 2)?;
+    Ok(Value::Bool(
+        (extract_int("bit::test", &args[0])? >> extract_int("bit::test", &args[1])? as u32) & 1
+            == 1,
+    ))
+}
+fn bit_set(args: &[Value]) -> RResult<Value> {
+    require_args("bit::set", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::set", &args[0])?
+            | (1i64.wrapping_shl(extract_int("bit::set", &args[1])? as u32)),
+    ))
+}
+fn bit_clear(args: &[Value]) -> RResult<Value> {
+    require_args("bit::clear", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::clear", &args[0])?
+            & !(1i64.wrapping_shl(extract_int("bit::clear", &args[1])? as u32)),
+    ))
+}
+fn bit_rotate_left(args: &[Value]) -> RResult<Value> {
+    require_args("bit::rotate_left", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::rotate_left", &args[0])?
+            .rotate_left(extract_int("bit::rotate_left", &args[1])? as u32),
+    ))
+}
+fn bit_rotate_right(args: &[Value]) -> RResult<Value> {
+    require_args("bit::rotate_right", args, 2)?;
+    Ok(Value::Int(
+        extract_int("bit::rotate_right", &args[0])?
+            .rotate_right(extract_int("bit::rotate_right", &args[1])? as u32),
+    ))
+}
+
+static STD_BIT: StdModule = StdModule {
+    name: "bit",
+    description: "Bitwise operations for low-level data manipulation",
+    functions: &[
+        StdFn {
+            name: "and",
+            params: &[("int", "a"), ("int", "b")],
+            return_type: "int",
+            handler: bit_and,
+        },
+        StdFn {
+            name: "or",
+            params: &[("int", "a"), ("int", "b")],
+            return_type: "int",
+            handler: bit_or,
+        },
+        StdFn {
+            name: "xor",
+            params: &[("int", "a"), ("int", "b")],
+            return_type: "int",
+            handler: bit_xor,
+        },
+        StdFn {
+            name: "not",
+            params: &[("int", "a")],
+            return_type: "int",
+            handler: bit_not,
+        },
+        StdFn {
+            name: "shl",
+            params: &[("int", "a"), ("int", "n")],
+            return_type: "int",
+            handler: bit_shl,
+        },
+        StdFn {
+            name: "shr",
+            params: &[("int", "a"), ("int", "n")],
+            return_type: "int",
+            handler: bit_shr,
+        },
+        StdFn {
+            name: "popcount",
+            params: &[("int", "a")],
+            return_type: "int",
+            handler: bit_popcount,
+        },
+        StdFn {
+            name: "leading_zeros",
+            params: &[("int", "a")],
+            return_type: "int",
+            handler: bit_leading_zeros,
+        },
+        StdFn {
+            name: "trailing_zeros",
+            params: &[("int", "a")],
+            return_type: "int",
+            handler: bit_trailing_zeros,
+        },
+        StdFn {
+            name: "test",
+            params: &[("int", "val"), ("int", "pos")],
+            return_type: "bool",
+            handler: bit_test,
+        },
+        StdFn {
+            name: "set",
+            params: &[("int", "val"), ("int", "pos")],
+            return_type: "int",
+            handler: bit_set,
+        },
+        StdFn {
+            name: "clear",
+            params: &[("int", "val"), ("int", "pos")],
+            return_type: "int",
+            handler: bit_clear,
+        },
+        StdFn {
+            name: "rotate_left",
+            params: &[("int", "val"), ("int", "n")],
+            return_type: "int",
+            handler: bit_rotate_left,
+        },
+        StdFn {
+            name: "rotate_right",
+            params: &[("int", "val"), ("int", "n")],
+            return_type: "int",
+            handler: bit_rotate_right,
+        },
+    ],
+};
+
+// ─── Standard Library: Log ─────────────────────────────────────────
+
+fn log_info(args: &[Value]) -> RResult<Value> {
+    require_args("log::info", args, 1)?;
+    eprintln!("[INFO] {}", value_display(&args[0]));
+    Ok(Value::Void)
+}
+fn log_warn(args: &[Value]) -> RResult<Value> {
+    require_args("log::warn", args, 1)?;
+    eprintln!("[WARN] {}", value_display(&args[0]));
+    Ok(Value::Void)
+}
+fn log_error(args: &[Value]) -> RResult<Value> {
+    require_args("log::error", args, 1)?;
+    eprintln!("[ERROR] {}", value_display(&args[0]));
+    Ok(Value::Void)
+}
+fn log_debug(args: &[Value]) -> RResult<Value> {
+    require_args("log::debug", args, 1)?;
+    eprintln!("[DEBUG] {}", value_display(&args[0]));
+    Ok(Value::Void)
+}
+fn log_trace(args: &[Value]) -> RResult<Value> {
+    require_args("log::trace", args, 1)?;
+    eprintln!("[TRACE] {}", value_display(&args[0]));
+    Ok(Value::Void)
+}
+
+static STD_LOG: StdModule = StdModule {
+    name: "log",
+    description: "Structured logging to stderr",
+    functions: &[
+        StdFn {
+            name: "info",
+            params: &[("any", "msg")],
+            return_type: "void",
+            handler: log_info,
+        },
+        StdFn {
+            name: "warn",
+            params: &[("any", "msg")],
+            return_type: "void",
+            handler: log_warn,
+        },
+        StdFn {
+            name: "error",
+            params: &[("any", "msg")],
+            return_type: "void",
+            handler: log_error,
+        },
+        StdFn {
+            name: "debug",
+            params: &[("any", "msg")],
+            return_type: "void",
+            handler: log_debug,
+        },
+        StdFn {
+            name: "trace",
+            params: &[("any", "msg")],
+            return_type: "void",
+            handler: log_trace,
+        },
+    ],
+};
+
+// ─── Standard Library: Testing ─────────────────────────────────────
+
+fn testing_assert_eq(args: &[Value]) -> RResult<Value> {
+    require_args("testing::assert_eq", args, 2)?;
+    let (a, b) = (value_display(&args[0]), value_display(&args[1]));
+    if a == b {
+        Ok(Value::Bool(true))
+    } else {
+        Err(format!("assertion failed: {} != {}", a, b))
+    }
+}
+fn testing_assert_ne(args: &[Value]) -> RResult<Value> {
+    require_args("testing::assert_ne", args, 2)?;
+    let (a, b) = (value_display(&args[0]), value_display(&args[1]));
+    if a != b {
+        Ok(Value::Bool(true))
+    } else {
+        Err(format!(
+            "assertion failed: {} == {} (expected different)",
+            a, b
+        ))
+    }
+}
+fn testing_assert_true(args: &[Value]) -> RResult<Value> {
+    require_args("testing::assert_true", args, 1)?;
+    match &args[0] {
+        Value::Bool(true) => Ok(Value::Bool(true)),
+        Value::Bool(false) => Err("assertion failed: expected true, got false".to_string()),
+        other => Err(format!(
+            "testing::assert_true: expected bool, got {:?}",
+            other
+        )),
+    }
+}
+fn testing_assert_false(args: &[Value]) -> RResult<Value> {
+    require_args("testing::assert_false", args, 1)?;
+    match &args[0] {
+        Value::Bool(false) => Ok(Value::Bool(true)),
+        Value::Bool(true) => Err("assertion failed: expected false, got true".to_string()),
+        other => Err(format!(
+            "testing::assert_false: expected bool, got {:?}",
+            other
+        )),
+    }
+}
+fn testing_fail(args: &[Value]) -> RResult<Value> {
+    Err(if args.is_empty() {
+        "test failed".to_string()
+    } else {
+        value_display(&args[0])
+    })
+}
+
+static STD_TESTING: StdModule = StdModule {
+    name: "testing",
+    description: "Test assertion utilities",
+    functions: &[
+        StdFn {
+            name: "assert_eq",
+            params: &[("any", "a"), ("any", "b")],
+            return_type: "bool",
+            handler: testing_assert_eq,
+        },
+        StdFn {
+            name: "assert_ne",
+            params: &[("any", "a"), ("any", "b")],
+            return_type: "bool",
+            handler: testing_assert_ne,
+        },
+        StdFn {
+            name: "assert_true",
+            params: &[("any", "val")],
+            return_type: "bool",
+            handler: testing_assert_true,
+        },
+        StdFn {
+            name: "assert_false",
+            params: &[("any", "val")],
+            return_type: "bool",
+            handler: testing_assert_false,
+        },
+        StdFn {
+            name: "fail",
+            params: &[("string", "msg")],
+            return_type: "void",
+            handler: testing_fail,
+        },
+    ],
+};
+
+// ─── Standard Library: CSV ─────────────────────────────────────────
+
+fn csv_parse(args: &[Value]) -> RResult<Value> {
+    require_args("csv::parse", args, 1)?;
+    let s = extract_string("csv::parse", &args[0])?;
+    Ok(Value::Array(
+        s.lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| Value::Array(csv_parse_row_str(l)))
+            .collect(),
+    ))
+}
+fn csv_parse_row(args: &[Value]) -> RResult<Value> {
+    require_args("csv::parse_row", args, 1)?;
+    Ok(Value::Array(csv_parse_row_str(&extract_string(
+        "csv::parse_row",
+        &args[0],
+    )?)))
+}
+fn csv_stringify(args: &[Value]) -> RResult<Value> {
+    require_args("csv::stringify", args, 1)?;
+    let rows = extract_array("csv::stringify", &args[0])?;
+    let mut result = String::new();
+    for row in &rows {
+        match row {
+            Value::Array(cols) => {
+                result.push_str(
+                    &cols
+                        .iter()
+                        .map(|v| csv_escape_field(&value_display(v)))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+                result.push('\n');
+            }
+            _ => return Err("csv::stringify: each row must be an array".to_string()),
+        }
+    }
+    Ok(Value::String(result))
+}
+fn csv_headers(args: &[Value]) -> RResult<Value> {
+    require_args("csv::headers", args, 1)?;
+    Ok(Value::Array(
+        extract_string("csv::headers", &args[0])?
+            .lines()
+            .next()
+            .map(csv_parse_row_str)
+            .unwrap_or_default(),
+    ))
+}
+fn csv_parse_row_str(line: &str) -> Vec<Value> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    current.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(c);
+            }
+        } else if c == '"' {
+            in_quotes = true;
+        } else if c == ',' {
+            fields.push(Value::String(current.clone()));
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    fields.push(Value::String(current));
+    fields
+}
+fn csv_escape_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+static STD_CSV: StdModule = StdModule {
+    name: "csv",
+    description: "CSV parsing and serialization",
+    functions: &[
+        StdFn {
+            name: "parse",
+            params: &[("string", "s")],
+            return_type: "array",
+            handler: csv_parse,
+        },
+        StdFn {
+            name: "parse_row",
+            params: &[("string", "row")],
+            return_type: "array",
+            handler: csv_parse_row,
+        },
+        StdFn {
+            name: "stringify",
+            params: &[("array", "rows")],
+            return_type: "string",
+            handler: csv_stringify,
+        },
+        StdFn {
+            name: "headers",
+            params: &[("string", "s")],
+            return_type: "array",
+            handler: csv_headers,
+        },
+    ],
+};
+
+// ─── Standard Library: Hex ─────────────────────────────────────────
+
+fn hex_encode(args: &[Value]) -> RResult<Value> {
+    require_args("hex::encode", args, 1)?;
+    let bytes = match &args[0] {
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.clone(),
+        other => {
+            return Err(format!(
+                "hex::encode: expected string or bytes, got {:?}",
+                other
+            ));
+        }
+    };
+    Ok(Value::String(
+        bytes.iter().map(|b| format!("{:02x}", b)).collect(),
+    ))
+}
+fn hex_decode(args: &[Value]) -> RResult<Value> {
+    require_args("hex::decode", args, 1)?;
+    let s = extract_string("hex::decode", &args[0])?;
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return Err("hex::decode: odd-length hex string".to_string());
+    }
+    let mut bytes = Vec::with_capacity(s.len() / 2);
+    let mut i = 0;
+    while i < s.len() {
+        bytes.push(
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| format!("hex::decode: invalid hex at {}: {}", i, e))?,
+        );
+        i += 2;
+    }
+    match String::from_utf8(bytes.clone()) {
+        Ok(s) => Ok(Value::String(s)),
+        Err(_) => Ok(Value::Bytes(bytes)),
+    }
+}
+fn hex_is_valid(args: &[Value]) -> RResult<Value> {
+    require_args("hex::is_valid", args, 1)?;
+    let s = extract_string("hex::is_valid", &args[0])?
+        .trim()
+        .to_string();
+    Ok(Value::Bool(
+        s.len() % 2 == 0 && s.chars().all(|c| c.is_ascii_hexdigit()),
+    ))
+}
+fn hex_to_int(args: &[Value]) -> RResult<Value> {
+    require_args("hex::to_int", args, 1)?;
+    let s = extract_string("hex::to_int", &args[0])?;
+    let s = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+    i64::from_str_radix(s, 16)
+        .map(Value::Int)
+        .map_err(|e| format!("hex::to_int: {}", e))
+}
+fn hex_from_int(args: &[Value]) -> RResult<Value> {
+    require_args("hex::from_int", args, 1)?;
+    Ok(Value::String(format!(
+        "0x{:x}",
+        extract_int("hex::from_int", &args[0])?
+    )))
+}
+
+static STD_HEX: StdModule = StdModule {
+    name: "hex",
+    description: "Hexadecimal encoding and decoding",
+    functions: &[
+        StdFn {
+            name: "encode",
+            params: &[("string", "input")],
+            return_type: "string",
+            handler: hex_encode,
+        },
+        StdFn {
+            name: "decode",
+            params: &[("string", "hex")],
+            return_type: "string",
+            handler: hex_decode,
+        },
+        StdFn {
+            name: "is_valid",
+            params: &[("string", "hex")],
+            return_type: "bool",
+            handler: hex_is_valid,
+        },
+        StdFn {
+            name: "to_int",
+            params: &[("string", "hex")],
+            return_type: "int",
+            handler: hex_to_int,
+        },
+        StdFn {
+            name: "from_int",
+            params: &[("int", "n")],
+            return_type: "string",
+            handler: hex_from_int,
+        },
+    ],
+};
+
+// ─── Standard Library: Random ──────────────────────────────────────
+
+fn random_seed() -> u64 {
+    use std::time::SystemTime;
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(42)
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)
+}
+fn random_int(args: &[Value]) -> RResult<Value> {
+    require_args("random::int", args, 2)?;
+    let lo = extract_int("random::int", &args[0])?;
+    let hi = extract_int("random::int", &args[1])?;
+    if lo >= hi {
+        return Err(format!("random::int: lo ({}) must be < hi ({})", lo, hi));
+    }
+    Ok(Value::Int(lo + (random_seed() % (hi - lo) as u64) as i64))
+}
+fn random_float(_args: &[Value]) -> RResult<Value> {
+    Ok(Value::Float((random_seed() as f64 / u64::MAX as f64).abs()))
+}
+fn random_bool(_args: &[Value]) -> RResult<Value> {
+    Ok(Value::Bool(random_seed().is_multiple_of(2)))
+}
+fn random_choice(args: &[Value]) -> RResult<Value> {
+    require_args("random::choice", args, 1)?;
+    let arr = extract_array("random::choice", &args[0])?;
+    if arr.is_empty() {
+        return Err("random::choice: empty array".to_string());
+    }
+    Ok(arr[(random_seed() as usize) % arr.len()].clone())
+}
+fn random_shuffle(args: &[Value]) -> RResult<Value> {
+    require_args("random::shuffle", args, 1)?;
+    let mut arr = extract_array("random::shuffle", &args[0])?;
+    let len = arr.len();
+    if len <= 1 {
+        return Ok(Value::Array(arr));
+    }
+    let mut seed = random_seed();
+    for i in (1..len).rev() {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        arr.swap(i, (seed as usize) % (i + 1));
+    }
+    Ok(Value::Array(arr))
+}
+
+static STD_RANDOM: StdModule = StdModule {
+    name: "random",
+    description: "Random number generation (non-cryptographic)",
+    functions: &[
+        StdFn {
+            name: "int",
+            params: &[("int", "lo"), ("int", "hi")],
+            return_type: "int",
+            handler: random_int,
+        },
+        StdFn {
+            name: "float",
+            params: &[],
+            return_type: "float",
+            handler: random_float,
+        },
+        StdFn {
+            name: "bool",
+            params: &[],
+            return_type: "bool",
+            handler: random_bool,
+        },
+        StdFn {
+            name: "choice",
+            params: &[("array", "arr")],
+            return_type: "any",
+            handler: random_choice,
+        },
+        StdFn {
+            name: "shuffle",
+            params: &[("array", "arr")],
+            return_type: "array",
+            handler: random_shuffle,
+        },
+    ],
+};
+
+// ─── Standard Library: Color ───────────────────────────────────────
+
+fn color_red(args: &[Value]) -> RResult<Value> {
+    require_args("color::red", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[31m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_green(args: &[Value]) -> RResult<Value> {
+    require_args("color::green", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[32m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_yellow(args: &[Value]) -> RResult<Value> {
+    require_args("color::yellow", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[33m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_blue(args: &[Value]) -> RResult<Value> {
+    require_args("color::blue", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[34m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_magenta(args: &[Value]) -> RResult<Value> {
+    require_args("color::magenta", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[35m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_cyan(args: &[Value]) -> RResult<Value> {
+    require_args("color::cyan", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[36m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_bold(args: &[Value]) -> RResult<Value> {
+    require_args("color::bold", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[1m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_dim(args: &[Value]) -> RResult<Value> {
+    require_args("color::dim", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[2m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_underline(args: &[Value]) -> RResult<Value> {
+    require_args("color::underline", args, 1)?;
+    Ok(Value::String(format!(
+        "\x1b[4m{}\x1b[0m",
+        value_display(&args[0])
+    )))
+}
+fn color_strip(args: &[Value]) -> RResult<Value> {
+    require_args("color::strip", args, 1)?;
+    let s = extract_string("color::strip", &args[0])?;
+    let mut r = String::new();
+    let mut esc = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            esc = true;
+        } else if esc {
+            if c == 'm' {
+                esc = false;
+            }
+        } else {
+            r.push(c);
+        }
+    }
+    Ok(Value::String(r))
+}
+fn color_rgb(args: &[Value]) -> RResult<Value> {
+    require_args("color::rgb", args, 4)?;
+    Ok(Value::String(format!(
+        "\x1b[38;2;{};{};{}m{}\x1b[0m",
+        extract_int("color::rgb", &args[0])? as u8,
+        extract_int("color::rgb", &args[1])? as u8,
+        extract_int("color::rgb", &args[2])? as u8,
+        value_display(&args[3])
+    )))
+}
+
+static STD_COLOR: StdModule = StdModule {
+    name: "color",
+    description: "ANSI terminal color formatting",
+    functions: &[
+        StdFn {
+            name: "red",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_red,
+        },
+        StdFn {
+            name: "green",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_green,
+        },
+        StdFn {
+            name: "yellow",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_yellow,
+        },
+        StdFn {
+            name: "blue",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_blue,
+        },
+        StdFn {
+            name: "magenta",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_magenta,
+        },
+        StdFn {
+            name: "cyan",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_cyan,
+        },
+        StdFn {
+            name: "bold",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_bold,
+        },
+        StdFn {
+            name: "dim",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_dim,
+        },
+        StdFn {
+            name: "underline",
+            params: &[("any", "text")],
+            return_type: "string",
+            handler: color_underline,
+        },
+        StdFn {
+            name: "strip",
+            params: &[("string", "text")],
+            return_type: "string",
+            handler: color_strip,
+        },
+        StdFn {
+            name: "rgb",
+            params: &[("int", "r"), ("int", "g"), ("int", "b"), ("any", "text")],
+            return_type: "string",
+            handler: color_rgb,
+        },
+    ],
+};
+
+// ─── Standard Library: Process ─────────────────────────────────────
+
+fn process_exec(args: &[Value]) -> RResult<Value> {
+    require_args("process::exec", args, 1)?;
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&extract_string("process::exec", &args[0])?)
+        .output()
+        .map_err(|e| format!("process::exec: {}", e))?;
+    let mut map = HashMap::new();
+    map.insert(
+        MapKey::Str("stdout".to_string()),
+        Value::String(String::from_utf8_lossy(&output.stdout).to_string()),
+    );
+    map.insert(
+        MapKey::Str("stderr".to_string()),
+        Value::String(String::from_utf8_lossy(&output.stderr).to_string()),
+    );
+    map.insert(
+        MapKey::Str("code".to_string()),
+        Value::Int(output.status.code().unwrap_or(-1) as i64),
+    );
+    map.insert(
+        MapKey::Str("success".to_string()),
+        Value::Bool(output.status.success()),
+    );
+    Ok(Value::Map(map))
+}
+fn process_pid(_args: &[Value]) -> RResult<Value> {
+    Ok(Value::Int(std::process::id() as i64))
+}
+fn process_env_vars(_args: &[Value]) -> RResult<Value> {
+    let mut map = HashMap::new();
+    for (k, v) in std::env::vars() {
+        map.insert(MapKey::Str(k), Value::String(v));
+    }
+    Ok(Value::Map(map))
+}
+fn process_set_env(args: &[Value]) -> RResult<Value> {
+    require_args("process::set_env", args, 2)?;
+    unsafe {
+        std::env::set_var(
+            &extract_string("process::set_env", &args[0])?,
+            &extract_string("process::set_env", &args[1])?,
+        );
+    }
+    Ok(Value::Void)
+}
+fn process_which(args: &[Value]) -> RResult<Value> {
+    require_args("process::which", args, 1)?;
+    let output = std::process::Command::new("which")
+        .arg(&extract_string("process::which", &args[0])?)
+        .output()
+        .map_err(|e| format!("process::which: {}", e))?;
+    Ok(Value::String(if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        String::new()
+    }))
+}
+
+static STD_PROCESS: StdModule = StdModule {
+    name: "process",
+    description: "Process execution and environment",
+    functions: &[
+        StdFn {
+            name: "exec",
+            params: &[("string", "command")],
+            return_type: "map",
+            handler: process_exec,
+        },
+        StdFn {
+            name: "pid",
+            params: &[],
+            return_type: "int",
+            handler: process_pid,
+        },
+        StdFn {
+            name: "env_vars",
+            params: &[],
+            return_type: "map",
+            handler: process_env_vars,
+        },
+        StdFn {
+            name: "set_env",
+            params: &[("string", "key"), ("string", "value")],
+            return_type: "void",
+            handler: process_set_env,
+        },
+        StdFn {
+            name: "which",
+            params: &[("string", "name")],
+            return_type: "string",
+            handler: process_which,
+        },
+    ],
+};
+
+// ─── Standard Library: INI ─────────────────────────────────────────
+
+fn ini_parse(args: &[Value]) -> RResult<Value> {
+    require_args("ini::parse", args, 1)?;
+    let s = extract_string("ini::parse", &args[0])?;
+    let mut result: HashMap<MapKey, Value> = HashMap::new();
+    let mut section = String::new();
+    let mut section_map: HashMap<MapKey, Value> = HashMap::new();
+    for line in s.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            if !section.is_empty() || !section_map.is_empty() {
+                result.insert(
+                    MapKey::Str(section.clone()),
+                    Value::Map(std::mem::take(&mut section_map)),
+                );
+            }
+            section = line[1..line.len() - 1].trim().to_string();
+            continue;
+        }
+        if let Some(eq) = line.find('=') {
+            section_map.insert(
+                MapKey::Str(line[..eq].trim().to_string()),
+                Value::String(line[eq + 1..].trim().to_string()),
+            );
+        }
+    }
+    if !section.is_empty() || !section_map.is_empty() {
+        result.insert(MapKey::Str(section), Value::Map(section_map));
+    }
+    Ok(Value::Map(result))
+}
+fn ini_stringify(args: &[Value]) -> RResult<Value> {
+    require_args("ini::stringify", args, 1)?;
+    let map = extract_map("ini::stringify", &args[0])?;
+    let mut result = String::new();
+    for (k, v) in &map {
+        let name = match k {
+            MapKey::Str(s) => s.clone(),
+            MapKey::Int(i) => i.to_string(),
+            MapKey::Bool(b) => b.to_string(),
+        };
+        if !name.is_empty() {
+            result.push_str(&format!("[{}]\n", name));
+        }
+        if let Value::Map(entries) = v {
+            for (ek, ev) in entries {
+                let key = match ek {
+                    MapKey::Str(s) => s.clone(),
+                    MapKey::Int(i) => i.to_string(),
+                    MapKey::Bool(b) => b.to_string(),
+                };
+                result.push_str(&format!("{} = {}\n", key, value_display(ev)));
+            }
+        }
+        result.push('\n');
+    }
+    Ok(Value::String(result))
+}
+fn ini_sections(args: &[Value]) -> RResult<Value> {
+    require_args("ini::sections", args, 1)?;
+    Ok(Value::Array(
+        extract_string("ini::sections", &args[0])?
+            .lines()
+            .filter(|l| l.trim().starts_with('[') && l.trim().ends_with(']'))
+            .map(|l| Value::String(l.trim()[1..l.trim().len() - 1].trim().to_string()))
+            .collect(),
+    ))
+}
+
+static STD_INI: StdModule = StdModule {
+    name: "ini",
+    description: "INI/config file parsing and serialization",
+    functions: &[
+        StdFn {
+            name: "parse",
+            params: &[("string", "s")],
+            return_type: "map",
+            handler: ini_parse,
+        },
+        StdFn {
+            name: "stringify",
+            params: &[("map", "data")],
+            return_type: "string",
+            handler: ini_stringify,
+        },
+        StdFn {
+            name: "sections",
+            params: &[("string", "s")],
+            return_type: "array",
+            handler: ini_sections,
+        },
+    ],
+};
+
+// ─── Standard Library: Iter ────────────────────────────────────────
+
+fn iter_range(args: &[Value]) -> RResult<Value> {
+    if args.is_empty() || args.len() > 3 {
+        return Err("iter::range requires 1-3 arguments".to_string());
+    }
+    let (start, end, step) = match args.len() {
+        1 => (0, extract_int("iter::range", &args[0])?, 1),
+        2 => (
+            extract_int("iter::range", &args[0])?,
+            extract_int("iter::range", &args[1])?,
+            1,
+        ),
+        _ => (
+            extract_int("iter::range", &args[0])?,
+            extract_int("iter::range", &args[1])?,
+            extract_int("iter::range", &args[2])?,
+        ),
+    };
+    if step == 0 {
+        return Err("iter::range: step cannot be 0".to_string());
+    }
+    let mut result = Vec::new();
+    let mut i = start;
+    if step > 0 {
+        while i < end {
+            result.push(Value::Int(i));
+            i += step;
+        }
+    } else {
+        while i > end {
+            result.push(Value::Int(i));
+            i += step;
+        }
+    }
+    Ok(Value::Array(result))
+}
+fn iter_repeat(args: &[Value]) -> RResult<Value> {
+    require_args("iter::repeat", args, 2)?;
+    Ok(Value::Array(vec![
+        args[0].clone();
+        extract_int("iter::repeat", &args[1])?
+            as usize
+    ]))
+}
+fn iter_zip(args: &[Value]) -> RResult<Value> {
+    require_args("iter::zip", args, 2)?;
+    Ok(Value::Array(
+        extract_array("iter::zip", &args[0])?
+            .into_iter()
+            .zip(extract_array("iter::zip", &args[1])?)
+            .map(|(a, b)| Value::Array(vec![a, b]))
+            .collect(),
+    ))
+}
+fn iter_enumerate(args: &[Value]) -> RResult<Value> {
+    require_args("iter::enumerate", args, 1)?;
+    Ok(Value::Array(
+        extract_array("iter::enumerate", &args[0])?
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| Value::Array(vec![Value::Int(i as i64), v]))
+            .collect(),
+    ))
+}
+fn iter_flatten(args: &[Value]) -> RResult<Value> {
+    require_args("iter::flatten", args, 1)?;
+    let mut r = Vec::new();
+    for item in extract_array("iter::flatten", &args[0])? {
+        match item {
+            Value::Array(inner) => r.extend(inner),
+            other => r.push(other),
+        }
+    }
+    Ok(Value::Array(r))
+}
+fn iter_take(args: &[Value]) -> RResult<Value> {
+    require_args("iter::take", args, 2)?;
+    Ok(Value::Array(
+        extract_array("iter::take", &args[0])?
+            .into_iter()
+            .take(extract_int("iter::take", &args[1])? as usize)
+            .collect(),
+    ))
+}
+fn iter_skip(args: &[Value]) -> RResult<Value> {
+    require_args("iter::skip", args, 2)?;
+    Ok(Value::Array(
+        extract_array("iter::skip", &args[0])?
+            .into_iter()
+            .skip(extract_int("iter::skip", &args[1])? as usize)
+            .collect(),
+    ))
+}
+fn iter_chunks(args: &[Value]) -> RResult<Value> {
+    require_args("iter::chunks", args, 2)?;
+    let arr = extract_array("iter::chunks", &args[0])?;
+    let size = extract_int("iter::chunks", &args[1])? as usize;
+    if size == 0 {
+        return Err("iter::chunks: size must be > 0".to_string());
+    }
+    Ok(Value::Array(
+        arr.chunks(size).map(|c| Value::Array(c.to_vec())).collect(),
+    ))
+}
+fn iter_chain(args: &[Value]) -> RResult<Value> {
+    require_args("iter::chain", args, 2)?;
+    let mut a = extract_array("iter::chain", &args[0])?;
+    a.extend(extract_array("iter::chain", &args[1])?);
+    Ok(Value::Array(a))
+}
+
+static STD_ITER: StdModule = StdModule {
+    name: "iter",
+    description: "Iterator and sequence utilities",
+    functions: &[
+        StdFn {
+            name: "range",
+            params: &[("int", "start"), ("int", "end")],
+            return_type: "array",
+            handler: iter_range,
+        },
+        StdFn {
+            name: "repeat",
+            params: &[("any", "val"), ("int", "n")],
+            return_type: "array",
+            handler: iter_repeat,
+        },
+        StdFn {
+            name: "zip",
+            params: &[("array", "a"), ("array", "b")],
+            return_type: "array",
+            handler: iter_zip,
+        },
+        StdFn {
+            name: "enumerate",
+            params: &[("array", "arr")],
+            return_type: "array",
+            handler: iter_enumerate,
+        },
+        StdFn {
+            name: "flatten",
+            params: &[("array", "arr")],
+            return_type: "array",
+            handler: iter_flatten,
+        },
+        StdFn {
+            name: "take",
+            params: &[("array", "arr"), ("int", "n")],
+            return_type: "array",
+            handler: iter_take,
+        },
+        StdFn {
+            name: "skip",
+            params: &[("array", "arr"), ("int", "n")],
+            return_type: "array",
+            handler: iter_skip,
+        },
+        StdFn {
+            name: "chunks",
+            params: &[("array", "arr"), ("int", "size")],
+            return_type: "array",
+            handler: iter_chunks,
+        },
+        StdFn {
+            name: "chain",
+            params: &[("array", "a"), ("array", "b")],
+            return_type: "array",
+            handler: iter_chain,
+        },
+    ],
+};
+
+// ─── Standard Library: Buffer ──────────────────────────────────────
+
+fn buffer_new(args: &[Value]) -> RResult<Value> {
+    Ok(Value::Bytes(vec![
+        0u8;
+        if args.is_empty() {
+            0
+        } else {
+            extract_int("buffer::new", &args[0])? as usize
+        }
+    ]))
+}
+fn buffer_from_string(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::from_string", args, 1)?;
+    Ok(Value::Bytes(
+        extract_string("buffer::from_string", &args[0])?.into_bytes(),
+    ))
+}
+fn buffer_to_string(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::to_string", args, 1)?;
+    Ok(Value::String(
+        String::from_utf8_lossy(&extract_bytes("buffer::to_string", &args[0])?).to_string(),
+    ))
+}
+fn buffer_length(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::length", args, 1)?;
+    Ok(Value::Int(
+        extract_bytes("buffer::length", &args[0])?.len() as i64
+    ))
+}
+fn buffer_get(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::get", args, 2)?;
+    let b = extract_bytes("buffer::get", &args[0])?;
+    let i = extract_int("buffer::get", &args[1])? as usize;
+    if i >= b.len() {
+        return Err(format!(
+            "buffer::get: index {} out of bounds (len {})",
+            i,
+            b.len()
+        ));
+    }
+    Ok(Value::Int(b[i] as i64))
+}
+fn buffer_slice(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::slice", args, 3)?;
+    let b = extract_bytes("buffer::slice", &args[0])?;
+    let end = (extract_int("buffer::slice", &args[2])? as usize).min(b.len());
+    let start = (extract_int("buffer::slice", &args[1])? as usize).min(end);
+    Ok(Value::Bytes(b[start..end].to_vec()))
+}
+fn buffer_concat(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::concat", args, 2)?;
+    let mut a = extract_bytes("buffer::concat", &args[0])?;
+    a.extend_from_slice(&extract_bytes("buffer::concat", &args[1])?);
+    Ok(Value::Bytes(a))
+}
+fn buffer_to_hex(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::to_hex", args, 1)?;
+    Ok(Value::String(
+        extract_bytes("buffer::to_hex", &args[0])?
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect(),
+    ))
+}
+fn buffer_from_array(args: &[Value]) -> RResult<Value> {
+    require_args("buffer::from_array", args, 1)?;
+    let arr = extract_array("buffer::from_array", &args[0])?;
+    let mut bytes = Vec::with_capacity(arr.len());
+    for (i, v) in arr.iter().enumerate() {
+        match v {
+            Value::Int(n) if *n >= 0 && *n <= 255 => bytes.push(*n as u8),
+            Value::Int(n) => {
+                return Err(format!("buffer::from_array: {} out of 0-255 at {}", n, i));
+            }
+            other => {
+                return Err(format!(
+                    "buffer::from_array: expected int at {}, got {:?}",
+                    i, other
+                ));
+            }
+        }
+    }
+    Ok(Value::Bytes(bytes))
+}
+
+static STD_BUFFER: StdModule = StdModule {
+    name: "buffer",
+    description: "Byte buffer manipulation for binary data",
+    functions: &[
+        StdFn {
+            name: "new",
+            params: &[("int", "size")],
+            return_type: "bytes",
+            handler: buffer_new,
+        },
+        StdFn {
+            name: "from_string",
+            params: &[("string", "s")],
+            return_type: "bytes",
+            handler: buffer_from_string,
+        },
+        StdFn {
+            name: "to_string",
+            params: &[("bytes", "buf")],
+            return_type: "string",
+            handler: buffer_to_string,
+        },
+        StdFn {
+            name: "length",
+            params: &[("bytes", "buf")],
+            return_type: "int",
+            handler: buffer_length,
+        },
+        StdFn {
+            name: "get",
+            params: &[("bytes", "buf"), ("int", "index")],
+            return_type: "int",
+            handler: buffer_get,
+        },
+        StdFn {
+            name: "slice",
+            params: &[("bytes", "buf"), ("int", "start"), ("int", "end")],
+            return_type: "bytes",
+            handler: buffer_slice,
+        },
+        StdFn {
+            name: "concat",
+            params: &[("bytes", "a"), ("bytes", "b")],
+            return_type: "bytes",
+            handler: buffer_concat,
+        },
+        StdFn {
+            name: "to_hex",
+            params: &[("bytes", "buf")],
+            return_type: "string",
+            handler: buffer_to_hex,
+        },
+        StdFn {
+            name: "from_array",
+            params: &[("array", "bytes")],
+            return_type: "bytes",
+            handler: buffer_from_array,
+        },
+    ],
+};
+
+// ─── Standard Library: Hash ────────────────────────────────────────
+
+fn hash_fnv32(args: &[Value]) -> RResult<Value> {
+    require_args("hash::fnv32", args, 1)?;
+    let d = value_to_bytes(&args[0]);
+    let mut h: u32 = 0x811c9dc5;
+    for b in &d {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x01000193);
+    }
+    Ok(Value::Int(h as i64))
+}
+fn hash_fnv64(args: &[Value]) -> RResult<Value> {
+    require_args("hash::fnv64", args, 1)?;
+    let d = value_to_bytes(&args[0]);
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in &d {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    Ok(Value::Int(h as i64))
+}
+fn hash_djb2(args: &[Value]) -> RResult<Value> {
+    require_args("hash::djb2", args, 1)?;
+    let d = value_to_bytes(&args[0]);
+    let mut h: u64 = 5381;
+    for b in &d {
+        h = h.wrapping_mul(33).wrapping_add(*b as u64);
+    }
+    Ok(Value::Int(h as i64))
+}
+fn hash_crc32(args: &[Value]) -> RResult<Value> {
+    require_args("hash::crc32", args, 1)?;
+    let d = value_to_bytes(&args[0]);
+    let mut crc: u32 = 0xFFFFFFFF;
+    for b in &d {
+        crc ^= *b as u32;
+        for _ in 0..8 {
+            if crc & 1 == 1 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    Ok(Value::Int((crc ^ 0xFFFFFFFF) as i64))
+}
+fn hash_adler32(args: &[Value]) -> RResult<Value> {
+    require_args("hash::adler32", args, 1)?;
+    let d = value_to_bytes(&args[0]);
+    let (mut a, mut b): (u32, u32) = (1, 0);
+    for byte in &d {
+        a = (a + *byte as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    Ok(Value::Int(((b << 16) | a) as i64))
+}
+fn value_to_bytes(v: &Value) -> Vec<u8> {
+    match v {
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.clone(),
+        other => format!("{:?}", other).into_bytes(),
+    }
+}
+
+static STD_HASH: StdModule = StdModule {
+    name: "hash",
+    description: "Non-cryptographic hash functions",
+    functions: &[
+        StdFn {
+            name: "fnv32",
+            params: &[("any", "data")],
+            return_type: "int",
+            handler: hash_fnv32,
+        },
+        StdFn {
+            name: "fnv64",
+            params: &[("any", "data")],
+            return_type: "int",
+            handler: hash_fnv64,
+        },
+        StdFn {
+            name: "djb2",
+            params: &[("any", "data")],
+            return_type: "int",
+            handler: hash_djb2,
+        },
+        StdFn {
+            name: "crc32",
+            params: &[("any", "data")],
+            return_type: "int",
+            handler: hash_crc32,
+        },
+        StdFn {
+            name: "adler32",
+            params: &[("any", "data")],
+            return_type: "int",
+            handler: hash_adler32,
+        },
+    ],
+};
+
+// ─── Standard Library: Sort ────────────────────────────────────────
+
+fn sort_asc(args: &[Value]) -> RResult<Value> {
+    require_args("sort::asc", args, 1)?;
+    let mut a = extract_array("sort::asc", &args[0])?;
+    a.sort_by(value_cmp);
+    Ok(Value::Array(a))
+}
+fn sort_desc(args: &[Value]) -> RResult<Value> {
+    require_args("sort::desc", args, 1)?;
+    let mut a = extract_array("sort::desc", &args[0])?;
+    a.sort_by(|x, y| value_cmp(y, x));
+    Ok(Value::Array(a))
+}
+fn sort_is_sorted(args: &[Value]) -> RResult<Value> {
+    require_args("sort::is_sorted", args, 1)?;
+    let a = extract_array("sort::is_sorted", &args[0])?;
+    Ok(Value::Bool(a.windows(2).all(|w| {
+        value_cmp(&w[0], &w[1]) != std::cmp::Ordering::Greater
+    })))
+}
+fn sort_min(args: &[Value]) -> RResult<Value> {
+    require_args("sort::min", args, 1)?;
+    let a = extract_array("sort::min", &args[0])?;
+    if a.is_empty() {
+        return Err("sort::min: empty array".to_string());
+    }
+    let mut m = &a[0];
+    for item in &a[1..] {
+        if value_cmp(item, m) == std::cmp::Ordering::Less {
+            m = item;
+        }
+    }
+    Ok(m.clone())
+}
+fn sort_max(args: &[Value]) -> RResult<Value> {
+    require_args("sort::max", args, 1)?;
+    let a = extract_array("sort::max", &args[0])?;
+    if a.is_empty() {
+        return Err("sort::max: empty array".to_string());
+    }
+    let mut m = &a[0];
+    for item in &a[1..] {
+        if value_cmp(item, m) == std::cmp::Ordering::Greater {
+            m = item;
+        }
+    }
+    Ok(m.clone())
+}
+fn sort_by_length(args: &[Value]) -> RResult<Value> {
+    require_args("sort::by_length", args, 1)?;
+    let mut a = extract_array("sort::by_length", &args[0])?;
+    a.sort_by_key(|v| match v {
+        Value::String(s) => s.len(),
+        Value::Array(a) => a.len(),
+        Value::Bytes(b) => b.len(),
+        _ => 0,
+    });
+    Ok(Value::Array(a))
+}
+fn value_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Int(x), Value::Float(y)) => (*x as f64)
+            .partial_cmp(y)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Float(x), Value::Int(y)) => x
+            .partial_cmp(&(*y as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
+static STD_SORT: StdModule = StdModule {
+    name: "sort",
+    description: "Sorting and ordering utilities",
+    functions: &[
+        StdFn {
+            name: "asc",
+            params: &[("array", "arr")],
+            return_type: "array",
+            handler: sort_asc,
+        },
+        StdFn {
+            name: "desc",
+            params: &[("array", "arr")],
+            return_type: "array",
+            handler: sort_desc,
+        },
+        StdFn {
+            name: "is_sorted",
+            params: &[("array", "arr")],
+            return_type: "bool",
+            handler: sort_is_sorted,
+        },
+        StdFn {
+            name: "min",
+            params: &[("array", "arr")],
+            return_type: "any",
+            handler: sort_min,
+        },
+        StdFn {
+            name: "max",
+            params: &[("array", "arr")],
+            return_type: "any",
+            handler: sort_max,
+        },
+        StdFn {
+            name: "by_length",
+            params: &[("array", "arr")],
+            return_type: "array",
+            handler: sort_by_length,
+        },
+    ],
+};
+
+// ─── Standard Library: UUID ────────────────────────────────────────
+
+fn uuid_v4(_args: &[Value]) -> RResult<Value> {
+    let mut bytes = [0u8; 16];
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            let _ = f.read_exact(&mut bytes);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let mut s = random_seed();
+        for b in bytes.iter_mut() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            *b = (s >> 33) as u8;
+        }
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(Value::String(format_uuid_bytes(&bytes)))
+}
+fn uuid_nil(_args: &[Value]) -> RResult<Value> {
+    Ok(Value::String(
+        "00000000-0000-0000-0000-000000000000".to_string(),
+    ))
+}
+fn uuid_is_valid(args: &[Value]) -> RResult<Value> {
+    require_args("uuid::is_valid", args, 1)?;
+    let s = extract_string("uuid::is_valid", &args[0])?
+        .trim()
+        .to_string();
+    if s.len() != 36 {
+        return Ok(Value::Bool(false));
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 5 {
+        return Ok(Value::Bool(false));
+    }
+    for (p, &l) in parts.iter().zip(&[8, 4, 4, 4, 12]) {
+        if p.len() != l || !p.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(Value::Bool(false));
+        }
+    }
+    Ok(Value::Bool(true))
+}
+fn uuid_version(args: &[Value]) -> RResult<Value> {
+    require_args("uuid::version", args, 1)?;
+    let s = extract_string("uuid::version", &args[0])?
+        .trim()
+        .to_string();
+    if s.len() != 36 {
+        return Err("uuid::version: invalid UUID".to_string());
+    }
+    match s.chars().nth(14) {
+        Some(c) if c.is_ascii_digit() => Ok(Value::Int((c as u8 - b'0') as i64)),
+        _ => Err("uuid::version: cannot determine version".to_string()),
+    }
+}
+fn format_uuid_bytes(b: &[u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15]
+    )
+}
+
+static STD_UUID: StdModule = StdModule {
+    name: "uuid",
+    description: "UUID generation and validation",
+    functions: &[
+        StdFn {
+            name: "v4",
+            params: &[],
+            return_type: "string",
+            handler: uuid_v4,
+        },
+        StdFn {
+            name: "nil",
+            params: &[],
+            return_type: "string",
+            handler: uuid_nil,
+        },
+        StdFn {
+            name: "is_valid",
+            params: &[("string", "s")],
+            return_type: "bool",
+            handler: uuid_is_valid,
+        },
+        StdFn {
+            name: "version",
+            params: &[("string", "s")],
+            return_type: "int",
+            handler: uuid_version,
+        },
+    ],
+};
+
+// ─── Standard Library: Encoding ────────────────────────────────────
+
+fn encoding_utf8_encode(args: &[Value]) -> RResult<Value> {
+    require_args("encoding::utf8_encode", args, 1)?;
+    Ok(Value::Bytes(
+        extract_string("encoding::utf8_encode", &args[0])?.into_bytes(),
+    ))
+}
+fn encoding_utf8_decode(args: &[Value]) -> RResult<Value> {
+    require_args("encoding::utf8_decode", args, 1)?;
+    String::from_utf8(extract_bytes("encoding::utf8_decode", &args[0])?)
+        .map(Value::String)
+        .map_err(|e| format!("encoding::utf8_decode: {}", e))
+}
+fn encoding_utf8_valid(args: &[Value]) -> RResult<Value> {
+    require_args("encoding::utf8_valid", args, 1)?;
+    Ok(Value::Bool(
+        std::str::from_utf8(&extract_bytes("encoding::utf8_valid", &args[0])?).is_ok(),
+    ))
+}
+fn encoding_ascii_codes(args: &[Value]) -> RResult<Value> {
+    require_args("encoding::ascii_codes", args, 1)?;
+    Ok(Value::Array(
+        extract_string("encoding::ascii_codes", &args[0])?
+            .bytes()
+            .map(|b| Value::Int(b as i64))
+            .collect(),
+    ))
+}
+fn encoding_from_ascii(args: &[Value]) -> RResult<Value> {
+    require_args("encoding::from_ascii", args, 1)?;
+    let arr = extract_array("encoding::from_ascii", &args[0])?;
+    let mut r = String::new();
+    for (i, v) in arr.iter().enumerate() {
+        match v {
+            Value::Int(n) if *n >= 0 && *n <= 127 => r.push(*n as u8 as char),
+            Value::Int(n) => {
+                return Err(format!("encoding::from_ascii: {} out of range at {}", n, i));
+            }
+            other => {
+                return Err(format!(
+                    "encoding::from_ascii: expected int at {}, got {:?}",
+                    i, other
+                ));
+            }
+        }
+    }
+    Ok(Value::String(r))
+}
+fn encoding_byte_length(args: &[Value]) -> RResult<Value> {
+    require_args("encoding::byte_length", args, 1)?;
+    Ok(Value::Int(
+        extract_string("encoding::byte_length", &args[0])?.len() as i64,
+    ))
+}
+
+static STD_ENCODING: StdModule = StdModule {
+    name: "encoding",
+    description: "Text encoding and decoding utilities",
+    functions: &[
+        StdFn {
+            name: "utf8_encode",
+            params: &[("string", "s")],
+            return_type: "bytes",
+            handler: encoding_utf8_encode,
+        },
+        StdFn {
+            name: "utf8_decode",
+            params: &[("bytes", "data")],
+            return_type: "string",
+            handler: encoding_utf8_decode,
+        },
+        StdFn {
+            name: "utf8_valid",
+            params: &[("bytes", "data")],
+            return_type: "bool",
+            handler: encoding_utf8_valid,
+        },
+        StdFn {
+            name: "ascii_codes",
+            params: &[("string", "s")],
+            return_type: "array",
+            handler: encoding_ascii_codes,
+        },
+        StdFn {
+            name: "from_ascii",
+            params: &[("array", "codes")],
+            return_type: "string",
+            handler: encoding_from_ascii,
+        },
+        StdFn {
+            name: "byte_length",
+            params: &[("string", "s")],
+            return_type: "int",
+            handler: encoding_byte_length,
+        },
+    ],
+};
+
+// ─── Standard Library: URL ─────────────────────────────────────────
+
+fn url_parse_fn(args: &[Value]) -> RResult<Value> {
+    require_args("url::parse", args, 1)?;
+    let s = extract_string("url::parse", &args[0])?.trim().to_string();
+    let mut map = HashMap::new();
+    let (scheme, rest) = if let Some(idx) = s.find("://") {
+        (s[..idx].to_string(), s[idx + 3..].to_string())
+    } else {
+        (String::new(), s.clone())
+    };
+    map.insert(MapKey::Str("scheme".to_string()), Value::String(scheme));
+    let (authority, pqf) = match rest.find('/') {
+        Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
+        None => match rest.find('?') {
+            Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
+            None => match rest.find('#') {
+                Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
+                None => (rest.clone(), String::new()),
+            },
+        },
+    };
+    let (host, port) = match authority.rfind(':') {
+        Some(i) => {
+            let p = &authority[i + 1..];
+            if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() {
+                (authority[..i].to_string(), p.to_string())
+            } else {
+                (authority.clone(), String::new())
+            }
+        }
+        None => (authority, String::new()),
+    };
+    map.insert(MapKey::Str("host".to_string()), Value::String(host));
+    map.insert(MapKey::Str("port".to_string()), Value::String(port));
+    let (path, qf) = match pqf.find('?') {
+        Some(i) => (pqf[..i].to_string(), pqf[i + 1..].to_string()),
+        None => match pqf.find('#') {
+            Some(i) => (pqf[..i].to_string(), pqf[i..].to_string()),
+            None => (pqf, String::new()),
+        },
+    };
+    map.insert(MapKey::Str("path".to_string()), Value::String(path));
+    let (query, fragment) = match qf.find('#') {
+        Some(i) => (qf[..i].to_string(), qf[i + 1..].to_string()),
+        None => (qf, String::new()),
+    };
+    map.insert(MapKey::Str("query".to_string()), Value::String(query));
+    map.insert(MapKey::Str("fragment".to_string()), Value::String(fragment));
+    Ok(Value::Map(map))
+}
+fn url_build(args: &[Value]) -> RResult<Value> {
+    require_args("url::build", args, 1)?;
+    let map = extract_map("url::build", &args[0])?;
+    let get = |k: &str| {
+        map.get(&MapKey::Str(k.to_string()))
+            .map(value_display)
+            .unwrap_or_default()
+    };
+    let mut r = String::new();
+    let scheme = get("scheme");
+    if !scheme.is_empty() {
+        r.push_str(&scheme);
+        r.push_str("://");
+    }
+    r.push_str(&get("host"));
+    let port = get("port");
+    if !port.is_empty() {
+        r.push(':');
+        r.push_str(&port);
+    }
+    let path = get("path");
+    if !path.is_empty() {
+        r.push_str(&path);
+    }
+    let query = get("query");
+    if !query.is_empty() {
+        r.push('?');
+        r.push_str(&query);
+    }
+    let fragment = get("fragment");
+    if !fragment.is_empty() {
+        r.push('#');
+        r.push_str(&fragment);
+    }
+    Ok(Value::String(r))
+}
+fn url_encode_component(args: &[Value]) -> RResult<Value> {
+    require_args("url::encode_component", args, 1)?;
+    Ok(Value::String(url_encode(&extract_string(
+        "url::encode_component",
+        &args[0],
+    )?)))
+}
+fn url_decode_component(args: &[Value]) -> RResult<Value> {
+    require_args("url::decode_component", args, 1)?;
+    Ok(Value::String(url_decode(&extract_string(
+        "url::decode_component",
+        &args[0],
+    )?)))
+}
+fn url_query_params(args: &[Value]) -> RResult<Value> {
+    require_args("url::query_params", args, 1)?;
+    let s = extract_string("url::query_params", &args[0])?
+        .trim_start_matches('?')
+        .to_string();
+    let mut map = HashMap::new();
+    for pair in s.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = match pair.find('=') {
+            Some(i) => (url_decode(&pair[..i]), url_decode(&pair[i + 1..])),
+            None => (url_decode(pair), String::new()),
+        };
+        map.insert(MapKey::Str(k), Value::String(v));
+    }
+    Ok(Value::Map(map))
+}
+fn url_build_query(args: &[Value]) -> RResult<Value> {
+    require_args("url::build_query", args, 1)?;
+    let map = extract_map("url::build_query", &args[0])?;
+    Ok(Value::String(
+        map.iter()
+            .map(|(k, v)| {
+                let key = match k {
+                    MapKey::Str(s) => url_encode(s),
+                    MapKey::Int(i) => i.to_string(),
+                    MapKey::Bool(b) => b.to_string(),
+                };
+                format!("{}={}", key, url_encode(&value_display(v)))
+            })
+            .collect::<Vec<_>>()
+            .join("&"),
+    ))
+}
+
+static STD_URL: StdModule = StdModule {
+    name: "url",
+    description: "URL parsing, building, and query string handling",
+    functions: &[
+        StdFn {
+            name: "parse",
+            params: &[("string", "url")],
+            return_type: "map",
+            handler: url_parse_fn,
+        },
+        StdFn {
+            name: "build",
+            params: &[("map", "components")],
+            return_type: "string",
+            handler: url_build,
+        },
+        StdFn {
+            name: "encode_component",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: url_encode_component,
+        },
+        StdFn {
+            name: "decode_component",
+            params: &[("string", "s")],
+            return_type: "string",
+            handler: url_decode_component,
+        },
+        StdFn {
+            name: "query_params",
+            params: &[("string", "query")],
+            return_type: "map",
+            handler: url_query_params,
+        },
+        StdFn {
+            name: "build_query",
+            params: &[("map", "params")],
+            return_type: "string",
+            handler: url_build_query,
+        },
+    ],
+};
+
+// ─── Helper: argument extraction ───────────────────────────────────
+
+fn require_args(name: &str, args: &[Value], min: usize) -> RResult<()> {
+    if args.len() < min {
+        Err(format!(
+            "{} requires at least {} argument(s), got {}",
+            name,
+            min,
+            args.len()
+        ))
+    } else {
+        Ok(())
+    }
+}
+fn extract_string(name: &str, v: &Value) -> RResult<String> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        other => Err(format!("{}: expected string, got {:?}", name, other)),
+    }
+}
+fn extract_int(name: &str, v: &Value) -> RResult<i64> {
+    match v {
+        Value::Int(n) => Ok(*n),
+        other => Err(format!("{}: expected int, got {:?}", name, other)),
+    }
+}
+fn extract_array(name: &str, v: &Value) -> RResult<Vec<Value>> {
+    match v {
+        Value::Array(a) => Ok(a.clone()),
+        other => Err(format!("{}: expected array, got {:?}", name, other)),
+    }
+}
+fn extract_bytes(name: &str, v: &Value) -> RResult<Vec<u8>> {
+    match v {
+        Value::Bytes(b) => Ok(b.clone()),
+        Value::String(s) => Ok(s.as_bytes().to_vec()),
+        other => Err(format!("{}: expected bytes, got {:?}", name, other)),
+    }
+}
+fn extract_map(name: &str, v: &Value) -> RResult<HashMap<MapKey, Value>> {
+    match v {
+        Value::Map(m) => Ok(m.clone()),
+        other => Err(format!("{}: expected map, got {:?}", name, other)),
+    }
+}
+fn value_display(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => format!("{}", f),
+        Value::Bool(b) => b.to_string(),
+        Value::Void => "void".to_string(),
+        Value::Array(a) => format!(
+            "[{}]",
+            a.iter().map(value_display).collect::<Vec<_>>().join(", ")
+        ),
+        other => format!("{:?}", other),
+    }
+}
+
 // ─── Helper implementations ─────────���───────────────────────────────
 
 fn to_f64(v: &Value) -> Result<f64, String> {
@@ -2089,6 +4831,26 @@ mod tests {
         assert!(lookup_std_module("time").is_some());
         assert!(lookup_std_module("net").is_some());
         assert!(lookup_std_module("collections").is_some());
+        assert!(lookup_std_module("string").is_some());
+        assert!(lookup_std_module("fmt").is_some());
+        assert!(lookup_std_module("path").is_some());
+        assert!(lookup_std_module("convert").is_some());
+        assert!(lookup_std_module("bit").is_some());
+        assert!(lookup_std_module("log").is_some());
+        assert!(lookup_std_module("testing").is_some());
+        assert!(lookup_std_module("csv").is_some());
+        assert!(lookup_std_module("hex").is_some());
+        assert!(lookup_std_module("random").is_some());
+        assert!(lookup_std_module("color").is_some());
+        assert!(lookup_std_module("process").is_some());
+        assert!(lookup_std_module("ini").is_some());
+        assert!(lookup_std_module("iter").is_some());
+        assert!(lookup_std_module("buffer").is_some());
+        assert!(lookup_std_module("hash").is_some());
+        assert!(lookup_std_module("sort").is_some());
+        assert!(lookup_std_module("uuid").is_some());
+        assert!(lookup_std_module("encoding").is_some());
+        assert!(lookup_std_module("url").is_some());
         assert!(lookup_std_module("nonexistent").is_none());
     }
 
@@ -2159,5 +4921,307 @@ mod tests {
         let err = resolve_std_import("nonexistent", None).unwrap_err();
         assert!(err.contains("Unknown standard library module"));
         assert!(err.contains("Available:"));
+    }
+
+    fn assert_str(v: Value, expected: &str) {
+        match v {
+            Value::String(s) => assert_eq!(s, expected),
+            other => panic!("expected String({expected}), got {:?}", other),
+        }
+    }
+    fn assert_int(v: Value, expected: i64) {
+        match v {
+            Value::Int(i) => assert_eq!(i, expected),
+            other => panic!("expected Int({expected}), got {:?}", other),
+        }
+    }
+    fn assert_bool(v: Value, expected: bool) {
+        match v {
+            Value::Bool(b) => assert_eq!(b, expected),
+            other => panic!("expected Bool({expected}), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_trim_operations() {
+        assert_str(
+            string_trim(&[Value::String("  hi  ".into())]).unwrap(),
+            "hi",
+        );
+        assert_str(
+            string_upper(&[Value::String("hello".into())]).unwrap(),
+            "HELLO",
+        );
+        assert_str(
+            string_lower(&[Value::String("HELLO".into())]).unwrap(),
+            "hello",
+        );
+    }
+
+    #[test]
+    fn string_split_join() {
+        match string_split(&[Value::String("a,b,c".into()), Value::String(",".into())]).unwrap() {
+            Value::Array(a) => assert_eq!(a.len(), 3),
+            other => panic!("expected Array, got {:?}", other),
+        }
+        let arr = Value::Array(vec![Value::String("x".into()), Value::String("y".into())]);
+        assert_str(
+            string_join(&[arr, Value::String("-".into())]).unwrap(),
+            "x-y",
+        );
+    }
+
+    #[test]
+    fn string_contains_and_index() {
+        assert_bool(
+            string_contains(&[
+                Value::String("hello world".into()),
+                Value::String("world".into()),
+            ])
+            .unwrap(),
+            true,
+        );
+        assert_int(
+            string_index_of(&[Value::String("abcdef".into()), Value::String("cd".into())]).unwrap(),
+            2,
+        );
+        assert_int(
+            string_index_of(&[Value::String("abcdef".into()), Value::String("zz".into())]).unwrap(),
+            -1,
+        );
+    }
+
+    #[test]
+    fn fmt_format_placeholders() {
+        assert_str(
+            fmt_format(&[
+                Value::String("Hello, {}! You are {} years old.".into()),
+                Value::String("Alice".into()),
+                Value::Int(30),
+            ])
+            .unwrap(),
+            "Hello, Alice! You are 30 years old.",
+        );
+    }
+
+    #[test]
+    fn fmt_number_formatting() {
+        assert_str(fmt_hex(&[Value::Int(255)]).unwrap(), "ff");
+        assert_str(fmt_oct(&[Value::Int(8)]).unwrap(), "10");
+        assert_str(fmt_bin(&[Value::Int(10)]).unwrap(), "1010");
+    }
+
+    #[test]
+    fn path_operations() {
+        assert_str(
+            path_basename(&[Value::String("/usr/local/bin/rustc".into())]).unwrap(),
+            "rustc",
+        );
+        assert_str(
+            path_dirname(&[Value::String("/usr/local/bin/rustc".into())]).unwrap(),
+            "/usr/local/bin",
+        );
+        assert_str(
+            path_extension(&[Value::String("file.tar.gz".into())]).unwrap(),
+            "gz",
+        );
+    }
+
+    #[test]
+    fn convert_parse_types() {
+        assert_int(
+            convert_parse_int(&[Value::String("42".into())]).unwrap(),
+            42,
+        );
+        match convert_parse_float(&[Value::String("1.23".into())]).unwrap() {
+            Value::Float(f) => assert!((f - 1.23_f64).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+        assert_str(convert_type_of(&[Value::Bool(true)]).unwrap(), "bool");
+        assert_str(convert_type_of(&[Value::Int(1)]).unwrap(), "int");
+    }
+
+    #[test]
+    fn bit_operations() {
+        assert_int(
+            bit_and(&[Value::Int(0b1100), Value::Int(0b1010)]).unwrap(),
+            0b1000,
+        );
+        assert_int(
+            bit_or(&[Value::Int(0b1100), Value::Int(0b1010)]).unwrap(),
+            0b1110,
+        );
+        assert_int(
+            bit_xor(&[Value::Int(0b1100), Value::Int(0b1010)]).unwrap(),
+            0b0110,
+        );
+        assert_int(bit_popcount(&[Value::Int(0b1011)]).unwrap(), 3);
+    }
+
+    #[test]
+    fn csv_parse_and_stringify() {
+        let csv = "name,age\nAlice,30\nBob,25";
+        match csv_parse(&[Value::String(csv.into())]).unwrap() {
+            Value::Array(rows) => assert_eq!(rows.len(), 3),
+            other => panic!("expected Array, got {:?}", other),
+        }
+        match csv_headers(&[Value::String(csv.into())]).unwrap() {
+            Value::Array(h) => {
+                assert_eq!(h.len(), 2);
+                assert_str(h[0].clone(), "name");
+                assert_str(h[1].clone(), "age");
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hex_encode_decode() {
+        assert_str(
+            hex_encode(&[Value::String("hello".into())]).unwrap(),
+            "68656c6c6f",
+        );
+        assert_str(
+            hex_decode(&[Value::String("68656c6c6f".into())]).unwrap(),
+            "hello",
+        );
+        assert_bool(hex_is_valid(&[Value::String("0f1a".into())]).unwrap(), true);
+        assert_bool(
+            hex_is_valid(&[Value::String("0fzz".into())]).unwrap(),
+            false,
+        );
+    }
+
+    #[test]
+    fn iter_range_variants() {
+        match iter_range(&[Value::Int(3)]).unwrap() {
+            Value::Array(a) => {
+                assert_eq!(a.len(), 3);
+                assert_int(a[0].clone(), 0);
+                assert_int(a[2].clone(), 2);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+        match iter_range(&[Value::Int(2), Value::Int(5)]).unwrap() {
+            Value::Array(a) => {
+                assert_eq!(a.len(), 3);
+                assert_int(a[0].clone(), 2);
+                assert_int(a[2].clone(), 4);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn buffer_create_and_ops() {
+        match buffer_new(&[Value::Int(4)]).unwrap() {
+            Value::Bytes(b) => assert_eq!(b.len(), 4),
+            other => panic!("expected Bytes, got {:?}", other),
+        }
+        match buffer_from_string(&[Value::String("hi".into())]).unwrap() {
+            Value::Bytes(b) => assert_eq!(b, vec![104, 105]),
+            other => panic!("expected Bytes, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hash_functions_produce_ints() {
+        match hash_fnv32(&[Value::String("test".into())]).unwrap() {
+            Value::Int(_) => {}
+            other => panic!("expected Int, got {:?}", other),
+        }
+        match hash_crc32(&[Value::String("test".into())]).unwrap() {
+            Value::Int(_) => {}
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sort_asc_desc() {
+        let arr = vec![Value::Int(3), Value::Int(1), Value::Int(2)];
+        match sort_asc(&[Value::Array(arr.clone())]).unwrap() {
+            Value::Array(a) => {
+                assert_int(a[0].clone(), 1);
+                assert_int(a[1].clone(), 2);
+                assert_int(a[2].clone(), 3);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+        match sort_desc(&[Value::Array(arr)]).unwrap() {
+            Value::Array(a) => {
+                assert_int(a[0].clone(), 3);
+                assert_int(a[1].clone(), 2);
+                assert_int(a[2].clone(), 1);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sort_min_max() {
+        let arr = vec![Value::Int(5), Value::Int(1), Value::Int(3)];
+        assert_int(sort_min(&[Value::Array(arr.clone())]).unwrap(), 1);
+        assert_int(sort_max(&[Value::Array(arr)]).unwrap(), 5);
+    }
+
+    #[test]
+    fn uuid_nil_and_valid() {
+        assert_str(
+            uuid_nil(&[]).unwrap(),
+            "00000000-0000-0000-0000-000000000000",
+        );
+        assert_bool(
+            uuid_is_valid(&[Value::String("550e8400-e29b-41d4-a716-446655440000".into())]).unwrap(),
+            true,
+        );
+        assert_bool(
+            uuid_is_valid(&[Value::String("not-a-uuid".into())]).unwrap(),
+            false,
+        );
+    }
+
+    #[test]
+    fn encoding_utf8_roundtrip() {
+        match encoding_utf8_encode(&[Value::String("hello".into())]).unwrap() {
+            Value::Bytes(b) => assert_eq!(b, vec![104, 101, 108, 108, 111]),
+            other => panic!("expected Bytes, got {:?}", other),
+        }
+        assert_str(
+            encoding_utf8_decode(&[Value::Bytes(vec![104, 101, 108, 108, 111])]).unwrap(),
+            "hello",
+        );
+        assert_bool(
+            encoding_utf8_valid(&[Value::Bytes(vec![104, 101])]).unwrap(),
+            true,
+        );
+        assert_bool(
+            encoding_utf8_valid(&[Value::Bytes(vec![0xff, 0xfe])]).unwrap(),
+            false,
+        );
+    }
+
+    #[test]
+    fn ini_parse_roundtrip() {
+        match ini_parse(&[Value::String("[section]\nkey=value\nfoo=bar\n".into())]).unwrap() {
+            Value::Map(m) => assert!(!m.is_empty()),
+            other => panic!("expected Map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn color_ansi_codes() {
+        match color_red(&[Value::String("err".into())]).unwrap() {
+            Value::String(s) => {
+                assert!(s.contains("\x1b[31m"));
+                assert!(s.contains("\x1b[0m"));
+                assert!(s.contains("err"));
+            }
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn total_module_count() {
+        assert_eq!(STD_MODULES.len(), 31);
     }
 }

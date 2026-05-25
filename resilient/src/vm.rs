@@ -1362,6 +1362,60 @@ fn run_inner(
                 }
                 stack.push(Value::Struct { name, fields });
             }
+            Op::MakeEnumTuple {
+                type_const,
+                variant_const,
+                arity,
+            } => {
+                let type_name = constant_as_string(chunk, type_const, "MakeEnumTuple (type)")?;
+                let variant = constant_as_string(chunk, variant_const, "MakeEnumTuple (variant)")?;
+                let n = arity as usize;
+                if stack.len() < n {
+                    return Err(VmError::EmptyStack);
+                }
+                let split_at = stack.len() - n;
+                let vals: Vec<Value> = stack.drain(split_at..).collect();
+                let payload = if vals.is_empty() {
+                    crate::EnumValuePayload::None
+                } else {
+                    crate::EnumValuePayload::Tuple(vals)
+                };
+                stack.push(Value::EnumVariant {
+                    type_name,
+                    variant,
+                    payload,
+                });
+            }
+            Op::MakeEnumNamed {
+                type_const,
+                variant_const,
+                field_count,
+            } => {
+                let type_name = constant_as_string(chunk, type_const, "MakeEnumNamed (type)")?;
+                let variant = constant_as_string(chunk, variant_const, "MakeEnumNamed (variant)")?;
+                let n = field_count as usize;
+                let needed = n.checked_mul(2).ok_or(VmError::EmptyStack)?;
+                if stack.len() < needed {
+                    return Err(VmError::EmptyStack);
+                }
+                let split_at = stack.len() - needed;
+                let flat: Vec<Value> = stack.drain(split_at..).collect();
+                let mut fields: Vec<(String, Value)> = Vec::with_capacity(n);
+                let mut it = flat.into_iter();
+                for _ in 0..n {
+                    let k = it.next().ok_or(VmError::EmptyStack)?;
+                    let v = it.next().ok_or(VmError::EmptyStack)?;
+                    let Value::String(field_name) = k else {
+                        return Err(VmError::TypeMismatch("MakeEnumNamed (non-string key)"));
+                    };
+                    fields.push((field_name, v));
+                }
+                stack.push(Value::EnumVariant {
+                    type_name,
+                    variant,
+                    payload: crate::EnumValuePayload::Named(fields),
+                });
+            }
             Op::GetField { name_const } => {
                 // RES-1433: borrow field name from the constant pool
                 // instead of cloning. The owned String was only ever
@@ -1689,6 +1743,8 @@ fn op_to_index(op: Op) -> usize {
         // catch-all index below since they share their semantics with
         // the match path. Keep them grouped at the tail of the table.
         Op::StructLiteral { .. } => OP_KIND_STRUCT_LITERAL,
+        Op::MakeEnumTuple { .. } => OP_KIND_STRUCT_LITERAL,
+        Op::MakeEnumNamed { .. } => OP_KIND_STRUCT_LITERAL,
         Op::GetField { .. } => OP_KIND_GET_FIELD,
         Op::SetField { .. } => OP_KIND_SET_FIELD,
         Op::Band => OP_KIND_BAND,
@@ -4511,6 +4567,16 @@ mod tests {
             },
             Op::StructLiteral {
                 name_const: 0,
+                field_count: 0,
+            },
+            Op::MakeEnumTuple {
+                type_const: 0,
+                variant_const: 0,
+                arity: 0,
+            },
+            Op::MakeEnumNamed {
+                type_const: 0,
+                variant_const: 0,
                 field_count: 0,
             },
             Op::GetField { name_const: 0 },

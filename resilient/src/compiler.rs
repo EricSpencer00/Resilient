@@ -13,7 +13,12 @@
 
 use crate::bytecode::{CatchArm, Chunk, CompileError, Function, Op, Program};
 use crate::{Node, Value};
+use std::cell::RefCell;
 use std::collections::HashMap;
+
+thread_local! {
+    static ENUM_INDEX: RefCell<HashMap<String, Vec<crate::EnumVariant>>> = RefCell::new(HashMap::new());
+}
 
 /// Tracks break/continue patch sites accumulated while compiling a loop body.
 ///
@@ -299,6 +304,19 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             _ => {}
         }
     }
+
+    // Pre-scan enum declarations so CallExpression / StructLiteral can
+    // resolve payload constructors like `Option::Some(x)` or
+    // `Result::Err { msg: "..." }`.
+    ENUM_INDEX.with(|ei| {
+        let mut idx = ei.borrow_mut();
+        idx.clear();
+        for spanned in stmts {
+            if let Node::EnumDecl { name, variants, .. } = &spanned.node {
+                idx.insert(name.clone(), variants.clone());
+            }
+        }
+    });
 
     // RES-2532: pre-scan top-level `let` bindings so function bodies
     // can reference them via LoadGlobal / StoreGlobal.
@@ -2732,6 +2750,41 @@ fn compile_expr(
                 );
                 return Ok(());
             }
+            // Enum tuple constructor: `Type::Variant(arg1, arg2, ...)`
+            if let Some((type_name, variant_name)) = crate::split_qualified(callee_name) {
+                let is_tuple = ENUM_INDEX.with(|ei| {
+                    ei.borrow()
+                        .get(type_name)
+                        .and_then(|vs| vs.iter().find(|v| v.name == variant_name))
+                        .is_some_and(|v| matches!(v.payload, crate::EnumPayload::Tuple(_)))
+                });
+                if is_tuple {
+                    for arg in arguments {
+                        compile_expr(
+                            arg,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                        )?;
+                    }
+                    let tc = chunk.add_string_constant(type_name)?;
+                    let vc = chunk.add_string_constant(variant_name)?;
+                    chunk.emit(
+                        Op::MakeEnumTuple {
+                            type_const: tc,
+                            variant_const: vc,
+                            arity: arguments.len() as u16,
+                        },
+                        line,
+                    );
+                    return Ok(());
+                }
+            }
             Err(CompileError::UnknownFunction(callee_name.to_string()))
         }
         // RES-171a: `[a, b, c]` literal → emit each item's expression
@@ -2816,6 +2869,43 @@ fn compile_expr(
         Node::StructLiteral { name, fields, .. } => {
             if fields.len() > u16::MAX as usize {
                 return Err(CompileError::TooManyFields(name.clone()));
+            }
+            // Check if this is a named-field enum constructor (Type::Variant { ... }).
+            if let Some((type_name, variant_name)) = crate::split_qualified(name) {
+                let is_named = ENUM_INDEX.with(|ei| {
+                    ei.borrow()
+                        .get(type_name)
+                        .and_then(|vs| vs.iter().find(|v| v.name == variant_name))
+                        .is_some_and(|v| matches!(v.payload, crate::EnumPayload::Named(_)))
+                });
+                if is_named {
+                    for (field_name, field_expr) in fields {
+                        let fname_idx = chunk.add_string_constant(field_name)?;
+                        chunk.emit(Op::Const(fname_idx), line);
+                        compile_expr(
+                            field_expr,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                        )?;
+                    }
+                    let tc = chunk.add_string_constant(type_name)?;
+                    let vc = chunk.add_string_constant(variant_name)?;
+                    chunk.emit(
+                        Op::MakeEnumNamed {
+                            type_const: tc,
+                            variant_const: vc,
+                            field_count: fields.len() as u16,
+                        },
+                        line,
+                    );
+                    return Ok(());
+                }
             }
             let name_const = chunk.add_string_constant(name)?;
             for (field_name, field_expr) in fields {
