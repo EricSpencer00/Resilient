@@ -7,6 +7,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-2518-slice-sentinel-collision",
       "claimed_at": "2026-05-25T12:30:00Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-2520-vm-map-index",
+      "claimed_at": "2026-05-25T12:39:43Z"
     }
   }
 }
