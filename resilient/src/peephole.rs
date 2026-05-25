@@ -28,7 +28,7 @@
 //! 14. `Const(k==0); Sub`                   → drop both (x - 0 == x, identity)
 //! 15. `Const(k==1); Div`                   → drop both (x / 1 == x, identity)
 //! 16. `Not; Not`                            → drop both (!!b == b, idempotent)
-//! 17. `Neg; Neg`                            → drop both (--x == x, double int-neg identity)
+//! 17. (REMOVED — RES-2498: unsound under Saturate/Trap overflow modes)
 //! 18. `Not; JumpIfTrue(off)`               → `JumpIfFalse(off)` (mirror of Rule 4)
 //! 19. `LoadLocal(n); StoreLocal(n)`        → drop both (self-load-store is a no-op)
 //! 20. `Const(true); JumpIfTrue(off)`       → `Jump(off)` (branch always taken)
@@ -262,12 +262,10 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             i += 2;
             continue;
         }
-        // Rule 17 — drop `Neg; Neg` (--x == x, double integer negation identity).
-        if rule_double_neg(chunk, i, &targets) {
-            optimized_any = true;
-            i += 2;
-            continue;
-        }
+        // Rule 17 — REMOVED. `Neg; Neg → identity` is unsound under
+        // Saturate and Trap overflow modes: `--i64::MIN` produces
+        // `i64::MIN + 1` (saturate) or an error (trap), not `i64::MIN`.
+        // See RES-2498.
         // Rule 18 — fold `Not; JumpIfTrue(off)` → `JumpIfFalse(off)`.
         // Mirror of Rule 4. A `JumpIfTrue` that would fire on `!b` is
         // equivalent to a `JumpIfFalse` on `b` directly.
@@ -701,21 +699,9 @@ pub(crate) fn rule_double_not(chunk: &Chunk, i: usize, targets: &[bool]) -> bool
     !*targets.get(i + 1).unwrap_or(&false)
 }
 
-/// Rule 17: drop `Neg; Neg` — double integer negation is identity.
-/// `--x == x` for all integers `x`.  Skips if the second `Neg` is a
-/// jump target.
-pub(crate) fn rule_double_neg(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
-    if i + 1 >= chunk.code.len() {
-        return false;
-    }
-    if !matches!(chunk.code[i], Op::Neg) {
-        return false;
-    }
-    if !matches!(chunk.code[i + 1], Op::Neg) {
-        return false;
-    }
-    !*targets.get(i + 1).unwrap_or(&false)
-}
+// Rule 17: REMOVED (RES-2498). `Neg; Neg → identity` is unsound
+// under Saturate/Trap overflow modes. `--i64::MIN` saturates to
+// `i64::MIN + 1`, not `i64::MIN`; Trap mode errors on the first Neg.
 
 /// Rule 18: fold `Not; JumpIfTrue(off)` → `JumpIfFalse(off)`.
 /// Mirror of Rule 4. Jumping on the negation of a value inverts the
@@ -1494,46 +1480,23 @@ mod tests {
         assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
     }
 
-    // ---------- Rule 17: Neg; Neg → identity ----------
+    // ---------- Rule 17: REMOVED (RES-2498) ----------
+    // Neg; Neg fold was unsound under Saturate/Trap overflow modes.
+    // Verify the optimizer no longer removes consecutive Neg ops.
 
     #[test]
-    fn rule17_double_neg_fires() {
-        let chunk = mk_chunk(&[Op::Neg, Op::Neg], vec![], &[1, 1]);
-        assert!(rule_double_neg(&chunk, 0, &[false; 3]));
-    }
-
-    #[test]
-    fn rule17_double_neg_skips_when_second_is_jump_target() {
-        let chunk = mk_chunk(&[Op::Neg, Op::Neg], vec![], &[1, 1]);
-        let targets = [false, true, false];
-        assert!(!rule_double_neg(&chunk, 0, &targets));
-    }
-
-    #[test]
-    fn rule17_double_neg_skips_single_neg() {
-        let chunk = mk_chunk(&[Op::Neg, Op::Return], vec![], &[1, 1]);
-        assert!(!rule_double_neg(&chunk, 0, &[false; 3]));
-    }
-
-    #[test]
-    fn rule17_double_neg_drops_both_in_full_pass() {
-        // LoadLocal(0); Neg; Neg; Return → LoadLocal(0); Return
+    fn rule17_removed_neg_neg_not_folded() {
         let mut chunk = mk_chunk(
             &[Op::LoadLocal(0), Op::Neg, Op::Neg, Op::Return],
             vec![],
             &[1, 1, 1, 2],
         );
         optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
-    }
-
-    #[test]
-    fn rule17_skips_not_neg_pair() {
-        // `Not; Neg` is NOT a double-neg pattern — must not fold.
-        let mut chunk = mk_chunk(&[Op::Not, Op::Neg, Op::Return], vec![], &[1, 1, 1]);
-        let before = chunk.code.clone();
-        optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code, before);
+        assert_eq!(
+            chunk.code,
+            vec![Op::LoadLocal(0), Op::Neg, Op::Neg, Op::Return],
+            "Neg; Neg must NOT be folded (unsound under Saturate/Trap)"
+        );
     }
 
     // ---------- Rule 18: Not; JumpIfTrue → JumpIfFalse ----------
