@@ -19495,7 +19495,9 @@ fn builtin_gcd(args: &[Value]) -> RResult<Value> {
                 x = y;
                 y = t;
             }
-            Ok(Value::Int(x as i64))
+            i64::try_from(x)
+                .map(Value::Int)
+                .map_err(|_| format!("gcd: |gcd({}, {})| = {} overflows i64", a, b, x))
         }
         [a, b] => Err(format!("gcd: expected (int, int), got ({}, {})", a, b)),
         _ => Err(format!("gcd: expected 2 arguments, got {}", args.len())),
@@ -19518,8 +19520,12 @@ fn builtin_lcm(args: &[Value]) -> RResult<Value> {
                 x = y;
                 y = t;
             }
-            // lcm(a, b) = |a / gcd| * |b|
-            Ok(Value::Int(((ax / x) * by) as i64))
+            let product = (ax / x)
+                .checked_mul(by)
+                .ok_or_else(|| format!("lcm: lcm({}, {}) overflows i64", a, b))?;
+            i64::try_from(product)
+                .map(Value::Int)
+                .map_err(|_| format!("lcm: lcm({}, {}) = {} overflows i64", a, b, product))
         }
         [a, b] => Err(format!("lcm: expected (int, int), got ({}, {})", a, b)),
         _ => Err(format!("lcm: expected 2 arguments, got {}", args.len())),
@@ -19532,7 +19538,7 @@ fn builtin_lcm(args: &[Value]) -> RResult<Value> {
 /// rules.
 fn fold_int_array<F>(name: &str, args: &[Value], init: i64, mut op: F) -> RResult<i64>
 where
-    F: FnMut(i64, i64) -> i64,
+    F: FnMut(i64, i64) -> RResult<i64>,
 {
     match args {
         [Value::Array(items)] => {
@@ -19547,7 +19553,7 @@ where
                         ));
                     }
                 };
-                acc = op(acc, n);
+                acc = op(acc, n)?;
             }
             Ok(acc)
         }
@@ -19562,8 +19568,6 @@ where
 /// inputs are treated as their absolute value.
 fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
     let result = fold_int_array("gcd_array", args, 0, |acc, n| {
-        // The accumulator is always non-negative (gcd never produces
-        // a negative). Use `unsigned_abs` on the new element.
         let mut a = acc as u64;
         let mut b = n.unsigned_abs();
         while b != 0 {
@@ -19571,7 +19575,7 @@ fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
             a = b;
             b = t;
         }
-        a as i64
+        i64::try_from(a).map_err(|_| format!("gcd_array: intermediate gcd {} overflows i64", a))
     })?;
     Ok(Value::Int(result))
 }
@@ -19769,9 +19773,8 @@ fn builtin_factorial(args: &[Value]) -> RResult<Value> {
 fn builtin_lcm_array(args: &[Value]) -> RResult<Value> {
     let result = fold_int_array("lcm_array", args, 1, |acc, n| {
         if acc == 0 || n == 0 {
-            return 0;
+            return Ok(0);
         }
-        // lcm(a, b) = |a / gcd(a, b)| * |b|
         let mut a = acc.unsigned_abs();
         let mut b = n.unsigned_abs();
         let (ax, by) = (a, b);
@@ -19780,7 +19783,11 @@ fn builtin_lcm_array(args: &[Value]) -> RResult<Value> {
             a = b;
             b = t;
         }
-        ((ax / a).wrapping_mul(by)) as i64
+        let product = (ax / a)
+            .checked_mul(by)
+            .ok_or_else(|| "lcm_array: intermediate lcm overflows i64".to_string())?;
+        i64::try_from(product)
+            .map_err(|_| format!("lcm_array: intermediate lcm {} overflows i64", product))
     })?;
     Ok(Value::Int(result))
 }
@@ -42464,6 +42471,45 @@ mod tests {
             builtin_gcd_array(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // RES-2466: gcd/lcm overflow guards
+    #[test]
+    fn gcd_i64_min_overflow_errors() {
+        let err = builtin_gcd(&[Value::Int(i64::MIN), Value::Int(0)]).unwrap_err();
+        assert!(
+            err.contains("overflows"),
+            "expected overflow error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn lcm_overflow_errors() {
+        let err = builtin_lcm(&[Value::Int(i64::MAX), Value::Int(2)]).unwrap_err();
+        assert!(
+            err.contains("overflows"),
+            "expected overflow error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn gcd_array_i64_min_overflow_errors() {
+        let err = builtin_gcd_array(&[Value::Array(vec![Value::Int(i64::MIN), Value::Int(0)])])
+            .unwrap_err();
+        assert!(
+            err.contains("overflows"),
+            "expected overflow error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn lcm_array_overflow_errors() {
+        let err = builtin_lcm_array(&[Value::Array(vec![Value::Int(i64::MAX), Value::Int(2)])])
+            .unwrap_err();
+        assert!(
+            err.contains("overflows"),
+            "expected overflow error, got: {err}"
         );
     }
 
