@@ -1,8 +1,8 @@
 {
   "claims": {
-    "resilient/src/vm.rs": {
-      "branch": "res-2494-vm-negative-index-wrap",
-      "claimed_at": "2026-05-25T12:00:00Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-2468-guard-string-repeat-oom",
+      "claimed_at": "2026-05-25T05:45:56Z"
     }
   }
 }

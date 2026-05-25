@@ -13803,12 +13803,20 @@ fn builtin_index_of(args: &[Value]) -> RResult<Value> {
 /// RES-413: `string_repeat(s, n)` — returns `s` repeated `n` times.
 /// Negative `n` is a typed error; zero or empty produces an empty string.
 fn builtin_string_repeat(args: &[Value]) -> RResult<Value> {
+    const MAX_STRING_REPEAT: usize = 10_000_000;
     match args {
         [Value::String(s), Value::Int(n)] => {
             if *n < 0 {
                 return Err(format!(
                     "string_repeat: count must be non-negative, got {}",
                     n
+                ));
+            }
+            let total = s.len().saturating_mul(*n as usize);
+            if total > MAX_STRING_REPEAT {
+                return Err(format!(
+                    "string_repeat: result length {} exceeds limit {}",
+                    total, MAX_STRING_REPEAT
                 ));
             }
             Ok(Value::String(s.repeat(*n as usize)))
@@ -16635,6 +16643,13 @@ fn builtin_string_indent(args: &[Value]) -> RResult<Value> {
                     n
                 ));
             }
+            const MAX_INDENT: i64 = 10_000_000;
+            if *n > MAX_INDENT {
+                return Err(format!(
+                    "string_indent: width {} exceeds limit {}",
+                    n, MAX_INDENT
+                ));
+            }
             if s.is_empty() {
                 return Ok(Value::String(String::new()));
             }
@@ -18787,10 +18802,16 @@ fn builtin_repeat(args: &[Value]) -> RResult<Value> {
             if *n < 0 {
                 return Err(format!("repeat: count must be >= 0, got {}", n));
             }
-            // `usize::try_from` guards against the (theoretical) case
-            // where i64 > usize::MAX on exotic targets.
+            const MAX_STRING_REPEAT: usize = 10_000_000;
             let count =
                 usize::try_from(*n).map_err(|_| format!("repeat: count {} out of range", n))?;
+            let total = s.len().saturating_mul(count);
+            if total > MAX_STRING_REPEAT {
+                return Err(format!(
+                    "repeat: result length {} exceeds limit {}",
+                    total, MAX_STRING_REPEAT
+                ));
+            }
             Ok(Value::String(s.repeat(count)))
         }
         [a, b] => Err(format!(
@@ -24900,6 +24921,14 @@ impl Interpreter {
             if let Some((s, n)) = str_int {
                 if n < 0 {
                     return Err(format!("string repetition count must be >= 0, got {}", n));
+                }
+                const MAX_STRING_REPEAT: usize = 10_000_000;
+                let total = s.len().saturating_mul(n as usize);
+                if total > MAX_STRING_REPEAT {
+                    return Err(format!(
+                        "string repetition: result length {} exceeds limit {}",
+                        total, MAX_STRING_REPEAT
+                    ));
                 }
                 return Ok(Value::String(s.repeat(n as usize)));
             }
@@ -32367,6 +32396,16 @@ mod tests {
         assert!(err.contains(">= 0"), "got: {}", err);
     }
 
+    #[test]
+    fn string_repetition_huge_count_errors() {
+        let src = r#"fn main(int _d) -> string { return "ab" * 10000000; } main(0);"#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(err.contains("exceeds limit"), "got: {}", err);
+    }
+
     /// RES-922: `let mut x = ...` is now accepted as syntactic sugar
     /// for `let x = ...`.
     #[test]
@@ -39254,6 +39293,13 @@ mod tests {
     }
 
     #[test]
+    fn repeat_rejects_huge_result() {
+        let err =
+            builtin_repeat(&[Value::String("ab".into()), Value::Int(10_000_000)]).unwrap_err();
+        assert!(err.contains("exceeds limit"), "got: {}", err);
+    }
+
+    #[test]
     fn res213_string_builtins_end_to_end() {
         // Exercises the full pipeline: parse → eval produces the
         // expected values. Signatures are registered in
@@ -42267,6 +42313,25 @@ mod tests {
     fn string_repeat_rejects_wrong_arity() {
         let err = builtin_string_repeat(&[Value::String("a".into())]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_repeat_rejects_huge_result() {
+        let err = builtin_string_repeat(&[Value::String("abc".into()), Value::Int(10_000_000)])
+            .unwrap_err();
+        assert!(err.contains("exceeds limit"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_repeat_just_under_limit_ok() {
+        let res = builtin_string_repeat(&[Value::String("a".into()), Value::Int(10_000_000)]);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn string_repeat_empty_string_bypasses_limit() {
+        let res = builtin_string_repeat(&[Value::String("".into()), Value::Int(i64::MAX)]);
+        assert!(res.is_ok());
     }
 
     // ---------- RES-414: index_of ----------
@@ -50588,6 +50653,13 @@ mod tests {
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
+    }
+
+    #[test]
+    fn string_indent_rejects_huge_width() {
+        let err = builtin_string_indent(&[Value::String("hello".into()), Value::Int(20_000_000)])
+            .unwrap_err();
+        assert!(err.contains("exceeds limit"), "got: {}", err);
     }
 
     // ---------- RES-462: array_pairs ----------
