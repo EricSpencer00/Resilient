@@ -1016,6 +1016,23 @@ fn run_inner(
                     }
                 }
             }
+            Op::IterPrepare => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                match v {
+                    Value::Array(_) | Value::String(_) => stack.push(v),
+                    Value::Map(m) => {
+                        let mut keys: Vec<&crate::MapKey> = m.keys().collect();
+                        keys.sort_unstable_by(|a, b| crate::map_entries_merge::cmp_map_keys(a, b));
+                        let arr: Vec<Value> = keys.into_iter().map(|k| k.to_value()).collect();
+                        stack.push(Value::Array(arr));
+                    }
+                    _ => {
+                        return Err(VmError::TypeMismatch(
+                            "IterPrepare: expected Array, String, or Map",
+                        ));
+                    }
+                }
+            }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
                 let target = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1484,6 +1501,7 @@ fn op_to_index(op: Op) -> usize {
         Op::MakeTuple { .. } => OP_KIND_MAKE_TUPLE,
         Op::CallClosure { .. } => OP_KIND_CALL_CLOSURE,
         Op::TryUnwrap => OP_KIND_TRY_UNWRAP,
+        Op::IterPrepare => OP_KIND_ITER_PREPARE,
     }
 }
 
@@ -1500,7 +1518,8 @@ const OP_KIND_ASSERT_FAIL: usize = 40;
 const OP_KIND_MAKE_TUPLE: usize = 41;
 const OP_KIND_CALL_CLOSURE: usize = 42;
 const OP_KIND_TRY_UNWRAP: usize = 43;
-const HANDLER_TABLE_LEN: usize = 44;
+const OP_KIND_ITER_PREPARE: usize = 44;
+const HANDLER_TABLE_LEN: usize = 45;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1550,6 +1569,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_MAKE_TUPLE] = h_make_tuple;
     table[OP_KIND_CALL_CLOSURE] = h_call_closure;
     table[OP_KIND_TRY_UNWRAP] = h_try_unwrap;
+    table[OP_KIND_ITER_PREPARE] = h_iter_prepare;
     table
 };
 
@@ -2496,6 +2516,25 @@ fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
             "TryUnwrap: expected Result or Option",
         )),
     }
+}
+
+fn h_iter_prepare(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match v {
+        Value::Array(_) | Value::String(_) => state.stack.push(v),
+        Value::Map(m) => {
+            let mut keys: Vec<&crate::MapKey> = m.keys().collect();
+            keys.sort_unstable_by(|a, b| crate::map_entries_merge::cmp_map_keys(a, b));
+            let arr: Vec<Value> = keys.into_iter().map(|k| k.to_value()).collect();
+            state.stack.push(Value::Array(arr));
+        }
+        _ => {
+            return Err(VmError::TypeMismatch(
+                "IterPrepare: expected Array, String, or Map",
+            ));
+        }
+    }
+    Ok(Step::Continue)
 }
 
 #[cfg(test)]
@@ -5210,6 +5249,86 @@ mod tests {
     #[test]
     fn vm_store_index_map_insert_new_key() {
         let result = compile_run(r#"let mut m = {"a" -> 1}; m["b"] = 2; m["b"]"#).unwrap();
+        assert_int(result, 2);
+    }
+
+    // ── RES-2528: for-in over maps in the VM ────────────────────────
+
+    #[test]
+    fn vm_for_in_map_iterates_keys() {
+        let src = r#"
+            let m = {"b" -> 20, "a" -> 10};
+            let result = [];
+            for k in m {
+                result = push(result, k);
+            }
+            result
+        "#;
+        let result = compile_run(src).unwrap();
+        match result {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(&items[0], Value::String(s) if s == "a"));
+                assert!(matches!(&items[1], Value::String(s) if s == "b"));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_for_in_map_access_values() {
+        let src = r#"
+            let m = {"x" -> 10, "y" -> 20};
+            let total = 0;
+            for k in m {
+                total = total + m[k];
+            }
+            total
+        "#;
+        let result = compile_run(src).unwrap();
+        assert_int(result, 30);
+    }
+
+    #[test]
+    fn vm_for_in_map_empty() {
+        let src = r#"
+            let m = {};
+            let count = 0;
+            for k in m {
+                count = count + 1;
+            }
+            count
+        "#;
+        let result = compile_run(src).unwrap();
+        assert_int(result, 0);
+    }
+
+    #[test]
+    fn vm_for_in_map_int_keys() {
+        let src = r#"
+            let m = {3 -> "c", 1 -> "a", 2 -> "b"};
+            let result = [];
+            for k in m {
+                result = push(result, k);
+            }
+            result
+        "#;
+        let result = compile_run(src).unwrap();
+        match result {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(&items[0], Value::Int(1)));
+                assert!(matches!(&items[1], Value::Int(2)));
+                assert!(matches!(&items[2], Value::Int(3)));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_len_map() {
+        let src = r#"len({"a" -> 1, "b" -> 2})"#;
+        let result = compile_run(src).unwrap();
         assert_int(result, 2);
     }
 }

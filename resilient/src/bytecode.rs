@@ -228,6 +228,13 @@ pub enum Op {
     ///
     /// Emitted for `expr?` (`Node::TryExpression`) nodes.
     TryUnwrap,
+    /// RES-2528: normalize an iterable for `for-in` loops. Pop TOS:
+    ///   - `Array` / `String` → push back unchanged (LoadIndex handles both).
+    ///   - `Map` → convert to sorted keys array, push that instead.
+    ///
+    /// Emitted by `compile_for_in` after evaluating the iterable so the
+    /// rest of the loop (len + sequential LoadIndex) works uniformly.
+    IterPrepare,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;

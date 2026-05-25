@@ -1566,7 +1566,10 @@ fn compile_for_in(
     *next_local += 1;
     locals.insert(name.to_string(), name_slot);
 
-    // 1. Evaluate iterable, store in arr_slot.
+    // 1. Evaluate iterable, normalize for iteration, store in arr_slot.
+    //    IterPrepare converts maps to their sorted-keys array so the
+    //    sequential LoadIndex loop below works uniformly for arrays,
+    //    strings, and maps.
     compile_expr(
         iterable,
         chunk,
@@ -1578,6 +1581,7 @@ fn compile_for_in(
         next_fn_idx,
         line,
     )?;
+    chunk.emit(Op::IterPrepare, line);
     chunk.emit(Op::StoreLocal(arr_slot), line);
 
     // 2. Compute length via the canonical `len` builtin and

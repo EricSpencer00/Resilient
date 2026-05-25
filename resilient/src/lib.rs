@@ -19478,8 +19478,9 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
         [Value::Array(items)] => Ok(Value::Int(items.len() as i64)),
         // RES-932: tuple length for tuple-pattern matching in the bytecode VM.
         [Value::Tuple(items)] => Ok(Value::Int(items.len() as i64)),
+        [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
         [other] => Err(format!(
-            "len: expected string, array, or tuple, got {}",
+            "len: expected string, array, tuple, or map, got {}",
             other
         )),
         _ => Err(format!("len: expected 1 argument, got {}", args.len())),
@@ -24235,7 +24236,17 @@ impl Interpreter {
         let iter_val = self.eval(iterable)?;
         let items = match iter_val {
             Value::Array(v) => v,
-            other => return Err(format!("`for` iterable must be an array, got {}", other)),
+            Value::Map(m) => {
+                let mut keys: Vec<&MapKey> = m.keys().collect();
+                keys.sort_unstable_by(|a, b| crate::map_entries_merge::cmp_map_keys(a, b));
+                keys.into_iter().map(|k| k.to_value()).collect()
+            }
+            other => {
+                return Err(format!(
+                    "`for` iterable must be an array or map, got {}",
+                    other
+                ));
+            }
         };
         for item in items {
             self.env.set(name.to_string(), item);
@@ -37573,6 +37584,60 @@ mod tests {
             Value::Map(m) => assert_eq!(m.len(), 0),
             other => panic!("expected empty Map, got {:?}", other),
         }
+    }
+
+    // --- RES-2528: for-in over maps ---
+
+    #[test]
+    fn for_in_map_iterates_keys_interpreter() {
+        let src = r#"
+            let m = {"b" -> 2, "a" -> 1};
+            let result = [];
+            for k in m {
+                result = push(result, k);
+            }
+        "#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        let result = interp.env.get("result").expect("binding `result`");
+        match result {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(&items[0], Value::String(s) if s == "a"));
+                assert!(matches!(&items[1], Value::String(s) if s == "b"));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn for_in_map_access_values_interpreter() {
+        let src = r#"
+            let m = {"x" -> 10, "y" -> 20};
+            let total = 0;
+            for k in m {
+                total = total + m[k];
+            }
+        "#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        let total = interp.env.get("total").expect("binding `total`");
+        assert!(matches!(total, Value::Int(30)), "got {:?}", total);
+    }
+
+    #[test]
+    fn len_supports_maps() {
+        let src = r#"let n = len({"a" -> 1, "b" -> 2, "c" -> 3});"#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        let n = interp.env.get("n").expect("binding `n`");
+        assert!(matches!(n, Value::Int(3)), "got {:?}", n);
     }
 
     // --- RES-153: struct field assignment ---
