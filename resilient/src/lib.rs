@@ -15055,22 +15055,36 @@ fn builtin_array_range(args: &[Value]) -> RResult<Value> {
 /// Positive `hi` is exclusive unless `inclusive` is `true`.
 /// Indices outside `[0, len)` are clamped silently.
 fn builtin_array_slice(args: &[Value]) -> RResult<Value> {
-    match args {
-        [
-            Value::Array(items),
-            Value::Int(lo_raw),
-            Value::Int(hi_raw),
-            Value::Bool(inclusive),
-        ] => {
+    // RES-2518: the hi bound can be Value::Int(n) for an explicit bound
+    // or Value::Void for "no upper bound" (sentinel from the bytecode
+    // compiler). Extract the optional hi value before matching.
+    if args.len() != 4 {
+        return Err(format!(
+            "array_slice: expected 4 arguments (target, lo, hi, inclusive), got {}",
+            args.len()
+        ));
+    }
+    let hi_opt: Option<i64> = match &args[2] {
+        Value::Int(h) => Some(*h),
+        Value::Void => None,
+        other => {
+            return Err(format!(
+                "array_slice: upper bound must be Int or Void, got {}",
+                other
+            ));
+        }
+    };
+    match (&args[0], &args[1], &args[3]) {
+        (Value::Array(items), Value::Int(lo_raw), Value::Bool(inclusive)) => {
             let len = items.len() as i64;
             let normalize = |v: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v } };
             let lo_i = normalize(*lo_raw);
-            // -1 sentinel means "end of array"
-            let hi_i = if *hi_raw == -1 {
-                len
-            } else {
-                let h = normalize(*hi_raw);
-                if *inclusive { h + 1 } else { h }
+            let hi_i = match hi_opt {
+                None => len,
+                Some(h) => {
+                    let h = normalize(h);
+                    if *inclusive { h + 1 } else { h }
+                }
             };
             let lo_u = (lo_i.clamp(0, len)) as usize;
             let hi_u = (hi_i.clamp(0, len)) as usize;
@@ -15079,21 +15093,17 @@ fn builtin_array_slice(args: &[Value]) -> RResult<Value> {
             }
             Ok(Value::Array(items[lo_u..hi_u].to_vec()))
         }
-        [
-            Value::String(s),
-            Value::Int(lo_raw),
-            Value::Int(hi_raw),
-            Value::Bool(inclusive),
-        ] => {
+        (Value::String(s), Value::Int(lo_raw), Value::Bool(inclusive)) => {
             let chars: Vec<char> = s.chars().collect();
             let len = chars.len() as i64;
             let normalize = |v: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v } };
             let lo_i = normalize(*lo_raw);
-            let hi_i = if *hi_raw == -1 {
-                len
-            } else {
-                let h = normalize(*hi_raw);
-                if *inclusive { h + 1 } else { h }
+            let hi_i = match hi_opt {
+                None => len,
+                Some(h) => {
+                    let h = normalize(h);
+                    if *inclusive { h + 1 } else { h }
+                }
             };
             let lo_u = (lo_i.clamp(0, len)) as usize;
             let hi_u = (hi_i.clamp(0, len)) as usize;
@@ -15103,8 +15113,8 @@ fn builtin_array_slice(args: &[Value]) -> RResult<Value> {
             Ok(Value::String(chars[lo_u..hi_u].iter().collect()))
         }
         _ => Err(format!(
-            "array_slice: expected (array|string, int, int, bool), got {} args",
-            args.len()
+            "array_slice: expected (array|string, int, int|void, bool), got ({}, {}, {}, {})",
+            args[0], args[1], args[2], args[3]
         )),
     }
 }

@@ -1,8 +1,12 @@
 {
   "claims": {
+    "resilient/src/compiler.rs": {
+      "branch": "res-2518-slice-sentinel-collision",
+      "claimed_at": "2026-05-25T12:30:00Z"
+    },
     "resilient/src/lib.rs": {
-      "branch": "res-2492-array-range-overflow-panic",
-      "claimed_at": "2026-05-25T08:30:00Z"
+      "branch": "res-2518-slice-sentinel-collision",
+      "claimed_at": "2026-05-25T12:30:00Z"
     }
   }
 }
