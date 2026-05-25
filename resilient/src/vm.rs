@@ -661,8 +661,11 @@ fn run_inner(
             }
             Op::ReturnFromCall => {
                 // Pop the return value, unwind the frame, push it
-                // onto the caller's stack.
-                let ret = stack.pop().ok_or(VmError::EmptyStack)?;
+                // onto the caller's stack. If the stack is empty the
+                // function body ended without an expression — return
+                // Void, matching the interpreter's implicit-return
+                // semantics.
+                let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
                 if frames.is_empty() {
                     // ReturnFromCall at top level — shouldn't happen
@@ -1849,7 +1852,7 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 
 #[inline(never)]
 fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let ret = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let ret = state.stack.pop().unwrap_or(Value::Void);
     let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
     if state.frames.is_empty() {
         return Ok(Step::Halt(ret));
@@ -5330,5 +5333,42 @@ mod tests {
         let src = r#"len({"a" -> 1, "b" -> 2})"#;
         let result = compile_run(src).unwrap();
         assert_int(result, 2);
+    }
+
+    // ── RES-2530: ReturnFromCall with empty stack returns Void ───────
+
+    #[test]
+    fn vm_void_fn_ending_with_let() {
+        let src = "fn foo() { let x = 1; } foo(); 42";
+        let result = compile_run(src).unwrap();
+        assert_int(result, 42);
+    }
+
+    #[test]
+    fn vm_void_fn_ending_with_println() {
+        let src = r#"fn foo() { println("hello"); } foo(); 42"#;
+        let result = compile_run(src).unwrap();
+        assert_int(result, 42);
+    }
+
+    #[test]
+    fn vm_void_closure_ending_with_let() {
+        let src = "let f = fn() { let y = 10; }; f(); 42";
+        let result = compile_run(src).unwrap();
+        assert_int(result, 42);
+    }
+
+    #[test]
+    fn vm_explicit_return_still_returns_value() {
+        let src = "fn f() -> int { return 99; } f()";
+        let result = compile_run(src).unwrap();
+        assert_int(result, 99);
+    }
+
+    #[test]
+    fn vm_implicit_expression_return_still_works() {
+        let src = "fn f() -> int { 42 } f()";
+        let result = compile_run(src).unwrap();
+        assert_int(result, 42);
     }
 }
