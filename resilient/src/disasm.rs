@@ -241,6 +241,10 @@ fn write_op(
         Op::IterPrepare => write!(out, "IterPrepare")?,
         Op::LoadGlobal(idx) => write!(out, "LoadGlobal {}", idx)?,
         Op::StoreGlobal(idx) => write!(out, "StoreGlobal {}", idx)?,
+        Op::CallMethod {
+            method_const,
+            arity,
+        } => write!(out, "CallMethod method={} arity={}", method_const, arity)?,
     }
     Ok(())
 }

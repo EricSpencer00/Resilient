@@ -1,0 +1,17 @@
+struct Counter {
+    int value,
+}
+
+impl Counter {
+    fn get(self) -> int {
+        return self.value;
+    }
+
+    fn add(self, int n) -> int {
+        return self.value + n;
+    }
+}
+
+let c = new Counter { value: 10 };
+println(c.get());
+println(c.add(5));

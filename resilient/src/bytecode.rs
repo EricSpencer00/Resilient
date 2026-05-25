@@ -126,6 +126,11 @@ pub enum Op {
     /// loaded from (`u16::MAX` if unknown/temporary) — used to
     /// write back mutated upvalues on return.
     CallClosure { arity: u8, source_slot: u16 },
+    /// RES-2542: method call on a struct value. The VM pops `arity`
+    /// arguments, then the receiver struct, reads its type name,
+    /// forms `{type_name}${method}`, resolves the function index, and
+    /// calls it with `[receiver, args...]`.
+    CallMethod { method_const: u16, arity: u8 },
     /// RES-384: self-tail-call in tail position. Reuses the current
     /// `CallFrame` instead of pushing a new one, keeping call-stack
     /// depth O(1) for tail-recursive functions. The callee MUST be
