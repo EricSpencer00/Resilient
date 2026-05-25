@@ -1,12 +1,8 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-2466-gcd-lcm-overflow",
-      "claimed_at": "2026-05-25T05:30:33Z"
-    },
     "resilient/src/vm.rs": {
-      "branch": "res-2476-vm-string-comparisons",
-      "claimed_at": "2026-05-25T06:40:59Z"
+      "branch": "res-2480-vm-string-coercion",
+      "claimed_at": "2026-05-25T07:00:00Z"
     }
   }
 }
