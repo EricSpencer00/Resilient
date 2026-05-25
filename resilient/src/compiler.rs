@@ -279,7 +279,22 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     let globals = prescan_globals(stmts);
 
     // Pass 2: compile each function body in declaration order.
+    // RES-2538: pre-allocate slots for all top-level functions so that
+    // nested function definitions (compiled during body traversal) get
+    // indices *after* the top-level range. This keeps fn_index (pass 1)
+    // valid even when nested fns are pushed to the Vec during compilation.
     let mut functions: Vec<Function> = Vec::with_capacity(fn_count);
+    let placeholder = || Function {
+        name: String::new(),
+        arity: 0,
+        chunk: Chunk::with_capacity(0),
+        local_count: 0,
+        upvalue_source_slots: Box::default(),
+    };
+    for _ in 0..fn_count {
+        functions.push(placeholder());
+    }
+    let mut top_idx: usize = 0;
     for spanned in stmts {
         if let Node::Function {
             name,
@@ -289,26 +304,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         } = &spanned.node
         {
             let arity = parameters.len() as u8;
-            // RES-1720: pre-size the Chunk's opcode buffers. 128 fits
-            // the median Resilient fn body (~50-200 opcodes) without
-            // needing a Vec realloc; tiny functions overshoot by < 1
-            // KB. Same shape as RES-1716 / RES-1714 / RES-1718.
             let mut chunk = Chunk::with_capacity(128);
-            // Parameters occupy locals 0..arity. Map each param name
-            // to its slot; additional `let` bindings in the body bump
-            // `next_local` from there.
-            //
-            // RES-1575: pre-size to `parameters.len() * 2` (params + a
-            // heuristic body-let allowance), floored at 8 so empty
-            // fns don't double-rehash from the default 0→4→8 grow
-            // path. Compiling N functions previously paid up to two
-            // rehashes per fn; one upfront `with_capacity` avoids
-            // them on the hot per-fn loop.
             let cap = parameters.len().saturating_mul(2).max(8) + globals.len();
             let mut locals: HashMap<String, u16> = HashMap::with_capacity(cap);
-            // RES-2532: seed globals into the locals map with the
-            // GLOBAL_FLAG so compile_expr emits LoadGlobal instead of
-            // LoadLocal. Parameters shadow globals if names collide.
             for (gname, &gslot) in &globals {
                 locals.insert(gname.clone(), gslot | GLOBAL_FLAG);
             }
@@ -317,19 +315,11 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 locals.insert(pname.clone(), next_local);
                 next_local += 1;
             }
-            // Function bodies are `Node::Block { stmts, .. }` today. Walk
-            // the inner statements; emit a trailing ReturnFromCall so
-            // a body that fell through produces Void to the caller.
             let inner = match body.as_ref() {
                 Node::Block { stmts: b, .. } => b,
                 single => std::slice::from_ref(single),
             };
             for stmt in inner {
-                // RES-092: prefer the body statement's own span so
-                // VM runtime errors land on the offending source
-                // line, not just the line of the enclosing fn.
-                // Falls back to the fn's outer line when the
-                // statement node has no span (synthetic).
                 let line = node_line(stmt).unwrap_or(spanned.span.start.line as u32);
                 compile_stmt_in_fn(
                     stmt,
@@ -345,39 +335,21 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 )?;
             }
             chunk.emit(Op::ReturnFromCall, 0);
-            // RES-384: replace self-tail-calls with TailCall. Scan
-            // for every `Call(own_idx); ReturnFromCall` pair and
-            // fold it into a single `TailCall(own_idx)`. This
-            // handles tail calls in all positions — explicit
-            // `return f(args);` statements and implicit tail
-            // returns from if-branches. Must run before the
-            // peephole pass so peephole sees the final opcode
-            // sequence.
-            let own_fn_idx = functions.len() as u16;
+            let own_fn_idx = top_idx as u16;
             rewrite_tail_calls(&mut chunk, own_fn_idx);
-            // RES-298: constant-fold pure expressions over literals
-            // BEFORE the peephole pass. Folding turns sequences like
-            // `Const Const Add` into a single `Const`, which the
-            // peephole's identity-fold rules (`Const 0; Add`,
-            // `Const 1; Mul`, …) can then act on.
             crate::const_fold::optimize_if_enabled(&mut chunk)
                 .map_err(|_| CompileError::InternalError("constant folder failed"))?;
-            // RES-172: run the peephole optimizer over the
-            // just-emitted chunk. Idempotent and linear-scan —
-            // no effect on chunks that don't contain any of the
-            // shipped idioms.
             crate::peephole::optimize(&mut chunk)
                 .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
-            // RES-297: dead code elimination — remove unreachable ops
-            // after returns and fold constant-condition branches.
             crate::dce::eliminate(&mut chunk);
-            functions.push(Function {
+            functions[top_idx] = Function {
                 name: name.clone(),
                 arity,
                 chunk,
                 local_count: next_local,
                 upvalue_source_slots: Box::default(),
-            });
+            };
+            top_idx += 1;
         }
     }
 
@@ -719,12 +691,25 @@ fn compile_stmt(
             next_fn_idx,
             line,
         ),
-        Node::Function { .. } | Node::Extern { .. } => {
-            // Top-level fn/extern decls already handled in passes 1/2.
-            // Skipping here would be a no-op, but we should never see
-            // them — the caller filters them out before calling us.
-            Err(CompileError::Unsupported("nested function/extern decl"))
-        }
+        Node::Function {
+            name,
+            parameters,
+            body,
+            ..
+        } => compile_nested_fn(
+            name,
+            parameters,
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        Node::Extern { .. } => Err(CompileError::Unsupported("nested extern decl")),
         // RES-390: actor / cluster decls are compile-time-only
         // verifier constructs. The bytecode backend emits nothing
         // for them — the interpreter also treats them as no-ops.
@@ -1086,6 +1071,99 @@ fn compile_control_flow(
     }
 }
 
+/// RES-2538: compile a nested `fn` definition inside a function body.
+/// The inner function is compiled into the functions table (like a
+/// top-level fn) and bound as a zero-capture closure in a local
+/// variable so call sites can resolve it via `CallClosure`.
+#[allow(clippy::too_many_arguments)]
+fn compile_nested_fn(
+    name: &str,
+    parameters: &[(String, String)],
+    body: &Node,
+    outer_chunk: &mut Chunk,
+    outer_locals: &mut HashMap<String, u16>,
+    outer_next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    if parameters.len() > u8::MAX as usize {
+        return Err(CompileError::Unsupported("fn with >255 params"));
+    }
+    if *next_fn_idx == u16::MAX {
+        return Err(CompileError::Unsupported("program has > 65535 functions"));
+    }
+    let arity = parameters.len() as u8;
+    let mut chunk = Chunk::with_capacity(128);
+    let cap = parameters.len().saturating_mul(2).max(8);
+    let mut locals: HashMap<String, u16> = HashMap::with_capacity(cap);
+    let mut next_local: u16 = 0;
+    for (_type_name, pname) in parameters {
+        locals.insert(pname.clone(), next_local);
+        next_local += 1;
+    }
+    let fn_idx = fns.len() as u16;
+    fns.push(Function {
+        name: name.to_string(),
+        arity: 0,
+        chunk: Chunk::with_capacity(0),
+        local_count: 0,
+        upvalue_source_slots: Box::default(),
+    });
+    let mut inner_fn_index = fn_index.clone();
+    inner_fn_index.insert(name.to_string(), fn_idx);
+    let inner = match body {
+        Node::Block { stmts: b, .. } => b.as_slice(),
+        single => std::slice::from_ref(single),
+    };
+    for stmt in inner {
+        let stmt_line = node_line(stmt).unwrap_or(line);
+        compile_stmt_in_fn(
+            stmt,
+            &mut chunk,
+            &mut locals,
+            &mut next_local,
+            &inner_fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            stmt_line,
+            &mut Vec::new(),
+        )?;
+    }
+    chunk.emit(Op::ReturnFromCall, 0);
+    rewrite_tail_calls(&mut chunk, fn_idx);
+    crate::const_fold::optimize_if_enabled(&mut chunk)
+        .map_err(|_| CompileError::InternalError("constant folder failed"))?;
+    crate::peephole::optimize(&mut chunk)
+        .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
+    crate::dce::eliminate(&mut chunk);
+    fns[fn_idx as usize] = Function {
+        name: name.to_string(),
+        arity,
+        chunk,
+        local_count: next_local,
+        upvalue_source_slots: Box::default(),
+    };
+    outer_chunk.emit(
+        Op::MakeClosure {
+            fn_idx,
+            upvalue_count: 0,
+        },
+        line,
+    );
+    if *outer_next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let slot = *outer_next_local;
+    *outer_next_local += 1;
+    outer_locals.insert(name.to_string(), slot);
+    outer_chunk.emit(Op::StoreLocal(slot), line);
+    Ok(())
+}
+
 /// Compile a statement inside a `fn` body. Same as `compile_stmt`
 /// except `return EXPR;` emits `ReturnFromCall` instead of `Return`
 /// — a bare `return` at program scope halts the VM; one inside a
@@ -1407,6 +1485,25 @@ fn compile_stmt_in_fn(
         | Node::ModuleDecl { .. }
         | Node::Use { .. }
         | Node::UnsafeBlock { .. } => Ok(()),
+        Node::Function {
+            name,
+            parameters,
+            body,
+            ..
+        } => compile_nested_fn(
+            name,
+            parameters,
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        Node::Extern { .. } => Err(CompileError::Unsupported("nested extern decl")),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }

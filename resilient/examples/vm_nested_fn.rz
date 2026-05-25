@@ -1,0 +1,6 @@
+fn outer(int x) -> int {
+    fn double(int n) -> int { return n * 2; }
+    fn add_one(int n) -> int { return n + 1; }
+    return add_one(double(x));
+}
+println(outer(5));
