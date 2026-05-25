@@ -720,20 +720,33 @@ fn compile_assert(
         line,
     )?;
     let jt = chunk.emit(Op::JumpIfTrue(0), line);
-    // Push the failure message string.
-    let msg_str = if let Some(msg_node) = message {
-        // If the message is a string literal we can embed it directly;
-        // otherwise fall back to a generic message (complex expressions
-        // aren't evaluated at compile time).
+    // RES-2508: push the failure message onto the stack.  String literals
+    // are embedded as constants; all other expressions are compiled so
+    // they evaluate at runtime — matching the tree-walker interpreter.
+    if let Some(msg_node) = message {
         match msg_node.as_ref() {
-            Node::StringLiteral { value: s, .. } => s.clone(),
-            _ => "assertion failed".to_string(),
+            Node::StringLiteral { value: s, .. } => {
+                let msg_idx = chunk.add_string_constant(s)?;
+                chunk.emit(Op::Const(msg_idx), line);
+            }
+            _ => {
+                compile_expr(
+                    msg_node,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
+            }
         }
     } else {
-        "assertion failed".to_string()
-    };
-    let msg_idx = chunk.add_string_constant(&msg_str)?;
-    chunk.emit(Op::Const(msg_idx), line);
+        let msg_idx = chunk.add_string_constant("assertion failed")?;
+        chunk.emit(Op::Const(msg_idx), line);
+    }
     chunk.emit(Op::AssertFail, line);
     let past_fail = chunk.code.len();
     chunk.patch_jump(jt, past_fail)?;
@@ -3012,8 +3025,16 @@ fn collect_free_vars(
                 collect_free_vars(v, param_names, outer_locals, out, seen);
             }
         }
-        Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
             collect_free_vars(condition, param_names, outer_locals, out, seen);
+            if let Some(msg) = message {
+                collect_free_vars(msg, param_names, outer_locals, out, seen);
+            }
         }
         Node::TryExpression { expr, .. } => {
             collect_free_vars(expr, param_names, outer_locals, out, seen);
@@ -4746,6 +4767,73 @@ check(-1);
             "expected AssertionFailed, got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn assert_dynamic_message_variable() {
+        let src = r#"
+let reason = "too small";
+assert(false, reason);
+"#;
+        let err = vm_run(src);
+        match err.kind() {
+            crate::vm::VmError::AssertionFailed(msg) => {
+                assert!(
+                    msg.contains("too small"),
+                    "expected dynamic message in {:?}",
+                    msg
+                );
+            }
+            other => panic!("expected AssertionFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assert_dynamic_message_concatenation() {
+        let src = r#"
+assert(false, "x was " + to_string(42));
+"#;
+        let err = vm_run(src);
+        match err.kind() {
+            crate::vm::VmError::AssertionFailed(msg) => {
+                assert!(msg.contains("x was 42"), "expected 'x was 42' in {:?}", msg);
+            }
+            other => panic!("expected AssertionFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assert_dynamic_message_in_function() {
+        let src = r#"
+fn check(int n) -> int {
+    assert(n > 0, "got " + to_string(n));
+    return n;
+}
+check(-5);
+"#;
+        let err = vm_run(src);
+        match err.kind() {
+            crate::vm::VmError::AssertionFailed(msg) => {
+                assert!(msg.contains("got -5"), "expected 'got -5' in {:?}", msg);
+            }
+            other => panic!("expected AssertionFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn closure_captures_var_in_assert_message() {
+        let src = r#"
+let label = "test";
+let f = fn() -> int {
+    assert(true, label);
+    return 1;
+};
+f();
+"#;
+        match vm_ok(src) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
     }
 
     #[test]
