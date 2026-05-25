@@ -3,6 +3,10 @@
     "resilient/src/compiler.rs": {
       "branch": "res-2522-vm-none-builtin",
       "claimed_at": "2026-05-25T14:00:00Z"
+    },
+    "resilient/src/contract_inference.rs": {
+      "branch": "res-2524-contract-inference-traversal",
+      "claimed_at": "2026-05-25T13:15:27Z"
     }
   }
 }

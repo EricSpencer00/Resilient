@@ -127,152 +127,60 @@ pub fn infer_program(program: &Node) -> Vec<InferredContracts> {
 // ── Precondition detectors ──────────────────────────────────────────────────
 
 fn body_divides_by(node: &Node, param: &str) -> bool {
-    match node {
-        Node::InfixExpression {
-            left,
-            operator,
-            right,
-            ..
-        } => {
-            if (*operator == "/" || *operator == "%")
+    crate::uniqueness_walk::any_node(node, |n| {
+        if let Node::InfixExpression {
+            operator, right, ..
+        } = n
+        {
+            (*operator == "/" || *operator == "%")
                 && matches!(right.as_ref(), Node::Identifier { name, .. } if name == param)
-            {
-                return true;
-            }
-            body_divides_by(left, param) || body_divides_by(right, param)
+        } else {
+            false
         }
-        Node::Block { stmts, .. } => stmts.iter().any(|s| body_divides_by(s, param)),
-        Node::ReturnStatement { value: Some(e), .. } => body_divides_by(e, param),
-        Node::ExpressionStatement { expr, .. } => body_divides_by(expr, param),
-        Node::LetStatement { value, .. } => body_divides_by(value, param),
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            body_divides_by(condition, param)
-                || body_divides_by(consequence, param)
-                || alternative
-                    .as_ref()
-                    .is_some_and(|a| body_divides_by(a, param))
-        }
-        _ => false,
-    }
+    })
 }
 
 /// `p[0]` — array-literal index 0 without an explicit bounds check.
 fn body_indexes_into(node: &Node, param: &str) -> bool {
-    match node {
-        Node::IndexExpression { target, index, .. } => {
-            if matches!(target.as_ref(), Node::Identifier { name, .. } if name == param) {
-                if matches!(index.as_ref(), Node::IntegerLiteral { value: 0, .. }) {
-                    return true;
-                }
-            }
-            body_indexes_into(target, param) || body_indexes_into(index, param)
+    crate::uniqueness_walk::any_node(node, |n| {
+        if let Node::IndexExpression { target, index, .. } = n {
+            matches!(target.as_ref(), Node::Identifier { name, .. } if name == param)
+                && matches!(index.as_ref(), Node::IntegerLiteral { value: 0, .. })
+        } else {
+            false
         }
-        Node::Block { stmts, .. } => stmts.iter().any(|s| body_indexes_into(s, param)),
-        Node::ReturnStatement { value: Some(e), .. } => body_indexes_into(e, param),
-        Node::ExpressionStatement { expr, .. } => body_indexes_into(expr, param),
-        Node::LetStatement { value, .. } => body_indexes_into(value, param),
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            body_indexes_into(condition, param)
-                || body_indexes_into(consequence, param)
-                || alternative
-                    .as_ref()
-                    .is_some_and(|a| body_indexes_into(a, param))
-        }
-        _ => false,
-    }
+    })
 }
 
 /// `for x in p` — iterating over `p` assumes it is non-empty when the body
 /// has observable side-effects (i.e., the programmer expects it to run).
 fn body_iterates(node: &Node, param: &str) -> bool {
-    match node {
-        Node::ForInStatement { iterable, .. } => {
-            matches!(iterable.as_ref(), Node::Identifier { name, .. } if name == param)
-        }
-        Node::Block { stmts, .. } => stmts.iter().any(|s| body_iterates(s, param)),
-        Node::IfStatement {
-            consequence,
-            alternative,
-            ..
-        } => {
-            body_iterates(consequence, param)
-                || alternative
-                    .as_ref()
-                    .is_some_and(|a| body_iterates(a, param))
-        }
-        Node::WhileStatement { body, .. } => body_iterates(body, param),
-        _ => false,
-    }
+    crate::uniqueness_walk::any_node(node, |n| {
+        matches!(n, Node::ForInStatement { iterable, .. }
+            if matches!(iterable.as_ref(), Node::Identifier { name, .. } if name == param))
+    })
 }
 
 /// `p.field` — field access on `p` implies `p` must not be null.
 fn body_accesses_field(node: &Node, param: &str) -> bool {
-    match node {
-        Node::FieldAccess { target, .. } => {
+    crate::uniqueness_walk::any_node(node, |n| match n {
+        Node::FieldAccess { target, .. } | Node::FieldAssignment { target, .. } => {
             matches!(target.as_ref(), Node::Identifier { name, .. } if name == param)
         }
-        Node::FieldAssignment { target, value, .. } => {
-            body_accesses_field(target, param) || body_accesses_field(value, param)
-        }
-        Node::Block { stmts, .. } => stmts.iter().any(|s| body_accesses_field(s, param)),
-        Node::ReturnStatement { value: Some(e), .. } => body_accesses_field(e, param),
-        Node::ExpressionStatement { expr, .. } => body_accesses_field(expr, param),
-        Node::LetStatement { value, .. } => body_accesses_field(value, param),
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            body_accesses_field(condition, param)
-                || body_accesses_field(consequence, param)
-                || alternative
-                    .as_ref()
-                    .is_some_and(|a| body_accesses_field(a, param))
-        }
-        Node::CallExpression {
-            function,
-            arguments,
-            ..
-        } => {
-            body_accesses_field(function, param)
-                || arguments.iter().any(|a| body_accesses_field(a, param))
-        }
-        Node::InfixExpression { left, right, .. } => {
-            body_accesses_field(left, param) || body_accesses_field(right, param)
-        }
         _ => false,
-    }
+    })
 }
 
 /// Detect `while ... < p`, `while ... <= p`, `for i in 0..p` — contexts
 /// where `p` serves as a loop bound and must be > 0 to be useful.
 fn body_uses_as_loop_bound(node: &Node, param: &str) -> bool {
-    match node {
-        Node::WhileStatement { condition, .. } => is_upper_bound_for(condition, param),
-        Node::Block { stmts, .. } => stmts.iter().any(|s| body_uses_as_loop_bound(s, param)),
-        Node::IfStatement {
-            consequence,
-            alternative,
-            ..
-        } => {
-            body_uses_as_loop_bound(consequence, param)
-                || alternative
-                    .as_ref()
-                    .is_some_and(|a| body_uses_as_loop_bound(a, param))
+    crate::uniqueness_walk::any_node(node, |n| {
+        if let Node::WhileStatement { condition, .. } = n {
+            is_upper_bound_for(condition, param)
+        } else {
+            false
         }
-        _ => false,
-    }
+    })
 }
 
 /// `expr < p` or `expr <= p` — `p` is the upper bound of the comparison.
@@ -950,5 +858,117 @@ mod new_inference_tests {
                 f.ensures
             );
         }
+    }
+
+    #[test]
+    fn division_inside_while_loop_infers_nonzero() {
+        let src = r#"fn loop_div(int a, int b) -> int {
+            let total = 0;
+            while total < 100 {
+                total = total + a / b;
+            }
+            return total;
+        }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let f = inferred
+            .iter()
+            .find(|c| c.function_name == "loop_div")
+            .expect("expected inferred contracts for loop_div");
+        assert!(
+            f.requires.iter().any(|r| r.contains("b != 0")),
+            "division inside while body must trigger requires b != 0; got: {:?}",
+            f.requires
+        );
+    }
+
+    #[test]
+    fn division_inside_for_loop_infers_nonzero() {
+        let src = r#"struct IntArr { int val }
+fn avg(IntArr arr, int n) -> int {
+    let total = 0;
+    for x in arr {
+        total = total + x / n;
+    }
+    return total;
+}"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let f = inferred
+            .iter()
+            .find(|c| c.function_name == "avg")
+            .expect("expected inferred contracts for avg");
+        assert!(
+            f.requires.iter().any(|r| r.contains("n != 0")),
+            "division inside for body must trigger requires n != 0; got: {:?}",
+            f.requires
+        );
+    }
+
+    #[test]
+    fn field_access_inside_while_loop_infers_not_null() {
+        let src = r#"struct Foo { int x }
+fn sum_field(Foo f) -> int {
+    let total = 0;
+    while total < 10 {
+        total = total + f.x;
+    }
+    return total;
+}"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let ic = inferred
+            .iter()
+            .find(|c| c.function_name == "sum_field")
+            .expect("expected inferred contracts for sum_field");
+        assert!(
+            ic.requires.iter().any(|r| r.contains("f != null")),
+            "field access inside while body must trigger requires f != null; got: {:?}",
+            ic.requires
+        );
+    }
+
+    #[test]
+    fn indexing_inside_while_loop_infers_len() {
+        let src = r#"fn first_in_loop(int arr) -> int {
+            let i = 0;
+            while i < 10 {
+                let v = arr[0];
+                i = i + 1;
+            }
+            return 0;
+        }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let f = inferred
+            .iter()
+            .find(|c| c.function_name == "first_in_loop")
+            .expect("expected inferred contracts for first_in_loop");
+        assert!(
+            f.requires.iter().any(|r| r.contains("len(arr) > 0")),
+            "indexing arr[0] inside while body must trigger requires len(arr) > 0; got: {:?}",
+            f.requires
+        );
+    }
+
+    #[test]
+    fn nested_while_loop_bound_detected() {
+        let src = r#"fn nested_bound(int n) {
+            while true {
+                let i = 0;
+                while i < n { i = i + 1; }
+            }
+        }"#;
+        let (prog, _) = parse(src);
+        let inferred = infer_program(&prog);
+        let f = inferred
+            .iter()
+            .find(|c| c.function_name == "nested_bound")
+            .expect("expected inferred contracts for nested_bound");
+        assert!(
+            f.requires.iter().any(|r| r.contains("n > 0")),
+            "nested while i < n must trigger requires n > 0; got: {:?}",
+            f.requires
+        );
     }
 }
