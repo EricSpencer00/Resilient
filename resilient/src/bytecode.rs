@@ -198,6 +198,25 @@ pub enum Op {
     /// Field names live in the constant pool as `Value::String` so
     /// `Op` stays `Copy` and `sizeof::<Op>() <= 8`.
     StructLiteral { name_const: u16, field_count: u16 },
+    /// Construct an enum variant with a tuple payload.
+    /// `type_const` and `variant_const` index into the constant pool
+    /// (both `Value::String`). `arity` values are popped from the stack
+    /// to form the tuple payload. Unit variants (arity == 0) are also
+    /// supported.
+    MakeEnumTuple {
+        type_const: u16,
+        variant_const: u16,
+        arity: u16,
+    },
+    /// Construct an enum variant with named-field payload.
+    /// Stack layout matches `StructLiteral`: `field_count` pairs of
+    /// (key-string, value) are on the stack. `type_const` and
+    /// `variant_const` index into the constant pool.
+    MakeEnumNamed {
+        type_const: u16,
+        variant_const: u16,
+        field_count: u16,
+    },
     /// RES-335: pop a `Value::Struct`, push the value of the field
     /// whose name is `chunk.constants[name_const]` (a `Value::String`).
     /// Missing field surfaces as `VmError::UnknownField`.

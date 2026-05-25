@@ -247,6 +247,24 @@ fn write_op(
         } => write!(out, "CallMethod method={} arity={}", method_const, arity)?,
         Op::EnterTry(idx) => write!(out, "EnterTry handler_table={}", idx)?,
         Op::ExitTry => write!(out, "ExitTry")?,
+        Op::MakeEnumTuple {
+            type_const,
+            variant_const,
+            arity,
+        } => write!(
+            out,
+            "MakeEnumTuple type={} variant={} arity={}",
+            type_const, variant_const, arity
+        )?,
+        Op::MakeEnumNamed {
+            type_const,
+            variant_const,
+            field_count,
+        } => write!(
+            out,
+            "MakeEnumNamed type={} variant={} fields={}",
+            type_const, variant_const, field_count
+        )?,
     }
     Ok(())
 }
