@@ -38546,6 +38546,24 @@ mod tests {
     }
 
     #[test]
+    fn typecheck_rejects_string_plus_array() {
+        let err = typecheck_src(r#"let s = "arr: " + [1, 2, 3];"#).unwrap_err();
+        assert!(
+            err.contains("cannot concatenate string with"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_string_plus_primitives() {
+        typecheck_src(r#"let a = "x=" + 42;"#).unwrap();
+        typecheck_src(r#"let b = "pi=" + 3.14;"#).unwrap();
+        typecheck_src(r#"let c = "ok=" + true;"#).unwrap();
+        typecheck_src(r#"let d = "hi " + "world";"#).unwrap();
+    }
+
+    #[test]
     fn typecheck_rejects_try_on_non_result() {
         let err = typecheck_src("let x = 42?;").unwrap_err();
         assert!(err.contains("? operator"), "unexpected: {}", err);

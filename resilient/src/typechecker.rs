@@ -7670,9 +7670,31 @@ impl TypeChecker {
                 match *operator {
                     "+" => {
                         // String-plus-primitive coercion (RES-008): if
-                        // either side is a string, the result is a string.
+                        // either side is a string AND the other side is a
+                        // stringifiable primitive, the result is a string.
+                        // Only Int, Float, Bool, String, and Any are
+                        // coercible — compound types (Array, Struct, etc.)
+                        // must use explicit to_string() conversion.
+                        let can_coerce_to_string = |t: &Type| {
+                            matches!(
+                                t,
+                                Type::String | Type::Int | Type::Float | Type::Bool | Type::Any
+                            ) || is_pinned_int(t)
+                        };
                         if left_type == Type::String || right_type == Type::String {
-                            return Ok(Type::String);
+                            if can_coerce_to_string(&left_type) && can_coerce_to_string(&right_type)
+                            {
+                                return Ok(Type::String);
+                            }
+                            let bad = if left_type == Type::String {
+                                &right_type
+                            } else {
+                                &left_type
+                            };
+                            return Err(format!(
+                                "cannot concatenate string with {} — use to_string() for explicit conversion",
+                                bad
+                            ));
                         }
                         // Array concat.
                         if compatible(&left_type, &Type::Array)
