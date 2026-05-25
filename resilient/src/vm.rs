@@ -1019,44 +1019,51 @@ fn run_inner(
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
                 let target = stack.pop().ok_or(VmError::EmptyStack)?;
-                let Value::Int(idx) = idx_val else {
-                    return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
-                };
-                match target {
-                    Value::Array(mut items) => {
-                        let len = items.len() as i64;
-                        let resolved = if idx < 0 { idx + len } else { idx };
-                        if resolved < 0 || resolved >= len {
-                            return Err(VmError::ArrayIndexOutOfBounds {
-                                index: idx,
-                                len: items.len(),
-                            });
+                if let Value::Map(m) = target {
+                    let mk =
+                        crate::MapKey::from_value(&idx_val).map_err(VmError::BuiltinCallFailed)?;
+                    let v = m.get(&mk).cloned().unwrap_or(Value::Void);
+                    stack.push(v);
+                } else {
+                    let Value::Int(idx) = idx_val else {
+                        return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
+                    };
+                    match target {
+                        Value::Array(mut items) => {
+                            let len = items.len() as i64;
+                            let resolved = if idx < 0 { idx + len } else { idx };
+                            if resolved < 0 || resolved >= len {
+                                return Err(VmError::ArrayIndexOutOfBounds {
+                                    index: idx,
+                                    len: items.len(),
+                                });
+                            }
+                            stack.push(items.swap_remove(resolved as usize));
                         }
-                        stack.push(items.swap_remove(resolved as usize));
-                    }
-                    Value::Tuple(mut items) => {
-                        if idx < 0 || (idx as usize) >= items.len() {
-                            return Err(VmError::ArrayIndexOutOfBounds {
-                                index: idx,
-                                len: items.len(),
-                            });
+                        Value::Tuple(mut items) => {
+                            if idx < 0 || (idx as usize) >= items.len() {
+                                return Err(VmError::ArrayIndexOutOfBounds {
+                                    index: idx,
+                                    len: items.len(),
+                                });
+                            }
+                            stack.push(items.swap_remove(idx as usize));
                         }
-                        stack.push(items.swap_remove(idx as usize));
-                    }
-                    Value::String(s) => {
-                        let len = s.chars().count();
-                        let len_i = len as i64;
-                        let resolved = if idx < 0 { idx + len_i } else { idx };
-                        if resolved < 0 || resolved >= len_i {
-                            return Err(VmError::ArrayIndexOutOfBounds { index: idx, len });
+                        Value::String(s) => {
+                            let len = s.chars().count();
+                            let len_i = len as i64;
+                            let resolved = if idx < 0 { idx + len_i } else { idx };
+                            if resolved < 0 || resolved >= len_i {
+                                return Err(VmError::ArrayIndexOutOfBounds { index: idx, len });
+                            }
+                            let ch = s
+                                .chars()
+                                .nth(resolved as usize)
+                                .expect("index already bounds-checked");
+                            stack.push(Value::String(ch.to_string()));
                         }
-                        let ch = s
-                            .chars()
-                            .nth(resolved as usize)
-                            .expect("index already bounds-checked");
-                        stack.push(Value::String(ch.to_string()));
+                        _ => return Err(VmError::TypeMismatch("LoadIndex (non-indexable target)")),
                     }
-                    _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
                 }
             }
             // RES-407: emitted only when `bounds_check::check_array_bounds`
@@ -1085,28 +1092,34 @@ fn run_inner(
             }
             Op::StoreIndex => {
                 // Stack layout on entry (top → bottom):
-                //   [v, idx, arr, ...]
+                //   [v, idx, container, ...]
                 // Pop in reverse-push order.
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
-                let arr_val = stack.pop().ok_or(VmError::EmptyStack)?;
-                let Value::Int(idx) = idx_val else {
-                    return Err(VmError::TypeMismatch("StoreIndex (non-int index)"));
-                };
-                let Value::Array(mut items) = arr_val else {
-                    return Err(VmError::TypeMismatch("StoreIndex (non-array target)"));
-                };
-                if idx < 0 || (idx as usize) >= items.len() {
-                    return Err(VmError::ArrayIndexOutOfBounds {
-                        index: idx,
-                        len: items.len(),
-                    });
+                let container = stack.pop().ok_or(VmError::EmptyStack)?;
+                if let Value::Map(mut m) = container {
+                    let mk =
+                        crate::MapKey::from_value(&idx_val).map_err(VmError::BuiltinCallFailed)?;
+                    m.insert(mk, v);
+                    stack.push(Value::Map(m));
+                } else {
+                    let Value::Int(idx) = idx_val else {
+                        return Err(VmError::TypeMismatch("StoreIndex (non-int index)"));
+                    };
+                    let Value::Array(mut items) = container else {
+                        return Err(VmError::TypeMismatch("StoreIndex (non-array target)"));
+                    };
+                    let len = items.len() as i64;
+                    let resolved = if idx < 0 { idx + len } else { idx };
+                    if resolved < 0 || resolved >= len {
+                        return Err(VmError::ArrayIndexOutOfBounds {
+                            index: idx,
+                            len: items.len(),
+                        });
+                    }
+                    items[resolved as usize] = v;
+                    stack.push(Value::Array(items));
                 }
-                items[idx as usize] = v;
-                // Push the modified array back so the enclosing
-                // compile pattern (`StoreLocal` after `StoreIndex`)
-                // can write it into the local slot.
-                stack.push(Value::Array(items));
             }
             // ---- RES-335: struct ops ----
             Op::StructLiteral {
@@ -5161,5 +5174,42 @@ mod tests {
     fn vm_load_index_negative_string_out_of_range() {
         let result = compile_run(r#"let s = "hi"; s[-3]"#);
         assert!(result.is_err(), "s[-3] on 2-char string should error");
+    }
+
+    #[test]
+    fn vm_load_index_map_string_key() {
+        let result = compile_run(r#"let m = {"a" -> 42, "b" -> 99}; m["a"]"#).unwrap();
+        assert_int(result, 42);
+    }
+
+    #[test]
+    fn vm_load_index_map_int_key() {
+        let result = compile_run(r#"let m = {1 -> "one", 2 -> "two"}; m[1]"#).unwrap();
+        match result {
+            Value::String(s) => assert_eq!(s, "one"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_load_index_map_missing_key_returns_void() {
+        let result = compile_run(r#"let m = {"a" -> 1}; m["missing"]"#).unwrap();
+        assert!(
+            matches!(result, Value::Void),
+            "missing key should return Void, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn vm_store_index_map_string_key() {
+        let result = compile_run(r#"let mut m = {"x" -> 0}; m["x"] = 77; m["x"]"#).unwrap();
+        assert_int(result, 77);
+    }
+
+    #[test]
+    fn vm_store_index_map_insert_new_key() {
+        let result = compile_run(r#"let mut m = {"a" -> 1}; m["b"] = 2; m["b"]"#).unwrap();
+        assert_int(result, 2);
     }
 }
