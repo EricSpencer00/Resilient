@@ -774,6 +774,7 @@ fn run_inner(
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x < y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x < y)),
+                    (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x < y)),
                     _ => return Err(VmError::TypeMismatch("Lt")),
                 }
             }
@@ -783,6 +784,7 @@ fn run_inner(
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x <= y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x <= y)),
+                    (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x <= y)),
                     _ => return Err(VmError::TypeMismatch("Le")),
                 }
             }
@@ -792,6 +794,7 @@ fn run_inner(
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x > y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x > y)),
+                    (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x > y)),
                     _ => return Err(VmError::TypeMismatch("Gt")),
                 }
             }
@@ -801,6 +804,7 @@ fn run_inner(
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x >= y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x >= y)),
+                    (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x >= y)),
                     _ => return Err(VmError::TypeMismatch("Ge")),
                 }
             }
@@ -1846,6 +1850,7 @@ fn h_lt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let result = match (a, b) {
         (Value::Int(x), Value::Int(y)) => x < y,
         (Value::Float(x), Value::Float(y)) => x < y,
+        (Value::String(ref x), Value::String(ref y)) => x < y,
         _ => return Err(VmError::TypeMismatch("Lt")),
     };
     state.stack.push(Value::Bool(result));
@@ -1859,6 +1864,7 @@ fn h_le(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let result = match (a, b) {
         (Value::Int(x), Value::Int(y)) => x <= y,
         (Value::Float(x), Value::Float(y)) => x <= y,
+        (Value::String(ref x), Value::String(ref y)) => x <= y,
         _ => return Err(VmError::TypeMismatch("Le")),
     };
     state.stack.push(Value::Bool(result));
@@ -1872,6 +1878,7 @@ fn h_gt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let result = match (a, b) {
         (Value::Int(x), Value::Int(y)) => x > y,
         (Value::Float(x), Value::Float(y)) => x > y,
+        (Value::String(ref x), Value::String(ref y)) => x > y,
         _ => return Err(VmError::TypeMismatch("Gt")),
     };
     state.stack.push(Value::Bool(result));
@@ -1885,6 +1892,7 @@ fn h_ge(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let result = match (a, b) {
         (Value::Int(x), Value::Int(y)) => x >= y,
         (Value::Float(x), Value::Float(y)) => x >= y,
+        (Value::String(ref x), Value::String(ref y)) => x >= y,
         _ => return Err(VmError::TypeMismatch("Ge")),
     };
     state.stack.push(Value::Bool(result));
@@ -4415,6 +4423,66 @@ mod tests {
         );
         match run(&prog).unwrap() {
             Value::Bool(b) => assert!(b),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_lt() {
+        let prog = const_program(
+            &[Value::String("abc".into()), Value::String("def".into())],
+            &[Op::Const(0), Op::Const(1), Op::Lt, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "\"abc\" < \"def\" should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_gt() {
+        let prog = const_program(
+            &[Value::String("def".into()), Value::String("abc".into())],
+            &[Op::Const(0), Op::Const(1), Op::Gt, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "\"def\" > \"abc\" should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_le_equal() {
+        let prog = const_program(
+            &[Value::String("abc".into()), Value::String("abc".into())],
+            &[Op::Const(0), Op::Const(1), Op::Le, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "\"abc\" <= \"abc\" should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_ge_equal() {
+        let prog = const_program(
+            &[Value::String("abc".into()), Value::String("abc".into())],
+            &[Op::Const(0), Op::Const(1), Op::Ge, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "\"abc\" >= \"abc\" should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_lt_false() {
+        let prog = const_program(
+            &[Value::String("xyz".into()), Value::String("abc".into())],
+            &[Op::Const(0), Op::Const(1), Op::Lt, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(!b, "\"xyz\" < \"abc\" should be false"),
             other => panic!("expected Bool, got {:?}", other),
         }
     }
