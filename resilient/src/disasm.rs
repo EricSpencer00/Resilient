@@ -229,6 +229,8 @@ fn write_op(
         Op::CallClosure { arity } => write!(out, "CallClosure arity={}", arity)?,
         Op::TryUnwrap => write!(out, "TryUnwrap")?,
         Op::IterPrepare => write!(out, "IterPrepare")?,
+        Op::LoadGlobal(idx) => write!(out, "LoadGlobal {}", idx)?,
+        Op::StoreGlobal(idx) => write!(out, "StoreGlobal {}", idx)?,
     }
     Ok(())
 }

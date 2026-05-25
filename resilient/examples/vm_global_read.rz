@@ -1,0 +1,7 @@
+let greeting = "hello";
+
+fn say() {
+    println(greeting);
+}
+
+say();

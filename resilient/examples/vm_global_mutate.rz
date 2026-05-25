@@ -1,0 +1,10 @@
+let mut counter = 0;
+
+fn inc() {
+    counter = counter + 1;
+}
+
+inc();
+inc();
+inc();
+println(counter);
