@@ -69,6 +69,17 @@ fn remove_unreachable(chunk: &mut Chunk) {
             reachable[t] = true;
             worklist.push(t);
         }
+        // RES-2544: EnterTry handler PCs are reachable via exception dispatch.
+        if let Op::EnterTry(handler_idx) = op
+            && let Some(entry) = chunk.try_handlers.get(handler_idx as usize)
+        {
+            for arm in &entry.arms {
+                if arm.handler_pc < n && !reachable[arm.handler_pc] {
+                    reachable[arm.handler_pc] = true;
+                    worklist.push(arm.handler_pc);
+                }
+            }
+        }
         // Fall-through: everything except unconditional terminators.
         // RES-2514: TailCall and AssertFail are also terminators that
         // never fall through to the next instruction.
@@ -135,6 +146,13 @@ fn remove_unreachable(chunk: &mut Chunk) {
             Op::JumpIfFalse(o) => *o = offset,
             Op::JumpIfTrue(o) => *o = offset,
             _ => unreachable!("is_jump_op guards the match"),
+        }
+    }
+
+    // RES-2544: remap try_handler PCs through old_to_new.
+    for entry in &mut chunk.try_handlers {
+        for arm in &mut entry.arms {
+            arm.handler_pc = old_to_new[arm.handler_pc];
         }
     }
 

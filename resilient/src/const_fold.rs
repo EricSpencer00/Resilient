@@ -309,6 +309,13 @@ fn fold_pass(chunk: &mut Chunk) -> Result<bool, FoldError> {
         }
     }
 
+    // RES-2544: remap try_handler PCs through old_to_new.
+    for entry in &mut chunk.try_handlers {
+        for arm in &mut entry.arms {
+            arm.handler_pc = old_to_new[arm.handler_pc];
+        }
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
     Ok(true)

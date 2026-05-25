@@ -245,6 +245,8 @@ fn write_op(
             method_const,
             arity,
         } => write!(out, "CallMethod method={} arity={}", method_const, arity)?,
+        Op::EnterTry(idx) => write!(out, "EnterTry handler_table={}", idx)?,
+        Op::ExitTry => write!(out, "ExitTry")?,
     }
     Ok(())
 }
@@ -333,6 +335,7 @@ mod tests {
                 chunk: mk_chunk(vec![Op::Return], vec![], vec![1]),
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
+                fails: Box::default(),
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -361,6 +364,7 @@ mod tests {
                     ),
                     local_count: 1,
                     upvalue_source_slots: Box::default(),
+                    fails: Box::default(),
                 },
                 Function {
                     name: "beta".to_string(),
@@ -368,6 +372,7 @@ mod tests {
                     chunk: mk_chunk(vec![Op::Return], vec![], vec![1]),
                     local_count: 2,
                     upvalue_source_slots: Box::default(),
+                    fails: Box::default(),
                 },
             ],
             #[cfg(feature = "ffi")]
@@ -422,6 +427,7 @@ mod tests {
                 ),
                 local_count: 1,
                 upvalue_source_slots: Box::default(),
+                fails: Box::default(),
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -500,6 +506,7 @@ mod tests {
                 chunk: Chunk::new(),
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
+                fails: Box::default(),
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
