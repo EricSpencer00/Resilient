@@ -15023,10 +15023,8 @@ fn builtin_array_range(args: &[Value]) -> RResult<Value> {
             if start >= end {
                 return Ok(Value::Array(Vec::new()));
             }
-            // i64 difference fits in usize on 64-bit platforms; clamp
-            // to a sensible upper bound to avoid OOM on absurd inputs.
-            const MAX_RANGE: i64 = 1_000_000_000;
-            let span = end - start;
+            const MAX_RANGE: i128 = 1_000_000_000;
+            let span = (*end as i128) - (*start as i128);
             if span > MAX_RANGE {
                 return Err(format!(
                     "array_range: range {} too large (max {})",
@@ -46349,6 +46347,39 @@ mod tests {
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
+    }
+
+    #[test]
+    fn array_range_overflow_is_error_not_panic() {
+        let err = builtin_array_range(&[
+            Value::Int(-5_000_000_000_000_000_000),
+            Value::Int(5_000_000_000_000_000_000),
+        ])
+        .unwrap_err();
+        assert!(err.contains("too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_range_extreme_negative_to_positive_is_error() {
+        let err = builtin_array_range(&[Value::Int(i64::MIN), Value::Int(i64::MAX)]).unwrap_err();
+        assert!(err.contains("too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_range_normal_still_works() {
+        match builtin_array_range(&[Value::Int(3), Value::Int(7)]).unwrap() {
+            Value::Array(items) => {
+                let ints: Vec<i64> = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n,
+                        _ => panic!("non-int"),
+                    })
+                    .collect();
+                assert_eq!(ints, vec![3, 4, 5, 6]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
     }
 
     // ---------- RES-522: array_indices ----------

@@ -1,8 +1,8 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2468-guard-string-repeat-oom",
-      "claimed_at": "2026-05-25T05:45:56Z"
+      "branch": "res-2492-array-range-overflow-panic",
+      "claimed_at": "2026-05-25T08:30:00Z"
     }
   }
 }
