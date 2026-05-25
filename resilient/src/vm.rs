@@ -764,28 +764,12 @@ fn run_inner(
             Op::Eq => {
                 let b = stack.pop().ok_or(VmError::EmptyStack)?;
                 let a = stack.pop().ok_or(VmError::EmptyStack)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x == y)),
-                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x == y)),
-                    (Value::Bool(x), Value::Bool(y)) => stack.push(Value::Bool(x == y)),
-                    (Value::String(ref x), Value::String(ref y)) => {
-                        stack.push(Value::Bool(x == y));
-                    }
-                    _ => return Err(VmError::TypeMismatch("Eq")),
-                }
+                stack.push(Value::Bool(vm_values_eq(&a, &b)));
             }
             Op::Neq => {
                 let b = stack.pop().ok_or(VmError::EmptyStack)?;
                 let a = stack.pop().ok_or(VmError::EmptyStack)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x != y)),
-                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x != y)),
-                    (Value::Bool(x), Value::Bool(y)) => stack.push(Value::Bool(x != y)),
-                    (Value::String(ref x), Value::String(ref y)) => {
-                        stack.push(Value::Bool(x != y));
-                    }
-                    _ => return Err(VmError::TypeMismatch("Neq")),
-                }
+                stack.push(Value::Bool(!vm_values_eq(&a, &b)));
             }
             Op::Lt => {
                 let b = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1302,6 +1286,44 @@ fn vm_push_stringified(buf: &mut String, v: &Value) {
         Value::Float(f) => buf.push_str(&f.to_string()),
         Value::Bool(b) => buf.push_str(&b.to_string()),
         _ => unreachable!(),
+    }
+}
+
+fn vm_values_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Void, Value::Void) => true,
+        (Value::Array(x), Value::Array(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| vm_values_eq(a, b))
+        }
+        (
+            Value::Struct {
+                name: ln,
+                fields: lf,
+            },
+            Value::Struct {
+                name: rn,
+                fields: rf,
+            },
+        ) => {
+            ln == rn
+                && lf.len() == rf.len()
+                && lf.iter().all(|(name, lv)| {
+                    rf.iter()
+                        .find(|(rn, _)| rn == name)
+                        .is_some_and(|(_, rv)| vm_values_eq(lv, rv))
+                })
+        }
+        (Value::Map(lm), Value::Map(rm)) => {
+            lm.len() == rm.len()
+                && lm
+                    .iter()
+                    .all(|(k, lv)| rm.get(k).is_some_and(|rv| vm_values_eq(lv, rv)))
+        }
+        _ => false,
     }
 }
 
@@ -1877,14 +1899,7 @@ fn h_inc_local(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 fn h_eq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let result = match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::String(ref x), Value::String(ref y)) => x == y,
-        _ => return Err(VmError::TypeMismatch("Eq")),
-    };
-    state.stack.push(Value::Bool(result));
+    state.stack.push(Value::Bool(vm_values_eq(&a, &b)));
     Ok(Step::Continue)
 }
 
@@ -1892,14 +1907,7 @@ fn h_eq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 fn h_neq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let result = match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x != y,
-        (Value::Float(x), Value::Float(y)) => x != y,
-        (Value::Bool(x), Value::Bool(y)) => x != y,
-        (Value::String(ref x), Value::String(ref y)) => x != y,
-        _ => return Err(VmError::TypeMismatch("Neq")),
-    };
-    state.stack.push(Value::Bool(result));
+    state.stack.push(Value::Bool(!vm_values_eq(&a, &b)));
     Ok(Step::Continue)
 }
 
@@ -2437,6 +2445,7 @@ fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MapKey;
     use crate::bytecode::{Op, Program};
 
     fn const_program(values: &[Value], code: &[Op]) -> Program {
@@ -4644,6 +4653,177 @@ mod tests {
                 assert!(msg.contains("must be >= 0"), "got: {}", msg);
             }
             other => panic!("expected BuiltinCallFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_eq_arrays_equal() {
+        let prog = const_program(
+            &[
+                Value::Array(vec![Value::Int(1), Value::Int(2)]),
+                Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            ],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "[1,2] == [1,2] should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_neq_arrays_different() {
+        let prog = const_program(
+            &[
+                Value::Array(vec![Value::Int(1), Value::Int(2)]),
+                Value::Array(vec![Value::Int(1), Value::Int(3)]),
+            ],
+            &[Op::Const(0), Op::Const(1), Op::Neq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "[1,2] != [1,3] should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_eq_arrays_different_length() {
+        let prog = const_program(
+            &[
+                Value::Array(vec![Value::Int(1)]),
+                Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            ],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(!b, "[1] == [1,2] should be false"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_eq_tuples_equal() {
+        let prog = const_program(
+            &[
+                Value::Tuple(vec![Value::Int(1), Value::String("a".into())]),
+                Value::Tuple(vec![Value::Int(1), Value::String("a".into())]),
+            ],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "(1,\"a\") == (1,\"a\") should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_eq_nested_arrays() {
+        let prog = const_program(
+            &[
+                Value::Array(vec![
+                    Value::Array(vec![Value::Int(1), Value::Int(2)]),
+                    Value::Int(3),
+                ]),
+                Value::Array(vec![
+                    Value::Array(vec![Value::Int(1), Value::Int(2)]),
+                    Value::Int(3),
+                ]),
+            ],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "nested arrays should be structurally equal"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_eq_structs_equal() {
+        let prog = const_program(
+            &[
+                Value::Struct {
+                    name: "Point".into(),
+                    fields: vec![("x".into(), Value::Int(1)), ("y".into(), Value::Int(2))],
+                },
+                Value::Struct {
+                    name: "Point".into(),
+                    fields: vec![("x".into(), Value::Int(1)), ("y".into(), Value::Int(2))],
+                },
+            ],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "identical structs should be equal"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_neq_structs_different_name() {
+        let prog = const_program(
+            &[
+                Value::Struct {
+                    name: "Point".into(),
+                    fields: vec![("x".into(), Value::Int(1))],
+                },
+                Value::Struct {
+                    name: "Vec2".into(),
+                    fields: vec![("x".into(), Value::Int(1))],
+                },
+            ],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(!b, "structs with different names should not be equal"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_eq_mismatched_types_is_false() {
+        let prog = const_program(
+            &[Value::Int(1), Value::String("1".into())],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(!b, "Int vs String should be false, not error"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_eq_map_equal() {
+        use std::collections::HashMap;
+        let mut m1 = HashMap::new();
+        m1.insert(MapKey::Str("a".into()), Value::Int(1));
+        m1.insert(MapKey::Int(2), Value::Bool(true));
+        let mut m2 = HashMap::new();
+        m2.insert(MapKey::Int(2), Value::Bool(true));
+        m2.insert(MapKey::Str("a".into()), Value::Int(1));
+        let prog = const_program(
+            &[Value::Map(m1), Value::Map(m2)],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "maps with same entries should be equal"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_neq_map_different_value() {
+        use std::collections::HashMap;
+        let mut m1 = HashMap::new();
+        m1.insert(MapKey::Str("a".into()), Value::Int(1));
+        let mut m2 = HashMap::new();
+        m2.insert(MapKey::Str("a".into()), Value::Int(2));
+        let prog = const_program(
+            &[Value::Map(m1), Value::Map(m2)],
+            &[Op::Const(0), Op::Const(1), Op::Neq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "maps with different values should not be equal"),
+            other => panic!("expected Bool, got {:?}", other),
         }
     }
 }
