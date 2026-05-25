@@ -118,6 +118,100 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
                 visit(body, f);
             }
         }
+        // RES-2510: the following were missing, causing visitors to
+        // silently skip sub-nodes inside these constructs.
+        Node::FunctionLiteral { body, .. } => visit(body, f),
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            visit(condition, f);
+            if let Some(m) = message {
+                visit(m, f);
+            }
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            visit(target, f);
+            visit(index, f);
+            visit(value, f);
+        }
+        Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
+            visit(value, f);
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                visit(k, f);
+                visit(v, f);
+            }
+        }
+        Node::SetLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
+            for i in items {
+                visit(i, f);
+            }
+        }
+        Node::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                visit(v, f);
+            }
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            visit(target, f);
+            if let Some(l) = lo {
+                visit(l, f);
+            }
+            if let Some(h) = hi {
+                visit(h, f);
+            }
+        }
+        Node::Range { lo, hi, .. } => {
+            visit(lo, f);
+            visit(hi, f);
+        }
+        Node::TupleIndex { tuple, .. } => visit(tuple, f),
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    visit(expr, f);
+                }
+            }
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for s in body {
+                visit(s, f);
+            }
+            for (_, handler_body) in handlers {
+                for s in handler_body {
+                    visit(s, f);
+                }
+            }
+        }
+        Node::TryExpression { expr, .. } => visit(expr, f),
+        Node::NewtypeConstruct { value, .. } | Node::NamedArg { value, .. } => visit(value, f),
+        Node::OptionalChain { object, access, .. } => {
+            visit(object, f);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    visit(a, f);
+                }
+            }
+        }
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
+            visit(body, f);
+            for inv in invariants {
+                visit(inv, f);
+            }
+        }
+        Node::Quantifier { body, .. } => visit(body, f),
+        // Leaf nodes and declarations without expression children.
         _ => {}
     }
 }
@@ -222,6 +316,72 @@ fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
                         || any_node_inner(body, pred)
                 })
         }
+        Node::FunctionLiteral { body, .. } => any_node_inner(body, pred),
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            any_node_inner(condition, pred)
+                || message.as_ref().is_some_and(|m| any_node_inner(m, pred))
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            any_node_inner(target, pred)
+                || any_node_inner(index, pred)
+                || any_node_inner(value, pred)
+        }
+        Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
+            any_node_inner(value, pred)
+        }
+        Node::MapLiteral { entries, .. } => entries
+            .iter()
+            .any(|(k, v)| any_node_inner(k, pred) || any_node_inner(v, pred)),
+        Node::SetLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
+            items.iter().any(|i| any_node_inner(i, pred))
+        }
+        Node::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| any_node_inner(v, pred)),
+        Node::Slice { target, lo, hi, .. } => {
+            any_node_inner(target, pred)
+                || lo.as_ref().is_some_and(|l| any_node_inner(l, pred))
+                || hi.as_ref().is_some_and(|h| any_node_inner(h, pred))
+        }
+        Node::Range { lo, hi, .. } => any_node_inner(lo, pred) || any_node_inner(hi, pred),
+        Node::TupleIndex { tuple, .. } => any_node_inner(tuple, pred),
+        Node::InterpolatedString { parts, .. } => parts.iter().any(|part| {
+            if let crate::string_interp::StringPart::Expr(expr) = part {
+                any_node_inner(expr, pred)
+            } else {
+                false
+            }
+        }),
+        Node::TryCatch { body, handlers, .. } => {
+            body.iter().any(|s| any_node_inner(s, pred))
+                || handlers
+                    .iter()
+                    .any(|(_, hb)| hb.iter().any(|s| any_node_inner(s, pred)))
+        }
+        Node::TryExpression { expr, .. } => any_node_inner(expr, pred),
+        Node::NewtypeConstruct { value, .. } | Node::NamedArg { value, .. } => {
+            any_node_inner(value, pred)
+        }
+        Node::OptionalChain { object, access, .. } => {
+            any_node_inner(object, pred)
+                || if let crate::ChainAccess::Method(_, args) = access {
+                    args.iter().any(|a| any_node_inner(a, pred))
+                } else {
+                    false
+                }
+        }
+        Node::LiveBlock {
+            body, invariants, ..
+        } => any_node_inner(body, pred) || invariants.iter().any(|inv| any_node_inner(inv, pred)),
+        Node::Quantifier { body, .. } => any_node_inner(body, pred),
         _ => false,
     }
 }
