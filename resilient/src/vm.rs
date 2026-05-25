@@ -521,6 +521,15 @@ fn run_inner(
                     (Value::String(s1), Value::String(s2)) => {
                         stack.push(Value::String(s1 + &s2));
                     }
+                    (Value::String(mut s), ref rhs) if vm_can_stringify(rhs) => {
+                        vm_push_stringified(&mut s, rhs);
+                        stack.push(Value::String(s));
+                    }
+                    (ref lhs, Value::String(ref s)) if vm_can_stringify(lhs) => {
+                        let mut buf = vm_stringify(lhs);
+                        buf.push_str(s);
+                        stack.push(Value::String(buf));
+                    }
                     _ => return Err(VmError::TypeMismatch("Add")),
                 }
             }
@@ -1263,6 +1272,29 @@ fn constant_as_str<'a>(
     }
 }
 
+fn vm_can_stringify(v: &Value) -> bool {
+    matches!(v, Value::Int(_) | Value::Float(_) | Value::Bool(_))
+}
+
+fn vm_stringify(v: &Value) -> String {
+    match v {
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::String(s) => s.clone(),
+        _ => unreachable!(),
+    }
+}
+
+fn vm_push_stringified(buf: &mut String, v: &Value) {
+    match v {
+        Value::Int(i) => buf.push_str(&i.to_string()),
+        Value::Float(f) => buf.push_str(&f.to_string()),
+        Value::Bool(b) => buf.push_str(&b.to_string()),
+        _ => unreachable!(),
+    }
+}
+
 fn pop_two_ints(stack: &mut Vec<Value>, op_name: &'static str) -> Result<(i64, i64), VmError> {
     let b = stack.pop().ok_or(VmError::EmptyStack)?;
     let a = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1567,6 +1599,15 @@ fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         }
         (Value::String(s1), Value::String(s2)) => {
             state.stack.push(Value::String(s1 + &s2));
+        }
+        (Value::String(mut s), ref rhs) if vm_can_stringify(rhs) => {
+            vm_push_stringified(&mut s, rhs);
+            state.stack.push(Value::String(s));
+        }
+        (ref lhs, Value::String(ref s)) if vm_can_stringify(lhs) => {
+            let mut buf = vm_stringify(lhs);
+            buf.push_str(s);
+            state.stack.push(Value::String(buf));
         }
         _ => return Err(VmError::TypeMismatch("Add")),
     }
@@ -2485,13 +2526,15 @@ mod tests {
     }
 
     #[test]
-    fn type_mismatch_on_add_with_string_constant() {
+    fn int_plus_string_coerces() {
         let p = const_program(
             &[Value::Int(1), Value::String("x".into())],
             &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
         );
-        let err = run(&p).unwrap_err();
-        assert_eq!(err.kind(), &VmError::TypeMismatch("Add"));
+        match run(&p).unwrap() {
+            Value::String(s) => assert_eq!(s, "1x"),
+            other => panic!("expected String, got {:?}", other),
+        }
     }
 
     #[test]
@@ -3931,7 +3974,7 @@ mod tests {
     }
 
     #[test]
-    fn add_int_string_is_type_error() {
+    fn add_int_string_coerces_via_chunk() {
         use crate::bytecode::{Chunk, Program};
         let mut chunk = Chunk::new();
         let i = chunk.add_constant(Value::Int(1)).unwrap();
@@ -3944,11 +3987,10 @@ mod tests {
             main: chunk,
             functions: vec![],
         };
-        let err = run(&prog).unwrap_err();
-        assert!(
-            err.to_string().contains("type mismatch") || err.to_string().contains("Add"),
-            "expected type-mismatch error, got: {err}"
-        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, "1x"),
+            other => panic!("expected String, got {:?}", other),
+        }
     }
 
     // ── Interpolated string (compiler + VM) ──────────────────────────────────
@@ -4484,6 +4526,54 @@ mod tests {
         match run(&prog).unwrap() {
             Value::Bool(b) => assert!(!b, "\"xyz\" < \"abc\" should be false"),
             other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_concat_int() {
+        let prog = const_program(
+            &[Value::String("x".into()), Value::Int(5)],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, "x5"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_int_concat_string() {
+        let prog = const_program(
+            &[Value::Int(42), Value::String("!".into())],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, "42!"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_concat_float() {
+        let prog = const_program(
+            &[Value::String("val=".into()), Value::Float(2.5)],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, "val=2.5"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_string_concat_bool() {
+        let prog = const_program(
+            &[Value::String("b:".into()), Value::Bool(true)],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::String(s) => assert_eq!(s, "b:true"),
+            other => panic!("expected String, got {:?}", other),
         }
     }
 }
