@@ -255,6 +255,27 @@ pub enum Op {
     /// RES-2532: pop TOS and store into `locals[idx]` in the main frame.
     /// Lets function bodies write top-level `let mut` bindings.
     StoreGlobal(u16),
+    /// RES-2544: enter a try-catch block. Pushes a try-handler frame
+    /// onto the handler stack. `handler_table` indexes the chunk's
+    /// `try_handlers` side table.
+    EnterTry(u16),
+    /// RES-2544: exit a try-catch block (normal completion of try body).
+    /// Pops the topmost try-handler frame from the handler stack.
+    ExitTry,
+}
+
+/// RES-2544: one catch arm in a try-catch handler table.
+#[derive(Debug, Clone)]
+pub struct CatchArm {
+    pub variant: String,
+    pub handler_pc: usize,
+}
+
+/// RES-2544: try-catch handler table entry. Stored in `Chunk::try_handlers`
+/// and referenced by `Op::EnterTry(idx)`.
+#[derive(Debug, Clone)]
+pub struct TryHandlerEntry {
+    pub arms: Vec<CatchArm>,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
@@ -293,6 +314,8 @@ pub struct Chunk {
     /// path skips any allocation; `add_string_constant` already
     /// avoided the up-front clone for hits since RES-1419).
     pub(crate) string_idx: HashMap<String, u16>,
+    /// RES-2544: try-catch handler table. `EnterTry(idx)` indexes this.
+    pub try_handlers: Vec<TryHandlerEntry>,
 }
 
 /// RES-081: a compiled function. Parameters occupy the first `arity`
@@ -309,6 +332,10 @@ pub struct Function {
     /// was captured from. `source_slots[i]` is the caller-frame slot
     /// for upvalue `i`. Empty for non-closure functions.
     pub upvalue_source_slots: Box<[u16]>,
+    /// RES-2544: declared `fails` variant names. When the function is
+    /// called inside a `try` block, the VM injects a checked failure
+    /// for the first variant instead of running the body.
+    pub fails: Box<[String]>,
 }
 
 /// RES-081: top-level compile output. `main` is the entrypoint
@@ -365,6 +392,7 @@ impl Chunk {
             bool_idx: [None; 2],
             void_idx: None,
             string_idx: HashMap::with_capacity(cap / 4),
+            try_handlers: Vec::new(),
         }
     }
 
@@ -492,6 +520,24 @@ impl Chunk {
         self.string_idx.insert(owned.clone(), idx);
         self.constants.push(Value::String(owned));
         Ok(idx)
+    }
+
+    /// RES-2544: register a try-catch handler table. Returns the index
+    /// for `Op::EnterTry(idx)`. Handler PCs are set to 0 initially and
+    /// must be patched via `patch_try_handler` after compiling handlers.
+    pub fn add_try_handler(&mut self, arms: Vec<CatchArm>) -> Result<u16, CompileError> {
+        let idx = self.try_handlers.len();
+        if idx > u16::MAX as usize {
+            return Err(CompileError::InternalError("too many try-catch blocks"));
+        }
+        self.try_handlers.push(TryHandlerEntry { arms });
+        Ok(idx as u16)
+    }
+
+    /// RES-2544: patch a catch arm's handler PC after the handler body
+    /// has been compiled and its start PC is known.
+    pub fn patch_try_handler(&mut self, table_idx: u16, arm_idx: usize, handler_pc: usize) {
+        self.try_handlers[table_idx as usize].arms[arm_idx].handler_pc = handler_pc;
     }
 }
 

@@ -11,7 +11,7 @@
 
 #![allow(dead_code)]
 
-use crate::bytecode::{Chunk, CompileError, Function, Op, Program};
+use crate::bytecode::{CatchArm, Chunk, CompileError, Function, Op, Program};
 use crate::{Node, Value};
 use std::collections::HashMap;
 
@@ -316,6 +316,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         chunk: Chunk::with_capacity(0),
         local_count: 0,
         upvalue_source_slots: Box::default(),
+        fails: Box::default(),
     };
     for _ in 0..fn_count {
         functions.push(placeholder());
@@ -325,6 +326,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                parameters: &[(String, String)],
                                body: &Node,
                                fn_line: u32,
+                               fails: Box<[String]>,
                                functions: &mut Vec<Function>,
                                next_fn_idx: &mut u16|
      -> Result<(), CompileError> {
@@ -373,6 +375,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             chunk,
             local_count: next_local,
             upvalue_source_slots: Box::default(),
+            fails,
         };
         top_idx += 1;
         Ok(())
@@ -383,6 +386,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 name,
                 parameters,
                 body,
+                fails,
                 ..
             } => {
                 compile_fn_body(
@@ -390,6 +394,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     parameters,
                     body,
                     spanned.span.start.line as u32,
+                    fails.clone().into_boxed_slice(),
                     &mut functions,
                     &mut next_fn_idx,
                 )?;
@@ -409,6 +414,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                             parameters,
                             body,
                             line,
+                            Box::default(),
                             &mut functions,
                             &mut next_fn_idx,
                         )?;
@@ -854,8 +860,126 @@ fn compile_stmt(
         | Node::ModuleDecl { .. }
         | Node::Use { .. }
         | Node::UnsafeBlock { .. } => Ok(()),
+        Node::TryCatch { body, handlers, .. } => compile_try_catch(
+            body,
+            handlers,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+            false,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
+}
+
+/// RES-2544: compile a `try { body } catch Variant { handler }` block.
+#[allow(clippy::too_many_arguments)]
+fn compile_try_catch(
+    body: &[Node],
+    handlers: &[(String, Vec<Node>)],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    loop_stack: &mut Vec<LoopState>,
+    in_fn: bool,
+) -> Result<(), CompileError> {
+    let arms: Vec<CatchArm> = handlers
+        .iter()
+        .map(|(variant, _)| CatchArm {
+            variant: variant.clone(),
+            handler_pc: 0,
+        })
+        .collect();
+    let handler_idx = chunk.add_try_handler(arms)?;
+    chunk.emit(Op::EnterTry(handler_idx), line);
+
+    for stmt in body {
+        let stmt_line = node_line(stmt).unwrap_or(line);
+        if in_fn {
+            compile_stmt_in_fn(
+                stmt,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                stmt_line,
+                loop_stack,
+            )?;
+        } else {
+            compile_stmt(
+                stmt,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                stmt_line,
+                loop_stack,
+            )?;
+        }
+    }
+    chunk.emit(Op::ExitTry, line);
+    let jmp_end = chunk.emit(Op::Jump(0), line);
+
+    let mut end_jumps = vec![jmp_end];
+    for (arm_idx, (_, handler_body)) in handlers.iter().enumerate() {
+        let handler_pc = chunk.code.len();
+        chunk.patch_try_handler(handler_idx, arm_idx, handler_pc);
+        for stmt in handler_body {
+            let stmt_line = node_line(stmt).unwrap_or(line);
+            if in_fn {
+                compile_stmt_in_fn(
+                    stmt,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    stmt_line,
+                    loop_stack,
+                )?;
+            } else {
+                compile_stmt(
+                    stmt,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    stmt_line,
+                    loop_stack,
+                )?;
+            }
+        }
+        let jmp = chunk.emit(Op::Jump(0), line);
+        end_jumps.push(jmp);
+    }
+
+    let end_pc = chunk.code.len();
+    for jmp in end_jumps {
+        chunk.patch_jump(jmp, end_pc)?;
+    }
+    Ok(())
 }
 
 /// Shared assert-lowering logic used by both `compile_stmt` and
@@ -1210,6 +1334,7 @@ fn compile_nested_fn(
         chunk: Chunk::with_capacity(0),
         local_count: 0,
         upvalue_source_slots: Box::default(),
+        fails: Box::default(),
     });
     let mut inner_fn_index = fn_index.clone();
     inner_fn_index.insert(name.to_string(), fn_idx);
@@ -1245,6 +1370,7 @@ fn compile_nested_fn(
         chunk,
         local_count: next_local,
         upvalue_source_slots: Box::default(),
+        fails: Box::default(),
     };
     outer_chunk.emit(
         Op::MakeClosure {
@@ -1603,6 +1729,20 @@ fn compile_stmt_in_fn(
             fns,
             next_fn_idx,
             line,
+        ),
+        Node::TryCatch { body, handlers, .. } => compile_try_catch(
+            body,
+            handlers,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+            true,
         ),
         Node::Extern { .. } => Err(CompileError::Unsupported("nested extern decl")),
         other => Err(CompileError::Unsupported(node_kind(other))),
@@ -3056,6 +3196,7 @@ fn compile_expr(
                     chunk: Chunk::with_capacity(0),
                     local_count: 0,
                     upvalue_source_slots: Box::default(),
+                    fails: Box::default(),
                 });
             }
             fns[fn_idx as usize] = Function {
@@ -3064,6 +3205,7 @@ fn compile_expr(
                 chunk: fn_chunk,
                 local_count,
                 upvalue_source_slots: source_slots,
+                fails: Box::default(),
             };
 
             // Emit: push each captured value onto the stack, then MakeClosure.

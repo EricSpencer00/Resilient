@@ -88,6 +88,8 @@ pub enum VmError {
     /// RES-169c: `LoadUpvalue(idx)` with `idx` outside the current
     /// frame's upvalue slab.
     UpvalueOutOfBounds(u16),
+    /// RES-2544: a function with `fails` was called inside a try block.
+    CheckedFailure(String),
 }
 
 impl VmError {
@@ -138,6 +140,9 @@ impl std::fmt::Display for VmError {
             }
             VmError::UpvalueOutOfBounds(idx) => {
                 write!(f, "vm: upvalue index {} out of bounds", idx)
+            }
+            VmError::CheckedFailure(variant) => {
+                write!(f, "vm: checked failure: {}", variant)
             }
         }
     }
@@ -370,6 +375,17 @@ struct CallFrame {
     source_slots: Box<[u16]>,
 }
 
+/// RES-2544: active try-catch handler frame. Pushed by `EnterTry`,
+/// popped by `ExitTry`. When a `CheckedFailure` error fires during
+/// a function call, the VM searches this stack for a matching handler.
+#[derive(Debug, Clone)]
+struct TryFrame {
+    handler_table_idx: u16,
+    chunk_idx: usize,
+    call_depth: usize,
+    stack_depth: usize,
+}
+
 /// RES-329: dispatch strategy. The default match-based loop and the
 /// direct-threaded function-pointer table produce byte-identical
 /// results; the threaded path is selected with `RESILIENT_DISPATCH=direct`.
@@ -476,6 +492,7 @@ fn run_inner(
         closure_home: None,
         source_slots: Box::default(),
     });
+    let mut try_stack: Vec<TryFrame> = Vec::new();
 
     loop {
         // SAFETY: frames is non-empty for the duration of the main
@@ -645,15 +662,42 @@ fn run_inner(
                 locals[abs] = v;
             }
             Op::Call(idx) => {
-                // RES-081: set up a fresh call frame. Pop `arity`
-                // values as args (leftmost arg is the deepest push),
-                // reserve `local_count` slots in the locals slab
-                // (params plus body-local bindings), copy args into
-                // slots 0..arity.
                 let func = program
                     .functions
                     .get(idx as usize)
                     .ok_or(VmError::FunctionOutOfBounds(idx))?;
+                if !try_stack.is_empty() && !func.fails.is_empty() {
+                    let variant = &func.fails[0];
+                    let arity = func.arity as usize;
+                    for _ in 0..arity {
+                        stack.pop();
+                    }
+                    let mut dispatched = false;
+                    while let Some(try_frame) = try_stack.pop() {
+                        let handler_chunk = if try_frame.chunk_idx == usize::MAX {
+                            &program.main
+                        } else {
+                            &program.functions[try_frame.chunk_idx].chunk
+                        };
+                        let entry =
+                            &handler_chunk.try_handlers[try_frame.handler_table_idx as usize];
+                        if let Some(arm) = entry.arms.iter().find(|a| a.variant == *variant) {
+                            while frames.len() > try_frame.call_depth {
+                                let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                                locals.truncate(popped.locals_base);
+                            }
+                            stack.truncate(try_frame.stack_depth);
+                            let fi = frames.len() - 1;
+                            frames[fi].pc = arm.handler_pc;
+                            dispatched = true;
+                            break;
+                        }
+                    }
+                    if dispatched {
+                        continue;
+                    }
+                    return Err(VmError::CheckedFailure(variant.clone()));
+                }
                 let arity = func.arity as usize;
                 if stack.len() < arity {
                     return Err(VmError::EmptyStack);
@@ -1173,6 +1217,17 @@ fn run_inner(
                 }
                 locals[abs] = v;
             }
+            Op::EnterTry(handler_idx) => {
+                try_stack.push(TryFrame {
+                    handler_table_idx: handler_idx,
+                    chunk_idx: frames[frames.len() - 1].chunk_idx,
+                    call_depth: frames.len(),
+                    stack_depth: stack.len(),
+                });
+            }
+            Op::ExitTry => {
+                try_stack.pop();
+            }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
                 let target = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1543,6 +1598,9 @@ enum Step {
     /// Halt execution and yield the supplied value as the program's result.
     /// Emitted by `Op::Return` and by implicit-return-from-main.
     Halt(Value),
+    /// RES-2544: a checked failure was injected. The dispatch loop
+    /// unwinds to the matching try-catch handler.
+    CatchDispatch(String),
 }
 
 /// Mutable VM state threaded through every direct-dispatch handler.
@@ -1555,6 +1613,7 @@ struct VmState<'p> {
     locals: Vec<Value>,
     frames: Vec<CallFrame>,
     overflow_mode: OverflowMode,
+    try_stack: Vec<TryFrame>,
 }
 
 impl<'p> VmState<'p> {
@@ -1646,6 +1705,8 @@ fn op_to_index(op: Op) -> usize {
         Op::StoreGlobal(_) => OP_KIND_STORE_GLOBAL,
         Op::StoreUpvalue { .. } => OP_KIND_STORE_UPVALUE,
         Op::CallMethod { .. } => OP_KIND_CALL_METHOD,
+        Op::EnterTry(_) => OP_KIND_ENTER_TRY,
+        Op::ExitTry => OP_KIND_EXIT_TRY,
     }
 }
 
@@ -1667,7 +1728,9 @@ const OP_KIND_LOAD_GLOBAL: usize = 45;
 const OP_KIND_STORE_GLOBAL: usize = 46;
 const OP_KIND_STORE_UPVALUE: usize = 47;
 const OP_KIND_CALL_METHOD: usize = 48;
-const HANDLER_TABLE_LEN: usize = 49;
+const OP_KIND_ENTER_TRY: usize = 49;
+const OP_KIND_EXIT_TRY: usize = 50;
+const HANDLER_TABLE_LEN: usize = 51;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1722,6 +1785,8 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_STORE_GLOBAL] = h_store_global;
     table[OP_KIND_STORE_UPVALUE] = h_store_upvalue;
     table[OP_KIND_CALL_METHOD] = h_call_method;
+    table[OP_KIND_ENTER_TRY] = h_enter_try;
+    table[OP_KIND_EXIT_TRY] = h_exit_try;
     table
 };
 
@@ -1743,6 +1808,7 @@ fn run_direct(
         locals: Vec::with_capacity(32),
         frames: Vec::with_capacity(16),
         overflow_mode,
+        try_stack: Vec::new(),
     };
     state.frames.push(CallFrame {
         chunk_idx: usize::MAX,
@@ -1792,6 +1858,32 @@ fn run_direct(
         match handler(&mut state, op)? {
             Step::Continue => continue,
             Step::Halt(v) => return Ok(v),
+            Step::CatchDispatch(variant) => {
+                let mut dispatched = false;
+                while let Some(try_frame) = state.try_stack.pop() {
+                    let handler_chunk = if try_frame.chunk_idx == usize::MAX {
+                        &state.program.main
+                    } else {
+                        &state.program.functions[try_frame.chunk_idx].chunk
+                    };
+                    let entry = &handler_chunk.try_handlers[try_frame.handler_table_idx as usize];
+                    if let Some(arm) = entry.arms.iter().find(|a| a.variant == variant) {
+                        while state.frames.len() > try_frame.call_depth {
+                            let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                            state.locals.truncate(popped.locals_base);
+                        }
+                        state.stack.truncate(try_frame.stack_depth);
+                        let fi = state.frame_idx();
+                        state.frames[fi].pc = arm.handler_pc;
+                        dispatched = true;
+                        break;
+                    }
+                }
+                if dispatched {
+                    continue;
+                }
+                return Err(VmError::CheckedFailure(variant));
+            }
         }
     }
 }
@@ -1999,6 +2091,14 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         .functions
         .get(idx as usize)
         .ok_or(VmError::FunctionOutOfBounds(idx))?;
+    if !state.try_stack.is_empty() && !func.fails.is_empty() {
+        let variant = func.fails[0].clone();
+        let arity = func.arity as usize;
+        for _ in 0..arity {
+            state.stack.pop();
+        }
+        return Ok(Step::CatchDispatch(variant));
+    }
     let arity = func.arity as usize;
     if state.stack.len() < arity {
         return Err(VmError::EmptyStack);
@@ -2879,6 +2979,27 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     Ok(Step::Continue)
 }
 
+#[inline(never)]
+fn h_enter_try(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::EnterTry(handler_idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    state.try_stack.push(TryFrame {
+        handler_table_idx: handler_idx,
+        chunk_idx: state.frames[frame_idx].chunk_idx,
+        call_depth: state.frames.len(),
+        stack_depth: state.stack.len(),
+    });
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_exit_try(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    state.try_stack.pop();
+    Ok(Step::Continue)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3119,6 +3240,7 @@ mod tests {
             chunk: body,
             local_count: 0,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -3386,6 +3508,7 @@ mod tests {
                 arity: 0,
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
+                fails: Box::default(),
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]
@@ -4290,6 +4413,7 @@ mod tests {
             chunk: body,
             local_count: 0,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -4328,6 +4452,7 @@ mod tests {
                 arity: 0,
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
+                fails: Box::default(),
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]
@@ -5920,5 +6045,90 @@ let b = new Val { n: a.doubled() };
 b.doubled()"#;
         assert_both_eq(src);
         assert_int(compile_run(src).unwrap(), 20);
+    }
+
+    #[test]
+    fn res2544_try_catch_dispatches_to_handler() {
+        let src = r#"fn read_sensor(int addr)
+    requires addr >= 0
+    fails Timeout
+{
+    return addr;
+}
+
+let result = 0;
+try {
+    let v = read_sensor(42);
+    result = v;
+} catch Timeout {
+    result = -1;
+}
+result;"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), -1);
+    }
+
+    #[test]
+    fn res2544_try_catch_nested_propagation() {
+        let src = r#"fn read_sensor(int addr)
+    requires addr >= 0
+    fails Timeout, HardwareFault
+{
+    return addr;
+}
+
+let result = 0;
+try {
+    try {
+        let v = read_sensor(42);
+        result = v;
+    } catch HardwareFault {
+        result = -2;
+    }
+} catch Timeout {
+    result = -1;
+}
+result;"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), -1);
+    }
+
+    #[test]
+    fn res2544_try_catch_no_failure_runs_body() {
+        let src = r#"fn safe_fn(int x)
+    requires x >= 0
+{
+    return x * 2;
+}
+
+let result = 0;
+try {
+    result = safe_fn(21);
+} catch Timeout {
+    result = -1;
+}
+result;"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 42);
+    }
+
+    #[test]
+    fn res2544_try_exit_cleans_try_stack() {
+        let src = r#"fn safe_fn(int x)
+    requires x >= 0
+{
+    return x + 1;
+}
+
+let a = 0;
+try {
+    a = safe_fn(10);
+} catch Timeout {
+    a = -1;
+}
+let b = safe_fn(20);
+a + b;"#;
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 32);
     }
 }

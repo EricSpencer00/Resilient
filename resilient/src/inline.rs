@@ -497,6 +497,13 @@ fn inline_into_chunk(
         }
     }
 
+    // RES-2544: remap try_handler PCs through old_to_new.
+    for entry in &mut chunk.try_handlers {
+        for arm in &mut entry.arms {
+            arm.handler_pc = old_to_new[arm.handler_pc];
+        }
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_lines;
     Ok(true)
@@ -658,6 +665,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(
                 vec![Op::LoadLocal(0), Op::ReturnFromCall, Op::ReturnFromCall],
                 vec![],
@@ -673,6 +681,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(
                 vec![
                     Op::LoadLocal(0),
@@ -694,6 +703,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(vec![Op::Call(0), Op::ReturnFromCall], vec![], vec![1, 1]),
         }
     }
@@ -717,6 +727,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(code, vec![Value::Int(0)], lines),
         }
     }
@@ -764,6 +775,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(code, vec![], lines),
         };
         let funcs = vec![func];
@@ -783,6 +795,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(code, vec![], lines),
         };
         let funcs = vec![func];
@@ -796,6 +809,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(vec![Op::TailCall(0), Op::Return], vec![], vec![1, 1]),
         };
         let funcs = vec![func];
@@ -809,6 +823,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(
                 vec![Op::CallForeign(0), Op::ReturnFromCall],
                 vec![],
@@ -826,6 +841,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(
                 vec![
                     Op::MakeClosure {
@@ -952,6 +968,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             upvalue_source_slots: Box::default(),
+            fails: Box::default(),
             chunk: mk_chunk(
                 vec![Op::Const(0), Op::ReturnFromCall, Op::ReturnFromCall],
                 vec![Value::Int(0)],
