@@ -5680,4 +5680,33 @@ mod tests {
         assert_both_eq(src);
         assert_int(compile_run(src).unwrap(), 42);
     }
+
+    // ── RES-2538: nested function definitions ───────────────────────────
+
+    #[test]
+    fn res2538_nested_fn_basic() {
+        let src = "fn outer() -> int { fn inner() -> int { return 42; } return inner(); } outer()";
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 42);
+    }
+
+    #[test]
+    fn res2538_nested_fn_with_args() {
+        let src = "fn outer(int x) -> int { fn double(int n) -> int { return n * 2; } return double(x); } outer(5)";
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 10);
+    }
+
+    #[test]
+    fn res2538_multiple_nested_fns() {
+        let src = "fn outer(int x) -> int { fn dbl(int n) -> int { return n * 2; } fn inc(int n) -> int { return n + 1; } return inc(dbl(x)); } outer(5)";
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 11);
+    }
+
+    #[test]
+    fn res2538_nested_fn_recursive() {
+        let src = "fn fib(int n) -> int { fn go(int a, int b, int c) -> int { if c <= 0 { return a; } return go(b, a + b, c - 1); } return go(0, 1, n); } fib(10)";
+        assert_int(compile_run(src).unwrap(), 55);
+    }
 }

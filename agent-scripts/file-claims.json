@@ -1,20 +1,8 @@
 {
   "claims": {
-    "resilient/src/vm.rs": {
-      "branch": "res-2536-closure-upvalue-mutation",
-      "claimed_at": "2026-05-25T15:02:29Z"
-    },
     "resilient/src/compiler.rs": {
-      "branch": "res-2536-closure-upvalue-mutation",
-      "claimed_at": "2026-05-25T15:02:29Z"
-    },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-2536-closure-upvalue-mutation",
-      "claimed_at": "2026-05-25T15:02:29Z"
-    },
-    "resilient/src/disasm.rs": {
-      "branch": "res-2536-closure-upvalue-mutation",
-      "claimed_at": "2026-05-25T15:02:29Z"
+      "branch": "res-2538-nested-fn-in-vm",
+      "claimed_at": "2026-05-25T15:43:38Z"
     }
   }
 }
