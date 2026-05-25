@@ -4964,6 +4964,8 @@ mod tests {
         match run(&prog).unwrap() {
             Value::Bool(b) => assert!(b, "!0 should be true"),
             other => panic!("expected Bool, got {:?}", other),
+        }
+    }
 
     #[test]
     fn vm_load_index_negative_wraps_array() {
@@ -5031,6 +5033,8 @@ mod tests {
         match run(&prog).unwrap() {
             Value::Bool(b) => assert!(!b, "!\"hello\" should be false"),
             other => panic!("expected Bool, got {:?}", other),
+        }
+    }
 
     #[test]
     fn vm_jump_if_false_float_truthy() {
@@ -5151,6 +5155,7 @@ mod tests {
             Value::Int(1) => {}
             other => panic!("expected Int(1) for truthy array, got {:?}", other),
         }
+    }
 
     #[test]
     fn vm_load_index_negative_string_out_of_range() {
