@@ -721,7 +721,9 @@ fn run_inner(
                 let is_falsy = match v {
                     Value::Bool(b) => !b,
                     Value::Int(i) => i == 0,
-                    _ => return Err(VmError::TypeMismatch("JumpIfFalse")),
+                    Value::Float(f) => f == 0.0,
+                    Value::String(ref s) => s.is_empty(),
+                    _ => false,
                 };
                 if is_falsy {
                     let new_pc = (frames[frame_idx].pc as isize) + offset as isize;
@@ -738,7 +740,9 @@ fn run_inner(
                 let is_truthy = match v {
                     Value::Bool(b) => b,
                     Value::Int(i) => i != 0,
-                    _ => return Err(VmError::TypeMismatch("JumpIfTrue")),
+                    Value::Float(f) => f != 0.0,
+                    Value::String(ref s) => !s.is_empty(),
+                    _ => true,
                 };
                 if is_truthy {
                     let new_pc = (frames[frame_idx].pc as isize) + offset as isize;
@@ -1849,7 +1853,9 @@ fn h_jump_if_false(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let is_falsy = match v {
         Value::Bool(b) => !b,
         Value::Int(i) => i == 0,
-        _ => return Err(VmError::TypeMismatch("JumpIfFalse")),
+        Value::Float(f) => f == 0.0,
+        Value::String(ref s) => s.is_empty(),
+        _ => false,
     };
     if is_falsy {
         let frame_idx = state.frame_idx();
@@ -1872,7 +1878,9 @@ fn h_jump_if_true(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let is_truthy = match v {
         Value::Bool(b) => b,
         Value::Int(i) => i != 0,
-        _ => return Err(VmError::TypeMismatch("JumpIfTrue")),
+        Value::Float(f) => f != 0.0,
+        Value::String(ref s) => !s.is_empty(),
+        _ => true,
     };
     if is_truthy {
         let frame_idx = state.frame_idx();
@@ -4987,6 +4995,125 @@ mod tests {
         match run(&prog).unwrap() {
             Value::Bool(b) => assert!(!b, "!\"hello\" should be false"),
             other => panic!("expected Bool, got {:?}", other),
+
+    #[test]
+    fn vm_jump_if_false_float_truthy() {
+        let prog = const_program(
+            &[Value::Float(1.5), Value::Int(1), Value::Int(0)],
+            &[
+                Op::Const(0),
+                Op::JumpIfFalse(2),
+                Op::Const(1),
+                Op::Return,
+                Op::Const(2),
+                Op::Return,
+            ],
+        );
+        match run(&prog).unwrap() {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1) for truthy float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_jump_if_false_float_zero_is_falsy() {
+        let prog = const_program(
+            &[Value::Float(0.0), Value::Int(1), Value::Int(0)],
+            &[
+                Op::Const(0),
+                Op::JumpIfFalse(2),
+                Op::Const(1),
+                Op::Return,
+                Op::Const(2),
+                Op::Return,
+            ],
+        );
+        match run(&prog).unwrap() {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0) for falsy 0.0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_jump_if_false_string_truthy() {
+        let prog = const_program(
+            &[Value::String("hello".into()), Value::Int(1), Value::Int(0)],
+            &[
+                Op::Const(0),
+                Op::JumpIfFalse(2),
+                Op::Const(1),
+                Op::Return,
+                Op::Const(2),
+                Op::Return,
+            ],
+        );
+        match run(&prog).unwrap() {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1) for truthy string, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_jump_if_false_empty_string_is_falsy() {
+        let prog = const_program(
+            &[Value::String("".into()), Value::Int(1), Value::Int(0)],
+            &[
+                Op::Const(0),
+                Op::JumpIfFalse(2),
+                Op::Const(1),
+                Op::Return,
+                Op::Const(2),
+                Op::Return,
+            ],
+        );
+        match run(&prog).unwrap() {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0) for falsy empty string, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_jump_if_true_float_truthy() {
+        let prog = const_program(
+            &[Value::Float(2.5), Value::Int(1), Value::Int(0)],
+            &[
+                Op::Const(0),
+                Op::JumpIfTrue(2),
+                Op::Const(2),
+                Op::Return,
+                Op::Const(1),
+                Op::Return,
+            ],
+        );
+        match run(&prog).unwrap() {
+            Value::Int(1) => {}
+            other => panic!(
+                "expected Int(1) for truthy float via JumpIfTrue, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn vm_jump_if_false_array_is_truthy() {
+        let prog = const_program(
+            &[
+                Value::Array(vec![Value::Int(1)]),
+                Value::Int(1),
+                Value::Int(0),
+            ],
+            &[
+                Op::Const(0),
+                Op::JumpIfFalse(2),
+                Op::Const(1),
+                Op::Return,
+                Op::Const(2),
+                Op::Return,
+            ],
+        );
+        match run(&prog).unwrap() {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1) for truthy array, got {:?}", other),
         }
     }
 }
