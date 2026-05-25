@@ -1,0 +1,25 @@
+struct Point { int x, int y, }
+
+let p1 = new Point { x: 3, y: 5 };
+let r1 = match p1 {
+    Point { x: 0, y } => "origin-x y=" + to_string(y),
+    Point { x, y: 0 } => "origin-y x=" + to_string(x),
+    Point { x, y } => "point(" + to_string(x) + "," + to_string(y) + ")",
+};
+println(r1);
+
+let p2 = new Point { x: 0, y: 42 };
+let r2 = match p2 {
+    Point { x: 0, y } => "y-axis at " + to_string(y),
+    _ => "other",
+};
+println(r2);
+
+enum Color { Red, Green, Blue, }
+let c = Color::Blue;
+let name = match c {
+    Color::Red => "red",
+    Color::Green => "green",
+    Color::Blue => "blue",
+};
+println(name);

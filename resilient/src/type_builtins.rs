@@ -60,6 +60,18 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
     }
 }
 
+pub(crate) fn builtin_struct_name(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Struct { name, .. }] => Ok(Value::String(name.clone())),
+        [Value::EnumVariant { variant, .. }] => Ok(Value::String(variant.clone())),
+        [_] => Err("struct_name: argument is not a struct or enum variant".to_string()),
+        _ => Err(format!(
+            "struct_name: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 /// `result_collect(arr) -> Result`
 ///
 /// Takes an Array of `Result` values and combines them into a single
