@@ -1,8 +1,8 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-2484-nested-map-assignment",
-      "claimed_at": "2026-05-25T08:00:00Z"
+    "resilient/src/vm.rs": {
+      "branch": "res-2478-vm-string-repetition",
+      "claimed_at": "2026-05-25T06:47:29Z"
     }
   }
 }
