@@ -347,42 +347,86 @@ enum Tok {
 /// allocation is pure overhead. Same shape as `int_lit` / `float_lit`
 /// which already gate on `contains('_')`.
 fn hex_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
-    let body = &lex.slice()[2..];
-    // Matches the hand-rolled lexer's best-effort fallback: on overflow
-    // or an empty body (which the regex's `+` already forbids, but we
-    // keep the guard to mirror semantics), emit 0.
-    if body.contains('_') {
-        Some(i64::from_str_radix(&body.replace('_', ""), 16).unwrap_or(0))
+    let slice = lex.slice();
+    let body = &slice[2..];
+    let cleaned = if body.contains('_') {
+        std::borrow::Cow::Owned(body.replace('_', ""))
     } else {
-        Some(i64::from_str_radix(body, 16).unwrap_or(0))
+        std::borrow::Cow::Borrowed(body)
+    };
+    match i64::from_str_radix(&cleaned, 16) {
+        Ok(n) => Some(n),
+        Err(_) => {
+            eprintln!(
+                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
+                slice,
+                i64::MAX
+            );
+            Some(0)
+        }
     }
 }
 
 fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
-    let body = &lex.slice()[2..];
-    if body.contains('_') {
-        Some(i64::from_str_radix(&body.replace('_', ""), 2).unwrap_or(0))
+    let slice = lex.slice();
+    let body = &slice[2..];
+    let cleaned = if body.contains('_') {
+        std::borrow::Cow::Owned(body.replace('_', ""))
     } else {
-        Some(i64::from_str_radix(body, 2).unwrap_or(0))
+        std::borrow::Cow::Borrowed(body)
+    };
+    match i64::from_str_radix(&cleaned, 2) {
+        Ok(n) => Some(n),
+        Err(_) => {
+            eprintln!(
+                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
+                slice,
+                i64::MAX
+            );
+            Some(0)
+        }
     }
 }
 
 fn oct_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
-    let body = &lex.slice()[2..];
-    if body.contains('_') {
-        Some(i64::from_str_radix(&body.replace('_', ""), 8).unwrap_or(0))
+    let slice = lex.slice();
+    let body = &slice[2..];
+    let cleaned = if body.contains('_') {
+        std::borrow::Cow::Owned(body.replace('_', ""))
     } else {
-        Some(i64::from_str_radix(body, 8).unwrap_or(0))
+        std::borrow::Cow::Borrowed(body)
+    };
+    match i64::from_str_radix(&cleaned, 8) {
+        Ok(n) => Some(n),
+        Err(_) => {
+            eprintln!(
+                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
+                slice,
+                i64::MAX
+            );
+            Some(0)
+        }
     }
 }
 
 /// RES-909: decimal int literal with optional `_` separators.
 fn int_lit(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     let slice = lex.slice();
-    if slice.contains('_') {
-        slice.replace('_', "").parse::<i64>().ok()
+    let cleaned = if slice.contains('_') {
+        std::borrow::Cow::Owned(slice.replace('_', ""))
     } else {
-        slice.parse::<i64>().ok()
+        std::borrow::Cow::Borrowed(slice)
+    };
+    match cleaned.parse::<i64>() {
+        Ok(n) => Some(n),
+        Err(_) => {
+            eprintln!(
+                "<input>:0:0: error: integer literal `{}` overflows i64 (max {})",
+                slice,
+                i64::MAX
+            );
+            Some(0)
+        }
     }
 }
 

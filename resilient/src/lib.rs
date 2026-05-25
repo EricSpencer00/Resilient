@@ -1596,7 +1596,19 @@ impl Lexer {
         if is_float {
             Token::FloatLiteral(number_str.parse::<f64>().unwrap_or(0.0))
         } else {
-            Token::IntLiteral(number_str.parse::<i64>().unwrap_or(0))
+            match number_str.parse::<i64>() {
+                Ok(n) => Token::IntLiteral(n),
+                Err(_) => {
+                    eprintln!(
+                        "<input>:{}:{}: error: integer literal `{}` overflows i64 (max {})",
+                        self.last_token_line,
+                        self.last_token_column,
+                        number_str,
+                        i64::MAX
+                    );
+                    Token::IntLiteral(0)
+                }
+            }
         }
     }
 
@@ -1622,13 +1634,14 @@ impl Lexer {
         match i64::from_str_radix(&cleaned, radix) {
             Ok(n) => Token::IntLiteral(n),
             Err(_) => {
-                // Overflow or invalid — fall back to 0 and let the
-                // parser (or runtime) catch anomalies. A real language
-                // would report this through the diagnostics pipeline;
-                // once the lexer gains a diagnostic channel (G5), this
-                // branch should use it. For now: note the prefix in
-                // the returned string representation of a dummy token.
-                let _ = prefix;
+                eprintln!(
+                    "<input>:{}:{}: error: integer literal `{}{}` overflows i64 (max {})",
+                    self.last_token_line,
+                    self.last_token_column,
+                    prefix,
+                    cleaned,
+                    i64::MAX
+                );
                 Token::IntLiteral(0)
             }
         }
@@ -37950,6 +37963,46 @@ mod tests {
             Value::Float(v) => assert!((v - 1234.5e10).abs() < 1.0, "f = {}", v),
             other => panic!("expected Float, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn lexer_int_overflow_produces_zero_with_diagnostic() {
+        let toks = tokenize("99999999999999999999");
+        assert!(
+            matches!(toks[0], Token::IntLiteral(0)),
+            "overflowed int literal should produce IntLiteral(0), got {:?}",
+            toks[0]
+        );
+    }
+
+    #[test]
+    fn lexer_hex_overflow_produces_zero_with_diagnostic() {
+        let toks = tokenize("0xFFFFFFFFFFFFFFFFFF");
+        assert!(
+            matches!(toks[0], Token::IntLiteral(0)),
+            "overflowed hex literal should produce IntLiteral(0), got {:?}",
+            toks[0]
+        );
+    }
+
+    #[test]
+    fn lexer_max_i64_parses_correctly() {
+        let toks = tokenize("9223372036854775807");
+        assert!(
+            matches!(toks[0], Token::IntLiteral(9223372036854775807)),
+            "i64::MAX should parse correctly, got {:?}",
+            toks[0]
+        );
+    }
+
+    #[test]
+    fn lexer_i64_max_plus_one_overflows() {
+        let toks = tokenize("9223372036854775808");
+        assert!(
+            matches!(toks[0], Token::IntLiteral(0)),
+            "i64::MAX+1 should overflow to IntLiteral(0), got {:?}",
+            toks[0]
+        );
     }
 
     #[test]
