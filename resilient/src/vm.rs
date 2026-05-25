@@ -1024,18 +1024,16 @@ fn run_inner(
                 };
                 match target {
                     Value::Array(mut items) => {
-                        if idx < 0 || (idx as usize) >= items.len() {
+                        let len = items.len() as i64;
+                        let resolved = if idx < 0 { idx + len } else { idx };
+                        if resolved < 0 || resolved >= len {
                             return Err(VmError::ArrayIndexOutOfBounds {
                                 index: idx,
                                 len: items.len(),
                             });
                         }
-                        // RES-1437: swap_remove is O(1); the clone from
-                        // LoadLocal means the original local is unaffected.
-                        stack.push(items.swap_remove(idx as usize));
+                        stack.push(items.swap_remove(resolved as usize));
                     }
-                    // RES-401: tuple indexing reuses LoadIndex. The
-                    // element is moved out of the owned Vec.
                     Value::Tuple(mut items) => {
                         if idx < 0 || (idx as usize) >= items.len() {
                             return Err(VmError::ArrayIndexOutOfBounds {
@@ -1045,19 +1043,16 @@ fn run_inner(
                         }
                         stack.push(items.swap_remove(idx as usize));
                     }
-                    // RES-334b: string character indexing for `for c in "hello"`.
-                    // Returns the character at the given code-point index as a
-                    // single-character string.  Negative or out-of-range indices
-                    // surface the same ArrayIndexOutOfBounds error that arrays use
-                    // so callers see a uniform error shape.
                     Value::String(s) => {
                         let len = s.chars().count();
-                        if idx < 0 || (idx as usize) >= len {
+                        let len_i = len as i64;
+                        let resolved = if idx < 0 { idx + len_i } else { idx };
+                        if resolved < 0 || resolved >= len_i {
                             return Err(VmError::ArrayIndexOutOfBounds { index: idx, len });
                         }
                         let ch = s
                             .chars()
-                            .nth(idx as usize)
+                            .nth(resolved as usize)
                             .expect("index already bounds-checked");
                         stack.push(Value::String(ch.to_string()));
                     }
@@ -2129,22 +2124,42 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let Value::Int(idx) = idx_val else {
         return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
     };
-    // RES-401: also handle Value::Tuple here (mirrors run_inner change).
-    let (mut items, is_tuple) = match target {
-        Value::Array(v) => (v, false),
-        Value::Tuple(v) => (v, true),
+    match target {
+        Value::Array(mut items) => {
+            let len = items.len() as i64;
+            let resolved = if idx < 0 { idx + len } else { idx };
+            if resolved < 0 || resolved >= len {
+                return Err(VmError::ArrayIndexOutOfBounds {
+                    index: idx,
+                    len: items.len(),
+                });
+            }
+            state.stack.push(items.swap_remove(resolved as usize));
+        }
+        Value::Tuple(mut items) => {
+            if idx < 0 || (idx as usize) >= items.len() {
+                return Err(VmError::ArrayIndexOutOfBounds {
+                    index: idx,
+                    len: items.len(),
+                });
+            }
+            state.stack.push(items.swap_remove(idx as usize));
+        }
+        Value::String(s) => {
+            let len = s.chars().count();
+            let len_i = len as i64;
+            let resolved = if idx < 0 { idx + len_i } else { idx };
+            if resolved < 0 || resolved >= len_i {
+                return Err(VmError::ArrayIndexOutOfBounds { index: idx, len });
+            }
+            let ch = s
+                .chars()
+                .nth(resolved as usize)
+                .expect("index already bounds-checked");
+            state.stack.push(Value::String(ch.to_string()));
+        }
         _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
-    };
-    if idx < 0 || (idx as usize) >= items.len() {
-        return Err(VmError::ArrayIndexOutOfBounds {
-            index: idx,
-            len: items.len(),
-        });
     }
-    let _ = is_tuple; // both branches use swap_remove
-    // RES-1437: swap_remove instead of clone — see the match-dispatch
-    // LoadIndex arm in run_inner for the full justification.
-    state.stack.push(items.swap_remove(idx as usize));
     Ok(Step::Continue)
 }
 
@@ -3169,7 +3184,7 @@ mod tests {
     }
 
     #[test]
-    fn res171a_load_index_negative_index_errors() {
+    fn res171a_load_index_negative_wraps() {
         let p = const_program(
             &[Value::Int(1), Value::Int(2), Value::Int(-1)],
             &[
@@ -3181,11 +3196,7 @@ mod tests {
                 Op::Return,
             ],
         );
-        let err = run(&p).unwrap_err();
-        assert!(matches!(
-            err.kind(),
-            VmError::ArrayIndexOutOfBounds { index: -1, len: 2 }
-        ));
+        assert_int(run(&p).unwrap(), 2);
     }
 
     #[test]
@@ -4953,6 +4964,31 @@ mod tests {
         match run(&prog).unwrap() {
             Value::Bool(b) => assert!(b, "!0 should be true"),
             other => panic!("expected Bool, got {:?}", other),
+
+    #[test]
+    fn vm_load_index_negative_wraps_array() {
+        let result = compile_run("let a = [10, 20, 30]; a[-1]").unwrap();
+        assert_int(result, 30);
+    }
+
+    #[test]
+    fn vm_load_index_negative_wraps_array_minus2() {
+        let result = compile_run("let a = [10, 20, 30]; a[-2]").unwrap();
+        assert_int(result, 20);
+    }
+
+    #[test]
+    fn vm_load_index_negative_out_of_range() {
+        let result = compile_run("let a = [10, 20, 30]; a[-4]");
+        assert!(result.is_err(), "a[-4] on 3-element array should error");
+    }
+
+    #[test]
+    fn vm_load_index_negative_wraps_string() {
+        let result = compile_run(r#"let s = "hello"; s[-1]"#).unwrap();
+        match result {
+            Value::String(s) => assert_eq!(s, "o"),
+            other => panic!("expected String, got {:?}", other),
         }
     }
 
@@ -5115,5 +5151,10 @@ mod tests {
             Value::Int(1) => {}
             other => panic!("expected Int(1) for truthy array, got {:?}", other),
         }
+
+    #[test]
+    fn vm_load_index_negative_string_out_of_range() {
+        let result = compile_run(r#"let s = "hi"; s[-3]"#);
+        assert!(result.is_err(), "s[-3] on 2-char string should error");
     }
 }

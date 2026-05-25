@@ -1,8 +1,8 @@
 {
   "claims": {
     "resilient/src/vm.rs": {
-      "branch": "res-2488-vm-jump-truthiness",
-      "claimed_at": "2026-05-25T10:00:00Z"
+      "branch": "res-2494-vm-negative-index-wrap",
+      "claimed_at": "2026-05-25T12:00:00Z"
     }
   }
 }
