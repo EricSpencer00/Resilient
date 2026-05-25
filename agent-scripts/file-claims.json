@@ -1,8 +1,8 @@
 {
   "claims": {
-    "resilient/src/compiler.rs": {
-      "branch": "res-2516-compile-if-expression",
-      "claimed_at": "2026-05-25T12:00:00Z"
+    "resilient/src/vm.rs": {
+      "branch": "res-2482-vm-not-truthiness",
+      "claimed_at": "2026-05-25T08:10:00Z"
     }
   }
 }

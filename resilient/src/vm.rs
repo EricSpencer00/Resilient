@@ -813,10 +813,14 @@ fn run_inner(
             }
             Op::Not => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
-                let Value::Bool(b) = v else {
-                    return Err(VmError::TypeMismatch("Not"));
+                let negated = match v {
+                    Value::Bool(b) => !b,
+                    Value::Int(i) => i == 0,
+                    Value::Float(f) => f == 0.0,
+                    Value::String(ref s) => s.is_empty(),
+                    _ => false,
                 };
-                stack.push(Value::Bool(!b));
+                stack.push(Value::Bool(negated));
             }
             Op::Return => {
                 return Ok(stack.pop().unwrap_or(Value::Void));
@@ -1976,10 +1980,14 @@ fn h_ge(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 #[inline(never)]
 fn h_not(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let Value::Bool(b) = v else {
-        return Err(VmError::TypeMismatch("Not"));
+    let negated = match v {
+        Value::Bool(b) => !b,
+        Value::Int(i) => i == 0,
+        Value::Float(f) => f == 0.0,
+        Value::String(ref s) => s.is_empty(),
+        _ => false,
     };
-    state.stack.push(Value::Bool(!b));
+    state.stack.push(Value::Bool(negated));
     Ok(Step::Continue)
 }
 
@@ -4929,5 +4937,56 @@ mod tests {
             "expected ArrayIndexOutOfBounds, got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn vm_not_int_zero_is_true() {
+        let prog = const_program(&[Value::Int(0)], &[Op::Const(0), Op::Not, Op::Return]);
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "!0 should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_not_int_nonzero_is_false() {
+        let prog = const_program(&[Value::Int(42)], &[Op::Const(0), Op::Not, Op::Return]);
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(!b, "!42 should be false"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_not_float_zero_is_true() {
+        let prog = const_program(&[Value::Float(0.0)], &[Op::Const(0), Op::Not, Op::Return]);
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "!0.0 should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_not_empty_string_is_true() {
+        let prog = const_program(
+            &[Value::String("".into())],
+            &[Op::Const(0), Op::Not, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b, "!\"\" should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_not_nonempty_string_is_false() {
+        let prog = const_program(
+            &[Value::String("hello".into())],
+            &[Op::Const(0), Op::Not, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(!b, "!\"hello\" should be false"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
     }
 }
