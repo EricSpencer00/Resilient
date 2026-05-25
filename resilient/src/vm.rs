@@ -340,6 +340,7 @@ fn err_at(line_info: &[u32], pc: usize, e: VmError) -> VmError {
 /// growth on pathologically-recursive input (test case for
 /// `VmError::CallStackOverflow`).
 const MAX_CALL_DEPTH: usize = 1024;
+const MAX_STRING_REPEAT: usize = 10_000_000;
 
 /// RES-081: one active function invocation. `chunk_idx = usize::MAX`
 /// marks the `main` frame; any other value indexes into
@@ -562,6 +563,13 @@ fn run_inner(
                             return Err(VmError::BuiltinCallFailed(format!(
                                 "string repetition count must be >= 0, got {}",
                                 n
+                            )));
+                        }
+                        let total = s.len().saturating_mul(n as usize);
+                        if total > MAX_STRING_REPEAT {
+                            return Err(VmError::BuiltinCallFailed(format!(
+                                "string repeat: result length {} exceeds limit {}",
+                                total, MAX_STRING_REPEAT
                             )));
                         }
                         stack.push(Value::String(s.repeat(n as usize)));
@@ -1751,6 +1759,13 @@ fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                     n
                 )));
             }
+            let total = s.len().saturating_mul(n as usize);
+            if total > MAX_STRING_REPEAT {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "string repeat: result length {} exceeds limit {}",
+                    total, MAX_STRING_REPEAT
+                )));
+            }
             state.stack.push(Value::String(s.repeat(n as usize)));
         }
         _ => return Err(VmError::TypeMismatch("Mul")),
@@ -2179,6 +2194,12 @@ fn h_make_array(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let idx_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let target = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    if let Value::Map(m) = target {
+        let mk = crate::MapKey::from_value(&idx_val).map_err(VmError::BuiltinCallFailed)?;
+        let v = m.get(&mk).cloned().unwrap_or(Value::Void);
+        state.stack.push(v);
+        return Ok(Step::Continue);
+    }
     let Value::Int(idx) = idx_val else {
         return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
     };
@@ -2252,20 +2273,28 @@ fn h_load_index_unchecked(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmEr
 fn h_store_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let idx_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let arr_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let container = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    if let Value::Map(mut m) = container {
+        let mk = crate::MapKey::from_value(&idx_val).map_err(VmError::BuiltinCallFailed)?;
+        m.insert(mk, v);
+        state.stack.push(Value::Map(m));
+        return Ok(Step::Continue);
+    }
     let Value::Int(idx) = idx_val else {
         return Err(VmError::TypeMismatch("StoreIndex (non-int index)"));
     };
-    let Value::Array(mut items) = arr_val else {
+    let Value::Array(mut items) = container else {
         return Err(VmError::TypeMismatch("StoreIndex (non-array target)"));
     };
-    if idx < 0 || (idx as usize) >= items.len() {
+    let len = items.len() as i64;
+    let resolved = if idx < 0 { idx + len } else { idx };
+    if resolved < 0 || resolved >= len {
         return Err(VmError::ArrayIndexOutOfBounds {
             index: idx,
             len: items.len(),
         });
     }
-    items[idx as usize] = v;
+    items[resolved as usize] = v;
     state.stack.push(Value::Array(items));
     Ok(Step::Continue)
 }
@@ -4103,6 +4132,11 @@ mod tests {
             Op::AssertFail,
             Op::MakeTuple { len: 0 },
             Op::CallClosure { arity: 0 },
+            Op::TryUnwrap,
+            Op::IterPrepare,
+            Op::LoadGlobal(0),
+            Op::StoreGlobal(0),
+            Op::LoadIndexUnchecked,
         ];
         for op in samples {
             let idx = op_to_index(*op);
@@ -5421,5 +5455,45 @@ mod tests {
         let src = "fn f() -> int { 42 } f()";
         let result = compile_run(src).unwrap();
         assert_int(result, 42);
+    }
+
+    // ── RES-2534: handler-table ↔ match-dispatch parity ─────────────────
+
+    #[test]
+    fn res2534_map_index_read_both_dispatch() {
+        let src = r#"let m = {"a": 1, "b": 2}; m["a"]"#;
+        assert_both_eq(src);
+    }
+
+    #[test]
+    fn res2534_map_index_write_both_dispatch() {
+        let src = r#"let m = {"x": 10}; m["x"] = 42; m["x"]"#;
+        assert_both_eq(src);
+    }
+
+    #[test]
+    fn res2534_negative_array_index_both_dispatch() {
+        let src = "let a = [10, 20, 30]; a[-1]";
+        assert_both_eq(src);
+    }
+
+    #[test]
+    fn res2534_negative_array_store_both_dispatch() {
+        let src = "let a = [10, 20, 30]; a[-1] = 99; a[2]";
+        assert_both_eq(src);
+    }
+
+    #[test]
+    fn res2534_string_repeat_limit_both_dispatch() {
+        let src = r#""x" * 10000001"#;
+        let (m, d) = run_both(src);
+        assert!(m.is_err(), "match dispatch should error on huge repeat");
+        assert!(d.is_err(), "direct dispatch should error on huge repeat");
+    }
+
+    #[test]
+    fn res2534_string_repeat_ok_both_dispatch() {
+        let src = r#""ab" * 3"#;
+        assert_both_eq(src);
     }
 }
