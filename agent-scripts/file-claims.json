@@ -1,8 +1,8 @@
 {
   "claims": {
-    "resilient/src/vm.rs": {
-      "branch": "res-2480-vm-string-coercion",
-      "claimed_at": "2026-05-25T07:00:00Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-2484-nested-map-assignment",
+      "claimed_at": "2026-05-25T08:00:00Z"
     }
   }
 }

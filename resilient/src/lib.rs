@@ -19433,41 +19433,53 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
 /// index targets the leaf cell that gets replaced. Bounds errors
 /// name the depth (1-indexed) where the out-of-range access occurred
 /// so users can tell `m[2][0]` (outer) from `m[0][5]` (inner).
-fn replace_at_path(items: &mut [Value], indices: &[i64], value: Value) -> RResult<()> {
-    fn recurse(items: &mut [Value], indices: &[i64], value: Value, depth: usize) -> RResult<()> {
-        let (i, rest) = match indices.split_first() {
-            Some(pair) => pair,
-            None => unreachable!("replace_at_path called with zero indices"),
-        };
-        if *i < 0 || (*i as usize) >= items.len() {
-            return Err(format!(
-                "Index {} out of bounds for array of length {} at dim {}",
-                i,
-                items.len(),
-                depth
-            ));
+fn assign_at_path(container: Value, path: &[Value], leaf: Value, dim: usize) -> RResult<Value> {
+    let (key, rest) = match path.split_first() {
+        Some(pair) => pair,
+        None => return Ok(leaf),
+    };
+    match container {
+        Value::Map(mut m) => {
+            let mk = MapKey::from_value(key)
+                .map_err(|e| format!("Invalid map key at dim {}: {}", dim, e))?;
+            if rest.is_empty() {
+                m.insert(mk, leaf);
+            } else {
+                let inner = m.remove(&mk).unwrap_or(Value::Void);
+                let updated = assign_at_path(inner, rest, leaf, dim + 1)?;
+                m.insert(mk, updated);
+            }
+            Ok(Value::Map(m))
         }
-        if rest.is_empty() {
-            items[*i as usize] = value;
-            return Ok(());
+        Value::Array(mut items) => {
+            let Value::Int(i) = key else {
+                return Err(format!(
+                    "Array index must be int at dim {}, got {}",
+                    dim, key
+                ));
+            };
+            let len = items.len() as i64;
+            let resolved = if *i < 0 { *i + len } else { *i };
+            if resolved < 0 || resolved >= len {
+                return Err(format!(
+                    "Index {} out of bounds for array of length {} at dim {}",
+                    i,
+                    items.len(),
+                    dim
+                ));
+            }
+            let idx = resolved as usize;
+            if rest.is_empty() {
+                items[idx] = leaf;
+            } else {
+                let inner = std::mem::replace(&mut items[idx], Value::Void);
+                let updated = assign_at_path(inner, rest, leaf, dim + 1)?;
+                items[idx] = updated;
+            }
+            Ok(Value::Array(items))
         }
-        // Need to dive into the inner array. Move it out, recurse on
-        // the inner Vec, then put the rebuilt array back. Cloning is
-        // unnecessary because `items[i]` will be overwritten with
-        // exactly the same Value::Array variant once the inner call
-        // returns.
-        let mut inner = std::mem::replace(&mut items[*i as usize], Value::Void);
-        let Value::Array(inner_items) = &mut inner else {
-            return Err(format!(
-                "Cannot index into non-array at dim {}: {:?}",
-                depth, inner
-            ));
-        };
-        let result = recurse(inner_items, rest, value, depth + 1);
-        items[*i as usize] = inner;
-        result
+        other => Err(format!("Cannot index into {} at dim {}", other, dim)),
     }
-    recurse(items, indices, value, 1)
 }
 
 /// `abs(x)` — absolute value for `int` and `float`.
@@ -23855,37 +23867,14 @@ impl Interpreter {
                     .get(&root_name)
                     .ok_or_else(|| format!("Identifier not found: {}", root_name))?;
 
-                match root {
-                    // RES-427: Map index assignment via MapKey (string / int / bool keys).
-                    Value::Map(mut m) => {
-                        if path_exprs.len() != 1 {
-                            return Err("Nested map index assignment not yet supported".to_string());
-                        }
-                        let idx_val = self.eval(path_exprs[0])?;
-                        let mk = MapKey::from_value(&idx_val)
-                            .map_err(|e| format!("Invalid map key: {e}"))?;
-                        m.insert(mk, new_val);
-                        let _ = self.env.reassign(&root_name, Value::Map(m));
-                        Ok(Value::Void)
+                {
+                    let mut path_vals: Vec<Value> = Vec::with_capacity(path_exprs.len());
+                    for idx_expr in &path_exprs {
+                        path_vals.push(self.eval(idx_expr)?);
                     }
-                    // Array index assignment (existing behaviour).
-                    Value::Array(mut items) => {
-                        let mut path_indices: Vec<i64> = Vec::with_capacity(path_exprs.len());
-                        for idx_expr in &path_exprs {
-                            let idx_val = self.eval(idx_expr)?;
-                            let Value::Int(i) = idx_val else {
-                                return Err(format!("Array index must be int, got {}", idx_val));
-                            };
-                            path_indices.push(i);
-                        }
-                        replace_at_path(&mut items, &path_indices, new_val)?;
-                        let _ = self.env.reassign(&root_name, Value::Array(items));
-                        Ok(Value::Void)
-                    }
-                    other => Err(format!(
-                        "Cannot index-assign into '{}' (has type {})",
-                        root_name, other
-                    )),
+                    let updated = assign_at_path(root, &path_vals, new_val, 1)?;
+                    let _ = self.env.reassign(&root_name, updated);
+                    Ok(Value::Void)
                 }
             }
             // RES-325: a `NamedArg` outside an enclosing call site is
@@ -53289,6 +53278,69 @@ mod tests {
             panic!("leaf");
         };
         assert!(matches!(leaf[0], Value::Int(99)));
+    }
+
+    // ---------- RES-2484: nested map index assignment ----------
+
+    #[test]
+    fn nested_map_assignment_two_deep() {
+        let src = r#"
+            let m = {"a" -> {"x" -> 1, "y" -> 2}};
+            m["a"]["y"] = 99;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let m = interp.env.get("m").unwrap();
+        let Value::Map(outer) = &m else {
+            panic!("expected Map")
+        };
+        let inner = outer.get(&MapKey::Str("a".into())).unwrap();
+        let Value::Map(inner_map) = inner else {
+            panic!("expected inner Map")
+        };
+        let val = inner_map.get(&MapKey::Str("y".into())).unwrap();
+        assert!(matches!(val, Value::Int(99)), "got {:?}", val);
+    }
+
+    #[test]
+    fn nested_map_of_array_assignment() {
+        let src = r#"
+            let m = {"items" -> [10, 20, 30]};
+            m["items"][1] = 99;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let m = interp.env.get("m").unwrap();
+        let Value::Map(outer) = &m else {
+            panic!("expected Map")
+        };
+        let inner = outer.get(&MapKey::Str("items".into())).unwrap();
+        let Value::Array(arr) = inner else {
+            panic!("expected Array")
+        };
+        assert!(matches!(arr[1], Value::Int(99)), "got {:?}", arr[1]);
+    }
+
+    #[test]
+    fn single_map_assignment_still_works() {
+        let src = r#"
+            let m = {"key" -> 1};
+            m["key"] = 42;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let m = interp.env.get("m").unwrap();
+        let Value::Map(map) = &m else {
+            panic!("expected Map")
+        };
+        let val = map.get(&MapKey::Str("key".into())).unwrap();
+        assert!(matches!(val, Value::Int(42)), "got {:?}", val);
     }
 
     // ---------- RES-077: Program statements carry Span ----------
