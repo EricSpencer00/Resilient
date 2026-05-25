@@ -1,8 +1,8 @@
 {
   "claims": {
     "resilient/src/compiler.rs": {
-      "branch": "res-2512-collect-free-vars-trycatch",
-      "claimed_at": "2026-05-25T11:30:00Z"
+      "branch": "res-2516-compile-if-expression",
+      "claimed_at": "2026-05-25T12:00:00Z"
     }
   }
 }

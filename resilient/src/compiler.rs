@@ -2865,7 +2865,144 @@ fn compile_expr(
             next_fn_idx,
             line,
         ),
+        // RES-2516: `if`/`else` in expression position. The parser reuses
+        // `Node::IfStatement` for both statement and expression contexts.
+        // Compile both branches so each leaves exactly one value on the stack.
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            compile_expr(
+                condition,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            compile_block_as_expr(
+                consequence,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let jmp_end = chunk.emit(Op::Jump(0), line);
+            let else_pc = chunk.code.len();
+            chunk.patch_jump(jif, else_pc)?;
+            if let Some(alt) = alternative {
+                compile_block_as_expr(
+                    alt,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
+            } else {
+                let void_idx = chunk.add_constant(Value::Void)?;
+                chunk.emit(Op::Const(void_idx), line);
+            }
+            let end_pc = chunk.code.len();
+            chunk.patch_jump(jmp_end, end_pc)?;
+            Ok(())
+        }
         other => Err(CompileError::Unsupported(node_kind(other))),
+    }
+}
+
+/// Compile a node in "expression" position — it must leave exactly one
+/// value on the stack. For `Block` nodes, all statements except the last
+/// are compiled as statements (no stack residue); the last statement is
+/// compiled as an expression. For non-`Block` nodes, delegates to
+/// `compile_expr`.
+#[allow(clippy::too_many_arguments)]
+fn compile_block_as_expr(
+    node: &Node,
+    chunk: &mut Chunk,
+    locals: &HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    match node {
+        Node::Block { stmts, .. } => {
+            if stmts.is_empty() {
+                let void_idx = chunk.add_constant(Value::Void)?;
+                chunk.emit(Op::Const(void_idx), line);
+                return Ok(());
+            }
+            let mut block_locals = locals.clone();
+            let (leading, last) = stmts.split_at(stmts.len() - 1);
+            for stmt in leading {
+                let stmt_line = node_line(stmt).unwrap_or(line);
+                compile_stmt_in_fn(
+                    stmt,
+                    chunk,
+                    &mut block_locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    stmt_line,
+                    &mut Vec::new(),
+                )?;
+            }
+            let last_node = &last[0];
+            let last_line = node_line(last_node).unwrap_or(line);
+            match last_node {
+                Node::ExpressionStatement { expr, .. } => compile_expr(
+                    expr,
+                    chunk,
+                    &block_locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    last_line,
+                ),
+                _ => compile_expr(
+                    last_node,
+                    chunk,
+                    &block_locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    last_line,
+                ),
+            }
+        }
+        _ => compile_expr(
+            node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
     }
 }
 
@@ -5417,5 +5554,78 @@ count_first_cols([0, 1, 2, 3], [0, 1, 2]);"#,
         )
         .unwrap();
         assert_int(v, 4);
+    }
+
+    #[test]
+    fn if_expression_in_let() {
+        let v = compile_run(
+            r#"
+fn choose(bool b) -> int {
+    let x = if b { 1 } else { 2 };
+    return x;
+}
+choose(true);"#,
+        )
+        .unwrap();
+        assert_int(v, 1);
+
+        let v2 = compile_run(
+            r#"
+fn choose(bool b) -> int {
+    let x = if b { 1 } else { 2 };
+    return x;
+}
+choose(false);"#,
+        )
+        .unwrap();
+        assert_int(v2, 2);
+    }
+
+    #[test]
+    fn if_expression_nested() {
+        let v = compile_run(
+            r#"
+fn nested(bool a, bool b) -> int {
+    let x = if a { if b { 10 } else { 20 } } else { 30 };
+    return x;
+}
+nested(true, false);"#,
+        )
+        .unwrap();
+        assert_int(v, 20);
+    }
+
+    #[test]
+    fn if_expression_multi_stmt_block() {
+        let v = compile_run(
+            r#"
+fn compute(bool b) -> int {
+    let x = if b {
+        let tmp = 10;
+        let result = tmp + 5;
+        result
+    } else {
+        let tmp = 20;
+        tmp
+    };
+    return x;
+}
+compute(true);"#,
+        )
+        .unwrap();
+        assert_int(v, 15);
+    }
+
+    #[test]
+    fn if_expression_in_return() {
+        let v = compile_run(
+            r#"
+fn abs_val(int n) -> int {
+    return if n < 0 { 0 - n } else { n };
+}
+abs_val(-7);"#,
+        )
+        .unwrap();
+        assert_int(v, 7);
     }
 }
