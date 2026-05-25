@@ -1,8 +1,20 @@
 {
   "claims": {
     "resilient/src/vm.rs": {
-      "branch": "res-2534-handler-table-sync",
-      "claimed_at": "2026-05-25T14:50:48Z"
+      "branch": "res-2536-closure-upvalue-mutation",
+      "claimed_at": "2026-05-25T15:02:29Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-2536-closure-upvalue-mutation",
+      "claimed_at": "2026-05-25T15:02:29Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-2536-closure-upvalue-mutation",
+      "claimed_at": "2026-05-25T15:02:29Z"
+    },
+    "resilient/src/disasm.rs": {
+      "branch": "res-2536-closure-upvalue-mutation",
+      "claimed_at": "2026-05-25T15:02:29Z"
     }
   }
 }

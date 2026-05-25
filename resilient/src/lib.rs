@@ -9952,6 +9952,10 @@ enum Value {
     Closure {
         fn_idx: u16,
         upvalues: Box<[Value]>,
+        /// RES-2536: caller-frame local slots that each upvalue was
+        /// captured from. On return, mutated upvalues are written
+        /// back to these slots in the caller's locals.
+        source_slots: Box<[u16]>,
     },
     /// FFI v1: resolved foreign symbol, callable from Resilient source.
     /// The Arc holds both the resolved ptr and the signature; the
@@ -10112,7 +10116,9 @@ impl std::fmt::Debug for Value {
             // RES-169a: skeleton Debug for the VM-side closure value.
             // Not constructed today; kept for completeness so a
             // future test printf doesn't silently no-op.
-            Value::Closure { fn_idx, upvalues } => {
+            Value::Closure {
+                fn_idx, upvalues, ..
+            } => {
                 write!(f, "Closure(fn={}, {} upvalues)", fn_idx, upvalues.len())
             }
             #[cfg(feature = "ffi")]
