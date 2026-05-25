@@ -59,12 +59,13 @@ pub enum Op {
     /// negative offsets loop backward.
     Jump(i16),
     /// RES-083: pop the operand stack; if the value is "falsy"
-    /// (`Bool(false)` or `Int(0)`), apply the relative jump.
-    /// Otherwise fall through. Non-bool/non-int → TypeMismatch.
+    /// (`Bool(false)`, `Int(0)`, `Float(0.0)`, empty `String`),
+    /// apply the relative jump. All other values are truthy.
     JumpIfFalse(i16),
     /// RES-172: pop the operand stack; if the value is "truthy"
-    /// (`Bool(true)` or `Int(!= 0)`), apply the relative jump.
-    /// Mirrors `JumpIfFalse` so the peephole pass can fold
+    /// (non-zero Int/Float, non-empty String, true Bool, or any
+    /// compound type), apply the relative jump. Mirrors
+    /// `JumpIfFalse` so the peephole pass can fold
     /// `Not; JumpIfFalse(off)` into a single `JumpIfTrue(off)`.
     JumpIfTrue(i16),
     /// RES-172: increment the local at `idx` by 1 in place. No
@@ -84,7 +85,9 @@ pub enum Op {
     Gt,
     /// RES-083: pop two ints, push `Value::Bool(lhs >= rhs)`.
     Ge,
-    /// RES-083: pop a bool, push its negation. Non-bool → TypeMismatch.
+    /// RES-083: pop a value and push its boolean negation using
+    /// truthiness rules (Bool, non-zero Int/Float, non-empty String
+    /// are truthy; everything else is falsy).
     Not,
     /// Halt execution. The top of the operand stack (if any) is the
     /// program's return value; an empty stack returns `Value::Void`.
