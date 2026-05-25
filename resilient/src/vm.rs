@@ -1070,9 +1070,15 @@ fn run_inner(
                         "LoadIndexUnchecked (non-array target)",
                     ));
                 };
-                // RES-1437: swap_remove instead of clone — see the
-                // bounds-checked LoadIndex arm above for justification.
-                stack.push(items.swap_remove(idx as usize));
+                let len = items.len() as i64;
+                let resolved = if idx < 0 { idx + len } else { idx };
+                if resolved < 0 || resolved >= len {
+                    return Err(VmError::ArrayIndexOutOfBounds {
+                        index: idx,
+                        len: items.len(),
+                    });
+                }
+                stack.push(items.swap_remove(resolved as usize));
             }
             Op::StoreIndex => {
                 // Stack layout on entry (top → bottom):
@@ -2141,9 +2147,15 @@ fn h_load_index_unchecked(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmEr
             "LoadIndexUnchecked (non-array target)",
         ));
     };
-    // RES-1437: swap_remove instead of clone — see the LoadIndex
-    // sibling above.
-    state.stack.push(items.swap_remove(idx as usize));
+    let len = items.len() as i64;
+    let resolved = if idx < 0 { idx + len } else { idx };
+    if resolved < 0 || resolved >= len {
+        return Err(VmError::ArrayIndexOutOfBounds {
+            index: idx,
+            len: items.len(),
+        });
+    }
+    state.stack.push(items.swap_remove(resolved as usize));
     Ok(Step::Continue)
 }
 
@@ -4825,5 +4837,97 @@ mod tests {
             Value::Bool(b) => assert!(b, "maps with different values should not be equal"),
             other => panic!("expected Bool, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn vm_load_index_unchecked_in_bounds() {
+        let prog = const_program(
+            &[
+                Value::Int(10),
+                Value::Int(20),
+                Value::Int(30),
+                Value::Int(1),
+            ],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::Const(2),
+                Op::MakeArray { len: 3 },
+                Op::Const(3),
+                Op::LoadIndexUnchecked,
+                Op::Return,
+            ],
+        );
+        assert_int(run(&prog).unwrap(), 20);
+    }
+
+    #[test]
+    fn vm_load_index_unchecked_negative_wraps() {
+        let prog = const_program(
+            &[
+                Value::Int(10),
+                Value::Int(20),
+                Value::Int(30),
+                Value::Int(-1),
+            ],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::Const(2),
+                Op::MakeArray { len: 3 },
+                Op::Const(3),
+                Op::LoadIndexUnchecked,
+                Op::Return,
+            ],
+        );
+        assert_int(run(&prog).unwrap(), 30);
+    }
+
+    #[test]
+    fn vm_load_index_unchecked_out_of_bounds_errors() {
+        let prog = const_program(
+            &[Value::Int(10), Value::Int(20), Value::Int(5)],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::MakeArray { len: 2 },
+                Op::Const(2),
+                Op::LoadIndexUnchecked,
+                Op::Return,
+            ],
+        );
+        let err = run(&prog).unwrap_err();
+        assert!(
+            matches!(
+                err.kind(),
+                VmError::ArrayIndexOutOfBounds { index: 5, len: 2 }
+            ),
+            "expected ArrayIndexOutOfBounds, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn vm_load_index_unchecked_negative_out_of_bounds_errors() {
+        let prog = const_program(
+            &[Value::Int(10), Value::Int(20), Value::Int(-3)],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::MakeArray { len: 2 },
+                Op::Const(2),
+                Op::LoadIndexUnchecked,
+                Op::Return,
+            ],
+        );
+        let err = run(&prog).unwrap_err();
+        assert!(
+            matches!(
+                err.kind(),
+                VmError::ArrayIndexOutOfBounds { index: -3, len: 2 }
+            ),
+            "expected ArrayIndexOutOfBounds, got {:?}",
+            err
+        );
     }
 }

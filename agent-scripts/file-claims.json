@@ -3,6 +3,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-2490-format-precision-panic",
       "claimed_at": "2026-05-25T10:30:00Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-2496-load-index-unchecked-panic",
+      "claimed_at": "2026-05-25T12:30:00Z"
     }
   }
 }
