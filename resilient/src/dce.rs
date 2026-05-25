@@ -70,7 +70,12 @@ fn remove_unreachable(chunk: &mut Chunk) {
             worklist.push(t);
         }
         // Fall-through: everything except unconditional terminators.
-        let falls_through = !matches!(op, Op::Return | Op::ReturnFromCall | Op::Jump(_));
+        // RES-2514: TailCall and AssertFail are also terminators that
+        // never fall through to the next instruction.
+        let falls_through = !matches!(
+            op,
+            Op::Return | Op::ReturnFromCall | Op::Jump(_) | Op::TailCall(_) | Op::AssertFail
+        );
         let next_pc = pc + 1;
         if falls_through && next_pc < n && !reachable[next_pc] {
             reachable[next_pc] = true;
@@ -97,9 +102,13 @@ fn remove_unreachable(chunk: &mut Chunk) {
         .map(|(pc, &op)| jump_target_pc(op, pc))
         .collect();
 
+    // RES-2514: build new_to_old in parallel (same pattern as RES-2370
+    // in const_fold.rs) to replace the O(n²) reverse lookup.
+    let mut new_to_old: Vec<usize> = Vec::with_capacity(n);
     for (pc, &op) in chunk.code.iter().enumerate() {
         if reachable[pc] {
             old_to_new[pc] = new_code.len();
+            new_to_old.push(pc);
             new_code.push(op);
             new_line_info.push(chunk.line_info[pc]);
         }
@@ -112,10 +121,7 @@ fn remove_unreachable(chunk: &mut Chunk) {
         if !is_jump_op(*op) {
             continue;
         }
-        // Find the old PC that produced this new_pc position.
-        let Some(old_pc) = (0..n).find(|&p| old_to_new[p] == new_pc) else {
-            continue;
-        };
+        let old_pc = new_to_old[new_pc];
         let Some(old_target) = orig_targets[old_pc] else {
             continue;
         };
@@ -239,6 +245,9 @@ fn fold_constant_branches(chunk: &mut Chunk) {
     // the `optimized_any` early-out in `peephole::optimize` (RES-1407).
     let mut folded_any = false;
 
+    // RES-2514: build new_to_old in parallel for O(1) reverse lookup.
+    let mut new_to_old: Vec<usize> = Vec::with_capacity(chunk.code.len());
+
     let mut i = 0;
     while i < chunk.code.len() {
         old_to_new[i] = new_code.len();
@@ -258,6 +267,7 @@ fn fold_constant_branches(chunk: &mut Chunk) {
                     // Replace the pair with a single unconditional Jump.
                     // Use offset 0 as a placeholder; the re-link pass will fix it.
                     let new_pc = new_code.len();
+                    new_to_old.push(i);
                     new_code.push(Op::Jump(0));
                     new_line_info.push(chunk.line_info[i]);
                     replacement_jumps.push((new_pc, old_target_pc));
@@ -270,6 +280,7 @@ fn fold_constant_branches(chunk: &mut Chunk) {
         }
 
         // No fold — copy verbatim.
+        new_to_old.push(i);
         new_code.push(chunk.code[i]);
         new_line_info.push(chunk.line_info[i]);
         i += 1;
@@ -296,10 +307,8 @@ fn fold_constant_branches(chunk: &mut Chunk) {
         if replacement_jumps.iter().any(|(rp, _)| *rp == new_pc) {
             continue;
         }
-        // Find the originating old PC by scanning old_to_new.
-        let Some(old_pc) = (0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc) else {
-            continue;
-        };
+        // RES-2514: O(1) reverse lookup via new_to_old vec.
+        let old_pc = new_to_old[new_pc];
         let Some(old_target) = orig_targets[old_pc] else {
             continue;
         };
@@ -614,5 +623,41 @@ mod tests {
             original_len,
             "int const should not be folded"
         );
+    }
+
+    // RES-2514: TailCall and AssertFail are terminators.
+
+    #[test]
+    fn dead_code_after_tailcall_is_removed() {
+        let mut chunk = chunk_from_ops(vec![
+            Op::TailCall(0),
+            Op::Add,    // dead
+            Op::Return, // dead
+        ]);
+        eliminate(&mut chunk);
+        assert_eq!(
+            chunk.code.len(),
+            1,
+            "expected 1 op after DCE: {:?}",
+            chunk.code
+        );
+        assert_eq!(chunk.code[0], Op::TailCall(0));
+    }
+
+    #[test]
+    fn dead_code_after_assert_fail_is_removed() {
+        let mut chunk = chunk_from_ops(vec![
+            Op::AssertFail,
+            Op::Add,    // dead
+            Op::Return, // dead
+        ]);
+        eliminate(&mut chunk);
+        assert_eq!(
+            chunk.code.len(),
+            1,
+            "expected 1 op after DCE: {:?}",
+            chunk.code
+        );
+        assert_eq!(chunk.code[0], Op::AssertFail);
     }
 }
