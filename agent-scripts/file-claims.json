@@ -1,20 +1,3 @@
 {
-  "claims": {
-    "resilient/src/bytecode.rs": {
-      "branch": "res-2532-vm-global-vars",
-      "claimed_at": "2026-05-25T14:30:00Z"
-    },
-    "resilient/src/compiler.rs": {
-      "branch": "res-2532-vm-global-vars",
-      "claimed_at": "2026-05-25T14:30:00Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-2532-vm-global-vars",
-      "claimed_at": "2026-05-25T14:30:00Z"
-    },
-    "resilient/src/disasm.rs": {
-      "branch": "res-2532-vm-global-vars",
-      "claimed_at": "2026-05-25T14:30:00Z"
-    }
-  }
+  "claims": {}
 }
