@@ -102,6 +102,7 @@ mod repl;
 // RES-510 PR 3: file watcher for `--watch` mode. Same reason — uses
 // platform fs-notification APIs (inotify / FSEvents / ...).
 mod imports;
+mod stdlib;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch_mode;
 // RES-510 PR 2: injectable stdout sink. The `print` / `println` /
@@ -736,6 +737,7 @@ enum Token {
     /// operations like `volatile_read_u32` / `volatile_write_u32` that
     /// can't be reached from a regular block.
     Unsafe,
+    Pub,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -896,6 +898,7 @@ impl Token {
             Token::Trait => Cow::Borrowed("`trait`"),
             Token::Enum => Cow::Borrowed("`enum`"),
             Token::Unsafe => Cow::Borrowed("`unsafe`"),
+            Token::Pub => Cow::Borrowed("`pub`"),
             Token::Underscore => Cow::Borrowed("`_`"),
             Token::Default => Cow::Borrowed("`default`"),
             Token::Dot => Cow::Borrowed("`.`"),
@@ -1450,6 +1453,7 @@ impl Lexer {
                         "trait" => Token::Trait,
                         "enum" => Token::Enum,
                         "unsafe" => Token::Unsafe,
+                        "pub" => Token::Pub,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2134,6 +2138,8 @@ enum Node {
         /// holds under the declared `requires`, otherwise the
         /// compiler rejects the program.
         recovers_to: Option<Box<Node>>,
+        #[allow(dead_code)]
+        is_pub: bool,
     },
     LiveBlock {
         body: Box<Node>,
@@ -2468,6 +2474,8 @@ enum Node {
         repr_c: bool,
         /// RES-088: span of the `struct` keyword. Consumed in follow-ups.
         span: span::Span,
+        #[allow(dead_code)]
+        is_pub: bool,
     },
     /// RES-155: `let <StructName> { field1, field2: local, .. } = expr;`
     /// struct destructuring. `fields` holds `(field_name, local_name)`
@@ -3193,6 +3201,7 @@ impl Parser {
             // item or returns `None` — which `parse_program` already
             // treats as "skip this iteration".
             Token::HashLeftBracket => crate::cfg_attr::parse_cfg_attribute(self),
+            Token::Pub => Some(self.parse_pub_decl()),
             Token::Function => Some(self.parse_function()),
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
@@ -3578,6 +3587,33 @@ impl Parser {
         }
     }
 
+    fn parse_pub_decl(&mut self) -> Node {
+        self.next_token();
+        match self.current_token {
+            Token::Function => {
+                let mut node = self.parse_function();
+                if let Node::Function { ref mut is_pub, .. } = node {
+                    *is_pub = true;
+                }
+                node
+            }
+            Token::Struct => {
+                let mut node = self.parse_struct_decl();
+                if let Node::StructDecl { ref mut is_pub, .. } = node {
+                    *is_pub = true;
+                }
+                node
+            }
+            _ => {
+                self.record_error("`pub` must be followed by `fn` or `struct`".to_string());
+                Node::Block {
+                    stmts: Vec::new(),
+                    span: self.span_at_current(),
+                }
+            }
+        }
+    }
+
     fn parse_function(&mut self) -> Node {
         // Default: no annotation. The attribute-dispatch path
         // (see parse_attributed_item) and the effect-keyword
@@ -3858,6 +3894,7 @@ impl Parser {
                     type_params: type_params.clone(),
                     type_param_bounds: type_param_bounds.clone(),
                     fails: Vec::new(),
+                    is_pub: false,
                 };
             }
 
@@ -3877,6 +3914,7 @@ impl Parser {
                 type_params,
                 type_param_bounds,
                 fails: Vec::new(),
+                is_pub: false,
             };
         }
 
@@ -3935,6 +3973,7 @@ impl Parser {
                     type_params: type_params.clone(),
                     type_param_bounds: type_param_bounds.clone(),
                     fails,
+                    is_pub: false,
                 };
             }
         }
@@ -3956,6 +3995,7 @@ impl Parser {
             type_params,
             type_param_bounds,
             fails,
+            is_pub: false,
         }
     }
 
@@ -4580,6 +4620,7 @@ impl Parser {
             type_params: Vec::new(),
             type_param_bounds: Vec::new(),
             fails,
+            is_pub: false,
         }
     }
 
@@ -6382,25 +6423,37 @@ impl Parser {
     }
 
     /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, alias, span }`.
-    /// RES-360: `use "path" as name;` — like above but imports are scoped
-    /// under `name::` instead of being merged into the global namespace.
-    /// Resolved by `imports::expand_uses` before typechecker / interpreter.
+    /// RES-360: `use "path" as name;` — namespaced import.
+    /// Also supports `use std::module;` and `use std::module as alias;`.
     fn parse_use_statement(&mut self) -> Option<Node> {
-        // Caller checked self.current_token == Token::Use.
         self.next_token(); // consume 'use'
         let path = match &self.current_token {
             Token::StringLiteral(s) => s.clone(),
+            Token::Identifier(name) => {
+                let mut segments = vec![name.clone()];
+                while self.peek_token == Token::DoubleColon {
+                    self.next_token(); // consume identifier
+                    self.next_token(); // consume '::'
+                    match &self.current_token {
+                        Token::Identifier(seg) => segments.push(seg.clone()),
+                        _ => {
+                            self.record_error(
+                                "Expected identifier after `::` in use path".to_string(),
+                            );
+                            return None;
+                        }
+                    }
+                }
+                segments.join("::")
+            }
             _ => {
-                self.record_error(
-                    "Expected string literal after 'use' (e.g. `use \"helpers.rz\";`)".to_string(),
-                );
+                self.record_error("Expected string literal or module path after 'use'".to_string());
                 return None;
             }
         };
-        // RES-360: optional `as NAME` suffix.
         let alias = if self.peek_token == Token::As {
-            self.next_token(); // consume string literal (current becomes 'as')
-            self.next_token(); // consume 'as'; current is now the alias identifier
+            self.next_token();
+            self.next_token();
             match &self.current_token {
                 Token::Identifier(name) => {
                     let name = name.clone();
@@ -8233,6 +8286,7 @@ impl Parser {
                 fields: Vec::new(),
                 repr_c,
                 span: self.span_at_current(),
+                is_pub: false,
             };
         }
         self.next_token(); // skip '{'
@@ -8276,6 +8330,7 @@ impl Parser {
             fields,
             repr_c,
             span: self.span_at_current(),
+            is_pub: false,
         }
     }
 
@@ -8331,6 +8386,7 @@ impl Parser {
             fields,
             repr_c,
             span: self.span_at_current(),
+            is_pub: false,
         }
     }
 
@@ -10040,7 +10096,7 @@ enum EnumValuePayload {
 /// at a key position surfaces a runtime error via `MapKey::from_value`.
 /// Derives `Hash + Eq` so `HashMap` works without any custom hasher.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum MapKey {
+pub(crate) enum MapKey {
     Int(i64),
     Str(String),
     Bool(bool),
@@ -27299,19 +27355,27 @@ fn execute_file(
         &program,
         Node::Program(stmts) if stmts.iter().any(|s| matches!(s.node, Node::Use { .. }))
     );
+    let mut std_bindings = Vec::new();
     if has_use {
         let base_dir = Path::new(filename)
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         let mut loaded: HashSet<PathBuf> = HashSet::new();
-        // Seed with the canonicalized current file so circular `use`s are
-        // detected if a re-import points back at us.
         if let Ok(canon) = fs::canonicalize(filename) {
             loaded.insert(canon);
         }
-        if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
+        let mut std_imports = Vec::new();
+        if let Err(e) =
+            imports::expand_uses_with_std(&mut program, &base_dir, &mut loaded, &mut std_imports)
+        {
             return Err(format!("Import error: {}", e));
+        }
+        for si in &std_imports {
+            match stdlib::resolve_std_import(&si.module, si.alias.as_deref()) {
+                Ok(bindings) => std_bindings.extend(bindings),
+                Err(e) => return Err(format!("Import error: {}", e)),
+            }
         }
     }
 
@@ -27582,6 +27646,8 @@ fn execute_file(
     let _live_telemetry_guard = install_live_run_telemetry(basename, log_writer);
 
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
+
+    stdlib::inject_std_bindings(&std_bindings, &interpreter.env);
 
     // FFI v1: resolve every `Node::Extern` block ahead of eval, bind as
     // Value::Foreign in the root env so the tree-walker can call through.

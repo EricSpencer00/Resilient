@@ -321,6 +321,8 @@ enum Tok {
     // RES-290: `trait Name { fn sig(...); ... }` trait declaration keyword.
     #[token("trait")]
     Trait,
+    #[token("pub")]
+    Pub,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,

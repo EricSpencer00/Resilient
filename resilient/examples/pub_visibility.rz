@@ -1,0 +1,13 @@
+pub fn greet(string name) -> string {
+    return "Hello, " + name + "!";
+}
+
+fn helper() -> string {
+    return "internal";
+}
+
+fn main() {
+    println(greet("world"));
+    println(helper());
+}
+main();

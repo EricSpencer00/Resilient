@@ -471,6 +471,7 @@ mod tests {
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),
                 fails: Vec::new(),
+                is_pub: false,
             },
             span: span::Span::default(),
         }
@@ -640,6 +641,7 @@ mod tests {
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),
                 fails: Vec::new(),
+                is_pub: false,
             },
             span: span::Span::default(),
         }
@@ -905,6 +907,7 @@ mod tests {
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),
                 fails: Vec::new(),
+                is_pub: false,
             },
             span: span::Span::default(),
         }
@@ -958,6 +961,7 @@ mod tests {
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),
                 fails: Vec::new(),
+                is_pub: false,
             },
             span: span::Span::default(),
         };

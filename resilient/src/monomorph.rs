@@ -314,6 +314,7 @@ fn rewrite_node(
             type_param_bounds,
             fails,
             recovers_to,
+            is_pub,
         } => Node::Function {
             name: name.clone(),
             parameters: parameters.clone(),
@@ -337,6 +338,7 @@ fn rewrite_node(
             recovers_to: recovers_to
                 .as_ref()
                 .map(|r| Box::new(rewrite_node(r, generic_fns, instantiations))),
+            is_pub: *is_pub,
         },
         Node::Block { stmts, span } => Node::Block {
             stmts: stmts
@@ -552,6 +554,7 @@ fn specialize_fn(fn_node: &Node, mangled: &str, type_args: &[Type]) -> Node {
                 type_param_bounds: vec![],
                 fails: fails.clone(),
                 recovers_to: recovers_to.clone(),
+                is_pub: false,
             }
         }
         other => other.clone(),

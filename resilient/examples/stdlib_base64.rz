@@ -1,0 +1,9 @@
+use std::base64;
+
+fn main() {
+    let encoded = base64_encode("Hello, Resilient!");
+    println(encoded);
+    let decoded = base64_decode(encoded);
+    println(decoded);
+}
+main();
