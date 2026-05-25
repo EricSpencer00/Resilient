@@ -226,7 +226,17 @@ fn write_op(
         Op::Shr => write!(out, "Shr")?,
         Op::AssertFail => write!(out, "AssertFail")?,
         Op::MakeTuple { len } => write!(out, "MakeTuple {}", len)?,
-        Op::CallClosure { arity } => write!(out, "CallClosure arity={}", arity)?,
+        Op::CallClosure { arity, source_slot } => {
+            if source_slot == u16::MAX {
+                write!(out, "CallClosure arity={}", arity)?
+            } else {
+                write!(out, "CallClosure arity={} src={}", arity, source_slot)?
+            }
+        }
+        Op::StoreUpvalue {
+            upvalue_idx,
+            local_slot,
+        } => write!(out, "StoreUpvalue uv={} local={}", upvalue_idx, local_slot)?,
         Op::TryUnwrap => write!(out, "TryUnwrap")?,
         Op::IterPrepare => write!(out, "IterPrepare")?,
         Op::LoadGlobal(idx) => write!(out, "LoadGlobal {}", idx)?,
@@ -318,6 +328,7 @@ mod tests {
                 arity: 0,
                 chunk: mk_chunk(vec![Op::Return], vec![], vec![1]),
                 local_count: 0,
+                upvalue_source_slots: Box::default(),
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -345,12 +356,14 @@ mod tests {
                         vec![1, 1],
                     ),
                     local_count: 1,
+                    upvalue_source_slots: Box::default(),
                 },
                 Function {
                     name: "beta".to_string(),
                     arity: 2,
                     chunk: mk_chunk(vec![Op::Return], vec![], vec![1]),
                     local_count: 2,
+                    upvalue_source_slots: Box::default(),
                 },
             ],
             #[cfg(feature = "ffi")]
@@ -404,6 +417,7 @@ mod tests {
                     vec![1, 1],
                 ),
                 local_count: 1,
+                upvalue_source_slots: Box::default(),
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -481,6 +495,7 @@ mod tests {
                 arity: 1,
                 chunk: Chunk::new(),
                 local_count: 0,
+                upvalue_source_slots: Box::default(),
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),

@@ -657,6 +657,7 @@ mod tests {
             name: "id".to_string(),
             arity: 1,
             local_count: 1,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(
                 vec![Op::LoadLocal(0), Op::ReturnFromCall, Op::ReturnFromCall],
                 vec![],
@@ -671,6 +672,7 @@ mod tests {
             name: "add1".to_string(),
             arity: 1,
             local_count: 1,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(
                 vec![
                     Op::LoadLocal(0),
@@ -691,6 +693,7 @@ mod tests {
             name: "rec".to_string(),
             arity: 0,
             local_count: 0,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(vec![Op::Call(0), Op::ReturnFromCall], vec![], vec![1, 1]),
         }
     }
@@ -713,6 +716,7 @@ mod tests {
             name: "big".to_string(),
             arity: 1,
             local_count: 1,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(code, vec![Value::Int(0)], lines),
         }
     }
@@ -759,6 +763,7 @@ mod tests {
             name: "boundary".to_string(),
             arity: 1,
             local_count: 1,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(code, vec![], lines),
         };
         let funcs = vec![func];
@@ -777,6 +782,7 @@ mod tests {
             name: "over".to_string(),
             arity: 1,
             local_count: 1,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(code, vec![], lines),
         };
         let funcs = vec![func];
@@ -789,6 +795,7 @@ mod tests {
             name: "tc".to_string(),
             arity: 0,
             local_count: 0,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(vec![Op::TailCall(0), Op::Return], vec![], vec![1, 1]),
         };
         let funcs = vec![func];
@@ -801,6 +808,7 @@ mod tests {
             name: "ffi_caller".to_string(),
             arity: 0,
             local_count: 0,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(
                 vec![Op::CallForeign(0), Op::ReturnFromCall],
                 vec![],
@@ -817,6 +825,7 @@ mod tests {
             name: "cl".to_string(),
             arity: 0,
             local_count: 0,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(
                 vec![
                     Op::MakeClosure {
@@ -942,6 +951,7 @@ mod tests {
             name: "zero".to_string(),
             arity: 0,
             local_count: 0,
+            upvalue_source_slots: Box::default(),
             chunk: mk_chunk(
                 vec![Op::Const(0), Op::ReturnFromCall, Op::ReturnFromCall],
                 vec![Value::Int(0)],

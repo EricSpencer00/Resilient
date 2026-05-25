@@ -111,13 +111,21 @@ pub enum Op {
     /// wire the actual slab; today the dispatch arm returns
     /// `VmError::Unsupported`.
     LoadUpvalue(u16),
+    /// RES-2536: pop TOS and write it to BOTH the local slot
+    /// (locals_base + local_slot) AND frame.upvalues[upvalue_idx].
+    /// Persists closure mutations so the value is retained across calls.
+    /// Encoded as (upvalue_idx, local_slot) packed into (u16, u16).
+    StoreUpvalue { upvalue_idx: u16, local_slot: u16 },
     /// RES-169c: call a closure value sitting below `arity` arguments
     /// on the operand stack. Stack layout before this op:
     ///   `[..., closure, arg0, arg1, …, argArity-1]`
     /// Pops `arity` args (reverse order → source order in the new
     /// frame's locals), then pops the closure, creates a new
     /// `CallFrame` with the closure's `fn_idx` and `upvalues` slab.
-    CallClosure { arity: u8 },
+    /// `source_slot` is the caller-frame local slot the closure was
+    /// loaded from (`u16::MAX` if unknown/temporary) — used to
+    /// write back mutated upvalues on return.
+    CallClosure { arity: u8, source_slot: u16 },
     /// RES-384: self-tail-call in tail position. Reuses the current
     /// `CallFrame` instead of pushing a new one, keeping call-stack
     /// depth O(1) for tail-recursive functions. The callee MUST be
@@ -292,6 +300,10 @@ pub struct Function {
     pub arity: u8,
     pub chunk: Chunk,
     pub local_count: u16,
+    /// RES-2536: for closures, the outer-scope local slot each upvalue
+    /// was captured from. `source_slots[i]` is the caller-frame slot
+    /// for upvalue `i`. Empty for non-closure functions.
+    pub upvalue_source_slots: Box<[u16]>,
 }
 
 /// RES-081: top-level compile output. `main` is the entrypoint

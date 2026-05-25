@@ -359,6 +359,15 @@ struct CallFrame {
     /// RES-169c: captured values for this closure frame. Empty for
     /// regular (non-closure) calls; `LoadUpvalue(i)` indexes here.
     upvalues: Box<[Value]>,
+    /// RES-2536: absolute index into the `locals` slab where the
+    /// closure value lives in the caller's frame. `None` for non-closure
+    /// calls or temporary closures. Used by `ReturnFromCall` to write
+    /// mutated upvalues back to the `Value::Closure`.
+    closure_home: Option<usize>,
+    /// RES-2536: for each upvalue, the caller-frame local slot it was
+    /// captured from. On return, mutated upvalues are written back to
+    /// both the `Value::Closure` and the caller's local slots.
+    source_slots: Box<[u16]>,
 }
 
 /// RES-329: dispatch strategy. The default match-based loop and the
@@ -464,6 +473,8 @@ fn run_inner(
         pc: 0,
         locals_base: 0,
         upvalues: Box::default(),
+        closure_home: None,
+        source_slots: Box::default(),
     });
 
     loop {
@@ -665,6 +676,8 @@ fn run_inner(
                     pc: 0,
                     locals_base: base,
                     upvalues: Box::default(),
+                    closure_home: None,
+                    source_slots: Box::default(),
                 });
             }
             Op::ReturnFromCall => {
@@ -676,10 +689,23 @@ fn run_inner(
                 let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
                 if frames.is_empty() {
-                    // ReturnFromCall at top level — shouldn't happen
-                    // for well-formed programs. Treat as halt so
-                    // hand-rolled chunks don't panic.
                     return Ok(ret);
+                }
+                if !popped.upvalues.is_empty() {
+                    let caller_base = frames.last().map_or(0, |f| f.locals_base);
+                    for (i, val) in popped.upvalues.iter().enumerate() {
+                        if let Some(&src) = popped.source_slots.get(i) {
+                            let abs = caller_base + src as usize;
+                            if abs < locals.len() {
+                                locals[abs] = val.clone();
+                            }
+                        }
+                    }
+                    if let Some(home) = popped.closure_home
+                        && let Some(Value::Closure { upvalues, .. }) = locals.get_mut(home)
+                    {
+                        *upvalues = popped.upvalues;
+                    }
                 }
                 locals.truncate(popped.locals_base);
                 stack.push(ret);
@@ -856,9 +882,15 @@ fn run_inner(
                 let split = stack.len() - upvalue_count as usize;
                 let captured: Box<[Value]> =
                     stack.drain(split..).collect::<Vec<_>>().into_boxed_slice();
+                let src = program
+                    .functions
+                    .get(fn_idx as usize)
+                    .map(|f| f.upvalue_source_slots.clone())
+                    .unwrap_or_default();
                 stack.push(Value::Closure {
                     fn_idx,
                     upvalues: captured,
+                    source_slots: src,
                 });
             }
             Op::LoadUpvalue(idx) => {
@@ -870,18 +902,44 @@ fn run_inner(
                     .clone();
                 stack.push(v);
             }
-            Op::CallClosure { arity } => {
+            Op::StoreUpvalue {
+                upvalue_idx,
+                local_slot,
+            } => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let frame_idx = frames.len() - 1;
+                let frame = &mut frames[frame_idx];
+                let abs = frame.locals_base + local_slot as usize;
+                if locals.len() <= abs {
+                    locals.resize(abs + 1, Value::Void);
+                }
+                locals[abs] = v.clone();
+                if let Some(uv) = frame.upvalues.get_mut(upvalue_idx as usize) {
+                    *uv = v;
+                }
+            }
+            Op::CallClosure { arity, source_slot } => {
                 if stack.len() < arity as usize + 1 {
                     return Err(VmError::EmptyStack);
                 }
                 if frames.len() >= MAX_CALL_DEPTH {
                     return Err(VmError::CallStackOverflow);
                 }
+                let caller_base = frames.last().map_or(0, |f| f.locals_base);
+                let home = if source_slot != u16::MAX {
+                    Some(caller_base + source_slot as usize)
+                } else {
+                    None
+                };
                 let split = stack.len() - arity as usize;
                 let args: Vec<Value> = stack.drain(split..).collect();
                 let closure = stack.pop().ok_or(VmError::EmptyStack)?;
-                let (fn_idx, captured) = match closure {
-                    Value::Closure { fn_idx, upvalues } => (fn_idx, upvalues),
+                let (fn_idx, captured, src_slots) = match closure {
+                    Value::Closure {
+                        fn_idx,
+                        upvalues,
+                        source_slots,
+                    } => (fn_idx, upvalues, source_slots),
                     _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
                 };
                 let func = program
@@ -898,6 +956,8 @@ fn run_inner(
                     pc: 0,
                     locals_base: base,
                     upvalues: captured,
+                    closure_home: home,
+                    source_slots: src_slots,
                 });
                 continue;
             }
@@ -1531,6 +1591,7 @@ fn op_to_index(op: Op) -> usize {
         Op::IterPrepare => OP_KIND_ITER_PREPARE,
         Op::LoadGlobal(_) => OP_KIND_LOAD_GLOBAL,
         Op::StoreGlobal(_) => OP_KIND_STORE_GLOBAL,
+        Op::StoreUpvalue { .. } => OP_KIND_STORE_UPVALUE,
     }
 }
 
@@ -1550,7 +1611,8 @@ const OP_KIND_TRY_UNWRAP: usize = 43;
 const OP_KIND_ITER_PREPARE: usize = 44;
 const OP_KIND_LOAD_GLOBAL: usize = 45;
 const OP_KIND_STORE_GLOBAL: usize = 46;
-const HANDLER_TABLE_LEN: usize = 47;
+const OP_KIND_STORE_UPVALUE: usize = 47;
+const HANDLER_TABLE_LEN: usize = 48;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1603,6 +1665,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_ITER_PREPARE] = h_iter_prepare;
     table[OP_KIND_LOAD_GLOBAL] = h_load_global;
     table[OP_KIND_STORE_GLOBAL] = h_store_global;
+    table[OP_KIND_STORE_UPVALUE] = h_store_upvalue;
     table
 };
 
@@ -1630,6 +1693,8 @@ fn run_direct(
         pc: 0,
         locals_base: 0,
         upvalues: Box::default(),
+        closure_home: None,
+        source_slots: Box::default(),
     });
 
     loop {
@@ -1639,11 +1704,26 @@ fn run_direct(
         *last_pc = (state.frames[frame_idx].chunk_idx, pc + 1);
 
         if pc >= chunk.code.len() {
-            // Implicit return — main halts, fn body returns Void.
             if state.frames.len() == 1 {
                 return Ok(state.stack.pop().unwrap_or(Value::Void));
             }
             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            if !popped.upvalues.is_empty() {
+                let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
+                for (i, val) in popped.upvalues.iter().enumerate() {
+                    if let Some(&src) = popped.source_slots.get(i) {
+                        let abs = caller_base + src as usize;
+                        if abs < state.locals.len() {
+                            state.locals[abs] = val.clone();
+                        }
+                    }
+                }
+                if let Some(home) = popped.closure_home
+                    && let Some(Value::Closure { upvalues, .. }) = state.locals.get_mut(home)
+                {
+                    *upvalues = popped.upvalues;
+                }
+            }
             state.locals.truncate(popped.locals_base);
             state.stack.push(Value::Void);
             continue;
@@ -1883,6 +1963,8 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         pc: 0,
         locals_base: base,
         upvalues: Box::default(),
+        closure_home: None,
+        source_slots: Box::default(),
     });
     Ok(Step::Continue)
 }
@@ -1893,6 +1975,22 @@ fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError>
     let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
     if state.frames.is_empty() {
         return Ok(Step::Halt(ret));
+    }
+    if !popped.upvalues.is_empty() {
+        let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
+        for (i, val) in popped.upvalues.iter().enumerate() {
+            if let Some(&src) = popped.source_slots.get(i) {
+                let abs = caller_base + src as usize;
+                if abs < state.locals.len() {
+                    state.locals[abs] = val.clone();
+                }
+            }
+        }
+        if let Some(home) = popped.closure_home
+            && let Some(Value::Closure { upvalues, .. }) = state.locals.get_mut(home)
+        {
+            *upvalues = popped.upvalues;
+        }
     }
     state.locals.truncate(popped.locals_base);
     state.stack.push(ret);
@@ -2090,9 +2188,16 @@ fn h_make_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         .drain(split..)
         .collect::<Vec<_>>()
         .into_boxed_slice();
+    let src = state
+        .program
+        .functions
+        .get(fn_idx as usize)
+        .map(|f| f.upvalue_source_slots.clone())
+        .unwrap_or_default();
     state.stack.push(Value::Closure {
         fn_idx,
         upvalues: captured,
+        source_slots: src,
     });
     Ok(Step::Continue)
 }
@@ -2114,7 +2219,7 @@ fn h_load_upvalue(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 
 #[inline(never)]
 fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
-    let Op::CallClosure { arity } = op else {
+    let Op::CallClosure { arity, source_slot } = op else {
         unreachable!()
     };
     if state.stack.len() < arity as usize + 1 {
@@ -2123,11 +2228,21 @@ fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     if state.frames.len() >= MAX_CALL_DEPTH {
         return Err(VmError::CallStackOverflow);
     }
+    let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
+    let home = if source_slot != u16::MAX {
+        Some(caller_base + source_slot as usize)
+    } else {
+        None
+    };
     let split = state.stack.len() - arity as usize;
     let args: Vec<Value> = state.stack.drain(split..).collect();
     let closure = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let (fn_idx, captured) = match closure {
-        Value::Closure { fn_idx, upvalues } => (fn_idx, upvalues),
+    let (fn_idx, captured, src_slots) = match closure {
+        Value::Closure {
+            fn_idx,
+            upvalues,
+            source_slots,
+        } => (fn_idx, upvalues, source_slots),
         _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
     };
     let func = state
@@ -2147,6 +2262,8 @@ fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         pc: 0,
         locals_base: base,
         upvalues: captured,
+        closure_home: home,
+        source_slots: src_slots,
     });
     Ok(Step::Continue)
 }
@@ -2620,6 +2737,29 @@ fn h_store_global(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     Ok(Step::Continue)
 }
 
+#[inline(never)]
+fn h_store_upvalue(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::StoreUpvalue {
+        upvalue_idx,
+        local_slot,
+    } = op
+    else {
+        unreachable!()
+    };
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let frame_idx = state.frame_idx();
+    let frame = &mut state.frames[frame_idx];
+    let abs = frame.locals_base + local_slot as usize;
+    if state.locals.len() <= abs {
+        state.locals.resize(abs + 1, Value::Void);
+    }
+    state.locals[abs] = v.clone();
+    if let Some(uv) = frame.upvalues.get_mut(upvalue_idx as usize) {
+        *uv = v;
+    }
+    Ok(Step::Continue)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2859,6 +2999,7 @@ mod tests {
             arity: 0,
             chunk: body,
             local_count: 0,
+            upvalue_source_slots: Box::default(),
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -3125,6 +3266,7 @@ mod tests {
                 name: "f".into(),
                 arity: 0,
                 local_count: 0,
+                upvalue_source_slots: Box::default(),
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]
@@ -3132,7 +3274,9 @@ mod tests {
         };
         let v = run(&p).unwrap();
         match v {
-            Value::Closure { fn_idx, upvalues } => {
+            Value::Closure {
+                fn_idx, upvalues, ..
+            } => {
                 assert_eq!(fn_idx, 0);
                 assert_eq!(upvalues.len(), 0);
             }
@@ -3166,6 +3310,7 @@ mod tests {
         let c = Value::Closure {
             fn_idx: 5,
             upvalues: vec![Value::Int(1), Value::Int(2)].into_boxed_slice(),
+            source_slots: Box::default(),
         };
         assert_eq!(format!("{:?}", c), "Closure(fn=5, 2 upvalues)");
         assert_eq!(format!("{}", c), "<closure>");
@@ -4025,6 +4170,7 @@ mod tests {
             arity: 0,
             chunk: body,
             local_count: 0,
+            upvalue_source_slots: Box::default(),
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -4062,6 +4208,7 @@ mod tests {
                 name: "f".into(),
                 arity: 0,
                 local_count: 0,
+                upvalue_source_slots: Box::default(),
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]
@@ -4131,12 +4278,19 @@ mod tests {
             Op::Shr,
             Op::AssertFail,
             Op::MakeTuple { len: 0 },
-            Op::CallClosure { arity: 0 },
+            Op::CallClosure {
+                arity: 0,
+                source_slot: u16::MAX,
+            },
             Op::TryUnwrap,
             Op::IterPrepare,
             Op::LoadGlobal(0),
             Op::StoreGlobal(0),
             Op::LoadIndexUnchecked,
+            Op::StoreUpvalue {
+                upvalue_idx: 0,
+                local_slot: 0,
+            },
         ];
         for op in samples {
             let idx = op_to_index(*op);
@@ -5495,5 +5649,35 @@ mod tests {
     fn res2534_string_repeat_ok_both_dispatch() {
         let src = r#""ab" * 3"#;
         assert_both_eq(src);
+    }
+
+    // ── RES-2536: closure upvalue mutation ───────────────────────────────
+
+    #[test]
+    fn res2536_closure_mutation_persists_across_calls() {
+        let src = "let x = 0; let inc = fn() { x = x + 1; }; inc(); inc(); x";
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 2);
+    }
+
+    #[test]
+    fn res2536_closure_mutation_three_calls() {
+        let src = "let x = 10; let dec = fn() { x = x - 1; }; dec(); dec(); dec(); x";
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 7);
+    }
+
+    #[test]
+    fn res2536_closure_captures_multiple_vars() {
+        let src = "let a = 1; let b = 2; let swap = fn() { let t = a; a = b; b = t; }; swap(); a + b * 10";
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 12);
+    }
+
+    #[test]
+    fn res2536_closure_read_without_mutation_unchanged() {
+        let src = "let x = 42; let read = fn() -> int { return x; }; read()";
+        assert_both_eq(src);
+        assert_int(compile_run(src).unwrap(), 42);
     }
 }

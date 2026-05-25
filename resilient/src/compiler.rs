@@ -376,6 +376,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 arity,
                 chunk,
                 local_count: next_local,
+                upvalue_source_slots: Box::default(),
             });
         }
     }
@@ -2264,7 +2265,13 @@ fn compile_expr(
                     if arity > u8::MAX as usize {
                         return Err(CompileError::Unsupported("too many args in indirect call"));
                     }
-                    chunk.emit(Op::CallClosure { arity: arity as u8 }, line);
+                    chunk.emit(
+                        Op::CallClosure {
+                            arity: arity as u8,
+                            source_slot: slot,
+                        },
+                        line,
+                    );
                     return Ok(());
                 }
             }
@@ -2771,6 +2778,25 @@ fn compile_expr(
             }
             fn_chunk.emit(Op::ReturnFromCall, 0);
 
+            // RES-2536: rewrite StoreLocal ops that target upvalue
+            // slots to StoreUpvalue, which persists the mutation in
+            // the closure's upvalue slab for cross-call visibility.
+            if upvalue_count > 0 {
+                let ub = upvalue_base;
+                let limit = ub + upvalue_count as u16;
+                for op in fn_chunk.code.iter_mut() {
+                    if let Op::StoreLocal(slot) = *op
+                        && slot >= ub
+                        && slot < limit
+                    {
+                        *op = Op::StoreUpvalue {
+                            upvalue_idx: slot - ub,
+                            local_slot: slot,
+                        };
+                    }
+                }
+            }
+
             let local_count = fn_next_local;
             // Insert at fn_idx (pre-allocated index). fns may have grown via
             // nested FunctionLiterals; we need to push a placeholder then
@@ -2779,12 +2805,15 @@ fn compile_expr(
             // also increment next_fn_idx, fn_idx may not equal fns.len() by
             // the time we reach here. Use a placeholder-then-overwrite strategy:
             // extend fns to at least fn_idx+1 with placeholders.
+            let source_slots: Box<[u16]> =
+                captured.iter().map(|(s, _)| *s).collect::<Vec<_>>().into();
             while fns.len() <= fn_idx as usize {
                 fns.push(Function {
                     name: "<closure_placeholder>".into(),
                     arity: 0,
                     chunk: Chunk::with_capacity(0),
                     local_count: 0,
+                    upvalue_source_slots: Box::default(),
                 });
             }
             fns[fn_idx as usize] = Function {
@@ -2792,6 +2821,7 @@ fn compile_expr(
                 arity,
                 chunk: fn_chunk,
                 local_count,
+                upvalue_source_slots: source_slots,
             };
 
             // Emit: push each captured value onto the stack, then MakeClosure.
