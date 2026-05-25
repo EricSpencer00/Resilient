@@ -515,6 +515,9 @@ fn run_inner(
                     (Value::Int(x), Value::Int(y)) => {
                         stack.push(Value::Int(overflow_mode.add(x, y, "Add")?));
                     }
+                    (Value::Float(x), Value::Float(y)) => {
+                        stack.push(Value::Float(x + y));
+                    }
                     (Value::String(s1), Value::String(s2)) => {
                         stack.push(Value::String(s1 + &s2));
                     }
@@ -522,27 +525,68 @@ fn run_inner(
                 }
             }
             Op::Sub => {
-                let (a, b) = pop_two_ints(&mut stack, "Sub")?;
-                stack.push(Value::Int(overflow_mode.sub(a, b, "Sub")?));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        stack.push(Value::Int(overflow_mode.sub(x, y, "Sub")?));
+                    }
+                    (Value::Float(x), Value::Float(y)) => {
+                        stack.push(Value::Float(x - y));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Sub")),
+                }
             }
             Op::Mul => {
-                let (a, b) = pop_two_ints(&mut stack, "Mul")?;
-                stack.push(Value::Int(overflow_mode.mul(a, b, "Mul")?));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        stack.push(Value::Int(overflow_mode.mul(x, y, "Mul")?));
+                    }
+                    (Value::Float(x), Value::Float(y)) => {
+                        stack.push(Value::Float(x * y));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Mul")),
+                }
             }
             Op::Div => {
-                let (a, b) = pop_two_ints(&mut stack, "Div")?;
-                stack.push(Value::Int(overflow_mode.div(a, b)?));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        stack.push(Value::Int(overflow_mode.div(x, y)?));
+                    }
+                    (Value::Float(x), Value::Float(y)) => {
+                        stack.push(Value::Float(x / y));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Div")),
+                }
             }
             Op::Mod => {
-                let (a, b) = pop_two_ints(&mut stack, "Mod")?;
-                stack.push(Value::Int(overflow_mode.rem(a, b)?));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        stack.push(Value::Int(overflow_mode.rem(x, y)?));
+                    }
+                    (Value::Float(x), Value::Float(y)) => {
+                        stack.push(Value::Float(x % y));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Mod")),
+                }
             }
             Op::Neg => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
-                let Value::Int(i) = v else {
-                    return Err(VmError::TypeMismatch("Neg"));
-                };
-                stack.push(Value::Int(overflow_mode.neg(i, "Neg")?));
+                match v {
+                    Value::Int(i) => {
+                        stack.push(Value::Int(overflow_mode.neg(i, "Neg")?));
+                    }
+                    Value::Float(f) => {
+                        stack.push(Value::Float(-f));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Neg")),
+                }
             }
             Op::LoadLocal(idx) => {
                 let base = frames[frame_idx].locals_base;
@@ -699,28 +743,66 @@ fn run_inner(
                 locals[abs] = Value::Int(overflow_mode.add(n, 1, "IncLocal")?);
             }
             Op::Eq => {
-                let (a, b) = pop_two_ints(&mut stack, "Eq")?;
-                stack.push(Value::Bool(a == b));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x == y)),
+                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x == y)),
+                    (Value::Bool(x), Value::Bool(y)) => stack.push(Value::Bool(x == y)),
+                    (Value::String(ref x), Value::String(ref y)) => {
+                        stack.push(Value::Bool(x == y));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Eq")),
+                }
             }
             Op::Neq => {
-                let (a, b) = pop_two_ints(&mut stack, "Neq")?;
-                stack.push(Value::Bool(a != b));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x != y)),
+                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x != y)),
+                    (Value::Bool(x), Value::Bool(y)) => stack.push(Value::Bool(x != y)),
+                    (Value::String(ref x), Value::String(ref y)) => {
+                        stack.push(Value::Bool(x != y));
+                    }
+                    _ => return Err(VmError::TypeMismatch("Neq")),
+                }
             }
             Op::Lt => {
-                let (a, b) = pop_two_ints(&mut stack, "Lt")?;
-                stack.push(Value::Bool(a < b));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x < y)),
+                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x < y)),
+                    _ => return Err(VmError::TypeMismatch("Lt")),
+                }
             }
             Op::Le => {
-                let (a, b) = pop_two_ints(&mut stack, "Le")?;
-                stack.push(Value::Bool(a <= b));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x <= y)),
+                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x <= y)),
+                    _ => return Err(VmError::TypeMismatch("Le")),
+                }
             }
             Op::Gt => {
-                let (a, b) = pop_two_ints(&mut stack, "Gt")?;
-                stack.push(Value::Bool(a > b));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x > y)),
+                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x > y)),
+                    _ => return Err(VmError::TypeMismatch("Gt")),
+                }
             }
             Op::Ge => {
-                let (a, b) = pop_two_ints(&mut stack, "Ge")?;
-                stack.push(Value::Bool(a >= b));
+                let b = stack.pop().ok_or(VmError::EmptyStack)?;
+                let a = stack.pop().ok_or(VmError::EmptyStack)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x >= y)),
+                    (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x >= y)),
+                    _ => return Err(VmError::TypeMismatch("Ge")),
+                }
             }
             Op::Not => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1476,6 +1558,9 @@ fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                 .stack
                 .push(Value::Int(state.overflow_mode.add(x, y, "Add")?));
         }
+        (Value::Float(x), Value::Float(y)) => {
+            state.stack.push(Value::Float(x + y));
+        }
         (Value::String(s1), Value::String(s2)) => {
             state.stack.push(Value::String(s1 + &s2));
         }
@@ -1486,45 +1571,86 @@ fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 
 #[inline(never)]
 fn h_sub(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Sub")?;
-    state
-        .stack
-        .push(Value::Int(state.overflow_mode.sub(a, b, "Sub")?));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            state
+                .stack
+                .push(Value::Int(state.overflow_mode.sub(x, y, "Sub")?));
+        }
+        (Value::Float(x), Value::Float(y)) => {
+            state.stack.push(Value::Float(x - y));
+        }
+        _ => return Err(VmError::TypeMismatch("Sub")),
+    }
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Mul")?;
-    state
-        .stack
-        .push(Value::Int(state.overflow_mode.mul(a, b, "Mul")?));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            state
+                .stack
+                .push(Value::Int(state.overflow_mode.mul(x, y, "Mul")?));
+        }
+        (Value::Float(x), Value::Float(y)) => {
+            state.stack.push(Value::Float(x * y));
+        }
+        _ => return Err(VmError::TypeMismatch("Mul")),
+    }
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_div(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Div")?;
-    state.stack.push(Value::Int(state.overflow_mode.div(a, b)?));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            state.stack.push(Value::Int(state.overflow_mode.div(x, y)?));
+        }
+        (Value::Float(x), Value::Float(y)) => {
+            state.stack.push(Value::Float(x / y));
+        }
+        _ => return Err(VmError::TypeMismatch("Div")),
+    }
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_mod(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Mod")?;
-    state.stack.push(Value::Int(state.overflow_mode.rem(a, b)?));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            state.stack.push(Value::Int(state.overflow_mode.rem(x, y)?));
+        }
+        (Value::Float(x), Value::Float(y)) => {
+            state.stack.push(Value::Float(x % y));
+        }
+        _ => return Err(VmError::TypeMismatch("Mod")),
+    }
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_neg(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let Value::Int(i) = v else {
-        return Err(VmError::TypeMismatch("Neg"));
-    };
-    state
-        .stack
-        .push(Value::Int(state.overflow_mode.neg(i, "Neg")?));
+    match v {
+        Value::Int(i) => {
+            state
+                .stack
+                .push(Value::Int(state.overflow_mode.neg(i, "Neg")?));
+        }
+        Value::Float(f) => {
+            state.stack.push(Value::Float(-f));
+        }
+        _ => return Err(VmError::TypeMismatch("Neg")),
+    }
     Ok(Step::Continue)
 }
 
@@ -1685,43 +1811,83 @@ fn h_inc_local(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 
 #[inline(never)]
 fn h_eq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Eq")?;
-    state.stack.push(Value::Bool(a == b));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let result = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::String(ref x), Value::String(ref y)) => x == y,
+        _ => return Err(VmError::TypeMismatch("Eq")),
+    };
+    state.stack.push(Value::Bool(result));
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_neq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Neq")?;
-    state.stack.push(Value::Bool(a != b));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let result = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x != y,
+        (Value::Float(x), Value::Float(y)) => x != y,
+        (Value::Bool(x), Value::Bool(y)) => x != y,
+        (Value::String(ref x), Value::String(ref y)) => x != y,
+        _ => return Err(VmError::TypeMismatch("Neq")),
+    };
+    state.stack.push(Value::Bool(result));
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_lt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Lt")?;
-    state.stack.push(Value::Bool(a < b));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let result = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x < y,
+        (Value::Float(x), Value::Float(y)) => x < y,
+        _ => return Err(VmError::TypeMismatch("Lt")),
+    };
+    state.stack.push(Value::Bool(result));
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_le(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Le")?;
-    state.stack.push(Value::Bool(a <= b));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let result = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x <= y,
+        (Value::Float(x), Value::Float(y)) => x <= y,
+        _ => return Err(VmError::TypeMismatch("Le")),
+    };
+    state.stack.push(Value::Bool(result));
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_gt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Gt")?;
-    state.stack.push(Value::Bool(a > b));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let result = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x > y,
+        (Value::Float(x), Value::Float(y)) => x > y,
+        _ => return Err(VmError::TypeMismatch("Gt")),
+    };
+    state.stack.push(Value::Bool(result));
     Ok(Step::Continue)
 }
 
 #[inline(never)]
 fn h_ge(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
-    let (a, b) = pop_two_ints(&mut state.stack, "Ge")?;
-    state.stack.push(Value::Bool(a >= b));
+    let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let result = match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x >= y,
+        (Value::Float(x), Value::Float(y)) => x >= y,
+        _ => return Err(VmError::TypeMismatch("Ge")),
+    };
+    state.stack.push(Value::Bool(result));
     Ok(Step::Continue)
 }
 
@@ -4144,5 +4310,112 @@ mod tests {
             mode.rem(i64::MIN, -1),
             Err(VmError::IntegerOverflow(_))
         ));
+    }
+
+    // ---------- RES-2472: VM float arithmetic ----------
+
+    #[test]
+    fn vm_float_add() {
+        let prog = const_program(
+            &[Value::Float(1.5), Value::Float(2.5)],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Float(f) => assert!((f - 4.0).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_sub() {
+        let prog = const_program(
+            &[Value::Float(5.0), Value::Float(2.5)],
+            &[Op::Const(0), Op::Const(1), Op::Sub, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Float(f) => assert!((f - 2.5).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_mul() {
+        let prog = const_program(
+            &[Value::Float(3.0), Value::Float(2.5)],
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Float(f) => assert!((f - 7.5).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_div() {
+        let prog = const_program(
+            &[Value::Float(7.5), Value::Float(2.5)],
+            &[Op::Const(0), Op::Const(1), Op::Div, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Float(f) => assert!((f - 3.0).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_div_by_zero_ieee754() {
+        let prog = const_program(
+            &[Value::Float(1.0), Value::Float(0.0)],
+            &[Op::Const(0), Op::Const(1), Op::Div, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Float(f) => assert!(f.is_infinite()),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_mod() {
+        let prog = const_program(
+            &[Value::Float(7.5), Value::Float(2.0)],
+            &[Op::Const(0), Op::Const(1), Op::Mod, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Float(f) => assert!((f - 1.5).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_neg() {
+        let prog = const_program(&[Value::Float(3.5)], &[Op::Const(0), Op::Neg, Op::Return]);
+        match run(&prog).unwrap() {
+            Value::Float(f) => assert!((f - (-3.5)).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_comparison_lt() {
+        let prog = const_program(
+            &[Value::Float(1.5), Value::Float(2.5)],
+            &[Op::Const(0), Op::Const(1), Op::Lt, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vm_float_eq() {
+        let prog = const_program(
+            &[Value::Float(2.5), Value::Float(2.5)],
+            &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
+        );
+        match run(&prog).unwrap() {
+            Value::Bool(b) => assert!(b),
+            other => panic!("expected Bool, got {:?}", other),
+        }
     }
 }
