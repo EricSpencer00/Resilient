@@ -1036,6 +1036,22 @@ fn run_inner(
                     }
                 }
             }
+            Op::LoadGlobal(idx) => {
+                let abs = idx as usize;
+                let v = locals
+                    .get(abs)
+                    .ok_or(VmError::LocalOutOfBounds(idx))?
+                    .clone();
+                stack.push(v);
+            }
+            Op::StoreGlobal(idx) => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let abs = idx as usize;
+                if locals.len() <= abs {
+                    locals.resize(abs + 1, Value::Void);
+                }
+                locals[abs] = v;
+            }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
                 let target = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1505,6 +1521,8 @@ fn op_to_index(op: Op) -> usize {
         Op::CallClosure { .. } => OP_KIND_CALL_CLOSURE,
         Op::TryUnwrap => OP_KIND_TRY_UNWRAP,
         Op::IterPrepare => OP_KIND_ITER_PREPARE,
+        Op::LoadGlobal(_) => OP_KIND_LOAD_GLOBAL,
+        Op::StoreGlobal(_) => OP_KIND_STORE_GLOBAL,
     }
 }
 
@@ -1522,7 +1540,9 @@ const OP_KIND_MAKE_TUPLE: usize = 41;
 const OP_KIND_CALL_CLOSURE: usize = 42;
 const OP_KIND_TRY_UNWRAP: usize = 43;
 const OP_KIND_ITER_PREPARE: usize = 44;
-const HANDLER_TABLE_LEN: usize = 45;
+const OP_KIND_LOAD_GLOBAL: usize = 45;
+const OP_KIND_STORE_GLOBAL: usize = 46;
+const HANDLER_TABLE_LEN: usize = 47;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1573,6 +1593,8 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_CALL_CLOSURE] = h_call_closure;
     table[OP_KIND_TRY_UNWRAP] = h_try_unwrap;
     table[OP_KIND_ITER_PREPARE] = h_iter_prepare;
+    table[OP_KIND_LOAD_GLOBAL] = h_load_global;
+    table[OP_KIND_STORE_GLOBAL] = h_store_global;
     table
 };
 
@@ -2537,6 +2559,35 @@ fn h_iter_prepare(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             ));
         }
     }
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_load_global(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::LoadGlobal(idx) = op else {
+        unreachable!()
+    };
+    let abs = idx as usize;
+    let v = state
+        .locals
+        .get(abs)
+        .ok_or(VmError::LocalOutOfBounds(idx))?
+        .clone();
+    state.stack.push(v);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_store_global(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::StoreGlobal(idx) = op else {
+        unreachable!()
+    };
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let abs = idx as usize;
+    if state.locals.len() <= abs {
+        state.locals.resize(abs + 1, Value::Void);
+    }
+    state.locals[abs] = v;
     Ok(Step::Continue)
 }
 

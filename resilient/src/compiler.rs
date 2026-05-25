@@ -63,6 +63,109 @@ impl LoopState {
     }
 }
 
+/// RES-2532: flag bit marking a slot as a global (main-frame local)
+/// rather than a function-frame local. Encoded in the `locals` HashMap
+/// so function bodies resolve globals without changing every function
+/// signature in the compiler.
+const GLOBAL_FLAG: u16 = 0x8000;
+
+/// Emit a load instruction for a slot that may be local or global.
+fn local_load_op(slot: u16) -> Op {
+    if slot & GLOBAL_FLAG != 0 {
+        Op::LoadGlobal(slot & !GLOBAL_FLAG)
+    } else {
+        Op::LoadLocal(slot)
+    }
+}
+
+/// Emit a store instruction for a slot that may be local or global.
+fn local_store_op(slot: u16) -> Op {
+    if slot & GLOBAL_FLAG != 0 {
+        Op::StoreGlobal(slot & !GLOBAL_FLAG)
+    } else {
+        Op::StoreLocal(slot)
+    }
+}
+
+/// RES-2532: pre-scan top-level statements to collect global variable
+/// names and their main-frame slot indices. Called before Pass 2
+/// (function body compilation) so function bodies can reference
+/// top-level `let` bindings via `LoadGlobal`/`StoreGlobal`.
+///
+/// The slot assignment must exactly mirror what `compile_stmt` +
+/// `compile_control_flow` + `compile_for_in` do for `next_local`.
+fn prescan_globals(stmts: &[crate::Spanned<Node>]) -> HashMap<String, u16> {
+    let mut globals = HashMap::new();
+    let mut slot: u16 = 0;
+    for spanned in stmts {
+        if matches!(
+            spanned.node,
+            Node::Function { .. }
+                | Node::Extern { .. }
+                | Node::RegionDecl { .. }
+                | Node::StructDecl { .. }
+                | Node::NewtypeDecl { .. }
+        ) {
+            continue;
+        }
+        prescan_stmt_slots(&spanned.node, &mut globals, &mut slot);
+    }
+    globals
+}
+
+fn prescan_stmt_slots(node: &Node, globals: &mut HashMap<String, u16>, slot: &mut u16) {
+    match node {
+        Node::LetStatement { name, .. } => {
+            globals.insert(name.clone(), *slot);
+            *slot += 1;
+        }
+        Node::StaticLet { name, .. } => {
+            globals.insert(name.clone(), *slot);
+            *slot += 1;
+        }
+        Node::LetTupleDestructure { names, .. } => {
+            *slot += 1;
+            for name in names {
+                globals.insert(name.clone(), *slot);
+                *slot += 1;
+            }
+        }
+        Node::LetDestructureStruct { fields, .. } => {
+            *slot += 1;
+            for (_field, local_name) in fields {
+                globals.insert(local_name.clone(), *slot);
+                *slot += 1;
+            }
+        }
+        Node::ForInStatement { body, .. } => {
+            *slot += 4;
+            prescan_stmt_slots(body.as_ref(), globals, slot);
+        }
+        Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            prescan_stmt_slots(consequence.as_ref(), globals, slot);
+            if let Some(alt) = alternative {
+                prescan_stmt_slots(alt.as_ref(), globals, slot);
+            }
+        }
+        Node::WhileStatement { body, .. } => {
+            prescan_stmt_slots(body.as_ref(), globals, slot);
+        }
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                prescan_stmt_slots(s, globals, slot);
+            }
+        }
+        Node::LiveBlock { body, .. } | Node::UnsafeBlock { body, .. } => {
+            prescan_stmt_slots(body.as_ref(), globals, slot);
+        }
+        _ => {}
+    }
+}
+
 /// Compile a parsed program into a bytecode `Program` ready for the VM.
 ///
 /// Steps:
@@ -171,6 +274,10 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         }
     }
 
+    // RES-2532: pre-scan top-level `let` bindings so function bodies
+    // can reference them via LoadGlobal / StoreGlobal.
+    let globals = prescan_globals(stmts);
+
     // Pass 2: compile each function body in declaration order.
     let mut functions: Vec<Function> = Vec::with_capacity(fn_count);
     for spanned in stmts {
@@ -197,8 +304,14 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             // path. Compiling N functions previously paid up to two
             // rehashes per fn; one upfront `with_capacity` avoids
             // them on the hot per-fn loop.
-            let mut locals: HashMap<String, u16> =
-                HashMap::with_capacity(parameters.len().saturating_mul(2).max(8));
+            let cap = parameters.len().saturating_mul(2).max(8) + globals.len();
+            let mut locals: HashMap<String, u16> = HashMap::with_capacity(cap);
+            // RES-2532: seed globals into the locals map with the
+            // GLOBAL_FLAG so compile_expr emits LoadGlobal instead of
+            // LoadLocal. Parameters shadow globals if names collide.
+            for (gname, &gslot) in &globals {
+                locals.insert(gname.clone(), gslot | GLOBAL_FLAG);
+            }
             let mut next_local: u16 = 0;
             for (_type_name, pname) in parameters {
                 locals.insert(pname.clone(), next_local);
@@ -526,7 +639,7 @@ fn compile_stmt(
             let slot = *locals
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
-            chunk.emit(Op::LoadLocal(slot), line);
+            chunk.emit(local_load_op(slot), line);
             compile_expr(
                 value,
                 chunk,
@@ -545,7 +658,7 @@ fn compile_stmt(
                 },
                 line,
             );
-            chunk.emit(Op::StoreLocal(slot), line);
+            chunk.emit(local_store_op(slot), line);
             Ok(())
         }
         Node::Break { .. } => {
@@ -1109,7 +1222,7 @@ fn compile_stmt_in_fn(
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
-            chunk.emit(Op::StoreLocal(idx), line);
+            chunk.emit(local_store_op(idx), line);
             Ok(())
         }
         // RES-171a/RES-171c: `a[i] = v` and `a[i0][i1]...[iN] = v`.
@@ -1154,7 +1267,7 @@ fn compile_stmt_in_fn(
             let slot = *locals
                 .get(local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
-            chunk.emit(Op::LoadLocal(slot), line);
+            chunk.emit(local_load_op(slot), line);
             compile_expr(
                 value,
                 chunk,
@@ -1173,7 +1286,7 @@ fn compile_stmt_in_fn(
                 },
                 line,
             );
-            chunk.emit(Op::StoreLocal(slot), line);
+            chunk.emit(local_store_op(slot), line);
             Ok(())
         }
         Node::Break { .. } => {
@@ -1744,7 +1857,7 @@ fn compile_index_assignment(
 
     if depth == 1 {
         // Fast path: `a[i] = v`.
-        chunk.emit(Op::LoadLocal(root_slot), line);
+        chunk.emit(local_load_op(root_slot), line);
         compile_expr(
             indices[0],
             chunk,
@@ -1768,7 +1881,7 @@ fn compile_index_assignment(
             line,
         )?;
         chunk.emit(Op::StoreIndex, line);
-        chunk.emit(Op::StoreLocal(root_slot), line);
+        chunk.emit(local_store_op(root_slot), line);
         return Ok(());
     }
 
@@ -1789,12 +1902,11 @@ fn compile_index_assignment(
     // Phase 1: load each intermediate level into its temp.
     // $t0 = root[i0], $t1 = $t0[i1], ..., $t(N-2) = $t(N-3)[i(N-2)]
     for (k, idx_node) in indices.iter().enumerate().take(n_temps) {
-        let src_slot = if k == 0 {
-            root_slot
+        if k == 0 {
+            chunk.emit(local_load_op(root_slot), line);
         } else {
-            temp_base + (k as u16 - 1)
-        };
-        chunk.emit(Op::LoadLocal(src_slot), line);
+            chunk.emit(Op::LoadLocal(temp_base + (k as u16 - 1)), line);
+        }
         compile_expr(
             idx_node,
             chunk,
@@ -1842,12 +1954,11 @@ fn compile_index_assignment(
     // Phase 3: write back up the chain.
     // $t(k-1)[i(k)] = $t(k), down to root[i0] = $t0
     for k in (0..n_temps).rev() {
-        let dst_slot = if k == 0 {
-            root_slot
+        if k == 0 {
+            chunk.emit(local_load_op(root_slot), line);
         } else {
-            temp_base + (k as u16 - 1)
-        };
-        chunk.emit(Op::LoadLocal(dst_slot), line);
+            chunk.emit(Op::LoadLocal(temp_base + (k as u16 - 1)), line);
+        }
         compile_expr(
             indices[k],
             chunk,
@@ -1861,7 +1972,11 @@ fn compile_index_assignment(
         )?;
         chunk.emit(Op::LoadLocal(temp_base + k as u16), line);
         chunk.emit(Op::StoreIndex, line);
-        chunk.emit(Op::StoreLocal(dst_slot), line);
+        if k == 0 {
+            chunk.emit(local_store_op(root_slot), line);
+        } else {
+            chunk.emit(Op::StoreLocal(temp_base + (k as u16 - 1)), line);
+        }
     }
 
     // Clean up temp keys from locals map.
@@ -1914,7 +2029,7 @@ fn compile_expr(
         }
         Node::Identifier { name, .. } => {
             if let Some(&idx) = locals.get(name) {
-                chunk.emit(Op::LoadLocal(idx), line);
+                chunk.emit(local_load_op(idx), line);
             } else if crate::lookup_builtin(name).is_some() {
                 let name_const = chunk.add_string_constant(name)?;
                 chunk.emit(

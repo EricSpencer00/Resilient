@@ -235,6 +235,13 @@ pub enum Op {
     /// Emitted by `compile_for_in` after evaluating the iterable so the
     /// rest of the loop (len + sequential LoadIndex) works uniformly.
     IterPrepare,
+    /// RES-2532: push `locals[idx]` from the main chunk's frame (frame 0,
+    /// locals_base = 0) onto the operand stack. Lets function bodies read
+    /// top-level `let` bindings without capturing them as upvalues.
+    LoadGlobal(u16),
+    /// RES-2532: pop TOS and store into `locals[idx]` in the main frame.
+    /// Lets function bodies write top-level `let mut` bindings.
+    StoreGlobal(u16),
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
