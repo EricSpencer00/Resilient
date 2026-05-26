@@ -113,6 +113,8 @@ mod watch_mode;
 mod inline;
 #[cfg(feature = "jit")]
 mod jit_backend;
+#[cfg(feature = "jit")]
+mod jit_runtime;
 #[cfg(feature = "lsp")]
 mod lsp_server;
 // MCP server: exposes the Resilient compiler as MCP tools over stdio.

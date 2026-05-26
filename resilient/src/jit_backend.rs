@@ -704,6 +704,35 @@ pub(crate) struct JitRuntimeImports {
     pub res_jit_abort_oob: FuncId,
     /// RES-380: noreturn abort shim for `pop` on an empty array.
     pub res_jit_abort_empty_pop: FuncId,
+    // --- RES-jit extended runtime imports ---
+    pub res_jit_alloc_float: FuncId,
+    pub res_jit_float_add: FuncId,
+    pub res_jit_float_sub: FuncId,
+    pub res_jit_float_mul: FuncId,
+    pub res_jit_float_div: FuncId,
+    pub res_jit_float_rem: FuncId,
+    pub res_jit_float_neg: FuncId,
+    pub res_jit_float_cmp: FuncId,
+    pub res_jit_alloc_string: FuncId,
+    pub res_jit_string_concat: FuncId,
+    pub res_jit_string_len: FuncId,
+    pub res_jit_value_to_string: FuncId,
+    pub res_jit_alloc_struct: FuncId,
+    pub res_jit_struct_set_field: FuncId,
+    pub res_jit_struct_get_field: FuncId,
+    pub res_jit_struct_get_name: FuncId,
+    pub res_jit_alloc_enum: FuncId,
+    pub res_jit_enum_is_variant: FuncId,
+    pub res_jit_enum_payload: FuncId,
+    pub res_jit_enum_variant_name: FuncId,
+    pub res_jit_alloc_map: FuncId,
+    pub res_jit_map_set: FuncId,
+    pub res_jit_map_get: FuncId,
+    pub res_jit_map_len: FuncId,
+    pub res_jit_println: FuncId,
+    pub res_jit_print: FuncId,
+    pub res_jit_value_eq: FuncId,
+    pub res_jit_value_ne: FuncId,
 }
 
 fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImports, JitError> {
@@ -784,6 +813,70 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         .declare_function("res_jit_abort_empty_pop", Linkage::Import, &sig_abort_empty)
         .map_err(|e| JitError::LinkError(e.to_string()))?;
 
+    // --- RES-jit: extended runtime imports ---
+    // Macro to reduce repetition: declare a function with a given
+    // signature and bind the FuncId to a local variable of the same name.
+    macro_rules! decl_import {
+        ($name:expr, $sig:expr) => {
+            module
+                .declare_function($name, Linkage::Import, &$sig)
+                .map_err(|e| JitError::LinkError(e.to_string()))?
+        };
+    }
+
+    // sig1r: (i64) -> i64
+    let res_jit_alloc_float = decl_import!("res_jit_alloc_float", sig1r);
+    let res_jit_float_neg = decl_import!("res_jit_float_neg", sig1r);
+    let res_jit_string_len = decl_import!("res_jit_string_len", sig1r);
+    let res_jit_value_to_string = decl_import!("res_jit_value_to_string", sig1r);
+    let res_jit_enum_payload = decl_import!("res_jit_enum_payload", sig1r);
+    let res_jit_enum_variant_name = decl_import!("res_jit_enum_variant_name", sig1r);
+    let res_jit_map_len = decl_import!("res_jit_map_len", sig1r);
+    let res_jit_println = decl_import!("res_jit_println", sig1r);
+    let res_jit_print = decl_import!("res_jit_print", sig1r);
+    let res_jit_struct_get_name = decl_import!("res_jit_struct_get_name", sig1r);
+
+    // sig2r: (i64, i64) -> i64
+    let res_jit_float_add = decl_import!("res_jit_float_add", sig2r);
+    let res_jit_float_sub = decl_import!("res_jit_float_sub", sig2r);
+    let res_jit_float_mul = decl_import!("res_jit_float_mul", sig2r);
+    let res_jit_float_div = decl_import!("res_jit_float_div", sig2r);
+    let res_jit_float_rem = decl_import!("res_jit_float_rem", sig2r);
+    let res_jit_float_cmp = decl_import!("res_jit_float_cmp", sig2r);
+    let res_jit_alloc_string = decl_import!("res_jit_alloc_string", sig2r);
+    let res_jit_string_concat = decl_import!("res_jit_string_concat", sig2r);
+    let res_jit_value_eq = decl_import!("res_jit_value_eq", sig2r);
+    let res_jit_value_ne = decl_import!("res_jit_value_ne", sig2r);
+
+    // sig3r: (i64, i64, i64) -> i64 (3 params WITH return)
+    let mut sig3r = module.make_signature();
+    sig3r.params.push(AbiParam::new(types::I64));
+    sig3r.params.push(AbiParam::new(types::I64));
+    sig3r.params.push(AbiParam::new(types::I64));
+    sig3r.returns.push(AbiParam::new(types::I64));
+    let res_jit_alloc_struct = decl_import!("res_jit_alloc_struct", sig3r);
+    let res_jit_struct_get_field = decl_import!("res_jit_struct_get_field", sig3r);
+    let res_jit_alloc_enum = decl_import!("res_jit_alloc_enum", sig3r);
+    let res_jit_enum_is_variant = decl_import!("res_jit_enum_is_variant", sig3r);
+
+    // sig_map_set: (i64, i64, i64) -> i64  (reuse sig3r)
+    let res_jit_map_set = decl_import!("res_jit_map_set", sig3r);
+    let res_jit_map_get = decl_import!("res_jit_map_get", sig2r);
+
+    // sig4: (i64, i64, i64, i64) -> i64
+    let mut sig4v = module.make_signature();
+    sig4v.params.push(AbiParam::new(types::I64));
+    sig4v.params.push(AbiParam::new(types::I64));
+    sig4v.params.push(AbiParam::new(types::I64));
+    sig4v.params.push(AbiParam::new(types::I64));
+    sig4v.returns.push(AbiParam::new(types::I64));
+    let res_jit_struct_set_field = decl_import!("res_jit_struct_set_field", sig4v);
+
+    // sig0r: () -> i64
+    let mut sig0r = module.make_signature();
+    sig0r.returns.push(AbiParam::new(types::I64));
+    let res_jit_alloc_map = decl_import!("res_jit_alloc_map", sig0r);
+
     Ok(JitRuntimeImports {
         res_array_new,
         res_array_len,
@@ -797,6 +890,34 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_jit_min,
         res_jit_abort_oob,
         res_jit_abort_empty_pop,
+        res_jit_alloc_float,
+        res_jit_float_add,
+        res_jit_float_sub,
+        res_jit_float_mul,
+        res_jit_float_div,
+        res_jit_float_rem,
+        res_jit_float_neg,
+        res_jit_float_cmp,
+        res_jit_alloc_string,
+        res_jit_string_concat,
+        res_jit_string_len,
+        res_jit_value_to_string,
+        res_jit_alloc_struct,
+        res_jit_struct_set_field,
+        res_jit_struct_get_field,
+        res_jit_struct_get_name,
+        res_jit_alloc_enum,
+        res_jit_enum_is_variant,
+        res_jit_enum_payload,
+        res_jit_enum_variant_name,
+        res_jit_alloc_map,
+        res_jit_map_set,
+        res_jit_map_get,
+        res_jit_map_len,
+        res_jit_println,
+        res_jit_print,
+        res_jit_value_eq,
+        res_jit_value_ne,
     })
 }
 
@@ -832,6 +953,7 @@ fn make_module() -> Result<JITModule, JitError> {
     // the `JITModule::new(builder)` call — once the module is
     // built, its symbol table is frozen.
     register_runtime_symbols(&mut builder);
+    crate::jit_runtime::register_jit_runtime_symbols(&mut builder);
     Ok(JITModule::new(builder))
 }
 
@@ -1303,7 +1425,39 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     // Names of functions whose bodies we need to compile (the
     // "primary" for each unique AST hash). Aliases skip compile.
     let mut primaries: Vec<String> = Vec::new();
+    // RES-jit: collect all function nodes including those inside ImplBlocks.
+    // ImplBlock methods are mangled as "StructName$method".
+    let mut all_fn_nodes: Vec<&Node> = Vec::new();
     for spanned in stmts {
+        match &spanned.node {
+            Node::Function { .. } => all_fn_nodes.push(&spanned.node),
+            Node::ImplBlock {
+                struct_name: _,
+                methods,
+                ..
+            } => {
+                for method_node in methods {
+                    all_fn_nodes.push(method_node);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Build a map of impl targets for mangling.
+    let mut impl_targets: HashMap<*const Node, String> = HashMap::new();
+    for spanned in stmts {
+        if let Node::ImplBlock {
+            struct_name,
+            methods,
+            ..
+        } = &spanned.node
+        {
+            for method_node in methods {
+                impl_targets.insert(method_node as *const Node, struct_name.clone());
+            }
+        }
+    }
+    for fn_node in &all_fn_nodes {
         if let Node::Function {
             name,
             parameters,
@@ -1311,17 +1465,26 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
             requires,
             ensures,
             ..
-        } = &spanned.node
+        } = fn_node
         {
+            let effective_name = if let Some(target) = impl_targets.get(&(*fn_node as *const Node))
+            {
+                format!("{target}${name}")
+            } else {
+                name.clone()
+            };
             // RES-175: stash the AST up-front — independent of
             // whether this fn becomes a cache alias or a primary.
-            fn_asts.insert(name.clone(), (parameters.clone(), (**body).clone()));
+            fn_asts.insert(
+                effective_name.clone(),
+                (parameters.clone(), (**body).clone()),
+            );
             let h = fn_hash(parameters, requires, ensures, body);
             if let Some(existing) = cache.map.get(&h).copied() {
                 // Cache hit — reuse the FuncId under the new name.
                 cache.hits += 1;
-                functions.insert(name.clone(), existing);
-                function_arities.insert(name.clone(), parameters.len());
+                functions.insert(effective_name.clone(), existing);
+                function_arities.insert(effective_name.clone(), parameters.len());
             } else {
                 cache.misses += 1;
                 let mut sig = module.make_signature();
@@ -1330,12 +1493,12 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
                 }
                 sig.returns.push(AbiParam::new(types::I64));
                 let func_id = module
-                    .declare_function(name, Linkage::Local, &sig)
+                    .declare_function(&effective_name, Linkage::Local, &sig)
                     .map_err(|e| JitError::LinkError(e.to_string()))?;
                 cache.map.insert(h, func_id);
-                functions.insert(name.clone(), func_id);
-                function_arities.insert(name.clone(), parameters.len());
-                primaries.push(name.clone());
+                functions.insert(effective_name.clone(), func_id);
+                function_arities.insert(effective_name.clone(), parameters.len());
+                primaries.push(effective_name.clone());
             }
         }
     }
@@ -1343,21 +1506,27 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     // ---------- Pass 2: compile each primary function body ----------
     // Aliases skip this loop — their FuncId points at the primary's
     // compiled code, so calls to them dispatch to the same entry.
-    for spanned in stmts {
+    for fn_node in &all_fn_nodes {
         if let Node::Function {
             name,
             parameters,
             body,
             ..
-        } = &spanned.node
+        } = fn_node
         {
-            if !primaries.contains(name) {
+            let effective_name = if let Some(target) = impl_targets.get(&(*fn_node as *const Node))
+            {
+                format!("{target}${name}")
+            } else {
+                name.clone()
+            };
+            if !primaries.contains(&effective_name) {
                 continue;
             }
-            let func_id = functions[name];
+            let func_id = functions[&effective_name];
             compile_function(
                 func_id,
-                name,
+                &effective_name,
                 parameters,
                 body,
                 &functions,
@@ -2123,9 +2292,43 @@ fn compile_node_list(
                 }
                 continue;
             }
-            // Skip statements with no JIT-relevant effect for now;
-            // a future phase will lower expression statements,
-            // reassignment, while loops, etc.
+            // RES-jit: for-in loop
+            Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                lower_for_in_statement(name, iterable, body, bcx, ctx, module)?;
+                continue;
+            }
+            // RES-jit: expression statement — evaluate for side effects, discard result
+            Node::ExpressionStatement { expr, .. } => {
+                let _ = lower_expr(expr, bcx, ctx, module)?;
+                continue;
+            }
+            // RES-jit: bare return with no value
+            Node::ReturnStatement { value: None, .. } => {
+                let zero = bcx.ins().iconst(types::I64, 0);
+                if let Some(merge) = ctx.inline_return_target {
+                    bcx.ins().jump(merge, &[zero]);
+                    return Ok(true);
+                }
+                bcx.ins().return_(&[zero]);
+                return Ok(true);
+            }
+            // Skip declarations (struct/enum/impl) — they're handled in Pass 1
+            Node::StructDecl { .. } | Node::EnumDecl { .. } | Node::ImplBlock { .. } => continue,
+            // RES-jit: Block node
+            Node::Block { stmts: inner, .. } => {
+                let refs: Vec<&Node> = inner.iter().collect();
+                let terminated = compile_node_list(&refs, bcx, ctx, module)?;
+                if terminated {
+                    return Ok(true);
+                }
+                continue;
+            }
+            // Skip statements with no JIT-relevant effect for now.
             _ => continue,
         }
     }
@@ -2193,6 +2396,75 @@ fn lower_while_statement(
     // is only detected at runtime, and our compile-time view has
     // to assume the exit path is reachable.
     Ok(false)
+}
+
+/// RES-jit: lower a `for NAME in ITERABLE { body }` loop.
+///
+/// The iterable must be an array. We get its length, then emit a
+/// classic index loop: `i = 0; while i < len { NAME = arr[i]; body; i += 1 }`.
+fn lower_for_in_statement(
+    name: &str,
+    iterable: &Node,
+    body: &Node,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Result<(), JitError> {
+    let arr_v = lower_expr(iterable, bcx, ctx, module)?;
+
+    // Get array length
+    let flen = module.declare_func_in_func(ctx.imports.res_array_len, bcx.func);
+    let call_len = bcx.ins().call(flen, &[arr_v]);
+    let len_v = bcx.inst_results(call_len)[0];
+
+    // Index variable
+    let idx_var = ctx.declare("__for_idx__", bcx);
+    let zero = bcx.ins().iconst(types::I64, 0);
+    bcx.def_var(idx_var, zero);
+
+    // Loop element variable
+    let elem_var = ctx.declare(name, bcx);
+    bcx.def_var(elem_var, zero); // placeholder
+
+    let header_block = bcx.create_block();
+    let body_block = bcx.create_block();
+    let exit_block = bcx.create_block();
+
+    bcx.ins().jump(header_block, &[]);
+
+    // Header: check i < len
+    bcx.switch_to_block(header_block);
+    let idx = bcx.use_var(idx_var);
+    let cond = bcx.ins().icmp(IntCC::SignedLessThan, idx, len_v);
+    bcx.ins().brif(cond, body_block, &[], exit_block, &[]);
+
+    // Body
+    bcx.switch_to_block(body_block);
+    bcx.seal_block(body_block);
+
+    // Load arr[i] into the loop variable
+    let fget = module.declare_func_in_func(ctx.imports.res_array_get_unchecked, bcx.func);
+    let idx2 = bcx.use_var(idx_var);
+    let call_get = bcx.ins().call(fget, &[arr_v, idx2]);
+    let elem = bcx.inst_results(call_get)[0];
+    bcx.def_var(elem_var, elem);
+
+    // Lower body
+    let body_terminated = lower_block_or_stmt(body, bcx, ctx, module)?;
+    if !body_terminated {
+        // Increment index
+        let idx3 = bcx.use_var(idx_var);
+        let one = bcx.ins().iconst(types::I64, 1);
+        let next = bcx.ins().iadd(idx3, one);
+        bcx.def_var(idx_var, next);
+        bcx.ins().jump(header_block, &[]);
+    }
+
+    bcx.seal_block(header_block);
+    bcx.switch_to_block(exit_block);
+    bcx.seal_block(exit_block);
+
+    Ok(())
 }
 
 /// RES-102 + RES-103: lower an IfStatement.
@@ -2335,6 +2607,58 @@ fn lower_block_or_stmt(
             bcx.ins().return_(&[v]);
             Ok(true)
         }
+        // RES-jit: bare return
+        Node::ReturnStatement { value: None, .. } => {
+            let zero = bcx.ins().iconst(types::I64, 0);
+            if let Some(merge) = ctx.inline_return_target {
+                bcx.ins().jump(merge, &[zero]);
+                return Ok(true);
+            }
+            bcx.ins().return_(&[zero]);
+            Ok(true)
+        }
+        // RES-jit: let binding
+        Node::LetStatement { name, value, .. } => {
+            let v = lower_expr(value, bcx, ctx, module)?;
+            let var = ctx.declare(name, bcx);
+            bcx.def_var(var, v);
+            Ok(false)
+        }
+        // RES-jit: assignment
+        Node::Assignment { name, value, .. } => {
+            let Some(var) = ctx.lookup(name) else {
+                return Err(JitError::Unsupported(
+                    "reassignment of undeclared identifier",
+                ));
+            };
+            let v = lower_expr(value, bcx, ctx, module)?;
+            bcx.def_var(var, v);
+            Ok(false)
+        }
+        // RES-jit: while loop
+        Node::WhileStatement {
+            condition, body, ..
+        } => lower_while_statement(condition, body, bcx, ctx, module),
+        // RES-jit: for-in loop
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            ..
+        } => {
+            lower_for_in_statement(name, iterable, body, bcx, ctx, module)?;
+            Ok(false)
+        }
+        // RES-jit: expression statement
+        Node::ExpressionStatement { expr, .. } => {
+            let _ = lower_expr(expr, bcx, ctx, module)?;
+            Ok(false)
+        }
+        // Skip declarations
+        Node::StructDecl { .. }
+        | Node::EnumDecl { .. }
+        | Node::ImplBlock { .. }
+        | Node::Function { .. } => Ok(false),
         _ => Err(JitError::Unsupported(node_kind(node))),
     }
 }
@@ -2481,8 +2805,30 @@ fn lower_expr(
             arguments,
             ..
         } => {
-            let callee_name = match function.as_ref() {
-                Node::Identifier { name, .. } => name.clone(),
+            // RES-jit: support method calls via FieldAccess (obj.method(args))
+            let (callee_name, method_receiver) = match function.as_ref() {
+                Node::Identifier { name, .. } => (name.clone(), None),
+                Node::FieldAccess { target, field, .. } => {
+                    // Method call: lower the receiver, resolve mangled name
+                    let recv_v = lower_expr(target, bcx, ctx, module)?;
+                    // Check if the receiver has a struct tag to resolve method
+                    let fref_name =
+                        module.declare_func_in_func(ctx.imports.res_jit_struct_get_name, bcx.func);
+                    let _ = fref_name; // We use a naming convention: try "Type$method"
+                    // For method calls, we try all known "Type$method" patterns
+                    let mut found_mangled = None;
+                    for key in ctx.functions.keys() {
+                        if key.ends_with(&format!("${field}")) {
+                            found_mangled = Some(key.clone());
+                            break;
+                        }
+                    }
+                    if let Some(mangled) = found_mangled {
+                        (mangled, Some(recv_v))
+                    } else {
+                        (field.clone(), Some(recv_v))
+                    }
+                }
                 _ => {
                     return Err(JitError::Unsupported(
                         "JIT only supports direct calls (Identifier callee)",
@@ -2517,13 +2863,18 @@ fn lower_expr(
 
             if let Some(func_id) = ctx.functions.get(&callee_name).copied() {
                 let expected_arity = ctx.function_arities.get(&callee_name).copied().unwrap_or(0);
-                if arguments.len() != expected_arity {
+                // For method calls, the receiver is the implicit `self` param
+                let effective_arg_count =
+                    arguments.len() + if method_receiver.is_some() { 1 } else { 0 };
+                if effective_arg_count != expected_arity {
                     return Err(JitError::Unsupported(
                         "call arity mismatch (declared params vs actual args)",
                     ));
                 }
 
-                if let Some((callee_params, callee_body)) = ctx.fn_asts.get(&callee_name).cloned()
+                if method_receiver.is_none()
+                    && let Some((callee_params, callee_body)) =
+                        ctx.fn_asts.get(&callee_name).cloned()
                     && is_trivial_leaf(&callee_body, &callee_name, ctx.current_fn.as_deref())
                     && ctx.inline_return_target.is_none()
                 {
@@ -2537,7 +2888,11 @@ fn lower_expr(
                     );
                 }
 
-                let mut arg_values: Vec<Value> = Vec::with_capacity(arguments.len());
+                let mut arg_values: Vec<Value> = Vec::with_capacity(effective_arg_count);
+                // Prepend receiver as `self` for method calls
+                if let Some(recv) = method_receiver {
+                    arg_values.push(recv);
+                }
                 for arg in arguments {
                     arg_values.push(lower_expr(arg, bcx, ctx, module)?);
                 }
@@ -2563,6 +2918,36 @@ fn lower_expr(
                 };
                 let local_ref = module.declare_func_in_func(fid, bcx.func);
                 let call = bcx.ins().call(local_ref, &arg_vals);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+
+            // RES-jit: println / print builtins
+            if callee_name == "println" {
+                if arguments.len() != 1 {
+                    return Err(JitError::Unsupported("println: expected 1 argument"));
+                }
+                let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
+                let fref = module.declare_func_in_func(ctx.imports.res_jit_println, bcx.func);
+                let call = bcx.ins().call(fref, &[arg]);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+            if callee_name == "print" {
+                if arguments.len() != 1 {
+                    return Err(JitError::Unsupported("print: expected 1 argument"));
+                }
+                let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
+                let fref = module.declare_func_in_func(ctx.imports.res_jit_print, bcx.func);
+                let call = bcx.ins().call(fref, &[arg]);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+            if callee_name == "to_string" || callee_name == "str" {
+                if arguments.len() != 1 {
+                    return Err(JitError::Unsupported("to_string: expected 1 argument"));
+                }
+                let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
+                let fref =
+                    module.declare_func_in_func(ctx.imports.res_jit_value_to_string, bcx.func);
+                let call = bcx.ins().call(fref, &[arg]);
                 return Ok(bcx.inst_results(call)[0]);
             }
 
@@ -2689,6 +3074,211 @@ fn lower_expr(
                 }
             })
         }
+        // RES-jit: float literal
+        Node::FloatLiteral { value, .. } => {
+            let bits = bcx.ins().iconst(types::I64, value.to_bits() as i64);
+            let fref = module.declare_func_in_func(ctx.imports.res_jit_alloc_float, bcx.func);
+            let call = bcx.ins().call(fref, &[bits]);
+            Ok(bcx.inst_results(call)[0])
+        }
+        // RES-jit: string literal
+        Node::StringLiteral { value, .. } => {
+            let ptr_val = bcx.ins().iconst(types::I64, value.as_ptr() as i64);
+            let len_val = bcx.ins().iconst(types::I64, value.len() as i64);
+            let fref = module.declare_func_in_func(ctx.imports.res_jit_alloc_string, bcx.func);
+            let call = bcx.ins().call(fref, &[ptr_val, len_val]);
+            Ok(bcx.inst_results(call)[0])
+        }
+        // RES-jit: prefix expression
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
+            let r = lower_expr(right, bcx, ctx, module)?;
+            match *operator {
+                "-" => {
+                    let zero = bcx.ins().iconst(types::I64, 0);
+                    Ok(bcx.ins().isub(zero, r))
+                }
+                "!" => {
+                    let one = bcx.ins().iconst(types::I64, 1);
+                    Ok(bcx.ins().bxor(r, one))
+                }
+                _ => Err(JitError::Unsupported("prefix operator other than -, !")),
+            }
+        }
+        // RES-jit: struct literal
+        Node::StructLiteral { name, fields, .. } => {
+            let name_ptr = bcx.ins().iconst(types::I64, name.as_ptr() as i64);
+            let name_len = bcx.ins().iconst(types::I64, name.len() as i64);
+            let field_count = bcx.ins().iconst(types::I64, fields.len() as i64);
+            let fref_alloc =
+                module.declare_func_in_func(ctx.imports.res_jit_alloc_struct, bcx.func);
+            let call = bcx
+                .ins()
+                .call(fref_alloc, &[name_ptr, name_len, field_count]);
+            let struct_v = bcx.inst_results(call)[0];
+            let fref_set =
+                module.declare_func_in_func(ctx.imports.res_jit_struct_set_field, bcx.func);
+            for (field_name, field_expr) in fields {
+                let val = lower_expr(field_expr, bcx, ctx, module)?;
+                let fptr = bcx.ins().iconst(types::I64, field_name.as_ptr() as i64);
+                let flen = bcx.ins().iconst(types::I64, field_name.len() as i64);
+                bcx.ins().call(fref_set, &[struct_v, fptr, flen, val]);
+            }
+            Ok(struct_v)
+        }
+        // RES-jit: field access
+        Node::FieldAccess { target, field, .. } => {
+            let target_v = lower_expr(target, bcx, ctx, module)?;
+            let fptr = bcx.ins().iconst(types::I64, field.as_ptr() as i64);
+            let flen = bcx.ins().iconst(types::I64, field.len() as i64);
+            let fref = module.declare_func_in_func(ctx.imports.res_jit_struct_get_field, bcx.func);
+            let call = bcx.ins().call(fref, &[target_v, fptr, flen]);
+            Ok(bcx.inst_results(call)[0])
+        }
+        // RES-jit: field assignment
+        Node::FieldAssignment {
+            target,
+            field,
+            value,
+            ..
+        } => {
+            let target_v = lower_expr(target, bcx, ctx, module)?;
+            let val_v = lower_expr(value, bcx, ctx, module)?;
+            let fptr = bcx.ins().iconst(types::I64, field.as_ptr() as i64);
+            let flen = bcx.ins().iconst(types::I64, field.len() as i64);
+            let fref = module.declare_func_in_func(ctx.imports.res_jit_struct_set_field, bcx.func);
+            bcx.ins().call(fref, &[target_v, fptr, flen, val_v]);
+            Ok(target_v)
+        }
+        // RES-jit: map literal
+        Node::MapLiteral { entries, .. } => {
+            let fref_alloc = module.declare_func_in_func(ctx.imports.res_jit_alloc_map, bcx.func);
+            let call = bcx.ins().call(fref_alloc, &[]);
+            let map_v = bcx.inst_results(call)[0];
+            let fref_set = module.declare_func_in_func(ctx.imports.res_jit_map_set, bcx.func);
+            for (key, value) in entries {
+                let k = lower_expr(key, bcx, ctx, module)?;
+                let v = lower_expr(value, bcx, ctx, module)?;
+                bcx.ins().call(fref_set, &[map_v, k, v]);
+            }
+            Ok(map_v)
+        }
+        // RES-jit: match expression
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            let scrut_v = lower_expr(scrutinee, bcx, ctx, module)?;
+            let merge_block = bcx.create_block();
+            bcx.append_block_param(merge_block, types::I64);
+            for (pattern, _guard, body) in arms {
+                match pattern {
+                    crate::Pattern::Wildcard | crate::Pattern::Identifier(_) => {
+                        if let crate::Pattern::Identifier(pname) = pattern {
+                            let var = ctx.declare(pname, bcx);
+                            bcx.def_var(var, scrut_v);
+                        }
+                        let v = lower_expr(body, bcx, ctx, module)?;
+                        bcx.ins().jump(merge_block, &[v]);
+                        bcx.switch_to_block(merge_block);
+                        bcx.seal_block(merge_block);
+                        return Ok(bcx.block_params(merge_block)[0]);
+                    }
+                    crate::Pattern::Literal(lit_node) => {
+                        let lit_v = lower_expr(lit_node, bcx, ctx, module)?;
+                        let cmp = bcx.ins().icmp(IntCC::Equal, scrut_v, lit_v);
+                        let then_bb = bcx.create_block();
+                        let else_bb = bcx.create_block();
+                        bcx.ins().brif(cmp, then_bb, &[], else_bb, &[]);
+                        bcx.switch_to_block(then_bb);
+                        bcx.seal_block(then_bb);
+                        let v = lower_expr(body, bcx, ctx, module)?;
+                        bcx.ins().jump(merge_block, &[v]);
+                        bcx.switch_to_block(else_bb);
+                        bcx.seal_block(else_bb);
+                    }
+                    crate::Pattern::EnumVariant {
+                        variant_name,
+                        payload: pat_payload,
+                        ..
+                    } => {
+                        let vptr = bcx.ins().iconst(types::I64, variant_name.as_ptr() as i64);
+                        let vlen = bcx.ins().iconst(types::I64, variant_name.len() as i64);
+                        let fref = module
+                            .declare_func_in_func(ctx.imports.res_jit_enum_is_variant, bcx.func);
+                        let ecall = bcx.ins().call(fref, &[scrut_v, vptr, vlen]);
+                        let is_match = bcx.inst_results(ecall)[0];
+                        let zero = bcx.ins().iconst(types::I64, 0);
+                        let cmp = bcx.ins().icmp(IntCC::NotEqual, is_match, zero);
+                        let then_bb = bcx.create_block();
+                        let else_bb = bcx.create_block();
+                        bcx.ins().brif(cmp, then_bb, &[], else_bb, &[]);
+                        bcx.switch_to_block(then_bb);
+                        bcx.seal_block(then_bb);
+                        let pfref =
+                            module.declare_func_in_func(ctx.imports.res_jit_enum_payload, bcx.func);
+                        let pcall = bcx.ins().call(pfref, &[scrut_v]);
+                        let payload_v = bcx.inst_results(pcall)[0];
+                        if let crate::EnumPatternPayload::Tuple(inner_pats) = pat_payload
+                            && inner_pats.len() == 1
+                            && let crate::Pattern::Identifier(pname) = &inner_pats[0]
+                        {
+                            let var = ctx.declare(pname, bcx);
+                            bcx.def_var(var, payload_v);
+                        }
+                        let v = lower_expr(body, bcx, ctx, module)?;
+                        bcx.ins().jump(merge_block, &[v]);
+                        bcx.switch_to_block(else_bb);
+                        bcx.seal_block(else_bb);
+                    }
+                    _ => {
+                        let v = lower_expr(body, bcx, ctx, module)?;
+                        bcx.ins().jump(merge_block, &[v]);
+                        bcx.switch_to_block(merge_block);
+                        bcx.seal_block(merge_block);
+                        return Ok(bcx.block_params(merge_block)[0]);
+                    }
+                }
+            }
+            let zero = bcx.ins().iconst(types::I64, 0);
+            bcx.ins().jump(merge_block, &[zero]);
+            bcx.switch_to_block(merge_block);
+            bcx.seal_block(merge_block);
+            Ok(bcx.block_params(merge_block)[0])
+        }
+        // RES-jit: interpolated string
+        Node::InterpolatedString { parts, .. } => {
+            let empty_ptr = bcx.ins().iconst(types::I64, 0);
+            let empty_len = bcx.ins().iconst(types::I64, 0);
+            let fref_alloc =
+                module.declare_func_in_func(ctx.imports.res_jit_alloc_string, bcx.func);
+            let call = bcx.ins().call(fref_alloc, &[empty_ptr, empty_len]);
+            let mut result = bcx.inst_results(call)[0];
+            let fref_concat =
+                module.declare_func_in_func(ctx.imports.res_jit_string_concat, bcx.func);
+            let fref_to_str =
+                module.declare_func_in_func(ctx.imports.res_jit_value_to_string, bcx.func);
+            for part in parts {
+                match part {
+                    crate::string_interp::StringPart::Literal(s) => {
+                        let sp = bcx.ins().iconst(types::I64, s.as_ptr() as i64);
+                        let sl = bcx.ins().iconst(types::I64, s.len() as i64);
+                        let sc = bcx.ins().call(fref_alloc, &[sp, sl]);
+                        let sv = bcx.inst_results(sc)[0];
+                        let c = bcx.ins().call(fref_concat, &[result, sv]);
+                        result = bcx.inst_results(c)[0];
+                    }
+                    crate::string_interp::StringPart::Expr(expr) => {
+                        let expr_v = lower_expr(expr, bcx, ctx, module)?;
+                        let str_call = bcx.ins().call(fref_to_str, &[expr_v]);
+                        let str_v = bcx.inst_results(str_call)[0];
+                        let c = bcx.ins().call(fref_concat, &[result, str_v]);
+                        result = bcx.inst_results(c)[0];
+                    }
+                }
+            }
+            Ok(result)
+        }
         _ => Err(JitError::Unsupported(node_kind(node))),
     }
 }
@@ -2701,6 +3291,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::ReturnStatement { .. } => "ReturnStatement",
         Node::IfStatement { .. } => "IfStatement",
         Node::WhileStatement { .. } => "WhileStatement",
+        Node::ForInStatement { .. } => "ForInStatement",
         Node::Identifier { .. } => "Identifier",
         Node::IntegerLiteral { .. } => "IntegerLiteral",
         Node::FloatLiteral { .. } => "FloatLiteral",
@@ -2711,6 +3302,15 @@ fn node_kind(n: &Node) -> &'static str {
         Node::CallExpression { .. } => "CallExpression",
         Node::Block { .. } => "Block",
         Node::ExpressionStatement { .. } => "ExpressionStatement",
+        Node::Assignment { .. } => "Assignment",
+        Node::StructLiteral { .. } => "StructLiteral",
+        Node::FieldAccess { .. } => "FieldAccess",
+        Node::MapLiteral { .. } => "MapLiteral",
+        Node::Match { .. } => "Match",
+        Node::StructDecl { .. } => "StructDecl",
+        Node::EnumDecl { .. } => "EnumDecl",
+        Node::ImplBlock { .. } => "ImplBlock",
+        Node::InterpolatedString { .. } => "InterpolatedString",
         _ => "<other>",
     }
 }
@@ -2953,20 +3553,24 @@ mod tests {
     // RES-100 closed Phase D — comparison ops work now too.
     // What's still unsupported at the expression level: prefix
     // ops (`-x`, `!x`), identifiers, calls, blocks. This test
-    // pins one of those (prefix `-`) so the descriptor list keeps
-    // being a useful diagnostic for users.
+    // ---------- RES-jit: prefix expressions now supported ----------
+
     #[test]
-    fn jit_rejects_prefix_for_now() {
+    fn jit_prefix_negation() {
         let p = parse_program("return -5;");
-        let err = run(&p).unwrap_err();
-        match err {
-            JitError::Unsupported(msg) => assert!(
-                msg.contains("Prefix"),
-                "expected node-kind in descriptor, got: {}",
-                msg
-            ),
-            _ => panic!("expected Unsupported, got {:?}", err),
-        }
+        assert_eq!(run(&p).unwrap(), -5);
+    }
+
+    #[test]
+    fn jit_prefix_not() {
+        let p = parse_program("return !1;");
+        assert_eq!(run(&p).unwrap(), 0);
+    }
+
+    #[test]
+    fn jit_nested_prefix_negation() {
+        let p = parse_program("return -(-3);");
+        assert_eq!(run(&p).unwrap(), 3);
     }
 
     // ---------- RES-099: Sub/Mul/Div/Mod ----------
@@ -4862,5 +5466,48 @@ return add_two(10, 32);
         } else {
             panic!("expected Function node");
         }
+    }
+
+    // ---------- RES-jit: extended coverage tests ----------
+
+    #[test]
+    fn jit_expression_statement_is_ignored() {
+        let p = parse_program("1 + 2; return 10;");
+        assert_eq!(run(&p).unwrap(), 10);
+    }
+
+    #[test]
+    fn jit_for_in_loop_sum() {
+        let p = parse_program(
+            "let arr = [10, 20, 30]; let sum = 0; for x in arr { sum = sum + x; } return sum;",
+        );
+        assert_eq!(run(&p).unwrap(), 60);
+    }
+
+    #[test]
+    fn jit_struct_literal_and_field_access() {
+        let p = parse_program(
+            "struct Point { int x, int y, } let p = new Point { x: 10, y: 20 }; return p.x + p.y;",
+        );
+        assert_eq!(run(&p).unwrap(), 30);
+    }
+
+    #[test]
+    fn jit_match_literal_arms() {
+        let p = parse_program("let x = 2; return match x { 1 => 10, 2 => 20, 3 => 30 };");
+        // match hits the literal arm `2 => 20`
+        assert_eq!(run(&p).unwrap(), 20);
+    }
+
+    #[test]
+    fn jit_match_wildcard_default() {
+        let p = parse_program("let x = 99; return match x { 1 => 10, _ => 42 };");
+        assert_eq!(run(&p).unwrap(), 42);
+    }
+
+    #[test]
+    fn jit_match_identifier_binding() {
+        let p = parse_program("let x = 7; return match x { y => y + 1 };");
+        assert_eq!(run(&p).unwrap(), 8);
     }
 }
