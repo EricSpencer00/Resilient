@@ -121,6 +121,12 @@ mod lsp_server;
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_server;
+// DAP server: Debug Adapter Protocol over stdio for interactive debugging.
+// CLI-only (no wasm32) — same platform constraint as the LSP and MCP servers.
+#[cfg(not(target_arch = "wasm32"))]
+mod dap_server;
+#[cfg(not(target_arch = "wasm32"))]
+mod debugger;
 
 /// RES-2645: MCP external-tool bridge registry — generic scaffolding for
 /// connecting external verification/analysis tools as MCP tool providers.
@@ -29236,6 +29242,8 @@ COMMON FLAGS:\n\
                                  Exposes compiler tools (parse/typecheck/run/\n\
                                  lint/format/verify) to AI assistants via the\n\
                                  Model Context Protocol (2024-11-05)\n\
+        --dap                    Run the DAP (Debug Adapter Protocol) server\n\
+                                 on stdio for interactive debugging\n\
         --no-cache               Disable the incremental compilation cache\n\
                                  for this run (RES-355)\n\
         --feature NAME           Activate a `#[cfg(feature=\"NAME\")]` flag\n\
@@ -29247,6 +29255,7 @@ COMMON FLAGS:\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
+    debug <file>        Start the DAP debug server for a file\n\
     pkg <verb>          Package manager operations (RES-205)\n\
     fmt <file>          Canonical source formatter\n\
     lint <file>         Run the starter lints\n\
@@ -29427,6 +29436,12 @@ pub fn run_cli() {
         std::process::exit(code);
     }
 
+    // DAP debug subcommand: `rz debug <file>` starts the DAP server.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(code) = dap_server::dispatch_dap(&args) {
+        std::process::exit(code);
+    }
+
     let mut type_check = false;
     // RES-1088: `--no-typecheck` opts out of the default-on type
     // checker. The default behaviour is to run typecheck on every
@@ -29456,6 +29471,7 @@ pub fn run_cli() {
     let mut use_jit = false;
     let mut lsp_mode = false;
     let mut mcp_mode = false;
+    let mut dap_mode = false;
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
     let mut dump_tokens = false;
@@ -29621,6 +29637,11 @@ pub fn run_cli() {
                 // Protocol (NDJSON JSON-RPC 2.0 on stdio). Always
                 // available on native builds; not available on wasm32.
                 mcp_mode = true;
+            } else if arg == "--dap" {
+                // DAP server: Debug Adapter Protocol over stdio for
+                // interactive debugging. Always available on native
+                // builds; not available on wasm32.
+                dap_mode = true;
             } else if arg == "--dump-tokens" {
                 // RES-112: print the lexer's token stream and exit.
                 // Accepts both the hand-rolled scanner (default) and
@@ -30217,6 +30238,22 @@ pub fn run_cli() {
         #[cfg(target_arch = "wasm32")]
         {
             eprintln!("--mcp is not available on wasm32 builds.");
+            std::process::exit(1);
+        }
+    }
+
+    // DAP mode: serve the Debug Adapter Protocol on stdio for interactive
+    // debugging. Always available on native builds (no feature gate —
+    // uses only serde_json which is already an unconditional dep).
+    if dap_mode {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            dap_server::run();
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            eprintln!("--dap is not available on wasm32 builds.");
             std::process::exit(1);
         }
     }
