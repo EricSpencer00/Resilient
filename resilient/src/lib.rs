@@ -200,6 +200,9 @@ mod pkg_init;
 // RES-342: `resilient pkg publish` — manifest read, tarball synth,
 // auth resolution. Companion to pkg_init.
 mod pkg_publish;
+// Package dependency resolution: path deps, git deps, lockfile,
+// and `rz pkg add` CLI command.
+mod pkg_deps;
 // RES-194: Ed25519 signatures on RES-071 verification certificates.
 // Pure algorithm + mini-PEM codec; consumed from main() when
 // `--sign-cert <path>` is passed and from the `verify-cert`
@@ -28065,9 +28068,79 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
             }
             Some(0)
         }
+        Some("add") => {
+            // `pkg add <name> <spec> [--rev X] [--tag X] [--branch X]`
+            let mut name: Option<String> = None;
+            let mut spec: Option<String> = None;
+            let mut opts = pkg_deps::AddOpts::default();
+            let mut i = 3;
+            while i < args.len() {
+                let a = &args[i];
+                if a == "--help" || a == "-h" {
+                    print_pkg_add_help();
+                    return Some(0);
+                } else if a == "--rev" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --rev requires an argument");
+                        return Some(2);
+                    }
+                    opts.rev = Some(args[i].clone());
+                } else if a == "--tag" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --tag requires an argument");
+                        return Some(2);
+                    }
+                    opts.tag = Some(args[i].clone());
+                } else if a == "--branch" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --branch requires an argument");
+                        return Some(2);
+                    }
+                    opts.branch = Some(args[i].clone());
+                } else if a.starts_with("--") {
+                    eprintln!("Error: unknown flag `{}` to `pkg add`", a);
+                    return Some(2);
+                } else if name.is_none() {
+                    name = Some(a.clone());
+                } else if spec.is_none() {
+                    spec = Some(a.clone());
+                } else {
+                    eprintln!("Error: unexpected extra argument `{}` to `pkg add`", a);
+                    return Some(2);
+                }
+                i += 1;
+            }
+            let Some(name) = name else {
+                eprintln!(
+                    "Error: `rz pkg add` requires a name and a source specifier.\n\
+                     Usage: rz pkg add <name> path:../libs/mylib\n\
+                     Usage: rz pkg add <name> git:https://... --rev abc123"
+                );
+                return Some(2);
+            };
+            let Some(spec) = spec else {
+                eprintln!(
+                    "Error: `rz pkg add` requires a source specifier.\n\
+                     Usage: rz pkg add {} path:../libs/{}\n\
+                     Usage: rz pkg add {} git:https://... --rev abc123",
+                    name, name, name
+                );
+                return Some(2);
+            };
+            match pkg_deps::add_dependency(&name, &spec, &opts) {
+                Ok(()) => Some(0),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    Some(1)
+                }
+            }
+        }
         Some(other) => {
             eprintln!(
-                "Error: unknown pkg subcommand `{}`. Known: init, publish. \
+                "Error: unknown pkg subcommand `{}`. Known: init, publish, add. \
                  Run `rz pkg --help` for usage.",
                 other
             );
@@ -28096,6 +28169,7 @@ fn print_pkg_help() {
          SUBCOMMANDS:\n    \
              init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
              publish  (RES-342) Package the current project for upload to a registry\n    \
+             add      Add a dependency to resilient.toml\n    \
              help     Show this message\n\
          \n\
          Run `rz pkg <subcommand> --help` for subcommand-specific options."
@@ -28116,6 +28190,7 @@ fn print_pkg_help_to_stderr() {
          SUBCOMMANDS:\n    \
              init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
              publish  Package the current project for upload to a registry\n    \
+             add      Add a dependency to resilient.toml\n    \
              help     Show this message\n\
          \n\
          Error: `rz pkg` requires a subcommand."
@@ -28162,6 +28237,29 @@ fn print_pkg_publish_help() {
              4. Builds a deterministic USTAR tarball in memory.\n    \
              5. Resolves the auth token (without printing it).\n    \
              6. Prints a human-readable summary."
+    );
+}
+
+/// `resilient pkg add --help`.
+fn print_pkg_add_help() {
+    println!(
+        "rz pkg add — add a dependency to resilient.toml\n\
+         \n\
+         USAGE:\n    \
+             rz pkg add <name> path:../libs/<name>\n    \
+             rz pkg add <name> git:https://github.com/user/repo --rev abc123\n\
+         \n\
+         ARGS:\n    \
+             <name>     Dependency name (used in `use <name>::module;` imports)\n    \
+             <spec>     Source specifier: `path:<relative-path>` or `git:<url>`\n\
+         \n\
+         FLAGS:\n    \
+             --rev <r>      Pin to a git revision (git deps only)\n    \
+             --tag <t>      Pin to a git tag (git deps only)\n    \
+             --branch <b>   Pin to a git branch (git deps only)\n\
+         \n\
+         Validates the dependency resolves, appends to [dependencies] in\n\
+         resilient.toml, and writes resilient.lock."
     );
 }
 
