@@ -218,6 +218,9 @@ mod lint;
 // RES-fmt: canonical source-code formatter. Consumed from main()
 // when the `fmt <file>` subcommand runs.
 mod formatter;
+// RES-test: `rz test` subcommand — discover and run `fn test_*()`
+// functions. Standalone from the compiler pipeline.
+mod test_runner;
 // RES-164a: pure free-variable analysis on the AST. Phase-K
 // scaffolding for JIT closure capture (RES-164c/d) — returns the
 // set of names referenced inside a subtree that aren't bound
@@ -29267,6 +29270,12 @@ pub fn run_cli() {
     // the general print_help(). Exits directly on handled verbs so
     // the rest of main stays focused on the compiler driver.
     if let Some(code) = dispatch_pkg_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-test: `rz test [<file|dir>] [--filter <substr>]` —
+    // discover and run test functions.
+    if let Some(code) = test_runner::dispatch_test_subcommand(&args) {
         std::process::exit(code);
     }
 
