@@ -75,6 +75,47 @@ pub fn lookup_std_module(name: &str) -> Option<&'static StdModule> {
     STD_MODULES.iter().find(|m| m.name == name).copied()
 }
 
+/// Dispatch a qualified stdlib call by splitting on `"::"` (e.g.
+/// `"math::sqrt"`) or `"_"` (e.g. `"math_sqrt"`) and looking up the
+/// module + function.  Returns `None` if the name isn't a valid stdlib
+/// qualified name.
+pub fn call_by_qualified_name(name: &str, args: &[Value]) -> Option<RResult<Value>> {
+    let handler = resolve_stdlib_handler(name)?;
+    Some(handler(args))
+}
+
+/// Check whether `name` resolves to a stdlib function.  Used by the
+/// bytecode compiler to decide whether to emit `CallBuiltin` for a
+/// callee that isn't in the flat builtin table.
+pub fn is_stdlib_function(name: &str) -> bool {
+    resolve_stdlib_handler(name).is_some()
+}
+
+/// Handler function pointer type used by stdlib dispatch.
+type StdHandler = fn(&[Value]) -> RResult<Value>;
+
+/// Shared resolution: try `"::"` split first, then `"_"` split.
+fn resolve_stdlib_handler(name: &str) -> Option<StdHandler> {
+    // Try "module::fn" form first.
+    if let Some((module_name, fn_name)) = name.split_once("::")
+        && let Some(module) = lookup_std_module(module_name)
+        && let Some(f) = module.functions.iter().find(|f| f.name == fn_name)
+    {
+        return Some(f.handler);
+    }
+    // Fall back to "module_fn" form (as produced by resolve_std_import).
+    // Try each registered module name as a prefix.
+    for module in STD_MODULES.iter() {
+        if let Some(fn_name) = name.strip_prefix(module.name)
+            && let Some(fn_name) = fn_name.strip_prefix('_')
+            && let Some(f) = module.functions.iter().find(|f| f.name == fn_name)
+        {
+            return Some(f.handler);
+        }
+    }
+    None
+}
+
 /// List all available standard library module names.
 pub fn all_std_module_names() -> impl Iterator<Item = &'static str> {
     STD_MODULES.iter().map(|m| m.name)
