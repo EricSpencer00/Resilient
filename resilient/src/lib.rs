@@ -16,8 +16,12 @@ mod alignment_helpers;
 // Pure leaf builtins; module-isolated.
 mod array_argminmax;
 mod array_combinators;
+mod array_dedup_none;
+mod array_flatten_depth;
 mod array_functional;
+mod array_struct_sort;
 mod collection_extras;
+mod int_parse_radix;
 mod map_functional;
 mod numeric_utils;
 mod result_option_hof;
@@ -1598,7 +1602,16 @@ impl Lexer {
         };
 
         if is_float {
-            Token::FloatLiteral(number_str.parse::<f64>().unwrap_or(0.0))
+            match number_str.parse::<f64>() {
+                Ok(f) => Token::FloatLiteral(f),
+                Err(_) => {
+                    eprintln!(
+                        "<input>:{}:{}: error: float literal `{}` is not a valid IEEE 754 value",
+                        self.last_token_line, self.last_token_column, number_str
+                    );
+                    Token::FloatLiteral(0.0)
+                }
+            }
         } else {
             match number_str.parse::<i64>() {
                 Ok(n) => Token::IntLiteral(n),
@@ -12109,6 +12122,33 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ),
     ("rle_encode", crate::data_utils::builtin_rle_encode),
     ("rle_decode", crate::data_utils::builtin_rle_decode),
+    // Pain-points hardening: struct sort, depth-bounded flatten, radix parse/format,
+    // dedup-by, int_to_oct.
+    (
+        "array_sort_by_field",
+        crate::array_struct_sort::builtin_array_sort_by_field,
+    ),
+    (
+        "array_sort_by_field_desc",
+        crate::array_struct_sort::builtin_array_sort_by_field_desc,
+    ),
+    (
+        "array_flatten_depth",
+        crate::array_flatten_depth::builtin_array_flatten_depth,
+    ),
+    (
+        "int_parse_hex",
+        crate::int_parse_radix::builtin_int_parse_hex,
+    ),
+    (
+        "int_parse_bin",
+        crate::int_parse_radix::builtin_int_parse_bin,
+    ),
+    ("int_to_oct", crate::int_parse_radix::builtin_int_to_oct),
+    (
+        "array_dedup_by",
+        crate::array_dedup_none::builtin_array_dedup_by,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -16183,7 +16223,10 @@ fn builtin_array_fold_int(args: &[Value]) -> RResult<Value> {
 fn builtin_array_ne(args: &[Value]) -> RResult<Value> {
     match builtin_array_eq(args).map_err(|e| e.replace("array_eq", "array_ne"))? {
         Value::Bool(b) => Ok(Value::Bool(!b)),
-        other => panic!("array_eq returned non-Bool: {:?}", other),
+        other => Err(format!(
+            "array_ne: internal error — array_eq returned non-Bool: {}",
+            other
+        )),
     }
 }
 
@@ -23197,6 +23240,12 @@ impl Interpreter {
                                     );
                                 }
                             }
+                        }
+
+                        // Pain-points hardening: array_none needs interpreter for apply_function.
+                        "array_none" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_dedup_none::builtin_array_none(self, &args);
                         }
 
                         // RES-2646: array_flat_map / array_group_by / array_partition.
