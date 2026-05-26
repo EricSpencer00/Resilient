@@ -117,12 +117,20 @@ mod watch_mode;
 mod inline;
 #[cfg(feature = "jit")]
 mod jit_backend;
+#[cfg(feature = "jit")]
+mod jit_runtime;
 #[cfg(feature = "lsp")]
 mod lsp_server;
 // MCP server: exposes the Resilient compiler as MCP tools over stdio.
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_server;
+// DAP server: Debug Adapter Protocol over stdio for interactive debugging.
+// CLI-only (no wasm32) — same platform constraint as the LSP and MCP servers.
+#[cfg(not(target_arch = "wasm32"))]
+mod dap_server;
+#[cfg(not(target_arch = "wasm32"))]
+mod debugger;
 
 /// RES-2645: MCP external-tool bridge registry — generic scaffolding for
 /// connecting external verification/analysis tools as MCP tool providers.
@@ -204,6 +212,9 @@ mod pkg_init;
 // RES-342: `resilient pkg publish` — manifest read, tarball synth,
 // auth resolution. Companion to pkg_init.
 mod pkg_publish;
+// Package dependency resolution: path deps, git deps, lockfile,
+// and `rz pkg add` CLI command.
+mod pkg_deps;
 // RES-194: Ed25519 signatures on RES-071 verification certificates.
 // Pure algorithm + mini-PEM codec; consumed from main() when
 // `--sign-cert <path>` is passed and from the `verify-cert`
@@ -222,6 +233,9 @@ mod lint;
 // RES-fmt: canonical source-code formatter. Consumed from main()
 // when the `fmt <file>` subcommand runs.
 mod formatter;
+// RES-test: `rz test` subcommand — discover and run `fn test_*()`
+// functions. Standalone from the compiler pipeline.
+mod test_runner;
 // RES-164a: pure free-variable analysis on the AST. Phase-K
 // scaffolding for JIT closure capture (RES-164c/d) — returns the
 // set of names referenced inside a subtree that aren't bound
@@ -28111,9 +28125,79 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
             }
             Some(0)
         }
+        Some("add") => {
+            // `pkg add <name> <spec> [--rev X] [--tag X] [--branch X]`
+            let mut name: Option<String> = None;
+            let mut spec: Option<String> = None;
+            let mut opts = pkg_deps::AddOpts::default();
+            let mut i = 3;
+            while i < args.len() {
+                let a = &args[i];
+                if a == "--help" || a == "-h" {
+                    print_pkg_add_help();
+                    return Some(0);
+                } else if a == "--rev" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --rev requires an argument");
+                        return Some(2);
+                    }
+                    opts.rev = Some(args[i].clone());
+                } else if a == "--tag" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --tag requires an argument");
+                        return Some(2);
+                    }
+                    opts.tag = Some(args[i].clone());
+                } else if a == "--branch" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --branch requires an argument");
+                        return Some(2);
+                    }
+                    opts.branch = Some(args[i].clone());
+                } else if a.starts_with("--") {
+                    eprintln!("Error: unknown flag `{}` to `pkg add`", a);
+                    return Some(2);
+                } else if name.is_none() {
+                    name = Some(a.clone());
+                } else if spec.is_none() {
+                    spec = Some(a.clone());
+                } else {
+                    eprintln!("Error: unexpected extra argument `{}` to `pkg add`", a);
+                    return Some(2);
+                }
+                i += 1;
+            }
+            let Some(name) = name else {
+                eprintln!(
+                    "Error: `rz pkg add` requires a name and a source specifier.\n\
+                     Usage: rz pkg add <name> path:../libs/mylib\n\
+                     Usage: rz pkg add <name> git:https://... --rev abc123"
+                );
+                return Some(2);
+            };
+            let Some(spec) = spec else {
+                eprintln!(
+                    "Error: `rz pkg add` requires a source specifier.\n\
+                     Usage: rz pkg add {} path:../libs/{}\n\
+                     Usage: rz pkg add {} git:https://... --rev abc123",
+                    name, name, name
+                );
+                return Some(2);
+            };
+            match pkg_deps::add_dependency(&name, &spec, &opts) {
+                Ok(()) => Some(0),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    Some(1)
+                }
+            }
+        }
         Some(other) => {
             eprintln!(
-                "Error: unknown pkg subcommand `{}`. Known: init, publish. \
+                "Error: unknown pkg subcommand `{}`. Known: init, publish, add. \
                  Run `rz pkg --help` for usage.",
                 other
             );
@@ -28142,6 +28226,7 @@ fn print_pkg_help() {
          SUBCOMMANDS:\n    \
              init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
              publish  (RES-342) Package the current project for upload to a registry\n    \
+             add      Add a dependency to resilient.toml\n    \
              help     Show this message\n\
          \n\
          Run `rz pkg <subcommand> --help` for subcommand-specific options."
@@ -28162,6 +28247,7 @@ fn print_pkg_help_to_stderr() {
          SUBCOMMANDS:\n    \
              init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
              publish  Package the current project for upload to a registry\n    \
+             add      Add a dependency to resilient.toml\n    \
              help     Show this message\n\
          \n\
          Error: `rz pkg` requires a subcommand."
@@ -28208,6 +28294,29 @@ fn print_pkg_publish_help() {
              4. Builds a deterministic USTAR tarball in memory.\n    \
              5. Resolves the auth token (without printing it).\n    \
              6. Prints a human-readable summary."
+    );
+}
+
+/// `resilient pkg add --help`.
+fn print_pkg_add_help() {
+    println!(
+        "rz pkg add — add a dependency to resilient.toml\n\
+         \n\
+         USAGE:\n    \
+             rz pkg add <name> path:../libs/<name>\n    \
+             rz pkg add <name> git:https://github.com/user/repo --rev abc123\n\
+         \n\
+         ARGS:\n    \
+             <name>     Dependency name (used in `use <name>::module;` imports)\n    \
+             <spec>     Source specifier: `path:<relative-path>` or `git:<url>`\n\
+         \n\
+         FLAGS:\n    \
+             --rev <r>      Pin to a git revision (git deps only)\n    \
+             --tag <t>      Pin to a git tag (git deps only)\n    \
+             --branch <b>   Pin to a git branch (git deps only)\n\
+         \n\
+         Validates the dependency resolves, appends to [dependencies] in\n\
+         resilient.toml, and writes resilient.lock."
     );
 }
 
@@ -29182,6 +29291,8 @@ COMMON FLAGS:\n\
                                  Exposes compiler tools (parse/typecheck/run/\n\
                                  lint/format/verify) to AI assistants via the\n\
                                  Model Context Protocol (2024-11-05)\n\
+        --dap                    Run the DAP (Debug Adapter Protocol) server\n\
+                                 on stdio for interactive debugging\n\
         --no-cache               Disable the incremental compilation cache\n\
                                  for this run (RES-355)\n\
         --feature NAME           Activate a `#[cfg(feature=\"NAME\")]` flag\n\
@@ -29193,6 +29304,7 @@ COMMON FLAGS:\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
+    debug <file>        Start the DAP debug server for a file\n\
     pkg <verb>          Package manager operations (RES-205)\n\
     fmt <file>          Canonical source formatter\n\
     lint <file>         Run the starter lints\n\
@@ -29319,6 +29431,12 @@ pub fn run_cli() {
         std::process::exit(code);
     }
 
+    // RES-test: `rz test [<file|dir>] [--filter <substr>]` —
+    // discover and run test functions.
+    if let Some(code) = test_runner::dispatch_test_subcommand(&args) {
+        std::process::exit(code);
+    }
+
     // RES-211: `--help` / `-h` prints a short usage summary listing
     // the most-used flags. Kept hand-rolled (no clap dep) to match
     // the rest of the driver's arg-parsing style.
@@ -29367,6 +29485,12 @@ pub fn run_cli() {
         std::process::exit(code);
     }
 
+    // DAP debug subcommand: `rz debug <file>` starts the DAP server.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(code) = dap_server::dispatch_dap(&args) {
+        std::process::exit(code);
+    }
+
     let mut type_check = false;
     // RES-1088: `--no-typecheck` opts out of the default-on type
     // checker. The default behaviour is to run typecheck on every
@@ -29396,6 +29520,7 @@ pub fn run_cli() {
     let mut use_jit = false;
     let mut lsp_mode = false;
     let mut mcp_mode = false;
+    let mut dap_mode = false;
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
     let mut dump_tokens = false;
@@ -29561,6 +29686,11 @@ pub fn run_cli() {
                 // Protocol (NDJSON JSON-RPC 2.0 on stdio). Always
                 // available on native builds; not available on wasm32.
                 mcp_mode = true;
+            } else if arg == "--dap" {
+                // DAP server: Debug Adapter Protocol over stdio for
+                // interactive debugging. Always available on native
+                // builds; not available on wasm32.
+                dap_mode = true;
             } else if arg == "--dump-tokens" {
                 // RES-112: print the lexer's token stream and exit.
                 // Accepts both the hand-rolled scanner (default) and
@@ -30157,6 +30287,22 @@ pub fn run_cli() {
         #[cfg(target_arch = "wasm32")]
         {
             eprintln!("--mcp is not available on wasm32 builds.");
+            std::process::exit(1);
+        }
+    }
+
+    // DAP mode: serve the Debug Adapter Protocol on stdio for interactive
+    // debugging. Always available on native builds (no feature gate —
+    // uses only serde_json which is already an unconditional dep).
+    if dap_mode {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            dap_server::run();
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            eprintln!("--dap is not available on wasm32 builds.");
             std::process::exit(1);
         }
     }

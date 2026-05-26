@@ -1113,8 +1113,6 @@ fn run_inner(
                     Value::String(s) => s.as_str(),
                     _ => return Err(VmError::TypeMismatch("CallBuiltin (non-string name)")),
                 };
-                let func = crate::lookup_builtin(name)
-                    .ok_or_else(|| VmError::UnknownBuiltin(name.to_string()))?;
                 let n = arity as usize;
                 if stack.len() < n {
                     return Err(VmError::EmptyStack);
@@ -1123,7 +1121,18 @@ fn run_inner(
                 // arm above for the same justification.
                 let split_at = stack.len() - n;
                 let args: Vec<Value> = stack.drain(split_at..).collect();
-                let result = func(&args).map_err(VmError::BuiltinCallFailed)?;
+                // Try the non-namespaced builtin table first, then fall
+                // back to stdlib qualified names (e.g. "math::sqrt") so
+                // `use std::math;` works under --vm.
+                let result = if let Some(func) = crate::lookup_builtin(name) {
+                    func(&args).map_err(VmError::BuiltinCallFailed)?
+                } else if let Some(stdlib_result) =
+                    crate::stdlib::call_by_qualified_name(name, &args)
+                {
+                    stdlib_result.map_err(VmError::BuiltinCallFailed)?
+                } else {
+                    return Err(VmError::UnknownBuiltin(name.to_string()));
+                };
                 stack.push(result);
             }
             // ---- RES-171a: array ops ----
@@ -2679,8 +2688,6 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         Value::String(s) => s.as_str(),
         _ => return Err(VmError::TypeMismatch("CallBuiltin (non-string name)")),
     };
-    let func =
-        crate::lookup_builtin(name).ok_or_else(|| VmError::UnknownBuiltin(name.to_string()))?;
     let n = arity as usize;
     if state.stack.len() < n {
         return Err(VmError::EmptyStack);
@@ -2689,7 +2696,16 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     // match-dispatch CallBuiltin above.
     let split_at = state.stack.len() - n;
     let args: Vec<Value> = state.stack.drain(split_at..).collect();
-    let result = func(&args).map_err(VmError::BuiltinCallFailed)?;
+    // Try the non-namespaced builtin table first, then fall back to
+    // stdlib qualified names (e.g. "math::sqrt") so `use std::math;`
+    // works under --vm.
+    let result = if let Some(func) = crate::lookup_builtin(name) {
+        func(&args).map_err(VmError::BuiltinCallFailed)?
+    } else if let Some(stdlib_result) = crate::stdlib::call_by_qualified_name(name, &args) {
+        stdlib_result.map_err(VmError::BuiltinCallFailed)?
+    } else {
+        return Err(VmError::UnknownBuiltin(name.to_string()));
+    };
     state.stack.push(result);
     Ok(Step::Continue)
 }

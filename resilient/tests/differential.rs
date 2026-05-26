@@ -140,6 +140,7 @@ const SHARED_EXAMPLES: &[&str] = &[
     "region_distinct_ok.rz",
     "shebang_demo.rz",
     "actor_eventually_drain.rz",
+    "vm_stdlib_math.rz",
 ];
 
 #[test]

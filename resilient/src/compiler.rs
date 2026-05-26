@@ -2723,7 +2723,9 @@ fn compile_expr(
             // emitting `Op::CallBuiltin { name_const, arity }`. Limit
             // arity to u8 so the opcode stays Copy + 4 bytes; calls
             // with >255 args are rejected before any code is emitted.
-            if crate::lookup_builtin(callee_name).is_some() {
+            if crate::lookup_builtin(callee_name).is_some()
+                || crate::stdlib::is_stdlib_function(callee_name)
+            {
                 if arguments.len() > u8::MAX as usize {
                     return Err(CompileError::Unsupported("builtin call with > 255 args"));
                 }

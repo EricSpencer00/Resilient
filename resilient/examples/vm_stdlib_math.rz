@@ -1,0 +1,8 @@
+use std::math;
+
+fn main() {
+    println(math_abs(-42));
+    println(math_max(10, 20));
+    println(math_min(3, 7));
+}
+main();

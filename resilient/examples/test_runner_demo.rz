@@ -1,0 +1,18 @@
+use std::testing;
+
+fn test_addition() {
+    testing_assert_eq(1 + 1, 2);
+}
+
+fn test_string() {
+    testing_assert_eq("hello", "hello");
+}
+
+fn test_should_fail() {
+    testing_assert_eq(1, 2);
+}
+
+fn not_a_test() {
+    // This should NOT be discovered as a test
+    println("not a test");
+}

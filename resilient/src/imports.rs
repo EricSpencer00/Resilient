@@ -83,6 +83,44 @@ pub fn expand_uses_with_std(
                 continue;
             }
 
+            // Check for package dependency import: `use dep::module;`
+            // Falls through to file-path resolution if not a known dep.
+            if let Some((dep_name, module)) = path.split_once("::")
+                && let Ok(Some(dep_path)) =
+                    crate::pkg_deps::resolve_dep_module(base_dir, dep_name, module)
+            {
+                let canon = canonicalize_or_self(&dep_path);
+                if alias.is_none() && !loaded.contains(&canon) {
+                    loaded.insert(canon);
+                } else if alias.is_none() {
+                    continue;
+                }
+                let imported_program = load_and_parse(&dep_path)?;
+                let imported_dir = dep_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                let mut imported_program = imported_program;
+                expand_uses_with_std(&mut imported_program, &imported_dir, loaded, std_imports)?;
+                if let Node::Program(imported_stmts) = imported_program {
+                    let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
+                    // Default namespace: use the dep_name so
+                    // callers access items as `dep::func`.
+                    let ns = alias.clone().unwrap_or_else(|| dep_name.to_string());
+                    for s in imported_stmts {
+                        if matches!(s.node, Node::Use { .. }) {
+                            continue;
+                        }
+                        if has_any_pub && is_exportable_decl(&s.node) && !is_pub_decl(&s.node) {
+                            continue;
+                        }
+                        let renamed = rename_decl(s, &ns);
+                        expanded.push(renamed);
+                    }
+                }
+                continue;
+            }
+
             let target = resolve_use_path(base_dir, path)?;
 
             let canon = canonicalize_or_self(&target);
