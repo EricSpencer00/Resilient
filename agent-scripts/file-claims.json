@@ -1,16 +1,16 @@
 {
   "claims": {
-    "resilient/src/compiler.rs": {
-      "branch": "res-2540-struct-match-patterns",
-      "claimed_at": "2026-05-25T16:10:22Z"
-    },
-    "resilient/src/type_builtins.rs": {
-      "branch": "res-2540-struct-match-patterns",
-      "claimed_at": "2026-05-25T16:10:22Z"
-    },
     "resilient/src/lib.rs": {
-      "branch": "res-2540-struct-match-patterns",
-      "claimed_at": "2026-05-25T16:10:22Z"
+      "branch": "res-2535-where-clauses",
+      "claimed_at": "2026-05-27T05:10:06Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2535-where-clauses",
+      "claimed_at": "2026-05-27T05:10:06Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-2535-where-clauses",
+      "claimed_at": "2026-05-27T05:10:06Z"
     }
   }
 }

@@ -5121,6 +5121,8 @@ impl TypeChecker {
                 // RES-1597: `lean_spec::check` is a no-op stub; Lean
                 // export is driven by the `--emit-lean-spec` CLI flag.
                 crate::mcp_tool_registry::check(program, source_path)?;
+                // RES-2535: validate where-clause type-param references.
+                crate::where_clauses::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
