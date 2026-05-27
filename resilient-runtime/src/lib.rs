@@ -69,6 +69,12 @@ pub mod fixed;
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
 
+// RES-2596: timer/counter peripheral abstraction. Always compiled —
+// no allocator or std required; state lives in a flat
+// `[TimerState; MAX_TIMERS]` static protected by an AtomicBool
+// spinlock.
+pub mod timer;
+
 #[cfg(feature = "alloc")]
 use alloc::string::String;
 
