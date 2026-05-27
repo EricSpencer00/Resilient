@@ -1,0 +1,21 @@
+// RES-2591: non-exhaustive match on enum variants with payloads.
+// This program is intentionally invalid: the match covers Lit and Add
+// but omits Neg. The typechecker must reject it and name the missing variant.
+//
+// Expected compile error (soft-mode output):
+//   Non-exhaustive match on enum `Expr`: missing variants: Expr::Neg
+
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+
+fn eval(Expr expr) -> int {
+    return match expr {
+        Expr::Lit(n) => n,
+        Expr::Add(a, b) => eval(a) + eval(b),
+    };
+}
+
+eval(Expr::Lit(1));
