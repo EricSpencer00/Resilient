@@ -586,6 +586,7 @@ mod statistics;
 // types; per-pass call sites consult it to skip ~15 attribute-only
 // passes whose markers are absent in the input program.
 mod enum_exhaustiveness;
+mod enum_payload_match;
 mod pass_gate;
 mod phantom_types;
 mod power_contracts;
