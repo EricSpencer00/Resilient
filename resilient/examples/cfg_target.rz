@@ -1,0 +1,23 @@
+// RES-2581: #[cfg(target = "...")] conditional compilation.
+//
+// Two alternative implementations of `read_sensor` — one for host
+// (returns a mock value), one for thumbv7em (would call a MMIO read).
+// Only the host variant survives when compiled without --target, so
+// the output is always "42".
+
+#[cfg(target = "thumbv7em")]
+fn read_sensor() -> int {
+    // On real hardware this would call volatile_read_u32(0x4000_0000).
+    return 0;
+}
+
+#[cfg(not(target = "thumbv7em"))]
+fn read_sensor() -> int {
+    return 42;
+}
+
+fn main() {
+    println(read_sensor());
+}
+
+main();

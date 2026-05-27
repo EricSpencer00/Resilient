@@ -121,6 +121,8 @@ pub(crate) struct Markers<'a> {
     /// `traits` gate (RES-1616), which also consults
     /// `impl_trait_names` and `has_generic_fn`.
     pub has_trait_decl: bool,
+    /// `blanket_impl::check` gate (RES-2552).
+    pub has_blanket_impl: bool,
     /// True if any `Node::ActorDecl` declares a non-empty
     /// `eventually_clauses` vector. Used by the `verifier_liveness`
     /// gate (RES-1616).
@@ -303,6 +305,9 @@ impl<'a> Markers<'a> {
             }
             Node::TraitDecl { .. } => {
                 m.has_trait_decl = true;
+            }
+            Node::BlanketImpl { .. } => {
+                m.has_blanket_impl = true;
             }
             Node::ActorDecl {
                 eventually_clauses, ..

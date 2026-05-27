@@ -378,6 +378,10 @@ mod default_params;
 // Node::Function::type_params field) lives in main.rs; this module owns the
 // typechecker validation pass (duplicate type-param detection).
 mod generics;
+// RES-2576: call-site type inference for generic function calls.
+// Validates that all type parameters can be inferred from argument
+// types, and reports a diagnostic when inference fails.
+mod generic_inference;
 // RES-405 PR 3: VM/JIT monomorphization pass — rewrites generic call sites
 // to specialized clones (e.g. `identity(42)` → `identity$Int(42)`).
 // Runs after typecheck, before `compiler::compile`.
@@ -423,6 +427,17 @@ pub(crate) mod devirtualize;
 // `#[must_tail_call]` enforcement pass, and `is_must_tail_call` query
 // used by `apply_function` to activate the trampoline loop.
 mod tail_calls;
+
+// RES-2592: tail call optimization — #[must_tail_call] check pass and
+// trampoline loop for self-recursive functions. All TCO logic lives in
+// tail_calls.rs; lib.rs adds only the Value::TailCall sentinel variant,
+// the tco_fn_name Interpreter field, and the trampoline in apply_function.
+mod tail_calls;
+
+// RES-2535: `where` clause support — post-signature generic bound syntax.
+// All parsing and validation logic lives here; lib.rs only adds the token
+// and the call to `merge_where_clause` after `parse_optional_return_type`.
+mod where_clauses;
 
 // Ralph-Loop-Uniqueness: shared AST-walk helper used by the family of
 // novel safety-critical checks below. Provides pre-order traversal,
@@ -768,6 +783,9 @@ enum Token {
     /// can't be reached from a regular block.
     Unsafe,
     Pub,
+    /// RES-2535: `where` keyword for post-signature generic bound clauses.
+    /// `fn merge<A, B>(a: A, b: B) where A: Display + Clone, B: Into { ... }`
+    Where,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -929,6 +947,7 @@ impl Token {
             Token::Enum => Cow::Borrowed("`enum`"),
             Token::Unsafe => Cow::Borrowed("`unsafe`"),
             Token::Pub => Cow::Borrowed("`pub`"),
+            Token::Where => Cow::Borrowed("`where`"),
             Token::Underscore => Cow::Borrowed("`_`"),
             Token::Default => Cow::Borrowed("`default`"),
             Token::Dot => Cow::Borrowed("`.`"),
@@ -1484,6 +1503,7 @@ impl Lexer {
                         "enum" => Token::Enum,
                         "unsafe" => Token::Unsafe,
                         "pub" => Token::Pub,
+                        "where" => Token::Where,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -3972,6 +3992,10 @@ impl Parser {
 
         // RES-052: optional `-> TYPE` return type, BEFORE contracts.
         let return_type = self.parse_optional_return_type();
+
+        // RES-2535: optional `where T: A + B, U: C` clause after return type.
+        let type_param_bounds =
+            crate::where_clauses::merge_where_clause(self, &type_params, type_param_bounds);
 
         // RES-035: between the parameter list and the body, accept any
         // number of `requires EXPR` and `ensures EXPR` clauses, in any
@@ -10241,6 +10265,10 @@ enum Value {
     /// `apply_function` — rebinds the function's parameters to the new
     /// args and restarts the body without growing the host stack.
     /// Never visible to user code or operators.
+    /// RES-2592: trampoline sentinel emitted by the interpreter when a
+    /// tail-recursive call to the active TCO function is detected.
+    /// Consumed immediately by the `'tco` loop in `apply_function`; never
+    /// escapes the call frame. The `Vec<Value>` holds the new argument list.
     TailCall(Vec<Value>),
 }
 
@@ -10381,6 +10409,8 @@ impl std::fmt::Debug for Value {
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
             // RES-2592: TailCall is an internal control-flow sentinel.
             Value::TailCall(args) => write!(f, "TailCall({} args)", args.len()),
+            // RES-2592: internal sentinel — should never appear in user output.
+            Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
         }
     }
 }
@@ -10559,6 +10589,8 @@ impl std::fmt::Display for Value {
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
             // RES-2576: tail-call trampoline value — not directly displayable.
             Value::TailCall(_) => write!(f, "<tail-call>"),
+            // RES-2592: internal sentinel — should never appear in user output.
+            Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
         }
     }
 }
@@ -22350,6 +22382,10 @@ struct Interpreter {
     /// instead of recursing, letting the trampoline in `apply_function`
     /// restart the frame without growing the host stack. `None` for all
     /// other functions — no overhead on the common path.
+    /// RES-2592: when `Some(name)`, the interpreter is inside a
+    /// `#[must_tail_call]`-annotated function body. Any `CallExpression`
+    /// whose callee matches this name emits `Value::TailCall` instead of
+    /// recursing, which the trampoline loop in `apply_function` catches.
     tco_fn_name: Option<String>,
 }
 
@@ -22959,6 +22995,20 @@ impl Interpreter {
                 arguments,
                 ..
             } => {
+                // RES-2592: tail-call trampoline signal. When this interpreter
+                // is running inside a #[must_tail_call] function body and sees
+                // a self-recursive call in tail position, emit Value::TailCall
+                // instead of recursing. The parent 'tco loop in apply_function
+                // will rebind parameters and restart the body — no new frame.
+                if let Some(ref tco_name) = self.tco_fn_name
+                    && let Node::Identifier {
+                        name: callee_name, ..
+                    } = function.as_ref()
+                    && callee_name == tco_name
+                {
+                    let new_args = self.eval_expressions(arguments)?;
+                    return Ok(Value::TailCall(new_args));
+                }
                 // RES-400: tuple-payload enum-variant constructor —
                 // `Pair::Both(1, 2)` parses as `CallExpression` with the
                 // callee `Identifier("Pair::Both")`. If the qualifier
@@ -24281,6 +24331,8 @@ impl Interpreter {
             // runtime value.
             Node::RegionParam { .. } => Ok(Value::Void),
             // RES-2552: blanket impl is a declaration-site marker; no runtime value.
+            // RES-2552: blanket impl — validated by blanket_impl::check.
+            // No runtime action needed.
             Node::BlanketImpl { .. } => Ok(Value::Void),
         }
     }
@@ -25542,6 +25594,9 @@ impl Interpreter {
                 // When active, the child interpreter returns Value::TailCall(new_args)
                 // instead of recursing, and the loop below rebinds parameters without
                 // growing the host stack.
+                // RES-2592: activate the trampoline loop for #[must_tail_call] fns.
+                // When set, any CallExpression whose callee name matches will emit
+                // Value::TailCall instead of recursing — the loop below catches it.
                 if crate::tail_calls::is_must_tail_call(name) {
                     interpreter.tco_fn_name = Some(name.clone());
                 }
@@ -25584,6 +25639,12 @@ impl Interpreter {
                 // child interpreter emits Value::TailCall(new_args) when it sees
                 // a self-recursive tail call. We rebind parameters and loop,
                 // consuming zero extra host-stack frames per iteration.
+                // RES-2592: trampoline loop for #[must_tail_call] functions.
+                // When tco_fn_name is set the child interpreter emits
+                // Value::TailCall(new_args) for every tail self-call instead
+                // of recursing. We rebind the parameters and re-execute the
+                // body — keeping host stack depth constant regardless of the
+                // number of recursive iterations.
                 let return_value = 'tco: loop {
                     let body_result = interpreter.eval(body).map_err(|e| {
                         if let Some(ref subst) = interpreter.active_subst {
@@ -25595,6 +25656,8 @@ impl Interpreter {
                     match body_result {
                         Value::TailCall(new_args) => {
                             // Rebind parameters to new arguments and loop.
+                        // Tail call signalled directly (expression context).
+                        Value::TailCall(new_args) => {
                             for ((_, param_name), arg_value) in parameters.iter().zip(new_args) {
                                 interpreter.env.set(param_name.clone(), arg_value);
                             }
@@ -25603,6 +25666,8 @@ impl Interpreter {
                         Value::Return(v) => match *v {
                             // RES-2592: `return f(...)` inside a #[must_tail_call]
                             // fn — the Return sentinel wraps a TailCall. Unwrap both.
+                        // Tail call inside a `return expr;` statement.
+                        Value::Return(v) => match *v {
                             Value::TailCall(new_args) => {
                                 for ((_, param_name), arg_value) in parameters.iter().zip(new_args)
                                 {
@@ -29499,6 +29564,10 @@ COMMON FLAGS:\n\
                                  (repeatable; RES-343)\n\
         --target TRIPLE          Set the active triple for `#[cfg(target=...)]`\n\
                                  predicates (RES-343)\n\
+        --cfg KEY=VALUE          Set a generic cfg key-value pair for\n\
+                                 `#[cfg(key = \"value\")]` predicates\n\
+                                 (repeatable; --cfg test sets the test flag)\n\
+                                 (RES-2581)\n\
         --watch                  Re-run the file on every save (200 ms\n\
                                  debounce); press Ctrl-C to stop (RES-228)\n\
 \n\
@@ -29769,13 +29838,15 @@ pub fn run_cli() {
     // `Some(true)` so `cargo test` reruns and watch-mode polling
     // short-circuit Z3 instead of re-deriving the proofs.
     let mut persistent_proof_cache_path: Option<PathBuf> = None;
-    // RES-343: conditional-compilation state. `--feature NAME` is
-    // repeatable; `--target TRIPLE` sets the active target. The
-    // collected values are installed into `cfg_attr::set_active_config`
-    // before parsing begins so `#[cfg(...)]` predicates can be
-    // evaluated at parse time.
+    // RES-343 / RES-2581: conditional-compilation state. `--feature NAME` is
+    // repeatable; `--target TRIPLE` sets the active target; `--cfg key=value`
+    // inserts a generic key-value pair. The collected values are installed
+    // into `cfg_attr::set_active_config` before parsing begins so
+    // `#[cfg(...)]` predicates can be evaluated at parse time.
     let mut cfg_features: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut cfg_target: Option<String> = None;
+    let mut cfg_extra: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut cfg_test: bool = false;
     // RES-228: `--watch` re-runs the program on every file save.
     let mut watch_mode = false;
     let mut filename = "";
@@ -30075,6 +30146,41 @@ pub fn run_cli() {
                 cfg_target = Some(args[i].clone());
             } else if let Some(val) = arg.strip_prefix("--target=") {
                 cfg_target = Some(val.to_string());
+            } else if arg == "--cfg" {
+                // RES-2581: `--cfg key=value` inserts a generic key-value pair
+                // for `#[cfg(key = "value")]` predicates. `--cfg test` (no `=`)
+                // sets the `test` built-in flag for `#[cfg(test)]`.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!(
+                        "Error: --cfg requires an argument (e.g. --cfg key=value or --cfg test)"
+                    );
+                    std::process::exit(2);
+                }
+                let kv = &args[i];
+                if kv == "test" {
+                    cfg_test = true;
+                } else if let Some((k, v)) = kv.split_once('=') {
+                    cfg_extra.insert(k.to_string(), v.to_string());
+                } else {
+                    eprintln!(
+                        "Error: --cfg argument must be `key=value` or `test`, got: {}",
+                        kv
+                    );
+                    std::process::exit(2);
+                }
+            } else if let Some(kv) = arg.strip_prefix("--cfg=") {
+                if kv == "test" {
+                    cfg_test = true;
+                } else if let Some((k, v)) = kv.split_once('=') {
+                    cfg_extra.insert(k.to_string(), v.to_string());
+                } else {
+                    eprintln!(
+                        "Error: --cfg= argument must be `key=value` or `test`, got: {}",
+                        kv
+                    );
+                    std::process::exit(2);
+                }
             } else if arg == "--watch" {
                 // RES-228: re-run the file on every save (200 ms debounce).
                 // Silently ignored in CI (see `watch_mode::is_non_interactive`).
@@ -30093,6 +30199,8 @@ pub fn run_cli() {
         cfg_attr::set_active_config(cfg_attr::CfgConfig {
             features: cfg_features,
             target: cfg_target,
+            is_test: cfg_test,
+            extra: cfg_extra,
         });
 
         // RES-1659: load the cross-build Z3 proof cache (RES-1657)
