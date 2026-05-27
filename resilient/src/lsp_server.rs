@@ -2238,11 +2238,50 @@ impl LanguageServer for Backend {
                 continue;
             }
 
-            // Only act on L0010 "no contract" diagnostics.
+            // RES-2570: unused-variable quick-fixes (L0001/L0011/L0020).
+            // Offer two actions: prefix with `_` and add an allow comment.
+            if is_unused_variable_diagnostic(diag) {
+                if let Some(action) = build_prefix_underscore_action(&uri, diag, &text) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+                if let Some(action) = build_suppress_lint_action(&uri, diag, &text) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+                continue;
+            }
+
+            // RES-2570: type-mismatch quick-fix — offer "Add `as <type>` cast"
+            // for numeric type mismatches.
+            if is_type_mismatch_diagnostic(diag) {
+                if let Some(action) = build_add_cast_action(&uri, diag) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+                continue;
+            }
+
+            // RES-2570: dead-function quick-fix (L0014).
+            if is_dead_function_diagnostic(diag) {
+                if let Some(action) = build_prefix_fn_underscore_action(&uri, diag, &text) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+                if let Some(action) = build_suppress_lint_action(&uri, diag, &text) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+                continue;
+            }
+
+            // L0010 "no contract" diagnostics: insert `requires`/`ensures` stubs.
             if !diag.message.contains("L0010")
                 && !diag.message.contains("requires")
                 && !diag.message.contains("no contract")
             {
+                // For any other lint-code diagnostic, offer the generic
+                // suppress-with-allow-comment action.
+                if extract_lint_code(&diag.message).is_some()
+                    && let Some(action) = build_suppress_lint_action(&uri, diag, &text)
+                {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
                 continue;
             }
             // Determine insertion point: scan from the diagnostic's
@@ -2373,6 +2412,337 @@ impl LanguageServer for Backend {
         }
         Ok(Some(out))
     }
+}
+
+// ============================================================
+// RES-2570: additional quick-fix helpers
+// ============================================================
+//
+// Each helper follows the same pattern as `build_insert_semicolon_action`:
+//   - detect a diagnostic by message substring (or lint code)
+//   - produce a `CodeAction { kind: QUICKFIX, edit: WorkspaceEdit }`
+//   - unit-testable as a pure function without an async runtime
+
+/// RES-2570: detect a lint-level "unused variable / binding" diagnostic.
+/// Triggers on L0001 ("unused local binding") and L0011 ("variable assigned
+/// but never used") messages emitted by the Resilient lint pass.
+pub(crate) fn is_unused_variable_diagnostic(diag: &Diagnostic) -> bool {
+    let msg = &diag.message;
+    (msg.contains("L0001") || msg.contains("unused local binding"))
+        || (msg.contains("L0011") || msg.contains("is assigned but never used"))
+        || (msg.contains("L0020") || msg.contains("unused parameter"))
+}
+
+/// RES-2570: extract the variable name from an L0001/L0011/L0020 diagnostic
+/// message such as "unused local binding `foo`" → "foo".
+///
+/// Returns `None` when the backtick-delimited name can't be extracted
+/// (e.g. a malformed or unrelated message). The caller skips the
+/// action in that case rather than producing an incorrect edit.
+pub(crate) fn extract_backtick_name(msg: &str) -> Option<&str> {
+    let start = msg.find('`')?;
+    let rest = &msg[start + 1..];
+    let end = rest.find('`')?;
+    let name = &rest[..end];
+    if name.is_empty() || name.starts_with('_') {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// RES-2570: build a "Prefix with `_`" `CodeAction` for an unused-variable
+/// diagnostic. The edit replaces the first occurrence of the bare identifier
+/// on the diagnostic's line with `_<name>`, which silences L0001/L0011.
+///
+/// Strategy: scan the source for the backtick-delimited name from the
+/// diagnostic message, then find it on the reported line. We replace only
+/// the *first* occurrence on that line to avoid renaming references inside
+/// the same statement (the lint always points at the declaration site).
+pub(crate) fn build_prefix_underscore_action(
+    uri: &Url,
+    diag: &Diagnostic,
+    src: &str,
+) -> Option<CodeAction> {
+    let name = extract_backtick_name(&diag.message)?;
+    let line_no = diag.range.start.line as usize;
+    let line = src.lines().nth(line_no)?;
+
+    // Find the first occurrence of `name` as a standalone token on this line.
+    // We search left-to-right and pick the first position where the character
+    // before and after `name` are both non-identifier chars (or line boundary).
+    let find_standalone = |haystack: &str, needle: &str| -> Option<usize> {
+        let mut offset = 0;
+        while offset + needle.len() <= haystack.len() {
+            if let Some(pos) = haystack[offset..].find(needle) {
+                let abs = offset + pos;
+                let before_ok = abs == 0
+                    || !haystack[abs - 1..abs]
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphanumeric() || c == '_')
+                        .unwrap_or(false);
+                let after = abs + needle.len();
+                let after_ok = after >= haystack.len()
+                    || !haystack[after..after + 1]
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphanumeric() || c == '_')
+                        .unwrap_or(false);
+                if before_ok && after_ok {
+                    return Some(abs);
+                }
+                offset = abs + 1;
+            } else {
+                break;
+            }
+        }
+        None
+    };
+
+    let col = find_standalone(line, name)?;
+    let edit_range = Range {
+        start: Position::new(line_no as u32, col as u32),
+        end: Position::new(line_no as u32, (col + name.len()) as u32),
+    };
+    let text_edit = TextEdit {
+        range: edit_range,
+        new_text: format!("_{}", name),
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![text_edit]);
+    Some(CodeAction {
+        title: format!("Prefix `{}` with `_`", name),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        command: None,
+        is_preferred: Some(true),
+        disabled: None,
+        data: None,
+    })
+}
+
+/// RES-2570: detect a "type mismatch" diagnostic — covers both the
+/// typechecker's legacy short form ("Type mismatch in argument N")
+/// and the rich E0007 form ("error[E0007]: type mismatch in argument N").
+/// Also matches return-type mismatch messages.
+pub(crate) fn is_type_mismatch_diagnostic(diag: &Diagnostic) -> bool {
+    let lower = diag.message.to_ascii_lowercase();
+    lower.contains("type mismatch") || lower.contains("return type mismatch")
+}
+
+/// RES-2570: extract `(expected_type, found_type)` from a type-mismatch
+/// diagnostic message such as:
+///   "type mismatch in argument 1: expected `int`, found `float`"
+/// Returns `None` when the pattern can't be matched.
+pub(crate) fn extract_mismatch_types(msg: &str) -> Option<(String, String)> {
+    // Normalise: drop the leading E0007 tag if present.
+    let lower = msg.to_ascii_lowercase();
+    // Look for "expected `X`, found `Y`" — the rich E0007 form.
+    if let Some(exp_pos) = lower.find("expected `") {
+        let after_exp = &msg[exp_pos + "expected `".len()..];
+        let exp_end = after_exp.find('`')?;
+        let expected = after_exp[..exp_end].to_string();
+        let found_search = &lower[exp_pos..];
+        let fnd_pos = found_search.find("found `")?;
+        let after_fnd = &msg[exp_pos + fnd_pos + "found `".len()..];
+        let fnd_end = after_fnd.find('`')?;
+        let found = after_fnd[..fnd_end].to_string();
+        return Some((expected, found));
+    }
+    // Legacy short form: "Type mismatch in argument N: expected X, got Y"
+    if let Some(exp_pos) = lower.find("expected ") {
+        let after_exp = &msg[exp_pos + "expected ".len()..];
+        let exp_end = after_exp.find([',', ';'])?;
+        let expected = after_exp[..exp_end].trim().to_string();
+        let got_search = &lower[exp_pos..];
+        let got_pos = got_search.find("got ")?;
+        let after_got = &msg[exp_pos + got_pos + "got ".len()..];
+        let got_end = after_got.find([',', ';', '\n']).unwrap_or(after_got.len());
+        let found = after_got[..got_end].trim().to_string();
+        return Some((expected, found));
+    }
+    None
+}
+
+/// RES-2570: build an "Add `as <type>` cast" `CodeAction` for a type-mismatch
+/// diagnostic. The action appends `as <expected>` to the token at the
+/// diagnostic's position. We insert the cast text at the *end* of the
+/// diagnostic range (after the expression) so the editor can apply it
+/// without knowing the full expression span.
+pub(crate) fn build_add_cast_action(uri: &Url, diag: &Diagnostic) -> Option<CodeAction> {
+    let (expected, found) = extract_mismatch_types(&diag.message)?;
+    // Only offer the cast for numeric or sized-integer mismatches where
+    // `as <type>` syntax makes sense. Skip abstract / unknown / any types.
+    let numeric_types = [
+        "int", "float", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+    ];
+    if !numeric_types.contains(&expected.as_str()) && !numeric_types.contains(&found.as_str()) {
+        return None;
+    }
+    // Insert the cast at the end of the diagnostic range.
+    let insert_pos = diag.range.end;
+    let insert_range = Range {
+        start: insert_pos,
+        end: insert_pos,
+    };
+    let text_edit = TextEdit {
+        range: insert_range,
+        new_text: format!(" as {}", expected),
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![text_edit]);
+    Some(CodeAction {
+        title: format!("Add `as {}` cast", expected),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        command: None,
+        is_preferred: Some(false),
+        disabled: None,
+        data: None,
+    })
+}
+
+/// RES-2570: detect an L0014 "dead function" diagnostic (function defined
+/// but never called).
+pub(crate) fn is_dead_function_diagnostic(diag: &Diagnostic) -> bool {
+    let msg = &diag.message;
+    msg.contains("L0014") || msg.contains("defined but never called")
+}
+
+/// RES-2570: build a "Prefix function with `_`" code action for L0014
+/// dead-function diagnostics. The action adds a leading `_` to the
+/// function name at its declaration site. Uses the same standalone-token
+/// replacement logic as `build_prefix_underscore_action`.
+pub(crate) fn build_prefix_fn_underscore_action(
+    uri: &Url,
+    diag: &Diagnostic,
+    src: &str,
+) -> Option<CodeAction> {
+    let name = extract_backtick_name(&diag.message)?;
+    let line_no = diag.range.start.line as usize;
+    // Find the `fn <name>` declaration on or near the reported line. Scan a
+    // small window: sometimes the lint points at the first line of the fn
+    // declaration, sometimes the whole span. We look in lines [line_no..
+    // line_no+5] for the `fn <name>` pattern.
+    let lines: Vec<&str> = src.lines().collect();
+    for delta in 0..=5_usize {
+        let idx = line_no + delta;
+        let Some(line) = lines.get(idx) else { break };
+        // Quick check: does this line contain `fn <name>`?
+        let fn_prefix = format!("fn {}", name);
+        if let Some(fn_pos) = line.find(&fn_prefix) {
+            let name_col = fn_pos + "fn ".len();
+            let edit_range = Range {
+                start: Position::new(idx as u32, name_col as u32),
+                end: Position::new(idx as u32, (name_col + name.len()) as u32),
+            };
+            let text_edit = TextEdit {
+                range: edit_range,
+                new_text: format!("_{}", name),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![text_edit]);
+            return Some(CodeAction {
+                title: format!("Prefix `{}` with `_` to suppress dead-code warning", name),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                command: None,
+                is_preferred: Some(false),
+                disabled: None,
+                data: None,
+            });
+        }
+    }
+    None
+}
+
+/// RES-2570: build a "Suppress with `// resilient: allow <code>`" action
+/// for any lint diagnostic whose message contains a lint code ("L0001"
+/// etc.). The action prepends a suppression comment on the line above the
+/// diagnostic — a universal escape hatch for cases where the other quick
+/// fixes don't apply.
+pub(crate) fn extract_lint_code(msg: &str) -> Option<&str> {
+    // Scan for "L" followed by 4 digits (e.g. "L0001").
+    let bytes = msg.as_bytes();
+    for i in 0..bytes.len().saturating_sub(4) {
+        if bytes[i] == b'L'
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 2].is_ascii_digit()
+            && bytes[i + 3].is_ascii_digit()
+            && bytes[i + 4].is_ascii_digit()
+        {
+            return Some(&msg[i..i + 5]);
+        }
+    }
+    None
+}
+
+/// RES-2570: build an "Add `// resilient: allow <code>`" suppression action.
+/// Inserts the comment on the line immediately before the diagnostic.
+pub(crate) fn build_suppress_lint_action(
+    uri: &Url,
+    diag: &Diagnostic,
+    src: &str,
+) -> Option<CodeAction> {
+    let code = extract_lint_code(&diag.message)?;
+    let line_no = diag.range.start.line;
+    // Detect the indentation of the diagnostic's line so the comment aligns.
+    let indent = src
+        .lines()
+        .nth(line_no as usize)
+        .map(|l| {
+            let trimmed = l.trim_start();
+            &l[..l.len() - trimmed.len()]
+        })
+        .unwrap_or("")
+        .to_string();
+    // Insert at the start of the diagnostic's line (so the new comment
+    // lands as a new line above it).
+    let insert_pos = Position {
+        line: line_no,
+        character: 0,
+    };
+    let insert_range = Range {
+        start: insert_pos,
+        end: insert_pos,
+    };
+    let comment_text = format!("{}// resilient: allow {}\n", indent, code);
+    let text_edit = TextEdit {
+        range: insert_range,
+        new_text: comment_text,
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![text_edit]);
+    Some(CodeAction {
+        title: format!("Suppress `{}` with allow comment", code),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        command: None,
+        is_preferred: Some(false),
+        disabled: None,
+        data: None,
+    })
 }
 
 /// Run the LSP server on stdin/stdout until the client shuts down.
@@ -4016,5 +4386,283 @@ fn main(int n) {\n\
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let ty = infer_identifier_type(&program, "msg");
         assert_eq!(ty, Some("String".into()));
+    }
+
+    // ============================================================
+    // RES-2570: quick-fix helpers
+    // ============================================================
+
+    // ---------- unused-variable detection ----------
+
+    #[test]
+    fn res2570_detects_l0001_unused_binding() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(1, 4), Position::new(1, 4)),
+            message: "unused local binding `foo` — prefix with `_` to silence".into(),
+            ..Default::default()
+        };
+        assert!(is_unused_variable_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res2570_detects_l0011_unused_variable() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(2, 4), Position::new(2, 4)),
+            message: "variable `bar` is assigned but never used".into(),
+            ..Default::default()
+        };
+        assert!(is_unused_variable_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res2570_does_not_match_unrelated_diag_as_unused() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            message: "expected `;` after statement".into(),
+            ..Default::default()
+        };
+        assert!(!is_unused_variable_diagnostic(&diag));
+    }
+
+    // ---------- extract_backtick_name ----------
+
+    #[test]
+    fn res2570_extract_backtick_name_simple() {
+        assert_eq!(
+            extract_backtick_name("unused local binding `myVar` — prefix with `_`"),
+            Some("myVar")
+        );
+    }
+
+    #[test]
+    fn res2570_extract_backtick_name_skips_underscore_prefixed() {
+        // If the name already starts with `_`, no action is needed.
+        assert_eq!(
+            extract_backtick_name("unused local binding `_x` — prefix with `_`"),
+            None
+        );
+    }
+
+    #[test]
+    fn res2570_extract_backtick_name_returns_none_when_no_backtick() {
+        assert_eq!(extract_backtick_name("no backticks here"), None);
+    }
+
+    // ---------- prefix-underscore action ----------
+
+    #[test]
+    fn res2570_prefix_underscore_inserts_leading_underscore() {
+        let uri = Url::parse("file:///tmp/test_unused.rz").unwrap();
+        let src = "fn f() {\n    let foo = 1;\n    return 0;\n}\nf();\n";
+        let diag = Diagnostic {
+            // Lint points at line 1, col 8 (the `f` of `foo`).
+            range: Range::new(Position::new(1, 8), Position::new(1, 11)),
+            message: "unused local binding `foo` — prefix with `_` to silence".into(),
+            ..Default::default()
+        };
+        let action = build_prefix_underscore_action(&uri, &diag, src).expect("action");
+        assert_eq!(action.title, "Prefix `foo` with `_`");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+
+        let edit = action.edit.expect("edit");
+        let mut changes = edit.changes.expect("changes");
+        let edits = changes.remove(&uri).expect("edits for uri");
+        assert_eq!(edits.len(), 1);
+        let te = &edits[0];
+        assert_eq!(te.new_text, "_foo");
+        // The edit range must be on line 1.
+        assert_eq!(te.range.start.line, 1);
+    }
+
+    #[test]
+    fn res2570_prefix_underscore_returns_none_when_name_not_on_line() {
+        let uri = Url::parse("file:///tmp/test_no_match.rz").unwrap();
+        // Diagnostic line doesn't contain the name `xyz`.
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            message: "unused local binding `xyz` — prefix with `_` to silence".into(),
+            ..Default::default()
+        };
+        let src = "let abc = 1;\n"; // no `xyz` on any line
+        assert!(build_prefix_underscore_action(&uri, &diag, src).is_none());
+    }
+
+    // ---------- type mismatch detection ----------
+
+    #[test]
+    fn res2570_detects_type_mismatch_rich_form() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(3, 10), Position::new(3, 12)),
+            message: "error[E0007]: type mismatch in argument 1: expected `int`, found `float`"
+                .into(),
+            ..Default::default()
+        };
+        assert!(is_type_mismatch_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res2570_detects_type_mismatch_legacy_form() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 5), Position::new(0, 8)),
+            message: "Type mismatch in argument 2: expected int, got float".into(),
+            ..Default::default()
+        };
+        assert!(is_type_mismatch_diagnostic(&diag));
+    }
+
+    // ---------- extract_mismatch_types ----------
+
+    #[test]
+    fn res2570_extract_mismatch_types_rich_form() {
+        let msg = "error[E0007]: type mismatch in argument 1: expected `int`, found `float`";
+        let (expected, found) = extract_mismatch_types(msg).expect("should parse");
+        assert_eq!(expected, "int");
+        assert_eq!(found, "float");
+    }
+
+    #[test]
+    fn res2570_extract_mismatch_types_legacy_form() {
+        let msg = "Type mismatch in argument 2: expected int, got float";
+        let (expected, found) = extract_mismatch_types(msg).expect("should parse legacy");
+        assert_eq!(expected, "int");
+        assert_eq!(found, "float");
+    }
+
+    // ---------- add-cast action ----------
+
+    #[test]
+    fn res2570_add_cast_action_produces_correct_edit() {
+        let uri = Url::parse("file:///tmp/test_cast.rz").unwrap();
+        let diag = Diagnostic {
+            range: Range::new(Position::new(5, 10), Position::new(5, 15)),
+            message: "error[E0007]: type mismatch in argument 1: expected `int`, found `float`"
+                .into(),
+            ..Default::default()
+        };
+        let action = build_add_cast_action(&uri, &diag).expect("action");
+        assert_eq!(action.title, "Add `as int` cast");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+        let edit = action.edit.expect("edit");
+        let mut changes = edit.changes.expect("changes");
+        let edits = changes.remove(&uri).expect("edits");
+        assert_eq!(edits.len(), 1);
+        let te = &edits[0];
+        assert_eq!(te.new_text, " as int");
+        // The cast is appended at the END of the diagnostic range.
+        assert_eq!(te.range.start.line, 5);
+        assert_eq!(te.range.start.character, 15);
+    }
+
+    #[test]
+    fn res2570_add_cast_action_skips_non_numeric_types() {
+        let uri = Url::parse("file:///tmp/test_cast_skip.rz").unwrap();
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+            message: "type mismatch in argument 1: expected `string`, found `bool`".into(),
+            ..Default::default()
+        };
+        // `string` and `bool` are not numeric — no cast action offered.
+        assert!(build_add_cast_action(&uri, &diag).is_none());
+    }
+
+    // ---------- dead-function detection ----------
+
+    #[test]
+    fn res2570_detects_l0014_dead_function() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 10)),
+            message: "function `helper` is defined but never called — prefix with `_` to silence"
+                .into(),
+            ..Default::default()
+        };
+        assert!(is_dead_function_diagnostic(&diag));
+    }
+
+    // ---------- prefix-fn-underscore action ----------
+
+    #[test]
+    fn res2570_prefix_fn_underscore_action() {
+        let uri = Url::parse("file:///tmp/test_dead.rz").unwrap();
+        let src = "fn helper() { return 0; }\nfn main(int _d) { return 0; }\nmain(0);\n";
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 8)),
+            message: "function `helper` is defined but never called — prefix with `_` to silence"
+                .into(),
+            ..Default::default()
+        };
+        let action = build_prefix_fn_underscore_action(&uri, &diag, src).expect("action");
+        // Title says "Prefix `helper` with `_` ..."; the new_text is "_helper".
+        assert!(
+            action.title.contains("helper"),
+            "title = {:?}",
+            action.title
+        );
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+        let edit = action.edit.expect("edit");
+        let mut changes = edit.changes.expect("changes");
+        let edits = changes.remove(&uri).expect("edits");
+        assert_eq!(edits.len(), 1);
+        let te = &edits[0];
+        assert_eq!(te.new_text, "_helper");
+    }
+
+    // ---------- lint-code extraction ----------
+
+    #[test]
+    fn res2570_extract_lint_code_finds_l_code() {
+        assert_eq!(
+            extract_lint_code("unused local binding `foo` — L0001"),
+            Some("L0001")
+        );
+        assert_eq!(extract_lint_code("L0014 dead function"), Some("L0014"));
+    }
+
+    #[test]
+    fn res2570_extract_lint_code_returns_none_when_absent() {
+        assert_eq!(extract_lint_code("expected `;` after statement"), None);
+        assert_eq!(extract_lint_code(""), None);
+    }
+
+    // ---------- suppress-lint action ----------
+
+    #[test]
+    fn res2570_suppress_lint_action_inserts_allow_comment() {
+        let uri = Url::parse("file:///tmp/test_suppress.rz").unwrap();
+        let src = "fn f() {\n    let unused_x = 1;\n    return 0;\n}\nf();\n";
+        let diag = Diagnostic {
+            range: Range::new(Position::new(1, 4), Position::new(1, 4)),
+            message: "unused local binding `unused_x` — prefix with `_` to silence L0001".into(),
+            ..Default::default()
+        };
+        let action = build_suppress_lint_action(&uri, &diag, src).expect("action");
+        assert!(action.title.contains("L0001"));
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+        let edit = action.edit.expect("edit");
+        let mut changes = edit.changes.expect("changes");
+        let edits = changes.remove(&uri).expect("edits");
+        assert_eq!(edits.len(), 1);
+        let te = &edits[0];
+        // The comment is inserted at the START of the diagnostic's line.
+        assert_eq!(te.range.start.line, 1);
+        assert_eq!(te.range.start.character, 0);
+        assert!(te.new_text.contains("// resilient: allow L0001"));
+        // Must end with a newline so existing code moves down.
+        assert!(te.new_text.ends_with('\n'));
+    }
+
+    #[test]
+    fn res2570_suppress_lint_action_returns_none_without_code() {
+        let uri = Url::parse("file:///tmp/test_no_code.rz").unwrap();
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            message: "expected `;` after statement".into(),
+            ..Default::default()
+        };
+        let src = "let x = 1\n";
+        assert!(build_suppress_lint_action(&uri, &diag, src).is_none());
     }
 }

@@ -378,6 +378,10 @@ mod default_params;
 // Node::Function::type_params field) lives in main.rs; this module owns the
 // typechecker validation pass (duplicate type-param detection).
 mod generics;
+// RES-2576: call-site type inference for generic function calls.
+// Validates that all type parameters can be inferred from argument
+// types, and reports a diagnostic when inference fails.
+mod generic_inference;
 // RES-405 PR 3: VM/JIT monomorphization pass — rewrites generic call sites
 // to specialized clones (e.g. `identity(42)` → `identity$Int(42)`).
 // Runs after typecheck, before `compiler::compile`.
@@ -412,6 +416,11 @@ mod supervisor;
 // bounds `<T: Trait>` are verified at call sites. Runtime dispatch
 // reuses the existing `<Type>$<method>` mangling — no VTable.
 mod traits;
+
+// RES-2535: `where` clause support — post-signature generic bound syntax.
+// All parsing and validation logic lives here; lib.rs only adds the token
+// and the call to `merge_where_clause` after `parse_optional_return_type`.
+mod where_clauses;
 
 // Ralph-Loop-Uniqueness: shared AST-walk helper used by the family of
 // novel safety-critical checks below. Provides pre-order traversal,
@@ -575,6 +584,7 @@ mod statistics;
 // types; per-pass call sites consult it to skip ~15 attribute-only
 // passes whose markers are absent in the input program.
 mod enum_exhaustiveness;
+mod enum_payload_match;
 mod pass_gate;
 mod phantom_types;
 mod power_contracts;
@@ -756,6 +766,9 @@ enum Token {
     /// can't be reached from a regular block.
     Unsafe,
     Pub,
+    /// RES-2535: `where` keyword for post-signature generic bound clauses.
+    /// `fn merge<A, B>(a: A, b: B) where A: Display + Clone, B: Into { ... }`
+    Where,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -917,6 +930,7 @@ impl Token {
             Token::Enum => Cow::Borrowed("`enum`"),
             Token::Unsafe => Cow::Borrowed("`unsafe`"),
             Token::Pub => Cow::Borrowed("`pub`"),
+            Token::Where => Cow::Borrowed("`where`"),
             Token::Underscore => Cow::Borrowed("`_`"),
             Token::Default => Cow::Borrowed("`default`"),
             Token::Dot => Cow::Borrowed("`.`"),
@@ -1472,6 +1486,7 @@ impl Lexer {
                         "enum" => Token::Enum,
                         "unsafe" => Token::Unsafe,
                         "pub" => Token::Pub,
+                        "where" => Token::Where,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -3951,6 +3966,10 @@ impl Parser {
 
         // RES-052: optional `-> TYPE` return type, BEFORE contracts.
         let return_type = self.parse_optional_return_type();
+
+        // RES-2535: optional `where T: A + B, U: C` clause after return type.
+        let type_param_bounds =
+            crate::where_clauses::merge_where_clause(self, &type_params, type_param_bounds);
 
         // RES-035: between the parameter list and the body, accept any
         // number of `requires EXPR` and `ensures EXPR` clauses, in any

@@ -323,6 +323,9 @@ enum Tok {
     Trait,
     #[token("pub")]
     Pub,
+    // RES-2535: `where` keyword for post-signature generic bound clauses.
+    #[token("where")]
+    Where,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -814,6 +817,8 @@ fn convert(t: Tok) -> Token {
         Tok::Supervisor => Token::Supervisor,
         // RES-290: trait keyword.
         Tok::Trait => Token::Trait,
+        // RES-2535: where keyword for post-signature generic bounds.
+        Tok::Where => Token::Where,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
