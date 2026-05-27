@@ -1,0 +1,28 @@
+// RES-2615: type variance for generic parameters.
+//
+// Demonstrates three variance shapes:
+//   - Covariant: T only in return position.
+//   - Contravariant: T only in parameter position.
+//   - Invariant: T in both positions (identity).
+
+// Covariant: T appears only in the output (return) position.
+// Safe to widen to a less specific type at the call site.
+fn produce_int() -> int {
+    return 42;
+}
+
+// Contravariant: T appears only in the input (parameter) position.
+fn consume(int x) -> void {
+}
+
+// Invariant: T in both input and output — must agree exactly.
+fn identity(int x) -> int {
+    return x;
+}
+
+fn main() {
+    println(produce_int());
+    consume(10);
+    println(identity(7));
+}
+main();
