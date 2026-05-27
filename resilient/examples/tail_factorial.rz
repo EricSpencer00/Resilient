@@ -1,0 +1,20 @@
+// RES-2592: tail call optimization demo — tail-recursive factorial.
+//
+// The accumulator-passing style makes every self-call a tail call.
+// With #[must_tail_call] the compiler verifies this statically and
+// the interpreter uses a trampoline loop instead of growing the stack.
+
+#[must_tail_call]
+fn factorial(int n, int acc) -> int {
+    if n <= 1 { return acc; }
+    return factorial(n - 1, n * acc);
+}
+
+fn main() {
+    println(to_string(factorial(0, 1)));
+    println(to_string(factorial(1, 1)));
+    println(to_string(factorial(5, 1)));
+    println(to_string(factorial(10, 1)));
+}
+
+main();

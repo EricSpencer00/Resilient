@@ -1,0 +1,18 @@
+// RES-2592: tail call optimization — no-stack-overflow proof.
+//
+// count() recurses 1,000,000 times. Without TCO this would exhaust
+// the host stack on any system. With #[must_tail_call] the interpreter
+// replaces each tail call with a parameter rebind and loop, keeping
+// host-stack depth constant regardless of the recursion depth.
+
+#[must_tail_call]
+fn count(int n) -> int {
+    if n <= 0 { return 0; }
+    return count(n - 1);
+}
+
+fn main() {
+    println(to_string(count(1000000)));
+}
+
+main();

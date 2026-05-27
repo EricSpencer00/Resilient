@@ -284,6 +284,8 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "version"
             | "ai_review_required"
             | "lean_spec"
+            // RES-2592: tail call optimization enforcement.
+            | "must_tail_call"
     )
 }
 
