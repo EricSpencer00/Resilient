@@ -1,0 +1,20 @@
+// RES-2591: exhaustive match on enum variants with payloads — passes.
+// All three variants (Lit, Add, Neg) are covered; the typechecker accepts
+// the program and it evaluates 3 + -(1) = 2.
+
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+
+fn eval(Expr expr) -> int {
+    return match expr {
+        Expr::Lit(n) => n,
+        Expr::Add(a, b) => eval(a) + eval(b),
+        Expr::Neg(e) => 0 - eval(e),
+    };
+}
+
+let result = eval(Expr::Add(Expr::Lit(3), Expr::Neg(Expr::Lit(1))));
+println(result);
