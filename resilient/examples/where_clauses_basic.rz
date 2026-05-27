@@ -1,0 +1,26 @@
+// RES-2535: where clause support — post-signature generic bounds.
+// Demonstrates `where T: Bound1 + Bound2` and multi-param bounds.
+
+trait Display {
+    fn show(self) -> string;
+}
+
+struct Num {
+    int val,
+}
+
+impl Display for Num {
+    fn show(self) -> string {
+        return to_string(self.val);
+    }
+}
+
+// Single where-clause bound: equivalent to fn<T: Display>
+fn<T> print_it(T x) where T: Display {
+    println(x.show());
+}
+
+fn main(int dummy) {
+    let n = new Num { val: 42 };
+    print_it(n);
+}

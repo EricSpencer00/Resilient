@@ -1,16 +1,1 @@
-{
-  "claims": {
-    "resilient/src/compiler.rs": {
-      "branch": "res-2540-struct-match-patterns",
-      "claimed_at": "2026-05-25T16:10:22Z"
-    },
-    "resilient/src/type_builtins.rs": {
-      "branch": "res-2540-struct-match-patterns",
-      "claimed_at": "2026-05-25T16:10:22Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-2540-struct-match-patterns",
-      "claimed_at": "2026-05-25T16:10:22Z"
-    }
-  }
-}
+{"claims": {}}
