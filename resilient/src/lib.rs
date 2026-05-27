@@ -378,6 +378,10 @@ mod default_params;
 // Node::Function::type_params field) lives in main.rs; this module owns the
 // typechecker validation pass (duplicate type-param detection).
 mod generics;
+// RES-2576: call-site type inference for generic function calls.
+// Validates that all type parameters can be inferred from argument
+// types, and reports a diagnostic when inference fails.
+mod generic_inference;
 // RES-405 PR 3: VM/JIT monomorphization pass — rewrites generic call sites
 // to specialized clones (e.g. `identity(42)` → `identity$Int(42)`).
 // Runs after typecheck, before `compiler::compile`.

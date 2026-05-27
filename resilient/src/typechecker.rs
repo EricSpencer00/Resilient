@@ -4741,6 +4741,8 @@ impl TypeChecker {
                 // during the shared whole-AST walk.
                 if markers.has_generic_fn {
                     crate::generics::check(program, source_path)?;
+                    // RES-2576: infer type parameters at call sites.
+                    crate::generic_inference::check(program, source_path)?;
                 }
                 // RES-1612 gate: pass loops top-level statements for
                 // `Node::NewtypeDecl`.
