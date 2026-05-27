@@ -424,6 +424,9 @@ mod traits;
 // RES-2552: blanket trait implementations (`impl<T: Bound> Trait for T`).
 pub(crate) mod blanket_impl;
 
+// RES-2605: static dispatch / devirtualization for trait method calls.
+pub(crate) mod devirtualize;
+
 // RES-2592: tail call optimization — #[must_tail_call] check pass and
 // trampoline loop for self-recursive functions. All TCO logic lives in
 // tail_calls.rs; lib.rs adds only the Value::TailCall sentinel variant,
@@ -10255,6 +10258,12 @@ enum Value {
     /// The raw `u64` is exposed because `actor_runtime::ActorPid` is
     /// not visible from the parser or eval arms that construct Values.
     ActorPid(u64),
+    /// RES-2592: TCO trampoline signal. Emitted by the child interpreter
+    /// when it encounters a `CallExpression` whose callee matches
+    /// `tco_fn_name`. Consumed immediately by the trampoline loop in
+    /// `apply_function` — rebinds the function's parameters to the new
+    /// args and restarts the body without growing the host stack.
+    /// Never visible to user code or operators.
     /// RES-2592: trampoline sentinel emitted by the interpreter when a
     /// tail-recursive call to the active TCO function is detected.
     /// Consumed immediately by the `'tco` loop in `apply_function`; never
@@ -23607,6 +23616,20 @@ impl Interpreter {
                         _ => {}
                     }
                 }
+                // RES-2592: TCO short-circuit. When executing inside a
+                // #[must_tail_call] function (tco_fn_name is Some), a call to
+                // that same function returns Value::TailCall(args) instead of
+                // recursing. The trampoline in apply_function consumes this
+                // signal and restarts the body without growing the host stack.
+                if let Some(ref tco_name) = self.tco_fn_name
+                    && let Node::Identifier {
+                        name: callee_name, ..
+                    } = function.as_ref()
+                    && callee_name == tco_name
+                {
+                    let new_args = self.eval_expressions(arguments)?;
+                    return Ok(Value::TailCall(new_args));
+                }
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(&func, args)
@@ -24296,6 +24319,7 @@ impl Interpreter {
             // RES-395: region type-param is a declaration marker; no
             // runtime value.
             Node::RegionParam { .. } => Ok(Value::Void),
+            // RES-2552: blanket impl is a declaration-site marker; no runtime value.
             // RES-2552: blanket impl — validated by blanket_impl::check.
             // No runtime action needed.
             Node::BlanketImpl { .. } => Ok(Value::Void),
@@ -25651,13 +25675,6 @@ impl Interpreter {
                         }
                     }
                     // RES-392: `recovers_to` — MVP final-state check.
-                    // Evaluated in the same post-return environment as
-                    // `ensures`, i.e. with `result` bound to the
-                    // returned value and parameters still in scope.
-                    // On refutation the diagnostic surfaces the final
-                    // state counterexample so the author can see which
-                    // concrete return value falsified the recovery
-                    // invariant.
                     if let Some(rec) = &recovers_to {
                         let v = interpreter.eval(rec)?;
                         if !interpreter.is_truthy(&v) {
@@ -27853,6 +27870,8 @@ fn execute_file(
         {
             // RES-405 PR 3: monomorphize before JIT compilation.
             let program = monomorph::lower(&program);
+            // RES-2605: devirtualize after monomorphization.
+            let program = devirtualize::lower(&program);
             let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
             // RES-355: write cache entry on JIT success.
@@ -27877,6 +27896,9 @@ fn execute_file(
         // RES-405 PR 3: lower generic functions to monomorphic specializations
         // before handing the AST to the bytecode compiler.
         let program = monomorph::lower(&program);
+        // RES-2605: devirtualize statically-known trait method calls after
+        // monomorphization so specialized clones get direct-call rewrites too.
+        let program = devirtualize::lower(&program);
         let prog = compiler::compile(&program).map_err(|e| format!("VM compile error: {}", e))?;
         let result = vm::run(&prog).map_err(|e| {
             // RES-095: mirror the typechecker's `<file>:<line>:` shape
@@ -30375,6 +30397,8 @@ pub fn run_cli() {
             }
             // RES-405 PR 3: monomorphize generic functions before disassembly.
             let resolved = monomorph::lower(&resolved);
+            // RES-2605: devirtualize after monomorphization.
+            let resolved = devirtualize::lower(&resolved);
             let prog = match compiler::compile(&resolved) {
                 Ok(p) => p,
                 Err(e) => {
