@@ -5100,6 +5100,13 @@ impl TypeChecker {
                 if markers.has_enum_decl && markers.has_match_expr {
                     crate::enum_exhaustiveness::check(program, source_path)?;
                 }
+                // RES-2533: enum payload arity — verify that match arm
+                // patterns supply the correct number of bindings for the
+                // variant's declared payload. Gated on the same marker
+                // pair as exhaustiveness: no enum → nothing to check.
+                if markers.has_enum_decl && markers.has_match_expr {
+                    crate::enum_payload_match::check(program, source_path)?;
+                }
                 // RES-324: module namespace validation — detect duplicate
                 // module declarations and unresolved name::item references.
                 if markers.has_inline_module {
@@ -5241,34 +5248,90 @@ impl TypeChecker {
             Pattern::Ok(inner) | Pattern::Err(inner) => {
                 self.match_pattern_binding_types(inner.as_ref(), &Type::Any)
             }
-            // RES-400: enum-variant pattern. The dynamic typechecker
-            // doesn't track variant payload types yet, so bound names
-            // are typed as `Any` — the runtime evaluator validates the
-            // shape match. Future PRs will plug payload types in.
-            Pattern::EnumVariant { payload, .. } => match payload {
-                crate::EnumPatternPayload::None => Ok(vec![]),
-                crate::EnumPatternPayload::Named(fields) => {
-                    // RES-1726: pre-size to fields.len() — lower bound
-                    // (each sub-pattern produces >=0 binding entries via
-                    // extend), but typically each named field contributes
-                    // ~1 binding. Same shape as the broader pre-size series.
-                    let mut out = Vec::with_capacity(fields.len());
-                    for (_, sub) in fields {
-                        let sub_bt = self.match_pattern_binding_types(sub.as_ref(), &Type::Any)?;
-                        out.extend(sub_bt);
-                    }
-                    Ok(out)
+            // RES-2533: enum-variant pattern. Look up the variant's
+            // declared payload types in `self.enum_decls` so bindings
+            // extracted from tuple/named payloads carry their concrete
+            // types (e.g. `float` for `Shape::Circle(r)`) rather than
+            // the `Any` fallback used before this PR. We resolve type
+            // strings into `Type` values eagerly (before recursive
+            // `match_pattern_binding_types` calls) to avoid a borrow
+            // conflict with `&mut self`.
+            Pattern::EnumVariant {
+                type_name,
+                variant_name,
+                payload,
+            } => {
+                // Resolve declared payload type-name strings; clone
+                // them out so we can release the borrow on `self.enum_decls`
+                // before the recursive `&mut self` call below.
+                enum ResolvedPayload {
+                    None,
+                    Named(Vec<(String, String)>), // (field_name, type_string)
+                    Tuple(Vec<String>),           // positional type strings
                 }
-                crate::EnumPatternPayload::Tuple(subs) => {
-                    // RES-1726: pre-size to subs.len() — same heuristic.
-                    let mut out = Vec::with_capacity(subs.len());
-                    for sub in subs {
-                        let sub_bt = self.match_pattern_binding_types(sub, &Type::Any)?;
-                        out.extend(sub_bt);
+                let resolved: ResolvedPayload = match type_name.as_deref() {
+                    Some(tn) => {
+                        let variants = self.enum_decls.get(tn);
+                        match variants.and_then(|vs| vs.iter().find(|v| v.name == *variant_name)) {
+                            Some(v) => match &v.payload {
+                                crate::EnumPayload::None => ResolvedPayload::None,
+                                crate::EnumPayload::Named(fields) => ResolvedPayload::Named(
+                                    fields
+                                        .iter()
+                                        .map(|f| (f.name.clone(), f.ty.clone()))
+                                        .collect(),
+                                ),
+                                crate::EnumPayload::Tuple(tys) => {
+                                    ResolvedPayload::Tuple(tys.clone())
+                                }
+                            },
+                            None => ResolvedPayload::None,
+                        }
                     }
-                    Ok(out)
+                    None => ResolvedPayload::None,
+                };
+                match payload {
+                    crate::EnumPatternPayload::None => Ok(vec![]),
+                    crate::EnumPatternPayload::Named(fields) => {
+                        // RES-1726: pre-size to fields.len().
+                        let mut out = Vec::with_capacity(fields.len());
+                        for (fname, sub) in fields {
+                            // Resolve declared field type; fall back to Any.
+                            let field_ty = if let ResolvedPayload::Named(ref decl_fields) = resolved
+                            {
+                                decl_fields
+                                    .iter()
+                                    .find(|(n, _)| n == fname)
+                                    .and_then(|(_, ty_str)| self.parse_type_name(ty_str).ok())
+                                    .unwrap_or(Type::Any)
+                            } else {
+                                Type::Any
+                            };
+                            let sub_bt =
+                                self.match_pattern_binding_types(sub.as_ref(), &field_ty)?;
+                            out.extend(sub_bt);
+                        }
+                        Ok(out)
+                    }
+                    crate::EnumPatternPayload::Tuple(subs) => {
+                        // RES-1726: pre-size to subs.len().
+                        let mut out = Vec::with_capacity(subs.len());
+                        for (i, sub) in subs.iter().enumerate() {
+                            // Resolve declared positional type; fall back to Any.
+                            let elem_ty = if let ResolvedPayload::Tuple(ref tys) = resolved {
+                                tys.get(i)
+                                    .and_then(|t| self.parse_type_name(t).ok())
+                                    .unwrap_or(Type::Any)
+                            } else {
+                                Type::Any
+                            };
+                            let sub_bt = self.match_pattern_binding_types(sub, &elem_ty)?;
+                            out.extend(sub_bt);
+                        }
+                        Ok(out)
+                    }
                 }
-            },
+            }
             // RES-931: tuple-struct destructure. Verify the scrutinee
             // is a struct with this name, the registered field count
             // matches the pattern arity, then recurse with each

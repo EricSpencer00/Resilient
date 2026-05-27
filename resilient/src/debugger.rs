@@ -456,11 +456,10 @@ mod tests {
         let mut got_output = false;
         while let Ok(event) = event_rx.recv() {
             match event {
-                DebugEvent::Output(s) => {
-                    if s.contains("42") {
-                        got_output = true;
-                    }
+                DebugEvent::Output(s) if s.contains("42") => {
+                    got_output = true;
                 }
+                DebugEvent::Output(_) => {}
                 DebugEvent::Terminated => {
                     got_terminated = true;
                     break;
