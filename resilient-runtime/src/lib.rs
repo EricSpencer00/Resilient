@@ -70,9 +70,19 @@ pub mod fixed;
 // Always compiled — no heap, integrates with the `linear` annotation
 // in the surface language so DMA buffers can't be aliased.
 pub mod dma;
+// RES-2597: UART serial communication abstraction.
+// no_std/no-alloc clean. User wires a `UartIo` adapter for the
+// concrete peripheral; the runtime composes blocking IO on top.
+pub mod uart;
 
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
+
+// RES-2596: timer/counter peripheral abstraction. Always compiled —
+// no allocator or std required; state lives in a flat
+// `[TimerState; MAX_TIMERS]` static protected by an AtomicBool
+// spinlock.
+pub mod timer;
 
 #[cfg(feature = "alloc")]
 use alloc::string::String;
