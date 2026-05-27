@@ -66,6 +66,11 @@ pub mod heap;
 // Compiles under default (no-alloc) features; no heap, no libm.
 pub mod fixed;
 
+// RES-2593: typestate GPIO HAL on top of the volatile MMIO
+// intrinsics. no_std, alloc-free; chip register layout is
+// parameterised via the `GpioConfig` trait.
+pub mod gpio;
+
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
 
