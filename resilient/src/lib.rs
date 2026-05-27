@@ -29299,6 +29299,10 @@ COMMON FLAGS:\n\
                                  (repeatable; RES-343)\n\
         --target TRIPLE          Set the active triple for `#[cfg(target=...)]`\n\
                                  predicates (RES-343)\n\
+        --cfg KEY=VALUE          Set a generic cfg key-value pair for\n\
+                                 `#[cfg(key = \"value\")]` predicates\n\
+                                 (repeatable; --cfg test sets the test flag)\n\
+                                 (RES-2581)\n\
         --watch                  Re-run the file on every save (200 ms\n\
                                  debounce); press Ctrl-C to stop (RES-228)\n\
 \n\
@@ -29569,13 +29573,15 @@ pub fn run_cli() {
     // `Some(true)` so `cargo test` reruns and watch-mode polling
     // short-circuit Z3 instead of re-deriving the proofs.
     let mut persistent_proof_cache_path: Option<PathBuf> = None;
-    // RES-343: conditional-compilation state. `--feature NAME` is
-    // repeatable; `--target TRIPLE` sets the active target. The
-    // collected values are installed into `cfg_attr::set_active_config`
-    // before parsing begins so `#[cfg(...)]` predicates can be
-    // evaluated at parse time.
+    // RES-343 / RES-2581: conditional-compilation state. `--feature NAME` is
+    // repeatable; `--target TRIPLE` sets the active target; `--cfg key=value`
+    // inserts a generic key-value pair. The collected values are installed
+    // into `cfg_attr::set_active_config` before parsing begins so
+    // `#[cfg(...)]` predicates can be evaluated at parse time.
     let mut cfg_features: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut cfg_target: Option<String> = None;
+    let mut cfg_extra: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut cfg_test: bool = false;
     // RES-228: `--watch` re-runs the program on every file save.
     let mut watch_mode = false;
     let mut filename = "";
@@ -29875,6 +29881,41 @@ pub fn run_cli() {
                 cfg_target = Some(args[i].clone());
             } else if let Some(val) = arg.strip_prefix("--target=") {
                 cfg_target = Some(val.to_string());
+            } else if arg == "--cfg" {
+                // RES-2581: `--cfg key=value` inserts a generic key-value pair
+                // for `#[cfg(key = "value")]` predicates. `--cfg test` (no `=`)
+                // sets the `test` built-in flag for `#[cfg(test)]`.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!(
+                        "Error: --cfg requires an argument (e.g. --cfg key=value or --cfg test)"
+                    );
+                    std::process::exit(2);
+                }
+                let kv = &args[i];
+                if kv == "test" {
+                    cfg_test = true;
+                } else if let Some((k, v)) = kv.split_once('=') {
+                    cfg_extra.insert(k.to_string(), v.to_string());
+                } else {
+                    eprintln!(
+                        "Error: --cfg argument must be `key=value` or `test`, got: {}",
+                        kv
+                    );
+                    std::process::exit(2);
+                }
+            } else if let Some(kv) = arg.strip_prefix("--cfg=") {
+                if kv == "test" {
+                    cfg_test = true;
+                } else if let Some((k, v)) = kv.split_once('=') {
+                    cfg_extra.insert(k.to_string(), v.to_string());
+                } else {
+                    eprintln!(
+                        "Error: --cfg= argument must be `key=value` or `test`, got: {}",
+                        kv
+                    );
+                    std::process::exit(2);
+                }
             } else if arg == "--watch" {
                 // RES-228: re-run the file on every save (200 ms debounce).
                 // Silently ignored in CI (see `watch_mode::is_non_interactive`).
@@ -29893,6 +29934,8 @@ pub fn run_cli() {
         cfg_attr::set_active_config(cfg_attr::CfgConfig {
             features: cfg_features,
             target: cfg_target,
+            is_test: cfg_test,
+            extra: cfg_extra,
         });
 
         // RES-1659: load the cross-build Z3 proof cache (RES-1657)
