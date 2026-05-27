@@ -1,8 +1,6 @@
 //! RES-2592: tail call optimization (TCO) for self-recursive functions.
 //!
 //! Resilient targets embedded systems where stack space is scarce. Without TCO,
-//! every recursive call consumes a stack frame, making idiomatic recursive
-//! patterns that exhaust bounded stacks. This module provides:
 //! every recursive call consumes a stack frame; on bounded stacks this quickly
 //! exhausts available memory. This module provides:
 //!

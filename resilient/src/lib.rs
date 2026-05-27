@@ -423,11 +423,6 @@ pub(crate) mod blanket_impl;
 // RES-2605: static dispatch / devirtualization for trait method calls.
 pub(crate) mod devirtualize;
 
-// RES-2592: tail call optimization — `is_tail_call` detector,
-// `#[must_tail_call]` enforcement pass, and `is_must_tail_call` query
-// used by `apply_function` to activate the trampoline loop.
-mod tail_calls;
-
 // RES-2592: tail call optimization — #[must_tail_call] check pass and
 // trampoline loop for self-recursive functions. All TCO logic lives in
 // tail_calls.rs; lib.rs adds only the Value::TailCall sentinel variant,
@@ -10407,8 +10402,6 @@ impl std::fmt::Debug for Value {
                 ),
             },
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
-            // RES-2592: TailCall is an internal control-flow sentinel.
-            Value::TailCall(args) => write!(f, "TailCall({} args)", args.len()),
             // RES-2592: internal sentinel — should never appear in user output.
             Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
         }
@@ -10587,8 +10580,6 @@ impl std::fmt::Display for Value {
                 }
             },
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
-            // RES-2576: tail-call trampoline value — not directly displayable.
-            Value::TailCall(_) => write!(f, "<tail-call>"),
             // RES-2592: internal sentinel — should never appear in user output.
             Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
         }
@@ -22376,12 +22367,6 @@ struct Interpreter {
     /// while its body executes.
     inject_checked_failures: bool,
     overflow_mode: vm::OverflowMode,
-    /// RES-2592: when `Some(name)`, the interpreter is executing inside a
-    /// `#[must_tail_call]` function named `name`. A self-recursive
-    /// `CallExpression` to that function returns `Value::TailCall(new_args)`
-    /// instead of recursing, letting the trampoline in `apply_function`
-    /// restart the frame without growing the host stack. `None` for all
-    /// other functions — no overhead on the common path.
     /// RES-2592: when `Some(name)`, the interpreter is inside a
     /// `#[must_tail_call]`-annotated function body. Any `CallExpression`
     /// whose callee matches this name emits `Value::TailCall` instead of
@@ -25590,10 +25575,6 @@ impl Interpreter {
                     tco_fn_name: None,
                 };
 
-                // RES-2592: activate TCO trampoline for #[must_tail_call] functions.
-                // When active, the child interpreter returns Value::TailCall(new_args)
-                // instead of recursing, and the loop below rebinds parameters without
-                // growing the host stack.
                 // RES-2592: activate the trampoline loop for #[must_tail_call] fns.
                 // When set, any CallExpression whose callee name matches will emit
                 // Value::TailCall instead of recursing — the loop below catches it.
@@ -25635,10 +25616,6 @@ impl Interpreter {
                     return Err(checked_failure_signal(&fails[0], name));
                 }
 
-                // RES-2592: TCO trampoline. For #[must_tail_call] functions the
-                // child interpreter emits Value::TailCall(new_args) when it sees
-                // a self-recursive tail call. We rebind parameters and loop,
-                // consuming zero extra host-stack frames per iteration.
                 // RES-2592: trampoline loop for #[must_tail_call] functions.
                 // When tco_fn_name is set the child interpreter emits
                 // Value::TailCall(new_args) for every tail self-call instead
@@ -25654,8 +25631,6 @@ impl Interpreter {
                         }
                     })?;
                     match body_result {
-                        Value::TailCall(new_args) => {
-                            // Rebind parameters to new arguments and loop.
                         // Tail call signalled directly (expression context).
                         Value::TailCall(new_args) => {
                             for ((_, param_name), arg_value) in parameters.iter().zip(new_args) {
@@ -25663,9 +25638,6 @@ impl Interpreter {
                             }
                             continue 'tco;
                         }
-                        Value::Return(v) => match *v {
-                            // RES-2592: `return f(...)` inside a #[must_tail_call]
-                            // fn — the Return sentinel wraps a TailCall. Unwrap both.
                         // Tail call inside a `return expr;` statement.
                         Value::Return(v) => match *v {
                             Value::TailCall(new_args) => {
