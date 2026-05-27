@@ -1,0 +1,19 @@
+// RES-2576: type inference for generic function calls.
+//
+// Demonstrates that T, A, B are inferred from argument types at call sites;
+// no explicit type annotation is required.
+
+fn identity<T>(T x) -> T {
+    return x;
+}
+
+fn pair<A, B>(A a, B b) -> string {
+    return to_string(a) + "," + to_string(b);
+}
+
+fn main() {
+    println(to_string(identity(42)));
+    println(identity("hello"));
+    println(pair(1, "two"));
+}
+main();
