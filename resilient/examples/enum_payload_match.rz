@@ -1,0 +1,42 @@
+// RES-2533: enum payload destructuring in match arms.
+//
+// Demonstrates single-payload, multi-payload, and nested enum
+// pattern destructuring, plus exhaustiveness checking.
+
+enum Shape {
+    Circle(float),
+    Rect(float, float),
+}
+
+enum Wrapper {
+    Empty,
+    Filled(float),
+}
+
+fn area(Shape s) -> float {
+    return match s {
+        Shape::Circle(r) => 3.14 * r * r,
+        Shape::Rect(w, h) => w * h,
+    };
+}
+
+fn unwrap_or_zero(Wrapper w) -> float {
+    return match w {
+        Wrapper::Empty => 0.0,
+        Wrapper::Filled(v) => v,
+    };
+}
+
+fn main() {
+    let c = Shape::Circle(2.0);
+    let r = Shape::Rect(3.0, 4.0);
+    println(to_string(area(c)));
+    println(to_string(area(r)));
+
+    let w1 = Wrapper::Empty;
+    let w2 = Wrapper::Filled(42.0);
+    println(to_string(unwrap_or_zero(w1)));
+    println(to_string(unwrap_or_zero(w2)));
+}
+
+main();

@@ -459,6 +459,7 @@ mod tests {
                 DebugEvent::Output(s) if s.contains("42") => {
                     got_output = true;
                 }
+                DebugEvent::Output(_) => {}
                 DebugEvent::Terminated => {
                     got_terminated = true;
                     break;
