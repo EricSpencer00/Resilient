@@ -66,6 +66,11 @@ pub mod heap;
 // Compiles under default (no-alloc) features; no heap, no libm.
 pub mod fixed;
 
+// RES-2597: UART serial communication abstraction.
+// no_std/no-alloc clean. User wires a `UartIo` adapter for the
+// concrete peripheral; the runtime composes blocking IO on top.
+pub mod uart;
+
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
 
