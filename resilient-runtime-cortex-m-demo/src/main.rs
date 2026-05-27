@@ -28,6 +28,7 @@ use cortex_m_rt::entry;
 // across the rename.
 use embedded_alloc::Heap;
 use resilient_runtime::Value;
+use resilient_runtime::dma::{DmaChain, DmaDescriptor, DmaWidth};
 
 // 4 KiB heap — plenty for the demo's single `String` and two
 // `Value`s. Real firmware sizes the region against its RAM budget.
@@ -59,6 +60,30 @@ fn main() -> ! {
     // prune them and we'd lose the smoke-test value).
     let _ = s.clone().add(Value::String(String::from(" world")));
     let _ = f.clone().eq(Value::Float(2.5));
+
+    // RES-2594: build a DMA chain on the Cortex-M target. This is the
+    // golden smoke test for the dma module — it proves the API
+    // links cleanly under no_std (no allocator dependence on the
+    // chain itself), and the cross-compile + size budget still pass.
+    // The buffers are word-aligned via `repr(align(4))` so the
+    // alignment check inside `DmaDescriptor::new` succeeds for the
+    // 32-bit-wide transfer.
+    #[repr(align(4))]
+    struct DmaBuf([u8; 16]);
+    static mut DMA_SRC: DmaBuf = DmaBuf([0u8; 16]);
+    static mut DMA_DST: DmaBuf = DmaBuf([0u8; 16]);
+    #[allow(static_mut_refs)]
+    let (src_ptr, dst_ptr) = unsafe {
+        (
+            DMA_SRC.0.as_ptr() as usize,
+            DMA_DST.0.as_mut_ptr() as usize,
+        )
+    };
+    let mut chain: DmaChain<2> = DmaChain::new();
+    if let Ok(d) = DmaDescriptor::new(src_ptr, dst_ptr, 16, DmaWidth::Word) {
+        let _ = chain.append(d);
+    }
+    let _transfer = chain.start();
 
     loop {
         cortex_m::asm::nop();

@@ -66,6 +66,10 @@ pub mod heap;
 // Compiles under default (no-alloc) features; no heap, no libm.
 pub mod fixed;
 
+// RES-2594: DMA descriptor chains for zero-copy embedded transfers.
+// Always compiled — no heap, integrates with the `linear` annotation
+// in the surface language so DMA buffers can't be aliased.
+pub mod dma;
 // RES-2593: typestate GPIO HAL on top of the volatile MMIO
 // intrinsics. no_std, alloc-free; chip register layout is
 // parameterised via the `GpioConfig` trait.
