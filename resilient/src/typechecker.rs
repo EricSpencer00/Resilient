@@ -4759,6 +4759,12 @@ impl TypeChecker {
                 {
                     crate::traits::check(program, source_path)?;
                 }
+                // RES-2552 gate: validate `Node::BlanketImpl` nodes — trait
+                // existence, bound existence, method coverage, duplicate check.
+                // Must run after `traits::check` so trait decls are well-formed.
+                if markers.has_blanket_impl {
+                    crate::blanket_impl::check(program, source_path)?;
+                }
                 // RES-1611: `region_inference::infer` is a no-op stub
                 // (`Ok(())`); the real region-aliasing logic lives in
                 // `check_call_site_region_aliasing` which runs from a
@@ -5130,6 +5136,11 @@ impl TypeChecker {
                 // RES-1597: `lean_spec::check` is a no-op stub; Lean
                 // export is driven by the `--emit-lean-spec` CLI flag.
                 crate::mcp_tool_registry::check(program, source_path)?;
+                // RES-2592: validate #[must_tail_call] annotations — every
+                // self-recursive call inside such a function must be in tail
+                // position. No marker gate needed; find_kind("must_tail_call")
+                // has an atomic fast-reject when the registry is empty.
+                crate::tail_calls::check(program, source_path)?;
                 // RES-2535: validate where-clause type-param references.
                 crate::where_clauses::check(program, source_path)?;
                 // </EXTENSION_PASSES>
@@ -8266,6 +8277,8 @@ impl TypeChecker {
             // RES-395: region type-param is a declaration-site marker;
             // no type to check.
             Node::RegionParam { .. } => Ok(Type::Void),
+            // RES-2552: blanket impl — validated by blanket_impl::check.
+            Node::BlanketImpl { .. } => Ok(Type::Void),
         }
     }
 
