@@ -352,4 +352,234 @@ fn handle(Status s) -> int {
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test.rz").is_ok());
     }
+
+    // RES-2591: payload enum variant exhaustiveness tests.
+
+    #[test]
+    fn tuple_payload_exhaustive_no_error() {
+        // All three variants covered — even though two carry tuple payloads.
+        let src = r#"
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+fn eval(Expr e) -> int {
+    return match e {
+        Expr::Lit(n) => n,
+        Expr::Add(a, b) => eval(a) + eval(b),
+        Expr::Neg(x) => 0 - eval(x),
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "all payload variants covered — expected no errors; got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn tuple_payload_missing_variant_detected() {
+        // Neg is missing — the checker must detect it even though the
+        // present arms have tuple payloads.
+        let src = r#"
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+fn eval(Expr e) -> int {
+    return match e {
+        Expr::Lit(n) => n,
+        Expr::Add(a, b) => eval(a) + eval(b),
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected exactly one exhaustiveness error; got: {:?}",
+            errs
+        );
+        assert_eq!(errs[0].enum_name, "Expr");
+        assert!(
+            errs[0].missing.contains(&"Neg".to_string()),
+            "missing variants should include Neg; got: {:?}",
+            errs[0].missing
+        );
+    }
+
+    #[test]
+    fn named_field_payload_exhaustive_no_error() {
+        // Named-field payloads (`{ r }`) — all variants covered.
+        let src = r#"
+enum Shape {
+    Circle { r: float },
+    Square { side: float },
+}
+fn area(Shape s) -> float {
+    return match s {
+        Shape::Circle { r } => 3.14 * r * r,
+        Shape::Square { side } => side * side,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "all named-field payload variants covered — expected no errors; got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn named_field_payload_missing_variant_detected() {
+        // Rect is missing — the checker must detect it.
+        let src = r#"
+enum Shape {
+    Circle { r: float },
+    Square { side: float },
+    Rect { w: float, h: float },
+}
+fn area(Shape s) -> float {
+    return match s {
+        Shape::Circle { r } => 3.14 * r * r,
+        Shape::Square { side } => side * side,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected exactly one exhaustiveness error; got: {:?}",
+            errs
+        );
+        assert_eq!(errs[0].enum_name, "Shape");
+        assert!(
+            errs[0].missing.contains(&"Rect".to_string()),
+            "missing variants should include Rect; got: {:?}",
+            errs[0].missing
+        );
+    }
+
+    #[test]
+    fn wildcard_covers_remaining_payload_variants() {
+        // Only one arm is explicit; the wildcard covers the rest.
+        let src = r#"
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+fn is_lit(Expr e) -> bool {
+    return match e {
+        Expr::Lit(n) => true,
+        _ => false,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "wildcard arm covers remaining payload variants — expected no errors; got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn mixed_payload_and_payload_less_exhaustive() {
+        // Mix of payload-carrying and payload-less variants, all covered.
+        let src = r#"
+enum Token {
+    Number(int),
+    Plus,
+    Minus,
+}
+fn kind(Token t) -> int {
+    return match t {
+        Token::Number(n) => 0,
+        Token::Plus => 1,
+        Token::Minus => 2,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "mixed payload / payload-less — all covered; expected no errors; got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn mixed_payload_and_payload_less_missing_detected() {
+        // Minus is missing.
+        let src = r#"
+enum Token {
+    Number(int),
+    Plus,
+    Minus,
+}
+fn kind(Token t) -> int {
+    return match t {
+        Token::Number(n) => 0,
+        Token::Plus => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected exactly one exhaustiveness error; got: {:?}",
+            errs
+        );
+        assert!(
+            errs[0].missing.contains(&"Minus".to_string()),
+            "missing variants should include Minus; got: {:?}",
+            errs[0].missing
+        );
+    }
+
+    #[test]
+    fn check_error_message_names_missing_payload_variant() {
+        // The `check` entry point must produce an error whose text names
+        // the missing payload variant by its unqualified name.
+        let src = r#"
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+fn eval(Expr e) -> int {
+    return match e {
+        Expr::Lit(n) => n,
+        Expr::Add(a, b) => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let result = check(&prog, "test.rz");
+        assert!(result.is_err(), "expected check to fail");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("non-exhaustive match on enum"),
+            "error must contain 'non-exhaustive match on enum': {msg}"
+        );
+        assert!(
+            msg.contains("Neg"),
+            "error must name missing variant 'Neg': {msg}"
+        );
+    }
 }
