@@ -4742,6 +4742,13 @@ impl TypeChecker {
                 if markers.has_generic_fn {
                     crate::generics::check(program, source_path)?;
                 }
+                // RES-2615: variance inference — runs after generics::check
+                // so the signature is already validated. Gated on the same
+                // `has_generic_fn` marker; variance has nothing to do when
+                // there are no generic functions.
+                if markers.has_generic_fn {
+                    crate::variance::check(program, source_path)?;
+                }
                 // RES-1612 gate: pass loops top-level statements for
                 // `Node::NewtypeDecl`.
                 if markers.has_newtype_decl {
