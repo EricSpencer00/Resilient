@@ -1,0 +1,31 @@
+// RES-2581: #[cfg(feature = "...")] with any/all combinators.
+//
+// Two alternative `describe` implementations — one active when "verbose"
+// is set, one active otherwise. Demonstrates: feature gates, not(), any(),
+// and all().
+//
+// Default invocation (no --feature flags) outputs "quiet mode".
+// `rz --feature verbose cfg_feature.rz` outputs "verbose mode".
+
+#[cfg(feature = "verbose")]
+fn describe() {
+    println("verbose mode");
+}
+
+#[cfg(not(feature = "verbose"))]
+fn describe() {
+    println("quiet mode");
+}
+
+// any(...): compile this helper only if "std" OR "alloc" is active.
+// With no feature flags this function is stripped from the AST.
+#[cfg(any(feature = "std", feature = "alloc"))]
+fn heap_available() -> bool {
+    return true;
+}
+
+fn main() {
+    describe();
+}
+
+main();
