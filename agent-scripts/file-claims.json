@@ -11,6 +11,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-2540-struct-match-patterns",
       "claimed_at": "2026-05-25T16:10:22Z"
+    },
+    "resilient-runtime/src/lib.rs": {
+      "branch": "res-2594-dma",
+      "claimed_at": "2026-05-27T01:24:46Z"
     }
   }
 }

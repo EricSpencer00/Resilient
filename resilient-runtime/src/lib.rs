@@ -66,6 +66,11 @@ pub mod heap;
 // Compiles under default (no-alloc) features; no heap, no libm.
 pub mod fixed;
 
+// RES-2594: DMA descriptor chains for zero-copy embedded transfers.
+// Always compiled — no heap, integrates with the `linear` annotation
+// in the surface language so DMA buffers can't be aliased.
+pub mod dma;
+
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
 
