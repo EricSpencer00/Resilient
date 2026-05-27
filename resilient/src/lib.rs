@@ -413,6 +413,9 @@ mod supervisor;
 // reuses the existing `<Type>$<method>` mangling — no VTable.
 mod traits;
 
+// RES-2552: blanket trait implementations (`impl<T: Bound> Trait for T`).
+pub(crate) mod blanket_impl;
+
 // Ralph-Loop-Uniqueness: shared AST-walk helper used by the family of
 // novel safety-critical checks below. Provides pre-order traversal,
 // `for_each_function`, and small predicate helpers so each feature
@@ -2881,6 +2884,15 @@ enum Node {
     /// call sites and upgrades these to explicit `RegionParam` nodes.
     #[allow(dead_code)]
     RegionParam { name: String, span: span::Span },
+    /// RES-2552: `impl<T: Bound> Trait for T { ... }` — blanket trait impl.
+    /// Validated by `crate::blanket_impl::check`. Specific impls win.
+    BlanketImpl {
+        type_param: String,
+        bounds: Vec<String>,
+        trait_name: String,
+        methods: Vec<Node>,
+        span: span::Span,
+    },
 }
 
 /// RES-400 PR 2: a single variant inside an `enum` declaration.
@@ -4044,6 +4056,12 @@ impl Parser {
         let impl_span = self.span_at_current();
         self.next_token(); // skip 'impl'
 
+        // RES-2552: `impl<T: Bound> Trait for T { … }` — blanket impl.
+        // Distinguish by `<` immediately after `impl`.
+        if self.current_token == Token::Less {
+            return self.parse_blanket_impl(impl_span);
+        }
+
         let first_name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             other => {
@@ -4136,6 +4154,112 @@ impl Parser {
             struct_name,
             methods,
             associated_type_impls,
+            span: impl_span,
+        }
+    }
+
+    /// RES-2552: Parse `impl<T: B1 + B2> Trait for T { … }`.
+    ///
+    /// On entry `current_token` is `<` (the caller already consumed `impl`).
+    /// On a successful exit the cursor sits on the closing `}` of the body.
+    fn parse_blanket_impl(&mut self, impl_span: span::Span) -> Node {
+        // Reuse the generic-param parser: handles `<T>`, `<T: B>`, `<T: B1 + B2>`.
+        let (type_params, type_param_bounds) = self.parse_optional_type_params();
+
+        // Exactly one type parameter is required.
+        let (type_param, bounds) = if type_params.is_empty() {
+            self.record_error(
+                "blanket impl `impl<…>` requires at least one type parameter".to_string(),
+            );
+            (String::new(), vec![])
+        } else {
+            let tp = type_params[0].clone();
+            let b = type_param_bounds.into_iter().next().unwrap_or_default();
+            if type_params.len() > 1 {
+                self.record_error(format!(
+                    "blanket impl supports exactly one type parameter, found {}",
+                    type_params.len()
+                ));
+            }
+            (tp, b)
+        };
+
+        // Expect: `<TraitName> for <type_param> {`
+        let trait_name = match &self.current_token {
+            Token::Identifier(n) => {
+                let n = n.clone();
+                self.next_token();
+                n
+            }
+            other => {
+                self.record_error(format!(
+                    "Expected trait name in `impl<{type_param}> <Trait> for <T>`, found {other}"
+                ));
+                String::new()
+            }
+        };
+
+        if self.current_token != Token::For {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `for` in `impl<{type_param}> {trait_name} for <T>`, found {tok}"
+            ));
+        } else {
+            self.next_token(); // skip 'for'
+        }
+
+        // The target must be the same identifier as the type parameter.
+        match &self.current_token {
+            Token::Identifier(n) if *n == type_param => {
+                self.next_token();
+            }
+            other => {
+                self.record_error(format!(
+                    "Expected `{type_param}` after `for` in blanket impl, found {other}"
+                ));
+                self.next_token();
+            }
+        }
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `{{` after `impl<{type_param}> {trait_name} for {type_param}`, found {tok}"
+            ));
+        } else {
+            self.next_token(); // skip '{'
+        }
+
+        let mut methods: Vec<Node> = Vec::with_capacity(4);
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            match &self.current_token {
+                Token::Function => {
+                    methods.push(self.parse_method(&type_param));
+                    if self.current_token == Token::RightBrace {
+                        self.next_token();
+                    }
+                }
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `fn` inside blanket impl body, found {tok}"
+                    ));
+                    while self.current_token != Token::RightBrace
+                        && self.current_token != Token::Eof
+                    {
+                        self.next_token();
+                    }
+                    break;
+                }
+            }
+        }
+        // Leave cursor ON the closing `}`.
+
+        Node::BlanketImpl {
+            type_param,
+            bounds,
+            trait_name,
+            methods,
             span: impl_span,
         }
     }
@@ -24114,6 +24238,9 @@ impl Interpreter {
             // RES-395: region type-param is a declaration marker; no
             // runtime value.
             Node::RegionParam { .. } => Ok(Value::Void),
+            // RES-2552: blanket impl — validated by blanket_impl::check.
+            // No runtime action needed.
+            Node::BlanketImpl { .. } => Ok(Value::Void),
         }
     }
 
