@@ -66,8 +66,19 @@ pub mod heap;
 // Compiles under default (no-alloc) features; no heap, no libm.
 pub mod fixed;
 
+// RES-2597: UART serial communication abstraction.
+// no_std/no-alloc clean. User wires a `UartIo` adapter for the
+// concrete peripheral; the runtime composes blocking IO on top.
+pub mod uart;
+
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
+
+// RES-2596: timer/counter peripheral abstraction. Always compiled —
+// no allocator or std required; state lives in a flat
+// `[TimerState; MAX_TIMERS]` static protected by an AtomicBool
+// spinlock.
+pub mod timer;
 
 #[cfg(feature = "alloc")]
 use alloc::string::String;

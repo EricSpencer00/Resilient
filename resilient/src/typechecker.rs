@@ -4741,6 +4741,8 @@ impl TypeChecker {
                 // during the shared whole-AST walk.
                 if markers.has_generic_fn {
                     crate::generics::check(program, source_path)?;
+                    // RES-2576: infer type parameters at call sites.
+                    crate::generic_inference::check(program, source_path)?;
                 }
                 // RES-1612 gate: pass loops top-level statements for
                 // `Node::NewtypeDecl`.
@@ -5134,6 +5136,13 @@ impl TypeChecker {
                 // RES-1597: `lean_spec::check` is a no-op stub; Lean
                 // export is driven by the `--emit-lean-spec` CLI flag.
                 crate::mcp_tool_registry::check(program, source_path)?;
+                // RES-2592: validate #[must_tail_call] annotations — every
+                // self-recursive call inside such a function must be in tail
+                // position. No marker gate needed; find_kind("must_tail_call")
+                // has an atomic fast-reject when the registry is empty.
+                crate::tail_calls::check(program, source_path)?;
+                // RES-2535: validate where-clause type-param references.
+                crate::where_clauses::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

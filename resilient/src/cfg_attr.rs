@@ -39,11 +39,11 @@
 //! the AST, so downstream passes see exactly what they would see if the
 //! user hadn't written the gated code at all.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
-/// RES-343: process-wide active-cfg state. The CLI driver populates this
-/// once, before parsing begins. Tests reset it via [`reset_for_test`].
+/// RES-343 / RES-2581: process-wide active-cfg state. The CLI driver populates
+/// this once, before parsing begins. Tests reset it via [`reset_for_test`].
 ///
 /// The shape mirrors how `bounds_check::set_deny_unproven_bounds` threads
 /// CLI flags into a parser-time pass without widening the `Parser`
@@ -58,6 +58,13 @@ pub struct CfgConfig {
     /// `--target TRIPLE`. A `#[cfg(target = "T")]` attribute is satisfied
     /// iff `target.as_deref() == Some("T")`.
     pub target: Option<String>,
+    /// `--cfg test` (or `--cfg test=true`). Set by the test runner before
+    /// executing test suites, so `#[cfg(test)]` gates work the same way
+    /// as in Rust.
+    pub is_test: bool,
+    /// `--cfg key=value` (repeatable). Arbitrary key-value pairs for
+    /// project-specific conditional compilation.
+    pub extra: HashMap<String, String>,
 }
 
 impl CfgConfig {
@@ -71,6 +78,8 @@ impl CfgConfig {
         Self {
             features: features.into_iter().collect(),
             target,
+            is_test: false,
+            extra: HashMap::new(),
         }
     }
 }
@@ -115,18 +124,24 @@ pub fn reset_for_test() {
     }
 }
 
-/// RES-343: a parsed cfg predicate. Surface syntax kept narrow — only the
-/// shapes the ticket lists as acceptance criteria. Logical combinators
-/// (`any`, `all`) are tracked as a follow-up; `not(...)` is in scope here
-/// because the ticket explicitly calls it out.
+/// RES-343 / RES-2581: a parsed cfg predicate. Supports the full set of
+/// logical combinators listed in the ticket acceptance criteria.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CfgPredicate {
     /// `feature = "name"` — true iff `name` is in `CfgConfig::features`.
     Feature(String),
     /// `target = "triple"` — true iff `triple` matches `CfgConfig::target`.
     Target(String),
+    /// `test` — true iff `CfgConfig::is_test` is set (CLI `--cfg test`).
+    Test,
+    /// `key = "value"` — generic key/value cfg flag set via `--cfg key=value`.
+    KeyValue(String, String),
     /// `not(<inner>)` — logical negation.
     Not(Box<CfgPredicate>),
+    /// `any(<p1>, <p2>, ...)` — true iff at least one inner predicate is true.
+    Any(Vec<CfgPredicate>),
+    /// `all(<p1>, <p2>, ...)` — true iff all inner predicates are true.
+    All(Vec<CfgPredicate>),
     /// Parse error placeholder. Treated as `false` so a malformed cfg
     /// drops the gated item; the parse error itself surfaces via the
     /// normal diagnostic channel.
@@ -141,7 +156,13 @@ impl CfgPredicate {
         match self {
             CfgPredicate::Feature(name) => cfg.features.contains(name),
             CfgPredicate::Target(triple) => cfg.target.as_deref() == Some(triple.as_str()),
+            CfgPredicate::Test => cfg.is_test,
+            CfgPredicate::KeyValue(key, value) => {
+                cfg.extra.get(key).map(|v| v == value).unwrap_or(false)
+            }
             CfgPredicate::Not(inner) => !inner.eval(cfg),
+            CfgPredicate::Any(preds) => preds.iter().any(|p| p.eval(cfg)),
+            CfgPredicate::All(preds) => preds.iter().all(|p| p.eval(cfg)),
             CfgPredicate::Invalid => false,
         }
     }
@@ -396,7 +417,8 @@ fn node_item_name(node: &crate::Node) -> Option<&str> {
 }
 
 /// Recursive predicate parser. Handles `feature = "x"`, `target = "x"`,
-/// and `not(<inner>)`. On a malformed predicate, records an error and
+/// `test`, `not(<inner>)`, `any(<p1>, ...)`, `all(<p1>, ...)`, and generic
+/// `key = "value"` pairs. On a malformed predicate, records an error and
 /// returns `CfgPredicate::Invalid`; the caller continues to advance the
 /// cursor through the surrounding `)` / `]`.
 fn parse_predicate(parser: &mut Parser) -> CfgPredicate {
@@ -405,7 +427,7 @@ fn parse_predicate(parser: &mut Parser) -> CfgPredicate {
         other => {
             let tok = other.clone();
             parser.record_error(format!(
-                "expected `feature`, `target`, or `not` inside `#[cfg(...)]`, found {}",
+                "expected cfg predicate (`feature`, `target`, `test`, `not`, `any`, `all`, or `key = \"value\"`) inside `#[cfg(...)]`, found {}",
                 tok
             ));
             return CfgPredicate::Invalid;
@@ -416,13 +438,37 @@ fn parse_predicate(parser: &mut Parser) -> CfgPredicate {
     match kind.as_str() {
         "feature" => parse_kv_predicate(parser, "feature", CfgPredicate::Feature),
         "target" => parse_kv_predicate(parser, "target", CfgPredicate::Target),
+        "test" => {
+            // `test` is a bare flag — no `= "..."` payload.
+            CfgPredicate::Test
+        }
         "not" => parse_not_predicate(parser),
-        other => {
-            parser.record_error(format!(
-                "unknown cfg predicate `{}`. Supported: `feature`, `target`, `not`",
-                other
-            ));
-            CfgPredicate::Invalid
+        "any" => parse_list_predicate(parser, "any"),
+        "all" => parse_list_predicate(parser, "all"),
+        key => {
+            // Generic `key = "value"` pair set via `--cfg key=value`.
+            if matches!(parser.current_token, Token::Assign) {
+                parser.next_token(); // skip `=`
+                let value = match &parser.current_token {
+                    Token::StringLiteral(s) => s.clone(),
+                    other => {
+                        let tok = other.clone();
+                        parser.record_error(format!(
+                            "expected string literal after `{} =` in `#[cfg]`, found {}",
+                            key, tok
+                        ));
+                        return CfgPredicate::Invalid;
+                    }
+                };
+                parser.next_token(); // skip the string literal
+                CfgPredicate::KeyValue(key.to_string(), value)
+            } else {
+                parser.record_error(format!(
+                    "unknown cfg predicate `{}`. Supported: `feature`, `target`, `test`, `not`, `any`, `all`, or `key = \"value\"`",
+                    key
+                ));
+                CfgPredicate::Invalid
+            }
         }
     }
 }
@@ -481,6 +527,48 @@ fn parse_not_predicate(parser: &mut Parser) -> CfgPredicate {
     parser.next_token(); // skip `)`
 
     CfgPredicate::Not(Box::new(inner))
+}
+
+/// Parse `any(p1, p2, ...)` or `all(p1, p2, ...)`. The combinator name
+/// has already been consumed; cursor is at `(`.
+fn parse_list_predicate(parser: &mut Parser, combinator: &str) -> CfgPredicate {
+    if !matches!(parser.current_token, Token::LeftParen) {
+        let tok = parser.current_token.clone();
+        parser.record_error(format!(
+            "expected `(` after `{}` in `#[cfg]`, found {}",
+            combinator, tok
+        ));
+        return CfgPredicate::Invalid;
+    }
+    parser.next_token(); // skip `(`
+
+    let mut preds = Vec::new();
+    loop {
+        if matches!(parser.current_token, Token::RightParen | Token::Eof) {
+            break;
+        }
+        preds.push(parse_predicate(parser));
+        // Consume optional `,` separator.
+        if matches!(parser.current_token, Token::Comma) {
+            parser.next_token();
+        }
+    }
+
+    if !matches!(parser.current_token, Token::RightParen) {
+        let tok = parser.current_token.clone();
+        parser.record_error(format!(
+            "expected `)` to close `{}(...)` in `#[cfg]`, found {}",
+            combinator, tok
+        ));
+        return CfgPredicate::Invalid;
+    }
+    parser.next_token(); // skip `)`
+
+    if combinator == "any" {
+        CfgPredicate::Any(preds)
+    } else {
+        CfgPredicate::All(preds)
+    }
 }
 
 /// Recovery helper: scan forward until we land just past the next `]`,
@@ -733,6 +821,162 @@ mod tests {
         assert!(!errs.is_empty(), "expected an error for unknown attribute");
         // `main` should still appear in the AST after recovery.
         assert!(top_level_fn_names(&program).contains(&"main".to_string()));
+    }
+
+    #[test]
+    fn predicate_eval_any() {
+        let cfg = CfgConfig::new(["std".to_string()], None);
+        let p = CfgPredicate::Any(vec![
+            CfgPredicate::Feature("nope".into()),
+            CfgPredicate::Feature("std".into()),
+        ]);
+        assert!(p.eval(&cfg));
+
+        let p_all_false = CfgPredicate::Any(vec![
+            CfgPredicate::Feature("nope".into()),
+            CfgPredicate::Feature("also_nope".into()),
+        ]);
+        assert!(!p_all_false.eval(&cfg));
+
+        // Empty any() → false (vacuously).
+        assert!(!CfgPredicate::Any(vec![]).eval(&cfg));
+    }
+
+    #[test]
+    fn predicate_eval_all() {
+        let cfg = CfgConfig::new(["std".to_string(), "alloc".to_string()], None);
+        let p = CfgPredicate::All(vec![
+            CfgPredicate::Feature("std".into()),
+            CfgPredicate::Feature("alloc".into()),
+        ]);
+        assert!(p.eval(&cfg));
+
+        let p_one_missing = CfgPredicate::All(vec![
+            CfgPredicate::Feature("std".into()),
+            CfgPredicate::Feature("nope".into()),
+        ]);
+        assert!(!p_one_missing.eval(&cfg));
+
+        // Empty all() → true (vacuously).
+        assert!(CfgPredicate::All(vec![]).eval(&cfg));
+    }
+
+    #[test]
+    fn predicate_eval_test_flag() {
+        let mut cfg = CfgConfig::default();
+        assert!(!CfgPredicate::Test.eval(&cfg));
+        cfg.is_test = true;
+        assert!(CfgPredicate::Test.eval(&cfg));
+    }
+
+    #[test]
+    fn predicate_eval_key_value() {
+        let cfg = CfgConfig {
+            extra: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("board".to_string(), "nucleo-f4".to_string());
+                m
+            },
+            ..CfgConfig::default()
+        };
+        assert!(CfgPredicate::KeyValue("board".into(), "nucleo-f4".into()).eval(&cfg));
+        assert!(!CfgPredicate::KeyValue("board".into(), "stm32".into()).eval(&cfg));
+        assert!(!CfgPredicate::KeyValue("missing".into(), "x".into()).eval(&cfg));
+    }
+
+    #[test]
+    fn cfg_any_keeps_when_one_matches() {
+        let src = r#"
+            #[cfg(any(feature = "std", feature = "alloc"))]
+            fn uses_alloc(int x) { return x; }
+            fn main(int dummy) { return 0; }
+        "#;
+        // Only "alloc" active → kept.
+        let cfg = CfgConfig::new(["alloc".to_string()], None);
+        let (prog, errs) = parse_with_cfg(src, cfg);
+        assert!(errs.is_empty(), "unexpected parse errors: {:?}", errs);
+        assert!(top_level_fn_names(&prog).contains(&"uses_alloc".to_string()));
+
+        // Neither active → stripped.
+        let (prog2, errs2) = parse_with_cfg(src, CfgConfig::default());
+        assert!(errs2.is_empty(), "unexpected parse errors: {:?}", errs2);
+        assert!(!top_level_fn_names(&prog2).contains(&"uses_alloc".to_string()));
+    }
+
+    #[test]
+    fn cfg_all_requires_all_to_match() {
+        let src = r#"
+            #[cfg(all(feature = "std", feature = "alloc"))]
+            fn needs_both(int x) { return x; }
+            fn main(int dummy) { return 0; }
+        "#;
+        // Both active → kept.
+        let cfg = CfgConfig::new(["std".to_string(), "alloc".to_string()], None);
+        let (prog, errs) = parse_with_cfg(src, cfg);
+        assert!(errs.is_empty(), "unexpected parse errors: {:?}", errs);
+        assert!(top_level_fn_names(&prog).contains(&"needs_both".to_string()));
+
+        // Only one active → stripped.
+        let cfg_one = CfgConfig::new(["std".to_string()], None);
+        let (prog2, errs2) = parse_with_cfg(src, cfg_one);
+        assert!(errs2.is_empty(), "unexpected parse errors: {:?}", errs2);
+        assert!(!top_level_fn_names(&prog2).contains(&"needs_both".to_string()));
+    }
+
+    #[test]
+    fn cfg_test_flag_gates_item() {
+        let src = r#"
+            #[cfg(test)]
+            fn test_helper(int x) { return x; }
+            fn main(int dummy) { return 0; }
+        "#;
+        // Without is_test → stripped.
+        let (prog, errs) = parse_with_cfg(src, CfgConfig::default());
+        assert!(errs.is_empty(), "unexpected parse errors: {:?}", errs);
+        assert!(!top_level_fn_names(&prog).contains(&"test_helper".to_string()));
+
+        // With is_test → kept.
+        let cfg = CfgConfig {
+            is_test: true,
+            ..CfgConfig::default()
+        };
+        let (prog2, errs2) = parse_with_cfg(src, cfg);
+        assert!(errs2.is_empty(), "unexpected parse errors: {:?}", errs2);
+        assert!(top_level_fn_names(&prog2).contains(&"test_helper".to_string()));
+    }
+
+    #[test]
+    fn cfg_key_value_from_extra_map() {
+        let src = r#"
+            #[cfg(board = "nucleo-f4")]
+            fn board_init(int dummy) { return 0; }
+            fn main(int dummy) { return 0; }
+        "#;
+        // Matching board → kept.
+        let cfg = CfgConfig {
+            extra: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("board".to_string(), "nucleo-f4".to_string());
+                m
+            },
+            ..CfgConfig::default()
+        };
+        let (prog, errs) = parse_with_cfg(src, cfg);
+        assert!(errs.is_empty(), "unexpected parse errors: {:?}", errs);
+        assert!(top_level_fn_names(&prog).contains(&"board_init".to_string()));
+
+        // Wrong board → stripped.
+        let cfg2 = CfgConfig {
+            extra: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("board".to_string(), "stm32".to_string());
+                m
+            },
+            ..CfgConfig::default()
+        };
+        let (prog2, errs2) = parse_with_cfg(src, cfg2);
+        assert!(errs2.is_empty(), "unexpected parse errors: {:?}", errs2);
+        assert!(!top_level_fn_names(&prog2).contains(&"board_init".to_string()));
     }
 
     #[test]
