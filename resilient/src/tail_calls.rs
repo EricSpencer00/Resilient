@@ -2,7 +2,7 @@
 //!
 //! Resilient targets embedded systems where stack space is scarce. Without TCO,
 //! every recursive call consumes a stack frame, making idiomatic recursive
-//! patterns unsafe for bounded stacks. This module provides:
+//! patterns that exhaust bounded stacks. This module provides:
 //!
 //! 1. **Tail-position detection** — `is_tail_call(node, fn_name)` returns
 //!    `true` when a `CallExpression` that calls `fn_name` appears in a
