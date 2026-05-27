@@ -4663,6 +4663,8 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::UnsafeBlock { span, .. } => span.start.line as u32,
         // RES-395: region type-param node — carries its declaration span.
         Node::RegionParam { span, .. } => span.start.line as u32,
+        // RES-2552: blanket impl — carries its declaration span.
+        Node::BlanketImpl { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }

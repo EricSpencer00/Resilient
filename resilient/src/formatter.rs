@@ -1219,6 +1219,7 @@ impl Formatter {
             | Node::EnumDecl { .. }
             | Node::UnsafeBlock { .. }
             | Node::RegionParam { .. }
+            | Node::BlanketImpl { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }

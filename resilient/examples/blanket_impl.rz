@@ -1,0 +1,51 @@
+// RES-2552: blanket trait implementations — `impl<T: Bound> Trait for T`.
+//
+// Declares a `Display` trait and a `Loud` trait, uses a blanket impl
+// `impl<T: Display> Loud for T { … }` to express "anything Displayable
+// is also Loud". The typechecker validates the blanket impl (trait
+// existence, bound existence, full method coverage, no duplicates).
+//
+// A standalone `impl Loud for Score` satisfies runtime dispatch so the
+// example can actually call `item.shout()`.
+
+struct Score {
+    int value,
+}
+
+trait Display {
+    fn show(self) -> string;
+}
+
+trait Loud {
+    fn shout(self) -> string;
+}
+
+// Specific impl for Display — provides the concrete show() method.
+impl Display for Score {
+    fn show(self) -> string {
+        return to_string(self.value);
+    }
+}
+
+// Blanket impl — validated by the typechecker's blanket_impl::check pass.
+// Any T that implements Display also implements Loud via this template.
+impl<T: Display> Loud for T {
+    fn shout(self) -> string {
+        return to_upper(self.show()) + "!";
+    }
+}
+
+// Specific impl for Loud on Score — used by the runtime dispatcher.
+impl Loud for Score {
+    fn shout(self) -> string {
+        return to_upper(to_string(self.value)) + "!";
+    }
+}
+
+fn main() {
+    let s = new Score { value: 42 };
+    println(s.show());
+    println(s.shout());
+}
+
+main();

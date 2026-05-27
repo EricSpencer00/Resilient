@@ -66,6 +66,10 @@ pub mod heap;
 // Compiles under default (no-alloc) features; no heap, no libm.
 pub mod fixed;
 
+// RES-2593: typestate GPIO HAL on top of the volatile MMIO
+// intrinsics. no_std, alloc-free; chip register layout is
+// parameterised via the `GpioConfig` trait.
+pub mod gpio;
 // RES-2597: UART serial communication abstraction.
 // no_std/no-alloc clean. User wires a `UartIo` adapter for the
 // concrete peripheral; the runtime composes blocking IO on top.
