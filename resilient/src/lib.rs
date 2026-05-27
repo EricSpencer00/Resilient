@@ -413,6 +413,17 @@ mod supervisor;
 // reuses the existing `<Type>$<method>` mangling — no VTable.
 mod traits;
 
+// RES-2552: blanket trait implementations (`impl<T: Bound> Trait for T`).
+pub(crate) mod blanket_impl;
+
+// RES-2605: static dispatch / devirtualization for trait method calls.
+pub(crate) mod devirtualize;
+
+// RES-2592: tail call optimization — `is_tail_call` detector,
+// `#[must_tail_call]` enforcement pass, and `is_must_tail_call` query
+// used by `apply_function` to activate the trampoline loop.
+mod tail_calls;
+
 // Ralph-Loop-Uniqueness: shared AST-walk helper used by the family of
 // novel safety-critical checks below. Provides pre-order traversal,
 // `for_each_function`, and small predicate helpers so each feature
@@ -2881,6 +2892,15 @@ enum Node {
     /// call sites and upgrades these to explicit `RegionParam` nodes.
     #[allow(dead_code)]
     RegionParam { name: String, span: span::Span },
+    /// RES-2552: `impl<T: Bound> Trait for T { ... }` — blanket trait impl.
+    /// Validated by `crate::blanket_impl::check`. Specific impls win.
+    BlanketImpl {
+        type_param: String,
+        bounds: Vec<String>,
+        trait_name: String,
+        methods: Vec<Node>,
+        span: span::Span,
+    },
 }
 
 /// RES-400 PR 2: a single variant inside an `enum` declaration.
@@ -4044,6 +4064,12 @@ impl Parser {
         let impl_span = self.span_at_current();
         self.next_token(); // skip 'impl'
 
+        // RES-2552: `impl<T: Bound> Trait for T { … }` — blanket impl.
+        // Distinguish by `<` immediately after `impl`.
+        if self.current_token == Token::Less {
+            return self.parse_blanket_impl(impl_span);
+        }
+
         let first_name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             other => {
@@ -4136,6 +4162,112 @@ impl Parser {
             struct_name,
             methods,
             associated_type_impls,
+            span: impl_span,
+        }
+    }
+
+    /// RES-2552: Parse `impl<T: B1 + B2> Trait for T { … }`.
+    ///
+    /// On entry `current_token` is `<` (the caller already consumed `impl`).
+    /// On a successful exit the cursor sits on the closing `}` of the body.
+    fn parse_blanket_impl(&mut self, impl_span: span::Span) -> Node {
+        // Reuse the generic-param parser: handles `<T>`, `<T: B>`, `<T: B1 + B2>`.
+        let (type_params, type_param_bounds) = self.parse_optional_type_params();
+
+        // Exactly one type parameter is required.
+        let (type_param, bounds) = if type_params.is_empty() {
+            self.record_error(
+                "blanket impl `impl<…>` requires at least one type parameter".to_string(),
+            );
+            (String::new(), vec![])
+        } else {
+            let tp = type_params[0].clone();
+            let b = type_param_bounds.into_iter().next().unwrap_or_default();
+            if type_params.len() > 1 {
+                self.record_error(format!(
+                    "blanket impl supports exactly one type parameter, found {}",
+                    type_params.len()
+                ));
+            }
+            (tp, b)
+        };
+
+        // Expect: `<TraitName> for <type_param> {`
+        let trait_name = match &self.current_token {
+            Token::Identifier(n) => {
+                let n = n.clone();
+                self.next_token();
+                n
+            }
+            other => {
+                self.record_error(format!(
+                    "Expected trait name in `impl<{type_param}> <Trait> for <T>`, found {other}"
+                ));
+                String::new()
+            }
+        };
+
+        if self.current_token != Token::For {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `for` in `impl<{type_param}> {trait_name} for <T>`, found {tok}"
+            ));
+        } else {
+            self.next_token(); // skip 'for'
+        }
+
+        // The target must be the same identifier as the type parameter.
+        match &self.current_token {
+            Token::Identifier(n) if *n == type_param => {
+                self.next_token();
+            }
+            other => {
+                self.record_error(format!(
+                    "Expected `{type_param}` after `for` in blanket impl, found {other}"
+                ));
+                self.next_token();
+            }
+        }
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `{{` after `impl<{type_param}> {trait_name} for {type_param}`, found {tok}"
+            ));
+        } else {
+            self.next_token(); // skip '{'
+        }
+
+        let mut methods: Vec<Node> = Vec::with_capacity(4);
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            match &self.current_token {
+                Token::Function => {
+                    methods.push(self.parse_method(&type_param));
+                    if self.current_token == Token::RightBrace {
+                        self.next_token();
+                    }
+                }
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `fn` inside blanket impl body, found {tok}"
+                    ));
+                    while self.current_token != Token::RightBrace
+                        && self.current_token != Token::Eof
+                    {
+                        self.next_token();
+                    }
+                    break;
+                }
+            }
+        }
+        // Leave cursor ON the closing `}`.
+
+        Node::BlanketImpl {
+            type_param,
+            bounds,
+            trait_name,
+            methods,
             span: impl_span,
         }
     }
@@ -10102,6 +10234,13 @@ enum Value {
     /// The raw `u64` is exposed because `actor_runtime::ActorPid` is
     /// not visible from the parser or eval arms that construct Values.
     ActorPid(u64),
+    /// RES-2592: TCO trampoline signal. Emitted by the child interpreter
+    /// when it encounters a `CallExpression` whose callee matches
+    /// `tco_fn_name`. Consumed immediately by the trampoline loop in
+    /// `apply_function` — rebinds the function's parameters to the new
+    /// args and restarts the body without growing the host stack.
+    /// Never visible to user code or operators.
+    TailCall(Vec<Value>),
 }
 
 /// RES-400: payload carried by a `Value::EnumVariant`. Mirrors the
@@ -10239,6 +10378,8 @@ impl std::fmt::Debug for Value {
                 ),
             },
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
+            // RES-2592: TailCall is an internal control-flow sentinel.
+            Value::TailCall(args) => write!(f, "TailCall({} args)", args.len()),
         }
     }
 }
@@ -10415,6 +10556,8 @@ impl std::fmt::Display for Value {
                 }
             },
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
+            // RES-2576: tail-call trampoline value — not directly displayable.
+            Value::TailCall(_) => write!(f, "<tail-call>"),
         }
     }
 }
@@ -22200,6 +22343,13 @@ struct Interpreter {
     /// while its body executes.
     inject_checked_failures: bool,
     overflow_mode: vm::OverflowMode,
+    /// RES-2592: when `Some(name)`, the interpreter is executing inside a
+    /// `#[must_tail_call]` function named `name`. A self-recursive
+    /// `CallExpression` to that function returns `Value::TailCall(new_args)`
+    /// instead of recursing, letting the trampoline in `apply_function`
+    /// restart the frame without growing the host stack. `None` for all
+    /// other functions — no overhead on the common path.
+    tco_fn_name: Option<String>,
 }
 
 /// RES-1108 + RES-1109 + RES-1110: structural equality for compound
@@ -22350,6 +22500,7 @@ impl Interpreter {
             active_subst: None,
             inject_checked_failures: false,
             overflow_mode: vm::OverflowMode::from_env(),
+            tco_fn_name: None,
         }
     }
 
@@ -23425,6 +23576,20 @@ impl Interpreter {
                         _ => {}
                     }
                 }
+                // RES-2592: TCO short-circuit. When executing inside a
+                // #[must_tail_call] function (tco_fn_name is Some), a call to
+                // that same function returns Value::TailCall(args) instead of
+                // recursing. The trampoline in apply_function consumes this
+                // signal and restarts the body without growing the host stack.
+                if let Some(ref tco_name) = self.tco_fn_name
+                    && let Node::Identifier {
+                        name: callee_name, ..
+                    } = function.as_ref()
+                    && callee_name == tco_name
+                {
+                    let new_args = self.eval_expressions(arguments)?;
+                    return Ok(Value::TailCall(new_args));
+                }
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(&func, args)
@@ -24114,6 +24279,8 @@ impl Interpreter {
             // RES-395: region type-param is a declaration marker; no
             // runtime value.
             Node::RegionParam { .. } => Ok(Value::Void),
+            // RES-2552: blanket impl is a declaration-site marker; no runtime value.
+            Node::BlanketImpl { .. } => Ok(Value::Void),
         }
     }
 
@@ -25367,7 +25534,16 @@ impl Interpreter {
                     active_subst: None,
                     inject_checked_failures: self.inject_checked_failures,
                     overflow_mode: self.overflow_mode,
+                    tco_fn_name: None,
                 };
+
+                // RES-2592: activate TCO trampoline for #[must_tail_call] functions.
+                // When active, the child interpreter returns Value::TailCall(new_args)
+                // instead of recursing, and the loop below rebinds parameters without
+                // growing the host stack.
+                if crate::tail_calls::is_must_tail_call(name) {
+                    interpreter.tco_fn_name = Some(name.clone());
+                }
 
                 // RES-405 PR 2: if this is a generic call, infer the substitution
                 // from actual argument values and store it on the child interpreter
@@ -25403,17 +25579,40 @@ impl Interpreter {
                     return Err(checked_failure_signal(&fails[0], name));
                 }
 
-                let body_result = interpreter.eval(body).map_err(|e| {
-                    if let Some(ref subst) = interpreter.active_subst {
-                        crate::diag::format_subst_context(name, subst, &e)
-                    } else {
-                        e
+                // RES-2592: TCO trampoline. For #[must_tail_call] functions the
+                // child interpreter emits Value::TailCall(new_args) when it sees
+                // a self-recursive tail call. We rebind parameters and loop,
+                // consuming zero extra host-stack frames per iteration.
+                let return_value = 'tco: loop {
+                    let body_result = interpreter.eval(body).map_err(|e| {
+                        if let Some(ref subst) = interpreter.active_subst {
+                            crate::diag::format_subst_context(name, subst, &e)
+                        } else {
+                            e
+                        }
+                    })?;
+                    match body_result {
+                        Value::TailCall(new_args) => {
+                            // Rebind parameters to new arguments and loop.
+                            for ((_, param_name), arg_value) in parameters.iter().zip(new_args) {
+                                interpreter.env.set(param_name.clone(), arg_value);
+                            }
+                            continue 'tco;
+                        }
+                        Value::Return(v) => match *v {
+                            // RES-2592: `return f(...)` inside a #[must_tail_call]
+                            // fn — the Return sentinel wraps a TailCall. Unwrap both.
+                            Value::TailCall(new_args) => {
+                                for ((_, param_name), arg_value) in parameters.iter().zip(new_args)
+                                {
+                                    interpreter.env.set(param_name.clone(), arg_value);
+                                }
+                                continue 'tco;
+                            }
+                            other => break 'tco other,
+                        },
+                        other => break 'tco other,
                     }
-                })?;
-                let return_value = if let Value::Return(v) = body_result {
-                    *v
-                } else {
-                    body_result
                 };
 
                 // RES-035: check each `ensures` clause AFTER, with the
@@ -25434,13 +25633,6 @@ impl Interpreter {
                         }
                     }
                     // RES-392: `recovers_to` — MVP final-state check.
-                    // Evaluated in the same post-return environment as
-                    // `ensures`, i.e. with `result` bound to the
-                    // returned value and parameters still in scope.
-                    // On refutation the diagnostic surfaces the final
-                    // state counterexample so the author can see which
-                    // concrete return value falsified the recovery
-                    // invariant.
                     if let Some(rec) = &recovers_to {
                         let v = interpreter.eval(rec)?;
                         if !interpreter.is_truthy(&v) {
@@ -25491,6 +25683,7 @@ impl Interpreter {
                     active_subst: None,
                     inject_checked_failures: false,
                     overflow_mode: self.overflow_mode,
+                    tco_fn_name: None,
                 };
                 for pre in requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -25522,6 +25715,7 @@ impl Interpreter {
                         active_subst: None,
                         inject_checked_failures: false,
                         overflow_mode: self.overflow_mode,
+                        tco_fn_name: None,
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in ensures {
@@ -27634,6 +27828,8 @@ fn execute_file(
         {
             // RES-405 PR 3: monomorphize before JIT compilation.
             let program = monomorph::lower(&program);
+            // RES-2605: devirtualize after monomorphization.
+            let program = devirtualize::lower(&program);
             let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
             // RES-355: write cache entry on JIT success.
@@ -27658,6 +27854,9 @@ fn execute_file(
         // RES-405 PR 3: lower generic functions to monomorphic specializations
         // before handing the AST to the bytecode compiler.
         let program = monomorph::lower(&program);
+        // RES-2605: devirtualize statically-known trait method calls after
+        // monomorphization so specialized clones get direct-call rewrites too.
+        let program = devirtualize::lower(&program);
         let prog = compiler::compile(&program).map_err(|e| format!("VM compile error: {}", e))?;
         let result = vm::run(&prog).map_err(|e| {
             // RES-095: mirror the typechecker's `<file>:<line>:` shape
@@ -30113,6 +30312,8 @@ pub fn run_cli() {
             }
             // RES-405 PR 3: monomorphize generic functions before disassembly.
             let resolved = monomorph::lower(&resolved);
+            // RES-2605: devirtualize after monomorphization.
+            let resolved = devirtualize::lower(&resolved);
             let prog = match compiler::compile(&resolved) {
                 Ok(p) => p,
                 Err(e) => {

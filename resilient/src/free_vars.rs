@@ -518,6 +518,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::UnsafeBlock { body, .. } => walk(body, bound, free),
         // RES-395: region type-param is a declaration marker; no free vars.
         Node::RegionParam { .. } => {}
+        // RES-2552: blanket impl is a declaration marker; no free vars.
+        Node::BlanketImpl { .. } => {}
     }
 }
 

@@ -162,6 +162,9 @@ pub(crate) struct Markers<'a> {
     /// `modules::check` (RES-324) to skip the duplicate-name and
     /// unresolved-item walk when the program has no inline modules.
     pub has_inline_module: bool,
+    /// True if any `Node::BlanketImpl` appears anywhere. Used by the
+    /// `blanket_impl::check` gate (RES-2552).
+    pub has_blanket_impl: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -323,6 +326,9 @@ impl<'a> Markers<'a> {
             }
             Node::EnumDecl { .. } => {
                 m.has_enum_decl = true;
+            }
+            Node::BlanketImpl { .. } => {
+                m.has_blanket_impl = true;
             }
             _ => {}
         });
