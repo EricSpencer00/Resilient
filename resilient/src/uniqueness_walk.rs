@@ -156,7 +156,10 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
                 visit(i, f);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                visit(b, f);
+            }
             for (_, v) in fields {
                 visit(v, f);
             }
@@ -345,7 +348,10 @@ fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
         Node::SetLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
             items.iter().any(|i| any_node_inner(i, pred))
         }
-        Node::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| any_node_inner(v, pred)),
+        Node::StructLiteral { fields, base, .. } => {
+            base.as_ref().is_some_and(|b| any_node_inner(b, pred))
+                || fields.iter().any(|(_, v)| any_node_inner(v, pred))
+        }
         Node::Slice { target, lo, hi, .. } => {
             any_node_inner(target, pred)
                 || lo.as_ref().is_some_and(|l| any_node_inner(l, pred))

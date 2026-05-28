@@ -2259,7 +2259,10 @@ fn collect_identifier_reads_in<'a>(node: &'a Node, out: &mut std::collections::H
                 collect_identifier_reads_in(i, out);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                collect_identifier_reads_in(b, out);
+            }
             for (_, v) in fields {
                 collect_identifier_reads_in(v, out);
             }
@@ -3216,7 +3219,10 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
                 f(i);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                f(b);
+            }
             for (_, v) in fields {
                 f(v);
             }
@@ -3704,7 +3710,10 @@ fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
                 l0013_walk(arg, out);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                l0013_walk(b, out);
+            }
             for (_, value) in fields {
                 l0013_walk(value, out);
             }
@@ -4792,7 +4801,9 @@ fn walk_l0024<'a>(
     decls: &std::collections::HashMap<&str, Vec<&'a str>>,
     out: &mut Vec<Lint>,
 ) {
-    if let Node::StructLiteral { name, fields, span } = node
+    if let Node::StructLiteral {
+        name, fields, span, ..
+    } = node
         && let Some(declared) = decls.get(name.as_str())
     {
         let provided: std::collections::HashSet<&str> =

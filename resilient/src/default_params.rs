@@ -449,7 +449,10 @@ fn rewrite_calls(node: &mut Node, sigs: &HashMap<String, FnDefaults>) {
                 rewrite_calls(inv, sigs);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                rewrite_calls(b, sigs);
+            }
             for (_n, v) in fields.iter_mut() {
                 rewrite_calls(v, sigs);
             }

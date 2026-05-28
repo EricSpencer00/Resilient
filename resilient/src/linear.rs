@@ -412,7 +412,10 @@ fn walk(
             walk(target, bindings, fn_name, source_path)?;
             walk(value, bindings, fn_name, source_path)
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                walk(b, bindings, fn_name, source_path)?;
+            }
             for (_, v) in fields {
                 walk(v, bindings, fn_name, source_path)?;
             }

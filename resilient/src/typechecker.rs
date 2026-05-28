@@ -7043,7 +7043,11 @@ impl TypeChecker {
             }
 
             Node::StructLiteral {
-                name, fields, span, ..
+                name,
+                fields,
+                base,
+                span,
+                ..
             } => {
                 self.current_span = *span;
                 // RES-404: look up declared field types. When the struct
@@ -7064,6 +7068,24 @@ impl TypeChecker {
                 } else {
                     name.clone()
                 };
+                // RES-2632: validate base expression for struct update syntax.
+                if let Some(base_expr) = base {
+                    let base_ty = self.check_node(base_expr)?;
+                    if let Type::Struct(base_name) = &base_ty {
+                        if base_name != &effective_struct_name {
+                            return Err(format!(
+                                "struct update base has type `{}`, \
+                                 but the literal constructs `{}`",
+                                base_name, effective_struct_name
+                            ));
+                        }
+                    } else if base_ty != Type::Any {
+                        return Err(format!(
+                            "struct update base must be a struct, found {}",
+                            base_ty
+                        ));
+                    }
+                }
                 let declared_opt = self.struct_fields.get(&effective_struct_name).cloned();
                 for (field_name, e) in fields {
                     let val_ty = self.check_node(e)?;
@@ -8889,7 +8911,10 @@ fn check_body_purity(
                 check_body_purity(i, fn_name, pure_fns)?;
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                check_body_purity(b, fn_name, pure_fns)?;
+            }
             for (_, v) in fields {
                 check_body_purity(v, fn_name, pure_fns)?;
             }
@@ -9872,8 +9897,9 @@ fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<&str, bool>)
                 || body_reaches_io(value, effects)
         }
         Node::ArrayLiteral { items, .. } => items.iter().any(|i| body_reaches_io(i, effects)),
-        Node::StructLiteral { fields, .. } => {
-            fields.iter().any(|(_, v)| body_reaches_io(v, effects))
+        Node::StructLiteral { fields, base, .. } => {
+            base.as_ref().is_some_and(|b| body_reaches_io(b, effects))
+                || fields.iter().any(|(_, v)| body_reaches_io(v, effects))
         }
         Node::Match {
             scrutinee, arms, ..
@@ -10140,7 +10166,10 @@ fn check_body_effects(
                 check_body_effects(i, fn_effects, linear_params)?;
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                check_body_effects(b, fn_effects, linear_params)?;
+            }
             for (_, v) in fields {
                 check_body_effects(v, fn_effects, linear_params)?;
             }

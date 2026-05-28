@@ -2562,6 +2562,9 @@ enum Node {
     StructLiteral {
         name: String,
         fields: Vec<(String, Node)>,
+        /// RES-2632: optional base expression for struct update syntax
+        /// (`new Config { ..base, field: value }`).
+        base: Option<Box<Node>>,
         /// RES-088: span of the type-name token. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -8968,6 +8971,7 @@ impl Parser {
             return Node::StructLiteral {
                 name,
                 fields: Vec::new(),
+                base: None,
                 span: self.span_at_current(),
             };
         }
@@ -8975,17 +8979,52 @@ impl Parser {
         // RES-1804: pre-size to 4 — typical struct literal has
         // 2-5 fields.
         let mut fields: Vec<(String, Node)> = Vec::with_capacity(4);
+        let mut base: Option<Box<Node>> = None;
 
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
             return Node::StructLiteral {
                 name,
                 fields,
+                base: None,
                 span: self.span_at_current(),
             };
         }
 
         self.next_token(); // skip '{'
+
+        // RES-2632: struct update syntax — `..expr` at the start
+        // of the field list copies unspecified fields from `expr`.
+        if self.current_token == Token::DotDot {
+            self.next_token(); // skip `..`
+            let base_expr = self.parse_expression(0).unwrap_or(Node::Identifier {
+                name: String::new(),
+                span: span::Span::default(),
+            });
+            self.next_token(); // past expression
+            base = Some(Box::new(base_expr));
+            if self.current_token == Token::Comma {
+                self.next_token(); // skip `,`
+                if self.current_token == Token::RightBrace {
+                    // `{ ..base }` — no overrides
+                    return Node::StructLiteral {
+                        name,
+                        fields,
+                        base,
+                        span: self.span_at_current(),
+                    };
+                }
+            } else if self.current_token == Token::RightBrace {
+                // `{ ..base }` — no overrides, no trailing comma
+                return Node::StructLiteral {
+                    name,
+                    fields,
+                    base,
+                    span: self.span_at_current(),
+                };
+            }
+        }
+
         loop {
             // Capture the span of the field-name token so a
             // shorthand expansion's `Identifier` carries the
@@ -9065,6 +9104,7 @@ impl Parser {
         Node::StructLiteral {
             name,
             fields,
+            base,
             span: self.span_at_current(),
         }
     }
@@ -9268,7 +9308,12 @@ impl Parser {
         let mut idx: usize = 0;
         if self.current_token == Token::RightParen {
             // empty body — `new Unit()` style.
-            return Node::StructLiteral { name, fields, span };
+            return Node::StructLiteral {
+                name,
+                fields,
+                base: None,
+                span,
+            };
         }
         loop {
             let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
@@ -9296,7 +9341,12 @@ impl Parser {
         }
         // current_token is on `)`. Caller's span is on `(`; rest of
         // pipeline sees the standard `StructLiteral` shape.
-        Node::StructLiteral { name, fields, span }
+        Node::StructLiteral {
+            name,
+            fields,
+            base: None,
+            span,
+        }
     }
 
     pub(crate) fn parse_pattern(&mut self) -> Pattern {
@@ -23951,10 +24001,37 @@ impl Interpreter {
                 }
                 Ok(Value::Void)
             }
-            Node::StructLiteral { name, fields, .. } => {
-                let mut out = Vec::with_capacity(fields.len());
+            Node::StructLiteral {
+                name, fields, base, ..
+            } => {
+                // RES-2632: if a base expression is present, evaluate it
+                // and seed the field list with its values. Explicit fields
+                // override the base.
+                let mut out: Vec<(String, Value)> = if let Some(base_expr) = base {
+                    let base_val = self.eval(base_expr)?;
+                    match base_val {
+                        Value::Struct {
+                            fields: base_fields,
+                            ..
+                        } => base_fields,
+                        other => {
+                            return Err(format!(
+                                "struct update `..` base must be a struct, got {:?}",
+                                other
+                            ));
+                        }
+                    }
+                } else {
+                    Vec::with_capacity(fields.len())
+                };
                 for (fname, fexpr) in fields {
-                    out.push((fname.clone(), self.eval(fexpr)?));
+                    let val = self.eval(fexpr)?;
+                    // Override existing field from base or append new one.
+                    if let Some(entry) = out.iter_mut().find(|(n, _)| n == fname) {
+                        entry.1 = val;
+                    } else {
+                        out.push((fname.clone(), val));
+                    }
                 }
                 // RES-400: if `name` is `EnumName::VariantName` and
                 // `EnumName` is a registered enum whose variant carries

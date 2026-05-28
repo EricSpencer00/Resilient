@@ -246,7 +246,10 @@ fn generate_in<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<Mutation<'a>>
             }
         }
         // RES-1918: struct/collection literal element expressions.
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                generate_in(b, fn_name, out);
+            }
             for (_, v) in fields {
                 generate_in(v, fn_name, out);
             }
