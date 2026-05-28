@@ -27,4 +27,4 @@ static_assert(RELEASE == true, "expected release build");
 fn main(int _d) {
     return BUFFER_SIZE;
 }
-print(main(0));
+println(main(0));
