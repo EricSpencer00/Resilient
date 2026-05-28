@@ -6722,6 +6722,25 @@ impl TypeChecker {
                     }
                 }
 
+                // RES-2664: reject match arms with incompatible types.
+                // Find the first concrete (non-Any) arm type and verify
+                // all other concrete arm types are compatible with it.
+                let mut expected: Option<&Type> = None;
+                for t in &arm_types {
+                    if matches!(t, Type::Any) {
+                        continue;
+                    }
+                    match expected {
+                        None => expected = Some(t),
+                        Some(e) if compatible(e, t) => {}
+                        Some(e) => {
+                            return Err(format!(
+                                "match arms have incompatible types: {} and {}",
+                                e, t
+                            ));
+                        }
+                    }
+                }
                 // RES-402: return the common type of all arm bodies.
                 Ok(infer_common_arm_type(&arm_types))
             }
@@ -11923,6 +11942,62 @@ fn f(bool b) -> int {
         false => [4, 5],
     };
     return len(arr);
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn match_arms_type_mismatch_errors() {
+        // RES-2664: match arms with different types must error.
+        let err = check_err(
+            r#"
+fn f(int x) -> int {
+    let _v = match x {
+        1 => "hello",
+        _ => 42,
+    };
+    return 0;
+}
+"#,
+        );
+        assert!(
+            err.contains("incompatible"),
+            "expected incompatible-types error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn match_arms_three_way_mismatch_errors() {
+        // RES-2664: three arms with three different types.
+        let err = check_err(
+            r#"
+fn f(int x) -> int {
+    return match x {
+        1 => "hello",
+        2 => true,
+        _ => 42,
+    };
+}
+"#,
+        );
+        assert!(
+            err.contains("incompatible"),
+            "expected incompatible-types error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn match_arms_same_type_accepted() {
+        // Same type in all arms — no error.
+        check_ok(
+            r#"
+fn f(int x) -> int {
+    return match x {
+        1 => 10,
+        2 => 20,
+        _ => 30,
+    };
 }
 "#,
         );
