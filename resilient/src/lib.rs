@@ -615,6 +615,7 @@ mod semver_behavior;
 mod session_types;
 mod snapshot_regression;
 mod stack_contracts;
+mod static_assert;
 mod struct_exhaustiveness;
 mod typestate_types;
 mod vibe_debt;
@@ -785,6 +786,10 @@ enum Token {
     /// RES-2535: `where` keyword for post-signature generic bound clauses.
     /// `fn merge<A, B>(a: A, b: B) where A: Display + Clone, B: Into { ... }`
     Where,
+    /// RES-2660: `static_assert(expr, msg)` — compile-time assertion.
+    /// Evaluates `expr` at compile time using the const evaluator;
+    /// emits a hard error with `msg` if false. Zero runtime cost.
+    StaticAssert,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -947,6 +952,7 @@ impl Token {
             Token::Unsafe => Cow::Borrowed("`unsafe`"),
             Token::Pub => Cow::Borrowed("`pub`"),
             Token::Where => Cow::Borrowed("`where`"),
+            Token::StaticAssert => Cow::Borrowed("`static_assert`"),
             Token::Underscore => Cow::Borrowed("`_`"),
             Token::Default => Cow::Borrowed("`default`"),
             Token::Dot => Cow::Borrowed("`.`"),
@@ -1503,6 +1509,7 @@ impl Lexer {
                         "unsafe" => Token::Unsafe,
                         "pub" => Token::Pub,
                         "where" => Token::Where,
+                        "static_assert" => Token::StaticAssert,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2921,6 +2928,12 @@ enum Node {
         methods: Vec<Node>,
         span: span::Span,
     },
+    /// RES-2660: `static_assert(expr, msg)` — compile-time assertion.
+    StaticAssert {
+        condition: Box<Node>,
+        message: String,
+        span: span::Span,
+    },
 }
 
 /// RES-400 PR 2: a single variant inside an `enum` declaration.
@@ -3294,6 +3307,7 @@ impl Parser {
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
             Token::Assume => Some(self.parse_assume()),
+            Token::StaticAssert => Some(crate::static_assert::parse(self)),
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
@@ -22906,6 +22920,9 @@ impl Interpreter {
             // RES-361: const declarations are handled in the pre-pass;
             // at runtime they are a no-op.
             Node::Const { .. } => Ok(Value::Void),
+            // RES-2660: static_assert is evaluated at compile time;
+            // at runtime it is a no-op.
+            Node::StaticAssert { .. } => Ok(Value::Void),
             Node::Identifier { name, .. } => {
                 if let Some(value) = self.consts.get(name) {
                     Ok(value.clone())
@@ -24397,7 +24414,7 @@ impl Interpreter {
     ///
     /// Any other node (function call, array literal, etc.) is rejected
     /// with a diagnostic describing what is allowed.
-    fn eval_const_expr(
+    pub(crate) fn eval_const_expr(
         node: &Node,
         resolved: &HashMap<String, Value>,
         evaluating: &mut Vec<String>,
@@ -24463,6 +24480,22 @@ impl Interpreter {
                     ("-", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
                     ("*", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
                     ("/", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+                    // RES-2660: comparison operators — required for
+                    // `static_assert` conditions and useful for any
+                    // const expression that evaluates to bool.
+                    ("==", Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a == b)),
+                    ("!=", Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a != b)),
+                    ("<", Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
+                    ("<=", Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
+                    (">", Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
+                    (">=", Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
+                    ("==", Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
+                    ("!=", Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a != b)),
+                    ("==", Value::String(ref a), Value::String(ref b)) => Ok(Value::Bool(a == b)),
+                    ("!=", Value::String(ref a), Value::String(ref b)) => Ok(Value::Bool(a != b)),
+                    // RES-2660: logical operators for compound conditions.
+                    ("&&", Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a && b)),
+                    ("||", Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a || b)),
                     (op, lv, rv) => Err(format!(
                         "error: operator '{}' on ({}, {}) is not supported in a constant expression",
                         op, lv, rv
@@ -24639,6 +24672,11 @@ impl Interpreter {
         // RES-361: evaluate all `const` declarations first, before any
         // function hoisting or statement execution.
         self.const_eval_program(statements)?;
+
+        // RES-2660: evaluate static_assert conditions now that all
+        // const declarations are resolved. Failures surface as
+        // compile-time errors — no runtime cost for passing asserts.
+        crate::static_assert::check_with_consts(statements, &self.consts)?;
 
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs

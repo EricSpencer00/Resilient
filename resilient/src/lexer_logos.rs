@@ -326,6 +326,9 @@ enum Tok {
     // RES-2535: `where` keyword for post-signature generic bound clauses.
     #[token("where")]
     Where,
+    // RES-2660: `static_assert(expr, msg)` compile-time assertion keyword.
+    #[token("static_assert")]
+    StaticAssert,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -819,6 +822,8 @@ fn convert(t: Tok) -> Token {
         Tok::Trait => Token::Trait,
         // RES-2535: where keyword for post-signature generic bounds.
         Tok::Where => Token::Where,
+        // RES-2660: static_assert keyword.
+        Tok::StaticAssert => Token::StaticAssert,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

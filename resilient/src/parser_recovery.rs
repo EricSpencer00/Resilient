@@ -69,6 +69,7 @@ pub(crate) fn starts_top_level_item(tok: &Token) -> bool {
             | Token::Return
             | Token::Assert
             | Token::Assume
+            | Token::StaticAssert
             | Token::Live
             | Token::Try
             | Token::At

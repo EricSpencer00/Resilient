@@ -520,6 +520,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::RegionParam { .. } => {}
         // RES-2552: blanket impl is a declaration marker; no free vars.
         Node::BlanketImpl { .. } => {}
+        // RES-2660: static_assert is a compile-time check; no free vars.
+        Node::StaticAssert { .. } => {}
     }
 }
 
