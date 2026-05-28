@@ -1,16 +1,12 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2660-static-assert",
-      "claimed_at": "2026-05-28T16:48:56Z"
+      "branch": "res-2651-nested-enum-type-inference",
+      "claimed_at": "2026-05-28T17:10:03Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2660-static-assert",
-      "claimed_at": "2026-05-28T16:48:56Z"
-    },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-2660-static-assert",
-      "claimed_at": "2026-05-28T16:48:56Z"
+      "branch": "res-2651-nested-enum-type-inference",
+      "claimed_at": "2026-05-28T17:10:03Z"
     }
   }
 }
