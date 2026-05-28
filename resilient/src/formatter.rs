@@ -452,6 +452,14 @@ impl Formatter {
                 self.write(";");
                 self.newline();
             }
+            Node::StaticAssert {
+                condition, message, ..
+            } => {
+                self.write("static_assert(");
+                self.fmt_expr(condition);
+                self.write_args(format_args!(", \"{}\");", message));
+                self.newline();
+            }
             Node::LetDestructureStruct {
                 struct_name,
                 fields,
@@ -1220,6 +1228,7 @@ impl Formatter {
             | Node::UnsafeBlock { .. }
             | Node::RegionParam { .. }
             | Node::BlanketImpl { .. }
+            | Node::StaticAssert { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }

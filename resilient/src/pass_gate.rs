@@ -164,6 +164,10 @@ pub(crate) struct Markers<'a> {
     /// `modules::check` (RES-324) to skip the duplicate-name and
     /// unresolved-item walk when the program has no inline modules.
     pub has_inline_module: bool,
+    /// RES-2660: True if any `Node::StaticAssert` appears anywhere.
+    /// Used by `static_assert::check` to skip the compile-time
+    /// assertion pass when the program has no static_assert statements.
+    pub has_static_assert: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -328,6 +332,9 @@ impl<'a> Markers<'a> {
             }
             Node::EnumDecl { .. } => {
                 m.has_enum_decl = true;
+            }
+            Node::StaticAssert { .. } => {
+                m.has_static_assert = true;
             }
             _ => {}
         });

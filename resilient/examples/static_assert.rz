@@ -1,0 +1,30 @@
+// RES-2660: static_assert — compile-time assertions for safety-critical validation.
+//
+// static_assert evaluates its condition at compile time using the const
+// evaluator. If the condition is false, compilation fails with the
+// user-supplied message. Passing assertions have zero runtime cost.
+
+const BUFFER_SIZE: int = 1024;
+const MAX_SRAM: int = 4096;
+const ALIGNMENT: int = 4;
+
+// Validate buffer fits in SRAM and is properly aligned.
+static_assert(BUFFER_SIZE <= MAX_SRAM, "buffer too large for SRAM");
+static_assert(BUFFER_SIZE % ALIGNMENT == 0, "buffer must be 4-byte aligned");
+
+// Validate arithmetic relationships between constants.
+const HEADER_SIZE: int = 16;
+const PAYLOAD_SIZE: int = BUFFER_SIZE - HEADER_SIZE;
+static_assert(PAYLOAD_SIZE > 0, "payload must be positive");
+static_assert(PAYLOAD_SIZE % 8 == 0, "payload must be 8-byte aligned");
+
+// Boolean logic in conditions.
+const DEBUG: bool = false;
+const RELEASE: bool = !DEBUG;
+static_assert(RELEASE == true, "expected release build");
+
+// Print something so the golden test has output.
+fn main(int _d) {
+    return BUFFER_SIZE;
+}
+println(main(0));

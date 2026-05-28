@@ -5152,6 +5152,10 @@ impl TypeChecker {
                 crate::tail_calls::check(program, source_path)?;
                 // RES-2535: validate where-clause type-param references.
                 crate::where_clauses::check(program, source_path)?;
+                // RES-2660: evaluate static_assert conditions at compile time.
+                if markers.has_static_assert {
+                    crate::static_assert::check(program, source_path)?;
+                }
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -8288,6 +8292,8 @@ impl TypeChecker {
             Node::RegionParam { .. } => Ok(Type::Void),
             // RES-2552: blanket impl — validated by blanket_impl::check.
             Node::BlanketImpl { .. } => Ok(Type::Void),
+            // RES-2660: static_assert — validated by static_assert::check.
+            Node::StaticAssert { .. } => Ok(Type::Void),
         }
     }
 

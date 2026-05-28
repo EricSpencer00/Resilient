@@ -846,6 +846,8 @@ fn compile_stmt(
         // RES-361: `const NAME = EXPR;` is pre-evaluated by the const_eval
         // pass before bytecode compilation. Nothing to emit at runtime.
         Node::Const { .. } => Ok(()),
+        // RES-2660: static_assert is evaluated at compile time. No-op in codegen.
+        Node::StaticAssert { .. } => Ok(()),
         // RES-139: `live { body }` — compile the body once.
         // Retry / backoff / invariant semantics are verification-only and
         // are not emitted in the bytecode backend.
@@ -1699,6 +1701,8 @@ fn compile_stmt_in_fn(
         }
         // RES-361: const decl inside fn body — pre-evaluated, no emission.
         Node::Const { .. } => Ok(()),
+        // RES-2660: static_assert — compile-time only, no emission.
+        Node::StaticAssert { .. } => Ok(()),
         // RES-139: `live { body }` inside fn body — compile body once.
         Node::LiveBlock { body, .. } => compile_stmt_in_fn(
             body,
@@ -4666,6 +4670,8 @@ fn node_line(n: &Node) -> Option<u32> {
         // RES-2552: blanket impl declaration — use its declaration span.
         // RES-2552: blanket impl — carries its declaration span.
         Node::BlanketImpl { span, .. } => span.start.line as u32,
+        // RES-2660: static_assert — carries the keyword's span.
+        Node::StaticAssert { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }
