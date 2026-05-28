@@ -1,0 +1,35 @@
+// RES-2664: match arm type checking — arms must have compatible types.
+
+// All arms return the same type — should pass cleanly.
+fn same_types(int x) -> int {
+    return match x {
+        1 => 10,
+        2 => 20,
+        _ => 0,
+    };
+}
+
+// Match with Option — Some(int) and None, both return int.
+fn option_match() -> int {
+    let opt = Some(42);
+    return match opt {
+        Some(v) => v,
+        None => -1,
+    };
+}
+
+// Wildcard arm with same type as explicit arms.
+fn wildcard_match(int x) -> string {
+    return match x {
+        1 => "one",
+        2 => "two",
+        _ => "other",
+    };
+}
+
+println(same_types(1));
+println(same_types(2));
+println(same_types(3));
+println(option_match());
+println(wildcard_match(1));
+println(wildcard_match(99));
