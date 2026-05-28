@@ -74,6 +74,13 @@ pub enum Type {
     Array,
     /// RES-053: Result<T, E> — payload types not tracked at MVP.
     Result,
+    /// RES-2651: `Option<T>` with tracked inner type. When the inner
+    /// type is known (e.g. from a `checked_add` return or an explicit
+    /// annotation), pattern matching on `Some(x)` binds `x` to the
+    /// concrete inner type instead of `Any`. Falls back gracefully:
+    /// `Option(Box::new(Type::Any))` behaves like the old untracked
+    /// `Result`-style representation.
+    Option(Box<Type>),
     /// RES-053: user-defined record by name. Field types looked up
     /// against the struct table when G7 goes deeper.
     Struct(String),
@@ -131,6 +138,13 @@ impl std::fmt::Display for Type {
             }
             Type::Array => write!(f, "array"),
             Type::Result => write!(f, "Result"),
+            Type::Option(inner) => {
+                if matches!(inner.as_ref(), Type::Any) {
+                    write!(f, "Option")
+                } else {
+                    write!(f, "Option<{}>", inner)
+                }
+            }
             Type::Struct(n) => write!(f, "{}", n),
             Type::Void => write!(f, "void"),
             Type::Any => write!(f, "any"),
@@ -249,6 +263,12 @@ fn compatible(a: &Type, b: &Type) -> bool {
     }
     if matches!(a, Type::Any) || matches!(b, Type::Any) {
         return true;
+    }
+    // RES-2651: Option<T> is compatible with Option<U> when T and U
+    // are compatible, and also with the legacy unparameterised Result
+    // (which represented Option before this PR).
+    if let (Type::Option(inner_a), Type::Option(inner_b)) = (a, b) {
+        return compatible(inner_a, inner_b);
     }
     // Integer literals produce Type::Int; allow assigning them to any
     // pinned integer type without an explicit cast.
@@ -1551,16 +1571,16 @@ impl TypeChecker {
                 env.set("leading_zeros".to_string(), fn_int_to_int());
                 env.set("trailing_zeros".to_string(), fn_int_to_int());
                 // RES-1115..1118: overflow-safe integer arithmetic. The
-                // checked_* family returns Option<int>; the type system has
-                // no Option<T> yet, so we use Type::Any for the return slot
-                // — the runtime check (`Value::Option`) is strict.
+                // checked_* family returns Option<int>.
+                // RES-2651: use Type::Option(Int) so pattern matching
+                // on `Some(x)` binds `x` to `Int`, not `Any`.
                 let fn_int_int_to_int = || Type::Function {
                     params: vec![Type::Int, Type::Int],
                     return_type: Box::new(Type::Int),
                 };
-                let fn_int_int_to_any = || Type::Function {
+                let fn_int_int_to_option_int = || Type::Function {
                     params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Option(Box::new(Type::Int))),
                 };
                 env.set("saturating_add".to_string(), fn_int_int_to_int());
                 env.set("saturating_sub".to_string(), fn_int_int_to_int());
@@ -1568,10 +1588,10 @@ impl TypeChecker {
                 env.set("wrapping_add".to_string(), fn_int_int_to_int());
                 env.set("wrapping_sub".to_string(), fn_int_int_to_int());
                 env.set("wrapping_mul".to_string(), fn_int_int_to_int());
-                env.set("checked_add".to_string(), fn_int_int_to_any());
-                env.set("checked_sub".to_string(), fn_int_int_to_any());
-                env.set("checked_mul".to_string(), fn_int_int_to_any());
-                env.set("checked_div".to_string(), fn_int_int_to_any());
+                env.set("checked_add".to_string(), fn_int_int_to_option_int());
+                env.set("checked_sub".to_string(), fn_int_int_to_option_int());
+                env.set("checked_mul".to_string(), fn_int_int_to_option_int());
+                env.set("checked_div".to_string(), fn_int_int_to_option_int());
                 // RES-1119..1121: bit manipulation.
                 env.set("rotate_left_int".to_string(), fn_int_int_to_int());
                 env.set("rotate_right_int".to_string(), fn_int_int_to_int());
@@ -4032,6 +4052,40 @@ impl TypeChecker {
                 env.set("unwrap".to_string(), fn_result_to_any());
                 env.set("unwrap_err".to_string(), fn_result_to_any());
 
+                // RES-2651: Option constructors and predicates.
+                // `Some` is registered with return type Option<Any>; call
+                // sites override this with the concrete argument type (see
+                // the `Some(expr)` special case in CallExpression).
+                env.set(
+                    "Some".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Option(Box::new(Type::Any))),
+                    },
+                );
+                env.set("None".to_string(), Type::Option(Box::new(Type::Any)));
+                env.set(
+                    "is_some".to_string(),
+                    Type::Function {
+                        params: vec![Type::Option(Box::new(Type::Any))],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "is_none".to_string(),
+                    Type::Function {
+                        params: vec![Type::Option(Box::new(Type::Any))],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "unwrap_option".to_string(),
+                    Type::Function {
+                        params: vec![Type::Option(Box::new(Type::Any))],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
                 // RES-936/937: Result fallback variants — Result + default → Any.
                 let fn_result_any_to_any = || Type::Function {
                     params: vec![Type::Result, Type::Any],
@@ -5265,10 +5319,17 @@ impl TypeChecker {
                 }
                 Ok(out)
             }
-            // RES-375: `Some(inner)` binds the inner value as `Any`
-            // (Option carries no type parameter in the dynamic checker).
-            // `None` introduces no bindings.
-            Pattern::Some(inner) => self.match_pattern_binding_types(inner.as_ref(), &Type::Any),
+            // RES-2651: `Some(inner)` extracts the inner type from
+            // `Option<T>` when the scrutinee carries a tracked element
+            // type. Falls back to `Any` for unparameterised scrutinees
+            // (legacy code, dynamic values).
+            Pattern::Some(inner) => {
+                let inner_ty = match scrut_ty {
+                    Type::Option(t) => t.as_ref(),
+                    _ => &Type::Any,
+                };
+                self.match_pattern_binding_types(inner.as_ref(), inner_ty)
+            }
             Pattern::None => Ok(vec![]),
             // RES-923: Result patterns recurse same way.
             Pattern::Ok(inner) | Pattern::Err(inner) => {
@@ -6624,6 +6685,30 @@ impl TypeChecker {
                                 }
                                 return Err(format!(
                                     "Non-exhaustive match on enum `Result`: missing variants: {}",
+                                    missing.join(", ")
+                                ));
+                            }
+                        }
+                        // RES-2651: Option<T> is exhaustive when both
+                        // Some and None arms are present.
+                        Type::Option(_) => {
+                            let has_some = arms.iter().any(|(p, guard, _)| {
+                                guard.is_none() && matches!(p, Pattern::Some(_))
+                            });
+                            let has_none = arms
+                                .iter()
+                                .any(|(p, guard, _)| guard.is_none() && matches!(p, Pattern::None));
+                            if !(has_some && has_none) {
+                                let mut missing = Vec::new();
+                                if !has_some {
+                                    missing.push("Some");
+                                }
+                                if !has_none {
+                                    missing.push("None");
+                                }
+                                return Err(format!(
+                                    "Non-exhaustive match on {}: missing variants: {}",
+                                    scrutinee_type,
                                     missing.join(", ")
                                 ));
                             }
@@ -8074,6 +8159,21 @@ impl TypeChecker {
                     }
                 }
 
+                // RES-2651: `Some(expr)` returns `Option<typeof(expr)>`.
+                // The registered signature is `fn(Any) -> Option<Any>`;
+                // replace the generic inner type with the concrete
+                // argument type so downstream pattern matching on
+                // `Some(x)` binds `x` to the right type.
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
+                    && callee_name == "Some"
+                    && arguments.len() == 1
+                {
+                    let arg_type = self.check_node(&arguments[0])?;
+                    return Ok(Type::Option(Box::new(arg_type)));
+                }
+
                 // RES-410: call-site type inference for numeric polymorphic
                 // builtins registered as (Any, Any) -> Any. When all
                 // arguments agree on the same concrete numeric type,
@@ -8164,10 +8264,7 @@ impl TypeChecker {
                             } else {
                                 param_type
                             };
-                            if arg_type != *effective_param
-                                && *effective_param != Type::Any
-                                && arg_type != Type::Any
-                            {
+                            if !compatible(&arg_type, effective_param) {
                                 // RES-340: when RESILIENT_RICH_DIAG=1
                                 // emit a rustc-style multi-block
                                 // diagnostic with a secondary label
@@ -8355,6 +8452,8 @@ impl TypeChecker {
             "bool" => Ok(Type::Bool),
             "void" => Ok(Type::Void),
             "Result" => Ok(Type::Result),
+            // RES-2651: bare `Option` or `Option<T>`.
+            "Option" => Ok(Type::Option(Box::new(Type::Any))),
             "array" => Ok(Type::Array),
             // RES-408: `any` as a written type annotation maps to Type::Any
             // (the unresolved/wildcard type). Without this arm the identifier
@@ -8428,6 +8527,14 @@ impl TypeChecker {
                     params,
                     return_type: Box::new(return_type),
                 })
+            }
+            // RES-2651: `Option<T>` with a type parameter — e.g.
+            // `Option<int>`, `Option<float>`. Extract the inner type
+            // name and resolve it recursively.
+            other if other.starts_with("Option<") && other.ends_with('>') => {
+                let inner_str = &other[7..other.len() - 1]; // strip "Option<" and ">"
+                let inner_ty = self.parse_type_name_inner(inner_str.trim(), seen)?;
+                Ok(Type::Option(Box::new(inner_ty)))
             }
             // RES-426: tuple type `(T1, T2, ...)`. Encoded by the
             // parser as a parenthesised comma-list; at type-check

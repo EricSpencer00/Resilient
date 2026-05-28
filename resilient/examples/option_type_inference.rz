@@ -1,0 +1,33 @@
+// RES-2651: Option<T> type inference — binding types inside Some(x)
+// patterns now carry the concrete inner type instead of Any.
+
+// Some(expr) constructs Option<typeof(expr)>.
+fn test_some_int() -> int {
+    let opt = Some(42);
+    return match opt {
+        Some(x) => x + 1,
+        None => 0,
+    };
+}
+
+// checked_add returns Option<int>; the Some(x) binding is int.
+fn test_checked() -> int {
+    let opt = checked_add(100, 200);
+    return match opt {
+        Some(val) => val,
+        None => -1,
+    };
+}
+
+// Option<T> annotation propagates through pattern matching.
+fn test_annotated(Option<int> opt) -> int {
+    return match opt {
+        Some(n) => n * 2,
+        None => 0,
+    };
+}
+
+println(test_some_int());
+println(test_checked());
+println(test_annotated(Some(21)));
+println(test_annotated(None));
