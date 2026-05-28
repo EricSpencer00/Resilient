@@ -833,7 +833,10 @@ fn walk_identifier_refs(node: &Node, target: &str, out: &mut Vec<Range>) {
                 walk_identifier_refs(e, target, out);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                walk_identifier_refs(b, target, out);
+            }
             for (_, v) in fields {
                 walk_identifier_refs(v, target, out);
             }
@@ -1218,11 +1221,14 @@ fn walk_call_sites(node: &Node, target: &str, out: &mut Vec<Range>) {
                 walk_call_sites(e, target, out);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
             // Note: `StructLiteral { name, .. }` is intentionally NOT
             // matched as a call site — struct construction is not a fn
             // call even if the struct shares a name with a function.
             // Only the field VALUE expressions are descended into.
+            if let Some(b) = base {
+                walk_call_sites(b, target, out);
+            }
             for (_, v) in fields {
                 walk_call_sites(v, target, out);
             }

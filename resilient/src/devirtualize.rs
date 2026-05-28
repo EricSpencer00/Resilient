@@ -367,6 +367,7 @@ mod tests {
         let target = Node::StructLiteral {
             name: "Point".to_string(),
             fields: vec![],
+            base: None,
             span: Default::default(),
         };
         let result = ctx.resolve_method(&target, "to_string");

@@ -1064,16 +1064,25 @@ impl Formatter {
                 }
                 self.write("}");
             }
-            Node::StructLiteral { name, fields, .. } => {
+            Node::StructLiteral {
+                name, fields, base, ..
+            } => {
                 self.write_args(format_args!("new {} {{", name));
-                for (i, (fname, v)) in fields.iter().enumerate() {
-                    if i > 0 {
+                let mut need_comma = false;
+                if let Some(b) = base {
+                    self.write(" ..");
+                    self.fmt_expr(b);
+                    need_comma = true;
+                }
+                for (fname, v) in fields {
+                    if need_comma {
                         self.write(",");
                     }
                     self.write_args(format_args!(" {}: ", fname));
                     self.fmt_expr(v);
+                    need_comma = true;
                 }
-                if !fields.is_empty() {
+                if need_comma || !fields.is_empty() {
                     self.write(" ");
                 }
                 self.write("}");

@@ -421,7 +421,10 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(i, bound, free);
             }
         }
-        Node::StructLiteral { fields, .. } => {
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                walk(b, bound, free);
+            }
             for (_, v) in fields {
                 walk(v, bound, free);
             }
@@ -1054,6 +1057,7 @@ mod tests {
         let lit = Node::StructLiteral {
             name: "Point".into(),
             fields: vec![("x".into(), ident("a")), ("y".into(), ident("b"))],
+            base: None,
             span: Span::default(),
         };
         assert_eq!(free_vars(&lit), as_set(["a", "b"]));

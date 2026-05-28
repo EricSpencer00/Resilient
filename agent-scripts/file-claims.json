@@ -1,12 +1,16 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2651-nested-enum-type-inference",
-      "claimed_at": "2026-05-28T17:10:03Z"
+      "branch": "res-2632-struct-update-syntax",
+      "claimed_at": "2026-05-28T17:42:07Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2651-nested-enum-type-inference",
-      "claimed_at": "2026-05-28T17:10:03Z"
+      "branch": "res-2632-struct-update-syntax",
+      "claimed_at": "2026-05-28T17:42:07Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-2632-struct-update-syntax",
+      "claimed_at": "2026-05-28T17:42:07Z"
     }
   }
 }

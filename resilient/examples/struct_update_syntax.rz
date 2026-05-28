@@ -1,0 +1,55 @@
+// RES-2632: Struct update syntax — { ..base, field: new_value }
+// creates a modified copy of a struct without specifying all fields.
+
+struct Config {
+    bool debug,
+    bool verbose,
+    int port,
+}
+
+// Basic struct update — override one field, copy the rest.
+fn test_basic_update() -> int {
+    let default_config = new Config { debug: false, verbose: false, port: 8080 };
+    let dev_config = new Config { ..default_config, debug: true };
+    if dev_config.debug {
+        return dev_config.port;
+    }
+    return 0;
+}
+
+// Override multiple fields.
+fn test_multi_override() -> int {
+    let base = new Config { debug: false, verbose: false, port: 3000 };
+    let custom = new Config { ..base, debug: true, port: 9090 };
+    if custom.debug && !custom.verbose {
+        return custom.port;
+    }
+    return 0;
+}
+
+// Copy all fields (no overrides).
+fn test_full_copy() -> int {
+    let original = new Config { debug: true, verbose: true, port: 443 };
+    let copy = new Config { ..original };
+    if copy.debug && copy.verbose {
+        return copy.port;
+    }
+    return 0;
+}
+
+struct Point {
+    int x,
+    int y,
+}
+
+// Struct update with a different struct type.
+fn test_point_update() -> int {
+    let p1 = new Point { x: 10, y: 20 };
+    let p2 = new Point { ..p1, x: 100 };
+    return p2.x + p2.y;
+}
+
+println(test_basic_update());
+println(test_multi_override());
+println(test_full_copy());
+println(test_point_update());
