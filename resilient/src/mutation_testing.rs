@@ -146,18 +146,26 @@ fn generate_in<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<Mutation<'a>>
                 push(out, fn_name, "literal", "swap `0` -> `1`");
             } else {
                 push(out, fn_name, "literal", format!("swap `{value}` -> `0`"));
-                push(
-                    out,
-                    fn_name,
-                    "literal",
-                    format!("off-by-one `{value}` -> `{}`", value - 1),
-                );
-                push(
-                    out,
-                    fn_name,
-                    "literal",
-                    format!("off-by-one `{value}` -> `{}`", value + 1),
-                );
+                // Off-by-one mutants use checked arithmetic: `i64::MIN`
+                // has no `-1` mutant and `i64::MAX` has no `+1` mutant,
+                // so skip the direction that would overflow rather than
+                // panicking the compiler on extremal literals.
+                if let Some(dec) = value.checked_sub(1) {
+                    push(
+                        out,
+                        fn_name,
+                        "literal",
+                        format!("off-by-one `{value}` -> `{dec}`"),
+                    );
+                }
+                if let Some(inc) = value.checked_add(1) {
+                    push(
+                        out,
+                        fn_name,
+                        "literal",
+                        format!("off-by-one `{value}` -> `{inc}`"),
+                    );
+                }
             }
         }
         Node::BooleanLiteral { value, .. } => {
