@@ -1,12 +1,8 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-2664-match-arm-type-mismatch",
-      "claimed_at": "2026-05-28T18:16:17Z"
-    },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2664-match-arm-type-mismatch",
-      "claimed_at": "2026-05-28T18:16:17Z"
+      "branch": "res-2622-did-you-mean-fields",
+      "claimed_at": "2026-05-29T04:14:06Z"
     }
   }
 }

@@ -60,6 +60,37 @@ pub fn suggest<'a>(target: &str, candidates: impl Iterator<Item = &'a str>) -> V
     scored.into_iter().take(3).map(|(_, n)| n).collect()
 }
 
+/// RES-2622: format a `suggest()` result as a diagnostic suffix.
+///
+/// Returns `" — did you mean `foo`?"` for one suggestion,
+/// `" — did you mean `foo`, `bar`?"` for several, or the empty
+/// string when no suggestion is available. Callers concatenate the
+/// suffix onto an existing error message:
+///
+/// ```ignore
+/// let hint = format_hint(&did_you_mean::suggest(name, pool));
+/// return Err(format!("Undefined variable: {}{}", name, hint));
+/// ```
+pub fn format_hint(suggestions: &[String]) -> String {
+    if suggestions.is_empty() {
+        return String::new();
+    }
+    let body = suggestions
+        .iter()
+        .map(|s| format!("`{}`", s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" — did you mean {}?", body)
+}
+
+/// RES-2622: convenience for the common pattern of suggesting from a
+/// slice of `&str` field/name candidates and formatting the result as
+/// a diagnostic suffix in one call. Returns the same empty-or-prefixed
+/// string as [`format_hint`].
+pub fn hint_from<'a>(target: &str, candidates: impl IntoIterator<Item = &'a str>) -> String {
+    format_hint(&suggest(target, candidates.into_iter()))
+}
+
 /// Plain Levenshtein distance with a rolling two-row buffer. Operates
 /// on Unicode scalar values (`char`) so multi-byte identifiers are
 /// counted correctly.
@@ -204,5 +235,44 @@ mod tests {
         let got = suggest("ln_", pool.into_iter());
         // Should appear only once.
         assert_eq!(got.iter().filter(|s| *s == "len").count(), 1);
+    }
+
+    // RES-2622: format helper covers the empty / single / many cases.
+
+    #[test]
+    fn format_hint_empty() {
+        assert_eq!(format_hint(&[]), "");
+    }
+
+    #[test]
+    fn format_hint_single() {
+        let suggestions = vec!["length".to_string()];
+        assert_eq!(format_hint(&suggestions), " — did you mean `length`?");
+    }
+
+    #[test]
+    fn format_hint_multiple() {
+        let suggestions = vec!["len".to_string(), "length".to_string()];
+        assert_eq!(
+            format_hint(&suggestions),
+            " — did you mean `len`, `length`?"
+        );
+    }
+
+    #[test]
+    fn hint_from_typo_yields_suffix() {
+        let hint = hint_from("lentgh", ["len", "length", "println"].iter().copied());
+        assert!(
+            hint.contains("`length`"),
+            "expected `length` suggestion, got: {:?}",
+            hint
+        );
+        assert!(hint.starts_with(" — did you mean "));
+    }
+
+    #[test]
+    fn hint_from_no_match_yields_empty() {
+        let hint = hint_from("xyzqrs", ["foo", "bar"].iter().copied());
+        assert_eq!(hint, "");
     }
 }

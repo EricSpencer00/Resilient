@@ -5309,9 +5309,13 @@ impl TypeChecker {
                         ));
                     }
                     let Some((_, fty)) = decl.iter().find(|(n, _)| n == fname) else {
+                        let hint = crate::did_you_mean::hint_from(
+                            fname,
+                            decl.iter().map(|(n, _)| n.as_str()),
+                        );
                         return Err(format!(
-                            "struct `{}` has no field `{}` in match pattern",
-                            sname, fname
+                            "struct `{}` has no field `{}` in match pattern{}",
+                            sname, fname, hint
                         ));
                     };
                     let sub_bt = self.match_pattern_binding_types(sub.as_ref(), fty)?;
@@ -6307,7 +6311,14 @@ impl TypeChecker {
                     // would otherwise generate.
                     for (pf, _) in fields {
                         if !declared_fields.iter().any(|(fname, _)| fname == pf) {
-                            return Err(format!("Struct {} has no field `{}`", struct_name, pf));
+                            let hint = crate::did_you_mean::hint_from(
+                                pf,
+                                declared_fields.iter().map(|(n, _)| n.as_str()),
+                            );
+                            return Err(format!(
+                                "Struct {} has no field `{}`{}",
+                                struct_name, pf, hint
+                            ));
                         }
                     }
                     // Exhaustiveness check when `..` is not used.
@@ -7113,10 +7124,13 @@ impl TypeChecker {
                         if !declared.iter().any(|(n, _)| n == field_name) {
                             let avail: Vec<&str> =
                                 declared.iter().map(|(n, _)| n.as_str()).collect();
+                            let hint =
+                                crate::did_you_mean::hint_from(field_name, avail.iter().copied());
                             return Err(format!(
-                                "struct `{}` has no field `{}`; available fields: {}",
+                                "struct `{}` has no field `{}`{}; available fields: {}",
                                 effective_struct_name,
                                 field_name,
+                                hint,
                                 if avail.is_empty() {
                                     "(none)".to_string()
                                 } else {
@@ -7178,10 +7192,12 @@ impl TypeChecker {
                     // RES-407: struct is known, field not found, and no
                     // impl method — report a clear diagnostic.
                     let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
+                    let hint = crate::did_you_mean::hint_from(field, avail.iter().copied());
                     return Err(format!(
-                        "struct `{}` has no field `{}`; available fields: {}",
+                        "struct `{}` has no field `{}`{}; available fields: {}",
                         sname,
                         field,
+                        hint,
                         if avail.is_empty() {
                             "(none)".to_string()
                         } else {
@@ -7310,10 +7326,12 @@ impl TypeChecker {
                         None => {
                             let avail: Vec<&str> =
                                 declared.iter().map(|(n, _)| n.as_str()).collect();
+                            let hint = crate::did_you_mean::hint_from(field, avail.iter().copied());
                             return Err(format!(
-                                "struct `{}` has no field `{}`; available fields: {}",
+                                "struct `{}` has no field `{}`{}; available fields: {}",
                                 sname,
                                 field,
+                                hint,
                                 avail.join(", ")
                             ));
                         }
@@ -7801,20 +7819,10 @@ impl TypeChecker {
                         // of the typo. The helper handles the
                         // <3-char skip and the cap-at-3 ranking.
                         let names = self.env.all_names();
-                        let suggestions = crate::did_you_mean::suggest(
+                        let hint = crate::did_you_mean::hint_from(
                             name.as_str(),
                             names.iter().map(String::as_str),
                         );
-                        let hint = if suggestions.is_empty() {
-                            String::new()
-                        } else {
-                            let body = suggestions
-                                .iter()
-                                .map(|s| format!("`{}`", s))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            format!(" — did you mean {}?", body)
-                        };
                         if span.start.line == 0 {
                             Err(format!("Undefined variable: {}{}", name, hint))
                         } else {
@@ -12493,6 +12501,89 @@ fn f(Point p) -> int { return p.z; }
     fn field_access_unknown_struct_is_permissive() {
         // When the struct name isn't declared, fall through to Any.
         check_ok(r#"fn f(UnknownStruct s) -> int { return s.x; }"#);
+    }
+
+    // RES-2622: did-you-mean hints on struct field typos so users don't
+    // have to scan the available-fields list to spot a one-letter slip.
+
+    #[test]
+    fn field_access_typo_suggests_close_field() {
+        let err = check_err(
+            r#"
+struct Rectangle { int width, int height }
+fn f(Rectangle r) -> int { return r.heigth; }
+"#,
+        );
+        assert!(
+            err.contains("did you mean `height`?"),
+            "expected did-you-mean hint; got: {err}"
+        );
+    }
+
+    #[test]
+    fn struct_literal_typo_suggests_close_field() {
+        let err = check_err(
+            r#"
+struct Rectangle { int width, int height }
+fn f() -> Rectangle { return new Rectangle { width: 1, heigth: 2 }; }
+"#,
+        );
+        assert!(
+            err.contains("did you mean `height`?"),
+            "expected did-you-mean hint; got: {err}"
+        );
+    }
+
+    #[test]
+    fn field_assignment_typo_suggests_close_field() {
+        let err = check_err(
+            r#"
+struct Counter { int count }
+fn f(Counter c) -> void { c.cont = 1; }
+"#,
+        );
+        assert!(
+            err.contains("did you mean `count`?"),
+            "expected did-you-mean hint; got: {err}"
+        );
+    }
+
+    #[test]
+    fn match_pattern_typo_suggests_close_field() {
+        let err = check_err(
+            r#"
+struct Vec2 { int width, int height }
+fn f(Vec2 v) -> int {
+    return match v {
+        Vec2 { widht, height } => width + height,
+        _ => 0,
+    };
+}
+"#,
+        );
+        assert!(
+            err.contains("did you mean `width`?"),
+            "expected did-you-mean hint; got: {err}"
+        );
+    }
+
+    #[test]
+    fn field_access_far_typo_omits_hint() {
+        // Edit distance 4 — too far to suggest. Error stands without hint.
+        let err = check_err(
+            r#"
+struct Tiny { int n }
+fn f(Tiny t) -> int { return t.completely_different; }
+"#,
+        );
+        assert!(
+            err.contains("has no field"),
+            "expected no-field error; got: {err}"
+        );
+        assert!(
+            !err.contains("did you mean"),
+            "did not expect did-you-mean hint at distance > 2; got: {err}"
+        );
     }
 
     // ── Slice endpoint types ───────────────────────────────────────────────────
