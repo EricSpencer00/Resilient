@@ -28,6 +28,19 @@ fn main() {
     println!("cargo:rerun-if-changed=tests/ffi/lib_testhelper.c");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_FFI");
 
+    // RES-2631: embed build metadata into the compiler binary so
+    // `rz --version --verbose` can report the exact build a user is
+    // running. This matters for safety-critical embedded engineering
+    // where a bug report needs to pin the exact compiler commit.
+    //
+    // All values fall back to "unknown" when the build environment
+    // does not provide them (e.g. a tarball release without `.git`,
+    // a sandboxed builder, or a target where `rustc -vV` is not on
+    // PATH). The runtime printer must tolerate "unknown" gracefully.
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    println!("cargo:rerun-if-changed=../.git/refs/heads");
+    emit_build_metadata();
+
     // Only compile the FFI test helper when the `ffi` feature is active.
     if std::env::var("CARGO_FEATURE_FFI").is_err() {
         return;
@@ -61,4 +74,68 @@ fn main() {
         "cargo:rustc-env=RESILIENT_FFI_TESTHELPER_PATH={}",
         lib_path.display()
     );
+}
+
+/// RES-2631: emit build-metadata env vars consumed by `--version --verbose`.
+///
+/// Best-effort: every value falls back to the string `"unknown"` rather
+/// than panicking, so a build without `.git` (release tarball, sandbox)
+/// still produces a working binary. The runtime is responsible for
+/// hiding the "unknown" lines from the verbose printout.
+fn emit_build_metadata() {
+    let git_hash = run_capture(&["git", "rev-parse", "--short=12", "HEAD"]);
+    let git_dirty = run_capture(&["git", "status", "--porcelain"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let git_hash_display = match (git_hash.as_deref(), git_dirty) {
+        (Some(h), true) => format!("{}-dirty", h),
+        (Some(h), false) => h.to_string(),
+        (None, _) => "unknown".to_string(),
+    };
+    let date = run_capture(&["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .unwrap_or_else(|| "unknown".to_string());
+    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
+    let rustc_version = run_capture(&["rustc", "--version"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!(
+        "cargo:rustc-env=RESILIENT_BUILD_GIT_HASH={}",
+        git_hash_display
+    );
+    println!("cargo:rustc-env=RESILIENT_BUILD_DATE={}", date);
+    println!("cargo:rustc-env=RESILIENT_BUILD_TARGET={}", target);
+    println!("cargo:rustc-env=RESILIENT_BUILD_PROFILE={}", profile);
+    println!(
+        "cargo:rustc-env=RESILIENT_BUILD_RUSTC_VERSION={}",
+        rustc_version
+    );
+
+    // Enabled cargo features show up in env as CARGO_FEATURE_<UPPER>=1.
+    // We translate that back to lower-snake names for the user.
+    let mut features: Vec<String> = std::env::vars()
+        .filter_map(|(k, _)| {
+            k.strip_prefix("CARGO_FEATURE_")
+                .map(|f| f.to_ascii_lowercase().replace('_', "-"))
+        })
+        .collect();
+    features.sort();
+    println!(
+        "cargo:rustc-env=RESILIENT_BUILD_FEATURES={}",
+        if features.is_empty() {
+            "none".to_string()
+        } else {
+            features.join(",")
+        }
+    );
+}
+
+fn run_capture(argv: &[&str]) -> Option<String> {
+    let out = Command::new(argv[0]).args(&argv[1..]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
 }

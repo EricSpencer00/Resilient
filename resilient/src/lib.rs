@@ -322,6 +322,10 @@ mod type_aliases;
 // helper consumed by the typechecker; no parser / lexer surface.
 mod did_you_mean;
 
+// RES-2631: build-metadata version banner consumed by the CLI driver
+// when the user invokes `rz --version [--verbose]`.
+mod version_info;
+
 // RES-307: parser error recovery — sync-point predicates and the
 // per-run diagnostic cap. The recovery loops live on `Parser` in
 // this file (they need `next_token` and the lexer's mutable state);
@@ -29767,11 +29771,21 @@ pub fn run_cli() {
     // RES-209: `--version` / `-V` prints the compiler version plus a
     // pre-1.0 stability notice and exits. See STABILITY.md at the
     // repo root for the policy this notice points to.
+    //
+    // RES-2631: `--verbose` (when paired with `--version`) prints
+    // the build metadata embedded by `build.rs` — git commit, build
+    // date, target triple, profile, rustc version, and enabled
+    // feature flags. Useful when filing safety-critical bug reports
+    // because two binaries built from the same source can produce
+    // different bytecode under different feature combinations.
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!(
-            "rz {}: pre-1.0 — breaking changes possible (see STABILITY.md)",
-            env!("CARGO_PKG_VERSION")
-        );
+        let verbose = args.iter().any(|a| a == "--verbose" || a == "-vv");
+        let banner = if verbose {
+            version_info::verbose()
+        } else {
+            version_info::short()
+        };
+        print!("{}", banner);
         std::process::exit(0);
     }
 

@@ -3,6 +3,14 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-2622-did-you-mean-fields",
       "claimed_at": "2026-05-29T04:14:06Z"
+    },
+    "resilient/build.rs": {
+      "branch": "res-2631-version-metadata",
+      "claimed_at": "2026-05-29T04:23:30Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-2631-version-metadata",
+      "claimed_at": "2026-05-29T04:23:30Z"
     }
   }
 }
