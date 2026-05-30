@@ -664,6 +664,8 @@ mod deque;
 mod heap;
 // RES-2614: cross-compilation target profiles in rz.toml.
 mod target_profiles;
+// RES-2611: source maps linking bytecode offsets to source positions.
+mod source_map;
 mod vibe_debt;
 mod wcet_contracts;
 
@@ -31012,6 +31014,11 @@ pub fn run_cli() {
     // formatter. Short-circuits before any compilation; returns
     // before the flag-parsing loop touches subcommand args.
     if let Some(code) = dispatch_fmt_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-2611: `dump-source-map <file>` — print bytecode → source-line map.
+    if let Some(code) = source_map::dispatch_dump_source_map(&args) {
         std::process::exit(code);
     }
 
