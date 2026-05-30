@@ -1,0 +1,21 @@
+// RES-2719: common type-name aliases accepted by the typechecker.
+// `str` / `String` map to string; `boolean` maps to bool;
+// `int32` / `int8` / `uint8` / `byte` etc. map to their pinned types;
+// `double` maps to float; `long` maps to int.
+
+fn greet(String name) -> String {
+    return "hello " + name;
+}
+
+fn is_positive(int x) -> boolean {
+    return x > 0;
+}
+
+fn double_val(double x) -> double {
+    return x * 2.0;
+}
+
+println(greet("world"));
+println(to_string(is_positive(5)));
+println(to_string(is_positive(-3)));
+println(to_string(double_val(3.14)));

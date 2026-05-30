@@ -1,0 +1,5 @@
+hello world
+true
+false
+6.28
+Program executed successfully
