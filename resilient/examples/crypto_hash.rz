@@ -1,0 +1,12 @@
+// RES-2560 / RES-2561: SHA-256, SHA-512, CRC-32, CRC-16 builtins.
+let digest = sha256_str("abc");
+println(digest);
+
+let empty_digest = sha256_str("");
+println(empty_digest);
+
+let crc = crc32_str("123456789");
+println(to_string(crc));
+
+let crc16 = crc16_str("123456789");
+println(to_string(crc16));

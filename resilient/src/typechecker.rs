@@ -1968,6 +1968,64 @@ impl TypeChecker {
                     },
                 );
                 env.set("hash_combine".to_string(), fn_int_int_to_int());
+                // RES-2560: SHA-256 and SHA-512 cryptographic hash builtins.
+                env.set(
+                    "sha256".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "sha256_str".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "sha512".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "sha512_str".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                // RES-2561: CRC-32 and CRC-16 checksum builtins.
+                env.set(
+                    "crc32".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "crc32_str".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "crc16".to_string(),
+                    Type::Function {
+                        params: vec![Type::Bytes],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "crc16_str".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
                 // RES-1164: iteration helpers.
                 env.set(
                     "enumerate".to_string(),
@@ -5562,6 +5620,8 @@ impl TypeChecker {
                 crate::struct_field_check::check(program, source_path)?;
                 // RES-2614: validate [target.X] sections in rz.toml.
                 crate::target_profiles::check(program, source_path)?;
+                // RES-2560/2561: SHA/CRC builtins (no-op check; builtins are leaf functions).
+                crate::crypto_hash::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
