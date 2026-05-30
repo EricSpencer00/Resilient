@@ -11275,6 +11275,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // manifests and provenance certificates can pin the toolchain
     // they were produced by.
     ("version", builtin_version),
+    // RES-2610: compile-time file embedding.
+    ("include_str", builtin_include_str),
+    ("include_bytes", builtin_include_bytes),
     ("abs", builtin_abs),
     // RES-410: sign(x) — -1, 0, +1 for negative/zero/positive.
     ("sign", builtin_sign),
@@ -12730,6 +12733,48 @@ fn builtin_version(args: &[Value]) -> RResult<Value> {
         return Err(format!("version: expected 0 arguments, got {}", args.len()));
     }
     Ok(Value::String(env!("CARGO_PKG_VERSION").to_string()))
+}
+
+// RES-2610: include_str("path") — embed a text file's contents as a string
+// value. The path is resolved relative to the current working directory.
+// File-not-found is a runtime error (the interpreter has no distinct
+// compile-time phase in the tree-walker).
+fn builtin_include_str(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(path)] => std::fs::read_to_string(path.as_str())
+            .map(Value::String)
+            .map_err(|e| format!("include_str: cannot read '{}': {}", path, e)),
+        [other] => Err(format!(
+            "include_str: expected a string path, got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "include_str: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+// RES-2610: include_bytes("path") — embed a file's raw bytes as an array of
+// integers (u8 values 0–255). Same path resolution as include_str.
+fn builtin_include_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(path)] => {
+            let bytes = std::fs::read(path.as_str())
+                .map_err(|e| format!("include_bytes: cannot read '{}': {}", path, e))?;
+            Ok(Value::Array(
+                bytes.into_iter().map(|b| Value::Int(b as i64)).collect(),
+            ))
+        }
+        [other] => Err(format!(
+            "include_bytes: expected a string path, got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "include_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// Core of `input()` factored out for unit testing — generic over
