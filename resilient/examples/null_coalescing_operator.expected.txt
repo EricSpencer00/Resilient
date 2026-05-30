@@ -1,0 +1,5 @@
+42
+0
+alice
+unknown
+Program executed successfully
