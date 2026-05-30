@@ -1,0 +1,6 @@
+let a = intern("hello");
+let b = intern("hello");
+let c = intern("world");
+println(to_string(intern_eq(a, b)));
+println(to_string(intern_eq(a, c)));
+println(to_string(intern_count()));

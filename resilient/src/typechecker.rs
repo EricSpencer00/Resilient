@@ -4663,6 +4663,28 @@ impl TypeChecker {
                         return_type: Box::new(Type::Any),
                     },
                 );
+                // RES-2612: string interning builtins.
+                env.set(
+                    "intern".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "intern_eq".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "intern_count".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
                 // RES-2585: regex matching builtins.
                 env.set(
                     "regex_match".to_string(),
@@ -5877,6 +5899,8 @@ impl TypeChecker {
                 crate::trait_inheritance::check(program, source_path)?;
                 // RES-2575: validate generic enum type parameters.
                 crate::generic_enums::check(program, source_path)?;
+                // RES-2612: advisory duplicate-string-literal warnings.
+                crate::string_interning::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

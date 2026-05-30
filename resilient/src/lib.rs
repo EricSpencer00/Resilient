@@ -243,6 +243,8 @@ mod formatter;
 mod test_runner;
 // RES-2613: benchmark framework — `bench "name" { body }` blocks.
 mod bench;
+// RES-2612: compile-time string interning.
+mod string_interning;
 // RES-164a: pure free-variable analysis on the AST. Phase-K
 // scaffolding for JIT closure capture (RES-164c/d) — returns the
 // set of names referenced inside a subtree that aren't bound
@@ -13055,6 +13057,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "string_builder_clear",
         crate::string_builder::builtin_string_builder_clear,
+    ),
+    // RES-2612: string interning builtins.
+    ("intern", crate::string_interning::builtin_intern),
+    ("intern_eq", crate::string_interning::builtin_intern_eq),
+    (
+        "intern_count",
+        crate::string_interning::builtin_intern_count,
     ),
     // RES-2585: regex matching builtins.
     ("regex_match", crate::regex_builtins::builtin_regex_match),
