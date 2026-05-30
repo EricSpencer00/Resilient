@@ -1,0 +1,7 @@
+true
+false
+hello
+3
+baz bar foo
+baz bar baz
+Program executed successfully
