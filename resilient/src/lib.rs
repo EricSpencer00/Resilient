@@ -444,6 +444,11 @@ mod tail_calls;
 // enum_ctors.rs; lib.rs adds only the Value variant and the apply_function arm.
 mod enum_ctors;
 
+// RES-2616: Numeric literal type suffixes (`42u8`, `3.14f32`).
+// All logic lives in numeric_suffixes.rs; lib.rs only adds the two parse-arm
+// patches in `parse_expression` that call into that module.
+mod numeric_suffixes;
+
 // RES-2535: `where` clause support — post-signature generic bound syntax.
 // All parsing and validation logic lives here; lib.rs only adds the token
 // and the call to `merge_where_clause` after `parse_optional_return_type`.
@@ -7966,14 +7971,42 @@ impl Parser {
                     })
                 }
             }
-            Token::IntLiteral(value) => Some(Node::IntegerLiteral {
-                value: *value,
-                span: tok_span,
-            }),
-            Token::FloatLiteral(value) => Some(Node::FloatLiteral {
-                value: *value,
-                span: tok_span,
-            }),
+            // RES-2616: integer literal — optionally followed by a type suffix identifier.
+            // Both int suffixes (`42u8`) and float suffixes (`42f32`) are accepted here.
+            Token::IntLiteral(value) => {
+                let value = *value;
+                if let Token::Identifier(ident) = &self.peek_token
+                    && let Some(suffix) = crate::numeric_suffixes::try_parse_suffix(ident)
+                {
+                    self.next_token(); // consume the suffix identifier
+                    Some(crate::numeric_suffixes::desugar_int_with_suffix(
+                        value, suffix, tok_span,
+                    ))
+                } else {
+                    Some(Node::IntegerLiteral {
+                        value,
+                        span: tok_span,
+                    })
+                }
+            }
+            // RES-2616: float literal — optionally followed by a float-type suffix.
+            Token::FloatLiteral(value) => {
+                let value = *value;
+                if let Token::Identifier(ident) = &self.peek_token
+                    && let Some(suffix) = crate::numeric_suffixes::try_parse_suffix(ident)
+                    && suffix.is_float()
+                {
+                    self.next_token(); // consume the suffix identifier
+                    Some(crate::numeric_suffixes::desugar_float_with_suffix(
+                        value, suffix, tok_span,
+                    ))
+                } else {
+                    Some(Node::FloatLiteral {
+                        value,
+                        span: tok_span,
+                    })
+                }
+            }
             Token::StringLiteral(value) => Some(Node::StringLiteral {
                 value: value.clone(),
                 span: tok_span,

@@ -1,0 +1,11 @@
+// RES-2616: numeric literal type suffixes.
+let a = 255u8;
+let b = 1000i16;
+let c = 3.14f32;
+let d = 42f32;
+let e = 0xFFu32;
+println(a);
+println(b);
+println(d);
+println(e);
+println(type_of(a));
