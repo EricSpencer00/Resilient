@@ -347,6 +347,24 @@ fn compatible(a: &Type, b: &Type) -> bool {
     false
 }
 
+/// RES-2713: map a literal-pattern node to its type so
+/// `match_pattern_binding_types` can validate that the literal is
+/// type-compatible with the match scrutinee.
+///
+/// Returns `None` for non-literal or unknown node kinds (callers skip
+/// the check — `Type::Any` scrutinees are handled via `compatible()`).
+fn literal_pattern_ty(node: &Node) -> Option<Type> {
+    match node {
+        Node::IntegerLiteral { .. } => Some(Type::Int),
+        Node::FloatLiteral { .. } => Some(Type::Float),
+        Node::StringLiteral { .. } => Some(Type::String),
+        Node::BooleanLiteral { .. } => Some(Type::Bool),
+        Node::CharLiteral { .. } => Some(Type::Char),
+        Node::BytesLiteral { .. } => Some(Type::Bytes),
+        _ => None,
+    }
+}
+
 /// RES-160: collect the binding names a pattern introduces, in
 /// source order. Used to verify that all branches of an or-pattern
 /// bind the same names.
@@ -5443,8 +5461,24 @@ impl TypeChecker {
         scrut_ty: &Type,
     ) -> Result<Vec<(String, Type)>, String> {
         match pattern {
-            // RES-915: range patterns bind no names today.
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => Ok(vec![]),
+            // RES-915: range and wildcard patterns bind no names.
+            Pattern::Wildcard | Pattern::Range { .. } => Ok(vec![]),
+            // RES-2713: validate that literal patterns are type-compatible
+            // with the scrutinee. Catches silent bugs like
+            //   match (x: int) { 'a' => ... }  ← char literal on int scrutinee.
+            // compatible() returns true when either side is Type::Any, so
+            // unknown-type scrutinees pass unconditionally.
+            Pattern::Literal(node) => {
+                if let Some(pt) = literal_pattern_ty(node)
+                    && !compatible(&pt, scrut_ty)
+                {
+                    return Err(format!(
+                        "pattern type `{}` is incompatible with scrutinee type `{}`",
+                        pt, scrut_ty
+                    ));
+                }
+                Ok(vec![])
+            }
             Pattern::Identifier(n) => Ok(vec![(n.clone(), scrut_ty.clone())]),
             Pattern::Or(branches) => {
                 let first = self.match_pattern_binding_types(&branches[0], scrut_ty)?;
@@ -7622,11 +7656,11 @@ impl TypeChecker {
                         idx_val
                     ));
                 }
-                // String indexing returns a single-char string for now;
-                // will become Type::Char once RES-2709 lands everywhere.
+                // String indexing returns a char (RES-2709 + RES-2711):
+                // runtime yields Value::Char; typechecker mirrors that here.
                 // Array indexing returns Any (no element-type tracking yet).
                 match tgt_ty {
-                    Type::String => Ok(Type::String),
+                    Type::String => Ok(Type::Char),
                     _ => Ok(Type::Any),
                 }
             }
@@ -13574,8 +13608,9 @@ mod res415_collection_type_checks {
     }
 
     #[test]
-    fn string_index_returns_string() {
-        check_ok(r#"fn f() -> string { let s = "hello"; return s[0]; }"#);
+    fn string_index_returns_char() {
+        // RES-2709 + RES-2711: s[i] now produces a char, not a single-char string.
+        check_ok(r#"fn f() -> char { let s = "hello"; return s[0]; }"#);
     }
 }
 
@@ -14541,5 +14576,80 @@ mod res2711_type_char {
     #[test]
     fn int_assigned_to_char_variable_is_type_error() {
         check_err("let c: char = 42;", "has type int");
+    }
+}
+
+#[cfg(test)]
+mod res2713_pattern_literal_type_check {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn char_pattern_on_int_scrutinee_is_error() {
+        check_err(
+            "let x: int = 5; match x { 'a' => println(\"x\"), _ => println(\"y\") }",
+            "incompatible",
+        );
+    }
+
+    #[test]
+    fn int_pattern_on_char_scrutinee_is_error() {
+        check_err(
+            "let c: char = 'a'; match c { 1 => println(\"x\"), _ => println(\"y\") }",
+            "incompatible",
+        );
+    }
+
+    #[test]
+    fn bool_pattern_on_string_scrutinee_is_error() {
+        check_err(
+            r#"let s = "hello"; match s { true => println("x"), _ => println("y") }"#,
+            "incompatible",
+        );
+    }
+
+    #[test]
+    fn correct_char_pattern_on_char_scrutinee_accepted() {
+        check_ok("let c: char = 'x'; match c { 'x' => println(\"x\"), _ => println(\"y\") }");
+    }
+
+    #[test]
+    fn correct_int_pattern_on_int_scrutinee_accepted() {
+        check_ok("let n: int = 5; match n { 5 => println(\"five\"), _ => println(\"other\") }");
+    }
+
+    #[test]
+    fn any_scrutinee_accepts_any_literal_pattern() {
+        // When the scrutinee type is unknown (Any), all literal patterns pass.
+        check_ok(
+            "fn f(any x) -> void { match x { 'a' => println(\"a\"), 1 => println(\"1\"), _ => println(\"_\") } } f(0);",
+        );
+    }
+
+    #[test]
+    fn string_subscript_returns_char_type() {
+        // s[i] now produces Type::Char, so the result can be bound to a char variable.
+        check_ok(r#"let s = "hello"; let c: char = s[0];"#);
     }
 }

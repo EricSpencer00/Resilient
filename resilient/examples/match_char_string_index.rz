@@ -1,0 +1,21 @@
+// RES-2713: string s[i] returns char; char literal patterns match char scrutinees.
+
+let word = "hello";
+let first = word[0];
+
+// match on a string-subscript result (Type::Char)
+match first {
+    'h' => println("starts with h"),
+    _ => println("other"),
+}
+
+// char variable annotation and match
+let c: char = 'z';
+match c {
+    'z' => println("got z"),
+    _ => println("other"),
+}
+
+// verify s[i] can be bound to a char variable
+let ch: char = word[1];
+println(ch);
