@@ -241,6 +241,8 @@ mod formatter;
 // RES-test: `rz test` subcommand — discover and run `fn test_*()`
 // functions. Standalone from the compiler pipeline.
 mod test_runner;
+// RES-2613: benchmark framework — `bench "name" { body }` blocks.
+mod bench;
 // RES-164a: pure free-variable analysis on the AST. Phase-K
 // scaffolding for JIT closure capture (RES-164c/d) — returns the
 // set of names referenced inside a subtree that aren't bound
@@ -854,6 +856,8 @@ enum Token {
     /// Evaluates `expr` at compile time using the const evaluator;
     /// emits a hard error with `msg` if false. Zero runtime cost.
     StaticAssert,
+    /// RES-2613: `bench "name" { body }` — benchmark block.
+    Bench,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -1019,6 +1023,7 @@ impl Token {
             Token::Pub => Cow::Borrowed("`pub`"),
             Token::Where => Cow::Borrowed("`where`"),
             Token::StaticAssert => Cow::Borrowed("`static_assert`"),
+            Token::Bench => Cow::Borrowed("`bench`"),
             Token::Underscore => Cow::Borrowed("`_`"),
             Token::Default => Cow::Borrowed("`default`"),
             Token::Dot => Cow::Borrowed("`.`"),
@@ -1643,6 +1648,8 @@ impl Lexer {
                         "pub" => Token::Pub,
                         "where" => Token::Where,
                         "static_assert" => Token::StaticAssert,
+                        // RES-2613: bench keyword.
+                        "bench" => Token::Bench,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -3186,6 +3193,13 @@ enum Node {
         message: String,
         span: span::Span,
     },
+    /// RES-2613: `bench "name" { body }` — benchmark block.
+    /// Skipped during normal execution; collected by `rz bench`.
+    BenchBlock {
+        name: String,
+        body: Box<Node>,
+        span: span::Span,
+    },
 }
 
 /// RES-400 PR 2: a single variant inside an `enum` declaration.
@@ -3560,6 +3574,7 @@ impl Parser {
             Token::Assert => Some(self.parse_assert()),
             Token::Assume => Some(self.parse_assume()),
             Token::StaticAssert => Some(crate::static_assert::parse(self)),
+            Token::Bench => Some(crate::bench::parse_bench_block(self)),
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
@@ -23887,6 +23902,9 @@ impl Interpreter {
             // RES-2660: static_assert is evaluated at compile time;
             // at runtime it is a no-op.
             Node::StaticAssert { .. } => Ok(Value::Void),
+            // RES-2613: bench blocks are collected by `rz bench`; during
+            // normal execution they are silently skipped.
+            Node::BenchBlock { .. } => Ok(Value::Void),
             Node::Identifier { name, .. } => {
                 if let Some(value) = self.consts.get(name) {
                     Ok(value.clone())
@@ -31371,6 +31389,11 @@ pub fn run_cli() {
     // RES-test: `rz test [<file|dir>] [--filter <substr>]` —
     // discover and run test functions.
     if let Some(code) = test_runner::dispatch_test_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-2613: `rz bench <file>` — discover and run bench blocks.
+    if let Some(code) = bench::dispatch_bench_subcommand(&args) {
         std::process::exit(code);
     }
 

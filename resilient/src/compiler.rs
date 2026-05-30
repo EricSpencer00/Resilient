@@ -4687,6 +4687,8 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::BlanketImpl { span, .. } => span.start.line as u32,
         // RES-2660: static_assert — carries the keyword's span.
         Node::StaticAssert { span, .. } => span.start.line as u32,
+        // RES-2613: bench block — carries its own span.
+        Node::BenchBlock { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }

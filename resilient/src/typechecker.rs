@@ -9315,6 +9315,8 @@ impl TypeChecker {
             Node::BlanketImpl { .. } => Ok(Type::Void),
             // RES-2660: static_assert — validated by static_assert::check.
             Node::StaticAssert { .. } => Ok(Type::Void),
+            // RES-2613: bench blocks are skipped at type-check time.
+            Node::BenchBlock { .. } => Ok(Type::Void),
         }
     }
 
