@@ -1,0 +1,25 @@
+// RES-2711: proper Type::Char — `char` and `Char` annotations compile,
+// char literals are typed as char, and char conversion builtins return
+// their precise types.
+
+// char annotation on variable
+let c: char = 'X';
+println(c);
+
+// function declared with -> char return type
+fn get_initial() -> char {
+    return 'R';
+}
+println(get_initial());
+
+// char_to_upper and char_to_lower return char
+let upper = char_to_upper('a');
+println(upper);
+let lower = char_to_lower('Z');
+println(lower);
+
+// char_to_int returns int; int_to_char returns char
+let code = char_to_int('A');
+println(to_string(code));
+let back = int_to_char(66);
+println(back);

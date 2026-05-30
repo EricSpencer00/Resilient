@@ -63,6 +63,10 @@ pub enum Type {
     Float32,
     String,
     Bool,
+    /// RES-2711: Unicode scalar value. Produced by char literals (`'x'`) and
+    /// by string indexing `s[i]` (RES-2709). Distinct from `String` so the
+    /// typechecker can reject mixing them without explicit conversion.
+    Char,
     /// RES-152: raw byte sequence, distinct from `String`. Protocol
     /// frames, register maps, packed on-the-wire structs. Unify
     /// rules mirror `String` but the two types don't interchange —
@@ -127,6 +131,7 @@ impl std::fmt::Display for Type {
             Type::Float32 => write!(f, "f32"),
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
+            Type::Char => write!(f, "char"),
             Type::Bytes => write!(f, "bytes"),
             Type::Function {
                 params,
@@ -2567,16 +2572,16 @@ impl TypeChecker {
                     },
                 );
 
-                // RES-2619: Char type builtins. All classification
-                // functions take one Any and return Bool; conversions
-                // return Any (no Type::Char yet).
+                // RES-2619 / RES-2711: char type builtins. Classification
+                // functions take one char-or-any and return Bool; conversion
+                // functions return the precise target type.
                 let fn_char_to_bool = || Type::Function {
                     params: vec![Type::Any],
                     return_type: Box::new(Type::Bool),
                 };
-                let fn_char_to_any = || Type::Function {
+                let fn_char_to_char = || Type::Function {
                     params: vec![Type::Any],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Char),
                 };
                 env.set("char_is_alpha".to_string(), fn_char_to_bool());
                 env.set("char_is_digit".to_string(), fn_char_to_bool());
@@ -2585,15 +2590,27 @@ impl TypeChecker {
                 env.set("char_is_lower".to_string(), fn_char_to_bool());
                 env.set("char_is_alphanumeric".to_string(), fn_char_to_bool());
                 env.set("char_is_ascii".to_string(), fn_char_to_bool());
-                env.set("char_to_upper".to_string(), fn_char_to_any());
-                env.set("char_to_lower".to_string(), fn_char_to_any());
-                env.set("char_to_int".to_string(), fn_char_to_any());
-                env.set("char_to_string".to_string(), fn_char_to_any());
+                env.set("char_to_upper".to_string(), fn_char_to_char());
+                env.set("char_to_lower".to_string(), fn_char_to_char());
+                env.set(
+                    "char_to_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "char_to_string".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
                 env.set(
                     "int_to_char".to_string(),
                     Type::Function {
                         params: vec![Type::Int],
-                        return_type: Box::new(Type::Any),
+                        return_type: Box::new(Type::Char),
                     },
                 );
 
@@ -7605,8 +7622,9 @@ impl TypeChecker {
                         idx_val
                     ));
                 }
-                // String indexing returns a single-char String;
-                // array indexing returns Any (no element-type tracking yet).
+                // String indexing returns a single-char string for now;
+                // will become Type::Char once RES-2709 lands everywhere.
+                // Array indexing returns Any (no element-type tracking yet).
                 match tgt_ty {
                     Type::String => Ok(Type::String),
                     _ => Ok(Type::Any),
@@ -8114,8 +8132,8 @@ impl TypeChecker {
             Node::InterpolatedString { .. } => Ok(Type::String),
             Node::BytesLiteral { .. } => Ok(Type::Bytes),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
-            // RES-2619: char literal — no Type::Char yet, infer as Any.
-            Node::CharLiteral { .. } => Ok(Type::Any),
+            // RES-2711: char literals produce the `char` type.
+            Node::CharLiteral { .. } => Ok(Type::Char),
 
             Node::PrefixExpression {
                 operator,
@@ -8785,6 +8803,8 @@ impl TypeChecker {
             "f32" | "Float32" => Ok(Type::Float32),
             "string" => Ok(Type::String),
             "bool" => Ok(Type::Bool),
+            // RES-2711: `char` and `Char` both resolve to the character type.
+            "char" | "Char" => Ok(Type::Char),
             "void" => Ok(Type::Void),
             "Result" => Ok(Type::Result),
             // RES-2651: bare `Option` or `Option<T>`.
@@ -14459,5 +14479,67 @@ mod res2705_array_type_annotation {
              sum(42);\n",
             "Type mismatch",
         );
+    }
+}
+
+#[cfg(test)]
+mod res2711_type_char {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn char_literal_is_typed_as_char() {
+        check_ok("let c: char = 'A';");
+    }
+
+    #[test]
+    fn char_and_capitalised_char_annotation_both_resolve() {
+        check_ok("let c: char = 'x'; let d: Char = 'y';");
+    }
+
+    #[test]
+    fn function_returning_char_from_literal_accepted() {
+        check_ok(
+            "fn get() -> char { return 'Z'; }\n\
+             let c: char = get();\n",
+        );
+    }
+
+    #[test]
+    fn char_to_upper_lower_return_char() {
+        check_ok(
+            "let u: char = char_to_upper('a');\n\
+             let l: char = char_to_lower('A');\n",
+        );
+    }
+
+    #[test]
+    fn char_to_int_returns_int() {
+        check_ok("let n: int = char_to_int('A');");
+    }
+
+    #[test]
+    fn int_assigned_to_char_variable_is_type_error() {
+        check_err("let c: char = 42;", "has type int");
     }
 }
