@@ -29691,6 +29691,7 @@ COMMON FLAGS:\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
+    stack-usage <file>  Print per-function worst-case stack usage (RES-2627)\n\
     debug <file>        Start the DAP debug server for a file\n\
     pkg <verb>          Package manager operations (RES-205)\n\
     fmt <file>          Canonical source formatter\n\
@@ -29773,6 +29774,116 @@ pub fn run_program(src: &str) -> RunResult {
             errors: vec![e],
         },
     }
+}
+
+/// RES-2627: `rz stack-usage <file>` — print per-function worst-case
+/// stack usage, flagging recursive functions as unbounded and checking
+/// any declared `#[stack(bytes=N)]` budgets.
+///
+/// Exit codes:
+/// - 0 = report printed; all budgets satisfied.
+/// - 1 = parse error OR at least one `#[stack(bytes=N)]` budget exceeded.
+/// - 2 = usage error (missing path, bad flag).
+///
+/// Returns `None` when the first arg isn't `stack-usage`.
+fn dispatch_stack_usage_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("stack-usage") {
+        return None;
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if !a.starts_with('-') && file.is_none() {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to stack-usage", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(path) = file else {
+        eprintln!("Error: `rz stack-usage <file>` requires a file path");
+        return Some(2);
+    };
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path.display(), e);
+            return Some(1);
+        }
+    };
+
+    let (program, parse_errors) = parse(&src);
+    if !parse_errors.is_empty() {
+        for e in &parse_errors {
+            eprintln!("Parser error: {}", e);
+        }
+        return Some(1);
+    }
+
+    let reports = stack_contracts::analyze(&program);
+    if reports.is_empty() {
+        println!("No user-defined functions found.");
+        return Some(0);
+    }
+
+    // Column widths.
+    let name_w = reports
+        .iter()
+        .map(|r| r.fn_name.len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+    let bytes_w = "Bytes".len().max(12);
+
+    let header = format!(
+        "{:<name_w$}  {:<bytes_w$}  Notes",
+        "Function",
+        "Est. Bytes",
+        name_w = name_w,
+        bytes_w = bytes_w,
+    );
+    println!("{header}");
+    let sep = "-".repeat(name_w + bytes_w + 30);
+    println!("{sep}");
+
+    let mut budget_exceeded = false;
+    for r in &reports {
+        let bytes_str = r
+            .max_bytes
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "unbounded".to_string());
+
+        let mut notes: Vec<String> = Vec::new();
+        if r.max_depth.is_none() {
+            notes.push("recursive — unbounded stack".to_string());
+        } else if !r.deepest_path.is_empty() {
+            notes.push(format!("deepest path: {}", r.deepest_path.join(" → ")));
+        }
+        if r.is_over_budget() {
+            let budget = r.budget_bytes.unwrap();
+            let used = r.max_bytes.unwrap();
+            notes.push(format!("OVER BUDGET ({} > {} bytes)", used, budget));
+            budget_exceeded = true;
+        } else if let Some(budget) = r.budget_bytes {
+            notes.push(format!("budget: {} bytes OK", budget));
+        }
+
+        println!(
+            "{:<name_w$}  {:<bytes_w$}  {}",
+            r.fn_name,
+            bytes_str,
+            notes.join("; "),
+            name_w = name_w,
+            bytes_w = bytes_w,
+        );
+    }
+
+    Some(if budget_exceeded { 1 } else { 0 })
 }
 
 /// RES-510: CLI entry point.
@@ -29879,6 +29990,11 @@ pub fn run_cli() {
 
     // RES-225: `check <file>` — parse + type-check without running.
     if let Some(code) = dispatch_check_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-2627: `stack-usage <file>` — print per-function stack estimates.
+    if let Some(code) = dispatch_stack_usage_subcommand(&args) {
         std::process::exit(code);
     }
 

@@ -7,6 +7,14 @@
     "CLAUDE.md": {
       "branch": "res-2672-fix-integration-branch-drift",
       "claimed_at": "2026-05-30T02:21:34Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-2627-stack-usage-subcommand",
+      "claimed_at": "2026-05-30T06:15:21Z"
+    },
+    "resilient/src/stack_contracts.rs": {
+      "branch": "res-2627-stack-usage-subcommand",
+      "claimed_at": "2026-05-30T06:15:21Z"
     }
   }
 }
