@@ -182,6 +182,22 @@ enum Tok {
     // RES-909: decimal int literals also accept `_` between digits.
     #[regex(r"[0-9][0-9_]*", int_lit)]
     Int(i64),
+    // RES-2599: triple-quoted string `"""..."""`. The regex matches
+    // only the opening `"""`. `triple_str_lit` scans forward via
+    // `lex.bump()` to find the closing `"""`, then strips common
+    // indentation from all lines. Priority 3 > Str (2) so `"""` is
+    // not tokenised as empty-string followed by lone `"`.
+    #[regex(r#"""""#, triple_str_lit, priority = 3)]
+    TripleStr(String),
+    // RES-2599: raw string `r"..."` — no escape processing. Priority
+    // 4 > Str (2) ensures `r"..."` is tokenised as a single token,
+    // not Ident("r") followed by Str("...").
+    #[regex(r#"r"[^"]*""#, raw_str_lit, priority = 4)]
+    RawStr(String),
+    // RES-2599: raw triple-quoted string `r"""..."""`. Priority 6
+    // beats both raw-single (4) and triple-str (3).
+    #[regex(r#"r""""#, raw_triple_str_lit, priority = 6)]
+    RawTripleStr(String),
     // String literal — `"([^"\\]|\\[\s\S])*"` matches any non-quote
     // non-backslash char OR a backslash followed by any char
     // (including newlines). `string_lit` post-processes escapes.
@@ -454,6 +470,62 @@ fn float_lit(lex: &mut logos::Lexer<Tok>) -> Option<f64> {
     } else {
         slice.parse::<f64>().ok()
     }
+}
+
+// RES-2599: strip the common leading indentation from a triple-quoted string
+// body. The algorithm: (1) drop an optional leading newline after `"""`,
+// (2) compute the minimum indentation across non-empty lines, (3) strip
+// that many leading spaces/tabs from each line.
+fn strip_triple_indent(s: &str) -> String {
+    let s = s.strip_prefix('\n').unwrap_or(s);
+    let lines: Vec<&str> = s.lines().collect();
+    let min_indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start_matches([' ', '\t']).len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|l| {
+            if l.len() >= min_indent {
+                &l[min_indent..]
+            } else {
+                l.trim_start()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// RES-2599: `"""..."""` triple-quoted string literal callback. The logos
+// regex matched only the opening `"""`. We scan the remainder for the
+// closing `"""`, bump the cursor, then strip common indentation.
+fn triple_str_lit(lex: &mut logos::Lexer<Tok>) -> Option<String> {
+    let rest = lex.remainder();
+    rest.find("\"\"\"").map(|end| {
+        let content = &rest[..end];
+        lex.bump(end + 3);
+        strip_triple_indent(content)
+    })
+}
+
+// RES-2599: `r"..."` raw string literal — strip the `r"` prefix and
+// trailing `"` with no escape processing at all.
+fn raw_str_lit(lex: &mut logos::Lexer<Tok>) -> String {
+    let slice = lex.slice();
+    slice[2..slice.len().saturating_sub(1)].to_string()
+}
+
+// RES-2599: `r"""..."""` raw triple-quoted string. Logos matched only
+// the opening `r"""`. Scan remainder for the closing `"""`.
+fn raw_triple_str_lit(lex: &mut logos::Lexer<Tok>) -> Option<String> {
+    let rest = lex.remainder();
+    rest.find("\"\"\"").map(|end| {
+        let content = rest[..end].to_string();
+        lex.bump(end + 3);
+        content
+    })
 }
 
 fn bytes_lit(lex: &mut logos::Lexer<Tok>) -> Vec<u8> {
@@ -901,6 +973,9 @@ fn convert(t: Tok) -> Token {
         Tok::BinInt(n) => Token::IntLiteral(n),
         Tok::Int(n) => Token::IntLiteral(n),
         Tok::Float(f) => Token::FloatLiteral(f),
+        Tok::TripleStr(s) => Token::StringLiteral(s),
+        Tok::RawStr(s) => Token::StringLiteral(s),
+        Tok::RawTripleStr(s) => Token::StringLiteral(s),
         Tok::Str(s) => Token::StringLiteral(s),
         Tok::BytesLit(b) => Token::BytesLiteral(b),
         // RES-2619: single-quoted char literal.

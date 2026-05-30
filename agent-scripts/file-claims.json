@@ -7,6 +7,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-2691-f32-compat-trait-struct-args",
       "claimed_at": "2026-05-30T18:00:00Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-2599-multiline-raw-strings",
+      "claimed_at": "2026-05-30T17:31:49Z"
     }
   }
 }
