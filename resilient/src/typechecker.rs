@@ -4442,6 +4442,33 @@ impl TypeChecker {
                         return_type: Box::new(Type::Bool),
                     },
                 );
+
+                // RES-2587: priority queue / binary heap builtins.
+                env.set(
+                    "heap_new".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "heap_new_max".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set("heap_push".to_string(), fn_any_any_to_any());
+                env.set("heap_pop".to_string(), fn_any_to_any());
+                env.set("heap_peek".to_string(), fn_any_to_any());
+                env.set("heap_len".to_string(), fn_any_to_int());
+                env.set(
+                    "heap_is_empty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
                 std::sync::Arc::new(env)
             });
 
