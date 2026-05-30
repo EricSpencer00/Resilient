@@ -11645,6 +11645,18 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
     ("array_join", builtin_array_join),
+    // RES-2734: short-name aliases so `arr.sort()`, `arr.join(sep)`, etc.
+    // work as dot-call methods via the Array method dispatch allowlist.
+    // These also serve as convenient global function aliases.
+    ("sort", builtin_array_sort),
+    ("sort_desc", builtin_array_sort_desc),
+    ("reverse", builtin_array_reverse),
+    ("join", builtin_array_join),
+    ("flatten", builtin_array_flatten),
+    ("dedup", builtin_array_dedup),
+    // "has" avoids collision with string `contains` while providing
+    // element membership testing as a dot-call: `arr.has(x)`.
+    ("has", builtin_array_contains),
     // RES-425: explicit scalar-to-string conversion.
     ("to_string", builtin_to_string),
     // RES-426: first-occurrence dedupe over scalar elements.
@@ -23731,7 +23743,19 @@ impl Interpreter {
                                 "split",
                                 "repeat",
                             ][..],
-                            Value::Array(_) => &["len", "push", "pop"][..],
+                            Value::Array(_) => &[
+                                "len",
+                                "push",
+                                "pop",
+                                "slice",
+                                "sort",
+                                "sort_desc",
+                                "reverse",
+                                "join",
+                                "flatten",
+                                "dedup",
+                                "has",
+                            ][..],
                             _ => unreachable!(),
                         };
                         if allowed.contains(&field.as_str()) {

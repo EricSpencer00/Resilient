@@ -7487,9 +7487,18 @@ impl TypeChecker {
                 // Function type here lets the call site infer the correct return.
                 if tgt_ty == Type::Array {
                     let ret = match field.as_str() {
-                        "map" | "filter" | "push" | "pop" | "sort" | "reverse" | "flat_map" => {
+                        // HOF methods: take a callback / element as the extra arg.
+                        "map" | "filter" | "push" | "flat_map" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Array),
+                        },
+                        // RES-2734: zero-extra-arg array transformations. `pop`,
+                        // `sort`, `reverse` etc. were previously grouped with the
+                        // HOF methods (1 param), causing a false arity error when
+                        // called without arguments. Fixed here.
+                        "pop" | "sort" | "sort_desc" | "reverse" | "flatten" | "dedup" => {
                             Type::Function {
-                                params: vec![Type::Any],
+                                params: vec![],
                                 return_type: Box::new(Type::Array),
                             }
                         }
@@ -7513,13 +7522,20 @@ impl TypeChecker {
                             params: vec![],
                             return_type: Box::new(Type::Int),
                         },
-                        "contains" => Type::Function {
+                        // RES-2734: `has` is the array-element membership method;
+                        // `contains` is kept for backward compat.
+                        "contains" | "has" => Type::Function {
                             params: vec![Type::Any],
                             return_type: Box::new(Type::Bool),
                         },
                         "join" => Type::Function {
                             params: vec![Type::String],
                             return_type: Box::new(Type::String),
+                        },
+                        // RES-2734: slice(start, end) — sub-array extraction.
+                        "slice" => Type::Function {
+                            params: vec![Type::Int, Type::Int],
+                            return_type: Box::new(Type::Array),
                         },
                         _ => Type::Any,
                     };
@@ -9635,6 +9651,14 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-412: reverse string/array.
         "string_reverse",
         "array_reverse",
+        // RES-2734: short-name aliases for array dot-call methods.
+        "sort",
+        "sort_desc",
+        "reverse",
+        "join",
+        "flatten",
+        "dedup",
+        "has",
         // RES-1859: higher-order array builtins.
         "array_map",
         "array_filter",
@@ -13491,6 +13515,47 @@ mod res412_method_return_types {
     #[test]
     fn array_join_returns_string() {
         check_ok(r#"fn f() -> string { let arr = ["a", "b"]; return arr.join(", "); }"#);
+    }
+
+    // RES-2734: zero-extra-arg methods were incorrectly registered with 1 param.
+    #[test]
+    fn array_sort_accepts_no_args() {
+        check_ok(r#"fn f() -> array { let arr = [3, 1, 2]; return arr.sort(); }"#);
+    }
+
+    #[test]
+    fn array_sort_desc_accepts_no_args() {
+        check_ok(r#"fn f() -> array { let arr = [1, 3, 2]; return arr.sort_desc(); }"#);
+    }
+
+    #[test]
+    fn array_reverse_accepts_no_args() {
+        check_ok(r#"fn f() -> array { let arr = [1, 2, 3]; return arr.reverse(); }"#);
+    }
+
+    #[test]
+    fn array_pop_accepts_no_args() {
+        check_ok(r#"fn f() -> array { let arr = [1, 2, 3]; return arr.pop(); }"#);
+    }
+
+    #[test]
+    fn array_flatten_accepts_no_args() {
+        check_ok(r#"fn f() -> array { let arr = [[1, 2], [3]]; return arr.flatten(); }"#);
+    }
+
+    #[test]
+    fn array_dedup_accepts_no_args() {
+        check_ok(r#"fn f() -> array { let arr = [1, 1, 2]; return arr.dedup(); }"#);
+    }
+
+    #[test]
+    fn array_has_returns_bool() {
+        check_ok(r#"fn f() -> bool { let arr = [1, 2, 3]; return arr.has(2); }"#);
+    }
+
+    #[test]
+    fn array_slice_returns_array() {
+        check_ok(r#"fn f() -> array { let arr = [1, 2, 3, 4]; return arr.slice(1, 3); }"#);
     }
 }
 
