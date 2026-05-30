@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # sync-integration.sh
 #
-# Rebase the current branch onto `origin/agents/integration` (the shared
-# live branch that tracks all in-flight agent work), then push that
-# rebased branch back into `agents/integration` via a fast-forward.
+# Rebase the current branch onto `origin/main`, then push that rebased
+# branch back into `agents/integration` via a fast-forward (keeping the
+# tracking branch in sync with shipped work).
 #
 # Workflow:
 #   1. fetch origin.
-#   2. rebase current branch onto origin/agents/integration.
+#   2. rebase current branch onto origin/main.
 #   3. if the rebase hits conflicts only in the append-only extension
 #      allowlist, run auto-resolve-extensions.sh and continue.
 #      Otherwise abort the rebase and exit nonzero — that needs a human.
@@ -59,7 +59,7 @@ if [[ -z "$PR" ]]; then
     PR="$(gh pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)"
 fi
 
-echo "Syncing $branch against origin/$INTEGRATION_REF"
+echo "Syncing $branch against origin/main (tracking via $INTEGRATION_REF)"
 
 git fetch origin "$INTEGRATION_REF" main 2>&1 | tail -3
 
@@ -69,8 +69,8 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     exit 3
 fi
 
-# Rebase.
-if git rebase "origin/$INTEGRATION_REF"; then
+# Rebase against main — not agents/integration, which can drift far behind.
+if git rebase "origin/main"; then
     echo "rebase: clean"
 else
     unresolved="$(git diff --name-only --diff-filter=U)"
@@ -153,8 +153,8 @@ for attempt in 1 2 3; do
         break
     fi
     echo "integration push failed (attempt $attempt), refetching and retrying..."
-    git fetch origin "$INTEGRATION_REF" 2>&1 | tail -1
-    git rebase "origin/$INTEGRATION_REF" || {
+    git fetch origin "$INTEGRATION_REF" main 2>&1 | tail -1
+    git rebase "origin/main" || {
         echo "integration: concurrent conflicting change landed — re-run sync-integration" >&2
         exit 6
     }
