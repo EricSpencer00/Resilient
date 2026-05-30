@@ -5560,6 +5560,8 @@ impl TypeChecker {
                 crate::const_eval_ext::check(program, source_path)?;
                 // RES-2601: exhaustive struct field checking in match patterns.
                 crate::struct_field_check::check(program, source_path)?;
+                // RES-2614: validate [target.X] sections in rz.toml.
+                crate::target_profiles::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

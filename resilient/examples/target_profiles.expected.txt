@@ -1,0 +1,2 @@
+cross-compilation profiles loaded
+Program executed successfully
