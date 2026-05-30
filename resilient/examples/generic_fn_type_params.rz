@@ -1,0 +1,30 @@
+// RES-2701: generic functions with fn-type parameters must not
+// produce false-positive type errors when called with concrete lambdas.
+
+fn apply_fn<T>(T x, fn(T) -> T f) -> T {
+    return f(x);
+}
+
+fn map_pair<A, B>(A x, A y, fn(A) -> B f) -> (B, B) {
+    return (f(x), f(y));
+}
+
+fn compose<A, B, C>(fn(A) -> B g, fn(B) -> C h) -> fn(A) -> C {
+    return fn(A x) -> C { return h(g(x)); };
+}
+
+fn double(int n) -> int { return n * 2; }
+
+fn main() -> void {
+    let r1 = apply_fn(7, fn(int x) -> int { return x * 3; });
+    println(to_string(r1));
+
+    let r2 = apply_fn(7, double);
+    println(to_string(r2));
+
+    let (a, b) = map_pair(1, 2, fn(int x) -> string { return to_string(x * 10); });
+    println(a);
+    println(b);
+}
+
+main();
