@@ -1,0 +1,16 @@
+// RES-2610: include_str / include_bytes — embed file contents at program load time.
+
+// include_str returns the file as a string.
+let src = include_str("examples/shift_bounds.rz");
+println(len(src) > 0);
+
+// The string starts with the comment marker.
+let starts_with_comment = src[0] == '/';
+println(starts_with_comment);
+
+// include_bytes returns an array of ints (0-255 per byte).
+let raw = include_bytes("examples/shift_bounds.rz");
+println(len(raw) > 0);
+
+// First byte is '/' (ASCII 47).
+println(raw[0] == 47);

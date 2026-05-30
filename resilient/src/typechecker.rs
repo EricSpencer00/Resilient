@@ -3821,6 +3821,21 @@ impl TypeChecker {
                         return_type: Box::new(Type::String),
                     },
                 );
+                // RES-2610: `include_str("path")` → string, `include_bytes("path")` → array.
+                env.set(
+                    "include_str".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "include_bytes".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
 
                 // RES-143: file I/O builtins (std-only; the resilient-runtime
                 // sibling crate has no builtins table so its no_std posture is
@@ -9155,6 +9170,9 @@ const IMPURE_BUILTINS: &[&str] = &[
     "println",
     "print",
     "input",
+    // RES-2610: compile-time file embedding.
+    "include_str",
+    "include_bytes",
     // RES-147: monotonic clock.
     "clock_ms",
     // RES-1174: wall-clock unix time.
