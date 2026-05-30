@@ -1,0 +1,26 @@
+// RES-2738: String dot-call methods — replace, chars, reverse,
+// strip_prefix, strip_suffix, lines. Previously available only as
+// global functions (replace/string_*) or not at all via dot notation.
+
+let s = "Hello, World!";
+println(s.replace("World", "Resilient"));
+println(s.chars());
+println(s.reverse());
+println(s.lines());
+
+let padded = "  hello  ";
+println(padded.trim());
+
+let prefixed = "prefix_value";
+println(prefixed.strip_prefix("prefix_"));
+println(prefixed.strip_prefix("other_"));
+
+let suffixed = "value.txt";
+println(suffixed.strip_suffix(".txt"));
+
+let csv = "a,b,c";
+let parts = csv.split(",");
+println(parts.join(" | "));
+
+let multiline = "one\ntwo\nthree";
+println(multiline.lines());

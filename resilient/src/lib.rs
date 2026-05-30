@@ -23726,38 +23726,56 @@ impl Interpreter {
                             _ => unreachable!(),
                         }
                     }
-                    // RES-920: method-call sugar on built-in String /
-                    // Array. Forward to the existing builtin with the
-                    // target prepended as the first argument so prefix
-                    // and dot-notation share semantics.
-                    if matches!(target_val, Value::String(_) | Value::Array(_)) {
-                        let allowed = match &target_val {
-                            Value::String(_) => &[
-                                "len",
-                                "trim",
-                                "to_upper",
-                                "to_lower",
-                                "contains",
-                                "starts_with",
-                                "ends_with",
-                                "split",
-                                "repeat",
-                            ][..],
-                            Value::Array(_) => &[
-                                "len",
-                                "push",
-                                "pop",
-                                "slice",
-                                "sort",
-                                "sort_desc",
-                                "reverse",
-                                "join",
-                                "flatten",
-                                "dedup",
-                                "has",
-                            ][..],
-                            _ => unreachable!(),
+                    // RES-920 / RES-2738: method-call sugar on built-in String.
+                    // Uses an explicit short-name → full-builtin-name map so
+                    // `reverse` can route to `string_reverse` without conflicting
+                    // with the Array `reverse` alias that points to `array_reverse`.
+                    if let Value::String(_) = &target_val {
+                        let full_name: &str = match field.as_str() {
+                            "len" => "len",
+                            "trim" => "trim",
+                            "to_upper" => "to_upper",
+                            "to_lower" => "to_lower",
+                            "contains" => "contains",
+                            "starts_with" => "starts_with",
+                            "ends_with" => "ends_with",
+                            "split" => "split",
+                            "repeat" => "repeat",
+                            // RES-2738: additional string methods.
+                            "replace" => "replace",
+                            "chars" => "string_chars",
+                            "reverse" => "string_reverse",
+                            "strip_prefix" => "string_strip_prefix",
+                            "strip_suffix" => "string_strip_suffix",
+                            "lines" => "string_lines",
+                            _ => "",
                         };
+                        if !full_name.is_empty() {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            let mut args = Vec::with_capacity(extra_args.len() + 1);
+                            args.push(target_val);
+                            args.extend(extra_args);
+                            return apply_builtin_by_name(full_name, &args).ok_or_else(|| {
+                                format!("Builtin method `{}` is not registered", field)
+                            })?;
+                        }
+                    }
+                    // RES-920 / RES-2734: method-call sugar on built-in Array.
+                    // All short names correspond to BUILTINS entries exactly.
+                    if let Value::Array(_) = &target_val {
+                        let allowed: &[&str] = &[
+                            "len",
+                            "push",
+                            "pop",
+                            "slice",
+                            "sort",
+                            "sort_desc",
+                            "reverse",
+                            "join",
+                            "flatten",
+                            "dedup",
+                            "has",
+                        ];
                         if allowed.contains(&field.as_str()) {
                             let extra_args = self.eval_expressions(arguments)?;
                             let mut args = Vec::with_capacity(extra_args.len() + 1);
@@ -23767,10 +23785,6 @@ impl Interpreter {
                                 format!("Builtin method `{}` is not registered", field)
                             })?;
                         }
-                        // Fall through to the original "Cannot access
-                        // field on non-struct" error path so misspelled
-                        // methods get the same diagnostic shape as
-                        // before.
                     }
                     // RES-2736: method-call sugar on built-in Map and Set.
                     // Maps the short dot-call name to the underlying
@@ -59796,5 +59810,78 @@ mod res2736_map_set_dot_methods {
         let r = run("let s = #{42}; println(s.items());");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("42"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2738_string_dot_methods {
+    use super::*;
+
+    fn run(src: &str) -> RunResult {
+        run_program(src)
+    }
+
+    #[test]
+    fn string_replace_method() {
+        let r = run(r#"println("hello world".replace("world", "Resilient"));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("hello Resilient"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn string_chars_method_no_type_error() {
+        // chars() previously caused "Expected 1 arguments, got 0" from typechecker
+        let r = run(r#"fn f() -> array { return "abc".chars(); } println(f());"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('a'), "got: {}", r.stdout);
+        assert!(r.errors.is_empty(), "type errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn string_reverse_method() {
+        let r = run(r#"println("abc".reverse());"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("cba"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn string_strip_prefix_method_found() {
+        let r = run(r#"println("prefix_val".strip_prefix("prefix_"));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("val"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn string_strip_prefix_method_missing() {
+        let r = run(r#"println("hello".strip_prefix("xyz"));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("hello"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn string_strip_suffix_method() {
+        let r = run(r#"println("file.txt".strip_suffix(".txt"));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("file"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn string_lines_method() {
+        let r = run("println(\"a\\nb\\nc\".lines());");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("\"a\""), "got: {}", r.stdout);
+        assert!(r.stdout.contains("\"b\""), "got: {}", r.stdout);
+        assert!(r.stdout.contains("\"c\""), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn existing_string_methods_still_work() {
+        let r = run(
+            r#"println("  hi  ".trim()); println("hello".to_upper()); println("WORLD".to_lower());"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("hi"), "got: {}", r.stdout);
+        assert!(r.stdout.contains("HELLO"), "got: {}", r.stdout);
+        assert!(r.stdout.contains("world"), "got: {}", r.stdout);
     }
 }

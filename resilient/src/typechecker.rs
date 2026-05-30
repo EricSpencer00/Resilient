@@ -7545,17 +7545,31 @@ impl TypeChecker {
                 }
                 if tgt_ty == Type::String {
                     let ret = match field.as_str() {
-                        "split" | "chars" => Type::Function {
+                        // `split` takes a separator arg; `chars` takes none.
+                        // RES-2738: `chars` was incorrectly grouped with `split`
+                        // (1-param), causing a false arity error on `s.chars()`.
+                        "split" => Type::Function {
                             params: vec![Type::Any],
                             return_type: Box::new(Type::Array),
                         },
-                        "trim" | "to_upper" | "to_lower" => Type::Function {
+                        // RES-2738: zero-arg array-returning string methods.
+                        "chars" | "lines" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Array),
+                        },
+                        // Zero-arg string → string methods.
+                        "trim" | "to_upper" | "to_lower" | "reverse" => Type::Function {
                             params: vec![],
                             return_type: Box::new(Type::String),
                         },
                         "replace" => Type::Function {
                             params: vec![Type::String, Type::String],
                             return_type: Box::new(Type::String),
+                        },
+                        // RES-2738: strip_prefix / strip_suffix return Result.
+                        "strip_prefix" | "strip_suffix" => Type::Function {
+                            params: vec![Type::String],
+                            return_type: Box::new(Type::Result),
                         },
                         "contains" | "starts_with" | "ends_with" => Type::Function {
                             params: vec![Type::String],
@@ -9659,6 +9673,12 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "flatten",
         "dedup",
         "has",
+        // RES-2738: string dot-call methods (routed via runtime name mapping).
+        "replace",
+        "chars",
+        "strip_prefix",
+        "strip_suffix",
+        "lines",
         // RES-1859: higher-order array builtins.
         "array_map",
         "array_filter",
