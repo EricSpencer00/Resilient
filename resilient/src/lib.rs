@@ -662,6 +662,8 @@ mod struct_field_check;
 mod deque;
 // RES-2587: priority queue / binary heap collection builtins.
 mod heap;
+// RES-2614: cross-compilation target profiles in rz.toml.
+mod target_profiles;
 mod vibe_debt;
 mod wcet_contracts;
 
