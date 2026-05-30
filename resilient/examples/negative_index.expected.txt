@@ -1,0 +1,6 @@
+50
+40
+10
+o
+l
+Program executed successfully

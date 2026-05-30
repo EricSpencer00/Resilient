@@ -7658,16 +7658,11 @@ impl TypeChecker {
                         idx_ty
                     ));
                 }
-                // RES-415: negative constant index is always out-of-bounds.
-                if matches!(tgt_ty, Type::Array | Type::String)
-                    && let Some(idx_val) = fold_const_i64(index, &self.const_bindings)
-                    && idx_val < 0
-                {
-                    return Err(format!(
-                        "index {} is always out of bounds — array/string indices must be non-negative",
-                        idx_val
-                    ));
-                }
+                // RES-921 added Python-style negative indexing to the runtime: arr[-1]
+                // is the last element, arr[-2] is second-to-last, etc. The RES-415
+                // compile-time rejection of negative constant indices is therefore a
+                // false positive and is removed. Out-of-range access (including
+                // out-of-range negative indices) is caught at runtime.
                 // String indexing returns a char (RES-2709 + RES-2711):
                 // runtime yields Value::Char; typechecker mirrors that here.
                 // Array indexing returns Any (no element-type tracking yet).
@@ -13672,12 +13667,11 @@ mod res415_collection_type_checks {
     }
 
     #[test]
-    fn negative_constant_index_errors() {
-        let e = check_err(r#"fn f() -> void { let arr = [1, 2, 3]; let x = arr[-1]; }"#);
-        assert!(
-            e.contains("out of bounds") || e.contains("negative"),
-            "expected negative-index error; got: {e}"
-        );
+    fn negative_constant_index_is_valid() {
+        // RES-921 added Python-style negative indexing (arr[-1] = last element).
+        // RES-2731 removed the false-positive compile-time rejection of negative
+        // constant indices — the runtime handles them correctly.
+        check_ok(r#"fn f() -> void { let arr = [1, 2, 3]; let x = arr[-1]; }"#);
     }
 
     #[test]
