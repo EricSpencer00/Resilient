@@ -672,6 +672,8 @@ mod heap;
 mod target_profiles;
 // RES-2611: source maps linking bytecode offsets to source positions.
 mod source_map;
+// RES-2588: linked list collection builtins.
+mod linked_list;
 mod vibe_debt;
 mod wcet_contracts;
 // RES-2558: process spawning (std-only).
@@ -13006,6 +13008,47 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("udp_send_to", crate::tcp_udp::builtin_udp_send_to),
     ("udp_recv_from", crate::tcp_udp::builtin_udp_recv_from),
     ("udp_close", crate::tcp_udp::builtin_udp_close),
+    // RES-2588: linked list collection builtins.
+    (
+        "linked_list_new",
+        crate::linked_list::builtin_linked_list_new,
+    ),
+    (
+        "linked_list_push_front",
+        crate::linked_list::builtin_linked_list_push_front,
+    ),
+    (
+        "linked_list_push_back",
+        crate::linked_list::builtin_linked_list_push_back,
+    ),
+    (
+        "linked_list_pop_front",
+        crate::linked_list::builtin_linked_list_pop_front,
+    ),
+    (
+        "linked_list_pop_back",
+        crate::linked_list::builtin_linked_list_pop_back,
+    ),
+    (
+        "linked_list_peek_front",
+        crate::linked_list::builtin_linked_list_peek_front,
+    ),
+    (
+        "linked_list_peek_back",
+        crate::linked_list::builtin_linked_list_peek_back,
+    ),
+    (
+        "linked_list_len",
+        crate::linked_list::builtin_linked_list_len,
+    ),
+    (
+        "linked_list_is_empty",
+        crate::linked_list::builtin_linked_list_is_empty,
+    ),
+    (
+        "linked_list_to_array",
+        crate::linked_list::builtin_linked_list_to_array,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
