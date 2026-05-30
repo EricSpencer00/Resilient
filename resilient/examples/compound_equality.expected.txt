@@ -1,0 +1,9 @@
+maps equal: true
+maps not equal: true
+sets equal: true
+sets not equal: true
+enum same variant: true
+enum different variant: true
+enum same payload: true
+enum different payload: true
+Program executed successfully

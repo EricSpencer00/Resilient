@@ -22723,6 +22723,36 @@ fn compound_values_equal(left: &Value, right: &Value) -> Option<bool> {
                 payload: rp,
             },
         ) => Some(lok == rok && values_strict_eq(lp, rp)),
+        // RES-2728: Map == Map. Same key set and each value pair must match.
+        (Value::Map(lm), Value::Map(rm)) => {
+            if lm.len() != rm.len() {
+                return Some(false);
+            }
+            Some(
+                lm.iter()
+                    .all(|(k, lv)| rm.get(k).is_some_and(|rv| values_strict_eq(lv, rv))),
+            )
+        }
+        // RES-2728: Set == Set. MapKey derives PartialEq+Eq+Hash so direct comparison works.
+        (Value::Set(ls), Value::Set(rs)) => Some(ls == rs),
+        // RES-2728: EnumVariant == EnumVariant. Same type, same variant, same payload.
+        (
+            Value::EnumVariant {
+                type_name: ltn,
+                variant: lv,
+                payload: lp,
+            },
+            Value::EnumVariant {
+                type_name: rtn,
+                variant: rv,
+                payload: rp,
+            },
+        ) => {
+            if ltn != rtn || lv != rv {
+                return Some(false);
+            }
+            Some(enum_payload_strict_eq(lp, rp))
+        }
         _ => None,
     }
 }
@@ -22768,6 +22798,26 @@ fn values_strict_eq(left: &Value, right: &Value) -> bool {
                 payload: rp,
             },
         ) => lok == rok && values_strict_eq(lp, rp),
+        // RES-2728: recursive Map, Set, EnumVariant equality.
+        (Value::Map(lm), Value::Map(rm)) => {
+            lm.len() == rm.len()
+                && lm
+                    .iter()
+                    .all(|(k, lv)| rm.get(k).is_some_and(|rv| values_strict_eq(lv, rv)))
+        }
+        (Value::Set(ls), Value::Set(rs)) => ls == rs,
+        (
+            Value::EnumVariant {
+                type_name: ltn,
+                variant: lv,
+                payload: lp,
+            },
+            Value::EnumVariant {
+                type_name: rtn,
+                variant: rv,
+                payload: rp,
+            },
+        ) => ltn == rtn && lv == rv && enum_payload_strict_eq(lp, rp),
         _ => false,
     }
 }
@@ -22790,6 +22840,18 @@ fn struct_fields_strict_eq(l: &[(String, Value)], r: &[(String, Value)]) -> bool
         }
     }
     true
+}
+
+/// RES-2728: structural equality for enum variant payloads.
+fn enum_payload_strict_eq(l: &EnumValuePayload, r: &EnumValuePayload) -> bool {
+    match (l, r) {
+        (EnumValuePayload::None, EnumValuePayload::None) => true,
+        (EnumValuePayload::Tuple(lv), EnumValuePayload::Tuple(rv)) => slices_strict_eq(lv, rv),
+        (EnumValuePayload::Named(lf), EnumValuePayload::Named(rf)) => {
+            struct_fields_strict_eq(lf, rf)
+        }
+        _ => false,
+    }
 }
 
 /// Scalar total-order comparison for primitive `Value` kinds. Returns
@@ -59404,5 +59466,101 @@ mod res2726_result_equality {
              if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2728_compound_equality {
+    use super::run_program as run;
+
+    // --- Map equality ---
+
+    #[test]
+    fn map_same_entries_equal() {
+        let r = run("let m1 = {\"a\" -> 1, \"b\" -> 2};\n\
+             let m2 = {\"a\" -> 1, \"b\" -> 2};\n\
+             if m1 == m2 { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_different_values_not_equal() {
+        let r = run("let m1 = {\"a\" -> 1};\n\
+             let m2 = {\"a\" -> 2};\n\
+             if m1 != m2 { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_different_keys_not_equal() {
+        let r = run("let m1 = {\"a\" -> 1};\n\
+             let m2 = {\"b\" -> 1};\n\
+             if m1 != m2 { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    // --- Set equality ---
+
+    #[test]
+    fn set_same_elements_equal() {
+        let r = run("let s1 = #{1, 2, 3};\n\
+             let s2 = #{1, 2, 3};\n\
+             if s1 == s2 { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn set_different_elements_not_equal() {
+        let r = run("let s1 = #{1, 2};\n\
+             let s2 = #{1, 3};\n\
+             if s1 != s2 { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    // --- EnumVariant equality ---
+
+    #[test]
+    fn enum_same_variant_equal() {
+        let r = run("enum Color { Red, Green, Blue }\n\
+             let a = Color::Red;\n\
+             let b = Color::Red;\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn enum_different_variant_not_equal() {
+        let r = run("enum Color { Red, Green, Blue }\n\
+             let a = Color::Red;\n\
+             let b = Color::Blue;\n\
+             if a != b { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn enum_tuple_variant_equal() {
+        let r = run("enum Shape { Circle(int), Rect(int, int) }\n\
+             let a = Shape::Circle(5);\n\
+             let b = Shape::Circle(5);\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn enum_tuple_variant_different_payload_not_equal() {
+        let r = run("enum Shape { Circle(int), Rect(int, int) }\n\
+             let a = Shape::Circle(5);\n\
+             let b = Shape::Circle(6);\n\
+             if a != b { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
     }
 }
