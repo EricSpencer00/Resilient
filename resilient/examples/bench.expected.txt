@@ -1,0 +1,2 @@
+bench blocks skipped in normal mode
+Program executed successfully

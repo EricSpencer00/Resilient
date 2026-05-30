@@ -438,6 +438,10 @@ fn collect_namespaces<'a>(node: &'a Node, out: &mut HashSet<&'a str>) {
         Node::StaticAssert { condition, .. } => {
             collect_namespaces(condition, out);
         }
+        // RES-2613: bench blocks — collect from body.
+        Node::BenchBlock { body, .. } => {
+            collect_namespaces(body, out);
+        }
         // Leaf nodes: literals, declarations without expressions, spans, etc.
         Node::Use { .. }
         | Node::Extern { .. }

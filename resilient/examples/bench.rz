@@ -1,0 +1,15 @@
+// RES-2613: benchmark framework example.
+// bench blocks are skipped during normal execution.
+// Use `rz bench bench.rz` to time them.
+
+bench "array sort" {
+    array_sort([3, 1, 4, 1, 5, 9, 2, 6]);
+}
+
+bench "string ops" {
+    let s = "hello" + " " + "world";
+    let n = len(s);
+}
+
+// Normal code runs as expected.
+println("bench blocks skipped in normal mode");

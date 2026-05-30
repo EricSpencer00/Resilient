@@ -352,6 +352,9 @@ enum Tok {
     // RES-2660: `static_assert(expr, msg)` compile-time assertion keyword.
     #[token("static_assert")]
     StaticAssert,
+    // RES-2613: `bench "name" { body }` benchmark block keyword.
+    #[token("bench")]
+    Bench,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -914,6 +917,8 @@ fn convert(t: Tok) -> Token {
         Tok::Where => Token::Where,
         // RES-2660: static_assert keyword.
         Tok::StaticAssert => Token::StaticAssert,
+        // RES-2613: bench keyword.
+        Tok::Bench => Token::Bench,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

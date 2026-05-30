@@ -526,6 +526,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::BlanketImpl { .. } => {}
         // RES-2660: static_assert is a compile-time check; no free vars.
         Node::StaticAssert { .. } => {}
+        // RES-2613: bench blocks are skipped; no free vars captured.
+        Node::BenchBlock { .. } => {}
     }
 }
 

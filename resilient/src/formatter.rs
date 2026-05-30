@@ -1248,6 +1248,7 @@ impl Formatter {
             | Node::RegionParam { .. }
             | Node::BlanketImpl { .. }
             | Node::StaticAssert { .. }
+            | Node::BenchBlock { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
