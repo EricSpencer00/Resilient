@@ -5508,6 +5508,8 @@ impl TypeChecker {
                 // RES-2580: extended const eval registration (no-op check;
                 // the actual extension is in eval_const_expr in lib.rs).
                 crate::const_eval_ext::check(program, source_path)?;
+                // RES-2601: exhaustive struct field checking in match patterns.
+                crate::struct_field_check::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

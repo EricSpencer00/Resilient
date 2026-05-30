@@ -656,6 +656,8 @@ mod dead_code_lint;
 mod unused_imports;
 // RES-2580: extended const eval — string concat, bitwise ops, conditionals.
 mod const_eval_ext;
+// RES-2601: exhaustive struct field checking in match patterns.
+mod struct_field_check;
 mod vibe_debt;
 mod wcet_contracts;
 

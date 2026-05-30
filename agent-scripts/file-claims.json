@@ -3,6 +3,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-2580-const-eval-ext",
       "claimed_at": "2026-05-30T20:03:44Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2601-struct-field-check",
+      "claimed_at": "2026-05-30T20:29:56Z"
     }
   }
 }

@@ -1,0 +1,31 @@
+// RES-2601: Exhaustive struct field checking in match patterns.
+// Patterns without `..` must list all declared fields.
+
+struct Point { int x, int y }
+struct Color { int r, int g, int b }
+
+fn classify(Point p) -> string {
+    return match p {
+        Point { x: 0, y: 0 } => "origin",
+        Point { x, y } => "other",
+    };
+}
+
+fn is_primary(Color c) -> bool {
+    return match c {
+        Color { r: 255, g: 0, b: 0 } => true,
+        Color { r: 0, g: 255, b: 0 } => true,
+        Color { r: 0, g: 0, b: 255 } => true,
+        Color { r, g, b } => false,
+    };
+}
+
+let origin = new Point { x: 0, y: 0 };
+let other = new Point { x: 3, y: 4 };
+println(classify(origin));
+println(classify(other));
+
+let red = new Color { r: 255, g: 0, b: 0 };
+let mixed = new Color { r: 128, g: 64, b: 32 };
+println(to_string(is_primary(red)));
+println(to_string(is_primary(mixed)));
