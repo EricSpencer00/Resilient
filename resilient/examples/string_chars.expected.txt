@@ -1,5 +1,5 @@
-["h", "e", "l", "l", "o"]
+[h, e, l, l, o]
 []
-["a"]
+[a]
 foobar
 Program executed successfully

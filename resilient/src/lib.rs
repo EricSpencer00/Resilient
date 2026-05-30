@@ -15520,13 +15520,11 @@ fn builtin_string_drop(args: &[Value]) -> RResult<Value> {
     }
 }
 
-/// RES-433: `string_chars(s)` — array of single-character strings,
-/// one per Unicode scalar. Empty input → empty array.
+/// RES-433: `string_chars(s)` — array of `Char` values, one per Unicode scalar.
+/// RES-2687: returns `Value::Char` (not single-char strings) now that `Value::Char` exists.
 fn builtin_string_chars(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::String(s)] => Ok(Value::Array(
-            s.chars().map(|c| Value::String(c.to_string())).collect(),
-        )),
+        [Value::String(s)] => Ok(Value::Array(s.chars().map(Value::Char).collect())),
         [other] => Err(format!("string_chars: expected string, got {}", other)),
         _ => Err(format!(
             "string_chars: expected 1 argument, got {}",
@@ -15981,19 +15979,25 @@ fn builtin_to_string(args: &[Value]) -> RResult<Value> {
 fn builtin_array_join(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items), Value::String(sep)] => {
-            let mut parts: Vec<&str> = Vec::with_capacity(items.len());
-            for v in items {
+            // RES-2687: accept Char elements in addition to String elements so
+            // `array_join(string_chars(s), sep)` round-trips correctly.
+            let mut out = String::new();
+            for (i, v) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(sep.as_str());
+                }
                 match v {
-                    Value::String(s) => parts.push(s.as_str()),
+                    Value::String(s) => out.push_str(s.as_str()),
+                    Value::Char(c) => out.push(*c),
                     other => {
                         return Err(format!(
-                            "array_join: expected all string elements, got {}",
+                            "array_join: expected string or char elements, got {}",
                             other
                         ));
                     }
                 }
             }
-            Ok(Value::String(parts.join(sep.as_str())))
+            Ok(Value::String(out))
         }
         [a, b] => Err(format!(
             "array_join: expected (array, string), got ({}, {})",
@@ -46759,7 +46763,7 @@ mod tests {
             Value::String(",".into()),
         ])
         .unwrap_err();
-        assert!(err.contains("all string elements"), "got: {}", err);
+        assert!(err.contains("string or char elements"), "got: {}", err);
     }
 
     #[test]
@@ -47812,7 +47816,20 @@ mod tests {
         );
     }
 
-    // ---------- RES-433: string_chars ----------
+    // ---------- RES-433 / RES-2687: string_chars ----------
+
+    fn extract_chars(v: Value) -> Vec<char> {
+        match v {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|v| match v {
+                    Value::Char(c) => c,
+                    _ => panic!("non-char in array: {:?}", v),
+                })
+                .collect(),
+            _ => panic!("expected Array"),
+        }
+    }
 
     fn extract_strings(v: Value) -> Vec<String> {
         match v {
@@ -47820,7 +47837,7 @@ mod tests {
                 .into_iter()
                 .map(|v| match v {
                     Value::String(s) => s,
-                    _ => panic!("non-string in array"),
+                    _ => panic!("non-string in array: {:?}", v),
                 })
                 .collect(),
             _ => panic!("expected Array"),
@@ -47830,29 +47847,29 @@ mod tests {
     #[test]
     fn string_chars_basic() {
         assert_eq!(
-            extract_strings(builtin_string_chars(&[Value::String("abc".into())]).unwrap()),
-            vec!["a", "b", "c"]
+            extract_chars(builtin_string_chars(&[Value::String("abc".into())]).unwrap()),
+            vec!['a', 'b', 'c']
         );
     }
 
     #[test]
     fn string_chars_empty_returns_empty_array() {
         assert_eq!(
-            extract_strings(builtin_string_chars(&[Value::String("".into())]).unwrap()),
-            Vec::<String>::new()
+            extract_chars(builtin_string_chars(&[Value::String("".into())]).unwrap()),
+            Vec::<char>::new()
         );
     }
 
     #[test]
     fn string_chars_unicode_scalar_per_element() {
-        // "café" has 4 scalars (5 bytes); each element should be a single-char string.
-        let chars = extract_strings(builtin_string_chars(&[Value::String("café".into())]).unwrap());
-        assert_eq!(chars, vec!["c", "a", "f", "é"]);
+        // "café" has 4 Unicode scalars; each element is a Char.
+        let chars = extract_chars(builtin_string_chars(&[Value::String("café".into())]).unwrap());
+        assert_eq!(chars, vec!['c', 'a', 'f', 'é']);
     }
 
     #[test]
     fn string_chars_round_trips_with_array_join() {
-        // string_chars + array_join with "" should reconstruct original.
+        // string_chars (returns Chars) + array_join with "" should reconstruct original.
         let parts = builtin_string_chars(&[Value::String("hello".into())]).unwrap();
         let joined = builtin_array_join(&[parts, Value::String("".into())]).unwrap();
         match joined {
