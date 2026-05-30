@@ -1,0 +1,24 @@
+// RES-2691: float literals are directly assignable to f32-annotated variables.
+// Prior to this fix, `let x: f32 = 3.14` produced a type error.
+
+fn add(f32 a, f32 b) -> f32 {
+    return a + b;
+}
+
+fn main() -> void {
+    // Direct float literal → f32 annotation (was a type error before RES-2691).
+    let x: f32 = 3.14;
+    let y: f32 = 2.0;
+    println(x);
+    println(y);
+
+    // f32 arithmetic with annotated variables.
+    let z: f32 = x + y;
+    println(z);
+
+    // f32 return value from a function with f32 parameters.
+    let w: f32 = add(x, y);
+    println(w);
+}
+
+main();
