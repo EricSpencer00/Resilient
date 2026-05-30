@@ -1,0 +1,14 @@
+// RES-2589: dead-code lint demo.
+// Shows that the compiler warns about unused functions, unreachable code,
+// and unused let bindings.
+
+fn add(int a, int b) -> int {
+    a + b
+}
+
+fn main() {
+    let result = add(3, 4);
+    println(to_string(result));
+}
+
+main();
