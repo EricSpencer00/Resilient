@@ -14948,7 +14948,6 @@ mod res2719_type_name_aliases {
 mod res2721_interp_string_scope {
     use crate::parse;
     use crate::typechecker::TypeChecker;
-    use std::sync::{Arc, Mutex};
 
     fn check_ok_no_warnings(src: &str) {
         let (prog, errs) = parse(src);
