@@ -1,0 +1,37 @@
+// RES-2695: associated-type projection bounds in where clauses.
+// `fn<I> collect(I iter) where I::Item: Show` now validates that the
+// concrete struct's associated type actually implements Show.
+
+trait Show {
+    fn show(self) -> string;
+}
+
+trait Iter {
+    type Item;
+    fn next(self) -> int;
+}
+
+struct Num { int v }
+struct List { int n }
+
+impl Show for Num {
+    fn show(self) -> string {
+        return to_string(self.v);
+    }
+}
+
+impl Iter for List {
+    type Item = Num;
+    fn next(self) -> int { return self.n; }
+}
+
+fn<I> collect(I it) where I::Item: Show {
+    println(it.next());
+}
+
+fn main() -> void {
+    let sl = new List { n: 42 };
+    collect(sl);
+}
+
+main();
