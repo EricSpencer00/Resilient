@@ -6868,10 +6868,16 @@ impl TypeChecker {
                             }
                         }
                         Type::Result => {
+                            // RES-2703: bare `Ok(v)` / `Err(e)` arms parse as
+                            // Pattern::Ok / Pattern::Err, not EnumVariant. Also
+                            // accept the enum-qualified `Result::Ok(v)` form
+                            // (Pattern::EnumVariant { variant_name: "Ok", .. }).
                             let covered: HashSet<&str> = arms
                                 .iter()
                                 .filter(|(_, g, _)| g.is_none())
                                 .filter_map(|(p, _, _)| match p {
+                                    Pattern::Ok(_) => Some("Ok"),
+                                    Pattern::Err(_) => Some("Err"),
                                     Pattern::EnumVariant { variant_name, .. } => {
                                         Some(variant_name.as_str())
                                     }
@@ -14188,6 +14194,7 @@ mod res2693_trait_param_compat {
 
 #[cfg(test)]
 mod res2701_generic_fn_type_params {
+mod res2703_result_exhaustiveness {
     use super::*;
 
     fn check_ok(src: &str) {
@@ -14216,6 +14223,15 @@ mod res2701_generic_fn_type_params {
         check_ok(
             "fn apply_fn<T>(T x, fn(T) -> T f) -> T { return f(x); }\n\
              let r = apply_fn(5, fn(int n) -> int { return n * 2; });\n",
+    fn ok_and_err_arms_accepted_as_exhaustive() {
+        check_ok(
+            "fn f() -> void {\n\
+             let r = Ok(5);\n\
+             match r {\n\
+               Ok(v) => println(to_string(v)),\n\
+               Err(e) => println(e),\n\
+             }\n\
+             }\n",
         );
     }
 
@@ -14225,6 +14241,15 @@ mod res2701_generic_fn_type_params {
             "fn double(int x) -> int { return x * 2; }\n\
              fn apply_fn<T>(T x, fn(T) -> T f) -> T { return f(x); }\n\
              let r = apply_fn(5, double);\n",
+    fn wildcard_arm_still_makes_result_match_exhaustive() {
+        check_ok(
+            "fn f() -> void {\n\
+             let r = Ok(5);\n\
+             match r {\n\
+               Ok(v) => println(to_string(v)),\n\
+               _ => println(\"fallback\"),\n\
+             }\n\
+             }\n",
         );
     }
 
@@ -14244,6 +14269,15 @@ mod res2701_generic_fn_type_params {
             "fn apply_int(int x, fn(int) -> int f) -> int { return f(x); }\n\
              let r = apply_int(5, fn(string s) -> int { return 0; });\n",
             "Type mismatch",
+    fn missing_err_arm_still_errors() {
+        check_err(
+            "fn f() -> void {\n\
+             let r = Ok(5);\n\
+             match r {\n\
+               Ok(v) => println(to_string(v)),\n\
+             }\n\
+             }\n",
+            "Non-exhaustive match on enum `Result`",
         );
     }
 
@@ -14261,6 +14295,28 @@ mod res2701_generic_fn_type_params {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Any),
             }
+    fn missing_ok_arm_still_errors() {
+        check_err(
+            "fn f() -> void {\n\
+             let r = Err(\"oops\");\n\
+             match r {\n\
+               Err(e) => println(e),\n\
+             }\n\
+             }\n",
+            "Non-exhaustive match on enum `Result`",
+        );
+    }
+
+    #[test]
+    fn ok_and_err_arms_with_block_bodies_accepted() {
+        check_ok(
+            "fn f() -> void {\n\
+             let r = Ok(5);\n\
+             match r {\n\
+               Ok(v) => { println(to_string(v)); },\n\
+               Err(e) => { println(e); },\n\
+             }\n\
+             }\n",
         );
     }
 }
