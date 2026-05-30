@@ -8760,7 +8760,11 @@ impl TypeChecker {
             "Result" => Ok(Type::Result),
             // RES-2651: bare `Option` or `Option<T>`.
             "Option" => Ok(Type::Option(Box::new(Type::Any))),
-            "array" => Ok(Type::Array),
+            // RES-2705: accept both `array` (canonical) and `Array` (capitalised)
+            // so that struct fields and fn params written as `Array foo` resolve
+            // to Type::Array instead of Type::Struct("Array"), which previously
+            // caused false-positive type-mismatch errors against array literals.
+            "array" | "Array" => Ok(Type::Array),
             // RES-408: `any` as a written type annotation maps to Type::Any
             // (the unresolved/wildcard type). Without this arm the identifier
             // falls through to `other => Type::Struct("any")`, which caused
@@ -14358,6 +14362,73 @@ mod res2703_result_exhaustiveness {
                Err(e) => { println(e); },\n\
              }\n\
              }\n",
+        );
+    }
+}
+
+#[cfg(test)]
+mod res2705_array_type_annotation {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn capitalised_array_param_accepts_array_literal() {
+        check_ok(
+            "fn sum(Array items) -> int { return 0; }\n\
+             sum([1, 2, 3]);\n",
+        );
+    }
+
+    #[test]
+    fn lowercase_array_param_still_accepted() {
+        check_ok(
+            "fn sum(array items) -> int { return 0; }\n\
+             sum([1, 2, 3]);\n",
+        );
+    }
+
+    #[test]
+    fn capitalised_array_struct_field_accepts_array_literal() {
+        check_ok(
+            "struct Bag { Array items }\n\
+             let b = new Bag { items: [1, 2, 3] };\n",
+        );
+    }
+
+    #[test]
+    fn capitalised_array_return_type_accepted() {
+        check_ok(
+            "fn make() -> Array { return [1, 2]; }\n\
+             let xs = make();\n",
+        );
+    }
+
+    #[test]
+    fn wrong_type_still_errors_for_array_param() {
+        check_err(
+            "fn sum(Array items) -> int { return 0; }\n\
+             sum(42);\n",
+            "Type mismatch",
         );
     }
 }
