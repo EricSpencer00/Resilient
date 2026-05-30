@@ -5622,6 +5622,8 @@ impl TypeChecker {
                 crate::target_profiles::check(program, source_path)?;
                 // RES-2560/2561: SHA/CRC builtins (no-op check; builtins are leaf functions).
                 crate::crypto_hash::check(program, source_path)?;
+                // RES-2572: validate trait inheritance — super-traits exist and impls are complete.
+                crate::trait_inheritance::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

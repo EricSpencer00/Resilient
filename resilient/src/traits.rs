@@ -121,6 +121,35 @@ pub(crate) fn parse(parser: &mut Parser) -> Node {
     };
     parser.next_token(); // skip name
 
+    // RES-2572: parse optional `extends A + B + C` super-trait list.
+    let mut supers: Vec<String> = Vec::new();
+    if let Token::Identifier(kw) = &parser.current_token
+        && kw == "extends"
+    {
+        parser.next_token(); // skip "extends"
+        loop {
+            match &parser.current_token {
+                Token::Identifier(super_name) => {
+                    supers.push(super_name.clone());
+                    parser.next_token();
+                    if parser.current_token == Token::Plus {
+                        parser.next_token(); // skip '+'
+                    } else {
+                        break;
+                    }
+                }
+                other => {
+                    let tok = other.clone();
+                    parser.record_error(format!(
+                        "Expected trait name after 'extends', found {}",
+                        tok
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
     if parser.current_token != Token::LeftBrace {
         let tok = parser.current_token.clone();
         parser.record_error(format!(
@@ -170,6 +199,7 @@ pub(crate) fn parse(parser: &mut Parser) -> Node {
         name,
         methods,
         associated_types,
+        supers,
         span: trait_span,
     }
 }
@@ -391,6 +421,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             methods,
             span,
             associated_types,
+            ..
         } = &stmt.node
         {
             if name.is_empty() {

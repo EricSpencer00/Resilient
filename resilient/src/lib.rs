@@ -425,6 +425,7 @@ mod supervisor;
 // declarations and `impl Trait for Type { ... }` validation. Generic
 // bounds `<T: Trait>` are verified at call sites. Runtime dispatch
 // reuses the existing `<Type>$<method>` mangling — no VTable.
+mod trait_inheritance;
 mod traits;
 
 // RES-2552: blanket trait implementations (`impl<T: Bound> Trait for T`).
@@ -2907,11 +2908,14 @@ enum Node {
     /// `<Type>$<method>` mangling; there is no VTable.
     /// RES-779: TraitDecl also carries associated type declarations
     /// (`type Name;`) that must be defined in each impl.
+    /// RES-2572: `supers` lists parent trait names from `trait A extends B + C`.
     TraitDecl {
         name: String,
         methods: Vec<crate::traits::TraitMethodSig>,
         #[allow(dead_code)]
         associated_types: Vec<crate::traits::AssociatedTypeDecl>,
+        /// RES-2572: super-traits required by this trait (`extends B + C`).
+        supers: Vec<String>,
         #[allow(dead_code)]
         span: span::Span,
     },
