@@ -2374,6 +2374,12 @@ fn compile_expr(
             chunk.emit(Op::Const(idx), line);
             Ok(())
         }
+        // RES-2683: char literal in VM codegen path.
+        Node::CharLiteral { value: c, .. } => {
+            let idx = chunk.add_constant(Value::Char(*c))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
         // RES-VM (issue #266): string + float literals. Required so
         // calls like `println("hello")` and `sin(1.5)` reach the
         // bytecode VM. The constant pool already accepts `Value::String`
@@ -4714,6 +4720,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::FieldAccess { .. } => "FieldAccess",
         Node::FieldAssignment { .. } => "FieldAssignment",
         Node::BytesLiteral { .. } => "BytesLiteral",
+        Node::CharLiteral { .. } => "CharLiteral",
         Node::Range { .. } => "Range",
         Node::Slice { .. } => "Slice",
         Node::LetTupleDestructure { .. } => "LetTupleDestructure",

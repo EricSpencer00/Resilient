@@ -412,4 +412,65 @@ println(char_is_digit('x'));
             r.ok, r.errors
         );
     }
+
+    // ── RES-2683: pattern matching and comparison ────────────────────────
+
+    #[test]
+    fn char_pattern_match() {
+        let r = run(r#"
+let c = 'A';
+let r = match c {
+    'A' => "is_A",
+    'B' => "is_B",
+    _ => "other",
+};
+println(r);
+"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("is_A"), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn char_equality() {
+        let r = run(r#"
+println('A' == 'A');
+println('A' == 'B');
+println('A' != 'B');
+"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.trim().lines().collect();
+        assert_eq!(lines[0], "true");
+        assert_eq!(lines[1], "false");
+        assert_eq!(lines[2], "true");
+    }
+
+    #[test]
+    fn char_ordering() {
+        let r = run(r#"
+println('A' < 'B');
+println('Z' > 'A');
+println('A' <= 'A');
+println('B' >= 'A');
+"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.trim().lines().collect();
+        assert_eq!(lines[0], "true");
+        assert_eq!(lines[1], "true");
+        assert_eq!(lines[2], "true");
+        assert_eq!(lines[3], "true");
+    }
+
+    #[test]
+    fn char_or_pattern() {
+        let r = run(r#"
+let c = 'B';
+let r = match c {
+    'A' | 'B' => "vowel_or_b",
+    _ => "other",
+};
+println(r);
+"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("vowel_or_b"), "stdout: {}", r.stdout);
+    }
 }
