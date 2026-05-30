@@ -4688,6 +4688,8 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::BlanketImpl { span, .. } => span.start.line as u32,
         // RES-2660: static_assert — carries the keyword's span.
         Node::StaticAssert { span, .. } => span.start.line as u32,
+        // RES-2579: defer statement — carries the keyword's span.
+        Node::DeferStatement { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }

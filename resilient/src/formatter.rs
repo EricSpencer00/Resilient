@@ -460,6 +460,12 @@ impl Formatter {
                 self.write_args(format_args!(", \"{}\");", message));
                 self.newline();
             }
+            Node::DeferStatement { expr, .. } => {
+                self.write("defer ");
+                self.fmt_expr(expr);
+                self.write(";");
+                self.newline();
+            }
             Node::LetDestructureStruct {
                 struct_name,
                 fields,
@@ -1256,6 +1262,7 @@ impl Formatter {
             | Node::RegionParam { .. }
             | Node::BlanketImpl { .. }
             | Node::StaticAssert { .. }
+            | Node::DeferStatement { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }

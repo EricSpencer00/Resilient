@@ -658,6 +658,8 @@ mod typestate_types;
 mod never_type;
 // RES-2589: compile-time dead-code warnings.
 mod dead_code_lint;
+// RES-2579: `defer` statement — deferred cleanup on function exit.
+mod defer_stmt;
 // RES-2590: warn on unused `use "path" as alias;` imports.
 mod unused_imports;
 // RES-2577: tuple struct named constructors (`Point(3, 4)` without `new`).
@@ -852,6 +854,9 @@ enum Token {
     /// Evaluates `expr` at compile time using the const evaluator;
     /// emits a hard error with `msg` if false. Zero runtime cost.
     StaticAssert,
+    /// RES-2579: `defer <expr>;` — run <expr> when the enclosing function
+    /// exits, in LIFO order (last deferred = first executed).
+    Defer,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -1017,6 +1022,7 @@ impl Token {
             Token::Pub => Cow::Borrowed("`pub`"),
             Token::Where => Cow::Borrowed("`where`"),
             Token::StaticAssert => Cow::Borrowed("`static_assert`"),
+            Token::Defer => Cow::Borrowed("`defer`"),
             Token::Underscore => Cow::Borrowed("`_`"),
             Token::Default => Cow::Borrowed("`default`"),
             Token::Dot => Cow::Borrowed("`.`"),
@@ -1641,6 +1647,7 @@ impl Lexer {
                         "pub" => Token::Pub,
                         "where" => Token::Where,
                         "static_assert" => Token::StaticAssert,
+                        "defer" => Token::Defer,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2590,6 +2597,14 @@ enum Node {
     /// loop with the given label.
     ContinueLabel {
         label: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-2579: `defer <expr>;` — push <expr> onto the function's defer
+    /// stack. On function exit (normal or early return), all deferred
+    /// expressions are evaluated in LIFO order.
+    DeferStatement {
+        expr: Box<Node>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -3558,6 +3573,7 @@ impl Parser {
             Token::Const => Some(self.parse_const_statement()),
             Token::Mod => Some(self.parse_module_decl()),
             Token::Return => Some(self.parse_return_statement()),
+            Token::Defer => Some(self.parse_defer_statement()),
             Token::Break => Some(self.parse_break_statement()),
             Token::Continue => Some(self.parse_continue_statement()),
             Token::Loop => Some(self.parse_loop_statement()),
@@ -7390,6 +7406,32 @@ impl Parser {
 
         Node::ReturnStatement {
             value,
+            span: stmt_span,
+        }
+    }
+
+    /// RES-2579: parse `defer <expr>;` — deferred expression statement.
+    fn parse_defer_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `defer`
+
+        let expr = match self.parse_expression(0) {
+            Some(e) => Box::new(e),
+            None => {
+                self.record_error("Expected expression after `defer`".to_string());
+                Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: stmt_span,
+                })
+            }
+        };
+
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::DeferStatement {
+            expr,
             span: stmt_span,
         }
     }
@@ -23198,6 +23240,12 @@ struct Interpreter {
     /// created by `apply_function` see the same registry.
     #[allow(clippy::type_complexity)]
     trait_method_defaults: Rc<RefCell<HashMap<String, Vec<(String, Value)>>>>,
+    /// RES-2579: deferred expressions for the current function scope.
+    /// Each entry pairs the deferred expression with the Environment
+    /// captured at defer-registration time, so bindings like `handle`
+    /// are visible when the deferred expression runs at function exit.
+    /// Drained in LIFO order by `apply_function` after body completes.
+    defer_stack: Vec<(Node, Environment)>,
 }
 
 /// RES-1108 + RES-1109 + RES-1110: structural equality for compound
@@ -23455,6 +23503,7 @@ impl Interpreter {
             tco_fn_name: None,
             mutual_tco_fn: None,
             trait_method_defaults: Rc::new(RefCell::new(HashMap::new())),
+            defer_stack: Vec::new(),
         }
     }
 
@@ -23737,6 +23786,14 @@ impl Interpreter {
                     None => Value::Void,
                 };
                 Ok(Value::Return(Box::new(val)))
+            }
+            // RES-2579: push the expression onto the function's defer stack,
+            // capturing the current environment so variables in scope at the
+            // `defer` site are accessible when the deferred expr runs.
+            Node::DeferStatement { expr, .. } => {
+                self.defer_stack
+                    .push((expr.as_ref().clone(), self.env.clone()));
+                Ok(Value::Void)
             }
             // RES-910: emit the control-flow sentinel; the enclosing
             // loop evaluator consumes it.
@@ -27008,6 +27065,7 @@ impl Interpreter {
                     tco_fn_name: None,
                     mutual_tco_fn: None,
                     trait_method_defaults: self.trait_method_defaults.clone(),
+                    defer_stack: Vec::new(),
                 };
 
                 // RES-2592: activate the trampoline loop for #[must_tail_call] fns.
@@ -27162,6 +27220,18 @@ impl Interpreter {
                         other => break 'tco other,
                     }
                 };
+
+                // RES-2579: execute deferred expressions in LIFO order.
+                // Each entry carries its captured environment so bindings
+                // from the defer-registration site remain accessible.
+                let deferred: Vec<(Node, Environment)> =
+                    interpreter.defer_stack.drain(..).collect();
+                for (deferred_expr, captured_env) in deferred.into_iter().rev() {
+                    // Swap to the captured env for this deferred expr, then restore.
+                    let saved = std::mem::replace(&mut interpreter.env, captured_env);
+                    let _ = interpreter.eval(&deferred_expr);
+                    interpreter.env = saved;
+                }
 
                 // RES-035: check each `ensures` clause AFTER, with the
                 // special identifier `result` bound to the return value.

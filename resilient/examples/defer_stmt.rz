@@ -1,0 +1,24 @@
+// RES-2579: `defer` statement — execute cleanup when the function exits.
+// Deferred expressions run in LIFO order (last deferred = first executed).
+
+fn open_resource() -> string {
+    println("opening resource");
+    "resource_handle"
+}
+
+fn use_resource() {
+    let handle = open_resource();
+    defer println("closing: " + handle);
+    println("using: " + handle);
+    // defer fires AFTER "using: resource_handle" → closing: resource_handle
+}
+
+fn countdown() {
+    defer println("3");
+    defer println("2");
+    defer println("1");
+    // LIFO order: last defer fires first → 1, 2, 3
+}
+
+use_resource();
+countdown();

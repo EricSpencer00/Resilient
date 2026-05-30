@@ -528,6 +528,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::BlanketImpl { .. } => {}
         // RES-2660: static_assert is a compile-time check; no free vars.
         Node::StaticAssert { .. } => {}
+        // RES-2579: defer — walk the deferred expression for free vars.
+        Node::DeferStatement { expr, .. } => walk(expr, bound, free),
     }
 }
 
