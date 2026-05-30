@@ -4625,6 +4625,44 @@ impl TypeChecker {
                 // RES-2587: priority queue / binary heap builtins.
                 env.set(
                     "heap_new".to_string(),
+                // RES-2584: string builder builtins.
+                env.set(
+                    "string_builder_new".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set("string_builder_append".to_string(), fn_any_any_to_any());
+                env.set("string_builder_prepend".to_string(), fn_any_any_to_any());
+                env.set(
+                    "string_builder_build".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "string_builder_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "string_builder_is_empty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "string_builder_clear".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
                 // RES-2588: linked list builtins.
                 env.set(
                     "linked_list_new".to_string(),
