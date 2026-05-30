@@ -5500,6 +5500,8 @@ impl TypeChecker {
                 crate::float32::check(program, source_path)?;
                 // RES-2659: mutual tail call annotation validation.
                 crate::mutual_tco::check(program, source_path)?;
+                // RES-2578: validate `-> !` (never type) function declarations.
+                crate::never_type::check(program, source_path)?;
                 // RES-2589: dead-code warnings — unused fns, unreachable stmts,
                 // unused let bindings. Warning-only, never returns Err.
                 crate::dead_code_lint::check(program, source_path);
