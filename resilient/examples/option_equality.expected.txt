@@ -1,0 +1,9 @@
+Some(5) == Some(5): true
+Some(5) != Some(6): true
+None == None: true
+Some(5) != None: true
+first even in [1,3,4,7] is 4
+no even in [1,3,5]
+different results: true
+first even in [2,4,6] is 2
+Program executed successfully
