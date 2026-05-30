@@ -424,7 +424,7 @@ workflow file.
 - **Preconditions** (all must hold):
   1. PR is **not draft** (set by `ready-or-bail.sh`).
   2. PR has the **`integration-synced` label** (applied by
-     `sync-integration.sh` when the rebase onto `agents/integration`
+     `sync-integration.sh` when the rebase onto `origin/main`
      succeeds without conflicts outside the append-only allowlist).
   3. PR base is **`main`**.
   4. **Every required status check is `SUCCESS`** (the diff-shape
