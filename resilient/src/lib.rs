@@ -77,6 +77,8 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod hash_builtins;
+// RES-2560 / RES-2561: SHA-256, SHA-512, CRC-32, CRC-16 builtins.
+mod crypto_hash;
 // RES-1172: small string + array gaps — split_once / rsplit_once /
 // string_from_chars / array_is_empty. Pure leaf builtins; module-isolated.
 mod string_array_misc;
@@ -12378,6 +12380,16 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("hash_string", crate::hash_builtins::builtin_hash_string),
     ("hash_bytes", crate::hash_builtins::builtin_hash_bytes),
     ("hash_combine", crate::hash_builtins::builtin_hash_combine),
+    // RES-2560: SHA-256 and SHA-512 cryptographic hash builtins.
+    ("sha256", crate::crypto_hash::builtin_sha256),
+    ("sha256_str", crate::crypto_hash::builtin_sha256_str),
+    ("sha512", crate::crypto_hash::builtin_sha512),
+    ("sha512_str", crate::crypto_hash::builtin_sha512_str),
+    // RES-2561: CRC-32 and CRC-16 checksum builtins.
+    ("crc32", crate::crypto_hash::builtin_crc32),
+    ("crc32_str", crate::crypto_hash::builtin_crc32_str),
+    ("crc16", crate::crypto_hash::builtin_crc16),
+    ("crc16_str", crate::crypto_hash::builtin_crc16_str),
     // RES-1160: argmax / argmin for float and string arrays.
     // Pure leaf builtins; module-isolated in `array_argminmax.rs`.
     // Appended at the end of BUILTINS per the perf rule from PR #1125.
