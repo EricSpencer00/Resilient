@@ -5243,6 +5243,8 @@ impl TypeChecker {
                 }
                 // RES-2618: f32/f64 cross-width mixing guard.
                 crate::float32::check(program, source_path)?;
+                // RES-2659: mutual tail call annotation validation.
+                crate::mutual_tco::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

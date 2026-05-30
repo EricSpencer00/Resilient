@@ -57,6 +57,8 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 Value::TailCall(_) => "void",
                 // RES-2603: enum variant constructor is callable — report as "function".
                 Value::EnumConstructor { .. } => "function",
+                // RES-2659: internal trampoline sentinel — never user-visible.
+                Value::MutualTailCall { .. } => "void",
             };
             Ok(Value::String(name.to_string()))
         }
