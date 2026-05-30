@@ -1,8 +1,8 @@
 {
   "claims": {
-    "resilient/src/typechecker.rs": {
-      "branch": "res-2731-negative-index-false-positive",
-      "claimed_at": "2026-05-30T15:37:55Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-2733-array-method-dispatch",
+      "claimed_at": "2026-05-30T15:49:47Z"
     }
   }
 }
