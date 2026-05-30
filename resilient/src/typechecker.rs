@@ -4625,6 +4625,9 @@ impl TypeChecker {
                 // RES-2587: priority queue / binary heap builtins.
                 env.set(
                     "heap_new".to_string(),
+                // RES-2588: linked list builtins.
+                env.set(
+                    "linked_list_new".to_string(),
                     Type::Function {
                         params: vec![],
                         return_type: Box::new(Type::Any),
@@ -4643,9 +4646,55 @@ impl TypeChecker {
                 env.set("heap_len".to_string(), fn_any_to_int());
                 env.set(
                     "heap_is_empty".to_string(),
+                env.set("linked_list_push_front".to_string(), fn_any_any_to_any());
+                env.set("linked_list_push_back".to_string(), fn_any_any_to_any());
+                env.set(
+                    "linked_list_pop_front".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "linked_list_pop_back".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "linked_list_peek_front".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "linked_list_peek_back".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "linked_list_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "linked_list_is_empty".to_string(),
                     Type::Function {
                         params: vec![Type::Any],
                         return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "linked_list_to_array".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
                     },
                 );
                 std::sync::Arc::new(env)
