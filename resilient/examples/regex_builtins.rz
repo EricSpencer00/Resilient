@@ -1,0 +1,16 @@
+// RES-2585: regex matching builtins example.
+println(to_string(regex_match("hello123", "[a-z]+[0-9]+")));
+println(to_string(regex_match("hello", "[0-9]+")));
+
+let found = regex_find("hello world", "[a-z]+");
+let v = match found { Some(s) => s, None => "none" };
+println(v);
+
+let all = regex_find_all("cat bat hat", "[a-z]at");
+println(to_string(len(all)));
+
+let replaced = regex_replace("foo bar foo", "foo", "baz");
+println(replaced);
+
+let replaced_all = regex_replace_all("foo bar foo", "foo", "baz");
+println(replaced_all);
