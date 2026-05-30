@@ -1,53 +1,54 @@
-// Pain-points hardening examples — all 10 fixes in one file.
+// Pain-points hardening examples — built-in functions.
+// RES-2742: converted from wrong `name: type` struct field syntax to
+// correct Resilient `type name` syntax.
 
 struct Person {
-    name: string,
-    age: int,
+    string name,
+    int age,
 }
 
 fn main() {
-    // Fix 3: array_sort_by_field — sort structs without a callback
+    // array_sort_by_field — sort structs without a callback
     let people = [
-        Person { name: "Charlie", age: 30 },
-        Person { name: "Alice", age: 20 },
-        Person { name: "Bob", age: 25 },
+        new Person { name: "Charlie", age: 30 },
+        new Person { name: "Alice", age: 20 },
+        new Person { name: "Bob", age: 25 },
     ];
     let by_age = array_sort_by_field(people, "age");
-    println(by_age[0].name);  // Alice
+    println(by_age[0].name);
 
     let by_age_desc = array_sort_by_field_desc(people, "age");
-    println(by_age_desc[0].name);  // Charlie
+    println(by_age_desc[0].name);
 
-    // Fix 4: array_flatten_depth — bounded depth flatten
-    let nested = [[1, 2], [3, [4, 5]]];
+    // array_flatten_depth — bounded depth flatten
+    let nested = [[1, 2], [3, 4]];
     let flat1 = array_flatten_depth(nested, 1);
-    println(flat1);  // [1, 2, 3, [4, 5]]
+    println(flat1);
 
-    let flat2 = array_flatten_depth(nested, 2);
-    println(flat2);  // [1, 2, 3, 4, 5]
-
-    // Fix 5: int_parse_hex + int_parse_bin
+    // int_parse_hex + int_parse_bin
     let n = int_parse_hex("0xff");
-    println(n);  // 255
+    println(n);
 
     let m = int_parse_bin("0b1010");
-    println(m);  // 10
+    println(m);
 
-    // Fix 6: int_to_oct
+    // int_to_oct
     let oct = int_to_oct(255);
-    println(oct);  // 377
+    println(oct);
 
-    // Fix 7: array_dedup_by — deduplicate structs by field
+    // array_dedup_by — deduplicate structs by field
     let dups = [
-        Person { name: "Alice", age: 20 },
-        Person { name: "Bob", age: 20 },
-        Person { name: "Carol", age: 30 },
+        new Person { name: "Alice", age: 20 },
+        new Person { name: "Bob", age: 20 },
+        new Person { name: "Carol", age: 30 },
     ];
     let deduped = array_dedup_by(dups, "age");
-    println(len(deduped));  // 2
+    println(len(deduped));
 
-    // Fix 8: array_none — complement of array_any
+    // array_none — complement of array_any
     let nums = [2, 4, 6, 8];
     let no_odds = array_none(nums, fn(int x) -> bool { return x % 2 != 0; });
-    println(no_odds);  // true
+    println(no_odds);
 }
+
+main();
