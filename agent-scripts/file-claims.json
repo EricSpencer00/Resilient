@@ -1,8 +1,12 @@
 {
   "claims": {
     "resilient/src/typechecker.rs": {
-      "branch": "res-2719-type-name-aliases",
-      "claimed_at": "2026-05-30T14:14:27Z"
+      "branch": "res-2721-interp-string-scope",
+      "claimed_at": "2026-05-30T14:23:45Z"
+    },
+    "resilient/src/string_interp.rs": {
+      "branch": "res-2721-interp-string-scope",
+      "claimed_at": "2026-05-30T14:23:45Z"
     }
   }
 }

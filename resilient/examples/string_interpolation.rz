@@ -1,0 +1,17 @@
+// RES-2721: string interpolation {expr} correctly resolves variables
+// from the enclosing scope without false-positive warnings.
+
+let name = "World";
+let count = 3;
+let greeting = "Hello, {name}! You have {count} messages.";
+println(greeting);
+
+fn double(int n) -> int { return n * 2; }
+
+let result = "double(7) = {double(7)}";
+println(result);
+
+let x = 10;
+let y = 20;
+let sum_msg = "{x} + {y} = {x + y}";
+println(sum_msg);
