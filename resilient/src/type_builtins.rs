@@ -32,6 +32,7 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 Value::Float(_) => "float",
                 Value::String(_) => "string",
                 Value::Bool(_) => "bool",
+                Value::Char(_) => "char",
                 Value::Array(_) => "array",
                 Value::Map(_) => "map",
                 Value::Set(_) => "set",

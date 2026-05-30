@@ -90,6 +90,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         | Node::StringLiteral { .. }
         | Node::BytesLiteral { .. }
         | Node::BooleanLiteral { .. }
+        | Node::CharLiteral { .. }
         | Node::DurationLiteral { .. }
         // RES-910: keyword-only statements have no expressions and bind
         // no names, so they contribute nothing to free vars.

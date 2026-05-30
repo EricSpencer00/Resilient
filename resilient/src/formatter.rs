@@ -889,6 +889,16 @@ impl Formatter {
             Node::BooleanLiteral { value, .. } => {
                 self.write(if *value { "true" } else { "false" });
             }
+            // RES-2619: char literal formatting — reconstruct quoted form.
+            Node::CharLiteral { value, .. } => match value {
+                '\'' => self.write("'\\''"),
+                '\\' => self.write("'\\\\'"),
+                '\n' => self.write("'\\n'"),
+                '\t' => self.write("'\\t'"),
+                '\r' => self.write("'\\r'"),
+                '\0' => self.write("'\\0'"),
+                c => self.write_args(format_args!("'{}'", c)),
+            },
             Node::BytesLiteral { value, .. } => {
                 self.write("b\"");
                 for b in value {
