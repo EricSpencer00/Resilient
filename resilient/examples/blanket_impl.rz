@@ -1,12 +1,12 @@
 // RES-2552: blanket trait implementations — `impl<T: Bound> Trait for T`.
+// RES-2685: monomorphization — the blanket impl is synthesized into a concrete
+//           `impl Loud for Score` at lowering time; no redundant specific impl needed.
 //
 // Declares a `Display` trait and a `Loud` trait, uses a blanket impl
 // `impl<T: Display> Loud for T { … }` to express "anything Displayable
 // is also Loud". The typechecker validates the blanket impl (trait
 // existence, bound existence, full method coverage, no duplicates).
-//
-// A standalone `impl Loud for Score` satisfies runtime dispatch so the
-// example can actually call `item.shout()`.
+// The lowering pass synthesizes a concrete `Score$shout` for runtime dispatch.
 
 struct Score {
     int value,
@@ -27,18 +27,11 @@ impl Display for Score {
     }
 }
 
-// Blanket impl — validated by the typechecker's blanket_impl::check pass.
-// Any T that implements Display also implements Loud via this template.
+// Blanket impl — any T that implements Display also implements Loud.
+// RES-2685: lower_program synthesizes `impl Loud for Score` from this.
 impl<T: Display> Loud for T {
     fn shout(self) -> string {
         return to_upper(self.show()) + "!";
-    }
-}
-
-// Specific impl for Loud on Score — used by the runtime dispatcher.
-impl Loud for Score {
-    fn shout(self) -> string {
-        return to_upper(to_string(self.value)) + "!";
     }
 }
 

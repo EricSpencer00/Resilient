@@ -1,16 +1,16 @@
 {
   "claims": {
+    "resilient/src/blanket_impl.rs": {
+      "branch": "res-2685-monomorphize-blanket-impls",
+      "claimed_at": "2026-05-30T09:02:14Z"
+    },
     "resilient/src/lib.rs": {
-      "branch": "res-2683-char-completions",
-      "claimed_at": "2026-05-30T08:42:46Z"
+      "branch": "res-2685-monomorphize-blanket-impls",
+      "claimed_at": "2026-05-30T09:02:14Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-2683-char-completions",
-      "claimed_at": "2026-05-30T08:42:46Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-2683-char-completions",
-      "claimed_at": "2026-05-30T08:44:28Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2685-monomorphize-blanket-impls",
+      "claimed_at": "2026-05-30T09:02:14Z"
     }
   }
 }
