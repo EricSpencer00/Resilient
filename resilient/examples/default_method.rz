@@ -1,0 +1,41 @@
+// RES-2697: default trait method bodies.
+// `greet_loudly` is not overridden by Alice's impl — the trait default fires.
+// Bob overrides it, so Bob's version runs instead.
+
+trait Greet {
+    fn greet(self) -> string;
+
+    fn greet_loudly(self) -> string {
+        return self.greet() + "!!!";
+    }
+}
+
+struct Alice { string name }
+struct Bob   { string name }
+
+impl Greet for Alice {
+    fn greet(self) -> string {
+        return "Hello, " + self.name;
+    }
+    // greet_loudly not overridden — default should fire
+}
+
+impl Greet for Bob {
+    fn greet(self) -> string {
+        return "Hi, " + self.name;
+    }
+    fn greet_loudly(self) -> string {
+        return "HEY, " + self.name + "!";
+    }
+}
+
+fn main() -> void {
+    let a = new Alice { name: "Alice" };
+    let b = new Bob   { name: "Bob"   };
+    println(a.greet());
+    println(a.greet_loudly());
+    println(b.greet());
+    println(b.greet_loudly());
+}
+
+main();

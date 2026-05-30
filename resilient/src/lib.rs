@@ -5769,7 +5769,7 @@ impl Parser {
         }
     }
 
-    fn parse_block_statement(&mut self) -> Node {
+    pub(crate) fn parse_block_statement(&mut self) -> Node {
         // RES-087: capture the `{` token's span before advancing.
         let brace_span = self.span_at_current();
         // RES-1772: pre-size to 4 — typical block has 2-5 statements.
@@ -22655,6 +22655,12 @@ struct Interpreter {
     /// whose callee is also `#[mutual_tail_call]` emits `Value::MutualTailCall`
     /// instead of recursing; the trampoline in `apply_function` re-dispatches.
     mutual_tco_fn: Option<String>,
+    /// RES-2697: default method bodies declared on traits. Keyed by trait
+    /// name; value is the list of `(method_name, FunctionValue)` pairs for
+    /// every method that has a default body. Shared via Rc so sub-interpreters
+    /// created by `apply_function` see the same registry.
+    #[allow(clippy::type_complexity)]
+    trait_method_defaults: Rc<RefCell<HashMap<String, Vec<(String, Value)>>>>,
 }
 
 /// RES-1108 + RES-1109 + RES-1110: structural equality for compound
@@ -22807,6 +22813,7 @@ impl Interpreter {
             overflow_mode: vm::OverflowMode::from_env(),
             tco_fn_name: None,
             mutual_tco_fn: None,
+            trait_method_defaults: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -24215,6 +24222,7 @@ impl Interpreter {
             Node::ImplBlock {
                 methods,
                 struct_name,
+                trait_name,
                 ..
             } => {
                 for method in methods {
@@ -24234,6 +24242,33 @@ impl Interpreter {
                         ));
                     }
                     self.eval(method)?;
+                }
+                // RES-2697: inject default method bodies for any trait method
+                // not explicitly overridden by this impl block.
+                if let Some(trait_nm) = trait_name {
+                    let overridden: HashSet<String> = methods
+                        .iter()
+                        .filter_map(|m| {
+                            if let Node::Function { name, .. } = m {
+                                name.strip_prefix(&format!("{}$", struct_name))
+                                    .map(|s| s.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let defaults: Vec<(String, Value)> = self
+                        .trait_method_defaults
+                        .borrow()
+                        .get(trait_nm.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+                    for (method_name, default_fn) in defaults {
+                        if !overridden.contains(&method_name) {
+                            self.env
+                                .set(format!("{}${}", struct_name, method_name), default_fn);
+                        }
+                    }
                 }
                 Ok(Value::Void)
             }
@@ -24608,9 +24643,40 @@ impl Interpreter {
             // Each contained declaration is registered under the
             // prefixed key `"name::decl"` in the outer environment.
             Node::ModuleDecl { name, body, .. } => crate::modules::eval_module(name, body, self),
-            // RES-290: trait declarations carry no runtime payload — the
-            // typechecker validates them; here we just produce Void.
-            Node::TraitDecl { .. } => Ok(Value::Void),
+            // RES-290: trait declarations carry no runtime payload for
+            // abstract methods. RES-2697: methods with default bodies are
+            // registered so ImplBlocks can inject them for non-overriding impls.
+            Node::TraitDecl { name, methods, .. } => {
+                let mut defaults: Vec<(String, Value)> = Vec::new();
+                for method in methods {
+                    let Some(body) = &method.default_body else {
+                        continue;
+                    };
+                    let parameters: Vec<(String, String)> = method
+                        .params
+                        .iter()
+                        .map(|p| ("".to_string(), p.clone()))
+                        .collect();
+                    let fv = Value::Function(Box::new(FunctionValue {
+                        parameters: Rc::new(parameters),
+                        body: Rc::new(*body.clone()),
+                        env: self.env.clone(),
+                        requires: vec![],
+                        ensures: vec![],
+                        recovers_to: None,
+                        name: format!("{}${}", name, method.name),
+                        type_params: vec![],
+                        fails: Rc::new(vec![]),
+                    }));
+                    defaults.push((method.name.clone(), fv));
+                }
+                if !defaults.is_empty() {
+                    self.trait_method_defaults
+                        .borrow_mut()
+                        .insert(name.clone(), defaults);
+                }
+                Ok(Value::Void)
+            }
             // RES-400: enum declarations register each variant under
             // the qualified key `EnumName::VariantName` in the current
             // scope. Payload-less variants resolve directly to a
@@ -25005,6 +25071,15 @@ impl Interpreter {
         // const declarations are resolved. Failures surface as
         // compile-time errors — no runtime cost for passing asserts.
         crate::static_assert::check_with_consts(statements, &self.consts)?;
+
+        // RES-2697: evaluate TraitDecl nodes first so that default method
+        // bodies are registered before impl blocks are hoisted below.
+        for statement in statements {
+            if let Node::TraitDecl { .. } = &statement.node {
+                self.eval(&statement.node)
+                    .map_err(|e| decorate_runtime_error(e, &statement.span))?;
+            }
+        }
 
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs
@@ -25957,6 +26032,7 @@ impl Interpreter {
                     overflow_mode: self.overflow_mode,
                     tco_fn_name: None,
                     mutual_tco_fn: None,
+                    trait_method_defaults: self.trait_method_defaults.clone(),
                 };
 
                 // RES-2592: activate the trampoline loop for #[must_tail_call] fns.
