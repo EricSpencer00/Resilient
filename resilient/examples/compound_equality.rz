@@ -1,0 +1,37 @@
+// RES-2728: Map==Map, Set==Set, and EnumVariant==EnumVariant now work correctly.
+
+// Map equality
+let m1 = {"a" -> 1, "b" -> 2};
+let m2 = {"a" -> 1, "b" -> 2};
+let m3 = {"a" -> 9, "b" -> 2};
+
+if m1 == m2 { println("maps equal: true"); }
+if m1 != m3 { println("maps not equal: true"); }
+
+// Set equality
+let s1 = #{1, 2, 3};
+let s2 = #{1, 2, 3};
+let s3 = #{1, 2, 4};
+
+if s1 == s2 { println("sets equal: true"); }
+if s1 != s3 { println("sets not equal: true"); }
+
+// Enum equality
+enum Color { Red, Green, Blue }
+
+let c1 = Color::Red;
+let c2 = Color::Red;
+let c3 = Color::Blue;
+
+if c1 == c2 { println("enum same variant: true"); }
+if c1 != c3 { println("enum different variant: true"); }
+
+// Enum with tuple payload
+enum Shape { Circle(int), Rect(int, int) }
+
+let sh1 = Shape::Circle(5);
+let sh2 = Shape::Circle(5);
+let sh3 = Shape::Circle(6);
+
+if sh1 == sh2 { println("enum same payload: true"); }
+if sh1 != sh3 { println("enum different payload: true"); }
