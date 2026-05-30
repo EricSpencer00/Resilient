@@ -1,0 +1,66 @@
+// RES-2693: trait-based polymorphism — a struct that implements a trait
+// can be passed wherever the trait type is expected.
+
+trait Describable {
+    fn describe(self) -> string;
+}
+
+trait Area {
+    fn area(self) -> float;
+}
+
+struct Circle {
+    float radius,
+}
+
+struct Rectangle {
+    float width,
+    float height,
+}
+
+impl Describable for Circle {
+    fn describe(self) -> string {
+        return "Circle(r=" + to_string(self.radius) + ")";
+    }
+}
+
+impl Describable for Rectangle {
+    fn describe(self) -> string {
+        return "Rectangle(" + to_string(self.width) + "x" + to_string(self.height) + ")";
+    }
+}
+
+impl Area for Circle {
+    fn area(self) -> float {
+        return 3.14159 * self.radius * self.radius;
+    }
+}
+
+impl Area for Rectangle {
+    fn area(self) -> float {
+        return self.width * self.height;
+    }
+}
+
+fn print_shape(Describable d) -> void {
+    println(d.describe());
+}
+
+fn main() -> void {
+    let c = new Circle { radius: 3.0 };
+    let r = new Rectangle { width: 4.0, height: 5.0 };
+
+    // Structs implementing Describable are accepted for Describable params.
+    print_shape(c);
+    print_shape(r);
+
+    // Let bindings with trait annotation.
+    let d: Describable = new Circle { radius: 1.0 };
+    println(d.describe());
+
+    // Area via direct method call.
+    println(c.area());
+    println(r.area());
+}
+
+main();
