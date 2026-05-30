@@ -1,0 +1,5 @@
+5
+division by zero
+42
+not positive
+Program executed successfully

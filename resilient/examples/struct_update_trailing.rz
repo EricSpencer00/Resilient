@@ -1,0 +1,29 @@
+// RES-2741: struct update `..base` at the END of a field list.
+// Previously only `new P { ..base, x: 10 }` worked; the more
+// common Rust-style `new P { x: 10, ..base }` caused a parse error.
+
+struct Point {
+    int x,
+    int y,
+    int z,
+}
+
+let origin = new Point { x: 0, y: 0, z: 0 };
+
+// Trailing ..base (Rust convention — now supported):
+let p1 = new Point { x: 5, ..origin };
+println(p1.x);
+println(p1.y);
+println(p1.z);
+
+// Multiple overrides then ..base:
+let p2 = new Point { x: 1, y: 2, ..origin };
+println(p2.x);
+println(p2.y);
+println(p2.z);
+
+// Leading ..base still works:
+let p3 = new Point { ..origin, z: 99 };
+println(p3.x);
+println(p3.y);
+println(p3.z);
