@@ -9352,10 +9352,17 @@ impl Parser {
                 break;
             }
             self.next_token(); // skip '=>'
-            let body = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
-                value: 0,
-                span: span::Span::default(),
-            });
+            // RES-2699: a braced arm body `{ stmt* }` must be parsed as a
+            // block statement, not a map literal — `{` in expression position
+            // defaults to parse_map_literal which misreads the contents.
+            let body = if self.current_token == Token::LeftBrace {
+                self.parse_block_statement()
+            } else {
+                self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                })
+            };
             arms.push((pattern, guard, body));
             self.next_token(); // past last token of body
             if self.current_token == Token::Comma {
@@ -59058,5 +59065,74 @@ println(m[0]);"#);
         let r = run(r#"let m = {"a" -> 1};
 println(m["z"]);"#);
         assert!(!r.ok, "expected error for missing key");
+    }
+}
+
+#[cfg(test)]
+mod res2699_match_block_arms {
+    use super::run_program as run;
+
+    #[test]
+    fn match_arm_block_body_executes() {
+        let r = run("enum Shape { Circle(float), Square(float) }\n\
+             let s = Shape::Circle(2.0);\n\
+             match s {\n\
+                 Shape::Circle(r) => {\n\
+                     let a = 3.0 * r;\n\
+                     println(to_string(a));\n\
+                 },\n\
+                 Shape::Square(x) => println(\"sq\"),\n\
+             }");
+        assert!(r.ok, "runtime failed: {:?}", r.errors);
+        assert!(r.stdout.contains("6"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn nested_match_inside_block_arm() {
+        let r = run("enum Color { Red, Blue }\n\
+             enum Shape { Circle(float), Square(float) }\n\
+             let c = Color::Red;\n\
+             let s = Shape::Circle(1.0);\n\
+             match s {\n\
+                 Shape::Circle(r) => {\n\
+                     match c {\n\
+                         Color::Red => println(\"red circle\"),\n\
+                         Color::Blue => println(\"blue circle\"),\n\
+                     }\n\
+                 },\n\
+                 Shape::Square(x) => println(\"square\"),\n\
+             }");
+        assert!(r.ok, "runtime failed: {:?}", r.errors);
+        assert!(r.stdout.contains("red circle"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn single_expr_arm_still_works() {
+        let r = run("enum Color { Red, Blue }\n\
+             let c = Color::Blue;\n\
+             match c {\n\
+                 Color::Red => println(\"red\"),\n\
+                 Color::Blue => println(\"blue\"),\n\
+             }");
+        assert!(r.ok, "runtime failed: {:?}", r.errors);
+        assert!(r.stdout.contains("blue"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn block_arm_with_return_propagates() {
+        let r = run("enum Shape { Circle(float), Square(float) }\n\
+             fn area(Shape s) -> float {\n\
+                 match s {\n\
+                     Shape::Circle(r) => {\n\
+                         return 3.14 * r * r;\n\
+                     },\n\
+                     Shape::Square(x) => {\n\
+                         return x * x;\n\
+                     },\n\
+                 }\n\
+             }\n\
+             println(to_string(area(Shape::Square(4.0))));");
+        assert!(r.ok, "runtime failed: {:?}", r.errors);
+        assert!(r.stdout.contains("16"), "got: {}", r.stdout);
     }
 }
