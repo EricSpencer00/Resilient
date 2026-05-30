@@ -1,0 +1,28 @@
+// RES-2726: Result == Result and Result != Result now work correctly.
+// Ok(x) == Ok(x) compares inner values structurally; Err(x) == Err(x) likewise.
+
+let a = Ok(5);
+let b = Ok(5);
+let c = Ok(6);
+let e1 = Err("fail");
+let e2 = Err("fail");
+
+if a == b { println("Ok(5) == Ok(5): true"); }
+if a != c { println("Ok(5) != Ok(6): true"); }
+if e1 == e2 { println("Err(fail) == Err(fail): true"); }
+if a != e1 { println("Ok(5) != Err(fail): true"); }
+
+fn safe_div(int x, int y) -> Result {
+    if y == 0 {
+        return Err("division by zero");
+    }
+    return Ok(x / y);
+}
+
+let r1 = safe_div(10, 2);
+let r2 = safe_div(10, 2);
+let r3 = safe_div(10, 0);
+
+if r1 == r2 { println("safe_div(10,2) == safe_div(10,2): true"); }
+if r1 != r3 { println("Ok(5) != Err(division by zero): true"); }
+if r3 == Err("division by zero") { println("error matches expected: true"); }
