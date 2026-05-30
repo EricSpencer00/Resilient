@@ -91,6 +91,40 @@ nav button:focus {
   cursor: wait;
 }
 
+/* RES-2624: share button */
+#share-btn {
+  background: #fff;
+  color: #4f8cff;
+  border-color: #4f8cff;
+}
+
+#share-btn:hover {
+  background: #e8f0ff;
+}
+
+/* RES-2624: "Link copied!" toast */
+.share-toast {
+  font-size: 12px;
+  background: #1a1a1a;
+  color: #fff;
+  padding: 3px 10px;
+  border-radius: 4px;
+  animation: fadeout 2s forwards;
+  pointer-events: none;
+}
+
+@keyframes fadeout {
+  0%   { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* RES-2625: red wavy underline on error positions in the editor */
+.rz-error-underline {
+  text-decoration: underline wavy #d32f2f;
+  text-underline-offset: 2px;
+}
+
 .github-link {
   font-size: 13px;
   color: #4f8cff;
