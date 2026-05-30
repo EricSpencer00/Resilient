@@ -9536,6 +9536,11 @@ impl Parser {
                 value: *b,
                 span: tok_span,
             }),
+            // RES-2683: char literal in pattern position — `'A'`, `'\n'`, etc.
+            Token::CharLiteral(c) => Pattern::Literal(Node::CharLiteral {
+                value: *c,
+                span: tok_span,
+            }),
             Token::Identifier(name) => {
                 let name = name.clone();
                 // RES-375: `Some(inner_pattern)` — Option presence pattern.
@@ -25723,6 +25728,19 @@ impl Interpreter {
             (Value::Bool(l), Value::Bool(r)) => {
                 self.eval_boolean_infix_expression(operator, *l, *r)
             }
+            // RES-2683: char comparison — code-point (Unicode scalar) order.
+            (Value::Char(l), Value::Char(r)) => {
+                let (l, r) = (*l, *r);
+                match operator {
+                    "==" => Ok(Value::Bool(l == r)),
+                    "!=" => Ok(Value::Bool(l != r)),
+                    "<" => Ok(Value::Bool(l < r)),
+                    ">" => Ok(Value::Bool(l > r)),
+                    "<=" => Ok(Value::Bool(l <= r)),
+                    ">=" => Ok(Value::Bool(l >= r)),
+                    _ => Err(format!("operator `{}` is not defined for Char", operator)),
+                }
+            }
             _ => {
                 if let Some(v) =
                     crate::operator_overload::try_dispatch(self, operator, &left, &right)?
@@ -26242,6 +26260,8 @@ impl Interpreter {
                     (Value::Float(a), Value::Float(b)) => a == b,
                     (Value::String(a), Value::String(b)) => a == b,
                     (Value::Bool(a), Value::Bool(b)) => a == b,
+                    // RES-2683: char literal patterns.
+                    (Value::Char(a), Value::Char(b)) => a == b,
                     _ => false,
                 };
                 Ok(if is_equal { Some(vec![]) } else { None })

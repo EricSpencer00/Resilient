@@ -863,6 +863,8 @@ fn run_inner(
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x < y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x < y)),
                     (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x < y)),
+                    // RES-2683: char ordering.
+                    (Value::Char(x), Value::Char(y)) => stack.push(Value::Bool(x < y)),
                     _ => return Err(VmError::TypeMismatch("Lt")),
                 }
             }
@@ -873,6 +875,8 @@ fn run_inner(
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x <= y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x <= y)),
                     (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x <= y)),
+                    // RES-2683: char ordering.
+                    (Value::Char(x), Value::Char(y)) => stack.push(Value::Bool(x <= y)),
                     _ => return Err(VmError::TypeMismatch("Le")),
                 }
             }
@@ -883,6 +887,8 @@ fn run_inner(
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x > y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x > y)),
                     (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x > y)),
+                    // RES-2683: char ordering.
+                    (Value::Char(x), Value::Char(y)) => stack.push(Value::Bool(x > y)),
                     _ => return Err(VmError::TypeMismatch("Gt")),
                 }
             }
@@ -893,6 +899,8 @@ fn run_inner(
                     (Value::Int(x), Value::Int(y)) => stack.push(Value::Bool(x >= y)),
                     (Value::Float(x), Value::Float(y)) => stack.push(Value::Bool(x >= y)),
                     (Value::String(ref x), Value::String(ref y)) => stack.push(Value::Bool(x >= y)),
+                    // RES-2683: char ordering.
+                    (Value::Char(x), Value::Char(y)) => stack.push(Value::Bool(x >= y)),
                     _ => return Err(VmError::TypeMismatch("Ge")),
                 }
             }
@@ -1592,6 +1600,8 @@ fn vm_values_eq(a: &Value, b: &Value) -> bool {
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::String(x), Value::String(y)) => x == y,
+        // RES-2683: char equality.
+        (Value::Char(x), Value::Char(y)) => x == y,
         (Value::Void, Value::Void) => true,
         (Value::Array(x), Value::Array(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| vm_values_eq(a, b))
@@ -2324,6 +2334,7 @@ fn h_lt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         (Value::Int(x), Value::Int(y)) => x < y,
         (Value::Float(x), Value::Float(y)) => x < y,
         (Value::String(ref x), Value::String(ref y)) => x < y,
+        (Value::Char(x), Value::Char(y)) => x < y,
         _ => return Err(VmError::TypeMismatch("Lt")),
     };
     state.stack.push(Value::Bool(result));
@@ -2338,6 +2349,7 @@ fn h_le(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         (Value::Int(x), Value::Int(y)) => x <= y,
         (Value::Float(x), Value::Float(y)) => x <= y,
         (Value::String(ref x), Value::String(ref y)) => x <= y,
+        (Value::Char(x), Value::Char(y)) => x <= y,
         _ => return Err(VmError::TypeMismatch("Le")),
     };
     state.stack.push(Value::Bool(result));
@@ -2352,6 +2364,7 @@ fn h_gt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         (Value::Int(x), Value::Int(y)) => x > y,
         (Value::Float(x), Value::Float(y)) => x > y,
         (Value::String(ref x), Value::String(ref y)) => x > y,
+        (Value::Char(x), Value::Char(y)) => x > y,
         _ => return Err(VmError::TypeMismatch("Gt")),
     };
     state.stack.push(Value::Bool(result));
@@ -2366,6 +2379,7 @@ fn h_ge(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         (Value::Int(x), Value::Int(y)) => x >= y,
         (Value::Float(x), Value::Float(y)) => x >= y,
         (Value::String(ref x), Value::String(ref y)) => x >= y,
+        (Value::Char(x), Value::Char(y)) => x >= y,
         _ => return Err(VmError::TypeMismatch("Ge")),
     };
     state.stack.push(Value::Bool(result));
