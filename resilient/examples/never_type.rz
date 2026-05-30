@@ -1,0 +1,18 @@
+// RES-2578: `!` (never) type for diverging functions.
+// Functions returning `!` promise to never return to their caller.
+
+fn fail(string msg) -> ! {
+    println("FATAL: " + msg);
+    loop { }
+}
+
+// A function that conditionally fails — type system knows `fail` diverges.
+fn checked_div(int a, int b) -> int {
+    if b == 0 {
+        fail("division by zero");
+    }
+    a / b
+}
+
+let result = checked_div(10, 2);
+println(to_string(result));
