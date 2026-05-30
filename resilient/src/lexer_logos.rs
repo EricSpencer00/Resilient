@@ -194,6 +194,13 @@ enum Tok {
     // `"..."` never decomposes into `Ident("b") Str(...)`.
     #[regex(r#"b"([^"\\]|\\[\s\S])*""#, bytes_lit, priority = 3)]
     BytesLit(Vec<u8>),
+    // RES-2619: char literal `'...'`. Matches single-quoted content
+    // with the same escape-or-non-quote alternation as string
+    // literals, then validates exactly one Unicode scalar in the
+    // `char_lit` callback. Priority 5 > Str (default 2) ensures
+    // `'A'` is not tokenised as an identifier followed by an error.
+    #[regex(r"'([^'\\]|\\[\s\S])*'", char_lit, priority = 5)]
+    CharLit(char),
 
     // --- keywords ---
     #[token("fn")]
@@ -627,6 +634,17 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
     out
 }
 
+/// RES-2619: char literal callback. Strip the surrounding `'...'` quotes,
+/// delegate to `char_type::parse_char_inner` for escape processing, and
+/// return `None` (lex error) if the content is not exactly one Unicode
+/// scalar value (e.g. `''`, `'AB'`).
+fn char_lit(lex: &mut logos::Lexer<Tok>) -> Option<char> {
+    let slice = lex.slice();
+    // Strip surrounding `'` quotes.
+    let inner = &slice[1..slice.len().saturating_sub(1)];
+    crate::char_type::parse_char_inner(inner)
+}
+
 fn block_comment(lex: &mut logos::Lexer<Tok>) -> logos::Skip {
     // `lex.slice()` already covered the opening `/*`; walk the
     // remainder and consume bytes until the matching closer is found,
@@ -885,6 +903,8 @@ fn convert(t: Tok) -> Token {
         Tok::Float(f) => Token::FloatLiteral(f),
         Tok::Str(s) => Token::StringLiteral(s),
         Tok::BytesLit(b) => Token::BytesLiteral(b),
+        // RES-2619: single-quoted char literal.
+        Tok::CharLit(c) => Token::CharLiteral(c),
         Tok::Ident(s) => Token::Identifier(s),
         // `BlockComment` is never emitted — its callback always
         // returns `logos::Skip`. Presence here guards the match's

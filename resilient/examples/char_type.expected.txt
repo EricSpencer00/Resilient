@@ -1,0 +1,16 @@
+char
+true
+true
+true
+true
+true
+true
+true
+B
+q
+65
+B
+H
+10
+char
+Program executed successfully

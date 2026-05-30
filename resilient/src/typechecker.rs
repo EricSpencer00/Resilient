@@ -2501,6 +2501,36 @@ impl TypeChecker {
                     },
                 );
 
+                // RES-2619: Char type builtins. All classification
+                // functions take one Any and return Bool; conversions
+                // return Any (no Type::Char yet).
+                let fn_char_to_bool = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Bool),
+                };
+                let fn_char_to_any = || Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Any),
+                };
+                env.set("char_is_alpha".to_string(), fn_char_to_bool());
+                env.set("char_is_digit".to_string(), fn_char_to_bool());
+                env.set("char_is_whitespace".to_string(), fn_char_to_bool());
+                env.set("char_is_upper".to_string(), fn_char_to_bool());
+                env.set("char_is_lower".to_string(), fn_char_to_bool());
+                env.set("char_is_alphanumeric".to_string(), fn_char_to_bool());
+                env.set("char_is_ascii".to_string(), fn_char_to_bool());
+                env.set("char_to_upper".to_string(), fn_char_to_any());
+                env.set("char_to_lower".to_string(), fn_char_to_any());
+                env.set("char_to_int".to_string(), fn_char_to_any());
+                env.set("char_to_string".to_string(), fn_char_to_any());
+                env.set(
+                    "int_to_char".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
                 // RES-416: integer-array reductions.
                 env.set("array_sum".to_string(), fn_any_to_int());
                 env.set("array_product".to_string(), fn_any_to_int());
@@ -7901,6 +7931,8 @@ impl TypeChecker {
             Node::InterpolatedString { .. } => Ok(Type::String),
             Node::BytesLiteral { .. } => Ok(Type::Bytes),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
+            // RES-2619: char literal — no Type::Char yet, infer as Any.
+            Node::CharLiteral { .. } => Ok(Type::Any),
 
             Node::PrefixExpression {
                 operator,
@@ -9779,6 +9811,19 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-945: default-fallback map accessors.
         "map_get_or",
         "hashmap_get_or",
+        // RES-2619: Char type builtins — all are pure.
+        "char_is_alpha",
+        "char_is_digit",
+        "char_is_whitespace",
+        "char_is_upper",
+        "char_is_lower",
+        "char_is_alphanumeric",
+        "char_is_ascii",
+        "char_to_upper",
+        "char_to_lower",
+        "char_to_int",
+        "int_to_char",
+        "char_to_string",
     ];
     // RES-1530: lookup against a `HashSet<&'static str>` built once
     // per process from `PURE_BUILTINS`. The previous shape called

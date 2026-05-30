@@ -4604,6 +4604,9 @@ fn node_line(n: &Node) -> Option<u32> {
         // RES-152: bytes literal span at its opening `b"`.
         Node::BytesLiteral { span, .. } => span.start.line as u32,
 
+        // RES-2619: char literal span at its opening `'`.
+        Node::CharLiteral { span, .. } => span.start.line as u32,
+
         // RES-155: struct destructure let carries the `let` keyword span.
         Node::LetDestructureStruct { span, .. } => span.start.line as u32,
 

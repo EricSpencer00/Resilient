@@ -453,6 +453,12 @@ mod enum_ctors;
 // patches in `parse_expression` that call into that module.
 mod numeric_suffixes;
 
+// RES-2619: `Char` — 32-bit Unicode scalar value type. Provides single-quoted
+// literals, classification builtins (char_is_alpha, char_is_digit, …), case
+// conversion, and int↔char conversion. All logic lives here; lib.rs adds only
+// the Token/Node/Value variants and the builtin registrations.
+mod char_type;
+
 // RES-2535: `where` clause support — post-signature generic bound syntax.
 // All parsing and validation logic lives here; lib.rs only adds the token
 // and the call to `merge_where_clause` after `parse_optional_return_type`.
@@ -828,6 +834,8 @@ enum Token {
     /// Unicode code-point at the bytes level) pass through as the
     /// literal two bytes `\` + char — see ticket Notes.
     BytesLiteral(Vec<u8>),
+    /// RES-2619: `'A'` single-quoted char literal — one Unicode scalar.
+    CharLiteral(char),
 
     // Operators
     Plus,
@@ -1031,6 +1039,7 @@ impl Token {
             Token::FloatLiteral(v) => Cow::Owned(format!("float literal `{}`", v)),
             Token::StringLiteral(_) => Cow::Borrowed("string literal"),
             Token::BytesLiteral(_) => Cow::Borrowed("bytes literal"),
+            Token::CharLiteral(c) => Cow::Owned(format!("char literal `'{}'`", c)),
             Token::BoolLiteral(b) => Cow::Owned(format!("`{}`", b)),
             Token::Eof => Cow::Borrowed("end of input"),
             Token::Unknown(c) => Cow::Owned(format!("unrecognized character `{}`", c)),
@@ -1461,6 +1470,13 @@ impl Lexer {
                 let str_value = self.read_string();
                 Token::StringLiteral(str_value)
             }
+            // RES-2619: `'...'` char literal.
+            '\'' => {
+                self.read_char(); // consume opening `'`; self.ch is first content char
+                let inner = self.read_char_inner();
+                // consume closing `'` (read_char_inner leaves self.ch on `'`)
+                Token::CharLiteral(inner)
+            }
             // RES-152: `b"..."` byte-string literal. The guard on
             // the next char distinguishes from a bare identifier
             // that starts with `b` — ASCII letters still fall
@@ -1768,6 +1784,45 @@ impl Lexer {
         }
 
         result
+    }
+
+    /// RES-2619: read the content of a `'...'` char literal, consuming
+    /// escape sequences and leaving `self.ch` at the closing `'`. If the
+    /// content is empty, malformed, or more than one scalar value, returns
+    /// the replacement character `\u{FFFD}` so the lexer always produces
+    /// a token instead of panicking. Full escape support via
+    /// `char_type::parse_char_inner`.
+    fn read_char_inner(&mut self) -> char {
+        let mut raw = String::new();
+        // Collect everything up to the closing `'` (or EOF).
+        while self.ch != '\'' && self.ch != '\0' {
+            if self.ch == '\\' && self.read_position < self.input.len() {
+                raw.push('\\');
+                self.read_char(); // consume the character after `\`
+                raw.push(self.ch);
+                // `\u{HHHH}` — gather the hex digits inside `{...}`
+                if self.ch == 'u' {
+                    let next = self.peek_char();
+                    if next == '{' {
+                        self.read_char(); // consume `{`
+                        raw.push('{');
+                        loop {
+                            self.read_char();
+                            if self.ch == '}' || self.ch == '\0' {
+                                raw.push(self.ch);
+                                break;
+                            }
+                            raw.push(self.ch);
+                        }
+                    }
+                }
+            } else {
+                raw.push(self.ch);
+            }
+            self.read_char();
+        }
+        // self.ch is now `'` (closing) or `\0` (EOF).
+        crate::char_type::parse_char_inner(&raw).unwrap_or('\u{FFFD}')
     }
 
     /// RES-152: read the contents of a `b"..."` byte literal, leaving
@@ -2451,6 +2506,12 @@ enum Node {
     /// eval time.
     BytesLiteral {
         value: Vec<u8>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-2619: `'A'` single-quoted char literal.
+    CharLiteral {
+        value: char,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -8020,6 +8081,11 @@ impl Parser {
                 value: value.clone(),
                 span: tok_span,
             }),
+            // RES-2619: single-quoted char literal.
+            Token::CharLiteral(value) => Some(Node::CharLiteral {
+                value: *value,
+                span: tok_span,
+            }),
             Token::BoolLiteral(value) => Some(Node::BooleanLiteral {
                 value: *value,
                 span: tok_span,
@@ -10228,6 +10294,8 @@ enum Value {
     Float(f64),
     String(String),
     Bool(bool),
+    /// RES-2619: Unicode scalar value.
+    Char(char),
     Function(Box<FunctionValue>),
     /// Native function. `name` is the identifier it was registered as,
     /// for diagnostics only.
@@ -10511,6 +10579,8 @@ impl std::fmt::Debug for Value {
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
             Value::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
+            // RES-2619: char value debug — show as 'A'.
+            Value::Char(c) => write!(f, "'{c}'"),
             // RES-169a: skeleton Debug for the VM-side closure value.
             // Not constructed today; kept for completeness so a
             // future test printf doesn't silently no-op.
@@ -10579,6 +10649,9 @@ impl std::fmt::Display for Value {
             Value::Float(fl) => write!(f, "{}", fl),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Bool(b) => write!(f, "{}", b),
+            // RES-2619: char displays as the bare character (no quotes),
+            // matching how println(c) should print a char to stdout.
+            Value::Char(c) => write!(f, "{c}"),
             Value::Function(_) => write!(f, "<function>"),
             Value::Builtin { name, .. } => write!(f, "<builtin {}>", name),
             Value::Array(items) => {
@@ -12507,6 +12580,25 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "array_dedup_by",
         crate::array_dedup_none::builtin_array_dedup_by,
     ),
+    // RES-2619: Char type builtins.
+    ("char_is_alpha", crate::char_type::builtin_char_is_alpha),
+    ("char_is_digit", crate::char_type::builtin_char_is_digit),
+    (
+        "char_is_whitespace",
+        crate::char_type::builtin_char_is_whitespace,
+    ),
+    ("char_is_upper", crate::char_type::builtin_char_is_upper),
+    ("char_is_lower", crate::char_type::builtin_char_is_lower),
+    (
+        "char_is_alphanumeric",
+        crate::char_type::builtin_char_is_alphanumeric,
+    ),
+    ("char_is_ascii", crate::char_type::builtin_char_is_ascii),
+    ("char_to_upper", crate::char_type::builtin_char_to_upper),
+    ("char_to_lower", crate::char_type::builtin_char_to_lower),
+    ("char_to_int", crate::char_type::builtin_char_to_int),
+    ("int_to_char", crate::char_type::builtin_int_to_char),
+    ("char_to_string", crate::char_type::builtin_char_to_string),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -23122,6 +23214,8 @@ impl Interpreter {
                 crate::string_interp::eval_interp(self, parts)
             }
             Node::BytesLiteral { value, .. } => Ok(Value::Bytes(value.clone())),
+            // RES-2619: char literal evaluates to Value::Char.
+            Node::CharLiteral { value, .. } => Ok(Value::Char(*value)),
             Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
             Node::PrefixExpression {
                 operator, right, ..

@@ -1,0 +1,31 @@
+// RES-2619: Char type — 32-bit Unicode scalar value.
+
+// Literals and type_of
+let c: Char = 'A';
+println(type_of(c));
+
+// Classification
+println(char_is_alpha(c));
+println(char_is_digit('5'));
+println(char_is_whitespace(' '));
+println(char_is_upper('Z'));
+println(char_is_lower('a'));
+println(char_is_alphanumeric('3'));
+println(char_is_ascii('~'));
+
+// Case conversion
+println(char_to_upper('b'));
+println(char_to_lower('Q'));
+
+// Conversion
+println(char_to_int('A'));
+println(int_to_char(66));
+println(char_to_string('H'));
+
+// Escape sequences
+let newline = '\n';
+println(char_to_int(newline));
+
+// Unicode escape
+let smiley = '\u{1F600}';
+println(type_of(smiley));
