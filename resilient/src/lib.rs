@@ -646,6 +646,8 @@ mod static_assert;
 mod float32;
 mod struct_exhaustiveness;
 mod typestate_types;
+// RES-2590: warn on unused `use "path" as alias;` imports.
+mod unused_imports;
 mod vibe_debt;
 mod wcet_contracts;
 
@@ -28706,6 +28708,12 @@ fn execute_file(
     {
         return Err(format!("Safety-critical lint failed: {} error(s)", count));
     }
+
+    // RES-2590: warn on unused aliased imports before expanding them.
+    // Must run before `expand_uses_with_std` because that call replaces
+    // `Node::Use` nodes with imported content; after expansion there are
+    // no `Node::Use` nodes left to inspect.
+    unused_imports::check(&program, filename);
 
     // RES-073: resolve `use` imports before typecheck / interpret.
     //
