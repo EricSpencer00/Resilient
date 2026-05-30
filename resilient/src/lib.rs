@@ -22714,8 +22714,14 @@ fn compound_values_equal(left: &Value, right: &Value) -> Option<bool> {
         // RES-2726: Result == Result. Ok(x)==Ok(y) iff x==y; Err(x)==Err(y)
         // iff x==y; Ok(_) != Err(_) always.
         (
-            Value::Result { ok: lok, payload: lp },
-            Value::Result { ok: rok, payload: rp },
+            Value::Result {
+                ok: lok,
+                payload: lp,
+            },
+            Value::Result {
+                ok: rok,
+                payload: rp,
+            },
         ) => Some(lok == rok && values_strict_eq(lp, rp)),
         _ => None,
     }
@@ -22752,9 +22758,16 @@ fn values_strict_eq(left: &Value, right: &Value) -> bool {
             _ => false,
         },
         // RES-2726: recursive Result equality. Ok(x)==Ok(y) iff x==y; mismatch variant is false.
-        (Value::Result { ok: lok, payload: lp }, Value::Result { ok: rok, payload: rp }) => {
-            lok == rok && values_strict_eq(lp, rp)
-        }
+        (
+            Value::Result {
+                ok: lok,
+                payload: lp,
+            },
+            Value::Result {
+                ok: rok,
+                payload: rp,
+            },
+        ) => lok == rok && values_strict_eq(lp, rp),
         _ => false,
     }
 }
