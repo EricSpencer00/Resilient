@@ -841,11 +841,9 @@ fn walk_call_sites(
                                 // rsplit_once(':') splits at the LAST ':', giving
                                 // projection="I::Item" and trait_bound="Display".
                                 // split_once("::") on the projection gives the assoc name.
-                                let parsed = bound
-                                    .rsplit_once(':')
-                                    .and_then(|(proj, tb)| {
-                                        proj.split_once("::").map(|(_, a)| (a, tb))
-                                    });
+                                let parsed = bound.rsplit_once(':').and_then(|(proj, tb)| {
+                                    proj.split_once("::").map(|(_, a)| (a, tb))
+                                });
                                 if let Some((assoc_name, trait_bound)) = parsed {
                                     let concrete_assoc = assoc_type_map
                                         .iter()
@@ -880,8 +878,11 @@ fn walk_call_sites(
                                                     *span,
                                                     &format!(
                                                         "associated type `{}::{}` = `{}` does not satisfy bound `{}` at call to `{}`",
-                                                        ct, assoc_name, concrete_type,
-                                                        trait_bound, callee_name
+                                                        ct,
+                                                        assoc_name,
+                                                        concrete_type,
+                                                        trait_bound,
+                                                        callee_name
                                                     ),
                                                 ));
                                             }
