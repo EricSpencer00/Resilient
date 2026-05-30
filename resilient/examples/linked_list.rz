@@ -1,0 +1,26 @@
+// RES-2588: linked list collection example.
+let l = linked_list_new();
+let l = linked_list_push_back(l, 1);
+let l = linked_list_push_back(l, 2);
+let l = linked_list_push_back(l, 3);
+let l = linked_list_push_front(l, 0);
+
+println(to_string(linked_list_len(l)));
+println(to_string(linked_list_is_empty(l)));
+
+let front = linked_list_peek_front(l);
+let v = match front { Some(x) => x, None => -1 };
+println(to_string(v));
+
+let (head, l) = linked_list_pop_front(l);
+let h = match head { Some(x) => x, None => -1 };
+println(to_string(h));
+println(to_string(linked_list_len(l)));
+
+let (tail, l) = linked_list_pop_back(l);
+let t = match tail { Some(x) => x, None => -1 };
+println(to_string(t));
+
+for x in linked_list_to_array(l) {
+    println(to_string(x));
+}
