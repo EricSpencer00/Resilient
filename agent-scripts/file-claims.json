@@ -1,8 +1,12 @@
 {
   "claims": {
-    "agent-scripts/claim-files.sh": {
-      "branch": "res-2670-claim-sweep",
-      "claimed_at": "2026-05-29T04:30:54Z"
+    "agent-scripts/sync-integration.sh": {
+      "branch": "res-2672-fix-integration-branch-drift",
+      "claimed_at": "2026-05-30T02:21:34Z"
+    },
+    "CLAUDE.md": {
+      "branch": "res-2672-fix-integration-branch-drift",
+      "claimed_at": "2026-05-30T02:21:34Z"
     }
   }
 }
