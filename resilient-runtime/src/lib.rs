@@ -91,6 +91,10 @@ pub mod ffi_static;
 // `[TimerState; MAX_TIMERS]` static protected by an AtomicBool
 // spinlock.
 pub mod timer;
+// RES-2598: interrupt priority management — NVIC configuration,
+// RAII critical sections, and `disable_interrupts`/`enable_interrupts`.
+// ARM-specific inline asm; host builds use no-op stubs so tests pass.
+pub mod interrupt;
 
 #[cfg(feature = "alloc")]
 use alloc::string::String;

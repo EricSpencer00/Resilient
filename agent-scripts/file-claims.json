@@ -1,16 +1,12 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2691-f32-compat-trait-struct-args",
-      "claimed_at": "2026-05-30T18:00:00Z"
+      "branch": "res-2590-unused-import-warnings",
+      "claimed_at": "2026-05-30T17:48:41Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2691-f32-compat-trait-struct-args",
-      "claimed_at": "2026-05-30T18:00:00Z"
-    },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-2599-multiline-raw-strings",
-      "claimed_at": "2026-05-30T17:31:49Z"
+      "branch": "res-2590-unused-import-warnings",
+      "claimed_at": "2026-05-30T17:48:41Z"
     }
   }
 }

@@ -15,6 +15,66 @@ import init, {
   playground_version,
 } from "./pkg/resilient_playground.js";
 
+// ---------------------------------------------------------------------------
+// RES-2625: custom CodeMirror mode for Resilient syntax highlighting
+// ---------------------------------------------------------------------------
+CodeMirror.defineMode("resilient", function () {
+  const KEYWORDS = new Set([
+    "fn", "let", "struct", "if", "else", "return", "while", "for", "match",
+    "in", "true", "false", "new", "impl", "trait", "type", "use", "mod",
+    "pub", "static", "live", "linear", "requires", "ensures", "invariant",
+    "enum", "forall", "exists", "assert", "spawn", "send", "receive",
+    "and", "or", "not", "is_err", "is_ok", "unwrap", "unwrap_err",
+  ]);
+
+  return {
+    startState() {
+      return { inString: false, inComment: false };
+    },
+    token(stream, state) {
+      // Line comments
+      if (stream.match("//")) {
+        stream.skipToEnd();
+        return "comment";
+      }
+      // String literals
+      if (stream.match('"')) {
+        state.inString = true;
+      }
+      if (state.inString) {
+        while (!stream.eol()) {
+          const ch = stream.next();
+          if (ch === "\\") {
+            stream.next(); // skip escaped char
+          } else if (ch === '"') {
+            state.inString = false;
+            break;
+          }
+        }
+        return "string";
+      }
+      // Numbers (int and float)
+      if (stream.match(/^[0-9]+(\.[0-9]+)?/)) {
+        return "number";
+      }
+      // Identifiers and keywords
+      if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
+        const word = stream.current();
+        if (KEYWORDS.has(word)) return "keyword";
+        // Type names start uppercase
+        if (/^[A-Z]/.test(word)) return "type";
+        return "variable";
+      }
+      // Operators / punctuation
+      if (stream.match(/^[+\-*/%<>=!&|^~?:;.,(){}\[\]]/)) {
+        return "operator";
+      }
+      stream.next();
+      return null;
+    },
+  };
+});
+
 // Fallback examples shown when examples.json is not present (e.g., dev mode).
 // These are the curated top picks that best illustrate what makes Resilient
 // distinct. The full list (350+ examples) is baked into examples.json at
@@ -443,14 +503,29 @@ const editorEl = document.getElementById("editor");
 const outputEl = document.getElementById("output");
 const footerEl = document.getElementById("output-footer");
 const runBtn = document.getElementById("run-btn");
+const shareBtn = document.getElementById("share-btn");
 const clearBtn = document.getElementById("clear-btn");
 const select = document.getElementById("example-select");
 const banner = document.getElementById("scaffold-banner");
 
-editorEl.value = EXAMPLES_FALLBACK[0].source; // sensor_monitor — first pinned example
+// RES-2624: restore code from URL hash before initialising the editor
+function getHashCode() {
+  const hash = window.location.hash;
+  if (hash.startsWith("#code=")) {
+    try {
+      return atob(hash.slice(6));
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
+const initialSource = getHashCode() ?? EXAMPLES_FALLBACK[0].source;
+editorEl.value = initialSource;
 
 const cm = CodeMirror.fromTextArea(editorEl, {
-  mode: "rust",
+  mode: "resilient",
   lineNumbers: true,
   theme: "idea",
   indentUnit: 4,
@@ -459,6 +534,77 @@ const cm = CodeMirror.fromTextArea(editorEl, {
 });
 
 let wasmReady = false;
+
+// ---------------------------------------------------------------------------
+// RES-2625: error underline helpers using CodeMirror text markers
+// ---------------------------------------------------------------------------
+let errorMarks = [];
+
+function clearErrorMarks() {
+  for (const m of errorMarks) m.clear();
+  errorMarks = [];
+}
+
+// Parse error positions from the compiler's stderr lines.
+// Supports the two common formats the Resilient compiler emits:
+//   "error at line 3, col 5: ..."
+//   "3:5: error: ..."
+function parseErrorPositions(stderr) {
+  if (!stderr) return [];
+  const positions = [];
+  // Format 1: "error at line N, col M"  (optional trailing colon/message)
+  const re1 = /(?:error|warning)[^:]*?line\s+(\d+)[,\s]+col(?:umn)?\s+(\d+)/gi;
+  // Format 2: "N:M: error/warning"
+  const re2 = /^(\d+):(\d+):\s*(?:error|warning)/gim;
+  for (const re of [re1, re2]) {
+    let m;
+    while ((m = re.exec(stderr)) !== null) {
+      positions.push({ line: parseInt(m[1], 10) - 1, col: parseInt(m[2], 10) - 1 });
+    }
+  }
+  return positions;
+}
+
+function applyErrorMarks(stderr) {
+  clearErrorMarks();
+  const positions = parseErrorPositions(stderr);
+  for (const { line, col } of positions) {
+    const lineText = cm.getLine(line);
+    if (lineText == null) continue;
+    // Underline from col to end-of-token (or end-of-line)
+    const end = lineText.slice(col).search(/[\s,;(){}\[\]]/) + col;
+    const to = end <= col ? { line, ch: lineText.length } : { line, ch: end };
+    const mark = cm.markText(
+      { line, ch: col },
+      to,
+      { className: "rz-error-underline" }
+    );
+    errorMarks.push(mark);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RES-2625: debounced auto-compile (fires 500 ms after last keystroke)
+// ---------------------------------------------------------------------------
+let autoCompileTimer = null;
+
+cm.on("change", () => {
+  clearTimeout(autoCompileTimer);
+  autoCompileTimer = setTimeout(() => {
+    if (wasmReady) runCode(/* auto */ true);
+  }, 500);
+});
+
+// ---------------------------------------------------------------------------
+// RES-2624: share button — encode current code as base64 URL hash
+// ---------------------------------------------------------------------------
+function showNotification(msg) {
+  const el = document.createElement("span");
+  el.className = "share-toast";
+  el.textContent = msg;
+  document.querySelector("nav").appendChild(el);
+  setTimeout(() => el.remove(), 2000);
+}
 
 async function bootstrap() {
   try {
@@ -510,14 +656,30 @@ clearBtn.addEventListener("click", () => {
   outputEl.textContent = "";
   outputEl.classList.remove("error");
   footerEl.textContent = "";
+  clearErrorMarks();
 });
 
-runBtn.addEventListener("click", async () => {
+// RES-2624: share button
+shareBtn.addEventListener("click", () => {
+  const encoded = btoa(unescape(encodeURIComponent(cm.getValue())));
+  window.location.hash = "#code=" + encoded;
+  try {
+    navigator.clipboard.writeText(window.location.href);
+    showNotification("Link copied!");
+  } catch (_) {
+    showNotification("URL updated!");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Core run logic — used by both the Run button and debounced auto-compile
+// ---------------------------------------------------------------------------
+async function runCode(isAuto = false) {
   if (!wasmReady) return;
-  runBtn.disabled = true;
+  if (!isAuto) runBtn.disabled = true;
   outputEl.classList.remove("error");
-  outputEl.textContent = "Running…";
-  footerEl.textContent = "";
+  if (!isAuto) outputEl.textContent = "Running…";
+  if (!isAuto) footerEl.textContent = "";
 
   // Yield to the event loop so the "Running…" placeholder paints
   // before the (potentially blocking) WASM call. Stubs are fast,
@@ -543,15 +705,20 @@ runBtn.addEventListener("click", async () => {
   const ms = Math.max(0, Math.round(result?.duration_ms ?? 0));
   const flavor = result?.flavor ?? "unknown";
 
+  clearErrorMarks();
   if (stderr) {
     outputEl.classList.add("error");
     outputEl.textContent = stderr + (stdout ? "\n--\n" + stdout : "");
+    applyErrorMarks(stderr);
   } else {
+    outputEl.classList.remove("error");
     outputEl.textContent = stdout || "(no output)";
   }
-  footerEl.textContent = `exit ${code} • ${ms} ms • ${flavor}`;
+  footerEl.textContent = `exit ${code} • ${ms} ms • ${flavor}${isAuto ? " • auto" : ""}`;
   runBtn.disabled = false;
-});
+}
+
+runBtn.addEventListener("click", () => runCode(false));
 
 runBtn.disabled = true;
 loadExamples();
