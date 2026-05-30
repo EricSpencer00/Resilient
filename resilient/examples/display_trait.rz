@@ -1,0 +1,31 @@
+trait Display { fn fmt(self) -> string; }
+
+struct Point {
+    int x,
+    int y,
+}
+
+impl Display for Point {
+    fn fmt(self) -> string {
+        "(" + to_string(self.x) + ", " + to_string(self.y) + ")"
+    }
+}
+
+struct Color {
+    int r,
+    int g,
+    int b,
+}
+
+impl Display for Color {
+    fn fmt(self) -> string {
+        "rgb(" + to_string(self.r) + "," + to_string(self.g) + "," + to_string(self.b) + ")"
+    }
+}
+
+let p = new Point { x: 3, y: 7 };
+println(to_string(p));
+
+let c = new Color { r: 255, g: 0, b: 128 };
+println(to_string(c));
+println(c.fmt());

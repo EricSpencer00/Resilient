@@ -5101,6 +5101,11 @@ impl TypeChecker {
                 {
                     crate::traits::check(program, source_path)?;
                 }
+                // RES-2604 gate: validate `impl Display for T` blocks — fmt
+                // method presence, arity, and string return type.
+                if !markers.impl_trait_names.is_empty() {
+                    crate::display_trait::check(program, source_path)?;
+                }
                 // RES-2552 gate: validate `Node::BlanketImpl` nodes — trait
                 // existence, bound existence, method coverage, duplicate check.
                 // Must run after `traits::check` so trait decls are well-formed.
