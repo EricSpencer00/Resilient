@@ -658,6 +658,8 @@ mod unused_imports;
 mod const_eval_ext;
 // RES-2601: exhaustive struct field checking in match patterns.
 mod struct_field_check;
+// RES-2586: deque (double-ended queue) collection builtins.
+mod deque;
 mod vibe_debt;
 mod wcet_contracts;
 
@@ -12788,6 +12790,16 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("char_to_int", crate::char_type::builtin_char_to_int),
     ("int_to_char", crate::char_type::builtin_int_to_char),
     ("char_to_string", crate::char_type::builtin_char_to_string),
+    // RES-2586: deque (double-ended queue) collection builtins.
+    ("deque_new", crate::deque::builtin_deque_new),
+    ("deque_push_front", crate::deque::builtin_deque_push_front),
+    ("deque_push_back", crate::deque::builtin_deque_push_back),
+    ("deque_pop_front", crate::deque::builtin_deque_pop_front),
+    ("deque_pop_back", crate::deque::builtin_deque_pop_back),
+    ("deque_peek_front", crate::deque::builtin_deque_peek_front),
+    ("deque_peek_back", crate::deque::builtin_deque_peek_back),
+    ("deque_len", crate::deque::builtin_deque_len),
+    ("deque_is_empty", crate::deque::builtin_deque_is_empty),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

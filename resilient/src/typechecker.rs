@@ -4419,6 +4419,29 @@ impl TypeChecker {
                 // `.set` rebinds the inner value, and the inner value's
                 // dynamic type flows through `Type::Any`.
                 env.set("cell".to_string(), fn_any_to_any());
+
+                // RES-2586: deque builtins.
+                env.set(
+                    "deque_new".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set("deque_push_front".to_string(), fn_any_any_to_any());
+                env.set("deque_push_back".to_string(), fn_any_any_to_any());
+                env.set("deque_pop_front".to_string(), fn_any_to_any());
+                env.set("deque_pop_back".to_string(), fn_any_to_any());
+                env.set("deque_peek_front".to_string(), fn_any_to_any());
+                env.set("deque_peek_back".to_string(), fn_any_to_any());
+                env.set("deque_len".to_string(), fn_any_to_int());
+                env.set(
+                    "deque_is_empty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
                 std::sync::Arc::new(env)
             });
 

@@ -1,0 +1,33 @@
+// RES-2586: Deque (double-ended queue) collection.
+
+let dq = deque_new();
+let dq = deque_push_back(dq, 1);
+let dq = deque_push_back(dq, 2);
+let dq = deque_push_back(dq, 3);
+let dq = deque_push_front(dq, 0);
+
+println(to_string(deque_len(dq)));
+println(to_string(deque_is_empty(dq)));
+
+let front = deque_peek_front(dq);
+let f_val = match front {
+    Some(x) => x,
+    None => -1,
+};
+println(to_string(f_val));
+
+let (popped, dq) = deque_pop_front(dq);
+let pv = match popped {
+    Some(x) => x,
+    None => -1,
+};
+println(to_string(pv));
+println(to_string(deque_len(dq)));
+
+let (last, dq) = deque_pop_back(dq);
+let lv = match last {
+    Some(x) => x,
+    None => -1,
+};
+println(to_string(lv));
+println(to_string(deque_len(dq)));
