@@ -1370,6 +1370,11 @@ pub struct TypeChecker {
     /// Used by `satisfies_trait_param` to allow a concrete struct to satisfy
     /// a trait-typed parameter, return annotation, or let binding.
     trait_impls: HashMap<String, HashSet<String>>,
+    /// RES-2697: trait name → set of method names that carry a default body.
+    /// Populated when processing `TraitDecl` nodes. Used to allow
+    /// `FieldAccess` type-checks to succeed for default methods even when
+    /// the impl block omits them.
+    trait_default_methods: HashMap<String, HashSet<String>>,
 }
 
 impl TypeChecker {
@@ -4378,6 +4383,7 @@ impl TypeChecker {
 
             fn_type_params: HashMap::new(),
             trait_impls: HashMap::new(),
+            trait_default_methods: HashMap::new(),
         }
     }
 
@@ -4676,6 +4682,19 @@ impl TypeChecker {
                                 .entry(struct_name.clone())
                                 .or_default()
                                 .insert(t.clone());
+                        }
+                        // RES-2697: record trait methods that carry a
+                        // default body so FieldAccess type-checks can
+                        // succeed when the impl block omits them.
+                        Node::TraitDecl { name, methods, .. } => {
+                            for m in methods {
+                                if m.default_body.is_some() {
+                                    self.trait_default_methods
+                                        .entry(name.clone())
+                                        .or_default()
+                                        .insert(m.name.clone());
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -7313,8 +7332,21 @@ impl TypeChecker {
                     if let Some(method_ty) = self.env.get(&mangled) {
                         return Ok(method_ty);
                     }
+                    // RES-2697: check if any trait this struct implements has
+                    // a default body for `field`. If so, the call is valid.
+                    if let Some(implemented_traits) = self.trait_impls.get(sname.as_str()) {
+                        for trait_name in implemented_traits {
+                            if self
+                                .trait_default_methods
+                                .get(trait_name.as_str())
+                                .is_some_and(|ms| ms.contains(field.as_str()))
+                            {
+                                return Ok(Type::Any);
+                            }
+                        }
+                    }
                     // RES-407: struct is known, field not found, and no
-                    // impl method — report a clear diagnostic.
+                    // impl method or default trait method — report a clear diagnostic.
                     let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
                     let hint = crate::did_you_mean::hint_from(field, avail.iter().copied());
                     return Err(format!(

@@ -83,6 +83,13 @@ pub(crate) struct TraitMethodSig {
     /// extension can flip this without a schema change).
     pub takes_self: bool,
     pub span: Span,
+    /// RES-2697: parameter names in declaration order (e.g. `["self", "x"]`).
+    /// Used to bind arguments when dispatching a default method body.
+    pub params: Vec<String>,
+    /// RES-2697: optional default body. `None` means the method must be
+    /// provided by every `impl` block; `Some` means the impl may omit it
+    /// and the default fires instead.
+    pub default_body: Option<Box<Node>>,
 }
 
 /// Associated type declaration in a trait.
@@ -195,20 +202,22 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
     }
     parser.next_token(); // skip '('
 
-    // Walk parameter tokens until the matching `)`. We don't need full
-    // type-checking here; arity is what matters for dispatch
-    // validation. We split on commas at depth 0 so that nested generic
-    // args / parens don't confuse the count.
+    // RES-2697: walk parameter tokens until the matching `)`, collecting
+    // param names for default-body dispatch. Arity still drives
+    // typecheck coverage; names drive runtime binding.
     let mut depth = 0_i32;
     let mut takes_self = false;
     let mut param_count = 0_usize;
+    let mut params: Vec<String> = Vec::new();
     let mut saw_any_token_in_param = false;
     let mut first_param = true;
+    let mut at_param_start = true;
     while parser.current_token != Token::Eof {
         match &parser.current_token {
             Token::LeftParen | Token::Less | Token::LeftBracket | Token::LeftBrace => {
                 depth += 1;
                 saw_any_token_in_param = true;
+                at_param_start = false;
                 parser.next_token();
             }
             Token::RightParen if depth == 0 => {
@@ -221,6 +230,7 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
             Token::RightParen | Token::Greater | Token::RightBracket | Token::RightBrace => {
                 depth -= 1;
                 saw_any_token_in_param = true;
+                at_param_start = false;
                 parser.next_token();
             }
             Token::Comma if depth == 0 => {
@@ -229,6 +239,7 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
                 }
                 saw_any_token_in_param = false;
                 first_param = false;
+                at_param_start = true;
                 parser.next_token();
             }
             Token::Identifier(ident)
@@ -236,10 +247,19 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
             {
                 takes_self = true;
                 saw_any_token_in_param = true;
+                at_param_start = false;
+                params.push("self".to_string());
+                parser.next_token();
+            }
+            Token::Identifier(ident) if at_param_start && depth == 0 => {
+                params.push(ident.clone());
+                saw_any_token_in_param = true;
+                at_param_start = false;
                 parser.next_token();
             }
             _ => {
                 saw_any_token_in_param = true;
+                at_param_start = false;
                 parser.next_token();
             }
         }
@@ -257,28 +277,28 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
         }
     }
 
-    // Tolerate either `;` (signature only) or `{ ... }` (stub body — ignored).
-    if parser.current_token == Token::Semicolon {
+    // RES-2697: `;` means abstract signature; `{ ... }` means default body.
+    // After parse_block_statement returns the cursor sits ON the closing `}`;
+    // advance past it so the outer trait-body loop doesn't mistake it for
+    // the trait's own closing brace.
+    let default_body = if parser.current_token == Token::Semicolon {
         parser.next_token();
+        None
     } else if parser.current_token == Token::LeftBrace {
-        // Skip the body to the matching closing brace.
-        let mut brace_depth = 1_i32;
-        parser.next_token(); // skip '{'
-        while brace_depth > 0 && parser.current_token != Token::Eof {
-            match parser.current_token {
-                Token::LeftBrace => brace_depth += 1,
-                Token::RightBrace => brace_depth -= 1,
-                _ => {}
-            }
-            parser.next_token();
-        }
-    }
+        let block = parser.parse_block_statement();
+        parser.next_token(); // step past the method body's closing `}`
+        Some(Box::new(block))
+    } else {
+        None
+    };
 
     Some(TraitMethodSig {
         name: method_name,
         param_arity: param_count,
         takes_self,
         span: sig_span,
+        params,
+        default_body,
     })
 }
 
@@ -498,6 +518,11 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             for sig in trait_methods {
                 match provided.get(&sig.name) {
                     None => {
+                        // RES-2697: a missing method is OK if the trait
+                        // declares a default body for it.
+                        if sig.default_body.is_some() {
+                            continue;
+                        }
                         return Err(format_err(
                             source_path,
                             *span,
@@ -1304,5 +1329,107 @@ mod tests {
         let e = check(&prog, "test.rz").expect_err("expected bound-violation error");
         assert!(e.contains("BadType"), "got: {e}");
         assert!(e.contains("Show"), "got: {e}");
+    }
+
+    // RES-2697: default trait method body tests.
+
+    #[test]
+    fn default_method_parses_body() {
+        let src = "trait Greet {\
+             fn greet(self) -> string;\
+             fn greet_loudly(self) -> string { return \"loud\"; }\
+             }\
+             struct A { int x }\
+             impl Greet for A { fn greet(self) -> string { return \"hi\"; } }\
+             fn main(int d) {} main();";
+        let prog = parse_program(src);
+        let stmts = match &prog {
+            Node::Program(s) => s,
+            _ => panic!("expected program"),
+        };
+        let loudly_has_default = stmts
+            .iter()
+            .find_map(|s| match &s.node {
+                Node::TraitDecl { methods, .. } => methods
+                    .iter()
+                    .find(|m| m.name == "greet_loudly")
+                    .map(|m| m.default_body.is_some()),
+                _ => None,
+            })
+            .expect("trait decl with greet_loudly");
+        assert!(
+            loudly_has_default,
+            "greet_loudly should have a default body"
+        );
+    }
+
+    #[test]
+    fn default_method_allows_missing_impl() {
+        // Impl omits greet_loudly; trait has a default — should not error.
+        let src = "trait Greet {\
+             fn greet(self) -> string;\
+             fn greet_loudly(self) -> string { return \"loud\"; }\
+             }\
+             struct A { int x }\
+             impl Greet for A { fn greet(self) -> string { return \"hi\"; } }\
+             fn main(int d) {} main();";
+        let prog = parse_program(src);
+        check(&prog, "test.rz").unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn abstract_method_without_default_still_required() {
+        // `greet` has no default — impl must provide it.
+        let src = "trait Greet {\
+             fn greet(self) -> string;\
+             fn greet_loudly(self) -> string { return \"loud\"; }\
+             }\
+             struct A { int x }\
+             impl Greet for A { fn greet_loudly(self) -> string { return \"HI\"; } }\
+             fn main(int d) {} main();";
+        let prog = parse_program(src);
+        let e = check(&prog, "test.rz").expect_err("expected missing-method error");
+        assert!(e.contains("greet"), "got: {e}");
+    }
+
+    #[test]
+    fn default_method_fires_at_runtime() {
+        // The interpreter must dispatch greet_loudly via the default body.
+        let src = "trait Greet {\
+             fn greet(self) -> string;\
+             fn greet_loudly(self) -> string { return self.greet() + \"!!!\"; }\
+             }\
+             struct Alice { string name }\
+             impl Greet for Alice {\
+             fn greet(self) -> string { return \"Hi \" + self.name; }\
+             }\
+             let a = new Alice { name: \"Alice\" };\
+             a.greet_loudly();\
+             ";
+        let result = crate::run_program(src);
+        assert!(result.ok, "runtime failed: {:?}", result.errors);
+    }
+
+    #[test]
+    fn explicit_override_replaces_default() {
+        // Bob overrides greet_loudly; his version must be used, not the default.
+        let src = "trait Greet {\
+             fn greet(self) -> string;\
+             fn greet_loudly(self) -> string { return self.greet() + \"!!!\"; }\
+             }\
+             struct Bob { string name }\
+             impl Greet for Bob {\
+             fn greet(self) -> string { return \"Hi \" + self.name; }\
+             fn greet_loudly(self) -> string { return \"HEY \" + self.name; }\
+             }\
+             let b = new Bob { name: \"Bob\" };\
+             println(b.greet_loudly());";
+        let result = crate::run_program(src);
+        assert!(result.ok, "runtime failed: {:?}", result.errors);
+        assert!(
+            result.stdout.contains("HEY Bob"),
+            "got: {:?}",
+            result.stdout
+        );
     }
 }
