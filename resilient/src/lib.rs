@@ -23772,6 +23772,51 @@ impl Interpreter {
                         // methods get the same diagnostic shape as
                         // before.
                     }
+                    // RES-2736: method-call sugar on built-in Map and Set.
+                    // Maps the short dot-call name to the underlying
+                    // `map_*`/`set_*` global builtin, then forwards with the
+                    // target prepended as the first argument.
+                    if let Value::Map(_) = &target_val {
+                        let full_name = match field.as_str() {
+                            "len" => "map_len",
+                            "get" => "map_get",
+                            "insert" => "map_insert",
+                            "remove" => "map_remove",
+                            "keys" => "map_keys",
+                            "values" => "map_values",
+                            "has" => "map_contains_key",
+                            "get_or" => "map_get_or",
+                            _ => "",
+                        };
+                        if !full_name.is_empty() {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            let mut args = Vec::with_capacity(extra_args.len() + 1);
+                            args.push(target_val);
+                            args.extend(extra_args);
+                            return apply_builtin_by_name(full_name, &args).ok_or_else(|| {
+                                format!("Builtin method `{}` is not registered", field)
+                            })?;
+                        }
+                    }
+                    if let Value::Set(_) = &target_val {
+                        let full_name = match field.as_str() {
+                            "len" => "set_len",
+                            "has" => "set_has",
+                            "insert" => "set_insert",
+                            "remove" => "set_remove",
+                            "items" => "set_items",
+                            _ => "",
+                        };
+                        if !full_name.is_empty() {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            let mut args = Vec::with_capacity(extra_args.len() + 1);
+                            args.push(target_val);
+                            args.extend(extra_args);
+                            return apply_builtin_by_name(full_name, &args).ok_or_else(|| {
+                                format!("Builtin method `{}` is not registered", field)
+                            })?;
+                        }
+                    }
                     // RES-353: StringBuilder method dispatch — intercept before
                     // the generic impl-block lookup so these builtins can write
                     // the mutated struct back to the caller's binding.
@@ -59642,5 +59687,114 @@ mod res2730_char_equality {
              if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2736_map_set_dot_methods {
+    use super::*;
+
+    fn run(src: &str) -> RunResult {
+        run_program(src)
+    }
+
+    #[test]
+    fn map_len_method() {
+        let r = run(r#"let m = {"a" -> 1, "b" -> 2}; println(m.len());"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('2'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_get_method_found() {
+        let r = run(r#"let m = {"k" -> 42}; println(m.get("k"));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("42"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_get_method_missing() {
+        let r = run(r#"let m = {"k" -> 42}; println(m.get("z"));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("not found"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_has_method() {
+        let r = run(r#"let m = {"a" -> 1}; println(m.has("a")); println(m.has("b"));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("true"), "got: {}", r.stdout);
+        assert!(r.stdout.contains("false"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_insert_method() {
+        let r = run(r#"let m = {"a" -> 1}; let m2 = m.insert("b", 2); println(m2.len());"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('2'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_remove_method() {
+        let r = run(r#"let m = {"a" -> 1, "b" -> 2}; let m2 = m.remove("a"); println(m2.len());"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('1'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_keys_method() {
+        let r = run(r#"let m = {"x" -> 1}; println(m.keys());"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("\"x\""), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_values_method() {
+        let r = run(r#"let m = {"x" -> 99}; println(m.values());"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("99"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_get_or_method() {
+        let r = run(r#"let m = {"a" -> 1}; println(m.get_or("z", 0));"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('0'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn set_len_method() {
+        let r = run("let s = #{1, 2, 3}; println(s.len());");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('3'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn set_has_method() {
+        let r = run("let s = #{10, 20}; println(s.has(10)); println(s.has(99));");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("true"), "got: {}", r.stdout);
+        assert!(r.stdout.contains("false"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn set_insert_method() {
+        let r = run("let s = #{1, 2}; let s2 = s.insert(3); println(s2.len());");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('3'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn set_remove_method() {
+        let r = run("let s = #{1, 2, 3}; let s2 = s.remove(2); println(s2.len());");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('2'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn set_items_method() {
+        let r = run("let s = #{42}; println(s.items());");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("42"), "got: {}", r.stdout);
     }
 }

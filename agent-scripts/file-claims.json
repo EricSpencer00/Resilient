@@ -1,8 +1,8 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2733-array-method-dispatch",
-      "claimed_at": "2026-05-30T15:49:47Z"
+      "branch": "res-2736-map-set-dot-methods",
+      "claimed_at": "2026-05-30T16:06:46Z"
     }
   }
 }
