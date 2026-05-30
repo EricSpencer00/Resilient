@@ -664,6 +664,8 @@ mod unused_imports;
 mod const_eval_ext;
 // RES-2601: exhaustive struct field checking in match patterns.
 mod struct_field_check;
+// RES-2584: string builder builtins.
+mod string_builder;
 // RES-2586: deque (double-ended queue) collection builtins.
 mod deque;
 // RES-2587: priority queue / binary heap collection builtins.
@@ -13008,6 +13010,35 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("udp_send_to", crate::tcp_udp::builtin_udp_send_to),
     ("udp_recv_from", crate::tcp_udp::builtin_udp_recv_from),
     ("udp_close", crate::tcp_udp::builtin_udp_close),
+    // RES-2584: string builder builtins.
+    (
+        "string_builder_new",
+        crate::string_builder::builtin_string_builder_new,
+    ),
+    (
+        "string_builder_append",
+        crate::string_builder::builtin_string_builder_append,
+    ),
+    (
+        "string_builder_prepend",
+        crate::string_builder::builtin_string_builder_prepend,
+    ),
+    (
+        "string_builder_build",
+        crate::string_builder::builtin_string_builder_build,
+    ),
+    (
+        "string_builder_len",
+        crate::string_builder::builtin_string_builder_len,
+    ),
+    (
+        "string_builder_is_empty",
+        crate::string_builder::builtin_string_builder_is_empty,
+    ),
+    (
+        "string_builder_clear",
+        crate::string_builder::builtin_string_builder_clear,
+    ),
     // RES-2588: linked list collection builtins.
     (
         "linked_list_new",
