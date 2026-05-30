@@ -14194,7 +14194,6 @@ mod res2693_trait_param_compat {
 
 #[cfg(test)]
 mod res2701_generic_fn_type_params {
-mod res2703_result_exhaustiveness {
     use super::*;
 
     fn check_ok(src: &str) {
@@ -14223,15 +14222,6 @@ mod res2703_result_exhaustiveness {
         check_ok(
             "fn apply_fn<T>(T x, fn(T) -> T f) -> T { return f(x); }\n\
              let r = apply_fn(5, fn(int n) -> int { return n * 2; });\n",
-    fn ok_and_err_arms_accepted_as_exhaustive() {
-        check_ok(
-            "fn f() -> void {\n\
-             let r = Ok(5);\n\
-             match r {\n\
-               Ok(v) => println(to_string(v)),\n\
-               Err(e) => println(e),\n\
-             }\n\
-             }\n",
         );
     }
 
@@ -14241,15 +14231,6 @@ mod res2703_result_exhaustiveness {
             "fn double(int x) -> int { return x * 2; }\n\
              fn apply_fn<T>(T x, fn(T) -> T f) -> T { return f(x); }\n\
              let r = apply_fn(5, double);\n",
-    fn wildcard_arm_still_makes_result_match_exhaustive() {
-        check_ok(
-            "fn f() -> void {\n\
-             let r = Ok(5);\n\
-             match r {\n\
-               Ok(v) => println(to_string(v)),\n\
-               _ => println(\"fallback\"),\n\
-             }\n\
-             }\n",
         );
     }
 
@@ -14269,15 +14250,6 @@ mod res2703_result_exhaustiveness {
             "fn apply_int(int x, fn(int) -> int f) -> int { return f(x); }\n\
              let r = apply_int(5, fn(string s) -> int { return 0; });\n",
             "Type mismatch",
-    fn missing_err_arm_still_errors() {
-        check_err(
-            "fn f() -> void {\n\
-             let r = Ok(5);\n\
-             match r {\n\
-               Ok(v) => println(to_string(v)),\n\
-             }\n\
-             }\n",
-            "Non-exhaustive match on enum `Result`",
         );
     }
 
@@ -14295,6 +14267,75 @@ mod res2703_result_exhaustiveness {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Any),
             }
+        );
+    }
+}
+
+#[cfg(test)]
+mod res2703_result_exhaustiveness {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn ok_and_err_arms_accepted_as_exhaustive() {
+        check_ok(
+            "fn f() -> void {\n\
+             let r = Ok(5);\n\
+             match r {\n\
+               Ok(v) => println(to_string(v)),\n\
+               Err(e) => println(e),\n\
+             }\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn wildcard_arm_still_makes_result_match_exhaustive() {
+        check_ok(
+            "fn f() -> void {\n\
+             let r = Ok(5);\n\
+             match r {\n\
+               Ok(v) => println(to_string(v)),\n\
+               _ => println(\"fallback\"),\n\
+             }\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn missing_err_arm_still_errors() {
+        check_err(
+            "fn f() -> void {\n\
+             let r = Ok(5);\n\
+             match r {\n\
+               Ok(v) => println(to_string(v)),\n\
+             }\n\
+             }\n",
+            "Non-exhaustive match on enum `Result`",
+        );
+    }
+
+    #[test]
     fn missing_ok_arm_still_errors() {
         check_err(
             "fn f() -> void {\n\
