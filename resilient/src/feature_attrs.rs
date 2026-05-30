@@ -286,6 +286,8 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "lean_spec"
             // RES-2592: tail call optimization enforcement.
             | "must_tail_call"
+            // RES-2659: mutual tail call optimization.
+            | "mutual_tail_call"
     )
 }
 

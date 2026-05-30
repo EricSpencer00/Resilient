@@ -437,6 +437,10 @@ pub(crate) mod devirtualize;
 // the tco_fn_name Interpreter field, and the trampoline in apply_function.
 mod tail_calls;
 
+// RES-2659: TCO for mutually-recursive functions. Annotate both sides of a
+// mutual recursion group with `#[mutual_tail_call]` to enable the trampoline.
+mod mutual_tco;
+
 // RES-2603: enum variant constructors as first-class function values.
 // Tuple-payload variants (e.g. `Option::Some`) are pre-bound as
 // `Value::EnumConstructor` when their enum is declared, enabling them
@@ -10393,6 +10397,15 @@ enum Value {
     /// Consumed immediately by the `'tco` loop in `apply_function`; never
     /// escapes the call frame. The `Vec<Value>` holds the new argument list.
     TailCall(Vec<Value>),
+    /// RES-2659: mutual tail-call trampoline sentinel. Emitted when a
+    /// `#[mutual_tail_call]` function calls another `#[mutual_tail_call]`
+    /// function in tail position. The `'tco` loop in `apply_function` catches
+    /// this, looks up `callee` in the env, and re-executes that function's
+    /// body without growing the host stack.
+    MutualTailCall {
+        callee: String,
+        args: Vec<Value>,
+    },
     /// RES-2603: first-class enum variant constructor for tuple-payload
     /// variants. Produced when `EnumName::VariantName` is referenced as
     /// a value without being immediately called (e.g. passing
@@ -10543,6 +10556,10 @@ impl std::fmt::Debug for Value {
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
             // RES-2592: internal sentinel — should never appear in user output.
             Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
+            // RES-2659: internal mutual-TCO sentinel — never user-visible.
+            Value::MutualTailCall { callee, args } => {
+                write!(f, "<mutual-tail-call {}({} args)>", callee, args.len())
+            }
             // RES-2603: first-class enum variant constructor.
             Value::EnumConstructor {
                 type_name,
@@ -10729,6 +10746,10 @@ impl std::fmt::Display for Value {
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
             // RES-2592: internal sentinel — should never appear in user output.
             Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
+            // RES-2659: internal mutual-TCO sentinel — never user-visible.
+            Value::MutualTailCall { callee, args } => {
+                write!(f, "<mutual-tail-call {}({} args)>", callee, args.len())
+            }
             // RES-2603: first-class enum variant constructor.
             Value::EnumConstructor {
                 type_name, variant, ..
@@ -22528,6 +22549,11 @@ struct Interpreter {
     /// whose callee matches this name emits `Value::TailCall` instead of
     /// recursing, which the trampoline loop in `apply_function` catches.
     tco_fn_name: Option<String>,
+    /// RES-2659: when `Some(name)`, the interpreter is inside a
+    /// `#[mutual_tail_call]`-annotated function body. Any `CallExpression`
+    /// whose callee is also `#[mutual_tail_call]` emits `Value::MutualTailCall`
+    /// instead of recursing; the trampoline in `apply_function` re-dispatches.
+    mutual_tco_fn: Option<String>,
 }
 
 /// RES-1108 + RES-1109 + RES-1110: structural equality for compound
@@ -22679,6 +22705,7 @@ impl Interpreter {
             inject_checked_failures: false,
             overflow_mode: vm::OverflowMode::from_env(),
             tco_fn_name: None,
+            mutual_tco_fn: None,
         }
     }
 
@@ -23152,6 +23179,24 @@ impl Interpreter {
                 {
                     let new_args = self.eval_expressions(arguments)?;
                     return Ok(Value::TailCall(new_args));
+                }
+                // RES-2659: mutual tail-call trampoline signal. When this
+                // interpreter is inside a #[mutual_tail_call] function and
+                // the callee is also #[mutual_tail_call], emit
+                // Value::MutualTailCall so the trampoline can re-dispatch
+                // without creating a new Rust call frame.
+                if self.mutual_tco_fn.is_some()
+                    && let Node::Identifier {
+                        name: callee_name, ..
+                    } = function.as_ref()
+                    && crate::mutual_tco::is_mutual_tail_call(callee_name)
+                    && self.mutual_tco_fn.as_deref() != Some(callee_name.as_str())
+                {
+                    let new_args = self.eval_expressions(arguments)?;
+                    return Ok(Value::MutualTailCall {
+                        callee: callee_name.clone(),
+                        args: new_args,
+                    });
                 }
                 // RES-400: tuple-payload enum-variant constructor —
                 // `Pair::Both(1, 2)` parses as `CallExpression` with the
@@ -25795,6 +25840,7 @@ impl Interpreter {
                     inject_checked_failures: self.inject_checked_failures,
                     overflow_mode: self.overflow_mode,
                     tco_fn_name: None,
+                    mutual_tco_fn: None,
                 };
 
                 // RES-2592: activate the trampoline loop for #[must_tail_call] fns.
@@ -25802,6 +25848,10 @@ impl Interpreter {
                 // Value::TailCall instead of recursing — the loop below catches it.
                 if crate::tail_calls::is_must_tail_call(name) {
                     interpreter.tco_fn_name = Some(name.clone());
+                }
+                // RES-2659: activate mutual TCO mode for #[mutual_tail_call] fns.
+                if crate::mutual_tco::is_mutual_tail_call(name) {
+                    interpreter.mutual_tco_fn = Some(name.clone());
                 }
 
                 // RES-405 PR 2: if this is a generic call, infer the substitution
@@ -25839,13 +25889,30 @@ impl Interpreter {
                 }
 
                 // RES-2592: trampoline loop for #[must_tail_call] functions.
+                // RES-2659: extended to support #[mutual_tail_call] functions.
+                //
                 // When tco_fn_name is set the child interpreter emits
                 // Value::TailCall(new_args) for every tail self-call instead
                 // of recursing. We rebind the parameters and re-execute the
                 // body — keeping host stack depth constant regardless of the
                 // number of recursive iterations.
+                //
+                // When mutual_tco_fn is set AND the callee is also
+                // #[mutual_tail_call], the interpreter emits
+                // Value::MutualTailCall { callee, args }. The 'tco loop
+                // catches this, looks up the callee's body in the env,
+                // rebinds params, and re-executes — still no new Rust frame.
+                //
+                // mtco_body / mtco_params hold the current function's owned
+                // body and params when we've switched via MutualTailCall;
+                // None means "use the initial body/parameters by reference".
+                let mut mtco_body: Option<Box<Node>> = None;
+                let mut mtco_params: Option<Vec<(String, String)>> = None;
                 let return_value = 'tco: loop {
-                    let body_result = interpreter.eval(body).map_err(|e| {
+                    // Resolve which body to evaluate this iteration.
+                    // After eval() returns, the &Node borrow ends (NLL).
+                    let cur_body: &Node = mtco_body.as_deref().unwrap_or(body.as_ref());
+                    let body_result = interpreter.eval(cur_body).map_err(|e| {
                         if let Some(ref subst) = interpreter.active_subst {
                             crate::diag::format_subst_context(name, subst, &e)
                         } else {
@@ -25853,20 +25920,74 @@ impl Interpreter {
                         }
                     })?;
                     match body_result {
-                        // Tail call signalled directly (expression context).
+                        // Self-recursive tail call (direct expression context).
                         Value::TailCall(new_args) => {
-                            for ((_, param_name), arg_value) in parameters.iter().zip(new_args) {
+                            let cur_params: &[(String, String)] =
+                                mtco_params.as_deref().unwrap_or(parameters.as_slice());
+                            for ((_, param_name), arg_value) in cur_params.iter().zip(new_args) {
                                 interpreter.env.set(param_name.clone(), arg_value);
                             }
+                            continue 'tco;
+                        }
+                        // RES-2659: mutual tail call — switch to callee's body.
+                        Value::MutualTailCall {
+                            callee,
+                            args: new_args,
+                        } => {
+                            let callee_fn = interpreter.env.get(&callee).ok_or_else(|| {
+                                format!("mutual_tail_call: function '{}' is not in scope", callee)
+                            })?;
+                            let Value::Function(fv) = callee_fn else {
+                                return Err(format!(
+                                    "mutual_tail_call: '{}' is not a function",
+                                    callee
+                                ));
+                            };
+                            let p = (*fv.parameters).clone();
+                            let b = Box::new((*fv.body).clone());
+                            for ((_, param_name), arg_value) in p.iter().zip(&new_args) {
+                                interpreter.env.set(param_name.clone(), arg_value.clone());
+                            }
+                            mtco_params = Some(p);
+                            mtco_body = Some(b);
+                            interpreter.mutual_tco_fn = Some(callee);
                             continue 'tco;
                         }
                         // Tail call inside a `return expr;` statement.
                         Value::Return(v) => match *v {
                             Value::TailCall(new_args) => {
-                                for ((_, param_name), arg_value) in parameters.iter().zip(new_args)
+                                let cur_params: &[(String, String)] =
+                                    mtco_params.as_deref().unwrap_or(parameters.as_slice());
+                                for ((_, param_name), arg_value) in cur_params.iter().zip(new_args)
                                 {
                                     interpreter.env.set(param_name.clone(), arg_value);
                                 }
+                                continue 'tco;
+                            }
+                            Value::MutualTailCall {
+                                callee,
+                                args: new_args,
+                            } => {
+                                let callee_fn = interpreter.env.get(&callee).ok_or_else(|| {
+                                    format!(
+                                        "mutual_tail_call: function '{}' is not in scope",
+                                        callee
+                                    )
+                                })?;
+                                let Value::Function(fv) = callee_fn else {
+                                    return Err(format!(
+                                        "mutual_tail_call: '{}' is not a function",
+                                        callee
+                                    ));
+                                };
+                                let p = (*fv.parameters).clone();
+                                let b = Box::new((*fv.body).clone());
+                                for ((_, param_name), arg_value) in p.iter().zip(&new_args) {
+                                    interpreter.env.set(param_name.clone(), arg_value.clone());
+                                }
+                                mtco_params = Some(p);
+                                mtco_body = Some(b);
+                                interpreter.mutual_tco_fn = Some(callee);
                                 continue 'tco;
                             }
                             other => break 'tco other,
