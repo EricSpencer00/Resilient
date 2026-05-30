@@ -159,6 +159,7 @@ impl Substitution {
             | Type::String
             | Type::Bytes
             | Type::Bool
+            | Type::Char
             | Type::Array
             | Type::Result
             | Type::Struct(_)
@@ -191,6 +192,7 @@ impl Substitution {
             | (Type::Float, Type::Float)
             | (Type::String, Type::String)
             | (Type::Bool, Type::Bool)
+            | (Type::Char, Type::Char)
             | (Type::Array, Type::Array)
             | (Type::Result, Type::Result)
             | (Type::Void, Type::Void) => Ok(()),
