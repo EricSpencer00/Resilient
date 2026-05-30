@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2738-string-method-dispatch",
-      "claimed_at": "2026-05-30T16:20:34Z"
+      "branch": "res-2740-result-struct-update-fixes",
+      "claimed_at": "2026-05-30T16:38:34Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2738-string-method-dispatch",
-      "claimed_at": "2026-05-30T16:20:34Z"
+      "branch": "res-2740-result-struct-update-fixes",
+      "claimed_at": "2026-05-30T16:38:34Z"
     }
   }
 }

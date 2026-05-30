@@ -9027,6 +9027,13 @@ impl TypeChecker {
                 let inner_ty = self.parse_type_name_inner(inner_str.trim(), seen)?;
                 Ok(Type::Option(Box::new(inner_ty)))
             }
+            // RES-2740: `Result<T, E>` with type parameters — Type::Result is
+            // unparameterized at MVP level, so we discard the params and resolve
+            // as plain Type::Result. Without this arm the string falls through to
+            // the alias lookup and becomes Type::Struct("Result<int, string>"),
+            // which never matches Type::Result from Ok()/Err() and produces a
+            // false-positive "return type mismatch" on every annotated function.
+            other if other.starts_with("Result<") && other.ends_with('>') => Ok(Type::Result),
             // RES-426: tuple type `(T1, T2, ...)`. Encoded by the
             // parser as a parenthesised comma-list; at type-check
             // level a tuple is represented as Type::Any (the interpreter

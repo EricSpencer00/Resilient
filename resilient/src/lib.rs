@@ -9156,6 +9156,23 @@ impl Parser {
         }
 
         loop {
+            // RES-2741: `..base` at the END of a field list — Rust-style struct
+            // update syntax. The start-of-list case is handled above; this arm
+            // handles the trailing position: `new P { x: 10, ..base }`.
+            if self.current_token == Token::DotDot {
+                self.next_token(); // skip `..`
+                let base_expr = self.parse_expression(0).unwrap_or(Node::Identifier {
+                    name: String::new(),
+                    span: span::Span::default(),
+                });
+                base = Some(Box::new(base_expr));
+                self.next_token(); // past expression
+                // Skip optional trailing comma then stop — `..base` must be last.
+                if self.current_token == Token::Comma {
+                    self.next_token();
+                }
+                break;
+            }
             // Capture the span of the field-name token so a
             // shorthand expansion's `Identifier` carries the
             // correct source position (the original field name's
@@ -59883,5 +59900,81 @@ mod res2738_string_dot_methods {
         assert!(r.stdout.contains("hi"), "got: {}", r.stdout);
         assert!(r.stdout.contains("HELLO"), "got: {}", r.stdout);
         assert!(r.stdout.contains("world"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2740_result_parametric_annotation {
+    use super::run_program as run;
+
+    #[test]
+    fn result_parametric_return_ok() {
+        let r = run(r#"fn divide(int a, int b) -> Result<int, string> {
+  if b == 0 { return Err("div by zero"); }
+  return Ok(a / b);
+}
+match divide(10, 2) { Ok(v) => println(v), Err(e) => println(e) }"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('5'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn result_parametric_return_err() {
+        let r = run(r#"fn divide(int a, int b) -> Result<int, string> {
+  if b == 0 { return Err("div by zero"); }
+  return Ok(a / b);
+}
+match divide(10, 0) { Ok(v) => println(v), Err(e) => println(e) }"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("div by zero"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn result_parametric_nested_type() {
+        // Result<float, string> should also parse correctly.
+        let r = run(r#"fn f(float x) -> Result<float, string> {
+  if x < 0.0 { return Err("negative"); }
+  return Ok(x);
+}
+match f(3.14) { Ok(v) => println("ok"), Err(e) => println(e) }"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("ok"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2741_struct_update_trailing {
+    use super::run_program as run;
+
+    #[test]
+    fn spread_at_end_one_override() {
+        let r = run(r#"struct Point { int x, int y, int z, }
+let o = new Point { x: 0, y: 0, z: 0 };
+let p = new Point { x: 5, ..o };
+println(p.x); println(p.y); println(p.z);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('5'), "got: {}", r.stdout);
+        assert!(r.stdout.contains('0'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn spread_at_end_multiple_overrides() {
+        let r = run(r#"struct Point { int x, int y, int z, }
+let o = new Point { x: 0, y: 0, z: 0 };
+let p = new Point { x: 1, y: 2, ..o };
+println(p.x); println(p.y); println(p.z);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('1'), "got: {}", r.stdout);
+        assert!(r.stdout.contains('2'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn spread_at_start_still_works() {
+        let r = run(r#"struct Point { int x, int y, int z, }
+let o = new Point { x: 0, y: 0, z: 0 };
+let p = new Point { ..o, z: 99 };
+println(p.x); println(p.y); println(p.z);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("99"), "got: {}", r.stdout);
     }
 }
