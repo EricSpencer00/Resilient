@@ -644,6 +644,8 @@ mod stack_contracts;
 mod static_assert;
 // RES-2618: f32 single-precision float type.
 mod float32;
+// RES-2604: Display trait — fmt(self) -> string for custom to_string formatting.
+mod display_trait;
 mod struct_exhaustiveness;
 mod typestate_types;
 // RES-2590: warn on unused `use "path" as alias;` imports.
@@ -26742,7 +26744,17 @@ impl Interpreter {
 
                 Ok(return_value)
             }
-            Value::Builtin { func, .. } => func(&args),
+            Value::Builtin { name, func } => {
+                // RES-2604: intercept `to_string(struct_val)` so Display::fmt is used.
+                if *name == "to_string"
+                    && let [struct_val @ Value::Struct { .. }] = args.as_slice()
+                    && let Some(result) =
+                        crate::display_trait::try_display_fmt(self, struct_val.clone())
+                {
+                    return result;
+                }
+                func(&args)
+            }
             #[cfg(feature = "ffi")]
             Value::Foreign {
                 name,
