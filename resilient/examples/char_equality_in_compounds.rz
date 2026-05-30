@@ -1,0 +1,24 @@
+// RES-2730: Char equality inside compound types now works correctly.
+// Previously, ['a','b'] == ['a','b'] silently returned false because
+// values_strict_eq had no arm for Value::Char.
+
+let chars1 = ['h', 'i'];
+let chars2 = ['h', 'i'];
+let chars3 = ['h', 'o'];
+
+if chars1 == chars2 { println("char arrays equal: true"); }
+if chars1 != chars3 { println("char arrays not equal: true"); }
+
+let opt1 = Some('x');
+let opt2 = Some('x');
+let opt3 = Some('z');
+
+if opt1 == opt2 { println("Option<char> equal: true"); }
+if opt1 != opt3 { println("Option<char> not equal: true"); }
+
+let t1 = ('a', 1);
+let t2 = ('a', 1);
+let t3 = ('b', 1);
+
+if t1 == t2 { println("char tuple equal: true"); }
+if t1 != t3 { println("char tuple not equal: true"); }

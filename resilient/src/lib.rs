@@ -22767,6 +22767,9 @@ fn values_strict_eq(left: &Value, right: &Value) -> bool {
         (Value::Float(l), Value::Float(r)) => l == r,
         (Value::String(l), Value::String(r)) => l == r,
         (Value::Bool(l), Value::Bool(r)) => l == r,
+        // RES-2730: Char was missing — chars inside compound types (arrays,
+        // Options, tuples, etc.) silently compared as unequal.
+        (Value::Char(l), Value::Char(r)) => l == r,
         (Value::Bytes(l), Value::Bytes(r)) => l == r,
         (Value::Void, Value::Void) => true,
         (Value::Array(l), Value::Array(r)) => slices_strict_eq(l, r),
@@ -22862,6 +22865,9 @@ fn values_cmp(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
         (Value::Float(l), Value::Float(r)) => l.partial_cmp(r),
         (Value::String(l), Value::String(r)) => Some(l.cmp(r)),
         (Value::Bool(l), Value::Bool(r)) => Some(l.cmp(r)),
+        // RES-2730: Char ordering by Unicode scalar value (same policy as the
+        // `eval_infix_expression` arm added in RES-2683).
+        (Value::Char(l), Value::Char(r)) => Some(l.cmp(r)),
         _ => None,
     }
 }
@@ -59562,5 +59568,55 @@ mod res2728_compound_equality {
              if a != b { println(\"different\"); } else { println(\"same\"); }");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2730_char_equality {
+    use super::run_program as run;
+
+    #[test]
+    fn char_array_same_equal() {
+        let r = run("let a = ['x', 'y'];\n\
+             let b = ['x', 'y'];\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn char_array_different_not_equal() {
+        let r = run("let a = ['x', 'y'];\n\
+             let b = ['x', 'z'];\n\
+             if a != b { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn option_char_some_equal() {
+        let r = run("let a = Some('m');\n\
+             let b = Some('m');\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn option_char_different_not_equal() {
+        let r = run("let a = Some('x');\n\
+             let b = Some('y');\n\
+             if a != b { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn char_tuple_equal() {
+        let r = run("let a = ('a', 1);\n\
+             let b = ('a', 1);\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
     }
 }

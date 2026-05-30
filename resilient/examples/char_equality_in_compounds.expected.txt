@@ -1,0 +1,7 @@
+char arrays equal: true
+char arrays not equal: true
+Option<char> equal: true
+Option<char> not equal: true
+char tuple equal: true
+char tuple not equal: true
+Program executed successfully
