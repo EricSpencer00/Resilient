@@ -57,6 +57,10 @@ pub enum Type {
     UInt32,
     UInt64,
     Float,
+    /// RES-2618: single-precision IEEE 754-2019 binary32. Distinct from
+    /// `Float` (f64) so the compiler can catch implicit cross-width mixing.
+    /// Cortex-M4F has hardware f32 FPU; f64 on that target is software-emulated.
+    Float32,
     String,
     Bool,
     /// RES-152: raw byte sequence, distinct from `String`. Protocol
@@ -120,6 +124,7 @@ impl std::fmt::Display for Type {
             Type::UInt32 => write!(f, "UInt32"),
             Type::UInt64 => write!(f, "UInt64"),
             Type::Float => write!(f, "float"),
+            Type::Float32 => write!(f, "f32"),
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
             Type::Bytes => write!(f, "bytes"),
@@ -500,6 +505,17 @@ fn check_numeric_same_type(op: &str, left: &Type, right: &Type) -> Result<Type, 
         (Type::Float, Type::Any) | (Type::Any, Type::Float) => Ok(Type::Float),
         (Type::Int, Type::Float) | (Type::Float, Type::Int) => Err(format!(
             "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
+            op
+        )),
+        // RES-2618: f32 arithmetic — same-width is OK; mixing f32 with f64 is an error.
+        (Type::Float32, Type::Float32) => Ok(Type::Float32),
+        (Type::Float32, Type::Any) | (Type::Any, Type::Float32) => Ok(Type::Float32),
+        (Type::Float32, Type::Float) | (Type::Float, Type::Float32) => Err(format!(
+            "Cannot apply '{}' to f32 and f64 — use `as f32` or `as f64` to convert explicitly.",
+            op
+        )),
+        (Type::Float32, Type::Int) | (Type::Int, Type::Float32) => Err(format!(
+            "Cannot apply '{}' to f32 and int — use `as_f32(x)` or `to_int(x)` to convert explicitly.",
             op
         )),
         // RES-366: pinned integer types — same width/sign is OK;
@@ -3566,6 +3582,21 @@ impl TypeChecker {
                 env.set("as_uint16".to_string(), fn_any_to_uint16());
                 env.set("as_uint32".to_string(), fn_any_to_uint32());
                 env.set("as_uint64".to_string(), fn_any_to_uint64());
+                // RES-2618: f32/f64 precision casts.
+                env.set(
+                    "as_f32".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Float32),
+                    },
+                );
+                env.set(
+                    "as_f64".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Float),
+                    },
+                );
 
                 // RES-138: current retry counter of the enclosing live block.
                 env.set(
@@ -5210,6 +5241,8 @@ impl TypeChecker {
                 if markers.has_static_assert {
                     crate::static_assert::check(program, source_path)?;
                 }
+                // RES-2618: f32/f64 cross-width mixing guard.
+                crate::float32::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -8496,7 +8529,10 @@ impl TypeChecker {
             "UInt16" | "u16" => Ok(Type::UInt16),
             "UInt32" | "u32" => Ok(Type::UInt32),
             "UInt64" | "u64" => Ok(Type::UInt64),
-            "float" => Ok(Type::Float),
+            "float" | "Float" | "f64" | "Float64" => Ok(Type::Float),
+            // RES-2618: single-precision float — `f32` and `Float32` are
+            // both accepted; `float` / `f64` remain aliases for double.
+            "f32" | "Float32" => Ok(Type::Float32),
             "string" => Ok(Type::String),
             "bool" => Ok(Type::Bool),
             "void" => Ok(Type::Void),

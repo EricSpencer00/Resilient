@@ -155,6 +155,7 @@ impl Substitution {
             | Type::UInt32
             | Type::UInt64
             | Type::Float
+            | Type::Float32
             | Type::String
             | Type::Bytes
             | Type::Bool

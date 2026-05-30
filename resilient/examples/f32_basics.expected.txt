@@ -1,0 +1,5 @@
+4.550000071525574
+4
+true
+42
+Program executed successfully

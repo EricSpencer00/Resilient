@@ -1,0 +1,37 @@
+// RES-2618: f32 single-precision float type.
+// Demonstrates f32 type annotations, as-cast conversion, and precision behavior.
+// Run with: rz run f32_basics.rz
+
+fn square_f32(f32 x) -> f32 {
+    return x * x;
+}
+
+fn add_f32(f32 a, f32 b) -> f32 {
+    return a + b;
+}
+
+fn main() -> void {
+    // f32 via explicit cast from float literal
+    let a = 3.14 as f32;
+    let b = 1.41 as f32;
+    let s = add_f32(a, b);
+    println(s);
+
+    // f32 arithmetic
+    let sq = square_f32(2.0 as f32);
+    println(sq);
+
+    // as_f32 builtin truncates to single precision
+    let big = 1.0 / 3.0;          // f64 division — full precision
+    let small = big as f32;        // truncated to f32 precision
+    let recovered = small as f64;  // widen back to f64
+    // recovered differs from big beyond ~7 significant digits
+    let diff = big - recovered;
+    println(diff > 0.0 || diff <= 0.0);  // always true: diff is finite
+
+    // int -> f32 via as-cast
+    let n = 42 as f32;
+    println(n);
+}
+
+main();

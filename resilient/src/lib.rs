@@ -620,6 +620,8 @@ mod session_types;
 mod snapshot_regression;
 mod stack_contracts;
 mod static_assert;
+// RES-2618: f32 single-precision float type.
+mod float32;
 mod struct_exhaustiveness;
 mod typestate_types;
 mod vibe_debt;
@@ -8187,8 +8189,10 @@ impl Parser {
                     };
                     let builtin = match type_name.as_str() {
                         "int" | "Int" | "Int64" | "i64" => "to_int",
-                        "float" | "Float" => "to_float",
+                        "float" | "Float" | "f64" | "Float64" => "to_float",
                         "string" | "String" => "to_string",
+                        // RES-2618: f32/f64 precision casts.
+                        "f32" | "Float32" => "as_f32",
                         // RES-2646 / RES-366: pinned-width integer casts.
                         // Each maps to the corresponding wrapping builtin
                         // registered in BUILTINS and known to the typechecker.
@@ -8202,7 +8206,7 @@ impl Parser {
                         other => {
                             self.record_error(format!(
                                 "Cannot cast to `{}` — `as` supports int / float / string / \
-                                 Int8 / Int16 / Int32 / UInt8 / UInt16 / UInt32 / UInt64 \
+                                 f32 / f64 / Int8 / Int16 / Int32 / UInt8 / UInt16 / UInt32 / UInt64 \
                                  (and their lowercase aliases i8 / u8 / i16 / u16 / i32 / u32 / u64)",
                                 other
                             ));
@@ -11110,6 +11114,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-130: explicit int ↔ float conversions.
     ("to_float", builtin_to_float),
     ("to_int", builtin_to_int),
+    // RES-2618: f32/f64 precision casts.
+    ("as_f32", crate::float32::builtin_as_f32),
+    ("as_f64", crate::float32::builtin_as_f64),
     // RES-366: pinned-width integer casts. Wrapping truncation.
     ("as_int8", builtin_as_int8),
     ("as_int16", builtin_as_int16),
@@ -26246,7 +26253,9 @@ impl Interpreter {
 fn type_str_to_tc_type(s: &str) -> crate::typechecker::Type {
     match s {
         "Int" | "int" | "Int64" => crate::typechecker::Type::Int,
-        "Float" | "float" => crate::typechecker::Type::Float,
+        "Float" | "float" | "f64" | "Float64" => crate::typechecker::Type::Float,
+        // RES-2618: single-precision float.
+        "f32" | "Float32" => crate::typechecker::Type::Float32,
         "Bool" | "bool" => crate::typechecker::Type::Bool,
         "String" | "string" => crate::typechecker::Type::String,
         "Bytes" | "bytes" => crate::typechecker::Type::Bytes,
