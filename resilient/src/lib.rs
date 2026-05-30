@@ -23413,8 +23413,20 @@ impl Interpreter {
                     // the callback dispatch needs the interpreter's
                     // `&mut self`, so handle them inline here before
                     // the generic builtin dispatch.
+                    // RES-2707: extend with `flat_map`, `for_each`,
+                    // `find`, `any`, `all`, and single-arg `reduce`.
                     if matches!(&target_val, Value::Array(_))
-                        && matches!(field.as_str(), "map" | "filter" | "reduce")
+                        && matches!(
+                            field.as_str(),
+                            "map"
+                                | "filter"
+                                | "reduce"
+                                | "flat_map"
+                                | "for_each"
+                                | "find"
+                                | "any"
+                                | "all"
+                        )
                     {
                         let Value::Array(items) = target_val else {
                             unreachable!()
@@ -23459,18 +23471,136 @@ impl Interpreter {
                                 return Ok(Value::Array(out));
                             }
                             "reduce" => {
-                                if extra_args.len() != 2 {
+                                match extra_args.len() {
+                                    // Single-arg form: reduce(fn) — uses first element as
+                                    // the initial accumulator; errors on empty array.
+                                    1 => {
+                                        let callback = extra_args.pop().unwrap();
+                                        let mut iter = items.into_iter();
+                                        let mut acc = iter.next().ok_or_else(|| {
+                                            "reduce: cannot reduce an empty array without an initial value".to_string()
+                                        })?;
+                                        for item in iter {
+                                            acc =
+                                                self.apply_function(&callback, vec![acc, item])?;
+                                        }
+                                        return Ok(acc);
+                                    }
+                                    // Two-arg form: reduce(init, fn) — explicit accumulator.
+                                    2 => {
+                                        let callback = extra_args.pop().unwrap();
+                                        let mut acc = extra_args.pop().unwrap();
+                                        for item in items {
+                                            acc =
+                                                self.apply_function(&callback, vec![acc, item])?;
+                                        }
+                                        return Ok(acc);
+                                    }
+                                    n => {
+                                        return Err(format!(
+                                            "reduce: expected 1 or 2 arguments (fn | init, fn), got {}",
+                                            n
+                                        ));
+                                    }
+                                }
+                            }
+                            "flat_map" => {
+                                if extra_args.len() != 1 {
                                     return Err(format!(
-                                        "reduce: expected 2 arguments (init, callback), got {}",
+                                        "flat_map: expected 1 callback argument, got {}",
                                         extra_args.len()
                                     ));
                                 }
                                 let callback = extra_args.pop().unwrap();
-                                let mut acc = extra_args.pop().unwrap();
+                                let mut out = Vec::new();
                                 for item in items {
-                                    acc = self.apply_function(&callback, vec![acc, item])?;
+                                    match self.apply_function(&callback, vec![item])? {
+                                        Value::Array(inner) => out.extend(inner),
+                                        other => out.push(other),
+                                    }
                                 }
-                                return Ok(acc);
+                                return Ok(Value::Array(out));
+                            }
+                            "for_each" => {
+                                if extra_args.len() != 1 {
+                                    return Err(format!(
+                                        "for_each: expected 1 callback argument, got {}",
+                                        extra_args.len()
+                                    ));
+                                }
+                                let callback = extra_args.pop().unwrap();
+                                for item in items {
+                                    self.apply_function(&callback, vec![item])?;
+                                }
+                                return Ok(Value::Void);
+                            }
+                            "find" => {
+                                if extra_args.len() != 1 {
+                                    return Err(format!(
+                                        "find: expected 1 predicate argument, got {}",
+                                        extra_args.len()
+                                    ));
+                                }
+                                let predicate = extra_args.pop().unwrap();
+                                for item in items {
+                                    match self.apply_function(&predicate, vec![item.clone()])? {
+                                        Value::Bool(true) => {
+                                            return Ok(Value::Option(Some(Box::new(item))));
+                                        }
+                                        Value::Bool(false) => {}
+                                        other => {
+                                            return Err(format!(
+                                                "find: predicate must return bool, got {}",
+                                                other
+                                            ));
+                                        }
+                                    }
+                                }
+                                return Ok(Value::Option(None));
+                            }
+                            "any" => {
+                                if extra_args.len() != 1 {
+                                    return Err(format!(
+                                        "any: expected 1 predicate argument, got {}",
+                                        extra_args.len()
+                                    ));
+                                }
+                                let predicate = extra_args.pop().unwrap();
+                                for item in items {
+                                    match self.apply_function(&predicate, vec![item])? {
+                                        Value::Bool(true) => return Ok(Value::Bool(true)),
+                                        Value::Bool(false) => {}
+                                        other => {
+                                            return Err(format!(
+                                                "any: predicate must return bool, got {}",
+                                                other
+                                            ));
+                                        }
+                                    }
+                                }
+                                return Ok(Value::Bool(false));
+                            }
+                            "all" => {
+                                if extra_args.len() != 1 {
+                                    return Err(format!(
+                                        "all: expected 1 predicate argument, got {}",
+                                        extra_args.len()
+                                    ));
+                                }
+                                let predicate = extra_args.pop().unwrap();
+                                for item in items {
+                                    match self.apply_function(&predicate, vec![item])? {
+                                        Value::Bool(true) => {}
+                                        Value::Bool(false) => return Ok(Value::Bool(false)),
+                                        other => {
+                                            return Err(format!(
+                                                "all: predicate must return bool, got {}",
+                                                other
+                                            ));
+                                        }
+                                    }
+                                }
+                                return Ok(Value::Bool(true));
                             }
                             _ => unreachable!(),
                         }
