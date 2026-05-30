@@ -377,12 +377,18 @@ impl<CFG: GpioConfig> GpioPin<CFG, Input> {
 /// ODR / BSRR offsets are 0x00, 0x10, 0x14, 0x18 per the same
 /// reference.
 ///
-/// **You must enable the GPIO clock in `RCC->AHB1ENR` before using
-/// any pin on this chip.** Configuring a pin without first enabling
-/// the bus clock is a silent no-op — the register reads back as 0
-/// and writes are discarded. Clock configuration is out of scope
-/// for V1 of the GPIO HAL; downstream users wire RCC through the
-/// volatile intrinsics directly.
+/// **You must enable the GPIO clock before using any pin on this chip.**
+/// Configuring a pin without first enabling the bus clock is a silent
+/// no-op — the register reads back as 0 and writes are discarded.
+///
+/// Use the `rcc` module (RES-2638) to enable the clock in a typed,
+/// no_std way:
+///
+/// ```rust,no_run
+/// use resilient_runtime::rcc::{self, Peripheral, Stm32f4Rcc};
+/// rcc::enable_peripheral::<Stm32f4Rcc>(Peripheral::GpioA).unwrap();
+/// // Now it is safe to configure pins on port A.
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32f4;
 
