@@ -1,0 +1,11 @@
+Hello, Resilient!
+[H, e, l, l, o, ,,  , W, o, r, l, d, !]
+!dlroW ,olleH
+["Hello, World!"]
+hello
+value
+prefix_value
+value
+a | b | c
+["one", "two", "three"]
+Program executed successfully
