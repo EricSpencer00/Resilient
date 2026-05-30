@@ -262,6 +262,36 @@ fn infer_common_arm_type(types: &[Type]) -> Type {
 /// `Int8` binding is always legal. Pinned types are NOT compatible
 /// with each other: `Int8 ↔ Int16` requires an explicit `as_int16`
 /// cast.
+/// RES-2701: recursively replace `Type::Struct(name)` with `Type::Any`
+/// for every `name` that appears in `type_params`. This is needed so
+/// call-site argument checking treats `fn(T) -> T` as `fn(Any) -> Any`
+/// when T is a declared generic type parameter — the single-level
+/// `Struct("T") → Any` substitution in RES-425 did not recurse into
+/// composite types (Function, Tuple, Option).
+fn substitute_type_params(ty: &Type, type_params: &[String]) -> Type {
+    match ty {
+        Type::Struct(name) if type_params.iter().any(|p| p == name) => Type::Any,
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| substitute_type_params(p, type_params))
+                .collect(),
+            return_type: Box::new(substitute_type_params(return_type, type_params)),
+        },
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|e| substitute_type_params(e, type_params))
+                .collect(),
+        ),
+        Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, type_params))),
+        other => other.clone(),
+    }
+}
+
 fn compatible(a: &Type, b: &Type) -> bool {
     if a == b {
         return true;
@@ -274,6 +304,25 @@ fn compatible(a: &Type, b: &Type) -> bool {
     // (which represented Option before this PR).
     if let (Type::Option(inner_a), Type::Option(inner_b)) = (a, b) {
         return compatible(inner_a, inner_b);
+    }
+    // RES-2701: Function types are compatible when all parameter types and
+    // the return type are pairwise compatible. This handles cases where
+    // substitute_type_params replaced type variables with Any — e.g.
+    // `fn(Any) -> Any` must accept a concrete `fn(int) -> int`.
+    if let (
+        Type::Function {
+            params: pa,
+            return_type: ra,
+        },
+        Type::Function {
+            params: pb,
+            return_type: rb,
+        },
+    ) = (a, b)
+    {
+        return pa.len() == pb.len()
+            && pa.iter().zip(pb.iter()).all(|(x, y)| compatible(x, y))
+            && compatible(ra, rb);
     }
     // Integer literals produce Type::Int; allow assigning them to any
     // pinned integer type without an explicit cast.
@@ -8493,13 +8542,16 @@ impl TypeChecker {
                             .enumerate()
                         {
                             let arg_type = self.check_node(arg)?;
-                            // Treat Struct("T") as Any when T is a generic
-                            // type parameter of the callee (RES-425).
-                            let effective_param = if let Type::Struct(tname) = param_type
-                                && let Some(tp) = &callee_type_params
-                                && tp.iter().any(|p| p == tname)
-                            {
-                                &Type::Any
+                            // RES-2701: substitute generic type params recursively
+                            // so that composite types like `fn(T) -> T` become
+                            // `fn(Any) -> Any` when T is a declared type param.
+                            // The previous RES-425 single-level check only handled
+                            // direct `Struct("T")` params, not Function/Tuple/Option
+                            // wrappers that contain a type variable.
+                            let substituted;
+                            let effective_param = if let Some(tp) = &callee_type_params {
+                                substituted = substitute_type_params(param_type, tp);
+                                &substituted
                             } else {
                                 param_type
                             };
@@ -14130,6 +14182,85 @@ mod res2693_trait_param_compat {
              let e = new Eve { n: 0 };\n\
              say_hi(e);\n\
              say_bye(e);\n",
+        );
+    }
+}
+
+#[cfg(test)]
+mod res2701_generic_fn_type_params {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn lambda_accepted_for_fn_t_to_t_param() {
+        check_ok(
+            "fn apply_fn<T>(T x, fn(T) -> T f) -> T { return f(x); }\n\
+             let r = apply_fn(5, fn(int n) -> int { return n * 2; });\n",
+        );
+    }
+
+    #[test]
+    fn named_fn_accepted_for_fn_t_to_t_param() {
+        check_ok(
+            "fn double(int x) -> int { return x * 2; }\n\
+             fn apply_fn<T>(T x, fn(T) -> T f) -> T { return f(x); }\n\
+             let r = apply_fn(5, double);\n",
+        );
+    }
+
+    #[test]
+    fn two_type_params_fn_arg_accepted() {
+        // A and B both appear in non-fn-type positions so inference can bind
+        // them; the fn-type param fn(A) -> A still uses a type variable.
+        check_ok(
+            "fn transform<A, B>(A x, B y, fn(A) -> A f) -> A { return f(x); }\n\
+             let r = transform(3, \"unused\", fn(int n) -> int { return n * 2; });\n",
+        );
+    }
+
+    #[test]
+    fn wrong_concrete_fn_type_still_errors() {
+        check_err(
+            "fn apply_int(int x, fn(int) -> int f) -> int { return f(x); }\n\
+             let r = apply_int(5, fn(string s) -> int { return 0; });\n",
+            "Type mismatch",
+        );
+    }
+
+    #[test]
+    fn substitute_type_params_helper_recurses() {
+        let tp = vec!["T".to_string()];
+        let fn_type = Type::Function {
+            params: vec![Type::Struct("T".to_string())],
+            return_type: Box::new(Type::Struct("T".to_string())),
+        };
+        let subst = substitute_type_params(&fn_type, &tp);
+        assert_eq!(
+            subst,
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Any),
+            }
         );
     }
 }
