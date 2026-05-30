@@ -1,0 +1,4 @@
+// RES-2590: Demonstrates that a used aliased import does NOT produce a warning.
+// `use "scoped_imports_a.rz" as helper;` is referenced via `helper::greet()`.
+use "scoped_imports_a.rz" as helper;
+helper::greet();
