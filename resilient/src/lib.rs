@@ -660,6 +660,8 @@ mod const_eval_ext;
 mod struct_field_check;
 // RES-2586: deque (double-ended queue) collection builtins.
 mod deque;
+// RES-2587: priority queue / binary heap collection builtins.
+mod heap;
 mod vibe_debt;
 mod wcet_contracts;
 
@@ -12800,6 +12802,14 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("deque_peek_back", crate::deque::builtin_deque_peek_back),
     ("deque_len", crate::deque::builtin_deque_len),
     ("deque_is_empty", crate::deque::builtin_deque_is_empty),
+    // RES-2587: priority queue / binary heap collection builtins.
+    ("heap_new", crate::heap::builtin_heap_new),
+    ("heap_new_max", crate::heap::builtin_heap_new_max),
+    ("heap_push", crate::heap::builtin_heap_push),
+    ("heap_pop", crate::heap::builtin_heap_pop),
+    ("heap_peek", crate::heap::builtin_heap_peek),
+    ("heap_len", crate::heap::builtin_heap_len),
+    ("heap_is_empty", crate::heap::builtin_heap_is_empty),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

@@ -1,0 +1,30 @@
+// RES-2587: Priority queue / binary heap collection.
+// heap_new() creates a min-heap; heap_new_max() creates a max-heap.
+
+// Min-heap: extract elements in ascending order.
+let h = heap_new();
+let h = heap_push(h, 5);
+let h = heap_push(h, 1);
+let h = heap_push(h, 3);
+let h = heap_push(h, 2);
+let h = heap_push(h, 4);
+
+let (a, h) = heap_pop(h);
+let (b, h) = heap_pop(h);
+let (c, h) = heap_pop(h);
+let av = match a { Some(x) => x, None => -1 };
+let bv = match b { Some(x) => x, None => -1 };
+let cv = match c { Some(x) => x, None => -1 };
+println(to_string(av));
+println(to_string(bv));
+println(to_string(cv));
+println(to_string(heap_len(h)));
+
+// Max-heap: extract largest first.
+let mh = heap_new_max();
+let mh = heap_push(mh, 10);
+let mh = heap_push(mh, 30);
+let mh = heap_push(mh, 20);
+let top = heap_peek(mh);
+let tv = match top { Some(x) => x, None => -1 };
+println(to_string(tv));
