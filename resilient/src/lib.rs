@@ -22711,6 +22711,12 @@ fn compound_values_equal(left: &Value, right: &Value) -> Option<bool> {
             (Some(lv), Some(rv)) => values_strict_eq(lv, rv),
             _ => false,
         }),
+        // RES-2726: Result == Result. Ok(x)==Ok(y) iff x==y; Err(x)==Err(y)
+        // iff x==y; Ok(_) != Err(_) always.
+        (
+            Value::Result { ok: lok, payload: lp },
+            Value::Result { ok: rok, payload: rp },
+        ) => Some(lok == rok && values_strict_eq(lp, rp)),
         _ => None,
     }
 }
@@ -22745,6 +22751,10 @@ fn values_strict_eq(left: &Value, right: &Value) -> bool {
             (Some(lv), Some(rv)) => values_strict_eq(lv, rv),
             _ => false,
         },
+        // RES-2726: recursive Result equality. Ok(x)==Ok(y) iff x==y; mismatch variant is false.
+        (Value::Result { ok: lok, payload: lp }, Value::Result { ok: rok, payload: rp }) => {
+            lok == rok && values_strict_eq(lp, rp)
+        }
         _ => false,
     }
 }
@@ -59328,6 +59338,56 @@ mod res2723_option_equality {
     fn nested_option_equality() {
         let r = run("let a = Some(Some(1));\n\
              let b = Some(Some(1));\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2726_result_equality {
+    use super::run_program as run;
+
+    #[test]
+    fn ok_same_value_is_equal() {
+        let r = run("let a = Ok(5);\n\
+             let b = Ok(5);\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn ok_different_value_is_not_equal() {
+        let r = run("let a = Ok(5);\n\
+             let b = Ok(6);\n\
+             if a != b { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn err_same_value_is_equal() {
+        let r = run("let a = Err(\"oops\");\n\
+             let b = Err(\"oops\");\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn ok_not_equal_to_err() {
+        let r = run("let a = Ok(1);\n\
+             let b = Err(\"no\");\n\
+             if a != b { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn nested_result_equality() {
+        let r = run("let a = Ok(Ok(42));\n\
+             let b = Ok(Ok(42));\n\
              if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("equal"), "got: {}", r.stdout);

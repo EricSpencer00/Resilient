@@ -1,0 +1,8 @@
+Ok(5) == Ok(5): true
+Ok(5) != Ok(6): true
+Err(fail) == Err(fail): true
+Ok(5) != Err(fail): true
+safe_div(10,2) == safe_div(10,2): true
+Ok(5) != Err(division by zero): true
+error matches expected: true
+Program executed successfully
