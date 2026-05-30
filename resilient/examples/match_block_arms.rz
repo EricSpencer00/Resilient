@@ -1,0 +1,27 @@
+// RES-2699: match arms with braced block bodies.
+// Previously `{` in arm position was mis-parsed as a map literal.
+
+enum Shape {
+    Circle(float),
+    Rectangle(float, float)
+}
+
+fn describe(Shape s) -> string {
+    match s {
+        Shape::Circle(r) => {
+            let area = 3.14159 * r * r;
+            return "circle area=" + to_string(area);
+        },
+        Shape::Rectangle(w, h) => {
+            let area = w * h;
+            return "rect area=" + to_string(area);
+        },
+    }
+}
+
+fn main() -> void {
+    println(describe(Shape::Circle(2.0)));
+    println(describe(Shape::Rectangle(3.0, 4.0)));
+}
+
+main();

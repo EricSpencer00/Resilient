@@ -1,12 +1,8 @@
 {
   "claims": {
-    "resilient/src/traits.rs": {
-      "branch": "res-2697-default-trait-methods",
-      "claimed_at": "2026-05-30T10:40:04Z"
-    },
     "resilient/src/lib.rs": {
-      "branch": "res-2697-default-trait-methods",
-      "claimed_at": "2026-05-30T10:40:04Z"
+      "branch": "res-2699-match-block-arms",
+      "claimed_at": "2026-05-30T11:08:31Z"
     }
   }
 }
