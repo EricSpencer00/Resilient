@@ -1,0 +1,19 @@
+let s = "hello";
+
+// String indexing now returns char, not single-char string
+let c = s[0];
+println(to_string(c));
+
+// Char literal patterns in match work
+match c {
+  'h' => println("matched h"),
+  _ => println("no match"),
+}
+
+// Char participates in string concatenation
+let greeting = "got: " + c;
+println(greeting);
+
+// to_string works on char literals directly
+let x = 'w';
+println(to_string(x));
