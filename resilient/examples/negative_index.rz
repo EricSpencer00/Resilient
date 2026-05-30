@@ -1,0 +1,13 @@
+// RES-2731: negative array and string indices work without a false-positive
+// type error. RES-921 added Python-style negative indexing to the runtime;
+// this removes the compile-time rejection that predated that feature.
+
+let arr = [10, 20, 30, 40, 50];
+
+println(arr[-1]);
+println(arr[-2]);
+println(arr[-5]);
+
+let s = "hello";
+println(s[-1]);
+println(s[-3]);
