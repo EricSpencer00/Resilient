@@ -8324,6 +8324,32 @@ impl TypeChecker {
                             Err(format!("Cannot compare {} and {}", left_type, right_type))
                         }
                     }
+                    // RES-2717: `??` null-coalescing operator. Left must be
+                    // Option<T>; result is T (or the right-hand type when T is
+                    // Any). Any left type is accepted as a fallback for
+                    // untyped / generic callers.
+                    "??" => {
+                        if left_type == Type::Any {
+                            return Ok(right_type);
+                        }
+                        if let Type::Option(inner) = &left_type {
+                            let inner_ty = *inner.clone();
+                            if inner_ty == Type::Any {
+                                return Ok(right_type);
+                            }
+                            if compatible(&inner_ty, &right_type) {
+                                return Ok(inner_ty);
+                            }
+                            return Err(format!(
+                                "`??` default has type {} but Option inner type is {}",
+                                right_type, inner_ty
+                            ));
+                        }
+                        Err(format!(
+                            "`??` operator requires an Option on the left, got {}",
+                            left_type
+                        ))
+                    }
                     _ => Err(format!("Unknown infix operator: {}", operator)),
                 }
             }
@@ -14737,6 +14763,71 @@ mod res2715_try_op_option {
                return Some(r * 2); \
              }\n\
              compute();\n",
+        );
+    }
+}
+
+#[cfg(test)]
+mod res2717_null_coalescing {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn null_coalesce_on_option_accepted() {
+        check_ok(
+            "fn f() -> Option { return Some(42); }\n\
+             let x = f() ?? 0;\n\
+             println(to_string(x));\n",
+        );
+    }
+
+    #[test]
+    fn null_coalesce_on_none_accepted() {
+        check_ok(
+            "let x = None ?? 99;\n\
+             println(to_string(x));\n",
+        );
+    }
+
+    #[test]
+    fn null_coalesce_on_non_option_rejected() {
+        check_err("let x = 42 ?? 0;", "requires an Option on the left");
+    }
+
+    #[test]
+    fn null_coalesce_on_string_rejected() {
+        check_err(
+            r#"let x = "hello" ?? "world";"#,
+            "requires an Option on the left",
+        );
+    }
+
+    #[test]
+    fn null_coalesce_any_lhs_accepted() {
+        check_ok(
+            "fn any_fn() -> any { return None; }\n\
+             let x = any_fn() ?? 0;\n",
         );
     }
 }

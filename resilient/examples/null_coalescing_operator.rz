@@ -1,0 +1,31 @@
+// RES-2717: `??` null-coalescing operator is now accepted by the typechecker.
+// Left side must be Option; result is the inner type (or default).
+
+fn safe_lookup(int key) -> Option {
+    if key == 1 {
+        return Some(42);
+    }
+    return None;
+}
+
+// Some case: returns the inner value (42)
+let a = safe_lookup(1) ?? 0;
+println(to_string(a));
+
+// None case: returns the default (0)
+let b = safe_lookup(99) ?? 0;
+println(to_string(b));
+
+// Chained with a string default
+fn maybe_name(int id) -> Option {
+    if id == 7 {
+        return Some("alice");
+    }
+    return None;
+}
+
+let name = maybe_name(7) ?? "unknown";
+println(name);
+
+let fallback = maybe_name(0) ?? "unknown";
+println(fallback);
