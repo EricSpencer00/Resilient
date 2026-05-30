@@ -873,6 +873,9 @@ fn compile_stmt(
         Node::StructDecl { .. }
         | Node::TraitDecl { .. }
         | Node::ImplBlock { .. }
+        // RES-2689: BlanketImpl is declaration-only; lower_program already
+        // injected the concrete ImplBlocks before compilation reaches here.
+        | Node::BlanketImpl { .. }
         | Node::TypeAlias { .. }
         | Node::NewtypeDecl { .. }
         | Node::RegionDecl { .. }
@@ -1725,6 +1728,9 @@ fn compile_stmt_in_fn(
         Node::StructDecl { .. }
         | Node::TraitDecl { .. }
         | Node::ImplBlock { .. }
+        // RES-2689: BlanketImpl is declaration-only; concrete ImplBlocks were
+        // already injected by lower_program before compilation.
+        | Node::BlanketImpl { .. }
         | Node::TypeAlias { .. }
         | Node::NewtypeDecl { .. }
         | Node::RegionDecl { .. }
