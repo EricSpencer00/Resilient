@@ -16,14 +16,13 @@
 //!    `impl Trait for ConcreteType` (the specific impl wins at call sites);
 //!    only *duplicate* blanket impls (same `trait_name + bounds`) are an error.
 //!
-//! ## Scope
+//! ## Monomorphization (RES-2685)
 //!
-//! This pass is purely a validation gate. Runtime dispatch is not changed:
-//! the interpreter continues to call methods via the `<Type>$<method>` mangling.
-//! Blanket impls do NOT currently inject synthetic `ImplBlock` nodes — they
-//! serve as a checked annotation that the programmer intends to cover all types
-//! satisfying the bound, and the interpreter's existing structural-satisfaction
-//! logic (checking that a type has all the right methods) handles dispatch.
+//! `lower_program` synthesizes concrete `ImplBlock` nodes from each `BlanketImpl`.
+//! For every struct that satisfies all bounds but lacks a specific impl of the
+//! target trait, it clones the blanket methods, rewrites `T$method → Concrete$method`
+//! in the function name and self-parameter type, and injects the resulting
+//! `ImplBlock` immediately after the originating `BlanketImpl` in the AST.
 
 #![allow(unused_imports)]
 
@@ -167,6 +166,186 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// RES-2685: Monomorphize blanket impls into concrete `ImplBlock` nodes.
+///
+/// For each `BlanketImpl { type_param, bounds, trait_name, methods }`, finds
+/// every struct that implements all bounds but does NOT already have a specific
+/// `impl trait_name for Struct`, and synthesizes a concrete `ImplBlock` by
+/// substituting `type_param → StructName` in method names and self-param types.
+///
+/// Injected nodes appear immediately after the originating `BlanketImpl` so
+/// the interpreter registers them before any downstream function calls.
+pub fn lower_program(program: &mut Node) {
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return,
+    };
+
+    // Fast-path: nothing to do if there are no blanket impls.
+    if !stmts
+        .iter()
+        .any(|s| matches!(s.node, Node::BlanketImpl { .. }))
+    {
+        return;
+    }
+
+    // Build struct_trait_impls: for each struct name, which traits it explicitly
+    // implements via concrete `ImplBlock` nodes.
+    let mut struct_trait_impls: HashMap<String, HashSet<String>> = HashMap::new();
+    for s in stmts.iter() {
+        if let Node::ImplBlock {
+            trait_name: Some(t),
+            struct_name,
+            ..
+        } = &s.node
+        {
+            struct_trait_impls
+                .entry(struct_name.clone())
+                .or_default()
+                .insert(t.clone());
+        }
+    }
+
+    // Collect all declared struct names.
+    let mut struct_names: Vec<String> = Vec::new();
+    for s in stmts.iter() {
+        if let Node::StructDecl { name, .. } = &s.node {
+            struct_names.push(name.clone());
+        }
+    }
+
+    // Walk the statement list, inserting synthetic ImplBlocks after each
+    // BlanketImpl. Use an index-based loop because we mutate `stmts`.
+    let mut i = 0;
+    while i < stmts.len() {
+        let (type_param, bounds, trait_name, methods, blanket_span) = if let Node::BlanketImpl {
+            type_param,
+            bounds,
+            trait_name,
+            methods,
+            span,
+        } = &stmts[i].node
+        {
+            (
+                type_param.clone(),
+                bounds.clone(),
+                trait_name.clone(),
+                methods.clone(),
+                *span,
+            )
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let mut to_insert: Vec<crate::span::Spanned<Node>> = Vec::new();
+
+        for concrete in &struct_names {
+            // Skip if there's already a specific impl for this (struct, trait) pair.
+            if struct_trait_impls
+                .get(concrete)
+                .map(|ts| ts.contains(&trait_name))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            // Check the struct implements every required bound.
+            let satisfies = bounds.iter().all(|bound| {
+                struct_trait_impls
+                    .get(concrete)
+                    .map(|ts| ts.contains(bound))
+                    .unwrap_or(false)
+            });
+            if !satisfies {
+                continue;
+            }
+
+            // Synthesize concrete method nodes: T$method → Concrete$method,
+            // self-parameter type T → Concrete.
+            let prefix = format!("{}$", type_param);
+            let synthesized: Vec<Node> = methods
+                .iter()
+                .map(|method| {
+                    if let Node::Function {
+                        name,
+                        parameters,
+                        defaults,
+                        body,
+                        requires,
+                        ensures,
+                        return_type,
+                        span,
+                        pure,
+                        effects,
+                        type_params,
+                        type_param_bounds,
+                        fails,
+                        recovers_to,
+                        is_pub,
+                    } = method.clone()
+                    {
+                        let new_name = name
+                            .strip_prefix(&prefix)
+                            .map(|rest| format!("{}${}", concrete, rest))
+                            .unwrap_or(name);
+                        let new_params: Vec<(String, String)> = parameters
+                            .into_iter()
+                            .map(|(ty, nm)| {
+                                (
+                                    if ty == type_param {
+                                        concrete.clone()
+                                    } else {
+                                        ty
+                                    },
+                                    nm,
+                                )
+                            })
+                            .collect();
+                        Node::Function {
+                            name: new_name,
+                            parameters: new_params,
+                            defaults,
+                            body,
+                            requires,
+                            ensures,
+                            return_type,
+                            span,
+                            pure,
+                            effects,
+                            type_params,
+                            type_param_bounds,
+                            fails,
+                            recovers_to,
+                            is_pub,
+                        }
+                    } else {
+                        method.clone()
+                    }
+                })
+                .collect();
+
+            let synthetic_impl = Node::ImplBlock {
+                trait_name: Some(trait_name.clone()),
+                struct_name: concrete.clone(),
+                methods: synthesized,
+                associated_type_impls: Vec::new(),
+                span: blanket_span,
+            };
+            to_insert.push(crate::span::Spanned::new(synthetic_impl, blanket_span));
+            // Record the new impl so later blankets see it.
+            struct_trait_impls
+                .entry(concrete.clone())
+                .or_default()
+                .insert(trait_name.clone());
+        }
+
+        let insert_count = to_insert.len();
+        stmts.splice((i + 1)..(i + 1), to_insert);
+        i += 1 + insert_count;
+    }
+}
+
 fn format_err(source_path: &str, span: Span, msg: &str) -> String {
     if span.start.line == 0 {
         msg.to_string()
@@ -289,6 +468,74 @@ main();
         assert!(
             parse_and_check(src).is_ok(),
             "blanket impl coexisting with specific impl should be valid"
+        );
+    }
+
+    /// RES-2685: lower_program synthesizes a concrete ImplBlock so the method
+    /// can be called without a redundant specific impl.
+    #[test]
+    fn lower_program_synthesizes_concrete_impl() {
+        let r = crate::run_program(
+            r#"
+struct Score { int value, }
+trait Display { fn show(self) -> string; }
+trait Loud    { fn shout(self) -> string; }
+impl Display for Score {
+    fn show(self) -> string { return to_string(self.value); }
+}
+impl<T: Display> Loud for T {
+    fn shout(self) -> string { return self.show() + "!"; }
+}
+fn main() {
+    let s = new Score { value: 7 };
+    println(s.show());
+    println(s.shout());
+}
+main();
+"#,
+        );
+        assert!(r.ok, "eval errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("7"),
+            "expected '7' in output, got: {}",
+            r.stdout
+        );
+        assert!(
+            r.stdout.contains("7!"),
+            "expected '7!' in output, got: {}",
+            r.stdout
+        );
+    }
+
+    /// RES-2685: specific impl wins over blanket — no duplicate-method error.
+    #[test]
+    fn lower_program_specific_impl_wins() {
+        let r = crate::run_program(
+            r#"
+struct Score { int value, }
+trait Display { fn show(self) -> string; }
+trait Loud    { fn shout(self) -> string; }
+impl Display for Score {
+    fn show(self) -> string { return to_string(self.value); }
+}
+impl Loud for Score {
+    fn shout(self) -> string { return "SPECIFIC"; }
+}
+impl<T: Display> Loud for T {
+    fn shout(self) -> string { return "BLANKET"; }
+}
+fn main() {
+    let s = new Score { value: 1 };
+    println(s.shout());
+}
+main();
+"#,
+        );
+        assert!(r.ok, "eval errors: {:?}", r.errors);
+        assert!(
+            r.stdout.contains("SPECIFIC"),
+            "specific impl should win; got: {}",
+            r.stdout
         );
     }
 }

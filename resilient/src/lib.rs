@@ -26728,6 +26728,8 @@ fn start_repl() -> RustylineResult<()> {
                 crate::newtypes::lower_program(&mut program);
                 // Expand textual macros declared with `#[macro(...)]`.
                 crate::macros::lower_program(&mut program);
+                // RES-2685: synthesize concrete ImplBlocks from BlanketImpl nodes.
+                crate::blanket_impl::lower_program(&mut program);
 
                 // Run type checker if enabled
                 if type_check_enabled {
@@ -27135,6 +27137,8 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     // RES-319: rewrite newtype constructor calls before eval.
     crate::newtypes::lower_program(&mut program);
     crate::macros::lower_program(&mut program);
+    // RES-2685: synthesize concrete ImplBlocks from BlanketImpl nodes.
+    crate::blanket_impl::lower_program(&mut program);
     (program, errs)
 }
 
@@ -28158,6 +28162,8 @@ fn execute_file(
     crate::newtypes::lower_program(&mut program);
     // Expand textual macros declared with `#[macro(...)]`.
     crate::macros::lower_program(&mut program);
+    // RES-2685: synthesize concrete ImplBlocks from BlanketImpl nodes.
+    crate::blanket_impl::lower_program(&mut program);
 
     // RES-391: syntactic non-aliasing check over reference-type
     // parameters. Runs unconditionally — a borrow-check violation is
