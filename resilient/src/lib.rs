@@ -672,6 +672,8 @@ mod heap;
 mod target_profiles;
 // RES-2611: source maps linking bytecode offsets to source positions.
 mod source_map;
+// RES-2583: mutex and rwlock synchronization primitives.
+mod mutex_rwlock;
 mod vibe_debt;
 mod wcet_contracts;
 // RES-2558: process spawning (std-only).
@@ -13006,6 +13008,18 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("udp_send_to", crate::tcp_udp::builtin_udp_send_to),
     ("udp_recv_from", crate::tcp_udp::builtin_udp_recv_from),
     ("udp_close", crate::tcp_udp::builtin_udp_close),
+    // RES-2583: mutex and rwlock synchronization primitives.
+    ("mutex_new", crate::mutex_rwlock::builtin_mutex_new),
+    ("mutex_lock", crate::mutex_rwlock::builtin_mutex_lock),
+    ("mutex_unlock", crate::mutex_rwlock::builtin_mutex_unlock),
+    (
+        "mutex_try_lock",
+        crate::mutex_rwlock::builtin_mutex_try_lock,
+    ),
+    ("rwlock_new", crate::mutex_rwlock::builtin_rwlock_new),
+    ("rwlock_read", crate::mutex_rwlock::builtin_rwlock_read),
+    ("rwlock_write", crate::mutex_rwlock::builtin_rwlock_write),
+    ("rwlock_unlock", crate::mutex_rwlock::builtin_rwlock_unlock),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
