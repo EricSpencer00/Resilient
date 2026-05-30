@@ -648,6 +648,8 @@ mod float32;
 mod display_trait;
 mod struct_exhaustiveness;
 mod typestate_types;
+// RES-2589: compile-time dead-code warnings.
+mod dead_code_lint;
 // RES-2590: warn on unused `use "path" as alias;` imports.
 mod unused_imports;
 mod vibe_debt;
