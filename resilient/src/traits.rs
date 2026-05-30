@@ -578,6 +578,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             for (i, tp) in type_params.iter().enumerate() {
                 if let Some(bs) = type_param_bounds.get(i) {
                     for b in bs {
+                        // RES-2695: projection bounds like "I::Item:Display" are
+                        // not direct trait names — skip the existence check here
+                        // and validate them in walk_call_sites instead.
+                        if b.contains("::") {
+                            continue;
+                        }
                         if !traits.contains_key(b) {
                             return Err(format_err(
                                 source_path,
@@ -594,6 +600,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         }
     }
 
+    // RES-2695: build the associated-type map so projection bounds can be
+    // validated at call sites: (trait_name, struct_name, assoc_type_name) → type.
+    let assoc_type_map = build_assoc_type_map(program).unwrap_or_default();
+
     // Validate call sites where the argument is a struct literal — the
     // case where the type is concretely determinable. For other forms,
     // we skip silently (matching `generics.rs` philosophy: dynamic
@@ -604,6 +614,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         &traits,
         &type_methods,
         &explicit_impls,
+        &assoc_type_map,
         source_path,
     )?;
 
@@ -621,6 +632,7 @@ fn walk_call_sites(
     traits: &HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
     type_methods: &HashMap<String, HashMap<String, usize>>,
     explicit_impls: &HashSet<(String, String)>,
+    assoc_type_map: &HashMap<(String, String, String), String>,
     source_path: &str,
 ) -> Result<(), String> {
     match node {
@@ -632,6 +644,7 @@ fn walk_call_sites(
                     traits,
                     type_methods,
                     explicit_impls,
+                    assoc_type_map,
                     source_path,
                 )?;
             }
@@ -644,6 +657,7 @@ fn walk_call_sites(
                     traits,
                     type_methods,
                     explicit_impls,
+                    assoc_type_map,
                     source_path,
                 )?;
             }
@@ -655,6 +669,7 @@ fn walk_call_sites(
                 traits,
                 type_methods,
                 explicit_impls,
+                assoc_type_map,
                 source_path,
             )?;
         }
@@ -666,6 +681,7 @@ fn walk_call_sites(
                     traits,
                     type_methods,
                     explicit_impls,
+                    assoc_type_map,
                     source_path,
                 )?;
             }
@@ -677,6 +693,7 @@ fn walk_call_sites(
                 traits,
                 type_methods,
                 explicit_impls,
+                assoc_type_map,
                 source_path,
             )?;
         }
@@ -687,6 +704,7 @@ fn walk_call_sites(
                 traits,
                 type_methods,
                 explicit_impls,
+                assoc_type_map,
                 source_path,
             )?;
         }
@@ -697,6 +715,7 @@ fn walk_call_sites(
                 traits,
                 type_methods,
                 explicit_impls,
+                assoc_type_map,
                 source_path,
             )?;
         }
@@ -712,6 +731,7 @@ fn walk_call_sites(
                 traits,
                 type_methods,
                 explicit_impls,
+                assoc_type_map,
                 source_path,
             )?;
             walk_call_sites(
@@ -720,6 +740,7 @@ fn walk_call_sites(
                 traits,
                 type_methods,
                 explicit_impls,
+                assoc_type_map,
                 source_path,
             )?;
             if let Some(alt) = alternative {
@@ -729,6 +750,7 @@ fn walk_call_sites(
                     traits,
                     type_methods,
                     explicit_impls,
+                    assoc_type_map,
                     source_path,
                 )?;
             }
@@ -745,6 +767,7 @@ fn walk_call_sites(
                 traits,
                 type_methods,
                 explicit_impls,
+                assoc_type_map,
                 source_path,
             )?;
             for a in arguments {
@@ -754,6 +777,7 @@ fn walk_call_sites(
                     traits,
                     type_methods,
                     explicit_impls,
+                    assoc_type_map,
                     source_path,
                 )?;
             }
@@ -811,6 +835,61 @@ fn walk_call_sites(
                     };
                     if let Some(ct) = concrete_type {
                         for bound in bounds {
+                            // RES-2695: projection bound like "I::Item:Display"
+                            // — parse "Param::AssocType:Trait" and validate.
+                            if bound.contains("::") {
+                                // rsplit_once(':') splits at the LAST ':', giving
+                                // projection="I::Item" and trait_bound="Display".
+                                // split_once("::") on the projection gives the assoc name.
+                                let parsed = bound
+                                    .rsplit_once(':')
+                                    .and_then(|(proj, tb)| {
+                                        proj.split_once("::").map(|(_, a)| (a, tb))
+                                    });
+                                if let Some((assoc_name, trait_bound)) = parsed {
+                                    let concrete_assoc = assoc_type_map
+                                        .iter()
+                                        .find(|((_, s, a), _)| {
+                                            s.as_str() == ct && a.as_str() == assoc_name
+                                        })
+                                        .map(|(_, v)| v.as_str());
+                                    match concrete_assoc {
+                                        None => {
+                                            return Err(format_err(
+                                                source_path,
+                                                *span,
+                                                &format!(
+                                                    "type `{}` does not define associated type `{}` required by bound `{}` at call to `{}`",
+                                                    ct, assoc_name, bound, callee_name
+                                                ),
+                                            ));
+                                        }
+                                        Some(concrete_type) => {
+                                            let satisfied = explicit_impls.contains(&(
+                                                trait_bound.to_string(),
+                                                concrete_type.to_string(),
+                                            )) || trait_satisfied_structurally(
+                                                trait_bound,
+                                                concrete_type,
+                                                traits,
+                                                type_methods,
+                                            );
+                                            if !satisfied {
+                                                return Err(format_err(
+                                                    source_path,
+                                                    *span,
+                                                    &format!(
+                                                        "associated type `{}::{}` = `{}` does not satisfy bound `{}` at call to `{}`",
+                                                        ct, assoc_name, concrete_type,
+                                                        trait_bound, callee_name
+                                                    ),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                continue; // projection bound handled above
+                            }
                             let satisfied = explicit_impls.contains(&(bound.clone(), ct.clone()))
                                 || trait_satisfied_structurally(bound, &ct, traits, type_methods);
                             if !satisfied {
@@ -1166,5 +1245,63 @@ mod tests {
         );
         assert!(map.contains_key(&msg_key), "should have Message type");
         assert!(map.contains_key(&err_key), "should have Error type");
+    }
+
+    // RES-2695: projection bound checking tests.
+
+    #[test]
+    fn projection_bound_no_false_positive_for_valid_program() {
+        // A function with `where I::Item: Show` should typecheck cleanly
+        // when the concrete struct's Item implements Show.
+        let src = "trait Show { fn show(self) -> string; }\n\
+             trait Iter { type Item; fn next(self) -> int; }\n\
+             struct Num { int v }\n\
+             struct List { int n }\n\
+             impl Show for Num { fn show(self) -> string { return \"n\"; } }\n\
+             impl Iter for List {\n\
+                 type Item = Num;\n\
+                 fn next(self) -> int { return self.n; }\n\
+             }\n\
+             fn<I> collect(I it) where I::Item: Show { println(it.next()); }\n\
+             let sl = new List { n: 0 };\n\
+             collect(sl);\n";
+        let prog = parse_program(src);
+        check(&prog, "test.rz").unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn projection_bound_errors_when_assoc_type_missing() {
+        // Struct's impl doesn't define the associated type — should error.
+        // Pass a struct literal so walk_call_sites sees the concrete type.
+        let src = "trait Show { fn show(self) -> string; }\n\
+             trait Iter { type Item; fn next(self) -> int; }\n\
+             struct Widget { int x }\n\
+             impl Iter for Widget { fn next(self) -> int { return self.x; } }\n\
+             fn<I> collect(I it) where I::Item: Show { println(it.next()); }\n\
+             collect(new Widget { x: 1 });\n";
+        let prog = parse_program(src);
+        let e = check(&prog, "test.rz").expect_err("expected missing-assoc-type error");
+        assert!(e.contains("Item"), "got: {e}");
+        assert!(e.contains("Widget"), "got: {e}");
+    }
+
+    #[test]
+    fn projection_bound_errors_when_assoc_type_does_not_satisfy_bound() {
+        // Struct defines Item = BadType, but BadType doesn't implement Show.
+        // Pass a struct literal directly so walk_call_sites can see the concrete type.
+        let src = "trait Show { fn show(self) -> string; }\n\
+             trait Iter { type Item; fn next(self) -> int; }\n\
+             struct BadType { int x }\n\
+             struct List { int n }\n\
+             impl Iter for List {\n\
+                 type Item = BadType;\n\
+                 fn next(self) -> int { return self.n; }\n\
+             }\n\
+             fn<I> collect(I it) where I::Item: Show { println(it.next()); }\n\
+             collect(new List { n: 0 });\n";
+        let prog = parse_program(src);
+        let e = check(&prog, "test.rz").expect_err("expected bound-violation error");
+        assert!(e.contains("BadType"), "got: {e}");
+        assert!(e.contains("Show"), "got: {e}");
     }
 }
