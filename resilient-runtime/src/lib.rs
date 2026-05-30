@@ -74,6 +74,10 @@ pub mod dma;
 // intrinsics. no_std, alloc-free; chip register layout is
 // parameterised via the `GpioConfig` trait.
 pub mod gpio;
+// RES-2638: RCC (Reset and Clock Control) HAL. Typed clock-enable API
+// so users don't poke AHB1ENR by hand before configuring peripherals.
+// Must be called before using gpio / uart / timer on any STM32F4 port.
+pub mod rcc;
 // RES-2597: UART serial communication abstraction.
 // no_std/no-alloc clean. User wires a `UartIo` adapter for the
 // concrete peripheral; the runtime composes blocking IO on top.
