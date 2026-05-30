@@ -1,12 +1,8 @@
 {
   "claims": {
     "resilient/src/typechecker.rs": {
-      "branch": "res-2711-type-char",
-      "claimed_at": "2026-05-30T12:41:52Z"
-    },
-    "resilient/src/unify.rs": {
-      "branch": "res-2711-type-char",
-      "claimed_at": "2026-05-30T13:02:53Z"
+      "branch": "res-2713-pattern-literal-type-check",
+      "claimed_at": "2026-05-30T13:23:25Z"
     }
   }
 }
