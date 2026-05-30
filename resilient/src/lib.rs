@@ -666,6 +666,8 @@ mod const_eval_ext;
 mod struct_field_check;
 // RES-2584: string builder builtins.
 mod string_builder;
+// RES-2585: regex matching builtins.
+mod regex_builtins;
 // RES-2586: deque (double-ended queue) collection builtins.
 mod deque;
 // RES-2587: priority queue / binary heap collection builtins.
@@ -13038,6 +13040,25 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "string_builder_clear",
         crate::string_builder::builtin_string_builder_clear,
+    ),
+    // RES-2585: regex matching builtins.
+    ("regex_match", crate::regex_builtins::builtin_regex_match),
+    ("regex_find", crate::regex_builtins::builtin_regex_find),
+    (
+        "regex_find_all",
+        crate::regex_builtins::builtin_regex_find_all,
+    ),
+    (
+        "regex_captures",
+        crate::regex_builtins::builtin_regex_captures,
+    ),
+    (
+        "regex_replace",
+        crate::regex_builtins::builtin_regex_replace,
+    ),
+    (
+        "regex_replace_all",
+        crate::regex_builtins::builtin_regex_replace_all,
     ),
     // RES-2588: linked list collection builtins.
     (

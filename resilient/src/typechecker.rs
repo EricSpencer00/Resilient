@@ -4663,6 +4663,49 @@ impl TypeChecker {
                         return_type: Box::new(Type::Any),
                     },
                 );
+                // RES-2585: regex matching builtins.
+                env.set(
+                    "regex_match".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "regex_find".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "regex_find_all".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "regex_captures".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "regex_replace".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "regex_replace_all".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
                 // RES-2588: linked list builtins.
                 env.set(
                     "linked_list_new".to_string(),
