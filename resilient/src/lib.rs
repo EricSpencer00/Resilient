@@ -654,6 +654,8 @@ mod never_type;
 mod dead_code_lint;
 // RES-2590: warn on unused `use "path" as alias;` imports.
 mod unused_imports;
+// RES-2580: extended const eval — string concat, bitwise ops, conditionals.
+mod const_eval_ext;
 mod vibe_debt;
 mod wcet_contracts;
 
@@ -25421,19 +25423,83 @@ impl Interpreter {
                     // RES-2660: logical operators for compound conditions.
                     ("&&", Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a && b)),
                     ("||", Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a || b)),
+                    // RES-2580: string concatenation in const expressions.
+                    ("+", Value::String(a), Value::String(b)) => Ok(Value::String(a + b.as_str())),
+                    // RES-2580: string ordering comparisons.
+                    ("<", Value::String(ref a), Value::String(ref b)) => Ok(Value::Bool(a < b)),
+                    ("<=", Value::String(ref a), Value::String(ref b)) => Ok(Value::Bool(a <= b)),
+                    (">", Value::String(ref a), Value::String(ref b)) => Ok(Value::Bool(a > b)),
+                    (">=", Value::String(ref a), Value::String(ref b)) => Ok(Value::Bool(a >= b)),
+                    // RES-2580: bitwise operators on integers.
+                    ("&", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a & b)),
+                    ("|", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a | b)),
+                    ("^", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a ^ b)),
+                    ("<<", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a << b)),
+                    (">>", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a >> b)),
                     (op, lv, rv) => Err(format!(
                         "error: operator '{}' on ({}, {}) is not supported in a constant expression",
                         op, lv, rv
                     )),
                 }
             }
+            // RES-2580: conditional const expressions: `if C { A } else { B }`.
+            // Both branches must be const-evaluable; the condition must be bool.
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
+                let cond = Self::eval_const_expr(condition, resolved, evaluating)?;
+                let Value::Bool(b) = cond else {
+                    return Err("error: condition in const `if` must evaluate to bool".to_string());
+                };
+                if b {
+                    Self::eval_const_expr(consequence, resolved, evaluating)
+                } else {
+                    match alternative {
+                        Some(alt) => Self::eval_const_expr(alt, resolved, evaluating),
+                        None => Ok(Value::Void),
+                    }
+                }
+            }
+            // RES-2580: unwrap expression-statement wrapper (parser emits
+            // ExpressionStatement for bare-expression blocks like `{ A }`).
+            Node::ExpressionStatement { expr, .. } => {
+                Self::eval_const_expr(expr, resolved, evaluating)
+            }
+            // RES-2580: block with single expression is allowed as a const value.
+            Node::Block { stmts, .. } => {
+                // Only single-expression blocks are supported in const context.
+                // Strip ExpressionStatement wrappers before recursing.
+                if stmts.len() == 1 {
+                    let inner = match &stmts[0] {
+                        Node::ExpressionStatement { expr, .. } => expr.as_ref(),
+                        other => other,
+                    };
+                    Self::eval_const_expr(inner, resolved, evaluating)
+                } else {
+                    Err(
+                        "error: only single-expression blocks are valid in const expressions"
+                            .to_string(),
+                    )
+                }
+            }
+            // RES-2580: tuple literals with all-const elements.
+            Node::TupleLiteral { items, .. } => {
+                let mut vals = Vec::with_capacity(items.len());
+                for item in items {
+                    vals.push(Self::eval_const_expr(item, resolved, evaluating)?);
+                }
+                Ok(Value::Tuple(vals))
+            }
             other => Err(format!(
                 "error: '{}' is not a valid constant expression; \
-                 only literals, arithmetic, and constant references are allowed",
+                 only literals, arithmetic, string ops, bitwise ops, \
+                 conditionals, and constant references are allowed",
                 match other {
                     Node::CallExpression { .. } => "function call".to_string(),
                     Node::ArrayLiteral { .. } => "array literal".to_string(),
-                    Node::Block { .. } => "block".to_string(),
                     _ => format!("{:?}", std::mem::discriminant(other)),
                 }
             )),
