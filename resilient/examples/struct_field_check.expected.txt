@@ -1,0 +1,5 @@
+origin
+other
+true
+false
+Program executed successfully
