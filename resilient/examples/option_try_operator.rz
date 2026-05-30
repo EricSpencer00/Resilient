@@ -1,0 +1,25 @@
+// RES-2715: `?` operator works on Option values (not just Result).
+// The runtime already supported this (RES-375); the typechecker now
+// accepts it and propagates the inner type.
+
+fn safe_div(int a, int b) -> Option {
+    if b == 0 {
+        return None;
+    }
+    return Some(a / b);
+}
+
+fn compute(int a, int b) -> Option {
+    let result = safe_div(a, b)?;
+    return Some(result * 2);
+}
+
+match compute(10, 2) {
+    Some(v) => println(to_string(v)),
+    None => println("none"),
+}
+
+match compute(5, 0) {
+    Some(v) => println(to_string(v)),
+    None => println("none"),
+}

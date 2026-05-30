@@ -6698,12 +6698,21 @@ impl TypeChecker {
 
             Node::TryExpression { expr: inner, .. } => {
                 let inner_type = self.check_node(inner)?;
-                // `?` expects a Result and unwraps to Any at MVP (we
-                // don't track Ok's payload type yet).
-                if !compatible(&inner_type, &Type::Result) {
-                    return Err(format!("? operator expects a Result, got {}", inner_type));
+                // RES-2715: `?` works on both Result and Option (the runtime
+                // handles both — see lib.rs RES-375 comment). For Option<T>
+                // propagate the inner type T so callers know the unwrapped
+                // value's type. For unparameterised Result return Any (the
+                // Ok payload type is not tracked yet).
+                if let Type::Option(ok_ty) = &inner_type {
+                    return Ok(*ok_ty.clone());
                 }
-                Ok(Type::Any)
+                if compatible(&inner_type, &Type::Result) {
+                    return Ok(Type::Any);
+                }
+                Err(format!(
+                    "? operator expects a Result or Option, got {}",
+                    inner_type
+                ))
             }
 
             // RES-363: `expr?.field` / `expr?.method(args)` — optional
@@ -14651,5 +14660,83 @@ mod res2713_pattern_literal_type_check {
     fn string_subscript_returns_char_type() {
         // s[i] now produces Type::Char, so the result can be bound to a char variable.
         check_ok(r#"let s = "hello"; let c: char = s[0];"#);
+    }
+}
+
+#[cfg(test)]
+mod res2715_try_op_option {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn try_on_option_accepted() {
+        check_ok(
+            "fn f() -> Option { return Some(1); }\n\
+             fn g() -> Option { let v = f()?; return Some(v); }\n\
+             g();\n",
+        );
+    }
+
+    #[test]
+    fn try_on_result_still_accepted() {
+        check_ok(
+            "fn ok_result() -> Result { return Ok(42); }\n\
+             fn use_it() -> Result { let v = ok_result()?; return Ok(v); }\n\
+             use_it();\n",
+        );
+    }
+
+    #[test]
+    fn try_on_int_rejected() {
+        check_err(
+            "fn f() -> int { let n = 5; let v = n?; return v; }",
+            "Result or Option",
+        );
+    }
+
+    #[test]
+    fn try_on_string_rejected() {
+        check_err(
+            r#"fn f() -> string { let s = "hello"; let v = s?; return v; }"#,
+            "Result or Option",
+        );
+    }
+
+    #[test]
+    fn try_propagates_option_inner_type() {
+        // When the option inner type is known, ? should unwrap to that type.
+        // Binding to a typed variable exercises the type propagation.
+        check_ok(
+            "fn safe_div(int a, int b) -> Option { \
+               if b == 0 { return None; } \
+               return Some(a / b); \
+             }\n\
+             fn compute() -> Option { \
+               let r = safe_div(10, 2)?; \
+               return Some(r * 2); \
+             }\n\
+             compute();\n",
+        );
     }
 }
