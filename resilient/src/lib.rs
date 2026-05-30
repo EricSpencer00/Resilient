@@ -11115,7 +11115,9 @@ fn format_contract_expr(node: &Node) -> String {
 fn can_stringify_for_concat(v: &Value) -> bool {
     matches!(
         v,
-        Value::String(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_)
+        // RES-2709: Char is now returned by string indexing s[i] so it
+        // must participate in `+` concatenation alongside the existing scalars.
+        Value::String(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Char(_)
     )
 }
 
@@ -11125,6 +11127,7 @@ fn stringify_for_concat_owned(v: Value) -> String {
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Bool(b) => b.to_string(),
+        Value::Char(c) => c.to_string(),
         _ => unreachable!(),
     }
 }
@@ -15972,6 +15975,8 @@ fn builtin_to_string(args: &[Value]) -> RResult<Value> {
         [Value::Int(n)] => Ok(Value::String(n.to_string())),
         [Value::Float(f)] => Ok(Value::String(f.to_string())),
         [Value::Bool(b)] => Ok(Value::String(b.to_string())),
+        // RES-2709: char is a scalar; convert to its one-character string form.
+        [Value::Char(c)] => Ok(Value::String(c.to_string())),
         [other] => Err(format!("to_string: expected scalar value, got {}", other)),
         _ => Err(format!(
             "to_string: expected 1 argument, got {}",
@@ -24594,9 +24599,11 @@ impl Interpreter {
                         m.remove(&mk)
                             .ok_or_else(|| format!("Key not found in map: {}", key_val))
                     }
-                    // RES-427: string subscript on a string yields a
-                    // one-character substring (`s["0"]` is not useful; the
-                    // useful form is integer subscript `s[i]`).
+                    // RES-427 / RES-2709: string subscript `s[i]` yields
+                    // the i-th Unicode scalar as a `Value::Char` so that
+                    // char literal patterns in `match` and `==` comparisons
+                    // can match the result. String concat via `+` accepts
+                    // Char (see `can_stringify_for_concat`).
                     (Value::String(s), Value::Int(i)) => {
                         let chars: Vec<char> = s.chars().collect();
                         let len = chars.len() as i64;
@@ -24608,7 +24615,7 @@ impl Interpreter {
                                 chars.len()
                             ))
                         } else {
-                            Ok(Value::String(chars[resolved as usize].to_string()))
+                            Ok(Value::Char(chars[resolved as usize]))
                         }
                     }
                     (other, _) => Err(format!("Cannot index {:?}", other)),
