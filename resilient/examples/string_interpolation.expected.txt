@@ -1,0 +1,4 @@
+Hello, World! You have 3 messages.
+double(7) = 14
+10 + 20 = 30
+Program executed successfully

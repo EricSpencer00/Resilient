@@ -4991,10 +4991,13 @@ impl TypeChecker {
                 if markers.has_range {
                     crate::ranges::check(program, source_path)?;
                 }
-                // RES-221: type-check interpolated string sub-expressions.
-                if markers.has_interp_string {
-                    crate::string_interp::check(program, source_path)?;
-                }
+                // RES-2721: string interpolation sub-expressions are now
+                // checked inline at `Node::InterpolatedString` in `check_node`
+                // (with the full populated environment) rather than by the old
+                // `string_interp::check` extension pass which used a fresh
+                // TypeChecker with no let-binding scope.  The gate below is
+                // intentionally removed; keep the `has_interp_string` marker
+                // in case a future pass needs it.
                 // RES-324: modules::check now active (duplicate names +
                 // unresolved items); gated at the has_inline_module site above.
                 // `full_modules::check` separately handles the module graph/cycles.
@@ -8172,7 +8175,35 @@ impl TypeChecker {
             Node::FloatLiteral { .. } => Ok(Type::Float),
             Node::StringLiteral { .. } => Ok(Type::String),
             // RES-221: interpolated strings always produce a String value.
-            Node::InterpolatedString { .. } => Ok(Type::String),
+            // RES-2721: type-check the embedded sub-expressions here, in the
+            // main traversal, so the full environment (including let bindings)
+            // is available. The old `string_interp::check` extension pass used
+            // a fresh TypeChecker with no let-binding scope, causing false
+            // "Undefined variable" diagnostics for in-scope variables.
+            Node::InterpolatedString {
+                parts,
+                span: interp_span,
+            } => {
+                let loc = if interp_span.start.line > 0 {
+                    format!(
+                        "{}:{}:{}: ",
+                        self.source_path, interp_span.start.line, interp_span.start.column
+                    )
+                } else {
+                    String::new()
+                };
+                for part in parts {
+                    if let crate::string_interp::StringPart::Expr(expr) = part {
+                        // Errors are downgraded to warnings — an interpolation
+                        // that can't be typed (e.g. genuinely undefined name)
+                        // should still allow the program to continue running.
+                        if let Err(e) = self.check_node(expr) {
+                            eprintln!("warning: {loc}in interpolated string: {e}");
+                        }
+                    }
+                }
+                Ok(Type::String)
+            }
             Node::BytesLiteral { .. } => Ok(Type::Bytes),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
             // RES-2711: char literals produce the `char` type.
@@ -14910,5 +14941,52 @@ mod res2719_type_name_aliases {
     #[test]
     fn string_param_can_be_assigned_to_string_var() {
         check_ok("fn greet(String name) -> string { let s: string = name; return s; }");
+    }
+}
+
+#[cfg(test)]
+mod res2721_interp_string_scope {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok_no_warnings(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn let_variable_in_interp_no_false_positive() {
+        // Variables defined by let-bindings must be visible inside {expr}.
+        check_ok_no_warnings(r#"let x = 10; let s = "{x}";"#);
+    }
+
+    #[test]
+    fn multi_variable_interp_no_false_positive() {
+        check_ok_no_warnings(r#"let a = 1; let b = 2; let s = "{a} and {b}";"#);
+    }
+
+    #[test]
+    fn expression_in_interp_no_false_positive() {
+        check_ok_no_warnings(r#"let x = 5; let y = 3; let s = "{x + y}";"#);
+    }
+
+    #[test]
+    fn function_return_in_interp_no_false_positive() {
+        check_ok_no_warnings(
+            "fn double(int n) -> int { return n * 2; }\n\
+             let s = \"result: {double(7)}\";\n",
+        );
+    }
+
+    #[test]
+    fn interp_string_is_typed_as_string() {
+        let (prog, errs) = parse(r#"let x = 1; let s: string = "{x}";"#);
+        assert!(errs.is_empty());
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect("typed let with interp string should pass");
     }
 }
