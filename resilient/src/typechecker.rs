@@ -7823,14 +7823,38 @@ impl TypeChecker {
                 // when the EnumDecl evaluates; the typechecker mirrors
                 // that resolution from `enum_decls` so the typed view
                 // matches.
-                if let Some(idx) = name.rfind("::") {
+                // RES-2603: tuple-payload variants (`Option::Some`)
+                // resolve to `Type::Function` so they typecheck when
+                // passed to higher-order functions.
+                if let Some(idx) = name.rfind("::")
+                    && let Some(variants) = self.enum_decls.get(&name[..idx]).cloned()
+                    && let Some(v) = variants.iter().find(|v| v.name == name[idx + 2..])
+                {
                     let type_name = &name[..idx];
-                    let variant_name = &name[idx + 2..];
-                    if let Some(variants) = self.enum_decls.get(type_name)
-                        && let Some(v) = variants.iter().find(|v| v.name == variant_name)
-                        && matches!(v.payload, crate::EnumPayload::None)
-                    {
-                        return Ok(Type::Struct(type_name.to_string()));
+                    match &v.payload {
+                        crate::EnumPayload::None => {
+                            return Ok(Type::Struct(type_name.to_string()));
+                        }
+                        // RES-2603: tuple-payload variant → function type.
+                        // Use parse_type_name for both params and return type
+                        // so the resulting Type::Function is structurally
+                        // identical to what a caller would get from a
+                        // `fn(T) -> EnumName` annotation.
+                        crate::EnumPayload::Tuple(param_types) => {
+                            let param_types = param_types.clone();
+                            let params: Vec<Type> = param_types
+                                .iter()
+                                .map(|t| self.parse_type_name(t).unwrap_or(Type::Any))
+                                .collect();
+                            let return_type = self
+                                .parse_type_name(type_name)
+                                .unwrap_or(Type::Struct(type_name.to_string()));
+                            return Ok(Type::Function {
+                                params,
+                                return_type: Box::new(return_type),
+                            });
+                        }
+                        crate::EnumPayload::Named(_) => {}
                     }
                 }
                 match self.env.get(name) {

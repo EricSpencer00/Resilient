@@ -1,0 +1,32 @@
+// RES-2603: enum variant constructors as first-class function values.
+// Demonstrates passing a tuple-payload variant by name to a higher-order
+// function, storing it in a variable, and calling it later.
+
+enum Color { Rgb(Int), Grayscale(Int), Transparent }
+
+fn wrap(fn(Int) -> Color f, Int x) -> Color {
+    return f(x);
+}
+
+fn main() -> void {
+    // Pass a variant constructor directly to a higher-order function.
+    let c1 = wrap(Color::Rgb, 255);
+    match c1 {
+        Color::Rgb(v) => println(v),
+        Color::Grayscale(v) => println(v),
+        Color::Transparent => println("transparent"),
+    }
+
+    // Store constructor in a variable, call it later.
+    let mk_gray = Color::Grayscale;
+    let c2 = mk_gray(128);
+    match c2 {
+        Color::Rgb(v) => println(v),
+        Color::Grayscale(v) => println(v),
+        Color::Transparent => println("transparent"),
+    }
+
+    // type_of reports "function" for a constructor value.
+    println(type_of(Color::Rgb));
+}
+main();
