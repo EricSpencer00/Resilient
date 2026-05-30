@@ -1,0 +1,11 @@
+Hello,
+World!
+no \n escape here
+SELECT *
+FROM users
+WHERE active = true
+
+no escape \n processing
+here either
+
+Program executed successfully

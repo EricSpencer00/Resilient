@@ -1,0 +1,24 @@
+// RES-2599: multi-line string literals and raw strings
+// Tests triple-quoted strings and r"..." raw strings.
+
+let greeting = """
+    Hello,
+    World!
+""";
+println(greeting);
+
+let raw = r"no \n escape here";
+println(raw);
+
+let sql = """
+    SELECT *
+    FROM users
+    WHERE active = true
+""";
+println(sql);
+
+let raw_multi = r"""
+no escape \n processing
+here either
+""";
+println(raw_multi);

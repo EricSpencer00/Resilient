@@ -1052,6 +1052,31 @@ impl Token {
 /// user-facing syntax strings (backtick-quoted punctuation, prose
 /// categories like `identifier`). Single-element slices specialize
 /// to `expected X, got Y` to keep the common case reading
+// RES-2599: strip the common leading indentation from a triple-quoted string
+// body. Leading newline immediately after `"""` is dropped. Then the minimum
+// indentation of all non-empty lines is stripped uniformly.
+fn res2599_strip_indent(s: &str) -> String {
+    let s = s.strip_prefix('\n').unwrap_or(s);
+    let lines: Vec<&str> = s.lines().collect();
+    let min_indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start_matches([' ', '\t']).len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|l| {
+            if l.len() >= min_indent {
+                &l[min_indent..]
+            } else {
+                l.trim_start()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// naturally. Slices longer than 5 entries are truncated with a
 /// trailing `…` so deep FIRST-sets don't balloon the diagnostic.
 pub fn format_expected(expected: &[&str], got_syntax: &str) -> String {
@@ -1188,6 +1213,15 @@ impl Lexer {
             '\0'
         } else {
             self.input[self.read_position]
+        }
+    }
+
+    // RES-2599: look two chars ahead (for `"""` triple-quote detection).
+    fn peek_char2(&self) -> char {
+        if self.read_position + 1 >= self.input.len() {
+            '\0'
+        } else {
+            self.input[self.read_position + 1]
         }
     }
 
@@ -1466,9 +1500,17 @@ impl Lexer {
             // tags the `@` itself.
             '@' => Token::At,
             '"' => {
-                self.read_char();
-                let str_value = self.read_string();
-                Token::StringLiteral(str_value)
+                self.read_char(); // advance past opening `"`; self.ch is now 2nd char
+                // RES-2599: detect `"""..."""` triple-quoted strings.
+                if self.ch == '"' && self.peek_char() == '"' {
+                    self.read_char(); // consume 2nd `"`
+                    self.read_char(); // consume 3rd `"`; self.ch is first content char
+                    let content = self.read_triple_string();
+                    Token::StringLiteral(res2599_strip_indent(&content))
+                } else {
+                    let str_value = self.read_string();
+                    Token::StringLiteral(str_value)
+                }
             }
             // RES-2619: `'...'` char literal.
             '\'' => {
@@ -1476,6 +1518,23 @@ impl Lexer {
                 let inner = self.read_char_inner();
                 // consume closing `'` (read_char_inner leaves self.ch on `'`)
                 Token::CharLiteral(inner)
+            }
+            // RES-2599: `r"..."` raw string (no escape processing) and
+            // `r"""..."""` raw triple-quoted string.
+            'r' if self.peek_char() == '"' => {
+                self.read_char(); // consume `r`; self.ch == `"`
+                self.read_char(); // consume opening `"`; self.ch is first content or 2nd `"`
+                if self.ch == '"' && self.peek_char() == '"' {
+                    // r"""...""" raw triple-quoted
+                    self.read_char(); // consume 2nd `"`
+                    self.read_char(); // consume 3rd `"`; self.ch is first content
+                    let content = self.read_raw_triple_string();
+                    Token::StringLiteral(content)
+                } else {
+                    // r"..." single raw string
+                    let content = self.read_raw_string();
+                    Token::StringLiteral(content)
+                }
             }
             // RES-152: `b"..."` byte-string literal. The guard on
             // the next char distinguishes from a bare identifier
@@ -1783,6 +1842,72 @@ impl Lexer {
             self.read_char();
         }
 
+        result
+    }
+
+    // RES-2599: `"""..."""` triple-quoted string. `self.ch` is the first
+    // content char after the opening `"""`. Reads until `"""` (three
+    // consecutive double-quotes) or EOF. Escape sequences are processed.
+    fn read_triple_string(&mut self) -> String {
+        let mut result = String::new();
+        loop {
+            if self.ch == '\0' {
+                break;
+            }
+            if self.ch == '"' && self.peek_char() == '"' && self.peek_char2() == '"' {
+                self.read_char(); // consume 2nd `"`
+                self.read_char(); // consume 3rd `"`
+                break;
+            }
+            if self.ch == '\\' && self.read_position < self.input.len() {
+                self.read_char();
+                match self.ch {
+                    'n' => result.push('\n'),
+                    't' => result.push('\t'),
+                    'r' => result.push('\r'),
+                    '\\' => result.push('\\'),
+                    '"' => result.push('"'),
+                    '0' => result.push('\0'),
+                    other => {
+                        result.push('\\');
+                        result.push(other);
+                    }
+                }
+            } else {
+                result.push(self.ch);
+            }
+            self.read_char();
+        }
+        result
+    }
+
+    // RES-2599: `r"..."` raw string — no escape processing.
+    // `self.ch` is the first content char after the opening `"`.
+    fn read_raw_string(&mut self) -> String {
+        let mut result = String::new();
+        while self.ch != '"' && self.ch != '\0' {
+            result.push(self.ch);
+            self.read_char();
+        }
+        result
+    }
+
+    // RES-2599: `r"""..."""` raw triple-quoted string — no escape processing.
+    // `self.ch` is the first content char after the opening `r"""`.
+    fn read_raw_triple_string(&mut self) -> String {
+        let mut result = String::new();
+        loop {
+            if self.ch == '\0' {
+                break;
+            }
+            if self.ch == '"' && self.peek_char() == '"' && self.peek_char2() == '"' {
+                self.read_char();
+                self.read_char();
+                break;
+            }
+            result.push(self.ch);
+            self.read_char();
+        }
         result
     }
 
@@ -60021,5 +60146,48 @@ let p = new Point { ..o, z: 99 };
 println(p.x); println(p.y); println(p.z);"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("99"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2599_multiline_raw_strings {
+    use super::run_program as run;
+
+    #[test]
+    fn triple_quoted_indent_strip() {
+        let r = run(r#"let s = """
+    hello
+    world
+""";
+println(s);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("hello"), "got: {}", r.stdout);
+        assert!(r.stdout.contains("world"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn raw_string_no_escape() {
+        let r = run(r#"let s = r"no \n escape";
+println(s);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains(r"no \n escape"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn raw_triple_string() {
+        let r = run("let s = r\"\"\"\nhello \\n raw\n\"\"\";\nprintln(s);");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains(r"hello \n raw"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn triple_quoted_string_concatenation() {
+        let r = run(r#"let a = """line1
+line2""";
+let b = "suffix";
+println(a + b);"#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("line1"), "got: {}", r.stdout);
+        assert!(r.stdout.contains("suffix"), "got: {}", r.stdout);
     }
 }
