@@ -15,6 +15,12 @@
     "resilient/src/stack_contracts.rs": {
       "branch": "res-2627-stack-usage-subcommand",
       "claimed_at": "2026-05-30T06:15:21Z"
+      "branch": "res-2618-f32-float-type",
+      "claimed_at": "2026-05-30T06:36:39Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2618-f32-float-type",
+      "claimed_at": "2026-05-30T06:36:39Z"
     }
   }
 }
