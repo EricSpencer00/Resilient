@@ -3052,6 +3052,54 @@ impl TypeChecker {
                 env.set("array_remove_all".to_string(), fn_any_any_to_array());
                 // RES-468: collapse adjacent duplicates.
                 env.set("array_dedup".to_string(), fn_array_to_array());
+                // RES-2742: pain-points hardening builtins — sort by struct
+                // field, bounded-depth flatten, dedup by field, complement-any,
+                // int radix parse/format.
+                let arr_str_to_arr = Type::Function {
+                    params: vec![Type::Array, Type::String],
+                    return_type: Box::new(Type::Array),
+                };
+                env.set("array_sort_by_field".to_string(), arr_str_to_arr.clone());
+                env.set(
+                    "array_sort_by_field_desc".to_string(),
+                    arr_str_to_arr.clone(),
+                );
+                env.set("array_dedup_by".to_string(), arr_str_to_arr);
+                env.set(
+                    "array_flatten_depth".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Int],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "array_none".to_string(),
+                    Type::Function {
+                        params: vec![Type::Array, Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "int_parse_hex".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "int_parse_bin".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "int_to_oct".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::String),
+                    },
+                );
                 // RES-504: partition into maximal runs of equal int elements.
                 // RES-2645: returns an array of groups (array of arrays).
                 env.set(
@@ -9713,6 +9761,15 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_count_if",
         "array_zip_with",
         "array_windows",
+        // RES-2742: pain-points hardening builtins missing from known list.
+        "array_sort_by_field",
+        "array_sort_by_field_desc",
+        "array_flatten_depth",
+        "array_dedup_by",
+        "array_none",
+        "int_parse_hex",
+        "int_parse_bin",
+        "int_to_oct",
         "array_take_while",
         "array_drop_while",
         // RES-2649: array aggregation by key.
