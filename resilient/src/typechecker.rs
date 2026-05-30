@@ -7424,13 +7424,27 @@ impl TypeChecker {
                 // Function type here lets the call site infer the correct return.
                 if tgt_ty == Type::Array {
                     let ret = match field.as_str() {
-                        "map" | "filter" | "push" | "pop" | "sort" | "reverse" => Type::Function {
+                        "map" | "filter" | "push" | "pop" | "sort" | "reverse" | "flat_map" => {
+                            Type::Function {
+                                params: vec![Type::Any],
+                                return_type: Box::new(Type::Array),
+                            }
+                        }
+                        // RES-2707: `reduce` accepts 1 arg (fn, uses first elem as init)
+                        // or 2 args (init, fn). Return Type::Any so the call site skips
+                        // strict arity checking and both forms are accepted.
+                        "reduce" => Type::Any,
+                        "for_each" => Type::Function {
                             params: vec![Type::Any],
-                            return_type: Box::new(Type::Array),
+                            return_type: Box::new(Type::Void),
                         },
-                        "reduce" => Type::Function {
-                            params: vec![Type::Any, Type::Any],
-                            return_type: Box::new(Type::Any),
+                        "find" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Option(Box::new(Type::Any))),
+                        },
+                        "any" | "all" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Bool),
                         },
                         "len" => Type::Function {
                             params: vec![],
@@ -7484,16 +7498,31 @@ impl TypeChecker {
                 // Function type here lets the call site infer the correct return.
                 if tgt_ty == Type::Array {
                     match field.as_str() {
-                        "map" | "filter" => {
+                        "map" | "filter" | "flat_map" => {
                             return Ok(Type::Function {
                                 params: vec![Type::Any],
                                 return_type: Box::new(Type::Array),
                             });
                         }
-                        "reduce" => {
+                        // RES-2707: reduce accepts 1 or 2 args — use Any to skip
+                        // strict arity checking at the call site.
+                        "reduce" => return Ok(Type::Any),
+                        "for_each" => {
                             return Ok(Type::Function {
-                                params: vec![Type::Any, Type::Any],
-                                return_type: Box::new(Type::Any),
+                                params: vec![Type::Any],
+                                return_type: Box::new(Type::Void),
+                            });
+                        }
+                        "find" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any],
+                                return_type: Box::new(Type::Option(Box::new(Type::Any))),
+                            });
+                        }
+                        "any" | "all" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any],
+                                return_type: Box::new(Type::Bool),
                             });
                         }
                         _ => {}

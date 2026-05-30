@@ -1,0 +1,11 @@
+5
+10
+20
+30
+3
+true
+true
+15
+24
+50
+Program executed successfully

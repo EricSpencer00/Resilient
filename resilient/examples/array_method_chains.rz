@@ -1,0 +1,35 @@
+// Demonstrates flat_map, for_each, find, any, all, and single-arg reduce
+
+// flat_map: flatten nested arrays
+let nested = [[1, 2], [3, 4], [5]];
+let flat = nested.flat_map(fn(Array arr) -> Array { return arr; });
+println(to_string(len(flat)));
+
+// for_each: iterate for side effects
+[10, 20, 30].for_each(fn(int x) -> void { println(to_string(x)); });
+
+// find: returns Some/None
+let found = [1, 2, 3, 4].find(fn(int x) -> bool { return x > 2; });
+match found {
+  Some(v) => println(to_string(v)),
+  None => println("not found"),
+}
+
+// any / all
+println(to_string([1, 2, 3].any(fn(int x) -> bool { return x > 2; })));
+println(to_string([1, 2, 3].all(fn(int x) -> bool { return x > 0; })));
+
+// reduce (single-arg): uses first element as initial accumulator
+let sum = [1, 2, 3, 4, 5].reduce(fn(int a, int b) -> int { return a + b; });
+println(to_string(sum));
+
+// reduce (two-arg): explicit initial value
+let product = [1, 2, 3, 4].reduce(1, fn(int a, int b) -> int { return a * b; });
+println(to_string(product));
+
+// chained: filter then map then single-arg reduce
+let result = [1, 2, 3, 4, 5]
+    .filter(fn(int x) -> bool { return x > 2; })
+    .map(fn(int x) -> int { return x * x; })
+    .reduce(fn(int a, int b) -> int { return a + b; });
+println(to_string(result));
