@@ -14631,9 +14631,7 @@ mod res2713_pattern_literal_type_check {
 
     #[test]
     fn correct_char_pattern_on_char_scrutinee_accepted() {
-        check_ok(
-            "let c: char = 'x'; match c { 'x' => println(\"x\"), _ => println(\"y\") }",
-        );
+        check_ok("let c: char = 'x'; match c { 'x' => println(\"x\"), _ => println(\"y\") }");
     }
 
     #[test]
