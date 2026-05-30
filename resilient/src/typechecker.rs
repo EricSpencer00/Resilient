@@ -8486,16 +8486,16 @@ impl TypeChecker {
         }
         match name {
             // RES-366: `Int64` is the long-form alias for `Int`.
-            "int" | "Int" | "Int64" => Ok(Type::Int),
-            // RES-366: pinned signed integer widths.
-            "Int8" => Ok(Type::Int8),
-            "Int16" => Ok(Type::Int16),
-            "Int32" => Ok(Type::Int32),
-            // RES-366: pinned unsigned integer widths.
-            "UInt8" => Ok(Type::UInt8),
-            "UInt16" => Ok(Type::UInt16),
-            "UInt32" => Ok(Type::UInt32),
-            "UInt64" => Ok(Type::UInt64),
+            "int" | "Int" | "Int64" | "i64" => Ok(Type::Int),
+            // RES-366: pinned signed integer widths (PascalCase + Rust-style lowercase).
+            "Int8" | "i8" => Ok(Type::Int8),
+            "Int16" | "i16" => Ok(Type::Int16),
+            "Int32" | "i32" => Ok(Type::Int32),
+            // RES-366: pinned unsigned integer widths (PascalCase + Rust-style lowercase).
+            "UInt8" | "u8" => Ok(Type::UInt8),
+            "UInt16" | "u16" => Ok(Type::UInt16),
+            "UInt32" | "u32" => Ok(Type::UInt32),
+            "UInt64" | "u64" => Ok(Type::UInt64),
             "float" => Ok(Type::Float),
             "string" => Ok(Type::String),
             "bool" => Ok(Type::Bool),
