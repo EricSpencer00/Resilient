@@ -437,6 +437,13 @@ pub(crate) mod devirtualize;
 // the tco_fn_name Interpreter field, and the trampoline in apply_function.
 mod tail_calls;
 
+// RES-2603: enum variant constructors as first-class function values.
+// Tuple-payload variants (e.g. `Option::Some`) are pre-bound as
+// `Value::EnumConstructor` when their enum is declared, enabling them
+// to be passed to higher-order functions. All runtime logic lives in
+// enum_ctors.rs; lib.rs adds only the Value variant and the apply_function arm.
+mod enum_ctors;
+
 // RES-2535: `where` clause support — post-signature generic bound syntax.
 // All parsing and validation logic lives here; lib.rs only adds the token
 // and the call to `merge_where_clause` after `parse_optional_return_type`.
@@ -10353,6 +10360,17 @@ enum Value {
     /// Consumed immediately by the `'tco` loop in `apply_function`; never
     /// escapes the call frame. The `Vec<Value>` holds the new argument list.
     TailCall(Vec<Value>),
+    /// RES-2603: first-class enum variant constructor for tuple-payload
+    /// variants. Produced when `EnumName::VariantName` is referenced as
+    /// a value without being immediately called (e.g. passing
+    /// `Option::Some` to a higher-order function). `apply_function`
+    /// delegates to `enum_ctors::apply_constructor` to build the
+    /// corresponding `Value::EnumVariant` when it is later called.
+    EnumConstructor {
+        type_name: String,
+        variant: String,
+        arity: usize,
+    },
 }
 
 /// RES-400: payload carried by a `Value::EnumVariant`. Mirrors the
@@ -10492,6 +10510,14 @@ impl std::fmt::Debug for Value {
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
             // RES-2592: internal sentinel — should never appear in user output.
             Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
+            // RES-2603: first-class enum variant constructor.
+            Value::EnumConstructor {
+                type_name,
+                variant,
+                arity,
+            } => {
+                write!(f, "EnumConstructor({}::{}/{})", type_name, variant, arity)
+            }
         }
     }
 }
@@ -10670,6 +10696,12 @@ impl std::fmt::Display for Value {
             Value::ActorPid(id) => write!(f, "ActorPid({})", id),
             // RES-2592: internal sentinel — should never appear in user output.
             Value::TailCall(args) => write!(f, "<tail-call({} args)>", args.len()),
+            // RES-2603: first-class enum variant constructor.
+            Value::EnumConstructor {
+                type_name, variant, ..
+            } => {
+                write!(f, "<constructor {}::{}>", type_name, variant)
+            }
         }
     }
 }
@@ -24413,19 +24445,34 @@ impl Interpreter {
                     .insert(name.clone(), variants.clone());
                 for v in variants {
                     let key = format!("{}::{}", name, v.name);
-                    if matches!(v.payload, EnumPayload::None) {
-                        self.env.set(
-                            key,
-                            Value::EnumVariant {
-                                type_name: name.clone(),
-                                variant: v.name.clone(),
-                                payload: EnumValuePayload::None,
-                            },
-                        );
+                    match &v.payload {
+                        EnumPayload::None => {
+                            self.env.set(
+                                key,
+                                Value::EnumVariant {
+                                    type_name: name.clone(),
+                                    variant: v.name.clone(),
+                                    payload: EnumValuePayload::None,
+                                },
+                            );
+                        }
+                        // RES-2603: pre-bind tuple-payload variants as first-class
+                        // constructor values so `Option::Some` can be passed to
+                        // higher-order functions without being immediately called.
+                        EnumPayload::Tuple(types) => {
+                            self.env.set(
+                                key,
+                                Value::EnumConstructor {
+                                    type_name: name.clone(),
+                                    variant: v.name.clone(),
+                                    arity: types.len(),
+                                },
+                            );
+                        }
+                        // Named-payload variants still come into existence only at
+                        // the constructor call site (StructLiteral evaluator).
+                        EnumPayload::Named(_) => {}
                     }
-                    // Named/tuple variants are NOT pre-bound — they
-                    // come into existence at the constructor call
-                    // site (StructLiteral or CallExpression).
                 }
                 Ok(Value::Void)
             }
@@ -25915,6 +25962,12 @@ impl Interpreter {
                 }
                 Ok(result)
             }
+            // RES-2603: first-class enum variant constructor.
+            Value::EnumConstructor {
+                type_name,
+                variant,
+                arity,
+            } => crate::enum_ctors::apply_constructor(type_name, variant, *arity, args),
             _ => Err(format!("Not a function: {}", func)),
         }
     }
