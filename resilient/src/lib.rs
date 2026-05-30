@@ -8186,12 +8186,24 @@ impl Parser {
                         }
                     };
                     let builtin = match type_name.as_str() {
-                        "int" | "Int" | "Int64" => "to_int",
+                        "int" | "Int" | "Int64" | "i64" => "to_int",
                         "float" | "Float" => "to_float",
                         "string" | "String" => "to_string",
+                        // RES-2646 / RES-366: pinned-width integer casts.
+                        // Each maps to the corresponding wrapping builtin
+                        // registered in BUILTINS and known to the typechecker.
+                        "Int8" | "i8" => "as_int8",
+                        "Int16" | "i16" => "as_int16",
+                        "Int32" | "i32" => "as_int32",
+                        "UInt8" | "u8" => "as_uint8",
+                        "UInt16" | "u16" => "as_uint16",
+                        "UInt32" | "u32" => "as_uint32",
+                        "UInt64" | "u64" => "as_uint64",
                         other => {
                             self.record_error(format!(
-                                "Cannot cast to `{}` — `as` supports int / float / string",
+                                "Cannot cast to `{}` — `as` supports int / float / string / \
+                                 Int8 / Int16 / Int32 / UInt8 / UInt16 / UInt32 / UInt64 \
+                                 (and their lowercase aliases i8 / u8 / i16 / u16 / i32 / u32 / u64)",
                                 other
                             ));
                             return Some(current_left);
@@ -27682,6 +27694,9 @@ fn execute_file(
     live_log: Option<&Path>,
     #[cfg(feature = "z3")] z3_theory: verifier_z3::Z3Theory,
     no_cache: bool,
+    // RES-2646: `--typecheck-strict` makes any type error fatal (exit 1)
+    // without the verbose status lines that `--typecheck` prints.
+    type_strict: bool,
 ) -> RResult<()> {
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
@@ -27880,11 +27895,15 @@ fn execute_file(
     //   execution continues. Exit code follows the program's
     //   runtime exit. Status lines are suppressed so default-mode
     //   stdout matches what users have always seen.
-    let typecheck_strict = type_check || audit || explain_effects || emit_cert_dir.is_some();
+    // `verbose_typecheck`: print "Running type checker…" / "Type check passed".
+    // `typecheck_strict`:  treat any type error as fatal (exit 1).
+    // `--typecheck-strict` sets the latter without the former.
+    let verbose_typecheck = type_check || audit || explain_effects || emit_cert_dir.is_some();
+    let typecheck_strict = verbose_typecheck || type_strict;
     let want_typecheck = !no_typecheck;
     let mut proven_fns: HashSet<String> = HashSet::new();
     if want_typecheck {
-        if typecheck_strict {
+        if verbose_typecheck {
             println!("Running type checker...");
         }
         let tc_base = typechecker::TypeChecker::new()
@@ -27920,7 +27939,7 @@ fn execute_file(
         // are prefixed with `<file>:<line>:<col>:`.
         match tc.check_program_with_source(&program, filename) {
             Ok(_) => {
-                if typecheck_strict {
+                if verbose_typecheck {
                     println!("\x1B[32mType check passed\x1B[0m");
                 }
             }
@@ -29623,6 +29642,10 @@ COMMON FLAGS:\n\
                                  type checker also runs by default in soft\n\
                                  mode — diagnostics print to stderr but the\n\
                                  program still executes (RES-1088).\n\
+        --typecheck-strict       Make any type error fatal (exit 1) without\n\
+                                 the verbose status lines of --typecheck.\n\
+                                 Suitable for CI scripts that want strict\n\
+                                 checking without extra output (RES-2646).\n\
         --no-typecheck           Skip the static type checker entirely\n\
         --audit                  Print the verification audit trail\n\
         --verbose                Print one stderr line per loop\n\
@@ -29873,6 +29896,9 @@ pub fn run_cli() {
     // via `typecheck_strict` below) keep the legacy strict
     // semantics — fail with exit 1 on any type error.
     let mut no_typecheck = false;
+    // RES-2646: `--typecheck-strict` makes type errors fatal without
+    // the verbose status lines that `--typecheck` emits.
+    let mut type_strict = false;
     let mut audit = false;
     // RES-318: --verbose enables one stderr line per loop invariant
     // statically discharged by the Z3 verifier. Off by default so
@@ -29963,6 +29989,10 @@ pub fn run_cli() {
             let arg = &args[i];
             if arg == "--typecheck" || arg == "-t" {
                 type_check = true;
+            } else if arg == "--typecheck-strict" {
+                // RES-2646: make type errors fatal without the verbose
+                // "Running type checker…" / "Type check passed" lines.
+                type_strict = true;
             } else if arg == "--no-typecheck" {
                 // RES-1088: opt out of the default-on type checker.
                 // Mostly for legacy scripts that intentionally feed
@@ -30573,6 +30603,7 @@ pub fn run_cli() {
                     #[cfg(feature = "z3")]
                     z3_theory_snap,
                     no_cache,
+                    type_strict,
                 );
                 match result {
                     Ok(_) => {
@@ -30615,6 +30646,7 @@ pub fn run_cli() {
                 #[cfg(feature = "z3")]
                 z3_theory,
                 no_cache,
+                type_strict,
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run

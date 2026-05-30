@@ -1,0 +1,14 @@
+// RES-2646: demonstrate --typecheck-strict flag.
+// Run with: rz run --typecheck-strict typecheck_strict_mode.rz
+// A program that type-checks cleanly exits 0 in strict mode.
+
+fn add(Int a, Int b) -> Int {
+    return a + b;
+}
+
+fn main() -> void {
+    let result = add(10, 32);
+    println(result);
+}
+
+main();

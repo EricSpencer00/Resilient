@@ -1,0 +1,23 @@
+// RES-2646: demonstrate as-cast for fixed-width integer types.
+// `as Int8` / `as u8` / `as i16` etc. all use wrapping truncation.
+
+fn main() -> void {
+    // Wrapping truncation to i8 range (-128..=127)
+    let wide: Int = 300;
+    let narrow = wide as Int8;
+    println(narrow);
+
+    // Wrapping truncation to u8 range (0..=255)
+    let wrapped = wide as u8;
+    println(wrapped);
+
+    // Negative as unsigned wraps at 256
+    let neg = (-1) as u8;
+    println(neg);
+
+    // Lowercase Rust-style alias works identically to PascalCase
+    let same: i8 = 42;
+    println(same);
+}
+
+main();
