@@ -1,0 +1,29 @@
+// RES-2736: Map and Set dot-call methods.
+// map.len(), map.get(), map.has(), map.insert(), map.remove(),
+// map.keys(), map.values(), map.get_or(), set.len(), set.has(),
+// set.insert(), set.remove(), set.items() all work via dot notation.
+
+let m = {"x" -> 10, "y" -> 20, "z" -> 30};
+println(m.len());
+println(m.get("x"));
+println(m.get("w"));
+println(m.has("y"));
+println(m.has("w"));
+println(m.keys());
+println(m.values());
+println(m.get_or("w", 0));
+let m2 = m.insert("w", 40);
+println(m2.len());
+let m3 = m.remove("z");
+println(m3.len());
+println(m3.has("z"));
+
+let s = #{1, 2, 3, 4, 5};
+println(s.len());
+println(s.has(3));
+println(s.has(9));
+let s2 = s.insert(6);
+println(s2.len());
+let s3 = s.remove(1);
+println(s3.len());
+println(s3.has(1));

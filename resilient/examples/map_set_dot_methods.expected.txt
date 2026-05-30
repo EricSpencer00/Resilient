@@ -1,0 +1,18 @@
+3
+Ok(10)
+Err("not found")
+true
+false
+["x", "y", "z"]
+[10, 20, 30]
+0
+4
+2
+false
+5
+true
+false
+6
+4
+false
+Program executed successfully
