@@ -140,4 +140,46 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    // RES-2691: float literals must be assignable to f32-annotated variables.
+    #[test]
+    fn f32_let_annotation_accepts_float_literal() {
+        let result = crate::run_program("let x: f32 = 3.14;\nprintln(x);\n");
+        assert!(
+            result.ok,
+            "let x: f32 = 3.14 should compile: {:?}",
+            result.errors
+        );
+        assert!(
+            result.stdout.contains("3.14"),
+            "stdout: {:?}",
+            result.stdout
+        );
+    }
+
+    #[test]
+    fn f32_let_annotation_two_vars_arithmetic() {
+        let src = "let x: f32 = 3.0;\nlet y: f32 = 2.0;\nlet z: f32 = x + y;\nprintln(z);\n";
+        let result = crate::run_program(src);
+        assert!(result.ok, "f32 annotation arithmetic: {:?}", result.errors);
+        assert!(result.stdout.contains('5'), "stdout: {:?}", result.stdout);
+    }
+
+    #[test]
+    fn f32_cross_width_arithmetic_still_errors() {
+        // run_program skips the typechecker; call it directly.
+        let src = "let a = 3.14;\nlet b = 2.0 as f32;\nlet c = a + b;\nprintln(c);\n";
+        let (prog, parse_errs) = parse(src);
+        assert!(parse_errs.is_empty(), "should parse: {:?}", parse_errs);
+        let check_result = crate::typechecker::TypeChecker::new().check_program(&prog);
+        assert!(
+            check_result.is_err(),
+            "f32 + float arithmetic should still type-error in the typechecker"
+        );
+        let errs = check_result.unwrap_err();
+        assert!(
+            errs.contains("f32") || errs.contains("f64"),
+            "error should mention f32/f64: {errs}"
+        );
+    }
 }

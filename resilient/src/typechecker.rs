@@ -283,6 +283,13 @@ fn compatible(a: &Type, b: &Type) -> bool {
     if is_pinned_int(a) && *b == Type::Int {
         return true;
     }
+    // RES-2691: float literals produce Type::Float; allow assigning them to
+    // f32-annotated variables and vice-versa — mirrors the Int ↔ pinned-int rule.
+    // Note: unify() still errors on Float/Float32 in arithmetic to prevent
+    // implicit cross-width mixing.
+    if (*a == Type::Float32 && *b == Type::Float) || (*a == Type::Float && *b == Type::Float32) {
+        return true;
+    }
     false
 }
 
