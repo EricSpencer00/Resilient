@@ -1,0 +1,17 @@
+// RES-2580: extended const eval — string concat, bitwise ops, conditionals.
+
+const PREFIX = "Hello";
+const NAME = ", Resilient";
+const GREETING = PREFIX + NAME;
+
+const FLAGS = 255;
+const MASK = 15;
+const LOWER_NIBBLE = FLAGS & MASK;
+
+const A = 42;
+const B = 17;
+const MAX_VAL = if A > B { A } else { B };
+
+println(GREETING);
+println(to_string(LOWER_NIBBLE));
+println(to_string(MAX_VAL));

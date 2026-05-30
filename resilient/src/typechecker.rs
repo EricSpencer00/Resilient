@@ -5505,6 +5505,9 @@ impl TypeChecker {
                 // RES-2589: dead-code warnings — unused fns, unreachable stmts,
                 // unused let bindings. Warning-only, never returns Err.
                 crate::dead_code_lint::check(program, source_path);
+                // RES-2580: extended const eval registration (no-op check;
+                // the actual extension is in eval_const_expr in lib.rs).
+                crate::const_eval_ext::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
