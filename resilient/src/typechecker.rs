@@ -8856,22 +8856,29 @@ impl TypeChecker {
         }
         match name {
             // RES-366: `Int64` is the long-form alias for `Int`.
-            "int" | "Int" | "Int64" | "i64" => Ok(Type::Int),
+            // RES-2719: `long` (Java/C) maps to the 64-bit signed int.
+            "int" | "Int" | "Int64" | "i64" | "long" => Ok(Type::Int),
             // RES-366: pinned signed integer widths (PascalCase + Rust-style lowercase).
-            "Int8" | "i8" => Ok(Type::Int8),
-            "Int16" | "i16" => Ok(Type::Int16),
-            "Int32" | "i32" => Ok(Type::Int32),
+            // RES-2719: snake_case variants (`int8`, `int16`, `int32`) added as aliases.
+            "Int8" | "i8" | "int8" => Ok(Type::Int8),
+            "Int16" | "i16" | "int16" => Ok(Type::Int16),
+            "Int32" | "i32" | "int32" => Ok(Type::Int32),
             // RES-366: pinned unsigned integer widths (PascalCase + Rust-style lowercase).
-            "UInt8" | "u8" => Ok(Type::UInt8),
-            "UInt16" | "u16" => Ok(Type::UInt16),
-            "UInt32" | "u32" => Ok(Type::UInt32),
-            "UInt64" | "u64" => Ok(Type::UInt64),
-            "float" | "Float" | "f64" | "Float64" => Ok(Type::Float),
+            // RES-2719: snake_case variants + `byte` (common alias for u8) added.
+            "UInt8" | "u8" | "uint8" | "byte" => Ok(Type::UInt8),
+            "UInt16" | "u16" | "uint16" => Ok(Type::UInt16),
+            "UInt32" | "u32" | "uint32" => Ok(Type::UInt32),
+            "UInt64" | "u64" | "uint64" => Ok(Type::UInt64),
+            // RES-2719: `double` is the common C/Java alias for 64-bit float.
+            "float" | "Float" | "f64" | "Float64" | "double" => Ok(Type::Float),
             // RES-2618: single-precision float — `f32` and `Float32` are
             // both accepted; `float` / `f64` remain aliases for double.
             "f32" | "Float32" => Ok(Type::Float32),
-            "string" => Ok(Type::String),
-            "bool" => Ok(Type::Bool),
+            // RES-2719: `str` and `String` are common aliases for `string`
+            // (Rust uses both; Java/Python use `String`/`str`).
+            "string" | "str" | "String" => Ok(Type::String),
+            // RES-2719: `boolean` is the common Java/JavaScript spelling.
+            "bool" | "boolean" => Ok(Type::Bool),
             // RES-2711: `char` and `Char` both resolve to the character type.
             "char" | "Char" => Ok(Type::Char),
             "void" => Ok(Type::Void),
@@ -14829,5 +14836,79 @@ mod res2717_null_coalescing {
             "fn any_fn() -> any { return None; }\n\
              let x = any_fn() ?? 0;\n",
         );
+    }
+}
+
+#[cfg(test)]
+mod res2719_type_name_aliases {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn str_alias_for_string() {
+        check_ok(r#"fn greet(str name) -> str { return name; }"#);
+    }
+
+    #[test]
+    fn capital_string_alias_for_string() {
+        check_ok(r#"fn greet(String name) -> String { return name; }"#);
+    }
+
+    #[test]
+    fn boolean_alias_for_bool() {
+        check_ok("fn pos(int x) -> boolean { return x > 0; }");
+    }
+
+    #[test]
+    fn int32_alias_for_int32_type() {
+        check_ok("fn f(int32 x) -> int32 { return x; }");
+    }
+
+    #[test]
+    fn int8_alias_for_int8_type() {
+        check_ok("fn f(int8 x) -> int8 { return x; }");
+    }
+
+    #[test]
+    fn uint8_alias_for_uint8_type() {
+        check_ok("fn f(uint8 x) -> uint8 { return x; }");
+    }
+
+    #[test]
+    fn uint32_alias_for_uint32_type() {
+        check_ok("fn f(uint32 x) -> uint32 { return x; }");
+    }
+
+    #[test]
+    fn byte_alias_for_uint8() {
+        check_ok("fn f(byte x) -> byte { return x; }");
+    }
+
+    #[test]
+    fn double_alias_for_float() {
+        check_ok("fn f(double x) -> double { return x; }");
+    }
+
+    #[test]
+    fn long_alias_for_int() {
+        check_ok("fn f(long x) -> long { return x; }");
+    }
+
+    #[test]
+    fn str_param_can_concat_with_string_literal() {
+        check_ok(r#"fn greet(str name) -> string { return "hi " + name; }"#);
+    }
+
+    #[test]
+    fn string_param_can_be_assigned_to_string_var() {
+        check_ok("fn greet(String name) -> string { let s: string = name; return s; }");
     }
 }
