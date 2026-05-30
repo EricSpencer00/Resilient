@@ -24107,6 +24107,18 @@ impl Interpreter {
                         // through to the regular `FieldAccess` eval
                         // (which will itself raise a clean error).
                     }
+                    // RES-2573: enum method dispatch — look up `TypeName$method`
+                    // in the environment, exactly like struct method dispatch.
+                    // `impl Color { fn foo(self) }` registers `Color$foo`; we
+                    // find it here when the receiver is an EnumVariant.
+                    if let Value::EnumVariant { type_name, .. } = &target_val {
+                        let mangled = format!("{}${}", type_name, field);
+                        if let Some(method_val) = self.env.get(&mangled) {
+                            let mut args = vec![target_val];
+                            args.extend(self.eval_expressions(arguments)?);
+                            return self.apply_function(&method_val, args);
+                        }
+                    }
                 }
                 // RES-1859: standalone array_map / array_filter / array_reduce
                 // must be handled inline — they accept user callbacks that

@@ -1,0 +1,5 @@
+north
+south
+true
+false
+Program executed successfully

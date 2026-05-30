@@ -1,0 +1,42 @@
+// RES-2573: impl blocks for enum types.
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+impl Direction {
+    fn label(self) -> string {
+        match self {
+            Direction::North => "north",
+            Direction::South => "south",
+            Direction::East => "east",
+            Direction::West => "west",
+        }
+    }
+
+    fn opposite_label(self) -> string {
+        match self {
+            Direction::North => "south",
+            Direction::South => "north",
+            Direction::East => "west",
+            Direction::West => "east",
+        }
+    }
+
+    fn is_vertical(self) -> bool {
+        match self {
+            Direction::North => true,
+            Direction::South => true,
+            Direction::East => false,
+            Direction::West => false,
+        }
+    }
+}
+
+let d = Direction::North;
+println(d.label());
+println(d.opposite_label());
+println(to_string(d.is_vertical()));
+println(to_string(Direction::East.is_vertical()));
