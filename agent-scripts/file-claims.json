@@ -1,16 +1,12 @@
 {
   "claims": {
-    "resilient/src/blanket_impl.rs": {
-      "branch": "res-2685-monomorphize-blanket-impls",
-      "claimed_at": "2026-05-30T09:02:14Z"
-    },
     "resilient/src/lib.rs": {
-      "branch": "res-2685-monomorphize-blanket-impls",
-      "claimed_at": "2026-05-30T09:02:14Z"
+      "branch": "res-2687-string-chars-returns-char",
+      "claimed_at": "2026-05-30T09:12:49Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-2685-monomorphize-blanket-impls",
-      "claimed_at": "2026-05-30T09:02:14Z"
+    "resilient/src/string_array_misc.rs": {
+      "branch": "res-2687-string-chars-returns-char",
+      "claimed_at": "2026-05-30T09:12:49Z"
     }
   }
 }

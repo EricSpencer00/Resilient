@@ -78,6 +78,9 @@ pub(crate) fn builtin_string_from_chars(args: &[Value]) -> RResult<Value> {
             let mut out = String::new();
             for v in items {
                 match v {
+                    // RES-2687: accept Char values (the new canonical form from string_chars)
+                    // as well as single-character strings (legacy / direct use).
+                    Value::Char(c) => out.push(*c),
                     Value::String(s) => {
                         let mut chars = s.chars();
                         let first = chars.next().ok_or_else(|| {
@@ -93,7 +96,7 @@ pub(crate) fn builtin_string_from_chars(args: &[Value]) -> RResult<Value> {
                     }
                     other => {
                         return Err(format!(
-                            "string_from_chars: array element must be String, got {}",
+                            "string_from_chars: array element must be a char or single-char string, got {}",
                             other
                         ));
                     }
@@ -263,7 +266,11 @@ mod tests {
     fn from_chars_rejects_non_string_element() {
         let arr = Value::Array(vec![s("h"), Value::Int(105)]);
         let err = builtin_string_from_chars(&[arr]).unwrap_err();
-        assert!(err.contains("must be String"));
+        assert!(
+            err.contains("must be a char or single-char string"),
+            "got: {}",
+            err
+        );
     }
 
     // --- array_is_empty ---
