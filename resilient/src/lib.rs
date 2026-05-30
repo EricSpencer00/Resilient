@@ -22704,6 +22704,13 @@ fn compound_values_equal(left: &Value, right: &Value) -> Option<bool> {
             }
             Some(struct_fields_strict_eq(lf, rf))
         }
+        // RES-2723: Option == Option / Option != Option. None == None; Some(x)
+        // == Some(y) iff x == y (structural); None != Some(_) and vice-versa.
+        (Value::Option(l), Value::Option(r)) => Some(match (l.as_deref(), r.as_deref()) {
+            (None, None) => true,
+            (Some(lv), Some(rv)) => values_strict_eq(lv, rv),
+            _ => false,
+        }),
         _ => None,
     }
 }
@@ -22732,6 +22739,12 @@ fn values_strict_eq(left: &Value, right: &Value) -> bool {
                 fields: rf,
             },
         ) => ln == rn && struct_fields_strict_eq(lf, rf),
+        // RES-2723: recursive Option equality used by compound_values_equal.
+        (Value::Option(l), Value::Option(r)) => match (l.as_deref(), r.as_deref()) {
+            (None, None) => true,
+            (Some(lv), Some(rv)) => values_strict_eq(lv, rv),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -59271,5 +59284,52 @@ mod res2699_match_block_arms {
              println(to_string(area(Shape::Square(4.0))));");
         assert!(r.ok, "runtime failed: {:?}", r.errors);
         assert!(r.stdout.contains("16"), "got: {}", r.stdout);
+    }
+}
+
+#[cfg(test)]
+mod res2723_option_equality {
+    use super::run_program as run;
+
+    #[test]
+    fn some_same_value_is_equal() {
+        let r = run("let a = Some(5);\n\
+             let b = Some(5);\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn some_different_value_is_not_equal() {
+        let r = run("let a = Some(5);\n\
+             let b = Some(6);\n\
+             if a != b { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn none_equals_none() {
+        let r = run("if None == None { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn some_not_equal_to_none() {
+        let r = run("let a = Some(42);\n\
+             if a != None { println(\"different\"); } else { println(\"same\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("different"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn nested_option_equality() {
+        let r = run("let a = Some(Some(1));\n\
+             let b = Some(Some(1));\n\
+             if a == b { println(\"equal\"); } else { println(\"not equal\"); }");
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("equal"), "got: {}", r.stdout);
     }
 }

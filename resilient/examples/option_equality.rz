@@ -1,0 +1,30 @@
+// RES-2723: Option == Option and Option != Option now work correctly.
+// Some(x) == Some(x) compares inner values structurally.
+
+let a = Some(5);
+let b = Some(5);
+let c = Some(6);
+let d = None;
+
+if a == b { println("Some(5) == Some(5): true"); }
+if a != c { println("Some(5) != Some(6): true"); }
+if d == None { println("None == None: true"); }
+if a != None { println("Some(5) != None: true"); }
+
+fn find_first_even(Array nums) -> Option {
+    for n in nums {
+        if n % 2 == 0 {
+            return Some(n);
+        }
+    }
+    return None;
+}
+
+let e1 = find_first_even([1, 3, 4, 7]);
+let e2 = find_first_even([1, 3, 5]);
+let e3 = find_first_even([2, 4, 6]);
+
+if e1 == Some(4) { println("first even in [1,3,4,7] is 4"); }
+if e2 == None { println("no even in [1,3,5]"); }
+if e1 != e2 { println("different results: true"); }
+if e3 == Some(2) { println("first even in [2,4,6] is 2"); }
