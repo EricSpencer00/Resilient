@@ -1,0 +1,6 @@
+255
+1000
+42
+255
+int
+Program executed successfully
