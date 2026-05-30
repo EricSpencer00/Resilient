@@ -1,0 +1,6 @@
+Circle(r=3)
+Rectangle(4x5)
+Circle(r=1)
+28.274309999999996
+20
+Program executed successfully

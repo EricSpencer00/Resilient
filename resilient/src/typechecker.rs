@@ -1365,6 +1365,11 @@ pub struct TypeChecker {
     /// type, fixing the "Type mismatch in argument 1: expected T, got int"
     /// false-positive that blocked all generic-function calls.
     fn_type_params: HashMap<String, Vec<String>>,
+    /// RES-2693: struct name → set of trait names the struct implements.
+    /// Populated by the pre-pass when scanning `ImplBlock` declarations.
+    /// Used by `satisfies_trait_param` to allow a concrete struct to satisfy
+    /// a trait-typed parameter, return annotation, or let binding.
+    trait_impls: HashMap<String, HashSet<String>>,
 }
 
 impl TypeChecker {
@@ -4372,6 +4377,7 @@ impl TypeChecker {
             current_span: Span::default(),
 
             fn_type_params: HashMap::new(),
+            trait_impls: HashMap::new(),
         }
     }
 
@@ -4490,6 +4496,31 @@ impl TypeChecker {
             .iter()
             .filter(|c| c.kind == "loop_invariant")
             .count()
+    }
+
+    /// RES-2693: true when one of `a`/`b` is a concrete struct that
+    /// implements the other as a trait.  Checks both orderings so the
+    /// caller doesn't need to know which of the two types is the trait
+    /// and which is the struct.
+    ///
+    /// Only `Type::Struct(name)` pairs are examined; all other combinations
+    /// return `false`, so the method never fires for primitive types.
+    fn satisfies_trait_param(&self, a: &Type, b: &Type) -> bool {
+        let (Type::Struct(a_name), Type::Struct(b_name)) = (a, b) else {
+            return false;
+        };
+        // a is the implementing struct, b is the trait:
+        if self
+            .trait_impls
+            .get(a_name.as_str())
+            .is_some_and(|ts| ts.contains(b_name.as_str()))
+        {
+            return true;
+        }
+        // b is the implementing struct, a is the trait:
+        self.trait_impls
+            .get(b_name.as_str())
+            .is_some_and(|ts| ts.contains(a_name.as_str()))
     }
 
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
@@ -4632,6 +4663,19 @@ impl TypeChecker {
                                 Type::Any
                             };
                             self.env.set(name.clone(), bind_type);
+                        }
+                        // RES-2693: record struct → trait relationships so
+                        // call-site checking can accept a concrete struct
+                        // where a trait-typed parameter is expected.
+                        Node::ImplBlock {
+                            trait_name: Some(t),
+                            struct_name,
+                            ..
+                        } => {
+                            self.trait_impls
+                                .entry(struct_name.clone())
+                                .or_default()
+                                .insert(t.clone());
                         }
                         _ => {}
                     }
@@ -6069,7 +6113,11 @@ impl TypeChecker {
                 // RES-053: enforce declared return type against body.
                 let effective_rt = if let Some(rt_name) = declared_rt {
                     let declared = self.parse_type_name(rt_name)?;
-                    if !compatible(&declared, &body_type) {
+                    if !compatible(&declared, &body_type)
+                        // RES-2693: body that returns a concrete struct satisfies
+                        // a trait-typed return annotation when the struct impls it.
+                        && !self.satisfies_trait_param(&declared, &body_type)
+                    {
                         return Err(format!(
                             "fn {}: return type mismatch — declared {}, body produces {}",
                             name, declared, body_type
@@ -6265,7 +6313,11 @@ impl TypeChecker {
                 // type isn't compatible with the declared annotation.
                 let bind_type = if let Some(ty_name) = type_annot {
                     let declared = self.parse_type_name(ty_name)?;
-                    if !compatible(&declared, &value_type) {
+                    if !compatible(&declared, &value_type)
+                        // RES-2693: allow binding a struct to a trait annotation
+                        // when the struct implements the trait.
+                        && !self.satisfies_trait_param(&declared, &value_type)
+                    {
                         return Err(format!(
                             "let {}: {} — value has type {}",
                             name, declared, value_type
@@ -7659,7 +7711,9 @@ impl TypeChecker {
                 let value_type = self.check_node(value)?;
                 let bind_type = if let Some(ty_name) = type_annot {
                     let declared = self.parse_type_name(ty_name)?;
-                    if !compatible(&declared, &value_type) {
+                    if !compatible(&declared, &value_type)
+                        && !self.satisfies_trait_param(&declared, &value_type)
+                    {
                         return Err(format!(
                             "const {}: {} — value has type {}",
                             name, declared, value_type
@@ -7717,6 +7771,9 @@ impl TypeChecker {
                 // (unresolved generics, dynamic containers).
                 if let Some(var_ty) = self.env.get(name)
                     && !compatible(&var_ty, &val_ty)
+                    // RES-2693: reassigning a struct to a trait-typed variable is
+                    // valid when the struct implements that trait.
+                    && !self.satisfies_trait_param(&var_ty, &val_ty)
                 {
                     return Err(format!(
                         "cannot assign {} to variable `{}` of type {}",
@@ -7750,6 +7807,9 @@ impl TypeChecker {
                 // wrong type while the body's last expression type matches.
                 if let Some(declared) = &self.current_fn_return_type
                     && !compatible(declared, &ret_type)
+                    // RES-2693: a struct returned where a trait is declared
+                    // is valid when the struct implements that trait.
+                    && !self.satisfies_trait_param(declared, &ret_type)
                 {
                     return Err(format!(
                         "return type mismatch — declared {}, returning {}",
@@ -8411,7 +8471,13 @@ impl TypeChecker {
                             } else {
                                 param_type
                             };
-                            if !compatible(&arg_type, effective_param) {
+                            if !compatible(&arg_type, effective_param)
+                                // RES-2693: a concrete struct satisfies a
+                                // trait-typed parameter when it implements
+                                // the trait via an `impl Trait for Struct`
+                                // block.
+                                && !self.satisfies_trait_param(&arg_type, effective_param)
+                            {
                                 // RES-340: when RESILIENT_RICH_DIAG=1
                                 // emit a rustc-style multi-block
                                 // diagnostic with a secondary label
@@ -13936,6 +14002,102 @@ mod res426_tuple_return_type {
                  let (q, r) = divmod(a, 3);\n\
                  return q;\n\
              }",
+        );
+    }
+}
+
+// RES-2693: struct implementing a trait must be accepted wherever the trait
+// type is expected — function parameters, let annotations, return statements.
+#[cfg(test)]
+mod res2693_trait_param_compat {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, expected_fragment: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(expected_fragment),
+            "expected fragment {:?} not found in error: {e}",
+            expected_fragment
+        );
+    }
+
+    #[test]
+    fn struct_accepted_as_trait_fn_param() {
+        check_ok(
+            "trait Greet { fn greet(self) -> string; }\n\
+             struct Alice { int x }\n\
+             impl Greet for Alice {\n\
+               fn greet(self) -> string { return \"hi\"; }\n\
+             }\n\
+             fn say(Greet g) -> void { println(g.greet()); }\n\
+             let a = new Alice { x: 1 };\n\
+             say(a);\n",
+        );
+    }
+
+    #[test]
+    fn struct_accepted_for_trait_let_annotation() {
+        check_ok(
+            "trait Greet { fn greet(self) -> string; }\n\
+             struct Bob { int y }\n\
+             impl Greet for Bob {\n\
+               fn greet(self) -> string { return \"hello\"; }\n\
+             }\n\
+             let b: Greet = new Bob { y: 2 };\n\
+             println(b.greet());\n",
+        );
+    }
+
+    #[test]
+    fn struct_accepted_as_trait_return_type() {
+        check_ok(
+            "trait Greet { fn greet(self) -> string; }\n\
+             struct Carol { int z }\n\
+             impl Greet for Carol {\n\
+               fn greet(self) -> string { return \"hey\"; }\n\
+             }\n\
+             fn make() -> Greet { return new Carol { z: 3 }; }\n",
+        );
+    }
+
+    #[test]
+    fn non_implementing_struct_still_errors() {
+        check_err(
+            "trait Greet { fn greet(self) -> string; }\n\
+             struct Dave { int w }\n\
+             fn say(Greet g) -> void { println(g.greet()); }\n\
+             let d = new Dave { w: 4 };\n\
+             say(d);\n",
+            "Type mismatch",
+        );
+    }
+
+    #[test]
+    fn multiple_impls_different_traits_independent() {
+        // struct implementing two traits can satisfy either
+        check_ok(
+            "trait Greet { fn greet(self) -> string; }\n\
+             trait Farewell { fn bye(self) -> string; }\n\
+             struct Eve { int n }\n\
+             impl Greet for Eve { fn greet(self) -> string { return \"hi\"; } }\n\
+             impl Farewell for Eve { fn bye(self) -> string { return \"bye\"; } }\n\
+             fn say_hi(Greet g) -> void { println(g.greet()); }\n\
+             fn say_bye(Farewell f) -> void { println(f.bye()); }\n\
+             let e = new Eve { n: 0 };\n\
+             say_hi(e);\n\
+             say_bye(e);\n",
         );
     }
 }
