@@ -1,0 +1,19 @@
+fn total(Array nums) -> int {
+    let s = 0;
+    let i = 0;
+    while i < len(nums) {
+        s = s + nums[i];
+        i = i + 1;
+    }
+    return s;
+}
+
+struct Bag {
+    Array items
+}
+
+let xs = [1, 2, 3, 4, 5];
+println(to_string(total(xs)));
+
+let b = new Bag { items: [10, 20] };
+println(to_string(total(b.items)));
