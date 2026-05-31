@@ -7882,13 +7882,32 @@ impl TypeChecker {
                         }
                         // RES-2651: Option<T> is exhaustive when both
                         // Some and None arms are present.
+                        // RES-2818: also accept the enum-qualified form
+                        // `Option::Some(v)` / `Option::None` which parses
+                        // as Pattern::EnumVariant, not Pattern::Some/None.
                         Type::Option(_) => {
-                            let has_some = arms.iter().any(|(p, guard, _)| {
-                                guard.is_none() && matches!(p, Pattern::Some(_))
-                            });
+                            let is_some_pattern = |p: &Pattern| {
+                                matches!(p, Pattern::Some(_))
+                                    || matches!(
+                                        p,
+                                        Pattern::EnumVariant { variant_name, .. }
+                                        if variant_name == "Some"
+                                    )
+                            };
+                            let is_none_pattern = |p: &Pattern| {
+                                matches!(p, Pattern::None)
+                                    || matches!(
+                                        p,
+                                        Pattern::EnumVariant { variant_name, .. }
+                                        if variant_name == "None"
+                                    )
+                            };
+                            let has_some = arms
+                                .iter()
+                                .any(|(p, guard, _)| guard.is_none() && is_some_pattern(p));
                             let has_none = arms
                                 .iter()
-                                .any(|(p, guard, _)| guard.is_none() && matches!(p, Pattern::None));
+                                .any(|(p, guard, _)| guard.is_none() && is_none_pattern(p));
                             if !(has_some && has_none) {
                                 let mut missing = Vec::new();
                                 if !has_some {
@@ -16701,5 +16720,33 @@ mod res2816_operator_and_type_alias_fixes {
     #[test]
     fn string_repeat_with_variable() {
         check_ok("let n = 5\nlet s = \"-\" * n\n");
+    }
+}
+
+#[cfg(test)]
+mod res2818_option_match_exhaustive {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn option_qualified_some_none_exhaustive() {
+        check_ok(
+            "fn describe(Option<int> x) -> string {\nmatch x {\nOption::Some(v) => \"got\",\nOption::None => \"nothing\",\n}\n}\n",
+        );
+    }
+
+    #[test]
+    fn option_bare_some_none_still_works() {
+        check_ok(
+            "fn check(Option<int> x) -> string {\nmatch x {\nSome(v) => \"yes\",\nNone => \"no\",\n}\n}\n",
+        );
     }
 }
