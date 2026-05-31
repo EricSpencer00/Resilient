@@ -4870,6 +4870,341 @@ impl TypeChecker {
                 env.set("rwlock_read".to_string(), fn_any_to_any());
                 env.set("rwlock_write".to_string(), fn_any_to_any());
                 env.set("rwlock_unlock".to_string(), fn_any_to_any());
+
+                // RES-2810: clock builtins.
+                env.set(
+                    "clock_now".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "clock_elapsed".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // RES-2810: event journal builtins.
+                env.set(
+                    "tick_now".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "tick_advance".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "record_event".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "replay_events".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "clear_events".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "event_count".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+
+                // RES-2810: provenance builtins.
+                env.set(
+                    "tag".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "untag".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "tag_of".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
+                // RES-2810: snapshot store builtins.
+                env.set(
+                    "snapshot_save".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "snapshot_load".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "snapshot_keys".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "snapshot_clear".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
+                // RES-2810: quota builtins.
+                env.set(
+                    "quota_set".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "quota_charge".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "quota_remaining".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "quota_reset".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "quota_used".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "quotas".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+
+                // RES-2810: capability builtins.
+                env.set(
+                    "mint_cap".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "check_cap".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "revoke_cap".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "caps".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+
+                // RES-2810: actor builtins.
+                env.set(
+                    "spawn".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "send".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Any],
+                        return_type: Box::new(Type::Void),
+                    },
+                );
+                env.set(
+                    "receive".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
+                // RES-2810: string builder.
+                env.set(
+                    "StringBuilder_new".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+
+                // RES-2810: math / data / reflection builtins that are
+                // registered in the interpreter's `BUILTINS` dispatch
+                // table but were missing from the type environment, so
+                // every call site failed with "Undefined variable".
+                // Params are `Any` (matching the abs/min/max precedent —
+                // these accept int- or float-valued arguments and the
+                // runtime coerces); arity is exact (the checker enforces
+                // it) and the return type is precise.
+                let any1 = |ret: Type| Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(ret),
+                };
+                let any2 = |ret: Type| Type::Function {
+                    params: vec![Type::Any; 2],
+                    return_type: Box::new(ret),
+                };
+                let any3 = |ret: Type| Type::Function {
+                    params: vec![Type::Any; 3],
+                    return_type: Box::new(ret),
+                };
+
+                // Vectors (resilient/src/linear_algebra.rs).
+                env.set("vec_add".to_string(), any2(Type::Array));
+                env.set("vec_sub".to_string(), any2(Type::Array));
+                env.set("vec_scale".to_string(), any2(Type::Array));
+                env.set("vec_dot".to_string(), any2(Type::Float));
+                env.set("vec_norm".to_string(), any1(Type::Float));
+                env.set("vec_cross".to_string(), any2(Type::Array));
+                env.set("vec_lerp".to_string(), any3(Type::Array));
+
+                // Matrices (linear_algebra.rs + statistics.rs).
+                env.set("mat_add".to_string(), any2(Type::Array));
+                env.set("mat_mul".to_string(), any2(Type::Array));
+                env.set("mat_scale".to_string(), any2(Type::Array));
+                env.set("mat_identity".to_string(), any1(Type::Array));
+                env.set("mat_trace".to_string(), any1(Type::Float));
+                env.set("mat_det".to_string(), any1(Type::Float));
+                env.set("mat_inv".to_string(), any1(Type::Array));
+                env.set("mat_lu".to_string(), any1(Type::Array));
+                env.set("mat_rank".to_string(), any1(Type::Int));
+                env.set("mat_solve".to_string(), any2(Type::Array));
+
+                // Complex numbers (complex_numbers.rs) — a complex value
+                // is represented as a `[real, imag]` float array.
+                env.set("complex".to_string(), any2(Type::Array));
+                env.set("complex_real".to_string(), any1(Type::Float));
+                env.set("complex_imag".to_string(), any1(Type::Float));
+                env.set("complex_add".to_string(), any2(Type::Array));
+                env.set("complex_sub".to_string(), any2(Type::Array));
+                env.set("complex_mul".to_string(), any2(Type::Array));
+                env.set("complex_div".to_string(), any2(Type::Array));
+                env.set("complex_abs".to_string(), any1(Type::Float));
+                env.set("complex_arg".to_string(), any1(Type::Float));
+                env.set("complex_conj".to_string(), any1(Type::Array));
+                env.set("complex_exp".to_string(), any1(Type::Array));
+                env.set("complex_ln".to_string(), any1(Type::Array));
+                env.set("complex_sqrt".to_string(), any1(Type::Array));
+                env.set("complex_sin".to_string(), any1(Type::Array));
+                env.set("complex_cos".to_string(), any1(Type::Array));
+
+                // Ranges + data utilities (data_utils.rs).
+                env.set("arange".to_string(), any3(Type::Array));
+                env.set("linspace".to_string(), any3(Type::Array));
+                env.set("logspace".to_string(), any3(Type::Array));
+                env.set("csv_parse".to_string(), any1(Type::Array));
+                env.set("csv_parse_tsv".to_string(), any1(Type::Array));
+                env.set("csv_format".to_string(), any1(Type::String));
+                env.set("csv_format_tsv".to_string(), any1(Type::String));
+                env.set("table_format".to_string(), any1(Type::String));
+                env.set("format_float".to_string(), any2(Type::String));
+                env.set("rle_encode".to_string(), any1(Type::Array));
+                env.set("rle_decode".to_string(), any1(Type::Array));
+
+                // Number theory (number_theory.rs).
+                env.set("count_digits".to_string(), any1(Type::Int));
+                env.set("digit_sum".to_string(), any1(Type::Int));
+                env.set("digital_root".to_string(), any1(Type::Int));
+                env.set("divisors".to_string(), any1(Type::Array));
+                env.set("euler_totient".to_string(), any1(Type::Int));
+                env.set("int_log".to_string(), any2(Type::Int));
+                env.set("int_to_digits".to_string(), any1(Type::Array));
+                env.set("is_fibonacci".to_string(), any1(Type::Bool));
+                env.set("is_perfect".to_string(), any1(Type::Bool));
+                env.set("prime_factors".to_string(), any1(Type::Array));
+                env.set("primes_up_to".to_string(), any1(Type::Array));
+
+                // Statistics (statistics.rs).
+                env.set("stats_iqr".to_string(), any1(Type::Float));
+                env.set("stats_mode_int".to_string(), any1(Type::Int));
+                env.set("stats_zscore".to_string(), any1(Type::Array));
+
+                // Graph algorithms (graph_algorithms.rs).
+                env.set("graph_bfs".to_string(), any2(Type::Array));
+                env.set("graph_dfs".to_string(), any2(Type::Array));
+
+                // Reflection / option helpers.
+                env.set("struct_name".to_string(), any1(Type::String));
+                env.set("identity".to_string(), any1(Type::Any));
+                env.set("is_tuple".to_string(), any1(Type::Bool));
+                env.set("option_unwrap".to_string(), any1(Type::Any));
+                env.set("option_unwrap_or".to_string(), any2(Type::Any));
+
+                // Volatile MMIO intrinsics (volatile.rs). Reads return the
+                // loaded integer; writes return Void. RES-406's capability
+                // pass additionally restricts where these may be called, and
+                // they are classified impure below.
+                env.set("volatile_read_u8".to_string(), any1(Type::Int));
+                env.set("volatile_read_u16".to_string(), any1(Type::Int));
+                env.set("volatile_read_u32".to_string(), any1(Type::Int));
+                env.set("volatile_read_u64".to_string(), any1(Type::Int));
+                env.set("volatile_write_u8".to_string(), any2(Type::Void));
+                env.set("volatile_write_u16".to_string(), any2(Type::Void));
+                env.set("volatile_write_u32".to_string(), any2(Type::Void));
+                env.set("volatile_write_u64".to_string(), any2(Type::Void));
+
                 std::sync::Arc::new(env)
             });
 
@@ -9783,6 +10118,54 @@ const IMPURE_BUILTINS: &[&str] = &[
     "live_retries",
     "live_total_retries",
     "live_total_exhaustions",
+    // RES-2810: clock builtins — observe wall-clock time.
+    "clock_now",
+    "clock_elapsed",
+    // RES-2810: event journal — mutates global event log.
+    "tick_now",
+    "tick_advance",
+    "record_event",
+    "replay_events",
+    "clear_events",
+    "event_count",
+    // RES-2810: provenance — wraps/unwraps tagged values.
+    "tag",
+    "untag",
+    "tag_of",
+    // RES-2810: snapshot store — persistent key/value storage.
+    "snapshot_save",
+    "snapshot_load",
+    "snapshot_keys",
+    "snapshot_clear",
+    // RES-2810: quotas — observe/mutate global quota state.
+    "quota_set",
+    "quota_charge",
+    "quota_remaining",
+    "quota_reset",
+    "quota_used",
+    "quotas",
+    // RES-2810: capabilities — mint/check/revoke tokens.
+    "mint_cap",
+    "check_cap",
+    "revoke_cap",
+    "caps",
+    // RES-2810: actor runtime — concurrency side-effects.
+    "spawn",
+    "send",
+    "receive",
+    // RES-2810: string builder — allocates mutable state.
+    "StringBuilder_new",
+    // RES-2810: volatile MMIO intrinsics — hardware reads/writes are
+    // observable side effects, so they must never be callable from a
+    // `@pure` function.
+    "volatile_read_u8",
+    "volatile_read_u16",
+    "volatile_read_u32",
+    "volatile_read_u64",
+    "volatile_write_u8",
+    "volatile_write_u16",
+    "volatile_write_u32",
+    "volatile_write_u64",
 ];
 
 /// RES-191: top-level entry for the purity pass. Walks the
@@ -10855,6 +11238,73 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "json_decode",
         "json_encode_pretty",
         "json_valid",
+        // RES-2810: math / data / reflection builtins — all deterministic
+        // and side-effect-free, so callable from `@pure` functions. Mirrors
+        // the type-environment registrations added in this PR.
+        "vec_add",
+        "vec_sub",
+        "vec_scale",
+        "vec_dot",
+        "vec_norm",
+        "vec_cross",
+        "vec_lerp",
+        "mat_add",
+        "mat_mul",
+        "mat_scale",
+        "mat_identity",
+        "mat_trace",
+        "mat_det",
+        "mat_inv",
+        "mat_lu",
+        "mat_rank",
+        "mat_solve",
+        "complex",
+        "complex_real",
+        "complex_imag",
+        "complex_add",
+        "complex_sub",
+        "complex_mul",
+        "complex_div",
+        "complex_abs",
+        "complex_arg",
+        "complex_conj",
+        "complex_exp",
+        "complex_ln",
+        "complex_sqrt",
+        "complex_sin",
+        "complex_cos",
+        "arange",
+        "linspace",
+        "logspace",
+        "csv_parse",
+        "csv_parse_tsv",
+        "csv_format",
+        "csv_format_tsv",
+        "table_format",
+        "format_float",
+        "rle_encode",
+        "rle_decode",
+        "count_digits",
+        "digit_sum",
+        "digital_root",
+        "divisors",
+        "euler_totient",
+        "int_log",
+        "int_to_digits",
+        "is_fibonacci",
+        "is_perfect",
+        "prime_factors",
+        "primes_up_to",
+        "stats_iqr",
+        "stats_mode_int",
+        "stats_zscore",
+        "graph_bfs",
+        "graph_dfs",
+        "struct_name",
+        "identity",
+        "is_tuple",
+        "option_unwrap",
+        "option_unwrap_or",
     ];
     // RES-1530: lookup against a `HashSet<&'static str>` built once
     // per process from `PURE_BUILTINS`. The previous shape called
@@ -15917,5 +16367,185 @@ mod res2807_float32_gaps {
     #[test]
     fn f32_unary_minus_accepted() {
         check_ok("let x: f32 = 3.14\nlet y: f32 = -x\n");
+    }
+}
+
+#[cfg(test)]
+mod res2810_missing_builtin_types {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn clock_now_accepted() {
+        check_ok("let t = clock_now()\nlet e = clock_elapsed(t)\n");
+    }
+
+    #[test]
+    fn event_journal_accepted() {
+        check_ok(
+            "let t = tick_now()\ntick_advance(1)\nlet id = record_event(\"x\", 42)\nlet log = replay_events()\nclear_events()\nlet n = event_count()\n",
+        );
+    }
+
+    #[test]
+    fn provenance_accepted() {
+        check_ok(
+            "let tagged = tag(42, \"sensor\")\nlet v = untag(tagged, \"sensor\")\nlet src = tag_of(tagged)\n",
+        );
+    }
+
+    #[test]
+    fn snapshot_store_accepted() {
+        check_ok(
+            "snapshot_save(\"key\", 100)\nlet v = snapshot_load(\"key\")\nlet keys = snapshot_keys()\nsnapshot_clear(\"key\")\n",
+        );
+    }
+
+    #[test]
+    fn quota_builtins_accepted() {
+        check_ok(
+            "quota_set(\"api\", 100)\nlet ok = quota_charge(\"api\", 1)\nlet r = quota_remaining(\"api\")\nquota_reset(\"api\")\nlet u = quota_used(\"api\")\nlet all = quotas()\n",
+        );
+    }
+
+    #[test]
+    fn capability_builtins_accepted() {
+        check_ok(
+            "let tok = mint_cap(\"admin\")\nlet ok = check_cap(\"admin\", tok)\nrevoke_cap(\"admin\")\nlet all = caps()\n",
+        );
+    }
+
+    #[test]
+    fn actor_builtins_accepted() {
+        check_ok("fn handler() { let msg = receive() }\nlet pid = spawn(handler)\nsend(pid, 42)\n");
+    }
+
+    #[test]
+    fn string_builder_accepted() {
+        check_ok("let sb = StringBuilder_new(256)\n");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error")
+    }
+
+    #[test]
+    fn vector_builtins_accepted() {
+        check_ok(
+            "let a = [1.0, 2.0, 3.0]\nlet b = [4.0, 5.0, 6.0]\nlet s = vec_add(a, b)\nlet d = vec_sub(a, b)\nlet sc = vec_scale(a, 2.0)\nlet dot = vec_dot(a, b)\nlet n = vec_norm(a)\nlet c = vec_cross(a, b)\nlet l = vec_lerp(a, b, 0.5)\n",
+        );
+    }
+
+    #[test]
+    fn matrix_builtins_accepted() {
+        check_ok(
+            "let m = [[1.0, 2.0], [3.0, 4.0]]\nlet s = mat_add(m, m)\nlet p = mat_mul(m, m)\nlet sc = mat_scale(m, 2.0)\nlet i = mat_identity(3)\nlet t = mat_trace(m)\nlet d = mat_det(m)\nlet inv = mat_inv(m)\nlet lu = mat_lu(m)\nlet r = mat_rank(m)\nlet x = mat_solve(m, [1.0, 2.0])\n",
+        );
+    }
+
+    #[test]
+    fn complex_builtins_accepted() {
+        check_ok(
+            "let z = complex(1.0, 2.0)\nlet w = complex(3.0, 4.0)\nlet re = complex_real(z)\nlet im = complex_imag(z)\nlet a = complex_add(z, w)\nlet s = complex_sub(z, w)\nlet m = complex_mul(z, w)\nlet d = complex_div(z, w)\nlet ab = complex_abs(z)\nlet ar = complex_arg(z)\nlet cj = complex_conj(z)\nlet e = complex_exp(z)\nlet ln = complex_ln(z)\nlet sq = complex_sqrt(z)\nlet si = complex_sin(z)\nlet co = complex_cos(z)\n",
+        );
+    }
+
+    #[test]
+    fn data_util_builtins_accepted() {
+        check_ok(
+            "let a = arange(0, 10, 1)\nlet l = linspace(0.0, 1.0, 5)\nlet lg = logspace(0.0, 2.0, 3)\nlet rows = csv_parse(\"a,b\")\nlet tsv = csv_parse_tsv(\"a\")\nlet f = csv_format([[\"a\"]])\nlet ft = csv_format_tsv([[\"a\"]])\nlet tb = table_format([[\"a\"]])\nlet s = format_float(3.14159, 2)\nlet enc = rle_encode([1, 1, 2])\nlet dec = rle_decode(enc)\n",
+        );
+    }
+
+    #[test]
+    fn number_theory_builtins_accepted() {
+        check_ok(
+            "let a = count_digits(12345)\nlet b = digit_sum(12345)\nlet c = digital_root(12345)\nlet d = divisors(12)\nlet e = euler_totient(12)\nlet f = int_log(8, 2)\nlet g = int_to_digits(123)\nlet h = is_fibonacci(13)\nlet i = is_perfect(28)\nlet j = prime_factors(12)\nlet k = primes_up_to(20)\n",
+        );
+    }
+
+    #[test]
+    fn stats_and_graph_builtins_accepted() {
+        check_ok(
+            "let q = stats_iqr([1.0, 2.0, 3.0, 4.0])\nlet m = stats_mode_int([1, 2, 2, 3])\nlet z = stats_zscore([1.0, 2.0, 3.0])\nlet bfs = graph_bfs([[1], [0]], 0)\nlet dfs = graph_dfs([[1], [0]], 0)\n",
+        );
+    }
+
+    #[test]
+    fn reflection_and_option_builtins_accepted() {
+        check_ok(
+            "let n = struct_name(42)\nlet x = identity(5)\nlet t = is_tuple(5)\nlet u = option_unwrap(Some(5))\nlet o = option_unwrap_or(Some(5), 0)\n",
+        );
+    }
+
+    #[test]
+    fn volatile_builtins_type_check() {
+        // The MMIO intrinsics resolve to their registered signatures
+        // (reads -> int, writes -> void). The RES-406 capability gate that
+        // requires a safety block runs in a later, separate pass
+        // (crate::unsafe_check), so type checking alone accepts the calls.
+        check_ok(
+            "let v = volatile_read_u32(1024)\nvolatile_write_u32(1024, 42)\nlet b = volatile_read_u8(512)\nvolatile_write_u16(512, 7)\n",
+        );
+    }
+
+    #[test]
+    fn return_types_are_precise() {
+        // Each builtin's registered return type unifies with the matching
+        // annotation — proving the type is precise, not erased to `Any`.
+        check_ok("let d: float = vec_dot([1.0, 2.0], [3.0, 4.0])\n");
+        check_ok("let b: bool = is_perfect(6)\n");
+        check_ok("let n: int = count_digits(123)\n");
+        check_ok("let s: string = struct_name(5)\n");
+        check_ok("let a: array = divisors(12)\n");
+        // A mismatched annotation is rejected — vec_dot returns float, not
+        // string — confirming the return type is genuinely `Float`.
+        let err = check_err("let s: string = vec_dot([1.0], [1.0])\n");
+        assert!(
+            err.to_lowercase().contains("string") || err.to_lowercase().contains("float"),
+            "expected a float/string mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn arity_is_enforced() {
+        // vec_dot takes exactly 2 arguments.
+        let err = check_err("let d = vec_dot([1.0])\n");
+        assert!(
+            err.contains("argument"),
+            "expected an arity error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn pure_math_callable_from_pure_fn() {
+        // The math/data builtins are classified pure, so a `@pure` function
+        // may call them. Without the PURE_BUILTINS entries the purity pass
+        // would reject these as "calls unannotated fn".
+        check_ok(
+            "@pure\nfn compute() -> float {\n    let v = vec_norm([3.0, 4.0])\n    let d = vec_dot([1.0, 2.0], [3.0, 4.0])\n    let p = is_perfect(28)\n    let n = count_digits(123)\n    return v + d\n}\n",
+        );
+    }
+
+    #[test]
+    fn impure_builtin_rejected_from_pure_fn() {
+        // Stateful builtins remain impure: a `@pure` fn must not call them.
+        let err = check_err("@pure\nfn t() -> int {\n    return clock_now()\n}\n");
+        assert!(
+            err.contains("impure") || err.contains("clock_now"),
+            "expected an impurity rejection, got: {err}"
+        );
     }
 }
