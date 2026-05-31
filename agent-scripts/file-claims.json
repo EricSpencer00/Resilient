@@ -1,18 +1,3 @@
 {
-  "claims": {
-    "resilient/src/json_builtins.rs": {
-      "branch": "res-2554-json-builtins",
-      "claimed_at": "2026-05-31T01:05:24Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-2554-json-builtins",
-      "claimed_at": "2026-05-31T01:05:24Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-2554-json-builtins",
-      "claimed_at": "2026-05-31T01:05:24Z"
-      "branch": "res-2551-break-with-value",
-      "claimed_at": "2026-05-31T00:09:37Z"
-    }
-  }
+  "claims": {}
 }

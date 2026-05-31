@@ -1,0 +1,7 @@
+answer
+42
+hello
+99
+3.14
+true
+Program executed successfully
