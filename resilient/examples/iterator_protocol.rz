@@ -1,0 +1,42 @@
+// RES-2800: iterator protocol — for-in over custom iterator functions.
+// A function returning Option<T> can be used as a for-in iterable.
+
+fn make_counter(int max) {
+    let count = 0
+    fn next() {
+        if count >= max {
+            return None
+        }
+        let val = count
+        count = count + 1
+        return Some(val)
+    }
+    return next
+}
+
+// Basic iteration
+let counter = make_counter(5)
+for x in counter {
+    println(x)
+}
+
+// Iterator with break
+fn make_range(int start, int end_val) {
+    let current = start
+    fn next() {
+        if current >= end_val {
+            return None
+        }
+        let val = current
+        current = current + 1
+        return Some(val)
+    }
+    return next
+}
+
+let r = make_range(10, 20)
+for x in r {
+    if x >= 13 { break; }
+    println(x)
+}
+println("done")
