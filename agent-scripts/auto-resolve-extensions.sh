@@ -60,7 +60,7 @@ for file in "$@"; do
     fi
 
     python3 - "$file" <<'PY'
-import pathlib, re, sys
+import pathlib, re, sys, subprocess, tempfile, os
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 pattern = re.compile(
@@ -72,10 +72,30 @@ def merge(m):
 out = pattern.sub(merge, text)
 if '<<<<<<<' in out or '>>>>>>>' in out or '\n=======\n' in out:
     sys.exit(f"ERROR: unresolved markers remain in {path}")
-if out != text:
-    path.write_text(out)
-    print(f"resolved: {path}")
-else:
+if out == text:
     print(f"clean: {path}")
+    sys.exit(0)
+
+# Write resolved content and verify with rustfmt before committing.
+# If rustfmt can't parse the file, the resolution was syntactically
+# invalid and must be done by hand.
+with tempfile.NamedTemporaryFile(mode='w', suffix='.rs', delete=False) as tmp:
+    tmp.write(out)
+    tmp_path = tmp.name
+try:
+    result = subprocess.run(
+        ['rustfmt', '--edition', '2021', '--check', tmp_path],
+        capture_output=True, text=True
+    )
+    if result.returncode not in (0, 1):  # 0=ok, 1=would reformat, 2=parse error
+        sys.exit(f"ERROR: rustfmt parse failure after auto-resolve of {path} — "
+                 f"resolve this conflict by hand.\nrustfmt stderr: {result.stderr[:400]}")
+except FileNotFoundError:
+    pass  # rustfmt not available — skip check
+finally:
+    os.unlink(tmp_path)
+
+path.write_text(out)
+print(f"resolved: {path}")
 PY
 done
