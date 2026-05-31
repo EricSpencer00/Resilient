@@ -335,6 +335,14 @@ fn compatible(a: &Type, b: &Type) -> bool {
             && pa.iter().zip(pb.iter()).all(|(x, y)| compatible(x, y))
             && compatible(ra, rb);
     }
+    // RES-2801: Tuple types are compatible when element-wise compatible.
+    if let (Type::Tuple(a_elems), Type::Tuple(b_elems)) = (a, b) {
+        return a_elems.len() == b_elems.len()
+            && a_elems
+                .iter()
+                .zip(b_elems.iter())
+                .all(|(x, y)| compatible(x, y));
+    }
     // Integer literals produce Type::Int; allow assigning them to any
     // pinned integer type without an explicit cast.
     if *a == Type::Int && is_pinned_int(b) {
@@ -1326,6 +1334,11 @@ pub struct TypeChecker {
     /// many fields, especially when entries carry `Type::Function`
     /// with their own nested Vecs).
     struct_fields: HashMap<String, std::rc::Rc<Vec<(String, Type)>>>,
+    /// RES-2801: for generic structs, store type parameter names and raw
+    /// field types so construction sites can infer and validate concrete
+    /// type-parameter bindings.
+    #[allow(clippy::type_complexity)]
+    generic_struct_info: HashMap<String, (Vec<String>, Vec<(String, String)>)>,
     /// RES-400: enum name → variant list. Populated when we visit each
     /// `EnumDecl`. Used by the `Match` exhaustiveness check to ensure
     /// every declared variant is covered, and by `match_pattern_binding_types`
@@ -4810,6 +4823,7 @@ impl TypeChecker {
             stats: VerificationStats::default(),
             certificates: Vec::new(),
             struct_fields: HashMap::with_capacity(PRESIZE),
+            generic_struct_info: HashMap::new(),
             // RES-1398: clone the cached builtin enum_decls (Option /
             // Result) HashMap instead of rebuilding it from scratch.
             // Pattern mirrors RES-1349's BUILTIN_ENV cache — the data
@@ -7816,6 +7830,12 @@ impl TypeChecker {
                 // clone a single refcount.
                 self.struct_fields
                     .insert(name.clone(), std::rc::Rc::new(resolved));
+                // RES-2801: store generic struct metadata for
+                // construction-site type-parameter validation.
+                if !type_params.is_empty() {
+                    self.generic_struct_info
+                        .insert(name.clone(), (type_params.clone(), fields.clone()));
+                }
                 Ok(Type::Void)
             }
 
@@ -7864,6 +7884,13 @@ impl TypeChecker {
                     }
                 }
                 let declared_opt = self.struct_fields.get(&effective_struct_name).cloned();
+                // RES-2801: collect field value types for generic
+                // type-parameter consistency checking below.
+                let generic_info = self
+                    .generic_struct_info
+                    .get(&effective_struct_name)
+                    .cloned();
+                let mut field_value_types: Vec<(String, Type)> = Vec::new();
                 for (field_name, e) in fields {
                     let val_ty = self.check_node(e)?;
                     if let Some(declared) = &declared_opt {
@@ -7894,6 +7921,36 @@ impl TypeChecker {
                                  but the initializer has type {}",
                                 effective_struct_name, field_name, field_ty, val_ty
                             ));
+                        }
+                    }
+                    if generic_info.is_some() {
+                        field_value_types.push((field_name.clone(), val_ty));
+                    }
+                }
+                // RES-2801: for generic structs, infer type-parameter
+                // bindings from field values and reject inconsistencies.
+                if let Some((type_params, raw_fields)) = &generic_info {
+                    let tp_set: std::collections::HashSet<&str> =
+                        type_params.iter().map(String::as_str).collect();
+                    let mut bindings: std::collections::HashMap<&str, Type> =
+                        std::collections::HashMap::new();
+                    for (field_name, val_ty) in &field_value_types {
+                        if let Some((raw_type, _)) =
+                            raw_fields.iter().find(|(_, n)| n == field_name)
+                            && tp_set.contains(raw_type.as_str())
+                        {
+                            if let Some(bound) = bindings.get(raw_type.as_str()) {
+                                if !compatible(bound, val_ty) {
+                                    return Err(format!(
+                                        "struct `{}`: type parameter `{}` \
+                                         bound to `{}` by an earlier field, \
+                                         but field `{}` has type `{}`",
+                                        effective_struct_name, raw_type, bound, field_name, val_ty
+                                    ));
+                                }
+                            } else {
+                                bindings.insert(raw_type.as_str(), val_ty.clone());
+                            }
                         }
                     }
                 }
@@ -8796,7 +8853,12 @@ impl TypeChecker {
                         let can_coerce_to_string = |t: &Type| {
                             matches!(
                                 t,
-                                Type::String | Type::Int | Type::Float | Type::Bool | Type::Any
+                                Type::String
+                                    | Type::Int
+                                    | Type::Float
+                                    | Type::Bool
+                                    | Type::Char
+                                    | Type::Any
                             ) || is_pinned_int(t)
                         };
                         if left_type == Type::String || right_type == Type::String {
@@ -15602,5 +15664,74 @@ mod res2721_interp_string_scope {
         TypeChecker::new()
             .check_program(&prog)
             .expect("typed let with interp string should pass");
+    }
+}
+
+#[cfg(test)]
+mod res2801_generic_struct_type_validation {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, expected_msg: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let err = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error");
+        assert!(
+            err.contains(expected_msg),
+            "error should contain \"{expected_msg}\", got: {err}"
+        );
+    }
+
+    #[test]
+    fn consistent_type_params_accepted() {
+        check_ok(
+            "struct Pair<T> { T first, T second }\n\
+             let p = new Pair { first: 1, second: 2 }\n",
+        );
+    }
+
+    #[test]
+    fn inconsistent_type_params_rejected() {
+        check_err(
+            "struct Pair<T> { T first, T second }\n\
+             let p = new Pair { first: 1, second: \"hello\" }\n",
+            "type parameter",
+        );
+    }
+
+    #[test]
+    fn different_type_params_independent() {
+        check_ok(
+            "struct Pair<T, U> { T first, U second }\n\
+             let p = new Pair { first: 1, second: \"hello\" }\n",
+        );
+    }
+
+    #[test]
+    fn non_generic_struct_unchanged() {
+        check_ok(
+            "struct Point { int x, int y }\n\
+             let p = new Point { x: 1, y: 2 }\n",
+        );
+    }
+
+    #[test]
+    fn compatible_tuple_types() {
+        check_ok("fn id(int x) -> int { return x; }\nlet r: int = id(42)\n");
+    }
+
+    #[test]
+    fn char_concat_with_string_accepted() {
+        check_ok("let c: char = 'x'\nlet s = \"hello\" + c\n");
     }
 }

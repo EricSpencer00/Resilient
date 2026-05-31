@@ -1,12 +1,8 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-2559-datetime-builtins",
-      "claimed_at": "2026-05-31T10:06:30Z"
-    },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2559-datetime-builtins",
-      "claimed_at": "2026-05-31T10:06:30Z"
+      "branch": "res-2801-generic-struct-type-validation",
+      "claimed_at": "2026-05-31T10:48:55Z"
     }
   }
 }
