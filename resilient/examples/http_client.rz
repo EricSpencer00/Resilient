@@ -1,0 +1,16 @@
+// RES-2556: HTTP client builtins — error-path smoke test.
+// (Cannot make real HTTP requests in CI, so test URL validation only.)
+
+let bad_scheme = http_get("ftp://example.com")
+match bad_scheme {
+    Ok(r) => println("unexpected ok"),
+    Err(e) => println("bad scheme: " + e),
+}
+
+let post_bad = http_post("ftp://example.com", "body")
+match post_bad {
+    Ok(r) => println("unexpected ok"),
+    Err(e) => println("post bad: " + e),
+}
+
+println("done")

@@ -610,6 +610,7 @@ mod full_modules;
 mod functional_hof;
 mod ghost_types;
 mod graph_algorithms;
+mod http_client;
 mod hw_state_machine;
 mod incremental_verify;
 mod info_flow;
@@ -12878,6 +12879,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "datetime_parse",
         crate::datetime_builtins::builtin_datetime_parse,
     ),
+    // RES-2556: HTTP client builtins.
+    ("http_get", crate::http_client::builtin_http_get),
+    ("http_post", crate::http_client::builtin_http_post),
     // RES-2658: linear algebra — vector and matrix operations (pure).
     ("vec_add", crate::linear_algebra::builtin_vec_add),
     ("vec_sub", crate::linear_algebra::builtin_vec_sub),
