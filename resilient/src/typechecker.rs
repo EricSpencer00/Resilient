@@ -2192,6 +2192,49 @@ impl TypeChecker {
                         return_type: Box::new(Type::Bool),
                     },
                 );
+                // RES-2585: regex builtins.
+                env.set(
+                    "regex_match".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "regex_find".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Option(Box::new(Type::String))),
+                    },
+                );
+                env.set(
+                    "regex_find_all".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+                env.set(
+                    "regex_captures".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Option(Box::new(Type::Array))),
+                    },
+                );
+                env.set(
+                    "regex_replace".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "regex_replace_all".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
                 // RES-1164: iteration helpers.
                 env.set(
                     "enumerate".to_string(),
@@ -5817,6 +5860,8 @@ impl TypeChecker {
                 crate::mutex_rwlock::check(program, source_path)?;
                 // RES-2574: validate generic struct type parameters.
                 crate::generic_structs::check(program, source_path)?;
+                // RES-2585: regex builtins (no-op check; builtins are leaf functions).
+                crate::regex_builtins::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

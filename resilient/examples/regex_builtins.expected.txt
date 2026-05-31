@@ -1,0 +1,9 @@
+true
+false
+found: 42.99
+["one", "three", "five"]
+John, Smith
+foo_bar  baz
+foo_bar_baz
+Smith, John
+Program executed successfully

@@ -144,6 +144,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 # RES-195: SHA-256 for the cert manifest's per-obligation hash AND
 # the incremental build cache's source-file hash. Always-on.
+regex = "1"
 sha2 = "0.10"
 serde_json = "1"
 
