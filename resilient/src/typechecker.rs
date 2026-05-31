@@ -9324,6 +9324,17 @@ impl TypeChecker {
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "-" | "*" | "/" | "%" => {
+                        // RES-2816: string repetition — `"x" * 3` or `3 * "x"`.
+                        // Mirrors the interpreter's string repeat support (RES-924).
+                        if *operator == "*" {
+                            let is_string_int = (left_type == Type::String
+                                && compatible(&right_type, &Type::Int))
+                                || (compatible(&left_type, &Type::Int)
+                                    && right_type == Type::String);
+                            if is_string_int {
+                                return Ok(Type::String);
+                            }
+                        }
                         // RES-130: same policy as `+` — no mixed int / float.
                         // RES-413: static division / modulo by zero detection.
                         if matches!(*operator, "/" | "%")
@@ -9957,7 +9968,8 @@ impl TypeChecker {
             // (Rust uses both; Java/Python use `String`/`str`).
             "string" | "str" | "String" => Ok(Type::String),
             // RES-2719: `boolean` is the common Java/JavaScript spelling.
-            "bool" | "boolean" => Ok(Type::Bool),
+            // RES-2816: `Bool` (capitalised) mirrors the `Int`/`Float`/`String` convention.
+            "bool" | "Bool" | "boolean" => Ok(Type::Bool),
             // RES-2711: `char` and `Char` both resolve to the character type.
             "char" | "Char" => Ok(Type::Char),
             "void" => Ok(Type::Void),
@@ -16655,5 +16667,39 @@ mod res2814_generic_enum_constructors {
             err.contains("expected 1 arg(s), got 2"),
             "unexpected error: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod res2816_operator_and_type_alias_fixes {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn string_repeat_accepted() {
+        check_ok("let s = \"x\" * 3\n");
+    }
+
+    #[test]
+    fn int_times_string_accepted() {
+        check_ok("let s = 3 * \"ab\"\n");
+    }
+
+    #[test]
+    fn bool_capitalised_alias_accepted() {
+        check_ok("struct R { Bool ok }\nlet r = new R { ok: true }\n");
+    }
+
+    #[test]
+    fn string_repeat_with_variable() {
+        check_ok("let n = 5\nlet s = \"-\" * n\n");
     }
 }
