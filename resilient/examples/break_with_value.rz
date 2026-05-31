@@ -1,0 +1,33 @@
+// RES-2551: break with value from loop expressions.
+// Note: `break identifier;` is a labeled break (backward-compat).
+// Use `break (expr);` or a compound expression to carry a value.
+
+// Break with an arithmetic expression.
+let mut i = 0;
+let result = loop {
+    i = i + 1;
+    if i >= 5 {
+        break i * 10;
+    }
+};
+println(to_string(result));
+
+// Break with a string expression.
+let mut n = 0;
+let msg = loop {
+    n = n + 1;
+    if n >= 3 {
+        break "done";
+    }
+};
+println(msg);
+
+// Break with a boolean expression.
+let mut x = 0;
+let ok = loop {
+    x = x + 1;
+    if x >= 4 {
+        break x > 2;
+    }
+};
+println(to_string(ok));

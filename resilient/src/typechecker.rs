@@ -194,7 +194,10 @@ impl std::fmt::Display for Type {
 /// so any positive diagnosis is a real bug rather than a guess.
 pub(crate) fn node_terminates(node: &Node) -> bool {
     match node {
-        Node::ReturnStatement { .. } | Node::Break { .. } | Node::Continue { .. } => true,
+        Node::ReturnStatement { .. }
+        | Node::Break { .. }
+        | Node::BreakWith { .. }
+        | Node::Continue { .. } => true,
         Node::Block { stmts, .. } => stmts.iter().any(node_terminates),
         Node::IfStatement {
             consequence,
@@ -6750,7 +6753,12 @@ impl TypeChecker {
                 // is always a bug. The `_`-prefixed discard convention is the
                 // expected pattern; bare `let x = void_fn()` produces a variable
                 // that can never be used in a typed context.
-                if value_type == Type::Void && !name.starts_with('_') {
+                // RES-2551 exception: `loop { break expr; }` and `while cond { break expr; }`
+                // are loop expressions whose type comes from the break value at runtime.
+                // The typechecker conservatively types WhileStatement as Void; skip the
+                // void-binding check here so `let x = loop { break 42; }` is accepted.
+                let rhs_is_loop = matches!(value.as_ref(), Node::WhileStatement { .. });
+                if value_type == Type::Void && !name.starts_with('_') && !rhs_is_loop {
                     return Err(format!(
                         "cannot bind void value to `{}` — the right-hand side expression has type void; \
                          use `let _ = expr;` to explicitly discard it",
@@ -8182,6 +8190,17 @@ impl TypeChecker {
                          inside a `while` or `for-in` body"
                         .to_string());
                 }
+                Ok(Type::Void)
+            }
+            // RES-2551: `break expr;` — validates the expression; loop type
+            // inference is done at use-site, not here.
+            Node::BreakWith { value, .. } => {
+                if self.loop_depth == 0 {
+                    return Err("'break' outside of a loop — `break` is only valid \
+                         inside a `while` or `for-in` body"
+                        .to_string());
+                }
+                self.check_node(value)?;
                 Ok(Type::Void)
             }
             Node::Continue { .. } => {

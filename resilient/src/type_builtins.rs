@@ -50,6 +50,7 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 // Control-flow sentinels — not user-visible.
                 Value::Return(_)
                 | Value::Break
+                | Value::BreakWith(_)
                 | Value::Continue
                 | Value::BreakLabel(_)
                 | Value::ContinueLabel(_) => "void",

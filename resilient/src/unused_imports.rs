@@ -460,6 +460,8 @@ fn collect_namespaces<'a>(node: &'a Node, out: &mut HashSet<&'a str>) {
         | Node::Continue { .. }
         | Node::BreakLabel { .. }
         | Node::ContinueLabel { .. } => {}
+        // RES-2551: walk the expression inside `break expr;`.
+        Node::BreakWith { value, .. } => collect_namespaces(value, out),
     }
 }
 
