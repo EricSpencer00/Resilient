@@ -2086,6 +2086,40 @@ impl TypeChecker {
                     Type::Function {
                         params: vec![Type::Any],
                         return_type: Box::new(Type::Bool),
+                // RES-2559: date/time formatting and parsing builtins (std-only).
+                env.set(
+                    "datetime_now".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Struct("DateTime".to_string())),
+                    },
+                );
+                env.set(
+                    "datetime_format".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "datetime_parse".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "datetime_to_unix".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "datetime_from_unix".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Struct("DateTime".to_string())),
                     },
                 );
                 // RES-2558: process execution builtins (std-only). Return Result<Struct>.

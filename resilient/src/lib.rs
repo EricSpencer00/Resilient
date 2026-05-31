@@ -678,6 +678,8 @@ mod wcet_contracts;
 mod process_exec;
 // RES-2555: TCP/UDP networking (std-only).
 mod tcp_udp;
+// RES-2559: date/time formatting and parsing (std-only).
+mod datetime_builtins;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -12894,6 +12896,27 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("udp_send_to", crate::tcp_udp::builtin_udp_send_to),
     ("udp_recv_from", crate::tcp_udp::builtin_udp_recv_from),
     ("udp_close", crate::tcp_udp::builtin_udp_close),
+    // RES-2559: date/time formatting and parsing builtins (std-only).
+    (
+        "datetime_now",
+        crate::datetime_builtins::builtin_datetime_now,
+    ),
+    (
+        "datetime_format",
+        crate::datetime_builtins::builtin_datetime_format,
+    ),
+    (
+        "datetime_parse",
+        crate::datetime_builtins::builtin_datetime_parse,
+    ),
+    (
+        "datetime_to_unix",
+        crate::datetime_builtins::builtin_datetime_to_unix,
+    ),
+    (
+        "datetime_from_unix",
+        crate::datetime_builtins::builtin_datetime_from_unix,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

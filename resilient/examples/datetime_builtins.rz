@@ -1,0 +1,24 @@
+// RES-2559: date/time formatting and parsing builtins.
+
+// Round-trip: Unix epoch → DateTime → format → parse → unix
+let epoch = datetime_from_unix(0);
+println(epoch.year);
+println(epoch.month);
+println(epoch.day);
+println(epoch.hour);
+println(epoch.minute);
+println(epoch.second);
+
+// Format a known date.
+let dt = datetime_from_unix(1705320645);
+let s = datetime_format(dt, "%Y-%m-%d %H:%M:%S");
+println(s);
+
+// Parse it back and convert to unix.
+let dt2 = unwrap(datetime_parse(s, "%Y-%m-%d %H:%M:%S"));
+let unix2 = datetime_to_unix(dt2);
+println(unix2 == 1705320645);
+
+// datetime_now returns a struct with the right field names.
+let now = datetime_now();
+println(now.year > 2020);
