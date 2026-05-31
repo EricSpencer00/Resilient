@@ -1,0 +1,6 @@
+42
+hello
+1
+true
+done
+Program executed successfully
