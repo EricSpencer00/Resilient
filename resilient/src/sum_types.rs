@@ -90,6 +90,9 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
     };
     parser.next_token(); // consume name (or whatever was there)
 
+    // RES-2575: optional type parameters — `enum Name<T, U> { ... }`.
+    let (type_params, _bounds) = parser.parse_optional_type_params();
+
     if parser.current_token != Token::LeftBrace {
         let tok = parser.current_token.clone();
         parser.record_error(format!(
@@ -100,6 +103,7 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
         // the program still parses.
         return Node::EnumDecl {
             name,
+            type_params,
             variants: Vec::new(),
             span: enum_span,
         };
@@ -180,6 +184,7 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
 
     Node::EnumDecl {
         name,
+        type_params,
         variants,
         span: enum_span,
     }

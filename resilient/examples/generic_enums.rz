@@ -1,0 +1,47 @@
+// RES-2575: generic enum declarations.
+// Type parameters are validated by the compiler; runtime uses the
+// concrete variant values just like non-generic enums.
+
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+enum Box<T> {
+    Wrap(T),
+}
+
+enum Tree<T> {
+    Leaf,
+    Node(T),
+}
+
+let a = Either::Left(42);
+let b = Either::Right("hello");
+let c = Box::Wrap(true);
+let d = Tree::Leaf;
+let e = Tree::Node(99);
+
+println(match a {
+    Either::Left(v) => v == 42,
+    Either::Right(_) => false,
+});
+
+println(match b {
+    Either::Left(_) => false,
+    Either::Right(s) => s == "hello",
+});
+
+println(match c {
+    Box::Wrap(v) => v == true,
+});
+
+println(match d {
+    Tree::Leaf => true,
+    Tree::Node(_) => false,
+});
+
+println(match e {
+    Tree::Leaf => false,
+    Tree::Node(n) => n == 99,
+});

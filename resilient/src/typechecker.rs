@@ -5745,6 +5745,8 @@ impl TypeChecker {
                 crate::crypto_hash::check(program, source_path)?;
                 // RES-2572: validate trait inheritance — super-traits exist and impls are complete.
                 crate::trait_inheritance::check(program, source_path)?;
+                // RES-2575: validate generic enum type parameters.
+                crate::generic_enums::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
