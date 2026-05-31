@@ -13,8 +13,10 @@
 //! 3. **Standard library imports**: `use std::http;` / `use std::json as j;`
 //!    — imports a built-in standard library module.
 //!
-//! Cycles are detected via an in-flight set and produce a clean diagnostic.
-//! Files already loaded once are skipped on re-import (dedup by canonical path).
+//! Cycles are detected via an in-flight stack: before expanding a file,
+//! we check if it's already being expanded higher up the call chain.
+//! If so, a clean diagnostic shows the full cycle path.
+//! Files already fully loaded are skipped on re-import (dedup by canonical path).
 //!
 //! Visibility:
 //! - `pub fn name(...)` marks a function as exported.
@@ -60,6 +62,17 @@ pub fn expand_uses_with_std(
     loaded: &mut HashSet<PathBuf>,
     std_imports: &mut Vec<StdImport>,
 ) -> Result<(), String> {
+    let mut in_flight: Vec<PathBuf> = Vec::new();
+    expand_recursive(program, base_dir, loaded, std_imports, &mut in_flight)
+}
+
+fn expand_recursive(
+    program: &mut Node,
+    base_dir: &Path,
+    loaded: &mut HashSet<PathBuf>,
+    std_imports: &mut Vec<StdImport>,
+    in_flight: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let stmts = match program {
         Node::Program(stmts) => stmts,
         _ => return Ok(()),
@@ -90,8 +103,12 @@ pub fn expand_uses_with_std(
                     crate::pkg_deps::resolve_dep_module(base_dir, dep_name, module)
             {
                 let canon = canonicalize_or_self(&dep_path);
+
+                // RES-2540: cycle detection — check in-flight stack.
+                check_cycle(&canon, in_flight)?;
+
                 if alias.is_none() && !loaded.contains(&canon) {
-                    loaded.insert(canon);
+                    loaded.insert(canon.clone());
                 } else if alias.is_none() {
                     continue;
                 }
@@ -101,11 +118,17 @@ pub fn expand_uses_with_std(
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from("."));
                 let mut imported_program = imported_program;
-                expand_uses_with_std(&mut imported_program, &imported_dir, loaded, std_imports)?;
+                in_flight.push(canon);
+                expand_recursive(
+                    &mut imported_program,
+                    &imported_dir,
+                    loaded,
+                    std_imports,
+                    in_flight,
+                )?;
+                in_flight.pop();
                 if let Node::Program(imported_stmts) = imported_program {
                     let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
-                    // Default namespace: use the dep_name so
-                    // callers access items as `dep::func`.
                     let ns = alias.clone().unwrap_or_else(|| dep_name.to_string());
                     for s in imported_stmts {
                         if matches!(s.node, Node::Use { .. }) {
@@ -122,13 +145,16 @@ pub fn expand_uses_with_std(
             }
 
             let target = resolve_use_path(base_dir, path)?;
-
             let canon = canonicalize_or_self(&target);
+
+            // RES-2540: cycle detection — check in-flight stack.
+            check_cycle(&canon, in_flight)?;
+
             if alias.is_none() {
                 if loaded.contains(&canon) {
                     continue;
                 }
-                loaded.insert(canon);
+                loaded.insert(canon.clone());
             }
 
             let imported_program = load_and_parse(&target)?;
@@ -138,10 +164,16 @@ pub fn expand_uses_with_std(
                 .unwrap_or_else(|| PathBuf::from("."));
 
             let mut imported_program = imported_program;
-            expand_uses_with_std(&mut imported_program, &imported_dir, loaded, std_imports)?;
+            in_flight.push(canon);
+            expand_recursive(
+                &mut imported_program,
+                &imported_dir,
+                loaded,
+                std_imports,
+                in_flight,
+            )?;
+            in_flight.pop();
 
-            // Filter by visibility: only export `pub` declarations.
-            // Legacy mode: if no `pub` decls exist, export everything.
             if let Node::Program(imported_stmts) = imported_program {
                 let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
 
@@ -150,7 +182,6 @@ pub fn expand_uses_with_std(
                         continue;
                     }
 
-                    // Skip non-pub declarations (unless legacy mode)
                     if has_any_pub && is_exportable_decl(&s.node) && !is_pub_decl(&s.node) {
                         continue;
                     }
@@ -168,6 +199,32 @@ pub fn expand_uses_with_std(
         }
     }
     *stmts = expanded;
+    Ok(())
+}
+
+/// Check if a file is already being expanded (cycle detection).
+/// If so, produce a diagnostic showing the full cycle path.
+fn check_cycle(canon: &Path, in_flight: &[PathBuf]) -> Result<(), String> {
+    if let Some(idx) = in_flight.iter().position(|p| p == canon) {
+        let mut chain: Vec<String> = in_flight[idx..]
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.display().to_string())
+            })
+            .collect();
+        chain.push(
+            canon
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| canon.display().to_string()),
+        );
+        return Err(format!(
+            "error: circular import detected: {}",
+            chain.join(" -> ")
+        ));
+    }
     Ok(())
 }
 
@@ -233,6 +290,16 @@ fn load_and_parse(path: &Path) -> Result<Node, String> {
 mod tests {
     use super::*;
 
+    fn make_temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rz_test_{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn cleanup_temp_dir(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn expand_is_a_noop_when_there_are_no_uses() {
         let (mut program, errs) = crate::parse("fn main() { return 1; }");
@@ -284,5 +351,77 @@ mod tests {
         } else {
             panic!("expected Program");
         }
+    }
+
+    #[test]
+    fn circular_import_detected() {
+        let dir = make_temp_dir().join("cycle2");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("a.rz"), "use \"b.rz\" as b;\nlet x = 1\n").unwrap();
+        fs::write(dir.join("b.rz"), "use \"a.rz\" as a;\nlet y = 2\n").unwrap();
+
+        let src = fs::read_to_string(dir.join("a.rz")).unwrap();
+        let (mut program, _) = crate::parse(&src);
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_err(), "circular import should error");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("circular import"),
+            "expected cycle error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn three_file_cycle_detected() {
+        let dir = make_temp_dir().join("cycle3");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("x.rz"), "use \"y.rz\" as y;\nlet a = 1\n").unwrap();
+        fs::write(dir.join("y.rz"), "use \"z.rz\" as z;\nlet b = 2\n").unwrap();
+        fs::write(dir.join("z.rz"), "use \"x.rz\" as x;\nlet c = 3\n").unwrap();
+
+        let src = fs::read_to_string(dir.join("x.rz")).unwrap();
+        let (mut program, _) = crate::parse(&src);
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("circular import"), "got: {}", err);
+    }
+
+    #[test]
+    fn non_aliased_reimport_deduplicates_no_error() {
+        let dir = make_temp_dir().join("dedup");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("lib.rz"), "let shared = 42\n").unwrap();
+
+        let src = "use \"lib.rz\";\nuse \"lib.rz\";\nlet x = shared\n";
+        let (mut program, _) = crate::parse(src);
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_ok(), "dedup should not error: {:?}", result);
+    }
+
+    #[test]
+    fn check_cycle_finds_cycle() {
+        let a = PathBuf::from("/a.rz");
+        let b = PathBuf::from("/b.rz");
+        let in_flight = vec![a.clone(), b.clone()];
+        let result = check_cycle(&a, &in_flight);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("circular import"));
+    }
+
+    #[test]
+    fn check_cycle_passes_for_new_file() {
+        let a = PathBuf::from("/a.rz");
+        let b = PathBuf::from("/b.rz");
+        let c = PathBuf::from("/c.rz");
+        let in_flight = vec![a, b];
+        assert!(check_cycle(&c, &in_flight).is_ok());
     }
 }
