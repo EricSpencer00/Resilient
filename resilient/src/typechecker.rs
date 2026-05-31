@@ -5789,6 +5789,8 @@ impl TypeChecker {
                 // RES-2589: dead-code warnings — unused fns, unreachable stmts,
                 // unused let bindings. Warning-only, never returns Err.
                 crate::dead_code_lint::check(program, source_path);
+                // RES-2579: reject `defer` at the top level (outside any fn).
+                crate::defer_stmt::check(program, source_path)?;
                 // RES-2580: extended const eval registration (no-op check;
                 // the actual extension is in eval_const_expr in lib.rs).
                 crate::const_eval_ext::check(program, source_path)?;
@@ -9258,6 +9260,11 @@ impl TypeChecker {
             Node::BlanketImpl { .. } => Ok(Type::Void),
             // RES-2660: static_assert — validated by static_assert::check.
             Node::StaticAssert { .. } => Ok(Type::Void),
+            // RES-2579: defer statement — validated by defer_stmt::check.
+            Node::DeferStatement { expr, .. } => {
+                self.check_node(expr)?;
+                Ok(Type::Void)
+            }
         }
     }
 

@@ -1,0 +1,7 @@
+opening resource
+using: resource_handle
+closing: resource_handle
+1
+2
+3
+Program executed successfully
