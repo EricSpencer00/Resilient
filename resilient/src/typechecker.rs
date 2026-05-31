@@ -4062,6 +4062,15 @@ impl TypeChecker {
                     },
                 );
 
+                // RES-2794: stacktrace() returns the current call stack as an array of strings.
+                env.set(
+                    "stacktrace".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+
                 // RES-143: file I/O builtins (std-only; the resilient-runtime
                 // sibling crate has no builtins table so its no_std posture is
                 // unaffected).
@@ -9524,6 +9533,8 @@ const IMPURE_BUILTINS: &[&str] = &[
     // RES-2610: compile-time file embedding.
     "include_str",
     "include_bytes",
+    // RES-2794: runtime call stack introspection.
+    "stacktrace",
     // RES-147: monotonic clock.
     "clock_ms",
     // RES-1174: wall-clock unix time.

@@ -1,0 +1,5 @@
+trace length: 3
+outer_trace
+middle_trace
+inner_trace
+Program executed successfully
