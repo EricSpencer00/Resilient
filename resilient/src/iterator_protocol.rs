@@ -116,4 +116,87 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn for_in_closure_iterator() {
+        let r = crate::run_program(
+            r#"
+fn counter(int max) {
+    let n = 0
+    fn next() {
+        if n >= max { return None }
+        let v = n
+        n = n + 1
+        return Some(v)
+    }
+    return next
+}
+for x in counter(4) {
+    println(x)
+}
+"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines, vec!["0", "1", "2", "3"]);
+    }
+
+    #[test]
+    fn for_in_iterator_with_break() {
+        let r = crate::run_program(
+            r#"
+fn counter(int max) {
+    let n = 0
+    fn next() {
+        if n >= max { return None }
+        let v = n
+        n = n + 1
+        return Some(v)
+    }
+    return next
+}
+for x in counter(100) {
+    if x >= 3 { break; }
+    println(x)
+}
+"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines, vec!["0", "1", "2"]);
+    }
+
+    #[test]
+    fn for_in_empty_iterator() {
+        let r = crate::run_program(
+            r#"
+fn empty() {
+    fn next() { return None }
+    return next
+}
+for x in empty() {
+    println(x)
+}
+println("done")
+"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert_eq!(r.stdout.trim(), "done");
+    }
+
+    #[test]
+    fn non_option_iterator_errors() {
+        let r = crate::run_program(
+            r#"
+fn bad_iter() {
+    fn next() { return 42 }
+    return next
+}
+for x in bad_iter() {
+    println(x)
+}
+"#,
+        );
+        assert!(!r.ok, "should error when next() returns non-Option");
+    }
 }

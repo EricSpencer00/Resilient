@@ -8172,10 +8172,11 @@ impl TypeChecker {
                 // RES-2548: Range is also iterable.
                 if !matches!(
                     iter_ty,
-                    Type::Array | Type::String | Type::Any | Type::Range
-                ) {
+                    Type::Array | Type::String | Type::Any | Type::Range | Type::Function { .. }
+                ) && !matches!(iter_ty, Type::Struct(_))
+                {
                     return Err(format!(
-                        "cannot iterate over type {} — for-in requires an array, range, or string",
+                        "cannot iterate over type {} — for-in requires an array, range, string, or iterator",
                         iter_ty
                     ));
                 }

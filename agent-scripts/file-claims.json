@@ -1,3 +1,16 @@
 {
-  "claims": {}
+  "claims": {
+    "resilient/src/lib.rs": {
+      "branch": "res-2800-iterator-protocol",
+      "claimed_at": "2026-05-31T08:54:26Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2800-iterator-protocol",
+      "claimed_at": "2026-05-31T08:54:26Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-2800-iterator-protocol",
+      "claimed_at": "2026-05-31T08:54:26Z"
+    }
+  }
 }

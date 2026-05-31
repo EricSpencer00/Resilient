@@ -26094,9 +26094,25 @@ impl Interpreter {
                 keys.sort_unstable_by(|a, b| crate::map_entries_merge::cmp_map_keys(a, b));
                 keys.into_iter().map(|k| k.to_value()).collect()
             }
+            Value::Function(_) | Value::Builtin { .. } => {
+                return self.eval_for_in_iterator(iter_val, name, body, label);
+            }
+            Value::Struct {
+                name: ref sname, ..
+            } if crate::iterator_protocol::is_iterator(sname) => {
+                let mangled = format!("{}$next", sname);
+                if let Some(method_val) = self.env.get(&mangled) {
+                    let iter_fn = method_val;
+                    return self.eval_for_in_iterator_method(iter_val, iter_fn, name, body, label);
+                }
+                return Err(format!(
+                    "type `{}` implements Iterator but has no `next` method",
+                    sname
+                ));
+            }
             other => {
                 return Err(format!(
-                    "`for` iterable must be an array or map, got {}",
+                    "`for` iterable must be an array, map, or iterator, got {}",
                     other
                 ));
             }
@@ -26133,6 +26149,110 @@ impl Interpreter {
             }
         }
         Ok(Value::Void)
+    }
+
+    /// RES-2800: for-in loop over a custom iterator. Calls `next()` on the
+    /// struct until it returns `None`. `Some(v)` unwraps to the loop variable.
+    /// RES-2800: for-in over a callable iterator. Calls the function/closure
+    /// with zero arguments until it returns `None`.
+    fn eval_for_in_iterator(
+        &mut self,
+        iter_fn: Value,
+        var_name: &str,
+        body: &Node,
+        label: Option<&str>,
+    ) -> RResult<Value> {
+        const MAX_ITERS: usize = 1_000_000;
+        let mut iters = 0usize;
+        loop {
+            iters += 1;
+            if iters > MAX_ITERS {
+                return Err(format!(
+                    "iterator exceeded {MAX_ITERS} calls to next() (runaway?)"
+                ));
+            }
+            let next_result = self.apply_function(&iter_fn, vec![])?;
+            if !Self::bind_iterator_value(&next_result, var_name, &mut self.env)? {
+                break;
+            }
+            if let Some(v) = self.eval_loop_body(body, label)? {
+                return Ok(v);
+            }
+        }
+        Ok(Value::Void)
+    }
+
+    /// RES-2800: for-in over a struct implementing Iterator. Calls `next(self)`
+    /// passing the struct value each iteration.
+    fn eval_for_in_iterator_method(
+        &mut self,
+        iterable: Value,
+        method_val: Value,
+        var_name: &str,
+        body: &Node,
+        label: Option<&str>,
+    ) -> RResult<Value> {
+        const MAX_ITERS: usize = 1_000_000;
+        let mut iters = 0usize;
+        loop {
+            iters += 1;
+            if iters > MAX_ITERS {
+                return Err(format!(
+                    "iterator exceeded {MAX_ITERS} calls to next() (runaway?)"
+                ));
+            }
+            let next_result = self.apply_function(&method_val, vec![iterable.clone()])?;
+            if !Self::bind_iterator_value(&next_result, var_name, &mut self.env)? {
+                break;
+            }
+            if let Some(v) = self.eval_loop_body(body, label)? {
+                return Ok(v);
+            }
+        }
+        Ok(Value::Void)
+    }
+
+    /// Extract `Some(v)` from an Option enum variant and bind it as the loop
+    /// variable. Returns `false` when `None` is encountered (loop should stop).
+    fn bind_iterator_value(result: &Value, var_name: &str, env: &mut Environment) -> RResult<bool> {
+        match result {
+            Value::Option(None) => Ok(false),
+            Value::Option(Some(inner)) => {
+                env.set(var_name.to_string(), inner.as_ref().clone());
+                Ok(true)
+            }
+            other => Err(format!(
+                "iterator next() must return Option (Some/None), got {}",
+                other
+            )),
+        }
+    }
+
+    /// Evaluate a loop body and handle break/continue/return signals.
+    /// Returns `Some(value)` when the loop should exit, `None` to continue.
+    fn eval_loop_body(&mut self, body: &Node, label: Option<&str>) -> RResult<Option<Value>> {
+        let result = self.eval(body)?;
+        if let Value::Return(_) = result {
+            return Ok(Some(result));
+        }
+        if matches!(result, Value::Break) {
+            return Ok(Some(Value::Void));
+        }
+        if let Value::BreakWith(v) = result {
+            return Ok(Some(*v));
+        }
+        if let Value::BreakLabel(ref lbl) = result {
+            if label == Some(lbl.as_str()) {
+                return Ok(Some(Value::Void));
+            }
+            return Ok(Some(result));
+        }
+        if let Value::ContinueLabel(ref lbl) = result
+            && label != Some(lbl.as_str())
+        {
+            return Ok(Some(result));
+        }
+        Ok(None)
     }
 
     /// RES-291 / RES-2548: helper for `Node::Range` evaluation as a value
