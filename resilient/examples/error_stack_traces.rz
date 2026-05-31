@@ -1,0 +1,20 @@
+// RES-2794: error stack traces with source locations.
+// Demonstrates the stacktrace() builtin returns the current call stack.
+
+fn inner_trace() {
+    let trace = stacktrace()
+    println("trace length: " + to_string(len(trace)))
+    for frame in trace {
+        println(frame)
+    }
+}
+
+fn middle_trace() {
+    inner_trace()
+}
+
+fn outer_trace() {
+    middle_trace()
+}
+
+outer_trace()

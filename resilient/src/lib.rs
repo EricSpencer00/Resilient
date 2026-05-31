@@ -689,6 +689,8 @@ mod tcp_udp;
 mod file_meta;
 // RES-2792: error chaining — `.context()`, `.root_cause()`, `.chain()`.
 mod error_chaining;
+// RES-2794: error stack traces with source locations.
+mod error_stack_traces;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -23278,6 +23280,10 @@ struct Interpreter {
     /// are visible when the deferred expression runs at function exit.
     /// Drained in LIFO order by `apply_function` after body completes.
     defer_stack: Vec<(Node, Environment)>,
+    /// RES-2794: call stack for error stack traces.
+    call_stack: Vec<crate::error_stack_traces::StackFrame>,
+    /// RES-2794: source path for stack trace formatting.
+    source_path: String,
 }
 
 /// RES-1108 + RES-1109 + RES-1110: structural equality for compound
@@ -23536,6 +23542,8 @@ impl Interpreter {
             mutual_tco_fn: None,
             trait_method_defaults: Rc::new(RefCell::new(HashMap::new())),
             defer_stack: Vec::new(),
+            call_stack: Vec::new(),
+            source_path: String::new(),
         }
     }
 
@@ -24926,6 +24934,17 @@ impl Interpreter {
                 {
                     let new_args = self.eval_expressions(arguments)?;
                     return Ok(Value::TailCall(new_args));
+                }
+                if let Node::Identifier { name, .. } = function.as_ref()
+                    && name == "stacktrace"
+                {
+                    let frames = crate::error_stack_traces::builtin_stacktrace(
+                        &self.call_stack,
+                        &self.source_path,
+                    );
+                    return Ok(Value::Array(
+                        frames.into_iter().map(Value::String).collect(),
+                    ));
                 }
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
@@ -27097,6 +27116,14 @@ impl Interpreter {
                     extended_env.set(param_name.clone(), arg_value);
                 }
 
+                // RES-2794: build the child's call stack by extending
+                // the parent's stack with a frame for this call.
+                let mut child_stack = self.call_stack.clone();
+                child_stack.push(crate::error_stack_traces::StackFrame {
+                    fn_name: name.clone(),
+                    call_span: crate::span::Span::default(),
+                });
+
                 let mut interpreter = Interpreter {
                     env: extended_env,
                     statics: self.statics.clone(),
@@ -27111,6 +27138,8 @@ impl Interpreter {
                     mutual_tco_fn: None,
                     trait_method_defaults: self.trait_method_defaults.clone(),
                     defer_stack: Vec::new(),
+                    call_stack: child_stack,
+                    source_path: self.source_path.clone(),
                 };
 
                 // RES-2592: activate the trampoline loop for #[must_tail_call] fns.
@@ -27301,7 +27330,16 @@ impl Interpreter {
                         }
                         v
                     }
-                    Err(body_err) => return Err(body_err),
+                    Err(body_err) => {
+                        if interpreter.call_stack.len() >= 2 && !body_err.contains("stack trace") {
+                            let trace = crate::error_stack_traces::format_stack_trace(
+                                &interpreter.call_stack,
+                                &interpreter.source_path,
+                            );
+                            return Err(format!("{}\n{}", body_err, trace));
+                        }
+                        return Err(body_err);
+                    }
                 };
 
                 // RES-035: check each `ensures` clause AFTER, with the
@@ -27383,6 +27421,11 @@ impl Interpreter {
                     inject_checked_failures: false,
                     overflow_mode: self.overflow_mode,
                     tco_fn_name: None,
+                    mutual_tco_fn: None,
+                    trait_method_defaults: self.trait_method_defaults.clone(),
+                    defer_stack: Vec::new(),
+                    call_stack: self.call_stack.clone(),
+                    source_path: self.source_path.clone(),
                 };
                 for pre in requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -27415,6 +27458,11 @@ impl Interpreter {
                         inject_checked_failures: false,
                         overflow_mode: self.overflow_mode,
                         tco_fn_name: None,
+                        mutual_tco_fn: None,
+                        trait_method_defaults: self.trait_method_defaults.clone(),
+                        defer_stack: Vec::new(),
+                        call_stack: self.call_stack.clone(),
+                        source_path: self.source_path.clone(),
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in ensures {
@@ -29636,6 +29684,7 @@ fn execute_file(
     let _live_telemetry_guard = install_live_run_telemetry(basename, log_writer);
 
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
+    interpreter.source_path = filename.to_string();
 
     stdlib::inject_std_bindings(&std_bindings, &interpreter.env);
 
@@ -31305,8 +31354,8 @@ pub fn run_program(src: &str) -> RunResult {
     }
     let (eval_result, captured) = output_sink::with_captured_output(|| {
         let mut interp = Interpreter::new();
+        interp.source_path = "<input>".to_string();
         interp.eval(&program)?;
-        // RES-332 PR 3: drain spawned actors after the main script.
         run_pending_actors(&mut interp)?;
         Ok(Value::Void)
     });
