@@ -687,6 +687,8 @@ mod process_exec;
 mod tcp_udp;
 // RES-2557: file metadata (std-only).
 mod file_meta;
+// RES-2792: error chaining — `.context()`, `.root_cause()`, `.chain()`.
+mod error_chaining;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -11102,7 +11104,12 @@ impl std::fmt::Display for Value {
                 write!(f, " }}")
             }
             Value::Result { ok, payload } => {
-                write!(f, "{}({})", if *ok { "Ok" } else { "Err" }, payload)
+                if !ok && matches!(payload.as_ref(), Value::Array(_)) {
+                    let msg = crate::error_chaining::format_chained_error(payload);
+                    write!(f, "Err({})", msg)
+                } else {
+                    write!(f, "{}({})", if *ok { "Ok" } else { "Err" }, payload)
+                }
             }
             Value::Option(inner) => match inner {
                 Some(v) => write!(f, "Some({})", v),
@@ -14712,9 +14719,12 @@ fn builtin_unwrap(args: &[Value]) -> RResult<Value> {
 }
 
 /// `unwrap_err(r)` — return the Err payload or error at runtime.
+/// For chained errors (from `.context()`), returns the formatted chain string.
 fn builtin_unwrap_err(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Result { ok: false, payload }] => Ok((**payload).clone()),
+        [Value::Result { ok: false, payload }] => {
+            Ok(crate::error_chaining::unwrap_err_payload(payload))
+        }
         [Value::Result { ok: true, payload }] => {
             Err(format!("unwrap_err called on Ok({})", payload))
         }
@@ -24106,6 +24116,19 @@ impl Interpreter {
                             },
                             other => Err(format!("Option has no method `{}`", other)),
                         };
+                    }
+                    // RES-2792: Result method dispatch — `.context()`,
+                    // `.root_cause()`, `.chain()`.
+                    if let Value::Result { ok, ref payload } = target_val {
+                        let extra_args = self.eval_expressions(arguments)?;
+                        if let Some(result) = crate::error_chaining::dispatch_result_method(
+                            ok,
+                            payload,
+                            field.as_str(),
+                            &extra_args,
+                        ) {
+                            return result;
+                        }
                     }
                     // RES-328: Cell method dispatch — `.get()` returns
                     // the inner value; `.set(v)` replaces it. The cell
