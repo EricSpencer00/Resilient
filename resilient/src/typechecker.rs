@@ -2106,6 +2106,49 @@ impl TypeChecker {
                         return_type: Box::new(Type::Result),
                     },
                 );
+                // RES-2557: file metadata builtins (std-only).
+                env.set(
+                    "file_exists".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "file_is_dir".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "file_is_file".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "file_size".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "file_stat".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "dir_list".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
                 // RES-2554: JSON serialization builtins.
                 env.set(
                     "to_json".to_string(),

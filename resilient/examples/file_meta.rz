@@ -1,0 +1,27 @@
+// RES-2557: file metadata builtins — file_exists, file_stat, file_is_dir,
+// file_is_file, file_size, dir_list.
+
+// Test with the current directory which always exists.
+let dot_exists = file_exists(".");
+println(dot_exists);
+
+let dot_is_dir = file_is_dir(".");
+println(dot_is_dir);
+
+let dot_is_file = file_is_file(".");
+println(dot_is_file);
+
+// Write a temp file, check its size, then stat it.
+file_write("/tmp/rz_file_meta_test.txt", "hello resilient");
+
+let sz = unwrap(file_size("/tmp/rz_file_meta_test.txt"));
+println(sz > 0);
+
+let meta = unwrap(file_stat("/tmp/rz_file_meta_test.txt"));
+println(meta.size > 0);
+println(meta.is_file);
+println(meta.is_dir);
+
+// dir_list returns a sorted array of entry names.
+let listing = unwrap(dir_list("."));
+println(listing != []);
