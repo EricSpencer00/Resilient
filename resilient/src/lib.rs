@@ -682,6 +682,8 @@ mod wcet_contracts;
 mod process_exec;
 // RES-2555: TCP/UDP networking (std-only).
 mod tcp_udp;
+// RES-2557: file metadata (std-only).
+mod file_meta;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -13051,6 +13053,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("rwlock_read", crate::mutex_rwlock::builtin_rwlock_read),
     ("rwlock_write", crate::mutex_rwlock::builtin_rwlock_write),
     ("rwlock_unlock", crate::mutex_rwlock::builtin_rwlock_unlock),
+    // RES-2557: file metadata builtins (std-only).
+    ("file_exists", crate::file_meta::builtin_file_exists),
+    ("file_is_dir", crate::file_meta::builtin_file_is_dir),
+    ("file_is_file", crate::file_meta::builtin_file_is_file),
+    ("file_size", crate::file_meta::builtin_file_size),
+    ("file_stat", crate::file_meta::builtin_file_stat),
+    ("dir_list", crate::file_meta::builtin_dir_list),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
