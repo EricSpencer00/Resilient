@@ -2284,6 +2284,21 @@ impl TypeChecker {
                         return_type: Box::new(Type::Result),
                     },
                 );
+                // RES-2556: HTTP client builtins.
+                env.set(
+                    "http_get".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "http_post".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
                 // RES-1164: iteration helpers.
                 env.set(
                     "enumerate".to_string(),
@@ -5914,6 +5929,8 @@ impl TypeChecker {
                 crate::regex_builtins::check(program, source_path)?;
                 // RES-2559: datetime builtins (no-op check).
                 crate::datetime_builtins::check(program, source_path)?;
+                // RES-2556: HTTP client builtins (no-op check).
+                crate::http_client::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

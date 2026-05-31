@@ -1,0 +1,4 @@
+bad scheme: http_*: only http:// URLs supported, got: ftp://example.com
+post bad: http_*: only http:// URLs supported, got: ftp://example.com
+done
+Program executed successfully

@@ -1,8 +1,12 @@
 {
   "claims": {
+    "resilient/src/lib.rs": {
+      "branch": "res-2556-http-client",
+      "claimed_at": "2026-05-31T11:43:02Z"
+    },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2801-generic-struct-type-validation",
-      "claimed_at": "2026-05-31T10:48:55Z"
+      "branch": "res-2556-http-client",
+      "claimed_at": "2026-05-31T11:43:02Z"
     }
   }
 }
