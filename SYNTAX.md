@@ -357,6 +357,35 @@ let Foo { a, .. } = f;           // ok — ignores b, c
 Only one layer deep — nested struct patterns are a follow-up. The
 pattern struct name must match the value's struct name at runtime.
 
+### Struct destructuring in function parameters (RES-2600)
+
+Function parameters support struct destructure patterns using the same
+`StructType { field, ... }` syntax. The struct type is both the declared
+parameter type and the destructure head:
+
+```rust
+struct Point { int x, int y, }
+struct Rect  { int w, int h, }
+
+fn area(Point { x, y }) -> int { x * y }
+
+// Field alias — bind `w` as `width` locally.
+fn perimeter(Rect { w: width, h: height }) -> int { 2 * (width + height) }
+
+// `..` rest pattern ignores unbound fields (irrefutable).
+fn just_x(Point { x, .. }) -> int { x }
+
+// Multiple struct-pattern parameters work the same way.
+fn dot(Point { x: ax, y: ay }, Point { x: bx, y: by }) -> int {
+    ax * bx + ay * by
+}
+```
+
+The compiler desugars each pattern parameter into a synthetic binding name
+(`__rz_p0`, `__rz_p1`, …) and inserts a `let StructType { ... } = __rz_p0;`
+statement at the top of the function body. Parameters must be irrefutable
+(struct patterns always are).
+
 ## Traits
 
 Traits (RES-290) define interfaces — sets of methods that a type must implement.

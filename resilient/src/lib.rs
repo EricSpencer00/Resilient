@@ -4247,7 +4247,7 @@ impl Parser {
 
         self.next_token(); // Skip '('
 
-        let (parameters, defaults) = self.parse_function_parameters();
+        let (parameters, defaults, param_prefix) = self.parse_function_parameters();
 
         // RES-052: optional `-> TYPE` return type, BEFORE contracts.
         let return_type = self.parse_optional_return_type();
@@ -4310,6 +4310,8 @@ impl Parser {
         }
 
         let body = self.parse_block_statement();
+        // RES-2600: prepend any struct-pattern destructure bindings.
+        let body = Self::prepend_prefix_bindings(body, param_prefix);
 
         Node::Function {
             name,
@@ -4879,7 +4881,7 @@ impl Parser {
                         self.next_token();
                         Vec::new()
                     } else {
-                        let (p, _) = self.parse_function_parameters();
+                        let (p, _, _) = self.parse_function_parameters();
                         p
                     };
                     let (requires, ensures, _) = self.parse_function_contracts();
@@ -5013,10 +5015,12 @@ impl Parser {
         }
 
         // Parse any remaining TYPE NAME params until the `)`.
+        let mut method_prefix: Vec<Node> = Vec::new();
         if self.current_token != Token::RightParen {
-            let (rest_params, rest_defaults) = self.parse_function_parameters();
+            let (rest_params, rest_defaults, prefix) = self.parse_function_parameters();
             parameters.extend(rest_params);
             defaults.extend(rest_defaults);
+            method_prefix.extend(prefix);
         } else {
             self.next_token(); // skip ')'
         }
@@ -5039,6 +5043,8 @@ impl Parser {
             ));
         }
         let body = self.parse_block_statement();
+        // RES-2600: prepend struct-pattern destructure bindings.
+        let body = Self::prepend_prefix_bindings(body, method_prefix);
 
         Node::Function {
             name: mangled,
@@ -5841,17 +5847,22 @@ impl Parser {
     }
 
     #[allow(clippy::type_complexity)]
-    fn parse_function_parameters(&mut self) -> (Vec<(String, String)>, Vec<Option<Box<Node>>>) {
+    fn parse_function_parameters(
+        &mut self,
+    ) -> (Vec<(String, String)>, Vec<Option<Box<Node>>>, Vec<Node>) {
         // RES-1768: pre-size to 4 — covers the typical fn-signature
         // case (most fns have 0-4 parameters) without doubling
         // through 1/2/4 on growth. Same shape as the held/acts
         // pre-size in lock_ordering (RES-1752).
         let mut parameters = Vec::with_capacity(4);
         let mut defaults: Vec<Option<Box<Node>>> = Vec::with_capacity(4);
+        // RES-2600: prefix bindings for struct-pattern parameters.
+        let mut prefix_bindings: Vec<Node> = Vec::new();
+        let mut pat_counter: usize = 0;
 
         if self.current_token == Token::RightParen {
             self.next_token(); // Skip ')'
-            return (parameters, defaults);
+            return (parameters, defaults, prefix_bindings);
         }
 
         while self.current_token != Token::RightParen {
@@ -5862,6 +5873,87 @@ impl Parser {
                 Some(t) => t,
                 None => break,
             };
+
+            // RES-2600: struct destructure pattern `StructType { field1, field2, .. }`.
+            // When the token after the type is `{`, treat this as a pattern parameter:
+            // generate a synthetic name `__rz_p0`, add `(StructType, __rz_p0)` to
+            // params, and emit a prefix `let StructType { field1, field2 } = __rz_p0;`.
+            if self.current_token == Token::LeftBrace {
+                let pat_span = self.span_at_current();
+                self.next_token(); // consume '{'
+                let mut fields: Vec<(String, String)> = Vec::with_capacity(4);
+                let mut has_rest = false;
+                while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+                    if self.current_token == Token::DotDot {
+                        has_rest = true;
+                        self.next_token();
+                        if self.current_token == Token::Comma {
+                            self.next_token();
+                        }
+                        break;
+                    }
+                    let field_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        tok => {
+                            let tok = tok.clone();
+                            self.record_error(format!(
+                                "Expected field name in struct parameter pattern, found {}",
+                                tok
+                            ));
+                            break;
+                        }
+                    };
+                    self.next_token();
+                    let local_name = if self.current_token == Token::Colon {
+                        self.next_token(); // skip ':'
+                        match &self.current_token {
+                            Token::Identifier(alias) => {
+                                let alias = alias.clone();
+                                self.next_token();
+                                alias
+                            }
+                            _ => field_name.clone(),
+                        }
+                    } else {
+                        field_name.clone()
+                    };
+                    fields.push((field_name, local_name));
+                    if self.current_token == Token::Comma {
+                        self.next_token();
+                    }
+                }
+                if self.current_token == Token::RightBrace {
+                    self.next_token(); // consume '}'
+                }
+                let synthetic = format!("__rz_p{}", pat_counter);
+                pat_counter += 1;
+                parameters.push((param_type.clone(), synthetic.clone()));
+                defaults.push(None);
+                let binding = Node::LetDestructureStruct {
+                    struct_name: param_type,
+                    fields,
+                    has_rest,
+                    value: Box::new(Node::Identifier {
+                        name: synthetic,
+                        span: pat_span,
+                    }),
+                    span: pat_span,
+                };
+                prefix_bindings.push(binding);
+                if self.current_token == Token::Comma {
+                    self.next_token();
+                } else if self.current_token != Token::RightParen
+                    && self.current_token != Token::Eof
+                {
+                    let tok_syntax = self.current_token.display_syntax();
+                    self.record_error(format!(
+                        "after struct pattern parameter: {}",
+                        format_expected(&["`,`", "`)`"], &tok_syntax)
+                    ));
+                    break;
+                }
+                continue;
+            }
 
             let param_name = match &self.current_token {
                 Token::Identifier(name) => name.clone(),
@@ -5907,7 +5999,25 @@ impl Parser {
         }
 
         self.next_token(); // Skip ')'
-        (parameters, defaults)
+        (parameters, defaults, prefix_bindings)
+    }
+
+    /// RES-2600: prepend struct-pattern prefix bindings into a block body.
+    fn prepend_prefix_bindings(body: Node, prefix: Vec<Node>) -> Node {
+        if prefix.is_empty() {
+            return body;
+        }
+        match body {
+            Node::Block { mut stmts, span } => {
+                let mut new_stmts = prefix;
+                new_stmts.append(&mut stmts);
+                Node::Block {
+                    stmts: new_stmts,
+                    span,
+                }
+            }
+            other => other,
+        }
     }
 
     /// RES-406: parse `unsafe { ... }`. Lifts the typechecker's
@@ -9443,7 +9553,7 @@ impl Parser {
         self.next_token(); // skip '('
         // Defaults from anonymous fn literals are discarded — MVP only
         // supports defaults on named top-level fns (Node::Function).
-        let (parameters, _defaults) = self.parse_function_parameters();
+        let (parameters, _defaults, fn_lit_prefix) = self.parse_function_parameters();
         let return_type = self.parse_optional_return_type();
         let (requires, ensures, recovers_to) = self.parse_function_contracts();
         if self.current_token != Token::LeftBrace {
@@ -9463,6 +9573,8 @@ impl Parser {
             };
         }
         let body = self.parse_block_statement();
+        // RES-2600: prepend struct-pattern destructure bindings.
+        let body = Self::prepend_prefix_bindings(body, fn_lit_prefix);
         Node::FunctionLiteral {
             parameters,
             body: Box::new(body),
