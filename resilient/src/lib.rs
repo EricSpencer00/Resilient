@@ -12608,6 +12608,14 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-2657: JSON serialization/deserialization (pure).
     ("to_json", crate::json_builtins::builtin_to_json),
     ("from_json", crate::json_builtins::builtin_from_json),
+    // RES-2554: json_encode / json_decode / json_encode_pretty / json_valid.
+    ("json_encode", crate::json_builtins::builtin_json_encode),
+    ("json_decode", crate::json_builtins::builtin_json_decode),
+    (
+        "json_encode_pretty",
+        crate::json_builtins::builtin_json_encode_pretty,
+    ),
+    ("json_valid", crate::json_builtins::builtin_json_valid),
     // RES-2658: linear algebra — vector and matrix operations (pure).
     ("vec_add", crate::linear_algebra::builtin_vec_add),
     ("vec_sub", crate::linear_algebra::builtin_vec_sub),

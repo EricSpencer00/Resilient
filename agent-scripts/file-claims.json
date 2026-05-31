@@ -1,8 +1,16 @@
 {
   "claims": {
+    "resilient/src/json_builtins.rs": {
+      "branch": "res-2554-json-builtins",
+      "claimed_at": "2026-05-31T01:05:24Z"
+    },
     "resilient/src/lib.rs": {
-      "branch": "res-2548-range-values",
-      "claimed_at": "2026-05-31T00:27:07Z"
+      "branch": "res-2554-json-builtins",
+      "claimed_at": "2026-05-31T01:05:24Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-2554-json-builtins",
+      "claimed_at": "2026-05-31T01:05:24Z"
     }
   }
 }
