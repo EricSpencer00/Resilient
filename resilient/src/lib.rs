@@ -673,6 +673,8 @@ mod vibe_debt;
 mod wcet_contracts;
 // RES-2558: process spawning (std-only).
 mod process_exec;
+// RES-2555: TCP/UDP networking (std-only).
+mod tcp_udp;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -12875,6 +12877,18 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-2558: process spawning builtins (std-only).
     ("exec", crate::process_exec::builtin_exec),
     ("exec_shell", crate::process_exec::builtin_exec_shell),
+    // RES-2555: TCP/UDP networking builtins (std-only).
+    ("tcp_connect", crate::tcp_udp::builtin_tcp_connect),
+    ("tcp_listen", crate::tcp_udp::builtin_tcp_listen),
+    ("tcp_accept", crate::tcp_udp::builtin_tcp_accept),
+    ("tcp_read", crate::tcp_udp::builtin_tcp_read),
+    ("tcp_write", crate::tcp_udp::builtin_tcp_write),
+    ("tcp_close", crate::tcp_udp::builtin_tcp_close),
+    ("tcp_set_timeout", crate::tcp_udp::builtin_tcp_set_timeout),
+    ("udp_bind", crate::tcp_udp::builtin_udp_bind),
+    ("udp_send_to", crate::tcp_udp::builtin_udp_send_to),
+    ("udp_recv_from", crate::tcp_udp::builtin_udp_recv_from),
+    ("udp_close", crate::tcp_udp::builtin_udp_close),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

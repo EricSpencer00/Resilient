@@ -1,0 +1,36 @@
+// RES-2555: TCP/UDP networking builtins.
+// This example uses loopback sockets to test the API without external servers.
+
+// Test 1: TCP echo (listen, connect, write, read, close).
+let listener = unwrap(tcp_listen("127.0.0.1", 19555));
+println(listener.id > 0);
+
+let conn = unwrap(tcp_connect("127.0.0.1", 19555));
+println(conn.id > 0);
+
+let accepted = unwrap(tcp_accept(listener));
+println(accepted.id > 0);
+
+// Write from conn side, read from accepted side.
+let written = unwrap(tcp_write(conn, "hello"));
+println(written == 5);
+
+let received = unwrap(tcp_read(accepted, 16));
+println(received == "hello");
+
+println(tcp_close(conn));
+println(tcp_close(accepted));
+
+// Test 2: UDP loopback.
+let sender = unwrap(udp_bind("127.0.0.1", 19556));
+let recver = unwrap(udp_bind("127.0.0.1", 19557));
+println(sender.id > 0);
+
+let sent = unwrap(udp_send_to(sender, "ping", "127.0.0.1", 19557));
+println(sent == 4);
+
+let msg = unwrap(udp_recv_from(recver, 64));
+println(msg == "ping");
+
+println(udp_close(sender));
+println(udp_close(recver));

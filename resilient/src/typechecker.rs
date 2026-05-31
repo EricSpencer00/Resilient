@@ -2029,6 +2029,65 @@ impl TypeChecker {
                         return_type: Box::new(Type::Int),
                     },
                 );
+                // RES-2555: TCP/UDP networking builtins (std-only).
+                for name in &["tcp_connect", "tcp_listen", "tcp_read", "tcp_write"] {
+                    env.set(
+                        (*name).to_string(),
+                        Type::Function {
+                            params: vec![Type::Any, Type::Any],
+                            return_type: Box::new(Type::Result),
+                        },
+                    );
+                }
+                env.set(
+                    "tcp_accept".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "tcp_close".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "tcp_set_timeout".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
+                env.set(
+                    "udp_bind".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Int],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "udp_send_to".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String, Type::String, Type::Int],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "udp_recv_from".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "udp_close".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
                 // RES-2558: process execution builtins (std-only). Return Result<Struct>.
                 env.set(
                     "exec".to_string(),
