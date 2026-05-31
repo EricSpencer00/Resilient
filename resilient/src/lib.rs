@@ -150,6 +150,9 @@ mod tla_bridge;
 // constructor expressions, exhaustive `match`, and the typechecker
 // integration.
 mod sum_types;
+// RES-2575: generic enum declarations — `enum Name<T> { ... }`.
+// Validates type parameters, substitution helpers, and mono registry.
+mod generic_enums;
 // RES-332: actor-runtime data model — `ActorPid`, mailbox registry,
 // scheduler. PR 1 lands the data layer; PRs 2-5 add `spawn` /
 // `send` / `receive` builtins, the cooperative scheduler, deadlock
@@ -3149,6 +3152,8 @@ enum Node {
     /// don't act on it yet — registering the type comes in PR 2.
     EnumDecl {
         name: String,
+        /// RES-2575: optional type parameters, e.g. `enum Either<L, R> { ... }`.
+        type_params: Vec<String>,
         variants: Vec<EnumVariant>,
         span: span::Span,
     },
