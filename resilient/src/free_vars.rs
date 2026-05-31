@@ -99,6 +99,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // RES-2653: labeled variants likewise.
         | Node::BreakLabel { .. }
         | Node::ContinueLabel { .. } => {}
+        // RES-2551: `break expr;` — walk the value expression.
+        Node::BreakWith { value, .. } => walk(value, bound, free),
         // RES-911: slicing — walk the target plus both endpoints; binds
         // no names of its own.
         Node::Slice { target, lo, hi, .. } => {

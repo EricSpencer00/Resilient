@@ -2563,6 +2563,13 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-2551: `break expr;` — exit the innermost `loop` with a value.
+    /// The loop expression evaluates to that value.
+    BreakWith {
+        value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-910: `continue;` — skip to the next iteration of the
     /// innermost enclosing loop. Typechecker rejects outside a loop.
     Continue {
@@ -7278,23 +7285,35 @@ impl Parser {
     fn parse_break_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // skip `break`
-        // RES-2653: `break label;` — if current token is an identifier
-        // (not a semicolon or EOF), treat it as a label name.
-        if let Token::Identifier(label) = &self.current_token.clone() {
+        // Plain `break;` — no value or label.
+        if self.current_token == Token::Semicolon || self.current_token == Token::Eof {
+            return Node::Break { span: stmt_span };
+        }
+        // RES-2653: `break label;` — a lone identifier followed by `;`.
+        // Must check peek FIRST: `break foo;` is a label, `break foo + 1;` is
+        // an expression.  The label form keeps backward compatibility.
+        if let Token::Identifier(label) = &self.current_token.clone()
+            && (self.peek_token == Token::Semicolon || self.peek_token == Token::Eof)
+        {
             let label = label.clone();
-            // Consume the label identifier.
-            if self.peek_token == Token::Semicolon {
-                self.next_token(); // move to `;`
-            }
+            self.next_token(); // skip the label identifier
             return Node::BreakLabel {
                 label,
                 span: stmt_span,
             };
         }
-        if self.peek_token == Token::Semicolon {
-            self.next_token();
+        // RES-2551: `break expr;` — parse the expression as a break value.
+        let Some(value) = self.parse_expression(0) else {
+            self.record_error("Expected expression after `break`".to_string());
+            return Node::Break { span: stmt_span };
+        };
+        if self.current_token == Token::Semicolon {
+            self.next_token(); // consume `;`
         }
-        Node::Break { span: stmt_span }
+        Node::BreakWith {
+            value: Box::new(value),
+            span: stmt_span,
+        }
     }
 
     /// RES-910: parse `continue;` or `continue label;` (RES-2653).
@@ -8304,6 +8323,10 @@ impl Parser {
             // the consequence / alternative blocks, a trailing bare
             // expression statement is what carries the block's value.
             Token::If => Some(self.parse_if_statement()),
+            // RES-2551: `loop { }` and `while cond { }` as expressions.
+            // This enables `let x = loop { break value; }`.
+            Token::Loop => Some(self.parse_loop_statement()),
+            Token::While => Some(self.parse_while_statement()),
             Token::Function => Some(self.parse_function_literal()),
             // RES-330: quantifier expressions delegate parsing entirely
             // to the quantifiers module so the prefix dispatch stays
@@ -10527,6 +10550,10 @@ enum Value {
     /// `eval_block_statement` like `Return`, but is intercepted by the
     /// nearest `WhileStatement` / `ForInStatement` evaluator.
     Break,
+    /// RES-2551: control-flow sentinel for `break expr;`. Carries the
+    /// break value; the enclosing `loop` evaluator returns it as the
+    /// loop expression value.
+    BreakWith(Box<Value>),
     /// RES-910: control-flow sentinel for `continue`. Same propagation
     /// rule as `Break`; the loop evaluator consumes it and starts the
     /// next iteration instead of exiting.
@@ -10774,6 +10801,7 @@ impl std::fmt::Debug for Value {
             },
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Break => write!(f, "Break"),
+            Value::BreakWith(v) => write!(f, "BreakWith({:?})", v),
             Value::Continue => write!(f, "Continue"),
             Value::BreakLabel(l) => write!(f, "BreakLabel({l})"),
             Value::ContinueLabel(l) => write!(f, "ContinueLabel({l})"),
@@ -10909,6 +10937,7 @@ impl std::fmt::Display for Value {
             },
             Value::Return(v) => write!(f, "{}", v),
             Value::Break => write!(f, "<break>"),
+            Value::BreakWith(v) => write!(f, "<break {v}>"),
             Value::Continue => write!(f, "<continue>"),
             Value::BreakLabel(l) => write!(f, "<break {l}>"),
             Value::ContinueLabel(l) => write!(f, "<continue {l}>"),
@@ -23585,6 +23614,11 @@ impl Interpreter {
             // loop evaluator consumes it.
             Node::Break { .. } => Ok(Value::Break),
             Node::Continue { .. } => Ok(Value::Continue),
+            // RES-2651: `break expr;` — evaluate and wrap in BreakWith.
+            Node::BreakWith { value, .. } => {
+                let v = self.eval(value)?;
+                Ok(Value::BreakWith(Box::new(v)))
+            }
             // RES-2653: labeled break/continue sentinels.
             Node::BreakLabel { label, .. } => Ok(Value::BreakLabel(label.clone())),
             Node::ContinueLabel { label, .. } => Ok(Value::ContinueLabel(label.clone())),
@@ -23637,6 +23671,13 @@ impl Interpreter {
                     // iteration.
                     if matches!(result, Value::Break) {
                         break;
+                    }
+                    // RES-2551: `break expr;` — exit with a value.
+                    if matches!(result, Value::BreakWith(_)) {
+                        return Ok(match result {
+                            Value::BreakWith(v) => *v,
+                            _ => unreachable!(),
+                        });
                     }
                     // RES-2653: labeled break — consume only if the label
                     // matches this loop; otherwise propagate upward.
@@ -25762,6 +25803,10 @@ impl Interpreter {
                 if matches!(result, Value::Break) {
                     return Ok(Value::Void);
                 }
+                // RES-2551: break with value.
+                if let Value::BreakWith(v) = result {
+                    return Ok(*v);
+                }
                 // RES-2653: labeled break/continue.
                 if let Value::BreakLabel(ref lbl) = result {
                     if label == Some(lbl.as_str()) {
@@ -25813,6 +25858,10 @@ impl Interpreter {
             // fast-path above.
             if matches!(result, Value::Break) {
                 return Ok(Value::Void);
+            }
+            // RES-2551: break with value.
+            if let Value::BreakWith(v) = result {
+                return Ok(*v);
             }
             // RES-2653: labeled break/continue.
             if let Value::BreakLabel(ref lbl) = result {
@@ -25941,6 +25990,7 @@ impl Interpreter {
                         result,
                         Value::Return(_)
                             | Value::Break
+                            | Value::BreakWith(_)
                             | Value::Continue
                             | Value::BreakLabel(_)
                             | Value::ContinueLabel(_)

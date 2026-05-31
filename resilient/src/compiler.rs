@@ -4575,6 +4575,7 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::Assignment { span, .. }
         | Node::ReturnStatement { span, .. }
         | Node::Break { span, .. }
+        | Node::BreakWith { span, .. }
         | Node::Continue { span, .. }
         | Node::BreakLabel { span, .. }
         | Node::ContinueLabel { span, .. }

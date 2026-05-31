@@ -508,6 +508,13 @@ impl Formatter {
                 self.write("break;");
                 self.newline();
             }
+            // RES-2551: `break expr;` formatter.
+            Node::BreakWith { value, .. } => {
+                self.write("break ");
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
             Node::Continue { .. } => {
                 self.write("continue;");
                 self.newline();
@@ -1223,6 +1230,7 @@ impl Formatter {
             | Node::Assignment { .. }
             | Node::ReturnStatement { .. }
             | Node::Break { .. }
+            | Node::BreakWith { .. }
             | Node::Continue { .. }
             | Node::BreakLabel { .. }
             | Node::ContinueLabel { .. }
