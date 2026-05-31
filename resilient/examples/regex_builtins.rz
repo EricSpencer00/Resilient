@@ -1,0 +1,32 @@
+// RES-2585: regular expression matching builtins.
+
+// regex_match — test if text matches a pattern
+println(regex_match("hello123", "[a-z]+[0-9]+"))
+println(regex_match("hello", "^[0-9]+$"))
+
+// regex_find — find first match, returns Option
+let found = regex_find("price: $42.99 and $10.50", "[0-9]+\\.[0-9]+")
+match found {
+    Some(s) => println("found: " + s),
+    None => println("not found"),
+}
+
+// regex_find_all — find all matches
+let words = regex_find_all("one 2 three 4 five", "[a-z]+")
+println(words)
+
+// regex_captures — capture groups
+let caps = regex_captures("John Smith", "(\\w+)\\s(\\w+)")
+match caps {
+    Some(groups) => println(groups[1] + ", " + groups[2]),
+    None => println("no match"),
+}
+
+// regex_replace — replace first occurrence
+println(regex_replace("foo  bar  baz", "\\s+", "_"))
+
+// regex_replace_all — replace all occurrences
+println(regex_replace_all("foo  bar  baz", "\\s+", "_"))
+
+// regex_replace_all with capture groups
+println(regex_replace_all("John Smith", "(\\w+)\\s(\\w+)", "$2, $1"))

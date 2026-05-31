@@ -627,6 +627,7 @@ mod no_panic_cert;
 mod number_theory;
 mod package_manager;
 mod param_destructuring;
+mod regex_builtins;
 mod statistics;
 // RES-1585: shared top-level marker pre-scan for the typechecker
 // `<EXTENSION_PASSES>` block. One walk collects fn names + parameter
@@ -12836,6 +12837,25 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         crate::json_builtins::builtin_json_encode_pretty,
     ),
     ("json_valid", crate::json_builtins::builtin_json_valid),
+    // RES-2585: regular expression matching builtins.
+    ("regex_match", crate::regex_builtins::builtin_regex_match),
+    ("regex_find", crate::regex_builtins::builtin_regex_find),
+    (
+        "regex_find_all",
+        crate::regex_builtins::builtin_regex_find_all,
+    ),
+    (
+        "regex_captures",
+        crate::regex_builtins::builtin_regex_captures,
+    ),
+    (
+        "regex_replace",
+        crate::regex_builtins::builtin_regex_replace,
+    ),
+    (
+        "regex_replace_all",
+        crate::regex_builtins::builtin_regex_replace_all,
+    ),
     // RES-2658: linear algebra — vector and matrix operations (pure).
     ("vec_add", crate::linear_algebra::builtin_vec_add),
     ("vec_sub", crate::linear_algebra::builtin_vec_sub),
