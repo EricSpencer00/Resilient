@@ -660,6 +660,8 @@ mod never_type;
 mod dead_code_lint;
 // RES-2590: warn on unused `use "path" as alias;` imports.
 mod unused_imports;
+// RES-2577: tuple struct named constructors (`Point(3, 4)` without `new`).
+mod tuple_struct;
 // RES-2580: extended const eval — string concat, bitwise ops, conditionals.
 mod const_eval_ext;
 // RES-2601: exhaustive struct field checking in match patterns.
@@ -25004,11 +25006,18 @@ impl Interpreter {
                 // No arm matched → void.
                 Ok(Value::Void)
             }
-            Node::StructDecl { .. } => {
-                // Declarations are pure compile-time metadata today.
-                // The typechecker (G7) will register them in a struct
-                // table; for now they're a runtime no-op, and Value
-                // construction trusts the literal.
+            Node::StructDecl { name, fields, .. } => {
+                // RES-2577: if all field names are consecutive digit strings
+                // ("0", "1", ...), this is a tuple struct — register a named
+                // constructor so `Point(3, 4)` works without `new`.
+                if crate::tuple_struct::is_tuple_struct(fields) {
+                    let ctor = crate::tuple_struct::make_constructor(
+                        name.clone(),
+                        fields.len(),
+                        self.env.clone(),
+                    );
+                    self.env.set(name.clone(), ctor);
+                }
                 Ok(Value::Void)
             }
             // RES-128: `type NAME = TARGET;` is purely a

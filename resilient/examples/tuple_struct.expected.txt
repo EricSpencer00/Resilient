@@ -1,7 +1,3 @@
-42
-answer
-255
-128
 0
-383
+25
 Program executed successfully
