@@ -1,0 +1,39 @@
+// RES-2547: Closures with mutable environment capture.
+// Closures can read and write variables from their enclosing scope.
+
+// Basic mutable capture: closure increments a counter.
+let count = 0;
+let inc = fn() { count = count + 1; };
+inc();
+inc();
+inc();
+println(to_string(count));
+
+// Multiple closures sharing the same captured variable.
+let x = 10;
+let add = fn(int n) { x = x + n; };
+let scale = fn(int n) { x = x * n; };
+add(5);
+scale(2);
+println(to_string(x));
+
+// Closure accumulator over a loop.
+let total = 0;
+let accumulate = fn(int n) { total = total + n; };
+accumulate(1);
+accumulate(2);
+accumulate(3);
+accumulate(4);
+accumulate(5);
+println(to_string(total));
+
+// Nested closure: inner closure captures from outer.
+let base = 100;
+let outer_fn = fn() {
+    let offset = 5;
+    let inner = fn() { base = base + offset; };
+    inner();
+    inner();
+};
+outer_fn();
+println(to_string(base));
