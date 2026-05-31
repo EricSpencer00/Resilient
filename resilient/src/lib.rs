@@ -19141,7 +19141,7 @@ fn builtin_array_min(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best.unwrap_or(0)))
         }
         [other] => Err(format!("array_min: expected array, got {}", other)),
         _ => Err(format!(
@@ -19173,7 +19173,7 @@ fn builtin_array_max(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best.unwrap_or(0)))
         }
         [other] => Err(format!("array_max: expected array, got {}", other)),
         _ => Err(format!(
@@ -19207,7 +19207,7 @@ fn builtin_array_max_or(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best.unwrap_or(0)))
         }
         [a, b] => Err(format!(
             "array_max_or: expected (array, int), got ({}, {})",
@@ -19243,7 +19243,7 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best.unwrap_or(0)))
         }
         [a, b] => Err(format!(
             "array_min_or: expected (array, int), got ({}, {})",

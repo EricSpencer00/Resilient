@@ -190,7 +190,7 @@ impl McpBridgeRegistry {
 
     /// Register a new bridged tool.  Duplicate names are silently replaced.
     pub fn register(&self, tool: BridgedTool) {
-        let mut tools = self.tools.write().expect("registry lock poisoned");
+        let mut tools = self.tools.write().unwrap_or_else(|p| p.into_inner());
         if let Some(pos) = tools.iter().position(|t| t.name == tool.name) {
             tools[pos] = tool;
         } else {
@@ -200,7 +200,7 @@ impl McpBridgeRegistry {
 
     /// Return all registered tools.
     pub fn all_tools(&self) -> Vec<BridgedTool> {
-        self.tools.read().expect("registry lock poisoned").clone()
+        self.tools.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Return only tools that are currently available.
@@ -223,7 +223,7 @@ impl McpBridgeRegistry {
     pub fn get(&self, name: &str) -> Option<BridgedTool> {
         self.tools
             .read()
-            .expect("registry lock poisoned")
+            .unwrap_or_else(|p| p.into_inner())
             .iter()
             .find(|t| t.name == name)
             .cloned()

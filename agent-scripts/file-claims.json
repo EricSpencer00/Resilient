@@ -1,8 +1,16 @@
 {
   "claims": {
     "resilient/src/typechecker.rs": {
-      "branch": "res-2805-generic-return-type-inference",
-      "claimed_at": "2026-05-31T12:50:20Z"
+      "branch": "res-2807-float32-gaps-panic-elimination",
+      "claimed_at": "2026-05-31T13:05:00Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-2807-float32-gaps-panic-elimination",
+      "claimed_at": "2026-05-31T13:05:00Z"
+    },
+    "resilient/src/mcp_tool_registry.rs": {
+      "branch": "res-2807-float32-gaps-panic-elimination",
+      "claimed_at": "2026-05-31T13:05:00Z"
     }
   }
 }

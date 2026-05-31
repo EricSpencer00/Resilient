@@ -8882,6 +8882,7 @@ impl TypeChecker {
                     "-" => {
                         if right_type != Type::Int
                             && right_type != Type::Float
+                            && right_type != Type::Float32
                             && right_type != Type::Any
                             && !is_pinned_int(&right_type)
                         {
@@ -8924,6 +8925,7 @@ impl TypeChecker {
                                 Type::String
                                     | Type::Int
                                     | Type::Float
+                                    | Type::Float32
                                     | Type::Bool
                                     | Type::Char
                                     | Type::Any
@@ -15891,5 +15893,29 @@ mod res2801_generic_struct_type_validation {
     #[test]
     fn char_concat_with_string_accepted() {
         check_ok("let c: char = 'x'\nlet s = \"hello\" + c\n");
+    }
+}
+
+#[cfg(test)]
+mod res2807_float32_gaps {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn f32_string_concat_accepted() {
+        check_ok("let x: f32 = 3.14\nlet s = \"val: \" + x\n");
+    }
+
+    #[test]
+    fn f32_unary_minus_accepted() {
+        check_ok("let x: f32 = 3.14\nlet y: f32 = -x\n");
     }
 }
