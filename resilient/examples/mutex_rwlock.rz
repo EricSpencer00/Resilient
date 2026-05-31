@@ -1,0 +1,9 @@
+let counter = mutex_new(0);
+let v = mutex_lock(counter);
+println(to_string(v));
+mutex_unlock(counter);
+
+let data = rwlock_new("shared");
+let r = rwlock_read(data);
+println(r);
+rwlock_unlock(data);

@@ -4648,6 +4648,15 @@ impl TypeChecker {
                         return_type: Box::new(Type::Bool),
                     },
                 );
+                // RES-2583: mutex and rwlock synchronization primitives.
+                env.set("mutex_new".to_string(), fn_any_to_any());
+                env.set("mutex_lock".to_string(), fn_any_to_any());
+                env.set("mutex_unlock".to_string(), fn_any_to_any());
+                env.set("mutex_try_lock".to_string(), fn_any_to_any());
+                env.set("rwlock_new".to_string(), fn_any_to_any());
+                env.set("rwlock_read".to_string(), fn_any_to_any());
+                env.set("rwlock_write".to_string(), fn_any_to_any());
+                env.set("rwlock_unlock".to_string(), fn_any_to_any());
                 std::sync::Arc::new(env)
             });
 
@@ -5747,6 +5756,8 @@ impl TypeChecker {
                 crate::trait_inheritance::check(program, source_path)?;
                 // RES-2575: validate generic enum type parameters.
                 crate::generic_enums::check(program, source_path)?;
+                // RES-2583: mutex/rwlock advisory check (no-op; real analysis in deadlock_freedom).
+                crate::mutex_rwlock::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
