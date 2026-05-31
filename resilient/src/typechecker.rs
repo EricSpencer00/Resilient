@@ -7148,33 +7148,45 @@ impl TypeChecker {
 
                 // RES-053: enforce declared return type against body.
                 let effective_rt = if let Some(rt_name) = declared_rt {
-                    let declared = self.parse_type_name(rt_name)?;
-                    if !compatible(&declared, &body_type)
-                        // RES-2693: body that returns a concrete struct satisfies
-                        // a trait-typed return annotation when the struct impls it.
-                        && !self.satisfies_trait_param(&declared, &body_type)
-                    {
-                        return Err(format!(
-                            "fn {}: return type mismatch — declared {}, body produces {}",
-                            name, declared, body_type
-                        ));
+                    // RES-2822: `-> !` (never type) is validated by
+                    // the `never_type::check` pass — skip the return
+                    // type mismatch check here since `!` isn't a
+                    // regular type and the body (e.g. `loop {}`) is
+                    // always `void`.
+                    if rt_name == "!" {
+                        Type::Void
+                    } else {
+                        let declared = self.parse_type_name(rt_name)?;
+                        if !compatible(&declared, &body_type)
+                            // RES-2693: body that returns a concrete struct satisfies
+                            // a trait-typed return annotation when the struct impls it.
+                            && !self.satisfies_trait_param(&declared, &body_type)
+                        {
+                            return Err(format!(
+                                "fn {}: return type mismatch — declared {}, body produces {}",
+                                name, declared, body_type
+                            ));
+                        }
+                        // RES-1112: a non-`void` return type requires every
+                        // control-flow path to yield a value — either an
+                        // explicit `return EXPR` on every branch, or an
+                        // implicit-return ExpressionStatement as the body's
+                        // last statement. Without this check, the typechecker
+                        // happily accepts `fn f() -> int { if c { return 1; } }`
+                        // because the `if`'s consequence_type matches `int`,
+                        // even though the else path falls off and yields void
+                        // at runtime.
+                        if declared != Type::Void
+                            && declared != Type::Any
+                            && !body_yields_value(body)
+                        {
+                            return Err(format!(
+                                "fn {}: missing return on at least one path — declared `{}`, but the body can fall off the end without returning a value",
+                                name, declared
+                            ));
+                        }
+                        declared
                     }
-                    // RES-1112: a non-`void` return type requires every
-                    // control-flow path to yield a value — either an
-                    // explicit `return EXPR` on every branch, or an
-                    // implicit-return ExpressionStatement as the body's
-                    // last statement. Without this check, the typechecker
-                    // happily accepts `fn f() -> int { if c { return 1; } }`
-                    // because the `if`'s consequence_type matches `int`,
-                    // even though the else path falls off and yields void
-                    // at runtime.
-                    if declared != Type::Void && declared != Type::Any && !body_yields_value(body) {
-                        return Err(format!(
-                            "fn {}: missing return on at least one path — declared `{}`, but the body can fall off the end without returning a value",
-                            name, declared
-                        ));
-                    }
-                    declared
                 } else {
                     body_type
                 };
@@ -16786,5 +16798,31 @@ mod res2820_return_arm_compatibility {
     #[test]
     fn match_return_arm_compatible_with_value_arm() {
         check_ok("fn f(int n) -> string {\nmatch n {\n0 => { return \"a\" },\n_ => \"b\",\n}\n}\n");
+    }
+}
+
+#[cfg(test)]
+mod res2822_never_type_return {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn never_return_with_loop_accepted() {
+        check_ok("fn fail(string msg) -> ! {\nprintln(msg)\nloop { }\n}\n");
+    }
+
+    #[test]
+    fn never_return_fn_callable() {
+        check_ok(
+            "fn fail(string msg) -> ! {\nloop { }\n}\nfn check(int x) -> int {\nif x == 0 { fail(\"zero\") }\nx\n}\n",
+        );
     }
 }
