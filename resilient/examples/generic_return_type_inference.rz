@@ -1,0 +1,28 @@
+// RES-2805: generic return type inference — verify that the typechecker
+// infers concrete return types from argument types instead of erasing to Any.
+
+fn identity<T>(T x) -> T {
+    return x
+}
+
+fn first<T>(T a, T b) -> T {
+    return a
+}
+
+// Correct usage: return type inferred as int
+let a: int = identity(42)
+println(a)
+
+// Correct usage: return type inferred as string
+let b: string = identity("hello")
+println(b)
+
+// Multi-arg: both args are int, return is int
+let c: int = first(1, 2)
+println(c)
+
+// Untyped binding: inferred type flows through
+let d = identity(true)
+println(d)
+
+println("done")

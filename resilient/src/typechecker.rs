@@ -303,6 +303,57 @@ fn substitute_type_params(ty: &Type, type_params: &[String]) -> Type {
     }
 }
 
+/// RES-2805: produce a concrete return type for a generic function call
+/// by substituting inferred type-parameter bindings into the declared
+/// return type. Falls back to `Type::Any` only when no binding exists.
+fn infer_generic_return_type(
+    return_type: &Type,
+    callee_type_params: &Option<Vec<String>>,
+    tp_bindings: &std::collections::HashMap<&str, Type>,
+) -> Type {
+    let tp = match callee_type_params {
+        Some(tp) if !tp.is_empty() => tp,
+        _ => return return_type.clone(),
+    };
+    substitute_with_bindings(return_type, tp, tp_bindings)
+}
+
+/// Recursively replace type-parameter references with their inferred
+/// concrete types. Unbound parameters fall back to `Type::Any`.
+fn substitute_with_bindings(
+    ty: &Type,
+    type_params: &[String],
+    bindings: &std::collections::HashMap<&str, Type>,
+) -> Type {
+    match ty {
+        Type::Struct(name) if type_params.iter().any(|p| p == name) => {
+            bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
+        }
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| substitute_with_bindings(p, type_params, bindings))
+                .collect(),
+            return_type: Box::new(substitute_with_bindings(return_type, type_params, bindings)),
+        },
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|e| substitute_with_bindings(e, type_params, bindings))
+                .collect(),
+        ),
+        Type::Option(inner) => Type::Option(Box::new(substitute_with_bindings(
+            inner,
+            type_params,
+            bindings,
+        ))),
+        other => other.clone(),
+    }
+}
+
 fn compatible(a: &Type, b: &Type) -> bool {
     if a == b {
         return true;
@@ -9294,6 +9345,16 @@ impl TypeChecker {
                         } else {
                             None
                         };
+                        // RES-2805: collect type-parameter bindings from
+                        // arguments so the return type can be concretely
+                        // inferred instead of erased to Any.
+                        let tp_set: std::collections::HashSet<&str> = callee_type_params
+                            .as_ref()
+                            .map(|tp| tp.iter().map(String::as_str).collect())
+                            .unwrap_or_default();
+                        let mut tp_bindings: std::collections::HashMap<&str, Type> =
+                            std::collections::HashMap::new();
+
                         // Check each argument type
                         for (i, (arg, param_type)) in arguments
                             .iter()
@@ -9301,12 +9362,22 @@ impl TypeChecker {
                             .enumerate()
                         {
                             let arg_type = self.check_node(arg)?;
+
+                            // Infer type-parameter bindings from direct
+                            // Struct("T") parameters matched against
+                            // concrete argument types.
+                            if let Type::Struct(pname) = param_type
+                                && tp_set.contains(pname.as_str())
+                                && !matches!(arg_type, Type::Any)
+                            {
+                                tp_bindings
+                                    .entry(pname.as_str())
+                                    .or_insert_with(|| arg_type.clone());
+                            }
+
                             // RES-2701: substitute generic type params recursively
                             // so that composite types like `fn(T) -> T` become
                             // `fn(Any) -> Any` when T is a declared type param.
-                            // The previous RES-425 single-level check only handled
-                            // direct `Struct("T")` params, not Function/Tuple/Option
-                            // wrappers that contain a type variable.
                             let substituted;
                             let effective_param = if let Some(tp) = &callee_type_params {
                                 substituted = substitute_type_params(param_type, tp);
@@ -9315,25 +9386,9 @@ impl TypeChecker {
                                 param_type
                             };
                             if !compatible(&arg_type, effective_param)
-                                // RES-2693: a concrete struct satisfies a
-                                // trait-typed parameter when it implements
-                                // the trait via an `impl Trait for Struct`
-                                // block.
                                 && !self.satisfies_trait_param(&arg_type, effective_param)
                             {
-                                // RES-340: when RESILIENT_RICH_DIAG=1
-                                // emit a rustc-style multi-block
-                                // diagnostic with a secondary label
-                                // pointing at the fn declaration. The
-                                // legacy short form remains the
-                                // default to keep every existing
-                                // golden byte-identical.
                                 if rich_diag_enabled() {
-                                    // Fall back to the call's `(`
-                                    // span when the argument node
-                                    // doesn't carry one (literal
-                                    // sub-trees produced before
-                                    // RES-077 spans were threaded).
                                     let mut arg_span = clause_span(arg);
                                     if arg_span.start.line == 0 {
                                         arg_span = *call_span;
@@ -9365,17 +9420,15 @@ impl TypeChecker {
                             }
                         }
 
-                        // RES-425: if the return type is a generic type
-                        // parameter (Type::Struct("T")), return Any so
-                        // callers don't get spurious type mismatches.
-                        let effective_return = if let Type::Struct(tname) = return_type.as_ref()
-                            && let Some(tp) = &callee_type_params
-                            && tp.iter().any(|p| p == tname)
-                        {
-                            Type::Any
-                        } else {
-                            *return_type
-                        };
+                        // RES-2805: infer concrete return type from
+                        // type-parameter bindings collected above.
+                        // Falls back to Any only when no binding was
+                        // inferred (e.g. zero-arg generic, or arg was Any).
+                        let effective_return = infer_generic_return_type(
+                            &return_type,
+                            &callee_type_params,
+                            &tp_bindings,
+                        );
                         Ok(effective_return)
                     }
                     Type::Any => Ok(Type::Any),
@@ -15122,6 +15175,94 @@ mod res2701_generic_fn_type_params {
                 return_type: Box::new(Type::Any),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod res2805_generic_return_type_inference {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn identity_int_accepted() {
+        check_ok(
+            "fn identity<T>(T x) -> T { return x; }\n\
+             let y: int = identity(42)\n",
+        );
+    }
+
+    #[test]
+    fn identity_string_to_int_rejected() {
+        check_err(
+            "fn identity<T>(T x) -> T { return x; }\n\
+             let y: int = identity(\"hello\")\n",
+            "value has type string",
+        );
+    }
+
+    #[test]
+    fn identity_no_annotation_accepted() {
+        check_ok(
+            "fn identity<T>(T x) -> T { return x; }\n\
+             let y = identity(42)\n",
+        );
+    }
+
+    #[test]
+    fn multi_param_same_type_accepted() {
+        check_ok(
+            "fn first<T>(T a, T b) -> T { return a; }\n\
+             let x: int = first(1, 2)\n",
+        );
+    }
+
+    #[test]
+    fn substitute_with_bindings_replaces_struct() {
+        let tp = vec!["T".to_string()];
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("T", Type::Int);
+        let ret = Type::Struct("T".to_string());
+        let result = substitute_with_bindings(&ret, &tp, &bindings);
+        assert_eq!(result, Type::Int);
+    }
+
+    #[test]
+    fn substitute_with_bindings_recurses_option() {
+        let tp = vec!["T".to_string()];
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("T", Type::String);
+        let ret = Type::Option(Box::new(Type::Struct("T".to_string())));
+        let result = substitute_with_bindings(&ret, &tp, &bindings);
+        assert_eq!(result, Type::Option(Box::new(Type::String)));
+    }
+
+    #[test]
+    fn unbound_param_falls_back_to_any() {
+        let tp = vec!["T".to_string()];
+        let bindings = std::collections::HashMap::new();
+        let ret = Type::Struct("T".to_string());
+        let result = substitute_with_bindings(&ret, &tp, &bindings);
+        assert_eq!(result, Type::Any);
     }
 }
 
