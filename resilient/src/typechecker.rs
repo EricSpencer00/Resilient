@@ -2029,6 +2029,21 @@ impl TypeChecker {
                         return_type: Box::new(Type::Int),
                     },
                 );
+                // RES-2558: process execution builtins (std-only). Return Result<Struct>.
+                env.set(
+                    "exec".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::Array],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "exec_shell".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
                 // RES-2554: JSON serialization builtins.
                 env.set(
                     "to_json".to_string(),
