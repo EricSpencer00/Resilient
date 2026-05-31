@@ -80,6 +80,8 @@ pub enum Type {
     /// RES-053: Array — element type not tracked at MVP (typed arrays
     /// land with RES-055 / generics).
     Array,
+    /// RES-2548: first-class range value type.
+    Range,
     /// RES-053: Result<T, E> — payload types not tracked at MVP.
     Result,
     /// RES-2651: `Option<T>` with tracked inner type. When the inner
@@ -147,6 +149,7 @@ impl std::fmt::Display for Type {
                 write!(f, ") -> {}", return_type)
             }
             Type::Array => write!(f, "array"),
+            Type::Range => write!(f, "range"),
             Type::Result => write!(f, "Result"),
             Type::Option(inner) => {
                 if matches!(inner.as_ref(), Type::Any) {
@@ -2281,10 +2284,11 @@ impl TypeChecker {
                         return_type: Box::new(Type::String),
                     },
                 );
+                // RES-2548: contains is overloaded: (string, string), (array, any), (range, int).
                 env.set(
                     "contains".to_string(),
                     Type::Function {
-                        params: vec![Type::String, Type::String],
+                        params: vec![Type::Any, Type::Any],
                         return_type: Box::new(Type::Bool),
                     },
                 );
@@ -6497,7 +6501,7 @@ impl TypeChecker {
                 if !ok(&hi_t) {
                     return Err(format!("range upper bound must be Int, got {}", hi_t));
                 }
-                Ok(Type::Array)
+                Ok(Type::Range)
             }
 
             Node::Assert {
@@ -7958,9 +7962,13 @@ impl TypeChecker {
                 self.current_span = *span;
                 // RES-406: reject non-iterable types as the loop source.
                 let iter_ty = self.check_node(iterable)?;
-                if !matches!(iter_ty, Type::Array | Type::String | Type::Any) {
+                // RES-2548: Range is also iterable.
+                if !matches!(
+                    iter_ty,
+                    Type::Array | Type::String | Type::Any | Type::Range
+                ) {
                     return Err(format!(
-                        "cannot iterate over type {} — for-in requires an array or string",
+                        "cannot iterate over type {} — for-in requires an array, range, or string",
                         iter_ty
                     ));
                 }

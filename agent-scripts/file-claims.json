@@ -1,8 +1,8 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-2553-primitive-impl-blocks",
-      "claimed_at": "2026-05-31T00:01:25Z"
+      "branch": "res-2548-range-values",
+      "claimed_at": "2026-05-31T00:27:07Z"
     }
   }
 }
