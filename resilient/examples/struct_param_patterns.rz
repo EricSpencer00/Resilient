@@ -1,0 +1,43 @@
+// RES-2600: struct destructuring in function parameter position.
+// Syntax: fn f(StructType { field1, field2 }) — the struct type name
+// is used as both the parameter type and the destructure head.
+
+struct Point { int x, int y, }
+struct Rect { int w, int h, }
+struct Color { int r, int g, int b, }
+
+// Basic: destructure Point into x and y.
+fn area(Point { x, y }) -> int {
+    x * y
+}
+
+// With field alias: rename `w` to `width` locally.
+fn perimeter(Rect { w: width, h: height }) -> int {
+    2 * (width + height)
+}
+
+// Rest pattern: only bind r, ignore g and b.
+fn red_channel(Color { r, .. }) -> int {
+    r
+}
+
+// Multiple pattern parameters.
+fn dot_product(Point { x: ax, y: ay }, Point { x: bx, y: by }) -> int {
+    ax * bx + ay * by
+}
+
+fn main() {
+    let p = new Point { x: 3, y: 4 };
+    println(area(p));
+
+    let r = new Rect { w: 5, h: 6 };
+    println(perimeter(r));
+
+    let c = new Color { r: 200, g: 100, b: 50 };
+    println(red_channel(c));
+
+    let a = new Point { x: 1, y: 2 };
+    let b = new Point { x: 3, y: 4 };
+    println(dot_product(a, b));
+}
+main();
