@@ -153,6 +153,7 @@ mod sum_types;
 // RES-2575: generic enum declarations — `enum Name<T> { ... }`.
 // Validates type parameters, substitution helpers, and mono registry.
 mod generic_enums;
+mod generic_structs;
 // RES-332: actor-runtime data model — `ActorPid`, mailbox registry,
 // scheduler. PR 1 lands the data layer; PRs 2-5 add `spawn` /
 // `send` / `receive` builtins, the cooperative scheduler, deadlock
@@ -2796,6 +2797,8 @@ enum Node {
     #[allow(dead_code)]
     StructDecl {
         name: String,
+        /// RES-2574: optional type parameters, e.g. `struct Pair<T, U> { ... }`.
+        type_params: Vec<String>,
         fields: Vec<(String, String)>, // (type, field_name)
         /// RES-317: `@repr(C)` annotation marks the struct as having
         /// a C-compatible memory layout. Required for any struct that
@@ -8944,12 +8947,14 @@ impl Parser {
             }
         };
         self.next_token();
+        // RES-2574: optional type parameters — `struct Name<T, U> { ... }`.
+        let (type_params, _bounds) = self.parse_optional_type_params();
         // RES-928: tuple-struct form — `struct Name(Type1, Type2);`.
         // Synthesize field names "0", "1", ... so the rest of the
         // pipeline (typechecker, interpreter, formatter) treats this
         // as an ordinary struct with positional names.
         if self.current_token == Token::LeftParen {
-            return self.parse_tuple_struct_decl_tail(name, repr_c);
+            return self.parse_tuple_struct_decl_tail(name, repr_c, type_params);
         }
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
@@ -8959,6 +8964,7 @@ impl Parser {
             ));
             return Node::StructDecl {
                 name,
+                type_params,
                 fields: Vec::new(),
                 repr_c,
                 span: self.span_at_current(),
@@ -9003,6 +9009,7 @@ impl Parser {
         }
         Node::StructDecl {
             name,
+            type_params,
             fields,
             repr_c,
             span: self.span_at_current(),
@@ -9015,7 +9022,12 @@ impl Parser {
     /// Token::LeftParen`. Returns a `StructDecl` whose fields use
     /// the synthesized positional names "0", "1", … so downstream
     /// passes need no extra branching.
-    fn parse_tuple_struct_decl_tail(&mut self, name: String, repr_c: bool) -> Node {
+    fn parse_tuple_struct_decl_tail(
+        &mut self,
+        name: String,
+        repr_c: bool,
+        type_params: Vec<String>,
+    ) -> Node {
         debug_assert!(matches!(self.current_token, Token::LeftParen));
         self.next_token(); // skip `(`
         // RES-1780: pre-size to 4 — tuple structs typically have
@@ -9059,6 +9071,7 @@ impl Parser {
         }
         Node::StructDecl {
             name,
+            type_params,
             fields,
             repr_c,
             span: self.span_at_current(),

@@ -1,0 +1,27 @@
+// RES-2574: generic struct declarations.
+// `struct Name<T> { T field }` parameterizes structs over types.
+
+struct Wrapper<T> {
+    T value,
+    string label,
+}
+
+struct Pair<A, B> {
+    A first,
+    B second,
+}
+
+// Construct a Wrapper<int>.
+let w = new Wrapper { value: 42, label: "answer" }
+println(w.label)
+println(to_string(w.value))
+
+// Construct a Pair<string, int>.
+let p = new Pair { first: "hello", second: 99 }
+println(p.first)
+println(to_string(p.second))
+
+// Construct a Pair<float, bool>.
+let p2 = new Pair { first: 3.14, second: true }
+println(to_string(p2.first))
+println(to_string(p2.second))

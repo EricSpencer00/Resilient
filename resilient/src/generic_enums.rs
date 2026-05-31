@@ -467,7 +467,7 @@ fn validate_payload_type_name(
     Ok(())
 }
 
-fn is_reserved_type_name(name: &str) -> bool {
+pub fn is_reserved_type_name(name: &str) -> bool {
     matches!(
         name,
         "int"

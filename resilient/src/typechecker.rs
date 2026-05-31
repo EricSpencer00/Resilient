@@ -5806,6 +5806,8 @@ impl TypeChecker {
                 crate::generic_enums::check(program, source_path)?;
                 // RES-2583: mutex/rwlock advisory check (no-op; real analysis in deadlock_freedom).
                 crate::mutex_rwlock::check(program, source_path)?;
+                // RES-2574: validate generic struct type parameters.
+                crate::generic_structs::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -7679,7 +7681,11 @@ impl TypeChecker {
             // field existence and surface typed-field errors
             // statically.
             Node::StructDecl {
-                name, fields, span, ..
+                name,
+                type_params,
+                fields,
+                span,
+                ..
             } => {
                 // RES-409: reject duplicate struct declarations at the
                 // same scope. A second `struct Foo` would silently
@@ -7692,6 +7698,9 @@ impl TypeChecker {
                     ));
                 }
 
+                let tp_set: std::collections::HashSet<&str> =
+                    type_params.iter().map(String::as_str).collect();
+
                 let mut seen_fields: std::collections::HashSet<&str> =
                     std::collections::HashSet::with_capacity(fields.len());
                 let mut resolved: Vec<(String, Type)> = Vec::with_capacity(fields.len());
@@ -7702,7 +7711,13 @@ impl TypeChecker {
                             self.source_path, span.start.line, span.start.column, field_name, name,
                         ));
                     }
-                    let ty = self.parse_type_name(type_name)?;
+                    // RES-2574: type parameters resolve as Any; concrete
+                    // types are checked at construction sites.
+                    let ty = if tp_set.contains(type_name.as_str()) {
+                        Type::Any
+                    } else {
+                        self.parse_type_name(type_name)?
+                    };
                     resolved.push((field_name.clone(), ty));
                 }
                 // RES-1365: wrap in `Rc` so per-FieldAccess reads
