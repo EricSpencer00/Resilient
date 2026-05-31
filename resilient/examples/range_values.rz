@@ -1,0 +1,37 @@
+// RES-2548: Range as a first-class value.
+
+// Assign a range to a variable and iterate it.
+let r = 1..5;
+let sum = 0;
+for i in r {
+    sum = sum + i;
+}
+println(to_string(sum));
+
+// Inclusive range.
+let ri = 1..=5;
+let sum2 = 0;
+for i in ri {
+    sum2 = sum2 + i;
+}
+println(to_string(sum2));
+
+// len() on a range.
+let r2 = 0..10;
+println(to_string(len(r2)));
+
+// len() on inclusive range.
+let ri2 = 0..=9;
+println(to_string(len(ri2)));
+
+// contains() membership test.
+let r3 = 0..10;
+println(to_string(contains(r3, 5)));
+println(to_string(contains(r3, 10)));
+
+let ri3 = 0..=10;
+println(to_string(contains(ri3, 10)));
+
+// Display a range value.
+let r4 = 3..7;
+println(to_string(r4));

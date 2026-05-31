@@ -53,6 +53,8 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 | Value::Continue
                 | Value::BreakLabel(_)
                 | Value::ContinueLabel(_) => "void",
+                // RES-2548: Range is a first-class type.
+                Value::Range { .. } => "range",
                 Value::OpaquePtr(_) | Value::Cell(_) => "opaque",
                 // RES-2592: internal trampoline sentinel — never user-visible.
                 Value::TailCall(_) => "void",

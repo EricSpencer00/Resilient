@@ -164,7 +164,9 @@ impl Substitution {
             | Type::Result
             | Type::Struct(_)
             | Type::Void
-            | Type::Any => ty.clone(),
+            | Type::Any
+            // RES-2548: Range is a leaf type with no sub-types.
+            | Type::Range => ty.clone(),
         }
     }
 

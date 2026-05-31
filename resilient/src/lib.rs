@@ -10554,6 +10554,14 @@ enum Value {
     /// versa. No interior mutability — `bytes_slice` returns a new
     /// `Value::Bytes`.
     Bytes(Vec<u8>),
+    /// RES-2548: first-class range value. Lazy — does not materialize
+    /// the elements until iterated. Supports `for x in r`, `len(r)`,
+    /// and `contains(r, v)`.
+    Range {
+        start: i64,
+        end: i64,
+        inclusive: bool,
+    },
     /// RES-169a (skeleton, unused): bytecode-VM closure value. Holds
     /// an index into the compiled `Program::functions` table and a
     /// slab of captured upvalues (already copied — capture-by-value).
@@ -10764,6 +10772,18 @@ impl std::fmt::Debug for Value {
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
             Value::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
+            // RES-2548: range debug.
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if *inclusive {
+                    write!(f, "{start}..={end}")
+                } else {
+                    write!(f, "{start}..{end}")
+                }
+            }
             // RES-2619: char value debug — show as 'A'.
             Value::Char(c) => write!(f, "'{c}'"),
             // RES-169a: skeleton Debug for the VM-side closure value.
@@ -10954,6 +10974,18 @@ impl std::fmt::Display for Value {
                     write!(f, "{}", k)?;
                 }
                 write!(f, "}}")
+            }
+            // RES-2548: Range Display — mirrors the source syntax.
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if *inclusive {
+                    write!(f, "{start}..={end}")
+                } else {
+                    write!(f, "{start}..{end}")
+                }
             }
             // RES-169a: skeleton Display for VM closures — mirror
             // `Value::Function`'s placeholder rendering so tests
@@ -14572,8 +14604,24 @@ fn builtin_trim(args: &[Value]) -> RResult<Value> {
 fn builtin_contains(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(h), Value::String(n)] => Ok(Value::Bool(h.contains(n.as_str()))),
+        // RES-2548: `contains(range, int)` — membership test.
+        [
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            },
+            Value::Int(v),
+        ] => {
+            let within = if *inclusive {
+                v >= start && v <= end
+            } else {
+                v >= start && v < end
+            };
+            Ok(Value::Bool(within))
+        }
         [a, b] => Err(format!(
-            "contains: expected (string, string), got ({:?}, {:?})",
+            "contains: expected (string, string) or (range, int), got ({:?}, {:?})",
             a, b
         )),
         _ => Err(format!(
@@ -16235,6 +16283,21 @@ fn builtin_to_string(args: &[Value]) -> RResult<Value> {
         [Value::Bool(b)] => Ok(Value::String(b.to_string())),
         // RES-2709: char is a scalar; convert to its one-character string form.
         [Value::Char(c)] => Ok(Value::String(c.to_string())),
+        // RES-2548: range to string — `3..7` or `3..=7`.
+        [
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            },
+        ] => {
+            let s = if *inclusive {
+                format!("{start}..={end}")
+            } else {
+                format!("{start}..{end}")
+            };
+            Ok(Value::String(s))
+        }
         [other] => Err(format!("to_string: expected scalar value, got {}", other)),
         _ => Err(format!(
             "to_string: expected 1 argument, got {}",
@@ -20314,6 +20377,21 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
         // RES-932: tuple length for tuple-pattern matching in the bytecode VM.
         [Value::Tuple(items)] => Ok(Value::Int(items.len() as i64)),
         [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
+        // RES-2548: range length.
+        [
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            },
+        ] => {
+            let count = if *inclusive {
+                (end - start + 1).max(0)
+            } else {
+                (end - start).max(0)
+            };
+            Ok(Value::Int(count))
+        }
         [other] => Err(format!(
             "len: expected string, array, tuple, or map, got {}",
             other
@@ -25670,6 +25748,14 @@ impl Interpreter {
         let iter_val = self.eval(iterable)?;
         let items = match iter_val {
             Value::Array(v) => v,
+            // RES-2548: Range is a first-class iterable.
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            } => crate::ranges::iterate_range(start, end, inclusive)
+                .map(Value::Int)
+                .collect(),
             Value::Map(m) => {
                 let mut keys: Vec<&MapKey> = m.keys().collect();
                 keys.sort_unstable_by(|a, b| crate::map_entries_merge::cmp_map_keys(a, b));
@@ -25712,10 +25798,9 @@ impl Interpreter {
         Ok(Value::Void)
     }
 
-    /// RES-291: helper for `Node::Range` evaluation as a value (RHS of
-    /// `let r = <range>;`). Materializes into a `Value::Array`. Pulled
-    /// out of `eval` for the same stack-frame-size reason as
-    /// [`Self::eval_for_in`].
+    /// RES-291 / RES-2548: helper for `Node::Range` evaluation as a value
+    /// (RHS of `let r = <range>;`). Returns a lazy `Value::Range` instead
+    /// of eagerly materializing all elements.
     #[inline(never)]
     fn eval_range_value(&mut self, lo: &Node, hi: &Node, inclusive: bool) -> RResult<Value> {
         let lo_v = self.eval(lo)?;
@@ -25728,10 +25813,11 @@ impl Interpreter {
             Value::Int(n) => n,
             other => return Err(format!("range upper bound must be Int, got {}", other)),
         };
-        let items: Vec<Value> = crate::ranges::iterate_range(lo_i, hi_i, inclusive)
-            .map(Value::Int)
-            .collect();
-        Ok(Value::Array(items))
+        Ok(Value::Range {
+            start: lo_i,
+            end: hi_i,
+            inclusive,
+        })
     }
 
     fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {
