@@ -1,0 +1,59 @@
+// RES-2553: impl blocks for primitive types (int, float, string, bool).
+
+impl int {
+    fn abs(self) -> int {
+        if self < 0 { return -self; }
+        return self;
+    }
+
+    fn clamp(self, int lo, int hi) -> int {
+        if self < lo { return lo; }
+        if self > hi { return hi; }
+        return self;
+    }
+
+    fn is_even(self) -> bool {
+        return self % 2 == 0;
+    }
+}
+
+impl float {
+    fn sign(self) -> int {
+        if self < 0.0 { return -1; }
+        if self > 0.0 { return 1; }
+        return 0;
+    }
+}
+
+impl string {
+    fn shout(self) -> string {
+        return self + "!";
+    }
+
+    fn is_empty(self) -> bool {
+        return len(self) == 0;
+    }
+}
+
+impl bool {
+    fn flip(self) -> bool {
+        return !self;
+    }
+}
+
+let n = -7;
+println(to_string(n.abs()));
+let v = 3;
+println(to_string(v.clamp(0, 5)));
+let w = 10;
+println(to_string(w.clamp(0, 5)));
+let e = 4;
+println(to_string(e.is_even()));
+let f = -3.5;
+println(to_string(f.sign()));
+let s = "hello";
+println(s.shout());
+let empty = "";
+println(to_string(empty.is_empty()));
+let b = true;
+println(to_string(b.flip()));

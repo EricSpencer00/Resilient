@@ -24123,6 +24123,25 @@ impl Interpreter {
                             return self.apply_function(&method_val, args);
                         }
                     }
+                    // RES-2553: primitive type method dispatch — `impl int { fn abs(self) }`,
+                    // `impl float { }`, `impl string { }`, `impl bool { }`.
+                    // The parser stores `impl int` with struct_name="int", so methods are
+                    // registered as `int$method_name`.  We mirror struct dispatch here.
+                    let prim_type_name: Option<&str> = match &target_val {
+                        Value::Int(_) => Some("int"),
+                        Value::Float(_) => Some("float"),
+                        Value::String(_) => Some("string"),
+                        Value::Bool(_) => Some("bool"),
+                        _ => None,
+                    };
+                    if let Some(type_name) = prim_type_name {
+                        let mangled = format!("{}${}", type_name, field);
+                        if let Some(method_val) = self.env.get(&mangled) {
+                            let mut args = vec![target_val];
+                            args.extend(self.eval_expressions(arguments)?);
+                            return self.apply_function(&method_val, args);
+                        }
+                    }
                 }
                 // RES-1859: standalone array_map / array_filter / array_reduce
                 // must be handled inline — they accept user callbacks that

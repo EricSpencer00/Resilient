@@ -1,0 +1,9 @@
+7
+3
+5
+true
+-1
+hello!
+true
+false
+Program executed successfully
