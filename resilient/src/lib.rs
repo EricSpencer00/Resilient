@@ -27155,19 +27155,22 @@ impl Interpreter {
                 // None means "use the initial body/parameters by reference".
                 let mut mtco_body: Option<Box<Node>> = None;
                 let mut mtco_params: Option<Vec<(String, String)>> = None;
-                let return_value = 'tco: loop {
-                    // Resolve which body to evaluate this iteration.
-                    // After eval() returns, the &Node borrow ends (NLL).
+                // RES-2790: the TCO loop yields Result so that body errors
+                // don't bypass deferred expressions. Defers always fire.
+                let body_outcome: Result<Value, String> = 'tco: loop {
                     let cur_body: &Node = mtco_body.as_deref().unwrap_or(body.as_ref());
-                    let body_result = interpreter.eval(cur_body).map_err(|e| {
-                        if let Some(ref subst) = interpreter.active_subst {
-                            crate::diag::format_subst_context(name, subst, &e)
-                        } else {
-                            e
+                    let body_result = match interpreter.eval(cur_body) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let e = if let Some(ref subst) = interpreter.active_subst {
+                                crate::diag::format_subst_context(name, subst, &e)
+                            } else {
+                                e
+                            };
+                            break 'tco Err(e);
                         }
-                    })?;
+                    };
                     match body_result {
-                        // Self-recursive tail call (direct expression context).
                         Value::TailCall(new_args) => {
                             let cur_params: &[(String, String)] =
                                 mtco_params.as_deref().unwrap_or(parameters.as_slice());
@@ -27176,16 +27179,21 @@ impl Interpreter {
                             }
                             continue 'tco;
                         }
-                        // RES-2659: mutual tail call — switch to callee's body.
                         Value::MutualTailCall {
                             callee,
                             args: new_args,
                         } => {
-                            let callee_fn = interpreter.env.get(&callee).ok_or_else(|| {
-                                format!("mutual_tail_call: function '{}' is not in scope", callee)
-                            })?;
+                            let callee_fn = match interpreter.env.get(&callee) {
+                                Some(v) => v,
+                                None => {
+                                    break 'tco Err(format!(
+                                        "mutual_tail_call: function '{}' is not in scope",
+                                        callee
+                                    ));
+                                }
+                            };
                             let Value::Function(fv) = callee_fn else {
-                                return Err(format!(
+                                break 'tco Err(format!(
                                     "mutual_tail_call: '{}' is not a function",
                                     callee
                                 ));
@@ -27200,7 +27208,6 @@ impl Interpreter {
                             interpreter.mutual_tco_fn = Some(callee);
                             continue 'tco;
                         }
-                        // Tail call inside a `return expr;` statement.
                         Value::Return(v) => match *v {
                             Value::TailCall(new_args) => {
                                 let cur_params: &[(String, String)] =
@@ -27215,14 +27222,17 @@ impl Interpreter {
                                 callee,
                                 args: new_args,
                             } => {
-                                let callee_fn = interpreter.env.get(&callee).ok_or_else(|| {
-                                    format!(
-                                        "mutual_tail_call: function '{}' is not in scope",
-                                        callee
-                                    )
-                                })?;
+                                let callee_fn = match interpreter.env.get(&callee) {
+                                    Some(v) => v,
+                                    None => {
+                                        break 'tco Err(format!(
+                                            "mutual_tail_call: function '{}' is not in scope",
+                                            callee
+                                        ));
+                                    }
+                                };
                                 let Value::Function(fv) = callee_fn else {
-                                    return Err(format!(
+                                    break 'tco Err(format!(
                                         "mutual_tail_call: '{}' is not a function",
                                         callee
                                     ));
@@ -27237,23 +27247,39 @@ impl Interpreter {
                                 interpreter.mutual_tco_fn = Some(callee);
                                 continue 'tco;
                             }
-                            other => break 'tco other,
+                            other => break 'tco Ok(other),
                         },
-                        other => break 'tco other,
+                        other => break 'tco Ok(other),
                     }
                 };
 
-                // RES-2579: execute deferred expressions in LIFO order.
-                // Each entry carries its captured environment so bindings
-                // from the defer-registration site remain accessible.
+                // RES-2790: execute deferred expressions in LIFO order,
+                // regardless of whether the body succeeded or failed.
+                // If the body succeeded and a defer errors, the defer error
+                // propagates. If the body already failed, the body error
+                // takes precedence (defer errors are discarded to avoid
+                // masking the original cause).
                 let deferred: Vec<(Node, Environment)> =
                     interpreter.defer_stack.drain(..).collect();
+                let mut first_defer_err: Option<String> = None;
                 for (deferred_expr, captured_env) in deferred.into_iter().rev() {
-                    // Swap to the captured env for this deferred expr, then restore.
                     let saved = std::mem::replace(&mut interpreter.env, captured_env);
-                    let _ = interpreter.eval(&deferred_expr);
+                    if let Err(e) = interpreter.eval(&deferred_expr)
+                        && first_defer_err.is_none()
+                    {
+                        first_defer_err = Some(e);
+                    }
                     interpreter.env = saved;
                 }
+                let return_value = match body_outcome {
+                    Ok(v) => {
+                        if let Some(defer_err) = first_defer_err {
+                            return Err(defer_err);
+                        }
+                        v
+                    }
+                    Err(body_err) => return Err(body_err),
+                };
 
                 // RES-035: check each `ensures` clause AFTER, with the
                 // special identifier `result` bound to the return value.
