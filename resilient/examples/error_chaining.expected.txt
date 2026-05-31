@@ -1,0 +1,8 @@
+Ok(42)
+Err(system initialization failed: failed to load config: invalid syntax)
+invalid syntax
+3
+system initialization failed
+failed to load config
+invalid syntax
+Program executed successfully

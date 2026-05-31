@@ -1,0 +1,39 @@
+// RES-2792: error chaining — .context(), .root_cause(), .chain() on Result.
+//
+// Demonstrates building causal error chains for rich diagnostics.
+
+fn parse_config(string raw) -> Result<int, string> {
+    if raw == "valid" {
+        return Ok(42)
+    }
+    Err("invalid syntax")
+}
+
+fn load_config(string path) -> Result<int, string> {
+    let result = parse_config(path)
+    result.context("failed to load config")
+}
+
+fn init_system(string path) -> Result<int, string> {
+    let result = load_config(path)
+    result.context("system initialization failed")
+}
+
+// Success path — context is a no-op on Ok.
+let ok_result = parse_config("valid")
+let wrapped_ok = ok_result.context("should not appear")
+println(wrapped_ok)
+
+// Error path — three-layer chain.
+let err_result = init_system("broken")
+println(err_result)
+
+// Inspect the chain.
+let cause = err_result.root_cause()
+println(cause)
+
+let chain = err_result.chain()
+println(len(chain))
+for part in chain {
+    println(part)
+}
