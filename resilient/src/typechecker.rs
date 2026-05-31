@@ -7760,7 +7760,16 @@ impl TypeChecker {
                         }
                     }
                     // RES-402: collect arm type for common-type inference.
-                    arm_types.push(body_res?);
+                    // RES-2820: a `return` arm exits the function
+                    // and doesn't contribute a value to the match
+                    // expression. Treat its type as Void so it's
+                    // compatible with any other arm type.
+                    let arm_ty = body_res?;
+                    if matches!(body, Node::ReturnStatement { .. }) {
+                        arm_types.push(Type::Void);
+                    } else {
+                        arm_types.push(arm_ty);
+                    }
                 }
 
                 // RES-054 + RES-159 + RES-160 + RES-369: exhaustiveness.
@@ -7937,7 +7946,10 @@ impl TypeChecker {
                 // all other concrete arm types are compatible with it.
                 let mut expected: Option<&Type> = None;
                 for t in &arm_types {
-                    if matches!(t, Type::Any) {
+                    // RES-2820: skip Void arms (from return statements)
+                    // and Any arms (unresolved) — neither constrains the
+                    // match expression's type.
+                    if matches!(t, Type::Any | Type::Void) {
                         continue;
                     }
                     match expected {
@@ -16748,5 +16760,31 @@ mod res2818_option_match_exhaustive {
         check_ok(
             "fn check(Option<int> x) -> string {\nmatch x {\nSome(v) => \"yes\",\nNone => \"no\",\n}\n}\n",
         );
+    }
+}
+
+#[cfg(test)]
+mod res2820_return_arm_compatibility {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    #[test]
+    fn if_let_with_return_accepted() {
+        check_ok(
+            "fn classify(int n) -> string {\nif let 0 = n { return \"zero\" }\nreturn \"other\"\n}\n",
+        );
+    }
+
+    #[test]
+    fn match_return_arm_compatible_with_value_arm() {
+        check_ok("fn f(int n) -> string {\nmatch n {\n0 => { return \"a\" },\n_ => \"b\",\n}\n}\n");
     }
 }
