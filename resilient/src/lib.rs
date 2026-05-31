@@ -597,6 +597,7 @@ mod contract_inference;
 mod coverage_warnings;
 mod crash_only_cert;
 mod data_utils;
+mod datetime_builtins;
 mod deadlock_freedom;
 mod default_trait_methods;
 mod dependent_arrays;
@@ -12855,6 +12856,27 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "regex_replace_all",
         crate::regex_builtins::builtin_regex_replace_all,
+    ),
+    // RES-2559: date/time builtins.
+    (
+        "datetime_now",
+        crate::datetime_builtins::builtin_datetime_now,
+    ),
+    (
+        "datetime_from_unix",
+        crate::datetime_builtins::builtin_datetime_from_unix,
+    ),
+    (
+        "datetime_to_unix",
+        crate::datetime_builtins::builtin_datetime_to_unix,
+    ),
+    (
+        "datetime_format",
+        crate::datetime_builtins::builtin_datetime_format,
+    ),
+    (
+        "datetime_parse",
+        crate::datetime_builtins::builtin_datetime_parse,
     ),
     // RES-2658: linear algebra — vector and matrix operations (pure).
     ("vec_add", crate::linear_algebra::builtin_vec_add),

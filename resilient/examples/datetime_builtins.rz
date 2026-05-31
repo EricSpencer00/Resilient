@@ -1,0 +1,28 @@
+// RES-2559: date/time builtins golden test.
+
+// datetime_from_unix + datetime_format
+let epoch = datetime_from_unix(0)
+let s = datetime_format(epoch, "%Y-%m-%d %H:%M:%S")
+println(s)
+
+// known date
+let dt = datetime_from_unix(1705276800)
+println(datetime_format(dt, "%Y-%m-%d"))
+
+// roundtrip: from_unix -> to_unix
+let unix = datetime_to_unix(dt)
+println(unix)
+
+// datetime_parse success
+let parsed = datetime_parse("2024-03-15 10:30:45", "%Y-%m-%d %H:%M:%S")
+match parsed {
+    Ok(d) => println(datetime_format(d, "%Y-%m-%d %H:%M:%S")),
+    Err(e) => println("error: " + e),
+}
+
+// datetime_parse failure (month 13)
+let bad = datetime_parse("2024-13-01", "%Y-%m-%d")
+match bad {
+    Ok(d) => println("unexpected ok"),
+    Err(e) => println("parse error: " + e),
+}
