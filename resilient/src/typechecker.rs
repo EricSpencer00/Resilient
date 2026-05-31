@@ -1403,6 +1403,11 @@ pub struct TypeChecker {
     /// payload, all duplicated per lookup). Mirrors RES-1363's
     /// `contract_table` and RES-1365's `struct_fields` refactors.
     pub(crate) enum_decls: HashMap<String, std::sync::Arc<Vec<crate::EnumVariant>>>,
+    /// RES-2814: type parameters declared on generic enums. Populated
+    /// alongside `enum_decls` so the constructor validator can treat
+    /// declared type-param names (e.g. `L`, `R` in `Either<L, R>`)
+    /// as wildcards rather than concrete struct types.
+    enum_type_params: HashMap<String, Vec<String>>,
     /// RES-128: alias name → raw target type name. Populated by
     /// every `TypeAlias` node. Consulted by `parse_type_name` which
     /// walks the chain (with a `seen` set for cycle detection) and
@@ -5275,6 +5280,7 @@ impl TypeChecker {
                 });
                 BUILTIN_ENUM_DECLS.clone()
             },
+            enum_type_params: HashMap::new(),
             type_aliases: HashMap::with_capacity(PRESIZE),
             // RES-137: ticket's default is 5 seconds per query.
             verifier_timeout_ms: 5000,
@@ -6483,6 +6489,11 @@ impl TypeChecker {
                     Named(Vec<(String, String)>), // (field_name, type_string)
                     Tuple(Vec<String>),           // positional type strings
                 }
+                // RES-2814: look up generic type params so we can
+                // treat them as Any when resolving payload types.
+                let generic_params: Option<Vec<String>> = type_name
+                    .as_deref()
+                    .and_then(|tn| self.enum_type_params.get(tn).cloned());
                 let resolved: ResolvedPayload = match type_name.as_deref() {
                     Some(tn) => {
                         let variants = self.enum_decls.get(tn);
@@ -6516,7 +6527,15 @@ impl TypeChecker {
                                 decl_fields
                                     .iter()
                                     .find(|(n, _)| n == fname)
-                                    .and_then(|(_, ty_str)| self.parse_type_name(ty_str).ok())
+                                    .and_then(|(_, ty_str)| {
+                                        // RES-2814: generic type param → Any.
+                                        if let Some(ref gp) = generic_params
+                                            && gp.iter().any(|p| p == ty_str)
+                                        {
+                                            return Some(Type::Any);
+                                        }
+                                        self.parse_type_name(ty_str).ok()
+                                    })
                                     .unwrap_or(Type::Any)
                             } else {
                                 Type::Any
@@ -6532,9 +6551,19 @@ impl TypeChecker {
                         let mut out = Vec::with_capacity(subs.len());
                         for (i, sub) in subs.iter().enumerate() {
                             // Resolve declared positional type; fall back to Any.
+                            // RES-2814: if the type string is a generic
+                            // parameter, use Any instead of Struct("L").
                             let elem_ty = if let ResolvedPayload::Tuple(ref tys) = resolved {
                                 tys.get(i)
-                                    .and_then(|t| self.parse_type_name(t).ok())
+                                    .and_then(|t| {
+                                        // RES-2814: generic type param → Any.
+                                        if let Some(ref gp) = generic_params
+                                            && gp.iter().any(|p| p == t)
+                                        {
+                                            return Some(Type::Any);
+                                        }
+                                        self.parse_type_name(t).ok()
+                                    })
                                     .unwrap_or(Type::Any)
                             } else {
                                 Type::Any
@@ -9412,7 +9441,19 @@ impl TypeChecker {
                         }
                         // RES-416: validate argument types against the
                         // declared payload types.
+                        // RES-2814: look up generic type params so we
+                        // can treat them as wildcards during validation.
+                        let tp = self.enum_type_params.get(type_name).cloned();
                         for (arg, type_str) in arguments.iter().zip(declared.iter()) {
+                            // RES-2814: if the declared type is a
+                            // generic type parameter (e.g. `L` in
+                            // `Either<L, R>`), accept any concrete arg.
+                            if let Some(ref params) = tp
+                                && params.iter().any(|p| p == type_str)
+                            {
+                                self.check_node(arg)?;
+                                continue;
+                            }
                             let arg_ty = self.check_node(arg)?;
                             if let Ok(expected_ty) = self.parse_type_name(type_str)
                                 && !compatible(&expected_ty, &arg_ty)
@@ -9798,8 +9839,8 @@ impl TypeChecker {
             Node::EnumDecl {
                 name,
                 variants,
+                type_params,
                 span,
-                ..
             } => {
                 // RES-406: reject duplicate variant names inside the same enum.
                 let mut seen_variants: std::collections::HashSet<&str> =
@@ -9821,6 +9862,12 @@ impl TypeChecker {
                 // share the same Arc machinery.
                 self.enum_decls
                     .insert(name.clone(), std::sync::Arc::new(variants.clone()));
+                // RES-2814: store generic type parameter names so the
+                // constructor validator can treat them as wildcards.
+                if !type_params.is_empty() {
+                    self.enum_type_params
+                        .insert(name.clone(), type_params.clone());
+                }
                 Ok(Type::Void)
             }
             // RES-406: unsafe block. The volatile-call gate (compile-
@@ -16546,6 +16593,67 @@ mod res2810_missing_builtin_types {
         assert!(
             err.contains("impure") || err.contains("clock_now"),
             "expected an impurity rejection, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod res2814_generic_enum_constructors {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error")
+    }
+
+    #[test]
+    fn generic_enum_constructor_accepts_concrete_types() {
+        check_ok(
+            "enum Either<L, R> { Left(L), Right(R) }\nlet a = Either::Left(42)\nlet b = Either::Right(\"hello\")\n",
+        );
+    }
+
+    #[test]
+    fn generic_enum_single_param() {
+        check_ok("enum Box<T> { Wrap(T) }\nlet x = Box::Wrap(true)\n");
+    }
+
+    #[test]
+    fn generic_enum_match_binding_usable() {
+        check_ok(
+            "enum Box<T> { Wrap(T) }\nlet x = Box::Wrap(42)\nmatch x { Box::Wrap(v) => println(v) }\n",
+        );
+    }
+
+    #[test]
+    fn non_generic_enum_still_validated() {
+        let err = check_err(
+            "enum Color { Red(int), Blue(string) }\nlet c = Color::Red(\"not-an-int\")\n",
+        );
+        assert!(
+            err.contains("argument has type string, expected int"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn generic_enum_arity_still_enforced() {
+        let err = check_err("enum Box<T> { Wrap(T) }\nlet x = Box::Wrap(1, 2)\n");
+        assert!(
+            err.contains("expected 1 arg(s), got 2"),
+            "unexpected error: {err}"
         );
     }
 }
