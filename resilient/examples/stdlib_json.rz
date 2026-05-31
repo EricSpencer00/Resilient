@@ -1,11 +1,8 @@
-use std::json;
+// JSON stdlib example — uses the top-level json_encode / json_decode builtins.
 
-fn main() {
-    let text = json_stringify(42);
-    println(text);
-    let valid = json_valid(text);
-    println(valid);
-    let parsed = json_parse("[1,2,3]");
-    println(parsed);
-}
-main();
+let text = json_encode(42);
+println(text);
+let valid = json_valid(text);
+println(to_string(valid));
+let parsed = unwrap(json_decode("[1,2,3]"));
+println(json_encode(parsed));

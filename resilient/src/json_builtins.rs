@@ -42,6 +42,146 @@ pub(crate) fn builtin_to_json(args: &[Value]) -> RResult<Value> {
     }
 }
 
+/// `json_encode(value) -> string` — alias for `to_json`.
+pub(crate) fn builtin_json_encode(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => serialize_value(v).map(Value::String),
+        _ => Err(format!(
+            "json_encode: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `json_encode_pretty(value) -> string` — indented JSON, 2 spaces per level.
+pub(crate) fn builtin_json_encode_pretty(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => serialize_value_pretty(v, 0).map(Value::String),
+        _ => Err(format!(
+            "json_encode_pretty: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `json_decode(string) -> Result<Value, string>` — safe JSON parse.
+///
+/// Unlike `from_json` which propagates errors as Resilient runtime errors,
+/// `json_decode` wraps success/failure in a `Result` value so callers can
+/// handle parse errors without a try/catch.
+pub(crate) fn builtin_json_decode(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let mut parser = JsonParser::new(s);
+            match parser.parse_value() {
+                Err(e) => Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String(e)),
+                }),
+                Ok(v) => {
+                    parser.skip_ws();
+                    if parser.pos < parser.src.len() {
+                        Ok(Value::Result {
+                            ok: false,
+                            payload: Box::new(Value::String(format!(
+                                "json_decode: trailing characters at position {}",
+                                parser.pos
+                            ))),
+                        })
+                    } else {
+                        Ok(Value::Result {
+                            ok: true,
+                            payload: Box::new(v),
+                        })
+                    }
+                }
+            }
+        }
+        [other] => Err(format!("json_decode: expected string, got {other}")),
+        _ => Err(format!(
+            "json_decode: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `json_valid(string) -> bool` — true if the string is valid JSON.
+pub(crate) fn builtin_json_valid(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let mut parser = JsonParser::new(s);
+            let ok = parser.parse_value().is_ok() && {
+                parser.skip_ws();
+                parser.pos >= parser.src.len()
+            };
+            Ok(Value::Bool(ok))
+        }
+        [other] => Err(format!("json_valid: expected string, got {other}")),
+        _ => Err(format!(
+            "json_valid: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+fn serialize_value_pretty(v: &Value, indent: usize) -> RResult<String> {
+    let pad = "  ".repeat(indent);
+    let inner_pad = "  ".repeat(indent + 1);
+    match v {
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                return Ok("[]".to_string());
+            }
+            let mut out = String::from("[\n");
+            for (i, item) in arr.iter().enumerate() {
+                let s = serialize_value_pretty(item, indent + 1)?;
+                out.push_str(&inner_pad);
+                out.push_str(&s);
+                if i + 1 < arr.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str(&pad);
+            out.push(']');
+            Ok(out)
+        }
+        Value::Map(m) => {
+            if m.is_empty() {
+                return Ok("{}".to_string());
+            }
+            let mut sorted: Vec<(&MapKey, &Value)> = m.iter().collect();
+            sorted.sort_by_key(|(k, _)| match k {
+                MapKey::Str(s) => format!("s:{s}"),
+                MapKey::Int(n) => format!("i:{n}"),
+                MapKey::Bool(b) => format!("b:{b}"),
+            });
+            let mut out = String::from("{\n");
+            for (i, (k, val)) in sorted.iter().enumerate() {
+                let key_str = match k {
+                    MapKey::Str(s) => json_escape_string(s),
+                    MapKey::Int(n) => format!("\"{}\"", n),
+                    MapKey::Bool(b) => format!("\"{}\"", b),
+                };
+                let val_str = serialize_value_pretty(val, indent + 1)?;
+                out.push_str(&inner_pad);
+                out.push_str(&key_str);
+                out.push_str(": ");
+                out.push_str(&val_str);
+                if i + 1 < sorted.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str(&pad);
+            out.push('}');
+            Ok(out)
+        }
+        // Primitives are the same as compact form.
+        other => serialize_value(other),
+    }
+}
+
 fn serialize_value(v: &Value) -> RResult<String> {
     match v {
         Value::Int(n) => Ok(n.to_string()),

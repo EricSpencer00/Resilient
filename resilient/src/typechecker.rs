@@ -2029,6 +2029,49 @@ impl TypeChecker {
                         return_type: Box::new(Type::Int),
                     },
                 );
+                // RES-2554: JSON serialization builtins.
+                env.set(
+                    "to_json".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "from_json".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "json_encode".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "json_decode".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
+                env.set(
+                    "json_encode_pretty".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "json_valid".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Bool),
+                    },
+                );
                 // RES-1164: iteration helpers.
                 env.set(
                     "enumerate".to_string(),
@@ -10405,6 +10448,13 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "char_to_int",
         "int_to_char",
         "char_to_string",
+        // RES-2554: JSON builtins (pure — no IO).
+        "to_json",
+        "from_json",
+        "json_encode",
+        "json_decode",
+        "json_encode_pretty",
+        "json_valid",
     ];
     // RES-1530: lookup against a `HashSet<&'static str>` built once
     // per process from `PURE_BUILTINS`. The previous shape called

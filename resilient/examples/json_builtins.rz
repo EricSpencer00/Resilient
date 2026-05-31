@@ -1,0 +1,29 @@
+// RES-2554: JSON serialization/deserialization builtins.
+
+// json_encode: serialize values to JSON strings.
+println(json_encode(42));
+println(json_encode(3.14));
+println(json_encode(true));
+println(json_encode("hello"));
+println(json_encode([1, 2, 3]));
+
+// json_decode: parse JSON strings into values — returns Result.
+let r = json_decode("[10, 20, 30]");
+println(to_string(is_ok(r)));
+let arr = unwrap(r);
+println(arr[1]);
+
+// json_valid: check if a string is valid JSON.
+println(to_string(json_valid("[1, 2, 3]")));
+println(to_string(json_valid("not json")));
+
+// json_encode_pretty: human-readable indented output.
+let pretty = json_encode_pretty([1, 2]);
+println(pretty);
+
+// round-trip: encode then decode.
+let data = [100, 200, 300];
+let encoded = json_encode(data);
+let decoded = unwrap(json_decode(encoded));
+println(decoded[0]);
+println(decoded[2]);
