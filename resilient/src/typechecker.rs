@@ -2248,6 +2248,42 @@ impl TypeChecker {
                         return_type: Box::new(Type::String),
                     },
                 );
+                // RES-2559: date/time builtins.
+                env.set(
+                    "datetime_now".to_string(),
+                    Type::Function {
+                        params: vec![],
+                        return_type: Box::new(Type::Struct("DateTime".to_string())),
+                    },
+                );
+                env.set(
+                    "datetime_from_unix".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Struct("DateTime".to_string())),
+                    },
+                );
+                env.set(
+                    "datetime_to_unix".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "datetime_format".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
+                env.set(
+                    "datetime_parse".to_string(),
+                    Type::Function {
+                        params: vec![Type::String, Type::String],
+                        return_type: Box::new(Type::Result),
+                    },
+                );
                 // RES-1164: iteration helpers.
                 env.set(
                     "enumerate".to_string(),
@@ -5876,6 +5912,8 @@ impl TypeChecker {
                 crate::generic_structs::check(program, source_path)?;
                 // RES-2585: regex builtins (no-op check; builtins are leaf functions).
                 crate::regex_builtins::check(program, source_path)?;
+                // RES-2559: datetime builtins (no-op check).
+                crate::datetime_builtins::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
