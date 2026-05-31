@@ -1,16 +1,8 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-2585-regex-builtins",
-      "claimed_at": "2026-05-31T09:26:47Z"
-    },
     "resilient/src/typechecker.rs": {
-      "branch": "res-2585-regex-builtins",
-      "claimed_at": "2026-05-31T09:26:47Z"
-    },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-2585-regex-builtins",
-      "claimed_at": "2026-05-31T09:26:47Z"
+      "branch": "res-2801-generic-struct-type-validation",
+      "claimed_at": "2026-05-31T10:48:55Z"
     }
   }
 }

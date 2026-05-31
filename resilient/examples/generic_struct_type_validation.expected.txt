@@ -1,0 +1,6 @@
+an integer
+a string
+1
+two
+hello!
+Program executed successfully

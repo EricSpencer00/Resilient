@@ -1,0 +1,28 @@
+// RES-2801: generic struct type parameter validation.
+
+struct Wrapper<T> {
+    T value,
+    string label,
+}
+
+// Same type param used consistently
+let w1 = new Wrapper { value: 42, label: "an integer" }
+println(w1.label)
+
+let w2 = new Wrapper { value: "hello", label: "a string" }
+println(w2.label)
+
+struct Pair<T, U> {
+    T first,
+    U second,
+}
+
+// Different type params are independent
+let p = new Pair { first: 1, second: "two" }
+println(p.first)
+println(p.second)
+
+// Char concatenation with string
+let c: char = '!'
+let msg = "hello" + c
+println(msg)
