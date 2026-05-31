@@ -671,6 +671,8 @@ mod target_profiles;
 mod source_map;
 mod vibe_debt;
 mod wcet_contracts;
+// RES-2558: process spawning (std-only).
+mod process_exec;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -12870,6 +12872,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("heap_peek", crate::heap::builtin_heap_peek),
     ("heap_len", crate::heap::builtin_heap_len),
     ("heap_is_empty", crate::heap::builtin_heap_is_empty),
+    // RES-2558: process spawning builtins (std-only).
+    ("exec", crate::process_exec::builtin_exec),
+    ("exec_shell", crate::process_exec::builtin_exec_shell),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

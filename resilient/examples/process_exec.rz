@@ -1,0 +1,21 @@
+// RES-2558: Process spawning — exec() and exec_shell() builtins.
+
+// exec(cmd, args) -> Result<ProcessResult, string>
+let r = exec("echo", ["hello"]);
+println(to_string(is_ok(r)));
+
+let res = unwrap(r);
+println(trim(res.stdout));
+println(res.exit_code);
+
+// A failing command still returns Ok — non-zero exit_code, not Err.
+let r2 = exec("false", []);
+println(to_string(is_ok(r2)));
+let res2 = unwrap(r2);
+// exit_code is non-zero for `false`
+println(to_string(res2.exit_code != 0));
+
+// exec_shell runs via the system shell, enabling pipelines.
+let r3 = exec_shell("echo world");
+let res3 = unwrap(r3);
+println(trim(res3.stdout));
