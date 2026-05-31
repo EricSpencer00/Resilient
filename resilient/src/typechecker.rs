@@ -2086,6 +2086,8 @@ impl TypeChecker {
                     Type::Function {
                         params: vec![Type::Any],
                         return_type: Box::new(Type::Bool),
+                    },
+                );
                 // RES-2559: date/time formatting and parsing builtins (std-only).
                 env.set(
                     "datetime_now".to_string(),
