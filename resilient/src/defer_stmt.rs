@@ -22,12 +22,17 @@
 //! statement (not the environment at exit time) — variable bindings are
 //! snapshotted when the defer is registered.
 //!
+//! ## Error semantics
+//!
+//! Deferred expressions always execute, even when the function body errors.
+//! If the body succeeds and a defer errors, the defer error propagates to
+//! the caller. If the body already failed, the body error takes precedence
+//! (defer errors are discarded to avoid masking the original cause).
+//!
 //! ## Limitations (MVP)
 //!
 //! - Only function-scope defer is supported. Defers inside loops accumulate
 //!   on the function stack; they do not fire at loop exit.
-//! - Errors thrown inside a deferred expression are currently surfaced to the
-//!   caller rather than being suppressed.
 
 use crate::Node;
 
@@ -185,6 +190,83 @@ println(r);
         assert!(
             r.stdout.contains("positive"),
             "return value should be 'positive', got: {:?}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn defer_fires_on_body_error() {
+        // RES-2790: deferred expressions must execute even when the
+        // function body throws an error. We verify by printing from
+        // the deferred expression — the print happens even though
+        // the function errors.
+        let r = run(r#"
+fn risky() {
+    defer println("cleanup ran")
+    println("before error")
+    let x = 1 / 0
+}
+risky()
+"#);
+        assert!(!r.ok, "division by zero should error");
+        assert!(
+            r.stdout.contains("before error"),
+            "body should have started, got: {:?}",
+            r.stdout
+        );
+        assert!(
+            r.stdout.contains("cleanup ran"),
+            "defer should fire even on error, got: {:?}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn defer_error_propagates_on_success() {
+        // RES-2790: if the body succeeds but a deferred expression
+        // throws, the defer error propagates to the caller.
+        let r = run(r#"
+fn bad_defer() -> int {
+    defer println(1 / 0)
+    42
+}
+bad_defer()
+"#);
+        assert!(!r.ok, "defer error should propagate");
+    }
+
+    #[test]
+    fn body_error_takes_precedence_over_defer_error() {
+        // RES-2790: if both body and defer error, the body error wins.
+        let r = run(r#"
+fn double_trouble() {
+    defer println(1 / 0)
+    let y = 2 / 0
+}
+double_trouble()
+"#);
+        assert!(!r.ok, "should error");
+    }
+
+    #[test]
+    fn defer_lifo_on_error_path() {
+        // RES-2790: multiple defers still fire in LIFO order when
+        // the function body errors.
+        let r = run(r#"
+fn multi_defer_error() {
+    defer println("A")
+    defer println("B")
+    defer println("C")
+    let x = 1 / 0
+}
+multi_defer_error()
+"#);
+        assert!(!r.ok, "should error");
+        let lines: Vec<&str> = r.stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines,
+            vec!["C", "B", "A"],
+            "defers should fire LIFO even on error path, got: {:?}",
             r.stdout
         );
     }
