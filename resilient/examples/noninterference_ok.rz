@@ -1,0 +1,22 @@
+// RES-2825: semantic non-interference, proven by self-composition + Z3.
+//
+// `mask` is annotated to depend only on its low input `data`, not the
+// high input `key`. And indeed the `key` term cancels, so the output is
+// `data` for every `key`. Under `--features z3` the verifier discharges
+// this by encoding the body twice (sharing `data`, freeing `key`) and
+// proving the two outputs are always equal.
+//
+// Marked `.interactive` so the stdout golden harness skips it: under z3
+// the verifier prints a proof line to stdout, which should not be pinned
+// by a golden file (same treatment as actor_commute.rz).
+
+#[noninterference(low = "data", high = "key")]
+fn mask(int data, int key) -> int {
+    return (data + key) - key;
+}
+
+fn main() {
+    println(mask(7, 99));
+}
+
+main();

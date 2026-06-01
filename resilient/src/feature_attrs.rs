@@ -270,6 +270,8 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "public"
             // RES-2824: information-flow laundering boundary.
             | "declassify"
+            // RES-2825: semantic non-interference proof obligation.
+            | "noninterference"
             | "phantom"
             | "atomic"
             | "lock_priority"

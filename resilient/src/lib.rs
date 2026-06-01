@@ -614,6 +614,7 @@ mod http_client;
 mod hw_state_machine;
 mod incremental_verify;
 mod info_flow;
+// RES-2825: semantic non-interference via self-composition + Z3.
 mod intent_blocks;
 mod iterator_protocol;
 mod json_builtins;
@@ -626,6 +627,7 @@ mod mmio_regmap;
 mod mutation_testing;
 mod no_alloc_cert;
 mod no_panic_cert;
+mod noninterference;
 mod number_theory;
 mod package_manager;
 mod param_destructuring;

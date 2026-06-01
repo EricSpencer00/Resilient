@@ -6157,6 +6157,8 @@ impl TypeChecker {
                 crate::dependent_arrays::check(program, source_path)?;
                 crate::row_polymorphism::check(program, source_path)?;
                 crate::info_flow::check(program, source_path)?;
+                // RES-2825: semantic non-interference (self-composition + Z3).
+                crate::noninterference::check(program, source_path)?;
                 crate::phantom_types::check(program, source_path)?;
                 crate::recursive_types::check(program, source_path)?;
                 // RES-1629 gate: pass scans for `Node::ActorDecl` to
