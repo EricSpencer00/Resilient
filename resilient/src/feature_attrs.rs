@@ -32,7 +32,7 @@
 //! | `#[property_test]` | `property_tests` | Auto-generated property tests |
 //! | `#[const_fn]` | `const_fn` | Compile-time evaluation |
 //! | `#[async_fn]` | `async_await` | Async function |
-//! | `#[secret]` / `#[public]` | `info_flow` | Information-flow tags |
+//! | `#[secret]` / `#[public]` / `#[declassify]` | `info_flow` | Information-flow tags |
 //! | `#[phantom]` | `phantom_types` | Type-erased marker |
 //! | `#[atomic]` | `atomic_types` | Lock-free primitive |
 //! | `#[lock_priority(N)]` | `lock_priority` | Static lock ordering |
@@ -268,6 +268,8 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "async_fn"
             | "secret"
             | "public"
+            // RES-2824: information-flow laundering boundary.
+            | "declassify"
             | "phantom"
             | "atomic"
             | "lock_priority"

@@ -1,0 +1,35 @@
+// RES-2824: information-flow declassification demo.
+//
+// `read_secret` is a `#[secret]` source — every value it returns is
+// classified. `publish` is a `#[public]` sink — its return value is
+// observable. Returning the secret directly would be rejected by the
+// info-flow pass (see info_flow_leak.rz), but routing it through the
+// `#[declassify]` function `redact` launders it, so `publish` compiles
+// and runs.
+
+#[secret]
+fn read_secret(int seed) -> int {
+    return seed * 7 + 3;
+}
+
+#[declassify]
+fn redact(int classified) -> int {
+    // Audited downgrade: collapse the secret to a coarse, non-sensitive
+    // bucket — here, just its sign — before publishing.
+    if classified > 0 {
+        return 1;
+    }
+    return 0;
+}
+
+#[public]
+fn publish(int seed) -> int {
+    return redact(read_secret(seed));
+}
+
+fn main() {
+    println(publish(5));
+    println(publish(-1));
+}
+
+main();
