@@ -1,0 +1,21 @@
+// RES-2825: a non-interference VIOLATION, caught by self-composition + Z3.
+//
+// `leaky` claims (via #[noninterference]) that its output depends only on
+// the low input `data`, but it actually adds the high input `secret`.
+// Under `--features z3`, `rz check` rejects it and prints a counterexample
+// — two `secret` values that, with `data` fixed, yield different outputs.
+//
+// Without the z3 feature the proof is skipped (advisory note) and the
+// program runs. Marked `.interactive` so the stdout golden harness skips
+// it; the rejection is asserted by tests/noninterference_smoke.rs.
+
+#[noninterference(low = "data", high = "secret")]
+fn leaky(int data, int secret) -> int {
+    return data + secret;
+}
+
+fn main() {
+    println(leaky(1, 2));
+}
+
+main();

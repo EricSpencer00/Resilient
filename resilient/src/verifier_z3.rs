@@ -4884,3 +4884,241 @@ mod tests {
         );
     }
 }
+
+// ============================================================
+// RES-2825: semantic non-interference via self-composition.
+//
+// Encode the return expression twice over the same Z3 context. `low`
+// parameters keep their names, so both copies reference the *same* Z3
+// constant (equal by construction). `high` parameters are renamed in the
+// second copy, so they are independent constants free to differ. If the
+// two outputs can be forced unequal, a high input leaks; if `out1 ==
+// out2` is a tautology (its negation is UNSAT), the result is
+// non-interferent.
+//
+// Restricted to the integer-arithmetic fragment translate_int handles
+// directly and that rename_high traverses exhaustively (sound: any other
+// node shape returns Unknown rather than risk an un-renamed high
+// variable masquerading as shared/low).
+// ============================================================
+
+/// Outcome of a non-interference query for one function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NiOutcome {
+    /// Proven: the output does not depend on any high input.
+    Independent,
+    /// A high input provably changes the output. Counterexample fields
+    /// are the model's values for the leaking variable and the two
+    /// resulting outputs.
+    Leak {
+        high_var: String,
+        lo_in: String,
+        hi_in: String,
+        lo_out: String,
+        hi_out: String,
+    },
+    /// Body outside the supported fragment, or Z3 could not decide.
+    /// Advisory — never proof.
+    Unknown(String),
+}
+
+/// True iff `node` is built only from parameter reads, integer literals,
+/// and `+ - * / %` / unary `-`. On this fragment `rename_high` renames
+/// *every* occurrence of a high variable, which is what makes the
+/// self-composition sound.
+fn ni_is_arith_fragment(node: &Node) -> bool {
+    match node {
+        Node::Identifier { .. } | Node::IntegerLiteral { .. } => true,
+        Node::PrefixExpression { right, .. } => ni_is_arith_fragment(right),
+        Node::InfixExpression { left, right, .. } => {
+            ni_is_arith_fragment(left) && ni_is_arith_fragment(right)
+        }
+        _ => false,
+    }
+}
+
+/// Collect every identifier read in an arithmetic-fragment expression.
+fn ni_collect_idents(node: &Node, out: &mut std::collections::HashSet<String>) {
+    match node {
+        Node::Identifier { name, .. } => {
+            out.insert(name.clone());
+        }
+        Node::PrefixExpression { right, .. } => ni_collect_idents(right, out),
+        Node::InfixExpression { left, right, .. } => {
+            ni_collect_idents(left, out);
+            ni_collect_idents(right, out);
+        }
+        _ => {}
+    }
+}
+
+/// Suffix appended to high-variable names in the second self-composition
+/// copy. Chosen to be unlikely to collide with a real identifier.
+const NI_COPY_SUFFIX: &str = "__ni_copy2";
+
+/// Clone `node`, renaming every high-variable read by appending
+/// `NI_COPY_SUFFIX`. Exhaustive over the arithmetic fragment guarded by
+/// `ni_is_arith_fragment`.
+fn ni_rename_high(node: &Node, highs: &std::collections::HashSet<&str>) -> Node {
+    match node {
+        Node::Identifier { name, span } => {
+            if highs.contains(name.as_str()) {
+                Node::Identifier {
+                    name: format!("{name}{NI_COPY_SUFFIX}"),
+                    span: *span,
+                }
+            } else {
+                node.clone()
+            }
+        }
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            span,
+        } => Node::InfixExpression {
+            left: Box::new(ni_rename_high(left, highs)),
+            operator,
+            right: Box::new(ni_rename_high(right, highs)),
+            span: *span,
+        },
+        Node::PrefixExpression {
+            operator,
+            right,
+            span,
+        } => Node::PrefixExpression {
+            operator,
+            right: Box::new(ni_rename_high(right, highs)),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Prove that `expr`'s value is independent of the `high` variables.
+pub fn prove_noninterference(expr: &Node, high_vars: &[String]) -> NiOutcome {
+    if !ni_is_arith_fragment(expr) {
+        return NiOutcome::Unknown(
+            "return expression is outside the supported integer-arithmetic fragment (params, integer literals, + - * / %)"
+                .to_string(),
+        );
+    }
+    // Only high variables that actually appear in the output can leak.
+    let mut used = std::collections::HashSet::new();
+    ni_collect_idents(expr, &mut used);
+    let effective: Vec<&str> = high_vars
+        .iter()
+        .map(String::as_str)
+        .filter(|h| used.contains(*h))
+        .collect();
+    if effective.is_empty() {
+        // The output mentions no high variable → trivially independent.
+        return NiOutcome::Independent;
+    }
+    let highs: std::collections::HashSet<&str> = effective.iter().copied().collect();
+    Z3_CTX.with(|ctx| {
+        let empty = HashMap::new();
+        let renamed = ni_rename_high(expr, &highs);
+        let (Some(out1), Some(out2)) = (
+            translate_int(ctx, expr, &empty),
+            translate_int(ctx, &renamed, &empty),
+        ) else {
+            return NiOutcome::Unknown(
+                "translation to Z3 failed for the return expression".to_string(),
+            );
+        };
+        let solver = z3::Solver::new(ctx);
+        solver.assert(&out1._eq(&out2).not());
+        match solver.check() {
+            z3::SatResult::Unsat => NiOutcome::Independent,
+            z3::SatResult::Sat => {
+                let hv = effective[0].to_string();
+                match solver.get_model() {
+                    Some(m) => {
+                        let ev = |x: &Int| -> String {
+                            m.eval(x, true)
+                                .and_then(|v| v.as_i64())
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "<?>".to_string())
+                        };
+                        let a = Int::new_const(ctx, hv.clone());
+                        let b = Int::new_const(ctx, format!("{hv}{NI_COPY_SUFFIX}"));
+                        NiOutcome::Leak {
+                            high_var: hv,
+                            lo_in: ev(&a),
+                            hi_in: ev(&b),
+                            lo_out: ev(&out1),
+                            hi_out: ev(&out2),
+                        }
+                    }
+                    None => NiOutcome::Leak {
+                        high_var: hv,
+                        lo_in: "<?>".to_string(),
+                        hi_in: "<?>".to_string(),
+                        lo_out: "<?>".to_string(),
+                        hi_out: "<?>".to_string(),
+                    },
+                }
+            }
+            z3::SatResult::Unknown => {
+                NiOutcome::Unknown("Z3 returned Unknown for the non-interference query".to_string())
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod ni_selfcomp_tests {
+    use super::*;
+    use crate::parse;
+
+    fn return_expr(src: &str) -> Node {
+        let (prog, _) = parse(src);
+        let Node::Program(stmts) = prog else {
+            panic!("not a program");
+        };
+        for s in stmts {
+            let Node::Function { body, .. } = s.node else {
+                continue;
+            };
+            let Node::Block { stmts, .. } = *body else {
+                continue;
+            };
+            for st in stmts {
+                if let Node::ReturnStatement { value: Some(e), .. } = st {
+                    return *e;
+                }
+            }
+        }
+        panic!("no return expr found");
+    }
+
+    #[test]
+    fn independent_when_high_cancels() {
+        // (a + b) - b == a — independent of high `b`.
+        let e = return_expr("fn f(int a, int b) -> int { return (a + b) - b; }\n");
+        assert_eq!(
+            prove_noninterference(&e, &["b".to_string()]),
+            NiOutcome::Independent
+        );
+    }
+
+    #[test]
+    fn independent_when_high_absent() {
+        let e = return_expr("fn f(int a, int b) -> int { return a * 2; }\n");
+        assert_eq!(
+            prove_noninterference(&e, &["b".to_string()]),
+            NiOutcome::Independent
+        );
+    }
+
+    #[test]
+    fn leak_when_output_depends_on_high() {
+        // a + b depends on high `b`.
+        let e = return_expr("fn f(int a, int b) -> int { return a + b; }\n");
+        assert!(matches!(
+            prove_noninterference(&e, &["b".to_string()]),
+            NiOutcome::Leak { .. }
+        ));
+    }
+}
