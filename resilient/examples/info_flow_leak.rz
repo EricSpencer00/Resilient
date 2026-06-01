@@ -1,0 +1,26 @@
+// RES-2824: information-flow leak — this example is REJECTED at compile
+// time, on purpose. `publish` is a `#[public]` sink that returns the
+// value of the `#[secret]` source `read_secret` directly, without
+// routing it through a `#[declassify]` function. The info-flow pass
+// reports the explicit flow and `rz check` exits non-zero.
+//
+// Compare with info_flow_declassify.rz, which launders the value and
+// therefore compiles. This file carries a sibling `.interactive` marker
+// so the stdout golden harness skips it; the rejection is asserted by
+// tests/info_flow_smoke.rs instead.
+
+#[secret]
+fn read_secret(int seed) -> int {
+    return seed * 7 + 3;
+}
+
+#[public]
+fn publish(int seed) -> int {
+    return read_secret(seed);
+}
+
+fn main() {
+    println(publish(5));
+}
+
+main();
