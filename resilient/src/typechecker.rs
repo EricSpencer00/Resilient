@@ -638,6 +638,39 @@ fn is_pinned_int(t: &Type) -> bool {
     )
 }
 
+/// RES-2831: is `t` a type that the `[]` index operator can never apply
+/// to? The runtime only indexes arrays, strings, and maps (maps carry
+/// `Type::Any`), so anything that resolves to a concrete non-sequence
+/// type is an unsound index at compile time. `Array`, `String`, `Any`,
+/// and unresolved inference variables (`Var`) are deliberately *not*
+/// listed: they are either indexable or still-unknown, and rejecting
+/// them would produce false positives on generic / inferred targets.
+fn is_non_indexable(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Int
+            | Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::UInt8
+            | Type::UInt16
+            | Type::UInt32
+            | Type::UInt64
+            | Type::Float
+            | Type::Float32
+            | Type::Bool
+            | Type::Char
+            | Type::Bytes
+            | Type::Void
+            | Type::Function { .. }
+            | Type::Range
+            | Type::Result
+            | Type::Option(_)
+            | Type::Struct(_)
+            | Type::Tuple(_)
+    )
+}
+
 fn check_numeric_same_type(op: &str, left: &Type, right: &Type) -> Result<Type, String> {
     match (left, right) {
         (Type::Int, Type::Int) => Ok(Type::Int),
@@ -8696,6 +8729,16 @@ impl TypeChecker {
             Node::IndexExpression { target, index, .. } => {
                 let tgt_ty = self.check_node(target)?;
                 let idx_ty = self.check_node(index)?;
+                // RES-2831: the target must be indexable at all. The
+                // runtime only indexes arrays, strings, and maps; `[]`
+                // on any other concrete type faults at runtime
+                // ("Cannot index ..."), so reject it at compile time.
+                if is_non_indexable(&tgt_ty) {
+                    return Err(format!(
+                        "cannot index a value of type {} — only arrays, strings, and maps support `[]` indexing",
+                        tgt_ty
+                    ));
+                }
                 // RES-405: array/string indexing must use an integer
                 // index. Reject obvious type errors like `arr["key"]`
                 // while keeping Map targets permissive (Any index).
@@ -8762,6 +8805,14 @@ impl TypeChecker {
                 // RES-406: validate index type for array/string targets.
                 let tgt_ty = self.check_node(target)?;
                 let idx_ty = self.check_node(index)?;
+                // RES-2831: reject index-assignment to a non-indexable
+                // target (mirrors the IndexExpression check).
+                if is_non_indexable(&tgt_ty) {
+                    return Err(format!(
+                        "cannot index a value of type {} — only arrays, strings, and maps support `[]` indexing",
+                        tgt_ty
+                    ));
+                }
                 if matches!(tgt_ty, Type::Array | Type::String)
                     && !matches!(idx_ty, Type::Int | Type::Any)
                     && !is_pinned_int(&idx_ty)
