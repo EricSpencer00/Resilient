@@ -10,7 +10,7 @@ Complete reference for every builtin function available in Resilient.
 | Math (basic) | `abs`, `min`, `max`, `clamp`, `to_float`, `to_int` |
 | Math (float) | `sqrt`, `pow`, `floor`, `ceil`, `sin`, `cos`, `tan`, `atan2`, `ln`, `log`, `exp` |
 | Bit casting | `as_int8`, `as_int16`, `as_int32`, `as_int64`, `as_uint8`, `as_uint16`, `as_uint32`, `as_uint64` |
-| Time | `clock_ms`, `clock_now`, `clock_elapsed` |
+| Time | `clock_ms`, `clock_now`, `clock_elapsed`, `datetime_now`, `datetime_from_unix`, `datetime_to_unix`, `datetime_format`, `datetime_parse` |
 | Random | `random_int`, `random_float` |
 | String | `len`, `push`, `pop`, `slice`, `split`, `trim`, `contains`, `to_upper`, `to_lower`, `replace`, `format`, `starts_with`, `ends_with`, `repeat`, `char_at`, `pad_left`, `pad_right` |
 | Parsing | `parse_int`, `parse_float` |
@@ -319,6 +319,56 @@ Return milliseconds elapsed since `start` (from `clock_ms()`).
 let t0 = clock_ms();
 // ... do work ...
 println(clock_elapsed(t0));  // ms elapsed
+```
+
+## Date / Time Functions
+
+The `DateTime` struct has fields `year`, `month`, `day`, `hour`, `minute`,
+`second`, and `nanos`.
+
+### `datetime_now`
+**Signature:** `datetime_now() -> DateTime`
+
+Return the current system time as a `DateTime` struct in UTC-style calendar
+fields.
+
+**Example:**
+```rust
+let now = datetime_now();
+println(datetime_format(now, "%Y-%m-%d %H:%M:%S"));
+```
+
+### `datetime_from_unix`
+**Signature:** `datetime_from_unix(secs: int) -> DateTime`
+
+Convert Unix seconds since `1970-01-01 00:00:00` into a `DateTime` struct.
+
+### `datetime_to_unix`
+**Signature:** `datetime_to_unix(dt: DateTime) -> int`
+
+Convert a `DateTime` struct back into Unix seconds.
+
+### `datetime_format`
+**Signature:** `datetime_format(dt: DateTime, fmt: string) -> string`
+
+Format a `DateTime` using `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, and `%%`.
+
+**Example:**
+```rust
+let dt = datetime_from_unix(1705276800);
+println(datetime_format(dt, "%Y-%m-%d"));
+```
+
+### `datetime_parse`
+**Signature:** `datetime_parse(s: string, fmt: string) -> Result[DateTime]`
+
+Parse a date/time string using the same format codes accepted by
+`datetime_format`. On success returns `Ok(DateTime)`; on failure returns
+`Err(message)`.
+
+**Example:**
+```rust
+let result = datetime_parse("2024-01-15", "%Y-%m-%d");
 ```
 
 ---
