@@ -158,12 +158,30 @@ impl Formatter {
 
     fn fmt_stmt(&mut self, node: &Node) {
         match node {
-            Node::Use { path, alias, .. } => {
-                if let Some(ns) = alias {
-                    self.write_args(format_args!("use \"{}\" as {};", path, ns));
-                } else {
-                    self.write_args(format_args!("use \"{}\";", path));
+            Node::Use {
+                path,
+                alias,
+                selectors,
+                is_pub,
+                ..
+            } => {
+                if *is_pub {
+                    self.write("pub ");
                 }
+                self.write_args(format_args!("use \"{}\"", path));
+                if let Some(ns) = alias {
+                    self.write_args(format_args!(" as {}", ns));
+                } else if let Some(selectors) = selectors {
+                    self.write(" { ");
+                    for (i, selector) in selectors.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(selector);
+                    }
+                    self.write(" }");
+                }
+                self.write(";");
                 self.newline();
             }
             Node::Function {

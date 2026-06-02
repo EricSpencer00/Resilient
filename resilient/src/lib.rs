@@ -2364,11 +2364,23 @@ enum Node {
     /// RES-360: optional `as NAME` suffix creates a namespace alias.
     /// Declarations imported from the file are bound as `NAME::decl`
     /// instead of being merged directly into the current scope.
+    ///
+    /// RES-2541: `pub use` marks the imported declarations public so
+    /// the current module can re-export them. A selective form,
+    /// `use "file" { A, B }`, imports only the named declarations.
     Use {
         path: String,
         /// RES-360: namespace alias from `use "file" as name;`.
         /// `None` preserves the original unqualified-import behaviour.
         alias: Option<String>,
+        /// RES-2541: optional selective import / re-export list from
+        /// `use "file" { A, B };`. `None` preserves flat import
+        /// behaviour. The selector names are matched against the
+        /// imported declaration names before any namespace rename.
+        selectors: Option<Vec<String>>,
+        /// RES-2541: `pub use` re-exports the imported declarations to
+        /// downstream importers of the current module.
+        is_pub: bool,
         /// RES-088: span of the `use` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -3972,8 +3984,14 @@ impl Parser {
                 }
                 node
             }
+            Token::Use => self
+                .parse_use_statement_with_visibility(true)
+                .unwrap_or_else(|| Node::Block {
+                    stmts: Vec::new(),
+                    span: self.span_at_current(),
+                }),
             _ => {
-                self.record_error("`pub` must be followed by `fn` or `struct`".to_string());
+                self.record_error("`pub` must be followed by `fn`, `struct`, or `use`".to_string());
                 Node::Block {
                     stmts: Vec::new(),
                     span: self.span_at_current(),
@@ -7021,10 +7039,17 @@ impl Parser {
         }
     }
 
-    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, alias, span }`.
+    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, alias, selectors, is_pub, span }`.
     /// RES-360: `use "path" as name;` — namespaced import.
+    /// RES-2541: `pub use "path";` marks the imported declarations
+    /// public; `use "path" { A, B };` selectively imports only the
+    /// named declarations.
     /// Also supports `use std::module;` and `use std::module as alias;`.
     fn parse_use_statement(&mut self) -> Option<Node> {
+        self.parse_use_statement_with_visibility(false)
+    }
+
+    fn parse_use_statement_with_visibility(&mut self, is_pub: bool) -> Option<Node> {
         self.next_token(); // consume 'use'
         let path = match &self.current_token {
             Token::StringLiteral(s) => s.clone(),
@@ -7070,12 +7095,50 @@ impl Parser {
         } else {
             None
         };
+        let selectors = if self.peek_token == Token::LeftBrace {
+            self.next_token();
+            self.next_token();
+            let mut selectors = Vec::new();
+            while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+                match &self.current_token {
+                    Token::Identifier(name) => selectors.push(name.clone()),
+                    _ => {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected identifier inside selective `use`, found {}",
+                            tok
+                        ));
+                        return None;
+                    }
+                }
+                self.next_token();
+                if self.current_token == Token::Comma {
+                    self.next_token();
+                } else if self.current_token != Token::RightBrace {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `,` or `}}` in selective `use`, found {}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+            if selectors.is_empty() {
+                self.record_error("Selective `use` requires at least one name".to_string());
+                return None;
+            }
+            Some(selectors)
+        } else {
+            None
+        };
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Some(Node::Use {
             path,
             alias,
+            selectors,
+            is_pub,
             span: self.span_at_current(),
         })
     }
