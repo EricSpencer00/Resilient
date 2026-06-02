@@ -48,14 +48,13 @@ Welcome! Resilient is an open project for safety-critical embedded systems. Cont
 ## Picking and Claiming a Ticket
 
 1. Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
-2. Look for issues labeled `agent-ready` or without any assignment
-3. Comment on the issue: `"I'll take this"` (or similar)
-4. Create a branch named `res-NNN-short-title` (e.g., `res-376-contributing-guide`)
+2. Look for issues labeled `agent-ready`
+3. Create a branch named `res-NNN-short-title` (e.g., `res-376-contributing-guide`)
    - `NNN` is the issue number
    - Use lowercase with hyphens for multi-word titles
-5. Open a **draft PR** early with `Closes #NNN` in the description
-   - This signals that the ticket is taken and prevents duplicate work
-   - Convert to ready-for-review when you're done
+4. Open a **draft PR** immediately with `Closes #NNN` in the description
+   - The draft PR is the canonical claim signal
+   - Convert to ready-for-review with `agent-scripts/ready-or-bail.sh --pr <number>` when you're done
 
 ---
 
@@ -326,55 +325,33 @@ When you modify golden files:
 
 ## Agent Contributors
 
-### Ticket Lifecycle
+### Live Ticket Flow
 
-The issue board uses a simple workflow:
+Resilient tracks active work in GitHub Issues and pull requests. The
+`agent-ready` issue template is the live queue.
 
 - **OPEN**: Ticket is available; nobody is actively working on it
-- **IN_PROGRESS**: An agent or human has claimed it (comment + draft PR)
-- **DONE**: PR is merged; the issue closes automatically when you add `Closes #NNN` in the PR body
+- **CLAIMED**: An agent has opened a draft PR with `Closes #NNN`
+- **DONE**: PR is merged; the issue closes automatically when you add
+  `Closes #NNN` in the PR body
 
 ### Workflow
 
-1. **Claim** the ticket by commenting with intent
-2. **Create a draft PR** immediately with `Closes #NNN` in the body
-3. **Push after every commit** — don't accumulate local commits
-4. **Mark ready for review** once all CI is green and the implementation is complete
-5. **Monitor for feedback** via the PR comment subscription
-6. Merge is automatic once approved; the issue closes
+1. **Pick** an `agent-ready` issue.
+2. **Create a branch** named `res-NNN-short-title`.
+3. **Open a draft PR** immediately with `Closes #NNN` in the body.
+4. **Push after every commit** — don't accumulate local commits.
+5. **Mark ready for review** with `agent-scripts/ready-or-bail.sh --pr <number>` once the implementation and CI are green.
+6. **Monitor for feedback** via the PR comment subscription.
+7. Merge is automatic once CI is green and the PR has been synced; the issue closes.
 
-### Creating New Tickets
+### Legacy Local Ledger
 
-Always use `scripts/new-ticket.sh` to create new board tickets. It automatically assigns the next unused `RES-NNN` id and places the file in `.board/tickets/OPEN/`:
-
-```bash
-scripts/new-ticket.sh "Short imperative title"
-```
-
-This prevents ID collisions that arise from manually chosen numbers.
-
-### Pre-commit Hook — Ticket ID Collision Guard
-
-A pre-commit hook prevents commits that introduce duplicate ticket IDs. Install it once per clone:
-
-```bash
-scripts/install-hooks.sh
-```
-
-Or install manually:
-
-```bash
-cp scripts/pre-commit .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-```
-
-The hook runs `scripts/check-ticket-ids.sh`, which scans `.board/tickets/OPEN/`, `IN_PROGRESS/`, and `DONE/` for `id: RES-NNN` front-matter and aborts the commit when a collision is found.
-
-You can also run the check independently (useful in CI):
-
-```bash
-scripts/check-ticket-ids.sh
-```
+The `.board/` tree and the `scripts/new-ticket.sh` /
+`scripts/check-ticket-ids.sh` helpers remain in-tree for archive
+maintenance and historical migration work. They are not the live queue
+and should not be used to start new work unless you are explicitly
+auditing or migrating historical tickets.
 
 ### Special Notes
 

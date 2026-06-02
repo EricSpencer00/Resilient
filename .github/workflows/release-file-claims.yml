@@ -79,5 +79,5 @@ jobs:
           else
             git add agent-scripts/file-claims.json
             git commit -m "chore: release file claims (+ sweep stale) for ${{ github.event.pull_request.head.ref }}"
-            git push
+            git push origin HEAD:refs/heads/main
           fi

@@ -8,12 +8,10 @@
 # from being dispatched to the same files.
 #
 # RES-2670: as a side-effect, every claim sweeps the file for stale
-# entries whose branch no longer exists on `origin`. The bot-driven
-# `release-file-claims` workflow has been failing for days because
-# branch protection rejects its direct push to `main` (the chore
-# commit cannot satisfy required status checks). Local sweep here
-# is the primary cleanup mechanism — the workflow remains as a
-# best-effort safety net.
+# entries whose branch no longer exists on `origin`. The local sweep
+# here is the primary cleanup mechanism — the merge-time
+# `release-file-claims` workflow is best-effort only, so stale claims
+# never block a fresh dispatch.
 
 set -euo pipefail
 

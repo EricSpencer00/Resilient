@@ -77,11 +77,12 @@ the perf gate automatically.
 ## The ticket system
 
 Resilient tracks work in [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues).
-Each issue carries a unique `RES-NNN` identifier, a clear goal, and
-concrete acceptance criteria.
+Each issue carries a unique `RES-NNN` identifier, a clear goal,
+priority, roadmap goal, and concrete acceptance criteria.
 
-- **Claiming a ticket**: comment on the issue, then create a branch
-  named `res-NNN-short-title`.
+- **Claiming a ticket**: create a branch named `res-NNN-short-title`
+  and open a draft PR with `Closes #N` in the body. Commenting on the
+  issue is optional.
 - **Landing a ticket**: open a PR with `Closes #N` in the body; the
   commit message should reference the ticket ID
   (e.g. `RES-042: add float division`).

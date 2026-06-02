@@ -10,13 +10,14 @@ file-claims + extension-point system introduced in PR #230.
 | `check-overlaps.sh` | Pre-dispatch: verify files don't conflict with open PRs or active claims |
 | `claim-files.sh` | Register files owned by a branch |
 | `release-claims.sh` | Release claims (called by CI on PR merge) |
-| `pick-ticket.sh` | Select the next `agent-ready` ticket not already in an open PR |
+| `pick-ticket.sh` | Select the next `agent-ready` ticket by priority / roadmap order, skipping open PR claims |
 | `dispatch-agent.sh` | Create worktree + branch + draft PR for a ticket, then record inferred file claims |
 | `agent-handoff.sh` | Post resumable PR handoff comments when model context is lost |
 | `agent-status.sh` | One-screen or JSON view of worktrees, open PRs, claims, and the next ticket |
 | **`verify-scope.sh`** | Guardrail: diff-shape + fmt + clippy + test + overlap, writes JSON report |
 | **`ready-or-bail.sh`** | Runs `verify-scope.sh`; marks PR ready on green, posts failure comment on red |
 | **`orchestrator.sh`** | The grand loop: pick → dispatch → sub-agent → ready-or-bail |
+| **`ralph-loop.sh`** | The reusable open-ended improvement loop, preloaded with the Ralph prompt |
 
 ## Four-layer guardrail architecture
 
@@ -54,10 +55,13 @@ agent-scripts/orchestrator.sh --n 3 --parallel 3
 # Drain the queue.
 agent-scripts/orchestrator.sh --loop
 
+# Drain the queue with the reusable high-leverage prompt.
+agent-scripts/ralph-loop.sh
+
 # Plan without mutating anything.
 agent-scripts/orchestrator.sh --dry-run
 
-# Feed a visual board or monitor.
+# Feed the status dashboard or monitor.
 agent-scripts/agent-status.sh --json
 ```
 
@@ -97,6 +101,11 @@ own pipeline) with `--skip tests --skip clippy --skip fmt`.
   `RES-NNN` in the title/body/branch, or a `res-NNN-*` branch name.
 - It's assigned to a human (non-bot). The Copilot and Claude bot
   accounts are treated as non-human and don't block the pick.
+- When multiple issues are eligible, it prefers explicit `Priority`
+  values first (`P0` before `P1`, etc.), then the lowest numbered
+  roadmap goal (`G7` before `G22`), then the oldest ticket. Legacy
+  issues without those fields fall back to the default `P2` / no-goal
+  ordering.
 
 ## Dispatch rules
 

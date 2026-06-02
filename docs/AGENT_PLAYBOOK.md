@@ -28,11 +28,11 @@ safely re-converges.
 
 | Stage | Mechanism | Output |
 |---|---|---|
-| Pick | `pick-ticket.sh` | `<issue-number>\t<title>\tagent-ready` |
+| Pick | `pick-ticket.sh` | `<issue-number>\t<title>` from the highest-priority eligible issue |
 | Dispatch | `dispatch-agent.sh --issue N` | Worktree at `.claude/worktrees/res-N/`, draft PR with `Closes #N` |
 | Implement | (agent free-form) | Follow feature-isolation pattern in CLAUDE.md |
 | Verify | `ready-or-bail.sh --pr P` | Runs `verify-scope.sh` + `sync-integration.sh`; marks PR ready on green |
-| Sync | `sync-integration.sh` (called by ready-or-bail) | Rebases branch onto `origin/agents/integration`, fast-forwards integration, stamps PR with `integration-synced` label |
+| Sync | `sync-integration.sh` (called by ready-or-bail) | Rebases branch onto `origin/main`, fast-forwards `agents/integration`, stamps PR with `integration-synced` label |
 | Auto-merge | `agent-auto-merge.yml` (CI) | Enables `gh pr merge --auto` when every check is green AND PR is labeled `integration-synced` |
 | Follow-main | `integration-follow-main.yml` (CI) | Fast-forwards `agents/integration` to `main` after every merge |
 | Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch |
@@ -59,10 +59,10 @@ Claims are automatically released by
 on PR merge, and by `agent-scripts/release-claims.sh` locally when a
 branch is abandoned.
 
-**Stale-claim rule**: any claim older than 30 minutes (measured by the
-commit timestamp on the claim-adding commit on `main`) is treated as
-abandoned. A new dispatcher may overwrite it. This is enforced by
-`check-overlaps.sh` treating stale entries as absent.
+**Stale-claim rule**: a claim is stale when its branch no longer has an
+open PR. `check-overlaps.sh` treats stale entries as informational only,
+so they do not block a fresh dispatch. The local claim sweep clears them
+opportunistically when a new claim is recorded.
 
 ### 2b. Append-only extension points
 
@@ -104,7 +104,7 @@ first, then `sync-integration.sh`. If either fails, the PR stays draft.
 `sync-integration.sh` does:
 
 1. `git fetch origin` and rebase the current branch onto
-   `origin/agents/integration`.
+   `origin/main`.
 2. If the rebase hits conflicts, check each file against the
    append-only allowlist (main.rs, typechecker.rs, lexer_logos.rs,
    file-claims.json). If all conflict files are in the allowlist, run
@@ -222,6 +222,12 @@ One command to drain the queue:
 
 ```bash
 agent-scripts/orchestrator.sh --loop
+```
+
+One command to run the reusable high-leverage loop:
+
+```bash
+agent-scripts/ralph-loop.sh
 ```
 
 One command to land the already-done work:
