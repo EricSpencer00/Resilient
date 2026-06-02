@@ -1,0 +1,8 @@
+// RES-2541: golden test for `pub use`.
+// Importers of this module should see both the namespace re-export
+// and the selective symbol re-exports.
+use "pub_use_lib.rz";
+
+parser::greet();
+Type();
+TypeKind();

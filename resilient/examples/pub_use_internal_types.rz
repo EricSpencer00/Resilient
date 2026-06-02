@@ -1,0 +1,9 @@
+// RES-2541: helper module for selective `pub use` re-exports.
+// Imported via `pub use "pub_use_internal_types.rz" { Type, TypeKind };`.
+fn Type() {
+    println("Type");
+}
+
+fn TypeKind() {
+    println("TypeKind");
+}
