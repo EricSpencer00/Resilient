@@ -802,8 +802,9 @@ See the [SYNTAX.md](SYNTAX.md) file for detailed syntax requirements and example
 ## Project Status
 
 Active development happens one ticket at a time. See [ROADMAP.md](ROADMAP.md)
-for the goalpost ladder and [GitHub Issues (closed)](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aclosed) for
-the full ledger. Each commit of the form `RES-NNN: summary` closes one ticket.
+for the goalpost ladder and [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
+for the live queue; closed issues are the historical ledger. Each commit
+of the form `RES-NNN: summary` closes one ticket.
 
 ### What works today
 

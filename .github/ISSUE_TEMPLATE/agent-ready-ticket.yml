@@ -21,6 +21,26 @@ body:
       description: What should exist or work after this ticket is done? One paragraph.
     validations:
       required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How urgent is this work?
+      options:
+        - P0 — blocks shipping or safety
+        - P1 — high leverage
+        - P2 — standard
+        - P3 — backlog / nice to have
+    validations:
+      required: true
+  - type: input
+    id: roadmap-goal
+    attributes:
+      label: Roadmap goal
+      description: Which current ROADMAP.md goal or milestone does this serve? Use `G#` when applicable, or `Infra / tooling` for work that does not map cleanly to a goalpost.
+      placeholder: "G7 — Real type checker"
+    validations:
+      required: true
   - type: textarea
     id: files-to-touch
     attributes:
@@ -45,31 +65,3 @@ body:
     attributes:
       label: Out of scope
       description: Explicitly name things NOT to do in this ticket
-  - type: dropdown
-    id: roadmap-goal
-    attributes:
-      label: Roadmap goal
-      description: Which roadmap goalpost does this serve? (see ROADMAP.md)
-      options:
-        - G1 — Hello World
-        - G2 — Arithmetic
-        - G3 — Control flow
-        - G4 — Functions
-        - G5 — Strings
-        - G6 — Structs
-        - G7 — Pattern matching
-        - G8 — Modules
-        - G9 — Effect system
-        - G10 — Type inference
-        - G11 — LSP
-        - G12 — Verifier
-        - G13 — Package manager
-        - G14 — Embedded runtime
-        - G15 — JIT
-        - G16 — FFI
-        - G17 — Concurrency
-        - G18 — Self-hosting
-        - G19 — Stability
-        - G20 — Release
-        - G21+ — Future
-        - Infra / tooling (no roadmap goal)

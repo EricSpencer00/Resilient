@@ -22,6 +22,9 @@
 #   AGENT_CMD — command used to run the sub-agent inside each worktree.
 #     Default: `claude -p --permission-mode acceptEdits`. Override to plug in
 #     other CLIs (e.g. `codex` or a mock for testing).
+#   AGENT_LOOP_PROMPT_FILE — optional Markdown file whose contents are
+#     prepended to the per-ticket prompt. Use this to steer the loop toward
+#     a reusable operating mode such as the Ralph improvement loop.
 
 set -euo pipefail
 
@@ -33,6 +36,7 @@ UNBOUNDED=0
 PARALLEL=1
 DRY_RUN=0
 AGENT_CMD="${AGENT_CMD:-claude -p --permission-mode acceptEdits}"
+LOOP_PROMPT_FILE="${AGENT_LOOP_PROMPT_FILE:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,7 +80,12 @@ run_one() {
   gh issue view "$issue" --json title,body -q '.title + "\n\n" + .body' > "$body_file"
 
   local prompt_file="/tmp/agent-prompt-${issue}.md"
-  cat > "$prompt_file" <<EOF
+  {
+    if [ -n "$LOOP_PROMPT_FILE" ] && [ -f "$LOOP_PROMPT_FILE" ]; then
+      cat "$LOOP_PROMPT_FILE"
+      printf '\n\n---\n\n'
+    fi
+    cat <<EOF
 You are working on Resilient. A worktree is prepared at:
   ${worktree}
 Branch is pushed and tracks origin. Draft PR is #${pr} with 'Closes #${issue}'.
@@ -103,6 +112,7 @@ Work in this order:
 
 When you're finished (guardrail green OR exhausted — don't loop forever on a stuck ticket), exit. Report under 300 words what you shipped and whether the PR is ready or left draft.
 EOF
+  } > "$prompt_file"
 
   log "launching sub-agent for #${issue}"
   (cd "$worktree" && $AGENT_CMD < "$prompt_file") || log "agent exited non-zero for #${issue}"
@@ -122,10 +132,16 @@ EOF
 }
 
 pick_next() {
-  local excl=("$@")
   local flags=()
-  for e in "${excl[@]}"; do flags+=(--exclude "$e"); done
-  bash "$SCRIPT_DIR/pick-ticket.sh" "${flags[@]}" 2>/dev/null | cut -f1
+  if (($# > 0)); then
+    local e
+    for e in "$@"; do flags+=(--exclude "$e"); done
+  fi
+  if ((${#flags[@]} > 0)); then
+    bash "$SCRIPT_DIR/pick-ticket.sh" "${flags[@]}" 2>/dev/null | cut -f1
+  else
+    bash "$SCRIPT_DIR/pick-ticket.sh" 2>/dev/null | cut -f1
+  fi
 }
 
 EXCLUDED=()
@@ -137,7 +153,11 @@ while true; do
     PIDS=()
     BATCH=()
     for ((k=0; k<PARALLEL; k++)); do
-      issue="$(pick_next "${EXCLUDED[@]}")"
+      if (( ${#EXCLUDED[@]} > 0 )); then
+        issue="$(pick_next "${EXCLUDED[@]}")"
+      else
+        issue="$(pick_next)"
+      fi
       [ -z "$issue" ] && break
       EXCLUDED+=("$issue")
       BATCH+=("$issue")
@@ -151,7 +171,11 @@ while true; do
     for pid in "${PIDS[@]}"; do wait "$pid" || true; done
     COUNT=$(( COUNT + ${#BATCH[@]} ))
   else
-    issue="$(pick_next "${EXCLUDED[@]}")"
+    if (( ${#EXCLUDED[@]} > 0 )); then
+      issue="$(pick_next "${EXCLUDED[@]}")"
+    else
+      issue="$(pick_next)"
+    fi
     [ -z "$issue" ] && { log "no more tickets"; break; }
     EXCLUDED+=("$issue")
     run_one "$issue" || true

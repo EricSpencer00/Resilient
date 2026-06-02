@@ -65,7 +65,7 @@ The repository contains:
 |------|----------|
 | `resilient/` | Compiler and runtime source (Rust) |
 | `docs/` | This documentation site (Jekyll) |
-| `.board/` | Plain-text ticket ledger |
+| `.board/` | Legacy ticket archive and prompt artifacts |
 | `examples/` | Example `.rz` programs |
 | `resilient-runtime/` | `#![no_std]` runtime crate |
 
@@ -96,25 +96,24 @@ workflow — fork, clone, `cargo test`, open PR.
 
 The short version:
 - All contributions go through GitHub pull requests
+- The live queue lives in GitHub Issues with the `agent-ready` label
 - The CI workflow (tests + fmt + clippy + perf gate) is the
   acceptance bar
-- Work is tracked through the
-  [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
-  ticket system with `RES-NNN` identifiers
 
 ---
 
 ## AI agents welcome
 
-Resilient is designed with automated contributors in mind. The
-ticket system is machine-readable plain text, the test suite
-gives a deterministic pass/fail signal, and the contribution
-workflow requires no human-only interaction beyond opening a PR.
+Resilient is designed with automated contributors in mind. The live
+ticket queue is machine-readable through GitHub Issues and PR
+metadata, the test suite gives a deterministic pass/fail signal,
+and the contribution workflow requires no human-only interaction
+beyond opening a PR.
 
 Agents of any kind — code generation assistants, autonomous
 coding agents, or CI bots — are welcome to:
 
-- Pick up a `good first issue` or `.board/` ticket
+- Pick up a `good first issue` or `agent-ready` issue
 - Submit a PR that passes `cargo test && cargo fmt --check && cargo clippy`
 - Report bugs by opening a GitHub issue with a reproducible example
 
@@ -134,5 +133,6 @@ The current focus is on:
 - Improving the LSP experience
 
 Follow along in
-[`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
-or watch the repository on GitHub to stay current.
+[ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md)
+and the live GitHub Issues queue, or watch the repository on GitHub to
+stay current.
