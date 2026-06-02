@@ -9757,6 +9757,57 @@ impl TypeChecker {
                     return Ok(Type::Option(Box::new(arg_type)));
                 }
 
+                // RES-2556: HTTP builtins accept optional request
+                // headers and timeout arguments. The type system only
+                // tracks the required string parameters; the optional
+                // request options are validated at runtime because the
+                // language does not yet model `map<string, string>` as
+                // a first-class type.
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
+                    && matches!(callee_name.as_str(), "http_get" | "http_post")
+                {
+                    let (required_count, max_count) = if callee_name == "http_get" {
+                        (1, 3)
+                    } else {
+                        (2, 4)
+                    };
+                    if arguments.len() < required_count || arguments.len() > max_count {
+                        return Err(format!(
+                            "{} expects between {} and {} argument(s), got {}",
+                            callee_name,
+                            required_count,
+                            max_count,
+                            arguments.len()
+                        ));
+                    }
+                    let url_ty = self.check_node(&arguments[0])?;
+                    if !compatible(&url_ty, &Type::String) {
+                        return Err(format!(
+                            "{} URL must be a string, got {}",
+                            callee_name, url_ty
+                        ));
+                    }
+                    if callee_name == "http_post" {
+                        let body_ty = self.check_node(&arguments[1])?;
+                        if !compatible(&body_ty, &Type::String) {
+                            return Err(format!(
+                                "{} body must be a string, got {}",
+                                callee_name, body_ty
+                            ));
+                        }
+                        for arg in arguments.iter().skip(2) {
+                            self.check_node(arg)?;
+                        }
+                    } else {
+                        for arg in arguments.iter().skip(1) {
+                            self.check_node(arg)?;
+                        }
+                    }
+                    return Ok(Type::Result);
+                }
+
                 // RES-410: call-site type inference for numeric polymorphic
                 // builtins registered as (Any, Any) -> Any. When all
                 // arguments agree on the same concrete numeric type,
