@@ -24072,8 +24072,9 @@ impl Interpreter {
             Node::CallExpression {
                 function,
                 arguments,
-                ..
+                span,
             } => {
+                let call_span = *span;
                 // RES-2592: tail-call trampoline signal. When this interpreter
                 // is running inside a #[must_tail_call] function body and sees
                 // a self-recursive call in tail position, emit Value::TailCall
@@ -24542,7 +24543,7 @@ impl Interpreter {
                             // Prepend the target as the implicit `self`.
                             let mut args = vec![target_val];
                             args.extend(self.eval_expressions(arguments)?);
-                            return self.apply_function(&method_val, args);
+                            return self.apply_function_at(&method_val, args, call_span);
                         }
                         // No matching method on this struct — fall
                         // through to the regular `FieldAccess` eval
@@ -24557,7 +24558,7 @@ impl Interpreter {
                         if let Some(method_val) = self.env.get(&mangled) {
                             let mut args = vec![target_val];
                             args.extend(self.eval_expressions(arguments)?);
-                            return self.apply_function(&method_val, args);
+                            return self.apply_function_at(&method_val, args, call_span);
                         }
                     }
                     // RES-2553: primitive type method dispatch — `impl int { fn abs(self) }`,
@@ -24576,7 +24577,7 @@ impl Interpreter {
                         if let Some(method_val) = self.env.get(&mangled) {
                             let mut args = vec![target_val];
                             args.extend(self.eval_expressions(arguments)?);
-                            return self.apply_function(&method_val, args);
+                            return self.apply_function_at(&method_val, args, call_span);
                         }
                     }
                 }
@@ -24996,7 +24997,7 @@ impl Interpreter {
                 }
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
-                self.apply_function(&func, args)
+                self.apply_function_at(&func, args, call_span)
             }
             Node::ArrayLiteral { items, .. } => {
                 let mut out = Vec::with_capacity(items.len());
@@ -27223,6 +27224,15 @@ impl Interpreter {
     }
 
     fn apply_function(&mut self, func: &Value, args: Vec<Value>) -> RResult<Value> {
+        self.apply_function_at(func, args, span::Span::default())
+    }
+
+    fn apply_function_at(
+        &mut self,
+        func: &Value,
+        args: Vec<Value>,
+        call_span: span::Span,
+    ) -> RResult<Value> {
         match func {
             Value::Function(fv) => {
                 let FunctionValue {
@@ -27289,7 +27299,7 @@ impl Interpreter {
                 let mut child_stack = self.call_stack.clone();
                 child_stack.push(crate::error_stack_traces::StackFrame {
                     fn_name: name.clone(),
-                    call_span: crate::span::Span::default(),
+                    call_span,
                 });
 
                 let mut interpreter = Interpreter {
