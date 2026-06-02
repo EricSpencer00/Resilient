@@ -8516,6 +8516,36 @@ impl TypeChecker {
                             }
                         }
                     }
+                    let next_mangled = format!("{}$next", sname);
+                    let implements_iterator = self.env.get(&next_mangled).is_some()
+                        || self
+                            .trait_impls
+                            .get(sname.as_str())
+                            .is_some_and(|traits| traits.contains("Iterator"))
+                        || crate::iterator_protocol::is_iterator(sname.as_str());
+                    if implements_iterator {
+                        match field.as_str() {
+                            "collect" => {
+                                return Ok(Type::Function {
+                                    params: vec![],
+                                    return_type: Box::new(Type::Array),
+                                });
+                            }
+                            "map" | "filter" => {
+                                return Ok(Type::Function {
+                                    params: vec![Type::Any],
+                                    return_type: Box::new(Type::Array),
+                                });
+                            }
+                            "take" | "skip" => {
+                                return Ok(Type::Function {
+                                    params: vec![Type::Int],
+                                    return_type: Box::new(Type::Array),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
                     // RES-407: struct is known, field not found, and no
                     // impl method or default trait method — report a clear diagnostic.
                     let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
@@ -8574,6 +8604,10 @@ impl TypeChecker {
                         "len" => Type::Function {
                             params: vec![],
                             return_type: Box::new(Type::Int),
+                        },
+                        "collect" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Array),
                         },
                         // RES-2734: `has` is the array-element membership method;
                         // `contains` is kept for backward compat.
@@ -8669,6 +8703,12 @@ impl TypeChecker {
                             return Ok(Type::Function {
                                 params: vec![Type::Any],
                                 return_type: Box::new(Type::Bool),
+                            });
+                        }
+                        "collect" => {
+                            return Ok(Type::Function {
+                                params: vec![],
+                                return_type: Box::new(Type::Array),
                             });
                         }
                         _ => {}
