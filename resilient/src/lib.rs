@@ -654,6 +654,8 @@ mod session_types;
 mod snapshot_regression;
 mod stack_contracts;
 mod static_assert;
+// RES-2613: benchmark framework with `bench` blocks and `rz bench` subcommand.
+mod bench;
 // RES-2618: f32 single-precision float type.
 mod float32;
 // RES-2604: Display trait — fmt(self) -> string for custom to_string formatting.
@@ -869,6 +871,10 @@ enum Token {
     /// RES-2579: `defer <expr>;` — run <expr> when the enclosing function
     /// exits, in LIFO order (last deferred = first executed).
     Defer,
+    /// RES-2613: `bench "name" { body }` — benchmark block for performance
+    /// measurement. Bench blocks are silently skipped during normal execution
+    /// (like `#[cfg(test)]` guards) but collected and timed by `rz bench`.
+    Bench,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -1035,6 +1041,7 @@ impl Token {
             Token::Where => Cow::Borrowed("`where`"),
             Token::StaticAssert => Cow::Borrowed("`static_assert`"),
             Token::Defer => Cow::Borrowed("`defer`"),
+            Token::Bench => Cow::Borrowed("`bench`"),
             Token::Underscore => Cow::Borrowed("`_`"),
             Token::Default => Cow::Borrowed("`default`"),
             Token::Dot => Cow::Borrowed("`.`"),
@@ -1660,6 +1667,7 @@ impl Lexer {
                         "where" => Token::Where,
                         "static_assert" => Token::StaticAssert,
                         "defer" => Token::Defer,
+                        "bench" => Token::Bench,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -3232,6 +3240,13 @@ enum Node {
         message: String,
         span: span::Span,
     },
+    /// RES-2613: `bench "name" { body }` — benchmark block. Silently skipped
+    /// during normal execution; collected and timed by `rz bench` subcommand.
+    BenchBlock {
+        name: String,
+        body: Box<Node>,
+        span: span::Span,
+    },
 }
 
 /// RES-400 PR 2: a single variant inside an `enum` declaration.
@@ -3607,6 +3622,7 @@ impl Parser {
             Token::Assert => Some(self.parse_assert()),
             Token::Assume => Some(self.parse_assume()),
             Token::StaticAssert => Some(crate::static_assert::parse(self)),
+            Token::Bench => Some(crate::bench::parse(self)),
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
@@ -23946,6 +23962,9 @@ impl Interpreter {
                     .push((expr.as_ref().clone(), self.env.clone()));
                 Ok(Value::Void)
             }
+            // RES-2613: bench blocks are silently skipped during normal eval.
+            // They are collected and run by the `rz bench` subcommand.
+            Node::BenchBlock { .. } => Ok(Value::Void),
             // RES-910: emit the control-flow sentinel; the enclosing
             // loop evaluator consumes it.
             Node::Break { .. } => Ok(Value::Break),

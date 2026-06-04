@@ -10087,6 +10087,9 @@ impl TypeChecker {
                 self.check_node(expr)?;
                 Ok(Type::Void)
             }
+            // RES-2613: bench block — silently skipped during normal typecheck.
+            // Will be processed by `rz bench` subcommand.
+            Node::BenchBlock { .. } => Ok(Type::Void),
         }
     }
 
