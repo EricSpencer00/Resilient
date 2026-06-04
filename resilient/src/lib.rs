@@ -27,6 +27,8 @@ mod numeric_utils;
 mod result_option_hof;
 mod string_hof;
 mod type_builtins;
+// RES-2612: compile-time string interning for reduced binary size.
+pub mod string_interning;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;

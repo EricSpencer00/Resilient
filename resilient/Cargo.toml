@@ -147,6 +147,7 @@ rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 regex = "1"
 sha2 = "0.10"
 serde_json = "1"
+parking_lot = "0.12"
 
 # RES-510 PR 3: deps that are CLI-only and don't compile to wasm32
 # (or aren't useful there). Moved out of the unconditional
