@@ -27,6 +27,8 @@ mod numeric_utils;
 mod result_option_hof;
 mod string_hof;
 mod type_builtins;
+// RES-2612: compile-time string interning for reduced binary size.
+pub mod string_interning;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -2710,6 +2712,18 @@ enum Node {
     },
     StringLiteral {
         value: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-2612: Interned string literal created during parsing.
+    /// String literals are automatically interned at parse time to
+    /// reduce binary size and enable O(1) equality checks.
+    /// The intern_id uniquely identifies this string across the program;
+    /// identical strings share the same ID.
+    StringInternLiteral {
+        #[allow(dead_code)]
+        intern_id: usize,
+        content: String,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -8505,10 +8519,14 @@ impl Parser {
                     })
                 }
             }
-            Token::StringLiteral(value) => Some(Node::StringLiteral {
-                value: value.clone(),
-                span: tok_span,
-            }),
+            Token::StringLiteral(value) => {
+                let intern_id = crate::string_interning::intern_string(value.clone());
+                Some(Node::StringInternLiteral {
+                    intern_id,
+                    content: value.clone(),
+                    span: tok_span,
+                })
+            }
             // RES-152: byte-string literal, lexed to Vec<u8>.
             Token::BytesLiteral(value) => Some(Node::BytesLiteral {
                 value: value.clone(),
@@ -8606,6 +8624,33 @@ impl Parser {
                     Err(e) => {
                         self.record_error(format!("string interpolation error: {}", e));
                         Some(Node::StringLiteral { value: raw, span })
+                    }
+                }
+            }
+            // RES-2612: also check interned strings for interpolation patterns,
+            // but silently treat parse failures as plain strings (they may be
+            // format template strings for use with format(), which share the
+            // `{}` syntax but are NOT interpolated strings).
+            Some(Node::StringInternLiteral {
+                ref content, span, ..
+            }) if content.contains('{') => {
+                let raw = content.clone();
+                match crate::string_interp::parse_parts(&raw) {
+                    Ok(Some(parts)) => Some(Node::InterpolatedString { parts, span }),
+                    Ok(None) => Some(Node::StringInternLiteral {
+                        intern_id: crate::string_interning::intern_string(raw.clone()),
+                        content: raw,
+                        span,
+                    }),
+                    Err(_) => {
+                        // RES-2612: if parse_parts fails (e.g. due to empty `{}` in
+                        // format strings), keep it as a plain interned string.
+                        // fmt_validation will validate it if it's a format() call.
+                        Some(Node::StringInternLiteral {
+                            intern_id: crate::string_interning::intern_string(raw.clone()),
+                            content: raw,
+                            span,
+                        })
                     }
                 }
             }
@@ -10001,10 +10046,14 @@ impl Parser {
                 value: *f,
                 span: tok_span,
             }),
-            Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral {
-                value: s.clone(),
-                span: tok_span,
-            }),
+            Token::StringLiteral(s) => {
+                let intern_id = crate::string_interning::intern_string(s.clone());
+                Pattern::Literal(Node::StringInternLiteral {
+                    intern_id,
+                    content: s.clone(),
+                    span: tok_span,
+                })
+            }
             Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral {
                 value: *b,
                 span: tok_span,
@@ -11579,6 +11628,7 @@ fn format_contract_expr(node: &Node) -> String {
         Node::IntegerLiteral { value, .. } => value.to_string(),
         Node::FloatLiteral { value, .. } => value.to_string(),
         Node::StringLiteral { value, .. } => format!("{:?}", value),
+        Node::StringInternLiteral { content, .. } => format!("{:?}", content),
         Node::BooleanLiteral { value, .. } => value.to_string(),
         Node::PrefixExpression {
             operator, right, ..
@@ -11742,6 +11792,22 @@ fn parse_checked_failure_signal(err: &str) -> Option<&str> {
     let rest = err.strip_prefix(CHECKED_FAILURE_SIGNAL_PREFIX)?;
     let (variant, _callee) = rest.split_once(':')?;
     Some(variant)
+}
+
+/// RES-2612 Task 6: intern(string) -> string.
+/// Interns a dynamically-created or runtime string for deduplication.
+fn builtin_intern(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let id = crate::string_interning::intern_string(s.clone());
+            match crate::string_interning::get_interned_string(id) {
+                Some(result) => Ok(Value::String(result)),
+                None => Err("intern: failed to retrieve interned string".to_string()),
+            }
+        }
+        [other] => Err(format!("intern: expected string argument, got {}", other)),
+        _ => Err(format!("intern: expected 1 argument, got {}", args.len())),
+    }
 }
 
 /// RES-920: lookup-and-apply a builtin by name. Used by the
@@ -11938,6 +12004,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_split_last", builtin_string_split_last),
     ("trim", builtin_trim),
     ("contains", builtin_contains),
+    // RES-2612 Task 6: intern(string) -> string for runtime deduplication.
+    ("intern", builtin_intern),
     ("to_upper", builtin_to_upper),
     ("to_lower", builtin_to_lower),
     // RES-412: reverse a string (Unicode-aware) or an array (clones elements).
@@ -24104,6 +24172,10 @@ impl Interpreter {
             Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            // RES-2612: interned strings evaluate to their content (the intern_id
+            // is used for binary size reduction and equality optimization, but at
+            // runtime we just return the actual string value)
+            Node::StringInternLiteral { content, .. } => Ok(Value::String(content.clone())),
             // RES-221: evaluate each part of an interpolated string and
             // concatenate into a single String value.
             Node::InterpolatedString { parts, .. } => {
@@ -26091,6 +26163,8 @@ impl Interpreter {
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            // RES-2612: interned strings evaluate to their content at compile time.
+            Node::StringInternLiteral { content, .. } => Ok(Value::String(content.clone())),
             Node::Identifier { name, .. } => {
                 if evaluating.contains(name) {
                     return Err(format!("error: circular constant definition: '{}'", name));
@@ -28700,6 +28774,10 @@ fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
             Node::StringLiteral { value, .. } => json!({
                 "type": "String",
                 "value": value,
+            }),
+            Node::StringInternLiteral { content, .. } => json!({
+                "type": "String",
+                "value": content,
             }),
             Node::BooleanLiteral { value, .. } => json!({
                 "type": "Bool",

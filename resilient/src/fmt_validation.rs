@@ -63,6 +63,10 @@ pub fn analyze(program: &Node) -> Vec<String> {
 fn static_template(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
     match node {
         Node::StringLiteral { value, .. } => Some(std::borrow::Cow::Borrowed(value.as_str())),
+        // RES-2612: interned strings can be validated as templates.
+        Node::StringInternLiteral { content, .. } => {
+            Some(std::borrow::Cow::Borrowed(content.as_str()))
+        }
         Node::InterpolatedString { parts, .. } => {
             let mut buf = String::new();
             for p in parts {

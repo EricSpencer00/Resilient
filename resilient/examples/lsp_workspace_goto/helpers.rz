@@ -1,0 +1,11 @@
+// RES-2566: LSP workspace goto-definition fixture — imported file.
+// main.rz uses this file; the LSP goto-definition test jumps
+// from main.rz's `helper()` call to this declaration.
+
+pub fn helper() -> int {
+    return 42;
+}
+
+pub struct HelperResult {
+    int value,
+}

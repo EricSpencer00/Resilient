@@ -1,0 +1,6 @@
+// RES-2614: Example showing cross-compilation target profiles in rz.toml.
+// The rz.toml alongside this file declares [target.thumbv7em-none-eabihf]
+// and [target.x86_64-unknown-linux] sections.
+fn main() {
+    print("pkg_with_targets: target profile example");
+}

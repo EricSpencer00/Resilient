@@ -423,6 +423,7 @@ fn literal_pattern_ty(node: &Node) -> Option<Type> {
         Node::IntegerLiteral { .. } => Some(Type::Int),
         Node::FloatLiteral { .. } => Some(Type::Float),
         Node::StringLiteral { .. } => Some(Type::String),
+        Node::StringInternLiteral { .. } => Some(Type::String),
         Node::BooleanLiteral { .. } => Some(Type::Bool),
         Node::CharLiteral { .. } => Some(Type::Char),
         Node::BytesLiteral { .. } => Some(Type::Bytes),
@@ -1260,6 +1261,7 @@ fn clause_span(node: &Node) -> Span {
         Node::IntegerLiteral { span, .. }
         | Node::FloatLiteral { span, .. }
         | Node::StringLiteral { span, .. }
+        | Node::StringInternLiteral { span, .. }
         | Node::BooleanLiteral { span, .. }
         | Node::Identifier { span, .. }
         | Node::InfixExpression { span, .. }
@@ -2649,6 +2651,14 @@ impl TypeChecker {
                     Type::Function {
                         params: vec![Type::Any, Type::Any],
                         return_type: Box::new(Type::Bool),
+                    },
+                );
+                // RES-2612 Task 6: intern(string) -> string for runtime deduplication.
+                env.set(
+                    "intern".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
                     },
                 );
                 env.set(
@@ -6358,6 +6368,8 @@ impl TypeChecker {
                 crate::datetime_builtins::check(program, source_path)?;
                 // RES-2556: HTTP client builtins (no-op check).
                 crate::http_client::check(program, source_path)?;
+                // RES-2612: string interning type checker pass.
+                crate::string_interning::check_string_interning(program)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -9326,6 +9338,8 @@ impl TypeChecker {
             Node::IntegerLiteral { .. } => Ok(Type::Int),
             Node::FloatLiteral { .. } => Ok(Type::Float),
             Node::StringLiteral { .. } => Ok(Type::String),
+            // RES-2612: interned string literals also produce String type
+            Node::StringInternLiteral { .. } => Ok(Type::String),
             // RES-221: interpolated strings always produce a String value.
             // RES-2721: type-check the embedded sub-expressions here, in the
             // main traversal, so the full environment (including let bindings)
@@ -10704,6 +10718,7 @@ fn check_body_purity(
         Node::IntegerLiteral { .. }
         | Node::FloatLiteral { .. }
         | Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
         | Node::BooleanLiteral { .. }
         | Node::BytesLiteral { .. }
         | Node::Identifier { .. }
@@ -10945,6 +10960,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_split_last",
         "trim",
         "contains",
+        // RES-2612 Task 6: runtime string interning.
+        "intern",
         "to_upper",
         "to_lower",
         // RES-412: reverse string/array.

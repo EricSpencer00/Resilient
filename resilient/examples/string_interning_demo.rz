@@ -1,0 +1,11 @@
+fn main() {
+    let s1 = "hello";
+    let s2 = "hello";
+    let s3 = "world";
+    
+    // Both s1 and s2 should be interned with same ID
+    // s3 should have different ID
+    print(s1);
+    print(s2);
+    print(s3);
+}

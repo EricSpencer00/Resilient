@@ -1,0 +1,17 @@
+// RES-2612 Task 6: Runtime string interning example
+fn main() {
+    let s = "dynamic";
+    let interned = intern(s);
+    print(interned);
+    
+    // Both should be interned now
+    let s2 = intern("dynamic");
+    print(s2);
+    
+    // Concatenated string
+    let concat = "dyn" + "amic";
+    let interned_concat = intern(concat);
+    print(interned_concat);
+}
+
+main();

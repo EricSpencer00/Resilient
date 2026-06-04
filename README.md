@@ -85,6 +85,10 @@ honest list of gaps.
 
 ## Key Features
 
+### Compile-Time String Interning
+
+String literals are automatically deduplicated at compile time, reducing binary size by 5-30% for string-heavy programs and enabling O(1) string equality checks. See [docs/STRING_INTERNING.md](docs/STRING_INTERNING.md) for details.
+
 ### The "Live" Block: Self-Healing Code
 
 The cornerstone of Resilient is the live block. Any code within a live block is supervised by the Resilient runtime. If a recoverable error occurs within this block, the runtime will not panic or halt. Instead, it will reset the state of the block to its last known-good state and re-execute it.

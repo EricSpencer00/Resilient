@@ -1298,8 +1298,13 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             }
             // L0051: `==` or `!=` between two string literals.
             if matches!(*operator, "==" | "!=")
-                && matches!(left.as_ref(), Node::StringLiteral { .. })
-                && matches!(right.as_ref(), Node::StringLiteral { .. })
+                && (matches!(
+                    left.as_ref(),
+                    Node::StringLiteral { .. } | Node::StringInternLiteral { .. }
+                ) && matches!(
+                    right.as_ref(),
+                    Node::StringLiteral { .. } | Node::StringInternLiteral { .. }
+                ))
             {
                 t.has_string_literal_cmp = true;
             }
@@ -1325,11 +1330,18 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_bool_logic_with_literal = true;
             }
             // L0086: `==` / `!=` with an empty string literal operand.
-            if matches!(*operator, "==" | "!=")
-                && (matches!(left.as_ref(), Node::StringLiteral { value, .. } if value.is_empty())
-                    || matches!(right.as_ref(), Node::StringLiteral { value, .. } if value.is_empty()))
-            {
-                t.has_empty_str_cmp = true;
+            if matches!(*operator, "==" | "!=") {
+                let left_is_empty_str = matches!(left.as_ref(),
+                    Node::StringLiteral { value, .. } if value.is_empty())
+                    || matches!(left.as_ref(),
+                    Node::StringInternLiteral { content, .. } if content.is_empty());
+                let right_is_empty_str = matches!(right.as_ref(),
+                    Node::StringLiteral { value, .. } if value.is_empty())
+                    || matches!(right.as_ref(),
+                    Node::StringInternLiteral { content, .. } if content.is_empty());
+                if left_is_empty_str || right_is_empty_str {
+                    t.has_empty_str_cmp = true;
+                }
             }
         }
         Node::PrefixExpression {
@@ -1486,7 +1498,9 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_expr_stmt_call = true;
             }
         }
-        Node::StringLiteral { .. } => t.has_string_literal = true,
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => {
+            t.has_string_literal = true
+        }
         Node::Assignment { .. } => t.has_assignment = true,
         Node::ReturnStatement { .. } => t.has_return_in_block = true,
         Node::Break { .. } | Node::Continue { .. } => t.has_break_continue = true,
@@ -4853,6 +4867,8 @@ fn walk_l0026(node: &Node, out: &mut Vec<Lint>) {
         for (key, _) in entries {
             let repr = match key {
                 Node::StringLiteral { value, .. } => Some(format!("\"{value}\"")),
+                // RES-2612: interned strings use their content for deduplication
+                Node::StringInternLiteral { content, .. } => Some(format!("\"{content}\"")),
                 Node::IntegerLiteral { value, .. } => Some(value.to_string()),
                 Node::BooleanLiteral { value, .. } => Some(value.to_string()),
                 _ => None,
@@ -5149,8 +5165,14 @@ fn walk_l0034_loop(node: &Node, in_loop: bool, out: &mut Vec<Lint>) {
             right,
             span,
         } if in_loop && *operator == "+" => {
-            let left_is_str = matches!(left.as_ref(), Node::StringLiteral { .. });
-            let right_is_str = matches!(right.as_ref(), Node::StringLiteral { .. });
+            let left_is_str = matches!(
+                left.as_ref(),
+                Node::StringLiteral { .. } | Node::StringInternLiteral { .. }
+            );
+            let right_is_str = matches!(
+                right.as_ref(),
+                Node::StringLiteral { .. } | Node::StringInternLiteral { .. }
+            );
             if left_is_str || right_is_str {
                 out.push(Lint {
                     code: "L0034".into(),
@@ -6015,24 +6037,45 @@ fn walk_l0051(node: &Node, out: &mut Vec<Lint>) {
         span,
     } = node
         && matches!(*operator, "==" | "!=")
-        && let Node::StringLiteral { value: lv, .. } = left.as_ref()
-        && let Node::StringLiteral { value: rv, .. } = right.as_ref()
     {
-        let result = if *operator == "==" {
-            lv == rv
-        } else {
-            lv != rv
+        let (lv, rv) = match (left.as_ref(), right.as_ref()) {
+            (Node::StringLiteral { value: lv, .. }, Node::StringLiteral { value: rv, .. }) => {
+                (Some(lv), Some(rv))
+            }
+            // RES-2612: also handle interned strings
+            (
+                Node::StringInternLiteral { content: lv, .. },
+                Node::StringInternLiteral { content: rv, .. },
+            ) => (Some(lv), Some(rv)),
+            // Mixed case: one interned, one regular
+            (
+                Node::StringLiteral { value: lv, .. },
+                Node::StringInternLiteral { content: rv, .. },
+            ) => (Some(lv), Some(rv)),
+            (
+                Node::StringInternLiteral { content: lv, .. },
+                Node::StringLiteral { value: rv, .. },
+            ) => (Some(lv), Some(rv)),
+            _ => (None, None),
         };
-        out.push(Lint {
-            code: "L0051".into(),
-            severity: Severity::Warning,
-            message: format!(
-                "comparison of two string literals always evaluates to `{result}` — \
-                 did you mean to compare against a variable?"
-            ),
-            line: span.start.line as u32,
-            column: span.start.column as u32,
-        });
+
+        if let (Some(lv), Some(rv)) = (lv, rv) {
+            let result = if *operator == "==" {
+                lv == rv
+            } else {
+                lv != rv
+            };
+            out.push(Lint {
+                code: "L0051".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "comparison of two string literals always evaluates to `{result}` — \
+                     did you mean to compare against a variable?"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
     }
     recurse_children(node, &mut |child| walk_l0051(child, out));
 }
@@ -7344,8 +7387,10 @@ fn run_l0086_empty_string_comparison(program: &Node, out: &mut Vec<Lint>) {
             if !matches!(*operator, "==" | "!=") {
                 return;
             }
-            let is_empty_str =
-                |n: &Node| matches!(n, Node::StringLiteral { value, .. } if value.is_empty());
+            let is_empty_str = |n: &Node| {
+                matches!(n, Node::StringLiteral { value, .. } if value.is_empty())
+                    || matches!(n, Node::StringInternLiteral { content, .. } if content.is_empty())
+            };
             if is_empty_str(left) || is_empty_str(right) {
                 let suggestion = if *operator == "==" {
                     "is_empty(s)"
