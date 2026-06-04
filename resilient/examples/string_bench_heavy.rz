@@ -1,0 +1,47 @@
+// RES-2612: String interning benchmark program
+// This program contains many repeated string literals to demonstrate the benefit
+// of compile-time string interning in reducing binary size.
+
+fn main() {
+    // Error messages (3 repetitions)
+    let err1 = "error: invalid input";
+    let err2 = "error: invalid input";
+    let err3 = "error: invalid input";
+    
+    // Warning messages (3 repetitions)
+    let warn1 = "warning: deprecated function";
+    let warn2 = "warning: deprecated function";
+    let warn3 = "warning: deprecated function";
+    
+    // Info messages (4 repetitions)
+    let info1 = "info: processing data";
+    let info2 = "info: processing data";
+    let info3 = "info: processing data";
+    let info4 = "info: processing data";
+    
+    // Debug messages (3 repetitions)
+    let debug1 = "debug: variable x is 42";
+    let debug2 = "debug: variable x is 42";
+    let debug3 = "debug: variable x is 42";
+    
+    // Status messages (2 repetitions)
+    let status1 = "status: operation completed";
+    let status2 = "status: operation completed";
+    
+    // Output all messages
+    print(err1);
+    print(err2);
+    print(err3);
+    print(warn1);
+    print(warn2);
+    print(warn3);
+    print(info1);
+    print(info2);
+    print(info3);
+    print(info4);
+    print(debug1);
+    print(debug2);
+    print(debug3);
+    print(status1);
+    print(status2);
+}
