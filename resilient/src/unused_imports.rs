@@ -473,6 +473,7 @@ fn collect_namespaces<'a>(node: &'a Node, out: &mut HashSet<&'a str>) {
         | Node::ContinueLabel { .. } => {}
         Node::BreakWith { value, .. } => collect_namespaces(value, out),
         Node::DeferStatement { expr, .. } => collect_namespaces(expr, out),
+        Node::BenchBlock { body, .. } => collect_namespaces(body, out),
     }
 }
 
