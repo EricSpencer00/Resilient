@@ -313,6 +313,8 @@ fn infer_node_type(node: &Node) -> Option<Type> {
         Node::IntegerLiteral { .. } => Some(Type::Int),
         Node::FloatLiteral { .. } => Some(Type::Float),
         Node::StringLiteral { .. } => Some(Type::String),
+        // RES-2612: interned strings infer to String type.
+        Node::StringInternLiteral { .. } => Some(Type::String),
         Node::BooleanLiteral { .. } => Some(Type::Bool),
         // Nested call or complex expression — unknown statically.
         _ => None,

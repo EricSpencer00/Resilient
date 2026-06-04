@@ -8,7 +8,7 @@
 
 // OffByOne: loop bounds should use < not <=
 fn process_array(Array<int> arr) -> int {
-    int i = 0;
+    let i: int = 0;
     while (i <= len(arr)) {  // Should be i < len(arr)
         i = i + 1;
     }

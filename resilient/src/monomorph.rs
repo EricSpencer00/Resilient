@@ -273,6 +273,7 @@ fn infer_literal_type(node: &Node) -> Option<Type> {
         Node::IntegerLiteral { .. } => Some(Type::Int),
         Node::FloatLiteral { .. } => Some(Type::Float),
         Node::StringLiteral { .. } => Some(Type::String),
+        Node::StringInternLiteral { .. } => Some(Type::String),
         Node::BooleanLiteral { .. } => Some(Type::Bool),
         _ => None,
     }

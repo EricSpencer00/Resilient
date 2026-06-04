@@ -1,4 +1,3 @@
-5
-30
-300
+4
+39637
 Program executed successfully

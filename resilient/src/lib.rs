@@ -8611,7 +8611,10 @@ impl Parser {
                     }
                 }
             }
-            // RES-2612: also check interned strings for interpolation patterns
+            // RES-2612: also check interned strings for interpolation patterns,
+            // but silently treat parse failures as plain strings (they may be
+            // format template strings for use with format(), which share the
+            // `{}` syntax but are NOT interpolated strings).
             Some(Node::StringInternLiteral {
                 ref content, span, ..
             }) if content.contains('{') => {
@@ -8623,8 +8626,10 @@ impl Parser {
                         content: raw,
                         span,
                     }),
-                    Err(e) => {
-                        self.record_error(format!("string interpolation error: {}", e));
+                    Err(_) => {
+                        // RES-2612: if parse_parts fails (e.g. due to empty `{}` in
+                        // format strings), keep it as a plain interned string.
+                        // fmt_validation will validate it if it's a format() call.
                         Some(Node::StringInternLiteral {
                             intern_id: crate::string_interning::intern_string(raw.clone()),
                             content: raw,
@@ -26139,6 +26144,8 @@ impl Interpreter {
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            // RES-2612: interned strings evaluate to their content at compile time.
+            Node::StringInternLiteral { content, .. } => Ok(Value::String(content.clone())),
             Node::Identifier { name, .. } => {
                 if evaluating.contains(name) {
                     return Err(format!("error: circular constant definition: '{}'", name));
