@@ -6360,6 +6360,8 @@ impl TypeChecker {
                 crate::datetime_builtins::check(program, source_path)?;
                 // RES-2556: HTTP client builtins (no-op check).
                 crate::http_client::check(program, source_path)?;
+                // RES-2612: string interning type checker pass.
+                crate::string_interning::check_string_interning(program)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

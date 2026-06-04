@@ -114,3 +114,214 @@ pub fn reset_interning_pool() {
     let mut pool = get_pool().lock();
     pool.clear();
 }
+
+/// RES-2612 Task 4: Type check interned strings.
+/// Validates that all StringInternLiteral nodes have valid intern_ids that
+/// map to entries in the interning pool, and that the content matches.
+pub(crate) fn check_string_interning(program: &crate::Node) -> Result<(), String> {
+    check_node(program)
+}
+
+/// Recursively walk the AST and validate all StringInternLiteral nodes.
+fn check_node(node: &crate::Node) -> Result<(), String> {
+    use crate::Node;
+
+    match node {
+        // StringInternLiteral: validate the intern_id is in the pool and content matches
+        Node::StringInternLiteral {
+            intern_id, content, ..
+        } => {
+            match get_interned_string(*intern_id) {
+                Some(pooled_content) => {
+                    if pooled_content != *content {
+                        return Err(format!(
+                            "String interning mismatch: intern_id {} has content '{}' in pool but '{}' in AST",
+                            intern_id, pooled_content, content
+                        ));
+                    }
+                }
+                None => {
+                    return Err(format!(
+                        "Invalid intern_id {} in StringInternLiteral: not found in pool",
+                        intern_id
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        // Program: check all top-level statements
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                check_node(&stmt.node)?;
+            }
+            Ok(())
+        }
+
+        // Function: check all components of a function definition
+        Node::Function {
+            body,
+            defaults,
+            requires,
+            ensures,
+            ..
+        } => {
+            check_node(body)?;
+            for default_expr in defaults.iter().flatten() {
+                check_node(default_expr)?;
+            }
+            for req in requires {
+                check_node(req)?;
+            }
+            for ens in ensures {
+                check_node(ens)?;
+            }
+            Ok(())
+        }
+
+        // Block: check all statements in the block
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                check_node(stmt)?;
+            }
+            Ok(())
+        }
+
+        // IfStatement: check condition, consequence, and optional alternative
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            check_node(condition)?;
+            check_node(consequence)?;
+            if let Some(alt) = alternative {
+                check_node(alt)?;
+            }
+            Ok(())
+        }
+
+        // WhileStatement: check condition and body
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            check_node(condition)?;
+            check_node(body)?;
+            Ok(())
+        }
+
+        // ForInStatement: check iterable and body
+        Node::ForInStatement { iterable, body, .. } => {
+            check_node(iterable)?;
+            check_node(body)?;
+            Ok(())
+        }
+
+        // CallExpression: check function and all arguments
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            check_node(function)?;
+            for arg in arguments {
+                check_node(arg)?;
+            }
+            Ok(())
+        }
+
+        // ReturnStatement: check returned expression if present
+        Node::ReturnStatement { value, .. } => {
+            if let Some(val) = value {
+                check_node(val)?;
+            }
+            Ok(())
+        }
+
+        // LetStatement: check initialization expression
+        Node::LetStatement { value, .. } => {
+            check_node(value)?;
+            Ok(())
+        }
+
+        // StaticLet: check initialization expression
+        Node::StaticLet { value, .. } => {
+            check_node(value)?;
+            Ok(())
+        }
+
+        // Assignment: check the assigned value
+        Node::Assignment { value, .. } => {
+            check_node(value)?;
+            Ok(())
+        }
+
+        // InfixExpression: check both operands
+        Node::InfixExpression { left, right, .. } => {
+            check_node(left)?;
+            check_node(right)?;
+            Ok(())
+        }
+
+        // PrefixExpression: check the operand
+        Node::PrefixExpression { right, .. } => {
+            check_node(right)?;
+            Ok(())
+        }
+
+        // ArrayLiteral: check all items
+        Node::ArrayLiteral { items, .. } => {
+            for item in items {
+                check_node(item)?;
+            }
+            Ok(())
+        }
+
+        // IndexExpression: check target and index
+        Node::IndexExpression { target, index, .. } => {
+            check_node(target)?;
+            check_node(index)?;
+            Ok(())
+        }
+
+        // StructLiteral: check all field values and base if present
+        Node::StructLiteral { fields, base, .. } => {
+            for (_, val) in fields {
+                check_node(val)?;
+            }
+            if let Some(b) = base {
+                check_node(b)?;
+            }
+            Ok(())
+        }
+
+        // FieldAccess: check the target expression
+        Node::FieldAccess { target, .. } => {
+            check_node(target)?;
+            Ok(())
+        }
+
+        // ExpressionStatement: check the expression
+        Node::ExpressionStatement { expr, .. } => {
+            check_node(expr)?;
+            Ok(())
+        }
+
+        // TryCatch: check body and handler bodies
+        Node::TryCatch { body, handlers, .. } => {
+            for stmt in body {
+                check_node(stmt)?;
+            }
+            for (_, handler_stmts) in handlers {
+                for stmt in handler_stmts {
+                    check_node(stmt)?;
+                }
+            }
+            Ok(())
+        }
+
+        // All other node types don't have children or don't need validation
+        _ => Ok(()),
+    }
+}
