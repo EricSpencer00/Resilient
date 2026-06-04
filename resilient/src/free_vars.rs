@@ -88,6 +88,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::IntegerLiteral { .. }
         | Node::FloatLiteral { .. }
         | Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
         | Node::BytesLiteral { .. }
         | Node::BooleanLiteral { .. }
         | Node::CharLiteral { .. }

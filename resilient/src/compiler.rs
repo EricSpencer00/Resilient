@@ -1074,6 +1074,11 @@ fn compile_assert(
                 let msg_idx = chunk.add_string_constant(s)?;
                 chunk.emit(Op::Const(msg_idx), line);
             }
+            // RES-2612: interned strings compile the same as regular strings
+            Node::StringInternLiteral { content: s, .. } => {
+                let msg_idx = chunk.add_string_constant(s)?;
+                chunk.emit(Op::Const(msg_idx), line);
+            }
             _ => {
                 compile_expr(
                     msg_node,
@@ -2393,6 +2398,12 @@ fn compile_expr(
         // and dedup); routing the literal nodes here lets builtin args
         // round-trip without touching the runtime.
         Node::StringLiteral { value: s, .. } => {
+            let idx = chunk.add_string_constant(s)?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
+        // RES-2612: interned strings compile the same as regular strings
+        Node::StringInternLiteral { content: s, .. } => {
             let idx = chunk.add_string_constant(s)?;
             chunk.emit(Op::Const(idx), line);
             Ok(())
@@ -4591,6 +4602,7 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::IntegerLiteral { span, .. }
         | Node::FloatLiteral { span, .. }
         | Node::StringLiteral { span, .. }
+        | Node::StringInternLiteral { span, .. }
         | Node::BooleanLiteral { span, .. }
         | Node::Identifier { span, .. } => span.start.line as u32,
 
@@ -4717,6 +4729,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::IntegerLiteral { .. } => "IntegerLiteral",
         Node::FloatLiteral { .. } => "FloatLiteral",
         Node::StringLiteral { .. } => "StringLiteral",
+        Node::StringInternLiteral { .. } => "StringInternLiteral",
         Node::BooleanLiteral { .. } => "BooleanLiteral",
         Node::PrefixExpression { .. } => "PrefixExpression",
         Node::InfixExpression { .. } => "InfixExpression",

@@ -917,6 +917,10 @@ impl Formatter {
             Node::StringLiteral { value, .. } => {
                 self.write_args(format_args!("\"{}\"", escape_string(value)));
             }
+            // RES-2612: format interned strings the same way as regular strings
+            Node::StringInternLiteral { content, .. } => {
+                self.write_args(format_args!("\"{}\"", escape_string(content)));
+            }
             Node::BooleanLiteral { value, .. } => {
                 self.write(if *value { "true" } else { "false" });
             }

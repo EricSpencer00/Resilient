@@ -463,6 +463,7 @@ fn collect_namespaces<'a>(node: &'a Node, out: &mut HashSet<&'a str>) {
         | Node::IntegerLiteral { .. }
         | Node::FloatLiteral { .. }
         | Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
         | Node::BytesLiteral { .. }
         | Node::CharLiteral { .. }
         | Node::BooleanLiteral { .. }

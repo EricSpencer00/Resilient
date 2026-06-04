@@ -2707,6 +2707,18 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-2612: Interned string literal created during parsing.
+    /// String literals are automatically interned at parse time to
+    /// reduce binary size and enable O(1) equality checks.
+    /// The intern_id uniquely identifies this string across the program;
+    /// identical strings share the same ID.
+    StringInternLiteral {
+        #[allow(dead_code)]
+        intern_id: usize,
+        content: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-152: byte-string literal — `b"\x00\x01"`. Payload is the
     /// decoded `Vec<u8>` that the lexer produced from the source
     /// escape sequences. Value is cloned into `Value::Bytes` at
@@ -8491,10 +8503,14 @@ impl Parser {
                     })
                 }
             }
-            Token::StringLiteral(value) => Some(Node::StringLiteral {
-                value: value.clone(),
-                span: tok_span,
-            }),
+            Token::StringLiteral(value) => {
+                let intern_id = crate::string_interning::intern_string(value.clone());
+                Some(Node::StringInternLiteral {
+                    intern_id,
+                    content: value.clone(),
+                    span: tok_span,
+                })
+            }
             // RES-152: byte-string literal, lexed to Vec<u8>.
             Token::BytesLiteral(value) => Some(Node::BytesLiteral {
                 value: value.clone(),
@@ -8592,6 +8608,28 @@ impl Parser {
                     Err(e) => {
                         self.record_error(format!("string interpolation error: {}", e));
                         Some(Node::StringLiteral { value: raw, span })
+                    }
+                }
+            }
+            // RES-2612: also check interned strings for interpolation patterns
+            Some(Node::StringInternLiteral {
+                ref content, span, ..
+            }) if content.contains('{') => {
+                let raw = content.clone();
+                match crate::string_interp::parse_parts(&raw) {
+                    Ok(Some(parts)) => Some(Node::InterpolatedString { parts, span }),
+                    Ok(None) => Some(Node::StringInternLiteral {
+                        intern_id: crate::string_interning::intern_string(raw.clone()),
+                        content: raw,
+                        span,
+                    }),
+                    Err(e) => {
+                        self.record_error(format!("string interpolation error: {}", e));
+                        Some(Node::StringInternLiteral {
+                            intern_id: crate::string_interning::intern_string(raw.clone()),
+                            content: raw,
+                            span,
+                        })
                     }
                 }
             }
@@ -9987,10 +10025,14 @@ impl Parser {
                 value: *f,
                 span: tok_span,
             }),
-            Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral {
-                value: s.clone(),
-                span: tok_span,
-            }),
+            Token::StringLiteral(s) => {
+                let intern_id = crate::string_interning::intern_string(s.clone());
+                Pattern::Literal(Node::StringInternLiteral {
+                    intern_id,
+                    content: s.clone(),
+                    span: tok_span,
+                })
+            }
             Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral {
                 value: *b,
                 span: tok_span,
@@ -11565,6 +11607,7 @@ fn format_contract_expr(node: &Node) -> String {
         Node::IntegerLiteral { value, .. } => value.to_string(),
         Node::FloatLiteral { value, .. } => value.to_string(),
         Node::StringLiteral { value, .. } => format!("{:?}", value),
+        Node::StringInternLiteral { content, .. } => format!("{:?}", content),
         Node::BooleanLiteral { value, .. } => value.to_string(),
         Node::PrefixExpression {
             operator, right, ..
@@ -24087,6 +24130,10 @@ impl Interpreter {
             Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            // RES-2612: interned strings evaluate to their content (the intern_id
+            // is used for binary size reduction and equality optimization, but at
+            // runtime we just return the actual string value)
+            Node::StringInternLiteral { content, .. } => Ok(Value::String(content.clone())),
             // RES-221: evaluate each part of an interpolated string and
             // concatenate into a single String value.
             Node::InterpolatedString { parts, .. } => {

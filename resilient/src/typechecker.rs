@@ -423,6 +423,7 @@ fn literal_pattern_ty(node: &Node) -> Option<Type> {
         Node::IntegerLiteral { .. } => Some(Type::Int),
         Node::FloatLiteral { .. } => Some(Type::Float),
         Node::StringLiteral { .. } => Some(Type::String),
+        Node::StringInternLiteral { .. } => Some(Type::String),
         Node::BooleanLiteral { .. } => Some(Type::Bool),
         Node::CharLiteral { .. } => Some(Type::Char),
         Node::BytesLiteral { .. } => Some(Type::Bytes),
@@ -1260,6 +1261,7 @@ fn clause_span(node: &Node) -> Span {
         Node::IntegerLiteral { span, .. }
         | Node::FloatLiteral { span, .. }
         | Node::StringLiteral { span, .. }
+        | Node::StringInternLiteral { span, .. }
         | Node::BooleanLiteral { span, .. }
         | Node::Identifier { span, .. }
         | Node::InfixExpression { span, .. }
@@ -9326,6 +9328,8 @@ impl TypeChecker {
             Node::IntegerLiteral { .. } => Ok(Type::Int),
             Node::FloatLiteral { .. } => Ok(Type::Float),
             Node::StringLiteral { .. } => Ok(Type::String),
+            // RES-2612: interned string literals also produce String type
+            Node::StringInternLiteral { .. } => Ok(Type::String),
             // RES-221: interpolated strings always produce a String value.
             // RES-2721: type-check the embedded sub-expressions here, in the
             // main traversal, so the full environment (including let bindings)
@@ -10701,6 +10705,7 @@ fn check_body_purity(
         Node::IntegerLiteral { .. }
         | Node::FloatLiteral { .. }
         | Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
         | Node::BooleanLiteral { .. }
         | Node::BytesLiteral { .. }
         | Node::Identifier { .. }
