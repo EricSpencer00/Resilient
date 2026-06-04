@@ -148,6 +148,10 @@ fn ai_threats_detects_missed_else() {
     // If it is, we should see "missed-else" in output and confidence
     if stdout.contains("missed-else") || stdout.contains("missed_else") {
         // Already detected and has confidence score (verified by earlier test).
+        assert!(
+            stdout.contains("confidence"),
+            "missed-else detections should include confidence; stdout: {stdout}"
+        );
     }
     // If not detected, that's OK too - detection logic is conservative
     let _ = std::fs::remove_file(&src);

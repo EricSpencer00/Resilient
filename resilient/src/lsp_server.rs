@@ -581,7 +581,7 @@ fn infer_literal_type(value: &Node) -> &'static str {
     match value {
         Node::IntegerLiteral { .. } => "Int",
         Node::FloatLiteral { .. } => "Float",
-        Node::StringLiteral { .. } => "String",
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => "String",
         Node::BooleanLiteral { .. } => "Bool",
         Node::BytesLiteral { .. } => "Bytes",
         _ => "unknown",

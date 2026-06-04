@@ -3,14 +3,13 @@
 //! String interning deduplicates identical string literals into a single memory location.
 //! This reduces binary bloat and enables pointer-based equality checks.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Global string interning pool. Maps normalized strings to unique IDs.
-static INTERNING_POOL: OnceLock<parking_lot::Mutex<InterningPool>> = OnceLock::new();
-
-static NEXT_STRING_ID: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// String interning is compilation-scoped, so keep one pool per thread.
+    static INTERNING_POOL: RefCell<InterningPool> = RefCell::new(InterningPool::new());
+}
 
 /// A deduplicated string with a stable numeric ID.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -34,6 +33,8 @@ pub struct InterningPool {
     strings: HashMap<String, InternedString>,
     /// Reverse mapping: ID -> InternedString (for ID-based lookup)
     by_id: BTreeMap<usize, InternedString>,
+    /// The next ID to assign within this compilation/thread scope.
+    next_id: usize,
 }
 
 impl InterningPool {
@@ -41,6 +42,7 @@ impl InterningPool {
         Self {
             strings: HashMap::new(),
             by_id: BTreeMap::new(),
+            next_id: 0,
         }
     }
 
@@ -50,7 +52,8 @@ impl InterningPool {
             return existing.clone();
         }
 
-        let id = NEXT_STRING_ID.fetch_add(1, Ordering::SeqCst);
+        let id = self.next_id;
+        self.next_id += 1;
         let interned = InternedString {
             id,
             content: content.clone(),
@@ -74,7 +77,7 @@ impl InterningPool {
     pub fn clear(&mut self) {
         self.strings.clear();
         self.by_id.clear();
-        NEXT_STRING_ID.store(0, Ordering::SeqCst);
+        self.next_id = 0;
     }
 }
 
@@ -84,35 +87,37 @@ impl Default for InterningPool {
     }
 }
 
-fn get_pool() -> &'static parking_lot::Mutex<InterningPool> {
-    INTERNING_POOL.get_or_init(|| parking_lot::Mutex::new(InterningPool::new()))
+fn with_pool<R>(f: impl FnOnce(&InterningPool) -> R) -> R {
+    INTERNING_POOL.with(|pool| f(&pool.borrow()))
+}
+
+fn with_pool_mut<R>(f: impl FnOnce(&mut InterningPool) -> R) -> R {
+    INTERNING_POOL.with(|pool| f(&mut pool.borrow_mut()))
 }
 
 /// Global entry point: intern a string and return its ID.
 pub fn intern_string(content: String) -> usize {
-    let mut pool = get_pool().lock();
-    pool.intern(content).id
+    with_pool_mut(|pool| pool.intern(content).id)
 }
 
 /// Look up an interned string by its ID.
 pub fn get_interned_string(id: usize) -> Option<String> {
-    let pool = get_pool().lock();
-    pool.get_by_id(id).map(|s| s.content)
+    with_pool(|pool| pool.get_by_id(id).map(|s| s.content))
 }
 
 /// Collect all interned strings (for codegen).
 pub fn all_interned_strings() -> Vec<(usize, String)> {
-    let pool = get_pool().lock();
-    pool.all_strings()
-        .into_iter()
-        .map(|s| (s.id, s.content))
-        .collect()
+    with_pool(|pool| {
+        pool.all_strings()
+            .into_iter()
+            .map(|s| (s.id, s.content))
+            .collect()
+    })
 }
 
 /// Reset the interning pool (for REPL, tests).
 pub fn reset_interning_pool() {
-    let mut pool = get_pool().lock();
-    pool.clear();
+    with_pool_mut(InterningPool::clear);
 }
 
 /// Check if two strings are equal. Uses O(1) pointer comparison if both are interned.
