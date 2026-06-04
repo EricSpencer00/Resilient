@@ -3,9 +3,9 @@
 //! String interning deduplicates identical string literals into a single memory location.
 //! This reduces binary bloat and enables pointer-based equality checks.
 
-use std::collections::{HashMap, BTreeMap};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Global string interning pool. Maps normalized strings to unique IDs.
 static INTERNING_POOL: OnceLock<parking_lot::Mutex<InterningPool>> = OnceLock::new();
@@ -51,7 +51,10 @@ impl InterningPool {
         }
 
         let id = NEXT_STRING_ID.fetch_add(1, Ordering::SeqCst);
-        let interned = InternedString { id, content: content.clone() };
+        let interned = InternedString {
+            id,
+            content: content.clone(),
+        };
         self.strings.insert(content, interned.clone());
         self.by_id.insert(id, interned.clone());
         interned
