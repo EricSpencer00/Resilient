@@ -28775,6 +28775,10 @@ fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
                 "type": "String",
                 "value": value,
             }),
+            Node::StringInternLiteral { content, .. } => json!({
+                "type": "String",
+                "value": content,
+            }),
             Node::BooleanLiteral { value, .. } => json!({
                 "type": "Bool",
                 "value": value,
