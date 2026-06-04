@@ -185,6 +185,37 @@ println("done")
     }
 
     #[test]
+    fn for_in_trait_iterator_works_without_typecheck() {
+        let r = crate::run_program(
+            r#"
+struct Counter { Cell current, int end }
+
+fn make_counter(int end) -> Counter {
+    let current = cell(0)
+    return new Counter { current, end }
+}
+
+impl Iterator for Counter {
+    type Item = int;
+    fn next(self) -> Option<int> {
+        if self.current.get() >= self.end { return None }
+        let value = self.current.get()
+        self.current.set(value + 1)
+        return Some(value)
+    }
+}
+
+for x in make_counter(4) {
+    println(x)
+}
+"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines, vec!["0", "1", "2", "3"]);
+    }
+
+    #[test]
     fn non_option_iterator_errors() {
         let r = crate::run_program(
             r#"
@@ -198,5 +229,38 @@ for x in bad_iter() {
 "#,
         );
         assert!(!r.ok, "should error when next() returns non-Option");
+    }
+
+    #[test]
+    fn iterator_trait_collect_and_adapters_work() {
+        let r = crate::run_program(
+            r#"
+struct Counter { Cell current, int end }
+
+fn make_counter(int end) -> Counter {
+    let current = cell(0)
+    return new Counter { current, end }
+}
+
+impl Iterator for Counter {
+    type Item = int;
+    fn next(self) -> Option<int> {
+        if self.current.get() >= self.end { return None }
+        let value = self.current.get()
+        self.current.set(value + 1)
+        return Some(value)
+    }
+}
+
+println(len(make_counter(5).collect()))
+println(len(make_counter(6).map(fn(int x) -> int { return x * 2; }).collect()))
+println(len(make_counter(6).filter(fn(int x) -> bool { return x % 2 == 0; }).collect()))
+println(len(make_counter(6).take(2).collect()))
+println(len(make_counter(6).skip(4).collect()))
+"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines, vec!["5", "6", "3", "2", "2"]);
     }
 }

@@ -24509,6 +24509,16 @@ impl Interpreter {
                     // RES-920 / RES-2734: method-call sugar on built-in Array.
                     // All short names correspond to BUILTINS entries exactly.
                     if let Value::Array(_) = &target_val {
+                        if field == "collect" {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            if !extra_args.is_empty() {
+                                return Err(format!(
+                                    "collect: expected 0 arguments, got {}",
+                                    extra_args.len()
+                                ));
+                            }
+                            return Ok(target_val.clone());
+                        }
                         let allowed: &[&str] = &[
                             "len",
                             "push",
@@ -24606,6 +24616,123 @@ impl Interpreter {
                             let mut args = vec![target_val];
                             args.extend(self.eval_expressions(arguments)?);
                             return self.apply_function(&method_val, args);
+                        }
+                        let next_mangled = format!("{}${}", sname, "next");
+                        if let Some(next_method) = self.env.get(&next_mangled) {
+                            match field.as_str() {
+                                "collect" => {
+                                    let extra_args = self.eval_expressions(arguments)?;
+                                    if !extra_args.is_empty() {
+                                        return Err(format!(
+                                            "collect: expected 0 arguments, got {}",
+                                            extra_args.len()
+                                        ));
+                                    }
+                                    let items = self.collect_iterator_items(
+                                        target_val.clone(),
+                                        next_method.clone(),
+                                    )?;
+                                    return Ok(Value::Array(items));
+                                }
+                                "map" => {
+                                    let mut extra_args = self.eval_expressions(arguments)?;
+                                    if extra_args.len() != 1 {
+                                        return Err(format!(
+                                            "map: expected 1 callback argument, got {}",
+                                            extra_args.len()
+                                        ));
+                                    }
+                                    let callback = extra_args.pop().unwrap();
+                                    let items = self.collect_iterator_items(
+                                        target_val.clone(),
+                                        next_method.clone(),
+                                    )?;
+                                    let mut out = Vec::with_capacity(items.len());
+                                    for item in items {
+                                        out.push(self.apply_function(&callback, vec![item])?);
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                "filter" => {
+                                    let mut extra_args = self.eval_expressions(arguments)?;
+                                    if extra_args.len() != 1 {
+                                        return Err(format!(
+                                            "filter: expected 1 predicate argument, got {}",
+                                            extra_args.len()
+                                        ));
+                                    }
+                                    let predicate = extra_args.pop().unwrap();
+                                    let items = self.collect_iterator_items(
+                                        target_val.clone(),
+                                        next_method.clone(),
+                                    )?;
+                                    let mut out = Vec::new();
+                                    for item in items {
+                                        match self.apply_function(&predicate, vec![item.clone()])? {
+                                            Value::Bool(true) => out.push(item),
+                                            Value::Bool(false) => {}
+                                            other => {
+                                                return Err(format!(
+                                                    "filter: predicate must return bool, got {}",
+                                                    other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                "take" => {
+                                    let mut extra_args = self.eval_expressions(arguments)?;
+                                    if extra_args.len() != 1 {
+                                        return Err(format!(
+                                            "take: expected 1 count argument, got {}",
+                                            extra_args.len()
+                                        ));
+                                    }
+                                    let count = match extra_args.pop().unwrap() {
+                                        Value::Int(n) if n >= 0 => n as usize,
+                                        other => {
+                                            return Err(format!(
+                                                "take: count must be non-negative, got {}",
+                                                other
+                                            ));
+                                        }
+                                    };
+                                    let items = self.collect_iterator_items(
+                                        target_val.clone(),
+                                        next_method.clone(),
+                                    )?;
+                                    return Ok(Value::Array(
+                                        items.into_iter().take(count).collect(),
+                                    ));
+                                }
+                                "skip" => {
+                                    let mut extra_args = self.eval_expressions(arguments)?;
+                                    if extra_args.len() != 1 {
+                                        return Err(format!(
+                                            "skip: expected 1 count argument, got {}",
+                                            extra_args.len()
+                                        ));
+                                    }
+                                    let count = match extra_args.pop().unwrap() {
+                                        Value::Int(n) if n >= 0 => n as usize,
+                                        other => {
+                                            return Err(format!(
+                                                "skip: count must be non-negative, got {}",
+                                                other
+                                            ));
+                                        }
+                                    };
+                                    let items = self.collect_iterator_items(
+                                        target_val.clone(),
+                                        next_method.clone(),
+                                    )?;
+                                    return Ok(Value::Array(
+                                        items.into_iter().skip(count).collect(),
+                                    ));
+                                }
+                                _ => {}
+                            }
                         }
                         // No matching method on this struct — fall
                         // through to the regular `FieldAccess` eval
@@ -26210,14 +26337,20 @@ impl Interpreter {
             }
             Value::Struct {
                 name: ref sname, ..
-            } if crate::iterator_protocol::is_iterator(sname) => {
+            } => {
                 let mangled = format!("{}$next", sname);
                 if let Some(method_val) = self.env.get(&mangled) {
                     let iter_fn = method_val;
                     return self.eval_for_in_iterator_method(iter_val, iter_fn, name, body, label);
                 }
+                if crate::iterator_protocol::is_iterator(sname) {
+                    return Err(format!(
+                        "type `{}` implements Iterator but has no `next` method",
+                        sname
+                    ));
+                }
                 return Err(format!(
-                    "type `{}` implements Iterator but has no `next` method",
+                    "`for` iterable must be an array, map, or iterator, got struct `{}`",
                     sname
                 ));
             }
@@ -26321,6 +26454,39 @@ impl Interpreter {
             }
         }
         Ok(Value::Void)
+    }
+
+    /// Eagerly materialize every item produced by a custom iterator.
+    /// The iterator protocol in this slice is intentionally array-backed
+    /// once a consumer asks for adapters like `collect`, `map`, or `take`.
+    fn collect_iterator_items(
+        &mut self,
+        iterable: Value,
+        method_val: Value,
+    ) -> RResult<Vec<Value>> {
+        const MAX_ITERS: usize = 1_000_000;
+        let mut iters = 0usize;
+        let mut items = Vec::new();
+        loop {
+            iters += 1;
+            if iters > MAX_ITERS {
+                return Err(format!(
+                    "iterator exceeded {MAX_ITERS} calls to next() (runaway?)"
+                ));
+            }
+            let next_result = self.apply_function(&method_val, vec![iterable.clone()])?;
+            match next_result {
+                Value::Option(None) => break,
+                Value::Option(Some(inner)) => items.push(*inner),
+                other => {
+                    return Err(format!(
+                        "iterator next() must return Option (Some/None), got {}",
+                        other
+                    ));
+                }
+            }
+        }
+        Ok(items)
     }
 
     /// Extract `Some(v)` from an Option enum variant and bind it as the loop
