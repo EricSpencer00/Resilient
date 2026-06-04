@@ -134,7 +134,7 @@ fn ai_threats_detects_off_by_one() {
 fn ai_threats_detects_missed_else() {
     // Missed else: if with return, followed by code
     let src = tmp_file(
-        "missed_else",
+        "branch_gap",
         "fn check(int x) -> int {\n    if (x < 0) {\n        return 0;\n    }\n    return x + 1;\n}\ncheck(5);\n",
     );
     let out = Command::new(bin())
