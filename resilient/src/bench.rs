@@ -96,10 +96,7 @@ pub struct BenchmarkMetadata {
 }
 
 #[allow(dead_code)]
-fn discover_benchmarks_recursive(
-    node: &Node,
-    benches: &mut Vec<BenchmarkMetadata>,
-) {
+fn discover_benchmarks_recursive(node: &Node, benches: &mut Vec<BenchmarkMetadata>) {
     match node {
         Node::Program(stmts) => {
             for stmt in stmts {
