@@ -180,6 +180,31 @@ jobs:
       - name: cargo test
         run: cargo test --locked --features ${{ matrix.features }} --verbose
 
+  ai_threat_tests:
+    name: AI threat integration tests
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: ai-threats
+
+      - name: cargo test (ai_threats_smoke)
+        run: cargo test --locked --test ai_threats_smoke --verbose
+
   board:
     name: board hygiene
     runs-on: ubuntu-latest
