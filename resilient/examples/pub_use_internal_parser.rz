@@ -1,0 +1,5 @@
+// RES-2541: helper module for `pub use` re-export coverage.
+// Imported via `pub use "pub_use_internal_parser.rz" as parser;`.
+fn greet() {
+    println("parser");
+}

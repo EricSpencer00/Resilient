@@ -8516,6 +8516,36 @@ impl TypeChecker {
                             }
                         }
                     }
+                    let next_mangled = format!("{}$next", sname);
+                    let implements_iterator = self.env.get(&next_mangled).is_some()
+                        || self
+                            .trait_impls
+                            .get(sname.as_str())
+                            .is_some_and(|traits| traits.contains("Iterator"))
+                        || crate::iterator_protocol::is_iterator(sname.as_str());
+                    if implements_iterator {
+                        match field.as_str() {
+                            "collect" => {
+                                return Ok(Type::Function {
+                                    params: vec![],
+                                    return_type: Box::new(Type::Array),
+                                });
+                            }
+                            "map" | "filter" => {
+                                return Ok(Type::Function {
+                                    params: vec![Type::Any],
+                                    return_type: Box::new(Type::Array),
+                                });
+                            }
+                            "take" | "skip" => {
+                                return Ok(Type::Function {
+                                    params: vec![Type::Int],
+                                    return_type: Box::new(Type::Array),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
                     // RES-407: struct is known, field not found, and no
                     // impl method or default trait method — report a clear diagnostic.
                     let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
@@ -8574,6 +8604,10 @@ impl TypeChecker {
                         "len" => Type::Function {
                             params: vec![],
                             return_type: Box::new(Type::Int),
+                        },
+                        "collect" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Array),
                         },
                         // RES-2734: `has` is the array-element membership method;
                         // `contains` is kept for backward compat.
@@ -8669,6 +8703,12 @@ impl TypeChecker {
                             return Ok(Type::Function {
                                 params: vec![Type::Any],
                                 return_type: Box::new(Type::Bool),
+                            });
+                        }
+                        "collect" => {
+                            return Ok(Type::Function {
+                                params: vec![],
+                                return_type: Box::new(Type::Array),
                             });
                         }
                         _ => {}
@@ -9755,6 +9795,57 @@ impl TypeChecker {
                 {
                     let arg_type = self.check_node(&arguments[0])?;
                     return Ok(Type::Option(Box::new(arg_type)));
+                }
+
+                // RES-2556: HTTP builtins accept optional request
+                // headers and timeout arguments. The type system only
+                // tracks the required string parameters; the optional
+                // request options are validated at runtime because the
+                // language does not yet model `map<string, string>` as
+                // a first-class type.
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
+                    && matches!(callee_name.as_str(), "http_get" | "http_post")
+                {
+                    let (required_count, max_count) = if callee_name == "http_get" {
+                        (1, 3)
+                    } else {
+                        (2, 4)
+                    };
+                    if arguments.len() < required_count || arguments.len() > max_count {
+                        return Err(format!(
+                            "{} expects between {} and {} argument(s), got {}",
+                            callee_name,
+                            required_count,
+                            max_count,
+                            arguments.len()
+                        ));
+                    }
+                    let url_ty = self.check_node(&arguments[0])?;
+                    if !compatible(&url_ty, &Type::String) {
+                        return Err(format!(
+                            "{} URL must be a string, got {}",
+                            callee_name, url_ty
+                        ));
+                    }
+                    if callee_name == "http_post" {
+                        let body_ty = self.check_node(&arguments[1])?;
+                        if !compatible(&body_ty, &Type::String) {
+                            return Err(format!(
+                                "{} body must be a string, got {}",
+                                callee_name, body_ty
+                            ));
+                        }
+                        for arg in arguments.iter().skip(2) {
+                            self.check_node(arg)?;
+                        }
+                    } else {
+                        for arg in arguments.iter().skip(1) {
+                            self.check_node(arg)?;
+                        }
+                    }
+                    return Ok(Type::Result);
                 }
 
                 // RES-410: call-site type inference for numeric polymorphic

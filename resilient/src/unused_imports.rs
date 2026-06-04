@@ -12,6 +12,7 @@
 //! use "util.rz";           ← skipped (conservative; flat merge)
 //! use std::http;           ← skipped (stdlib)
 //! use std::http as h;      ← skipped (stdlib)
+//! pub use "lib.rz" as h;   ← skipped (intentional re-export)
 //! ```
 //!
 //! For `use "path"` without an alias, the imported declarations are
@@ -60,7 +61,17 @@ pub(crate) fn check(program: &Node, source_path: &str) {
     // stdlib (`std::`) imports are always skipped.
     let mut candidates: Vec<ImportInfo<'_>> = Vec::new();
     for stmt in stmts {
-        if let Node::Use { path, alias, span } = &stmt.node {
+        if let Node::Use {
+            path,
+            alias,
+            span,
+            is_pub,
+            ..
+        } = &stmt.node
+        {
+            if *is_pub {
+                continue;
+            }
             if path.starts_with("std::") {
                 continue;
             }
@@ -486,7 +497,17 @@ mod tests {
         // Collect candidates.
         let mut candidates: Vec<(String, String, crate::span::Span)> = Vec::new();
         for stmt in stmts {
-            if let crate::Node::Use { path, alias, span } = &stmt.node {
+            if let crate::Node::Use {
+                path,
+                alias,
+                span,
+                is_pub,
+                ..
+            } = &stmt.node
+            {
+                if *is_pub {
+                    continue;
+                }
                 if path.starts_with("std::") {
                     continue;
                 }
@@ -599,5 +620,15 @@ mod tests {
         let src = "use std::json; let x = 1; x;";
         let warnings = warnings_for(src);
         assert!(warnings.is_empty(), "stdlib import should not warn");
+    }
+
+    #[test]
+    fn pub_use_alias_unused_is_not_warned() {
+        let src = "pub use \"util.rz\" as util; let x = 1; x;";
+        let warnings = warnings_for(src);
+        assert!(
+            warnings.is_empty(),
+            "pub re-export should not warn even when alias is unused"
+        );
     }
 }

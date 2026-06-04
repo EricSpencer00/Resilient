@@ -10,7 +10,11 @@
 //! 2. **Namespaced file imports**: `use "path" as name;` — like above but
 //!    declarations are scoped under `name::`.
 //!
-//! 3. **Standard library imports**: `use std::http;` / `use std::json as j;`
+//! 3. **Selective / public re-exports**: `use "path" { A, B };` imports
+//!    only the named declarations, while `pub use "path"` marks imported
+//!    declarations public so the current module can re-export them.
+//!
+//! 4. **Standard library imports**: `use std::http;` / `use std::json as j;`
 //!    — imports a built-in standard library module.
 //!
 //! Cycles are detected via an in-flight stack: before expanding a file,
@@ -84,8 +88,17 @@ fn expand_recursive(
 
     let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
-        if let Node::Use { path, alias, .. } = &stmt.node {
+        if let Node::Use {
+            path,
+            alias,
+            selectors,
+            is_pub,
+            ..
+        } = &stmt.node
+        {
             let alias = alias.clone();
+            let selectors = selectors.clone();
+            let is_pub = *is_pub;
 
             // Check for standard library import: `use std::module;`
             if let Some(module_name) = path.strip_prefix("std::") {
@@ -128,18 +141,14 @@ fn expand_recursive(
                 )?;
                 in_flight.pop();
                 if let Node::Program(imported_stmts) = imported_program {
-                    let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
-                    let ns = alias.clone().unwrap_or_else(|| dep_name.to_string());
-                    for s in imported_stmts {
-                        if matches!(s.node, Node::Use { .. }) {
-                            continue;
-                        }
-                        if has_any_pub && is_exportable_decl(&s.node) && !is_pub_decl(&s.node) {
-                            continue;
-                        }
-                        let renamed = rename_decl(s, &ns);
-                        expanded.push(renamed);
-                    }
+                    let ns = alias.as_deref().unwrap_or(dep_name);
+                    append_imported_stmts(
+                        imported_stmts,
+                        &mut expanded,
+                        selectors.as_deref(),
+                        is_pub,
+                        Some(ns),
+                    );
                 }
                 continue;
             }
@@ -175,24 +184,13 @@ fn expand_recursive(
             in_flight.pop();
 
             if let Node::Program(imported_stmts) = imported_program {
-                let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
-
-                for s in imported_stmts {
-                    if matches!(s.node, Node::Use { .. }) {
-                        continue;
-                    }
-
-                    if has_any_pub && is_exportable_decl(&s.node) && !is_pub_decl(&s.node) {
-                        continue;
-                    }
-
-                    if let Some(ref ns) = alias {
-                        let renamed = rename_decl(s, ns);
-                        expanded.push(renamed);
-                    } else {
-                        expanded.push(s);
-                    }
-                }
+                append_imported_stmts(
+                    imported_stmts,
+                    &mut expanded,
+                    selectors.as_deref(),
+                    is_pub,
+                    alias.as_deref(),
+                );
             }
         } else {
             expanded.push(stmt);
@@ -242,6 +240,24 @@ fn is_exportable_decl(node: &Node) -> bool {
     matches!(node, Node::Function { .. } | Node::StructDecl { .. })
 }
 
+/// Return the declaration name for items that can be re-exported.
+fn decl_name(node: &Node) -> Option<&str> {
+    match node {
+        Node::Function { name, .. } | Node::StructDecl { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+/// Mark a declaration as public when it is re-exported via `pub use`.
+fn mark_pub_decl(node: &mut Node) {
+    match node {
+        Node::Function { is_pub, .. } | Node::StructDecl { is_pub, .. } => {
+            *is_pub = true;
+        }
+        _ => {}
+    }
+}
+
 /// Rename an imported declaration by prepending `ns::` to its name.
 fn rename_decl(mut s: Spanned<Node>, ns: &str) -> Spanned<Node> {
     match &mut s.node {
@@ -254,6 +270,45 @@ fn rename_decl(mut s: Spanned<Node>, ns: &str) -> Spanned<Node> {
         _ => {}
     }
     s
+}
+
+/// Apply import/export filtering and push the surviving declarations
+/// into `expanded`.
+fn append_imported_stmts(
+    imported_stmts: Vec<Spanned<Node>>,
+    expanded: &mut Vec<Spanned<Node>>,
+    selectors: Option<&[String]>,
+    make_pub: bool,
+    namespace: Option<&str>,
+) {
+    let has_any_pub = imported_stmts.iter().any(|s| is_pub_decl(&s.node));
+
+    for mut s in imported_stmts {
+        if matches!(s.node, Node::Use { .. }) {
+            continue;
+        }
+
+        if has_any_pub && is_exportable_decl(&s.node) && !is_pub_decl(&s.node) {
+            continue;
+        }
+
+        if let Some(selector_names) = selectors {
+            let Some(name) = decl_name(&s.node) else {
+                continue;
+            };
+            if !selector_names.iter().any(|selector| selector == name) {
+                continue;
+            }
+        }
+
+        if let Some(ns) = namespace {
+            s = rename_decl(s, ns);
+        }
+        if make_pub {
+            mark_pub_decl(&mut s.node);
+        }
+        expanded.push(s);
+    }
 }
 
 fn resolve_use_path(base_dir: &Path, path: &str) -> Result<PathBuf, String> {
