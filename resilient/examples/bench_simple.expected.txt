@@ -1,6 +1,1 @@
-Benchmarks discovered:
-- "empty block" at line 3
-- "integer arithmetic" at line 6
-- "string operations" at line 11
-- "fibonacci(10)" at line 21
-- "fibonacci(15)" at line 25
+Program executed successfully
