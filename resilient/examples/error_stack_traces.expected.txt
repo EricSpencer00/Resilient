@@ -1,5 +1,5 @@
 trace length: 3
-outer_trace
-middle_trace
-inner_trace
+outer_trace at error_stack_traces.rz:20:13
+middle_trace at error_stack_traces.rz:17:18
+inner_trace at error_stack_traces.rz:13:17
 Program executed successfully
