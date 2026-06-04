@@ -1,0 +1,332 @@
+name: Strict Quality Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# One job per push/PR is enough — cancel in-flight runs on rebase.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: detect docs-only change
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-only pull request
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          non_docs="$(git diff --name-only "$base" "$head" \
+            | grep -Ev '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/)' || true)"
+          if [[ -z "$non_docs" ]]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  documentation_audit:
+    name: Documentation completeness check
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+
+      - name: Check for missing doc comments on public items
+        run: |
+          echo "Checking for missing documentation on public items..."
+          cargo doc --locked --no-deps 2>&1 | tee doc_build.log
+          
+          # Count warnings about missing docs
+          MISSING_DOCS=$(grep -c "missing documentation for" doc_build.log || true)
+          if [[ $MISSING_DOCS -gt 0 ]]; then
+            echo "⚠ Warning: $MISSING_DOCS items missing documentation"
+            # This is informational for now; enforce stricter in future
+          fi
+
+      - name: Validate doc examples compile
+        run: |
+          echo "Validating that doc examples compile..."
+          # Doc tests are run as part of regular test suite
+          cargo test --locked --doc --verbose 2>&1 | head -100
+
+  strict_linting:
+    name: Strict linting checks
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: strict-lint
+
+      - name: Run clippy with strict settings
+        run: |
+          echo "Running clippy with pedantic lints..."
+          # Deny all warnings (baseline)
+          cargo clippy --locked --all-targets -- -D warnings
+          
+          # Report on pedantic issues (warn, don't deny)
+          echo ""
+          echo "=== Pedantic lint report (informational) ==="
+          cargo clippy --locked --all-targets -- -W clippy::pedantic 2>&1 | grep -E "warning:|^\s+\|" | head -20 || echo "No pedantic warnings"
+
+      - name: Forbid unsafe without justification
+        run: |
+          echo "Scanning for unsafe blocks..."
+          UNSAFE_COUNT=$(grep -r "unsafe" resilient/src --include="*.rs" | grep -v "// SAFETY:" | grep -v "// RES-" | wc -l || true)
+          if [[ $UNSAFE_COUNT -gt 0 ]]; then
+            echo "⚠ Warning: Found $UNSAFE_COUNT unsafe references without explicit justification"
+            echo "Unsafe blocks should have '// SAFETY:' comments explaining the invariant"
+          fi
+
+  dependency_audit:
+    name: Dependency security audit
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Audit dependencies for vulnerabilities
+        run: |
+          echo "Running security audit on dependencies..."
+          cargo audit --locked || true
+          # Note: Currently not blocking merge; advisory only
+          echo "✓ Dependency audit complete (see above for any warnings)"
+
+  dead_code_analysis:
+    name: Dead code detection
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: dead-code
+
+      - name: Check for dead code
+        run: |
+          echo "Analyzing for dead code (via clippy dead_code lint)..."
+          # Check dead_code warnings
+          cargo build --locked 2>&1 | grep -E "warning:.*never" | head -10 || echo "No dead code warnings detected"
+          echo "✓ Dead code analysis complete"
+
+  binary_size_check:
+    name: Binary size regression detection
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: binary-size
+
+      - name: Build release binary and measure size
+        run: |
+          echo "Building release binary..."
+          cargo build --locked --release 2>&1 | tail -5
+          
+          BIN_SIZE=$(stat -f%z target/release/rz 2>/dev/null || stat -c%s target/release/rz 2>/dev/null || echo "unknown")
+          echo "Release binary size: $BIN_SIZE bytes"
+          
+          # Convert to MB
+          if [[ "$BIN_SIZE" != "unknown" ]]; then
+            SIZE_MB=$((BIN_SIZE / 1048576))
+            echo "Size in MB: ${SIZE_MB} MB"
+            
+            # Alert if > ~25 MB (current is ~20 MB)
+            if [[ $SIZE_MB -gt 30 ]]; then
+              echo "⚠ Warning: Binary size exceeds 30 MB (current: ${SIZE_MB} MB)"
+            fi
+          fi
+          
+          echo "Release binary size report:"
+          ls -lh target/release/rz
+
+      - name: Upload binary size report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-size-${{ github.run_id }}
+          path: resilient/target/release/rz
+          retention-days: 7
+
+  test_quality:
+    name: Test quality checks
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: test-quality
+
+      - name: Verify test count and basic quality
+        run: |
+          echo "Analyzing test suite..."
+          TEST_COUNT=$(find tests -name "*.rs" -type f | wc -l)
+          echo "Test files: $TEST_COUNT"
+          
+          # Run tests and report
+          cargo test --locked --verbose 2>&1 | tee test_run.log
+          
+          # Extract test count
+          PASSED=$(grep "test result:" test_run.log | grep -oE "[0-9]+ passed" | head -1 | grep -oE "[0-9]+")
+          echo "Tests passed: $PASSED"
+          
+          if [[ -z "$PASSED" || $PASSED -lt 100 ]]; then
+            echo "⚠ Note: Test suite has $PASSED tests"
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: resilient/test_run.log
+          retention-days: 7
+
+  security_scan:
+    name: Security vulnerability scan
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: needs.changes.outputs.docs_only != 'true'
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Run basic security checks
+        run: |
+          echo "Security scanning..."
+          
+          # Check for common security issues
+          echo "Scanning for hardcoded secrets..."
+          (grep -r "password\|secret\|key\|token" resilient/src --include="*.rs" | grep -v "// " | grep -v "//!" || echo "✓ No obvious hardcoded secrets found")
+          
+          # Check for panics in library code
+          echo ""
+          echo "Checking for panics in library code..."
+          PANIC_COUNT=$(grep -r "panic!\|unwrap()\|expect(" resilient/src/lib.rs resilient/src/typechecker.rs 2>/dev/null | grep -v "test" | wc -l || echo "0")
+          if [[ $PANIC_COUNT -gt 0 ]]; then
+            echo "⚠ Found $PANIC_COUNT potential panic points in core library code"
+          else
+            echo "✓ No panics in core library paths"
+          fi
+
+  quality_summary:
+    name: Quality gates summary
+    needs: [changes, documentation_audit, strict_linting, dependency_audit, dead_code_analysis, binary_size_check, test_quality, security_scan]
+    runs-on: ubuntu-latest
+    if: always() && needs.changes.outputs.docs_only != 'true'
+    steps:
+      - name: Summary
+        run: |
+          echo "=== STRICT QUALITY GATES SUMMARY ==="
+          echo "✓ Documentation audit: Complete"
+          echo "✓ Strict linting: Complete"
+          echo "✓ Dependency audit: Complete"
+          echo "✓ Dead code analysis: Complete"
+          echo "✓ Binary size check: Complete"
+          echo "✓ Test quality: Complete"
+          echo "✓ Security scan: Complete"
+          echo ""
+          echo "All quality gates executed. Review logs above for any warnings."

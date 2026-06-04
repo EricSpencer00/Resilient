@@ -69,12 +69,30 @@ jobs:
         with:
           workspaces: resilient
 
-      # RES-2446: fmt before build — fail fast on formatting issues
+      # RES-2446: fmt and clippy in parallel — fail fast on formatting issues
       # before waiting for the expensive compilation steps. rustfmt
       # needs only the toolchain, not any compiled artifacts.
-      - name: cargo fmt
+      - name: cargo fmt + cargo clippy (parallel)
         if: needs.changes.outputs.docs_only != 'true'
-        run: cargo fmt --check
+        run: |
+          # Start both checks in parallel (they don't share build state)
+          cargo fmt --check &
+          FMT_PID=$!
+          
+          cargo clippy --locked --all-targets -- -D warnings &
+          CLIPPY_PID=$!
+          
+          # Wait for both to complete
+          wait $FMT_PID
+          FMT_EXIT=$?
+          
+          wait $CLIPPY_PID
+          CLIPPY_EXIT=$?
+          
+          # Fail if either failed
+          if [[ $FMT_EXIT -ne 0 || $CLIPPY_EXIT -ne 0 ]]; then
+            exit 1
+          fi
 
       # RES-1263 + RES-1300: build with `--timings` so Cargo writes
       # `target/cargo-timings/cargo-timing-<timestamp>.html` during
@@ -86,10 +104,6 @@ jobs:
       - name: cargo build --timings
         if: needs.changes.outputs.docs_only != 'true'
         run: cargo build --locked --verbose --timings
-
-      - name: cargo clippy
-        if: needs.changes.outputs.docs_only != 'true'
-        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
         if: needs.changes.outputs.docs_only != 'true'
