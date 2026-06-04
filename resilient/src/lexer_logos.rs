@@ -352,6 +352,9 @@ enum Tok {
     // RES-2660: `static_assert(expr, msg)` compile-time assertion keyword.
     #[token("static_assert")]
     StaticAssert,
+    // RES-2613: `bench "name" { body }` — benchmark block keyword.
+    #[token("bench")]
+    Bench,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,

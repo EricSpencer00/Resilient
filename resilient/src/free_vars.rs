@@ -531,6 +531,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::StaticAssert { .. } => {}
         // RES-2579: defer — walk the deferred expression for free vars.
         Node::DeferStatement { expr, .. } => walk(expr, bound, free),
+        // RES-2613: bench block — walk the body for free vars.
+        Node::BenchBlock { body, .. } => walk(body, bound, free),
     }
 }
 

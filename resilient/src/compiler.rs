@@ -4702,6 +4702,8 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::StaticAssert { span, .. } => span.start.line as u32,
         // RES-2579: defer statement — carries the keyword's span.
         Node::DeferStatement { span, .. } => span.start.line as u32,
+        // RES-2613: bench block — carries the keyword's span.
+        Node::BenchBlock { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }
