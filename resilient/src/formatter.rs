@@ -484,6 +484,12 @@ impl Formatter {
                 self.write(";");
                 self.newline();
             }
+            Node::BenchBlock { name, body, .. } => {
+                self.write("bench \"");
+                self.write(name);
+                self.write("\" ");
+                self.fmt_stmt(body);
+            }
             Node::LetDestructureStruct {
                 struct_name,
                 fields,
@@ -1281,6 +1287,7 @@ impl Formatter {
             | Node::BlanketImpl { .. }
             | Node::StaticAssert { .. }
             | Node::DeferStatement { .. }
+            | Node::BenchBlock { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
