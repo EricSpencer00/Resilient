@@ -2653,6 +2653,14 @@ impl TypeChecker {
                         return_type: Box::new(Type::Bool),
                     },
                 );
+                // RES-2612 Task 6: intern(string) -> string for runtime deduplication.
+                env.set(
+                    "intern".to_string(),
+                    Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::String),
+                    },
+                );
                 env.set(
                     "to_upper".to_string(),
                     Type::Function {
@@ -10949,6 +10957,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_split_last",
         "trim",
         "contains",
+        // RES-2612 Task 6: runtime string interning.
+        "intern",
         "to_upper",
         "to_lower",
         // RES-412: reverse string/array.

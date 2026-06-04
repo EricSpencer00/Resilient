@@ -11773,6 +11773,22 @@ fn parse_checked_failure_signal(err: &str) -> Option<&str> {
     Some(variant)
 }
 
+/// RES-2612 Task 6: intern(string) -> string.
+/// Interns a dynamically-created or runtime string for deduplication.
+fn builtin_intern(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let id = crate::string_interning::intern_string(s.clone());
+            match crate::string_interning::get_interned_string(id) {
+                Some(result) => Ok(Value::String(result)),
+                None => Err("intern: failed to retrieve interned string".to_string()),
+            }
+        }
+        [other] => Err(format!("intern: expected string argument, got {}", other)),
+        _ => Err(format!("intern: expected 1 argument, got {}", args.len())),
+    }
+}
+
 /// RES-920: lookup-and-apply a builtin by name. Used by the
 /// method-call dispatch (`s.len()`, `arr.push(x)`) to share semantics
 /// with the prefix form. Returns `None` only when the name is not in
@@ -11967,6 +11983,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_split_last", builtin_string_split_last),
     ("trim", builtin_trim),
     ("contains", builtin_contains),
+    // RES-2612 Task 6: intern(string) -> string for runtime deduplication.
+    ("intern", builtin_intern),
     ("to_upper", builtin_to_upper),
     ("to_lower", builtin_to_lower),
     // RES-412: reverse a string (Unicode-aware) or an array (clones elements).
