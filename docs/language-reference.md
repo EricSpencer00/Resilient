@@ -808,6 +808,18 @@ wall clock (reported to stderr so the user can pin the next run).
 | Name        | Signature     | Errors | Notes |
 |:------------|:--------------|:-------|:------|
 | `clock_ms()`| `() -> int`   | —      | monotonic ms since an unspecified epoch; std-only |
+| `clock_now()`| `() -> int`  | —      | current Unix timestamp in seconds; std-only |
+| `clock_elapsed(start)`| `(int) -> int` | — | elapsed milliseconds since `start`; std-only |
+
+### Date / time
+
+| Name                | Signature                  | Errors | Notes |
+|:--------------------|:---------------------------|:-------|:------|
+| `datetime_now()`    | `() -> DateTime`           | system clock before Unix epoch → runtime error | current system time as a `DateTime`; std-only |
+| `datetime_from_unix(secs)` | `(int) -> DateTime` | — | convert Unix seconds into `DateTime`; std-only |
+| `datetime_to_unix(dt)` | `(DateTime) -> int`      | shape mismatch → runtime error | convert `DateTime` back to Unix seconds; std-only |
+| `datetime_format(dt, fmt)` | `(DateTime, string) -> string` | unknown `%` specifier → runtime error | supports `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%%`; std-only |
+| `datetime_parse(s, fmt)` | `(string, string) -> Result<DateTime>` | parse failure → `Err(message)` | parses the same format codes accepted by `datetime_format`; std-only |
 
 ### Files (std-only)
 
@@ -973,9 +985,9 @@ runs. Specifically:
   and `HashSet` provide no order guarantee. (The no_std runtime
   uses sorted containers; programs that need ordered iteration
   across targets should sort at the API boundary.)
-- `clock_ms` is a non-determinism source; programs requiring
-  reproducibility must avoid reading it or must record it into a
-  trace.
+- `clock_ms`, `clock_now`, and `datetime_now` are non-determinism
+  sources; programs requiring reproducibility must avoid reading them
+  or must record them into a trace.
 
 Without `--seed`, the RNG seed is derived from the wall clock and
 reported to stderr on first use so the user can pin it on the next
