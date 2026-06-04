@@ -115,6 +115,19 @@ pub fn reset_interning_pool() {
     pool.clear();
 }
 
+/// Check if two strings are equal. Uses O(1) pointer comparison if both are interned.
+/// In this implementation, we rely on the fact that interned strings with the same
+/// ID will retrieve the same String value from the pool.
+pub fn strings_equal(id1: usize, id2: usize) -> bool {
+    // If both intern_ids are the same, the strings are definitely equal (O(1)).
+    id1 == id2
+}
+
+/// Check if a given ID corresponds to an interned string in the pool.
+pub fn is_interned(id: usize) -> bool {
+    get_interned_string(id).is_some()
+}
+
 /// RES-2612 Task 4: Type check interned strings.
 /// Validates that all StringInternLiteral nodes have valid intern_ids that
 /// map to entries in the interning pool, and that the content matches.

@@ -1,0 +1,24 @@
+// RES-2612: Example demonstrating interpreter evaluation of interned strings
+// with O(1) equality checks for identical string literals.
+
+fn main() {
+    let s1 = "hello";
+    let s2 = "hello";
+    let s3 = "world";
+    
+    if s1 == s2 {
+        println("s1 and s2 are equal");
+    }
+    
+    if s1 != s3 {
+        println("s1 and s3 are different");
+    }
+    
+    println(s1);
+    
+    // Interned strings work in string concatenation
+    let greeting = s1 + " " + s3;
+    println(greeting);
+}
+
+main();
