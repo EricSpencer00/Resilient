@@ -1,0 +1,12 @@
+// RES-2566: LSP workspace goto-definition fixture — calling file.
+// The LSP server should resolve `helper` (line 7) and `h::helper`
+// (line 10) to their definitions in helpers.rz.
+
+use "helpers.rz";
+use "helpers.rz" as h;
+
+fn main() {
+    let result = helper();
+    let also = h::helper();
+    return result;
+}
