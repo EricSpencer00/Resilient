@@ -4,17 +4,34 @@
 //
 // The compiler will report each AI failure-mode pattern present
 // in the file, with file:line:col, threat kind, and a suggested
-// mitigation. The program itself runs successfully — the threat
-// reporter is a soft, advisory pass.
+// mitigation. This example showcases detected AI-generated-code patterns.
 
-fn safe_add(int a, int b) -> int {
-    return a + b;
+// OffByOne: loop bounds should use < not <=
+fn process_array(Array<int> arr) -> int {
+    int i = 0;
+    while (i <= len(arr)) {  // Should be i < len(arr)
+        i = i + 1;
+    }
+    return i;
+}
+
+// MagicNumber: unnamed constants in arithmetic
+fn compute_hash(int x) -> int {
+    return x * 7919 + 42;  // Named constants are better
+}
+
+// UnboundedLoop: while true with no break
+fn risky() {
+    while true {
+        let counter = 0;
+        // No break reachable — infinite loop
+    }
 }
 
 fn main() {
-    println(safe_add(2, 3));
-    println(safe_add(10, 20));
-    println(safe_add(100, 200));
+    let arr = [1, 2, 3];
+    println(process_array(arr));
+    println(compute_hash(5));
 }
 
 main();
