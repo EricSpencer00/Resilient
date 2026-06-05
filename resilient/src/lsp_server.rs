@@ -3360,6 +3360,34 @@ impl LanguageServer for Backend {
                 continue;
             }
 
+            // RES-2645: undefined-name import quick-fix. When the
+            // workspace index contains top-level function definitions
+            // matching the missing name, offer one `use "path";`
+            // action per candidate module.
+            if is_undefined_name_diagnostic(diag) {
+                let needs_build = match self.workspace_index_built.lock() {
+                    Ok(g) => !*g,
+                    Err(_) => false,
+                };
+                if needs_build {
+                    self.rebuild_workspace_index();
+                    if let Ok(mut g) = self.workspace_index_built.lock() {
+                        *g = true;
+                    }
+                }
+                let index = match self.workspace_index.lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                let candidates = undefined_name_candidates(&index, &uri, diag);
+                actions.extend(
+                    build_add_use_actions(&uri, diag, &text, candidates.into_iter())
+                        .into_iter()
+                        .map(CodeActionOrCommand::CodeAction),
+                );
+                continue;
+            }
+
             // RES-2570: dead-function quick-fix (L0014).
             if is_dead_function_diagnostic(diag) {
                 if let Some(action) = build_prefix_fn_underscore_action(&uri, diag, &text) {
@@ -3732,6 +3760,155 @@ pub(crate) fn build_add_cast_action(uri: &Url, diag: &Diagnostic) -> Option<Code
         disabled: None,
         data: None,
     })
+}
+
+/// RES-2645: detect an undefined-name/typechecker diagnostic whose missing
+/// symbol might be satisfiable by importing another module.
+pub(crate) fn is_undefined_name_diagnostic(diag: &Diagnostic) -> bool {
+    diag.message.contains("Undefined variable")
+}
+
+/// RES-2645: extract the missing identifier from either rich
+/// `"Undefined variable 'foo' at 3:5"` or legacy
+/// `"Undefined variable: foo"` diagnostics.
+pub(crate) fn extract_undefined_name(msg: &str) -> Option<&str> {
+    if let Some(start) = msg.find("Undefined variable '") {
+        let rest = &msg[start + "Undefined variable '".len()..];
+        let end = rest.find('\'')?;
+        let name = &rest[..end];
+        return (!name.is_empty()).then_some(name);
+    }
+    if let Some(start) = msg.find("Undefined variable:") {
+        let rest = msg[start + "Undefined variable:".len()..].trim();
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ',' || c == ';')
+            .unwrap_or(rest.len());
+        let name = &rest[..end];
+        return (!name.is_empty()).then_some(name);
+    }
+    None
+}
+
+/// RES-2645: exact-name lookup into the workspace symbol index. Only
+/// top-level functions qualify for the import quick-fix.
+pub(crate) fn undefined_name_candidates<'a>(
+    index: &'a HashMap<Url, Vec<WorkspaceSymbolEntry>>,
+    current_uri: &Url,
+    diag: &Diagnostic,
+) -> Vec<&'a WorkspaceSymbolEntry> {
+    let Some(name) = extract_undefined_name(&diag.message) else {
+        return Vec::new();
+    };
+    let mut out: Vec<&WorkspaceSymbolEntry> = index
+        .values()
+        .flatten()
+        .filter(|entry| {
+            entry.kind == SymbolKind::FUNCTION && entry.name == name && &entry.uri != current_uri
+        })
+        .collect();
+    out.sort_by(|a, b| a.uri.as_str().cmp(b.uri.as_str()));
+    out
+}
+
+fn path_components(path: &Path) -> Vec<&std::ffi::OsStr> {
+    path.components()
+        .map(|component| component.as_os_str())
+        .collect()
+}
+
+/// RES-2645: convert an indexed candidate's absolute file URI into the
+/// relative string form expected by `use "path/to/module.rz";`.
+pub(crate) fn import_path_for_candidate(current_uri: &Url, candidate_uri: &Url) -> Option<String> {
+    let current_path = current_uri.to_file_path().ok()?;
+    let candidate_path = candidate_uri.to_file_path().ok()?;
+    let current_dir = current_path.parent()?;
+
+    let current_parts = path_components(current_dir);
+    let candidate_parts = path_components(&candidate_path);
+    let shared = current_parts
+        .iter()
+        .zip(candidate_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut relative = PathBuf::new();
+    for _ in shared..current_parts.len() {
+        relative.push("..");
+    }
+    for part in &candidate_parts[shared..] {
+        relative.push(part);
+    }
+
+    let rendered = relative.to_string_lossy().replace('\\', "/");
+    if rendered.is_empty() {
+        None
+    } else {
+        Some(rendered)
+    }
+}
+
+fn leading_use_insertion_line(src: &str) -> u32 {
+    let mut saw_use = false;
+    for (idx, line) in src.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if saw_use {
+                return idx as u32 + 1;
+            }
+            continue;
+        }
+        if trimmed.starts_with("use \"") || trimmed.starts_with("pub use \"") {
+            saw_use = true;
+            continue;
+        }
+        return idx as u32;
+    }
+    src.lines().count() as u32
+}
+
+/// RES-2645: build one "Add `use`" action per candidate module. The
+/// inserted path is relative to the current document, and the edit is
+/// anchored at the top-of-file import section.
+pub(crate) fn build_add_use_actions<'a>(
+    uri: &Url,
+    diag: &Diagnostic,
+    src: &str,
+    candidates: impl IntoIterator<Item = &'a WorkspaceSymbolEntry>,
+) -> Vec<CodeAction> {
+    let insert_line = leading_use_insertion_line(src);
+    let insert_pos = Position::new(insert_line, 0);
+    let insert_range = Range::new(insert_pos, insert_pos);
+    let mut actions = Vec::new();
+    for candidate in candidates {
+        let Some(path) = import_path_for_candidate(uri, &candidate.uri) else {
+            continue;
+        };
+        let new_text = format!("use \"{}\";\n", path);
+        if src.contains(&new_text) {
+            continue;
+        }
+        let text_edit = TextEdit {
+            range: insert_range,
+            new_text: new_text.clone(),
+        };
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), vec![text_edit]);
+        actions.push(CodeAction {
+            title: format!("Add `use \"{}\";`", path),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diag.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        });
+    }
+    actions
 }
 
 /// RES-2570: detect an L0014 "dead function" diagnostic (function defined
@@ -6000,5 +6177,102 @@ fn main(int n) {\n\
         };
         let src = "let x = 1\n";
         assert!(build_suppress_lint_action(&uri, &diag, src).is_none());
+    }
+
+    // ============================================================
+    // RES-2645: undefined-name import quick-fix
+    // ============================================================
+
+    #[test]
+    fn res2645_extract_undefined_name_from_type_error() {
+        assert_eq!(
+            extract_undefined_name("Undefined variable 'helper' at 3:5"),
+            Some("helper")
+        );
+        assert_eq!(
+            extract_undefined_name("Undefined variable: helper"),
+            Some("helper")
+        );
+    }
+
+    #[test]
+    fn res2645_build_add_use_action_single_match() {
+        let uri = Url::parse("file:///workspace/main.rz").unwrap();
+        let candidate = WorkspaceSymbolEntry {
+            name: "helper".into(),
+            kind: SymbolKind::FUNCTION,
+            uri: Url::parse("file:///workspace/lib/math.rz").unwrap(),
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+        };
+        let diag = Diagnostic {
+            range: Range::new(Position::new(2, 4), Position::new(2, 10)),
+            message: "Undefined variable 'helper' at 3:5".into(),
+            ..Default::default()
+        };
+        let src = "fn main() {\n    helper();\n}\n";
+
+        let actions = build_add_use_actions(&uri, &diag, src, [&candidate]);
+        assert_eq!(actions.len(), 1, "expected exactly one quick-fix");
+        let action = &actions[0];
+        assert_eq!(action.title, "Add `use \"lib/math.rz\";`");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+
+        let edit = action.edit.clone().expect("edit");
+        let mut changes = edit.changes.expect("changes");
+        let edits = changes.remove(&uri).expect("edits");
+        assert_eq!(edits.len(), 1);
+        let te = &edits[0];
+        assert_eq!(te.range.start, Position::new(0, 0));
+        assert_eq!(te.range.end, Position::new(0, 0));
+        assert_eq!(te.new_text, "use \"lib/math.rz\";\n");
+    }
+
+    #[test]
+    fn res2645_build_add_use_action_multiple_matches() {
+        let uri = Url::parse("file:///workspace/main.rz").unwrap();
+        let a = WorkspaceSymbolEntry {
+            name: "helper".into(),
+            kind: SymbolKind::FUNCTION,
+            uri: Url::parse("file:///workspace/lib/a.rz").unwrap(),
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+        };
+        let b = WorkspaceSymbolEntry {
+            name: "helper".into(),
+            kind: SymbolKind::FUNCTION,
+            uri: Url::parse("file:///workspace/lib/b.rz").unwrap(),
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+        };
+        let diag = Diagnostic {
+            range: Range::new(Position::new(1, 4), Position::new(1, 10)),
+            message: "Undefined variable: helper".into(),
+            ..Default::default()
+        };
+        let src = "fn main() {\n    helper();\n}\n";
+
+        let actions = build_add_use_actions(&uri, &diag, src, [&a, &b]);
+        let titles: Vec<&str> = actions.iter().map(|action| action.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec!["Add `use \"lib/a.rz\";`", "Add `use \"lib/b.rz\";`"]
+        );
+    }
+
+    #[test]
+    fn res2645_build_add_use_action_no_match() {
+        let uri = Url::parse("file:///tmp/main.rz").unwrap();
+        let diag = Diagnostic {
+            range: Range::new(Position::new(1, 4), Position::new(1, 10)),
+            message: "Undefined variable 'helper' at 2:5".into(),
+            ..Default::default()
+        };
+        let src = "fn main() {\n    helper();\n}\n";
+
+        let actions = build_add_use_actions(
+            &uri,
+            &diag,
+            src,
+            std::iter::empty::<&WorkspaceSymbolEntry>(),
+        );
+        assert!(actions.is_empty(), "expected no quick-fixes");
     }
 }
