@@ -1377,6 +1377,8 @@ pub(crate) enum RenameSymbolKind {
     Variable,
 }
 
+const RENAME_WORKSPACE_SCAN_LIMIT: usize = 10_000;
+
 /// RES-2568: produce all `TextEdit`s needed to rename `old_name` →
 /// `new_name` inside a single document.
 ///
@@ -1464,6 +1466,103 @@ pub(crate) fn build_rename_edits_for_doc(
     }
 
     edits
+}
+
+fn collect_rename_changes_for_docs(
+    docs: &[(Url, String, Node)],
+    old_name: &str,
+    new_name: &str,
+    kind: RenameSymbolKind,
+) -> HashMap<Url, Vec<TextEdit>> {
+    let mut changes = HashMap::new();
+    for (uri, text, program) in docs {
+        let def_range = match kind {
+            RenameSymbolKind::Variable => find_let_name_range(text, old_name).unwrap_or_default(),
+            RenameSymbolKind::Fn | RenameSymbolKind::Struct => {
+                let defs = build_top_level_defs(program);
+                find_top_level_def(&defs, old_name)
+                    .map(|def| def.range)
+                    .unwrap_or_default()
+            }
+        };
+        let edits = build_rename_edits_for_doc(program, text, old_name, new_name, kind, def_range);
+        if !edits.is_empty() {
+            changes.insert(uri.clone(), edits);
+        }
+    }
+    changes
+}
+
+fn walk_resilient_files_capped(root: &Path, limit: usize) -> (Vec<PathBuf>, bool) {
+    fn walk(root: &Path, limit: usize, out: &mut Vec<PathBuf>) -> bool {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') || name == "target" {
+                continue;
+            }
+            if path.is_dir() {
+                if walk(&path, limit, out) {
+                    return true;
+                }
+            } else if path.extension().and_then(|s| s.to_str()) == Some("rz") {
+                if out.len() >= limit {
+                    return true;
+                }
+                out.push(path);
+            }
+        }
+        false
+    }
+
+    let mut out = Vec::new();
+    let truncated = walk(root, limit, &mut out);
+    (out, truncated)
+}
+
+fn collect_workspace_rename_changes(
+    open_docs: &[(Url, String, Node)],
+    workspace_root: Option<&Path>,
+    cached_uris: &HashSet<Url>,
+    old_name: &str,
+    new_name: &str,
+    kind: RenameSymbolKind,
+    scan_limit: usize,
+) -> (HashMap<Url, Vec<TextEdit>>, bool) {
+    let mut changes = collect_rename_changes_for_docs(open_docs, old_name, new_name, kind);
+    let Some(root) = workspace_root else {
+        return (changes, false);
+    };
+
+    let (files, truncated) = walk_resilient_files_capped(root, scan_limit);
+    let mut disk_docs = Vec::new();
+    for path in files {
+        let Ok(uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+        if cached_uris.contains(&uri) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let (program, _errs) = parse(&text);
+        disk_docs.push((uri, text, program));
+    }
+
+    for (uri, text, program) in disk_docs {
+        let edits =
+            build_rename_edits_for_doc(&program, &text, old_name, new_name, kind, Range::default());
+        if !edits.is_empty() {
+            changes.insert(uri, edits);
+        }
+    }
+    (changes, truncated)
 }
 
 /// RES-2568: find the precise range of the identifier token that names
@@ -3157,7 +3256,7 @@ impl LanguageServer for Backend {
 
         // Confirm cursor is on a top-level binding (fn / struct / let).
         let defs = build_top_level_defs(&program);
-        let Some(def) = find_top_level_def(&defs, &name) else {
+        let Some(_def) = find_top_level_def(&defs, &name) else {
             return Ok(None);
         };
 
@@ -3191,55 +3290,49 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        // --- Build edits for the primary document (the one with the cursor) ---
-        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-        let primary_edits =
-            build_rename_edits_for_doc(&program, &text, &name, &new_name, symbol_kind, def.range);
-        if !primary_edits.is_empty() {
-            changes.insert(uri.clone(), primary_edits);
-        }
-
-        // --- RES-2568: cross-file rename via open-document cache ---
-        // For every other open document, collect the same edit sites.
-        // We don't scan the full workspace on disk here (that would be
-        // too slow for large repos and requires holding locks across I/O);
-        // we scan the in-memory `documents_text` + `documents` maps.
-        //
-        // The workspace-index path (scanning `.rz` files on disk) is
-        // a follow-up (RES-2568b). What we ship here covers the common
-        // case: open buffers in the editor session.
-        let other_docs: Vec<(Url, String, Node)> = {
+        let open_docs: Vec<(Url, String, Node)> = {
             let text_map = self.documents_text.lock().ok();
             let ast_map = self.documents.lock().ok();
             match (text_map, ast_map) {
                 (Some(tmap), Some(amap)) => tmap
                     .iter()
-                    .filter(|(u, _)| *u != &uri)
-                    .filter_map(|(u, src)| {
-                        amap.get(u)
-                            .map(|prog| (u.clone(), src.clone(), prog.clone()))
+                    .filter_map(|(doc_uri, src)| {
+                        amap.get(doc_uri)
+                            .map(|prog| (doc_uri.clone(), src.clone(), prog.clone()))
                     })
                     .collect(),
                 _ => Vec::new(),
             }
         };
 
-        for (other_uri, other_text, other_prog) in other_docs {
-            let other_defs = build_top_level_defs(&other_prog);
-            let def_range = find_top_level_def(&other_defs, &name)
-                .map(|d| d.range)
-                .unwrap_or_default();
-            let edits = build_rename_edits_for_doc(
-                &other_prog,
-                &other_text,
-                &name,
-                &new_name,
-                symbol_kind,
-                def_range,
-            );
-            if !edits.is_empty() {
-                changes.insert(other_uri, edits);
-            }
+        let cached_uris: HashSet<Url> = open_docs
+            .iter()
+            .map(|(doc_uri, _, _)| doc_uri.clone())
+            .collect();
+        let workspace_root = match self.workspace_root.lock() {
+            Ok(root) => root.clone(),
+            Err(_) => None,
+        };
+        let (changes, truncated) = collect_workspace_rename_changes(
+            &open_docs,
+            workspace_root.as_deref(),
+            &cached_uris,
+            &name,
+            &new_name,
+            symbol_kind,
+            RENAME_WORKSPACE_SCAN_LIMIT,
+        );
+
+        if truncated {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!(
+                        "rename scanned the first {} workspace files; some unopened .rz files were skipped",
+                        RENAME_WORKSPACE_SCAN_LIMIT
+                    ),
+                )
+                .await;
         }
 
         if changes.is_empty() {
@@ -5550,6 +5643,52 @@ fn main(int n) {\n\
         let defs = build_top_level_defs(&prog);
         let found = find_top_level_def(&defs, "add");
         assert!(found.is_some(), "expected add in top-level defs");
+    }
+
+    #[test]
+    fn res2568b_workspace_rename_includes_unopened_disk_files() {
+        let root = tmp_workspace("rename_disk");
+        let primary_src = "fn add(int a, int b) -> int { return a + b; }\nadd(1, 2);\n";
+        let secondary_src = "fn use_add() -> int { return add(3, 4); }\n";
+        write_file(&root, "primary.rz", primary_src);
+        write_file(&root, "secondary.rz", secondary_src);
+
+        let primary_path = root.join("primary.rz");
+        let primary_uri = Url::from_file_path(&primary_path).expect("primary URI");
+        let secondary_uri = Url::from_file_path(root.join("secondary.rz")).expect("secondary URI");
+
+        let (primary_prog, errs) = parse(primary_src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+
+        let open_docs = vec![(primary_uri.clone(), primary_src.to_string(), primary_prog)];
+        let cached_uris = HashSet::from([primary_uri.clone()]);
+        let (changes, truncated) = collect_workspace_rename_changes(
+            &open_docs,
+            Some(&root),
+            &cached_uris,
+            "add",
+            "sum",
+            RenameSymbolKind::Fn,
+            RENAME_WORKSPACE_SCAN_LIMIT,
+        );
+        assert!(!truncated, "small workspace should not hit scan limit");
+
+        let primary_edits = changes.get(&primary_uri).expect("primary edits");
+        assert_eq!(primary_edits.len(), 2, "expected decl + local call edit");
+        let secondary_edits = changes
+            .get(&secondary_uri)
+            .expect("secondary unopened file should be renamed too");
+        assert_eq!(
+            secondary_edits.len(),
+            1,
+            "expected one cross-file call edit"
+        );
+        assert!(
+            secondary_edits.iter().all(|edit| edit.new_text == "sum"),
+            "unexpected edits: {secondary_edits:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // ============================================================
