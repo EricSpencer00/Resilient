@@ -13,7 +13,7 @@
 //! gated on `cfg(feature = "lsp")`, so this file is only compiled
 //! when the feature is on — no per-file `#![cfg]` needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -375,6 +375,35 @@ pub(crate) struct TopLevelDef {
     pub range: Range,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ReferenceSymbolKind {
+    Fn,
+    Struct,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceVisibleSymbol {
+    origin_path: PathBuf,
+    origin_name: String,
+    kind: ReferenceSymbolKind,
+    decl_range: Range,
+}
+
+#[derive(Debug, Clone)]
+struct VariableReferenceSet {
+    name: String,
+    decl_range: Range,
+    refs: Vec<Range>,
+}
+
+#[derive(Debug, Clone)]
+struct UseStmtInfo {
+    path: String,
+    alias: Option<String>,
+    selectors: Option<Vec<String>>,
+    is_pub: bool,
+}
+
 /// RES-182a: build a name → top-level-decl-location map from a
 /// parsed program. Covers `fn` / `struct` / `type` aliases —
 /// the same decl shapes `document_symbols_for_program` already
@@ -429,6 +458,198 @@ pub(crate) fn find_top_level_def<'a>(
     name: &str,
 ) -> Option<&'a TopLevelDef> {
     defs.iter().find(|d| d.name == name)
+}
+
+fn canonicalize_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn raw_use_stmts(program: &Node) -> Vec<UseStmtInfo> {
+    let Node::Program(stmts) = program else {
+        return Vec::new();
+    };
+    stmts
+        .iter()
+        .filter_map(|stmt| match &stmt.node {
+            Node::Use {
+                path,
+                alias,
+                selectors,
+                is_pub,
+                ..
+            } => Some(UseStmtInfo {
+                path: path.clone(),
+                alias: alias.clone(),
+                selectors: selectors.clone(),
+                is_pub: *is_pub,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn local_top_level_symbols(
+    program: &Node,
+    src: &str,
+    source_path: &Path,
+    exported_only: bool,
+) -> HashMap<String, WorkspaceVisibleSymbol> {
+    let Node::Program(stmts) = program else {
+        return HashMap::new();
+    };
+    let source_path = canonicalize_or_self(source_path);
+    let any_pub = stmts.iter().any(|stmt| {
+        matches!(
+            stmt.node,
+            Node::Function { is_pub: true, .. } | Node::StructDecl { is_pub: true, .. }
+        )
+    });
+    let mut out = HashMap::new();
+    for stmt in stmts {
+        match &stmt.node {
+            Node::Function { name, is_pub, .. } => {
+                if exported_only && any_pub && !is_pub {
+                    continue;
+                }
+                out.entry(name.clone())
+                    .or_insert_with(|| WorkspaceVisibleSymbol {
+                        origin_path: source_path.clone(),
+                        origin_name: name.clone(),
+                        kind: ReferenceSymbolKind::Fn,
+                        decl_range: find_decl_name_range(src, name)
+                            .unwrap_or_else(|| span_to_range(stmt.span)),
+                    });
+            }
+            Node::StructDecl { name, is_pub, .. } => {
+                if exported_only && any_pub && !is_pub {
+                    continue;
+                }
+                out.entry(name.clone())
+                    .or_insert_with(|| WorkspaceVisibleSymbol {
+                        origin_path: source_path.clone(),
+                        origin_name: name.clone(),
+                        kind: ReferenceSymbolKind::Struct,
+                        decl_range: find_struct_decl_name_range(src, name)
+                            .unwrap_or_else(|| span_to_range(stmt.span)),
+                    });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn load_source_and_program(
+    path: &Path,
+    source_overrides: &HashMap<PathBuf, (String, Node)>,
+) -> Option<(String, Node)> {
+    let canon = canonicalize_or_self(path);
+    if let Some((src, program)) = source_overrides.get(&canon) {
+        return Some((src.clone(), program.clone()));
+    }
+    let src = std::fs::read_to_string(&canon).ok()?;
+    let (program, _errors) = parse(&src);
+    Some((src, program))
+}
+
+fn resolve_use_target(base_path: &Path, use_path: &str) -> Option<PathBuf> {
+    if use_path.starts_with("std::") {
+        return None;
+    }
+    if use_path.contains("::") && !use_path.ends_with(".rz") {
+        return None;
+    }
+    let base_dir = base_path.parent().unwrap_or_else(|| Path::new("."));
+    let candidate = base_dir.join(use_path);
+    candidate
+        .exists()
+        .then_some(canonicalize_or_self(&candidate))
+}
+
+fn exported_symbols_for_file(
+    path: &Path,
+    source_overrides: &HashMap<PathBuf, (String, Node)>,
+    memo: &mut HashMap<PathBuf, HashMap<String, WorkspaceVisibleSymbol>>,
+    visiting: &mut HashSet<PathBuf>,
+) -> HashMap<String, WorkspaceVisibleSymbol> {
+    let canon = canonicalize_or_self(path);
+    if let Some(cached) = memo.get(&canon) {
+        return cached.clone();
+    }
+    if !visiting.insert(canon.clone()) {
+        return HashMap::new();
+    }
+    let Some((src, program)) = load_source_and_program(&canon, source_overrides) else {
+        visiting.remove(&canon);
+        return HashMap::new();
+    };
+
+    let mut out = local_top_level_symbols(&program, &src, &canon, true);
+    for use_stmt in raw_use_stmts(&program) {
+        if !use_stmt.is_pub {
+            continue;
+        }
+        let Some(target) = resolve_use_target(&canon, &use_stmt.path) else {
+            continue;
+        };
+        let imported = exported_symbols_for_file(&target, source_overrides, memo, visiting);
+        for (visible_name, symbol) in imported {
+            if let Some(selector_names) = use_stmt.selectors.as_ref()
+                && !selector_names
+                    .iter()
+                    .any(|selector| selector == &visible_name)
+            {
+                continue;
+            }
+            let imported_name = use_stmt
+                .alias
+                .as_ref()
+                .map(|ns| format!("{ns}::{visible_name}"))
+                .unwrap_or(visible_name);
+            out.entry(imported_name).or_insert(symbol);
+        }
+    }
+
+    visiting.remove(&canon);
+    memo.insert(canon.clone(), out.clone());
+    out
+}
+
+fn accessible_symbols_for_file(
+    path: &Path,
+    source_overrides: &HashMap<PathBuf, (String, Node)>,
+    exports_memo: &mut HashMap<PathBuf, HashMap<String, WorkspaceVisibleSymbol>>,
+) -> HashMap<String, WorkspaceVisibleSymbol> {
+    let canon = canonicalize_or_self(path);
+    let Some((src, program)) = load_source_and_program(&canon, source_overrides) else {
+        return HashMap::new();
+    };
+
+    let mut out = local_top_level_symbols(&program, &src, &canon, false);
+    for use_stmt in raw_use_stmts(&program) {
+        let Some(target) = resolve_use_target(&canon, &use_stmt.path) else {
+            continue;
+        };
+        let mut visiting = HashSet::new();
+        let imported =
+            exported_symbols_for_file(&target, source_overrides, exports_memo, &mut visiting);
+        for (visible_name, symbol) in imported {
+            if let Some(selector_names) = use_stmt.selectors.as_ref()
+                && !selector_names
+                    .iter()
+                    .any(|selector| selector == &visible_name)
+            {
+                continue;
+            }
+            let imported_name = use_stmt
+                .alias
+                .as_ref()
+                .map(|ns| format!("{ns}::{visible_name}"))
+                .unwrap_or(visible_name);
+            out.entry(imported_name).or_insert(symbol);
+        }
+    }
+    out
 }
 
 /// RES-302: best-effort type lookup for an identifier in the
@@ -701,6 +922,297 @@ pub(crate) fn collect_identifier_refs(program: &Node, target: &str) -> Vec<Range
     let mut out = Vec::new();
     walk_identifier_refs(program, target, &mut out);
     out
+}
+
+fn range_contains_pos(range: Range, pos: Position) -> bool {
+    (pos.line > range.start.line
+        || (pos.line == range.start.line && pos.character >= range.start.character))
+        && (pos.line < range.end.line
+            || (pos.line == range.end.line && pos.character <= range.end.character))
+}
+
+fn push_scope(scopes: &mut Vec<HashMap<String, usize>>) {
+    scopes.push(HashMap::new());
+}
+
+fn pop_scope(scopes: &mut Vec<HashMap<String, usize>>) {
+    scopes.pop();
+}
+
+fn bind_variable(
+    symbols: &mut Vec<VariableReferenceSet>,
+    scopes: &mut [HashMap<String, usize>],
+    name: &str,
+    decl_range: Range,
+) {
+    let symbol_id = symbols.len();
+    symbols.push(VariableReferenceSet {
+        name: name.to_string(),
+        decl_range,
+        refs: Vec::new(),
+    });
+    if let Some(scope) = scopes.last_mut() {
+        scope.insert(name.to_string(), symbol_id);
+    }
+}
+
+fn resolve_variable(scopes: &[HashMap<String, usize>], name: &str) -> Option<usize> {
+    scopes
+        .iter()
+        .rev()
+        .find_map(|scope| scope.get(name).copied())
+}
+
+fn collect_variable_references(program: &Node) -> Vec<VariableReferenceSet> {
+    let mut symbols = Vec::new();
+    let mut scopes = vec![HashMap::new()];
+    walk_variable_refs(program, &mut symbols, &mut scopes);
+    symbols
+}
+
+fn walk_variable_refs(
+    node: &Node,
+    symbols: &mut Vec<VariableReferenceSet>,
+    scopes: &mut Vec<HashMap<String, usize>>,
+) {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                walk_variable_refs(&stmt.node, symbols, scopes);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            push_scope(scopes);
+            for stmt in stmts {
+                walk_variable_refs(stmt, symbols, scopes);
+            }
+            pop_scope(scopes);
+        }
+        Node::Function {
+            parameters,
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
+            push_scope(scopes);
+            let fn_range = expression_span(node).map(span_to_range).unwrap_or_default();
+            for (_, name) in parameters {
+                bind_variable(symbols, scopes, name, fn_range);
+            }
+            for req in requires {
+                walk_variable_refs(req, symbols, scopes);
+            }
+            for ensure in ensures {
+                walk_variable_refs(ensure, symbols, scopes);
+            }
+            walk_variable_refs(body, symbols, scopes);
+            pop_scope(scopes);
+        }
+        Node::LetStatement {
+            name, value, span, ..
+        } => {
+            walk_variable_refs(value, symbols, scopes);
+            bind_variable(symbols, scopes, name, span_to_range(*span));
+        }
+        Node::Const {
+            name, value, span, ..
+        }
+        | Node::StaticLet { name, value, span } => {
+            walk_variable_refs(value, symbols, scopes);
+            bind_variable(symbols, scopes, name, span_to_range(*span));
+        }
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            span,
+            ..
+        } => {
+            walk_variable_refs(iterable, symbols, scopes);
+            push_scope(scopes);
+            bind_variable(symbols, scopes, name, span_to_range(*span));
+            walk_variable_refs(body, symbols, scopes);
+            pop_scope(scopes);
+        }
+        Node::Assignment { name, value, span } => {
+            walk_variable_refs(value, symbols, scopes);
+            if let Some(id) = resolve_variable(scopes, name) {
+                symbols[id].refs.push(span_to_range(*span));
+            }
+        }
+        Node::Identifier { name, span } => {
+            if let Some(id) = resolve_variable(scopes, name) {
+                symbols[id].refs.push(span_to_range(*span));
+            }
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            walk_variable_refs(function, symbols, scopes);
+            for arg in arguments {
+                walk_variable_refs(arg, symbols, scopes);
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            walk_variable_refs(condition, symbols, scopes);
+            walk_variable_refs(consequence, symbols, scopes);
+            if let Some(alt) = alternative {
+                walk_variable_refs(alt, symbols, scopes);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            walk_variable_refs(condition, symbols, scopes);
+            walk_variable_refs(body, symbols, scopes);
+        }
+        Node::ReturnStatement {
+            value: Some(value), ..
+        }
+        | Node::ExpressionStatement { expr: value, .. }
+        | Node::TryExpression { expr: value, .. }
+        | Node::DeferStatement { expr: value, .. } => {
+            walk_variable_refs(value, symbols, scopes);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            walk_variable_refs(left, symbols, scopes);
+            walk_variable_refs(right, symbols, scopes);
+        }
+        Node::PrefixExpression { right, .. } => {
+            walk_variable_refs(right, symbols, scopes);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            walk_variable_refs(target, symbols, scopes);
+            walk_variable_refs(index, symbols, scopes);
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            walk_variable_refs(target, symbols, scopes);
+            walk_variable_refs(index, symbols, scopes);
+            walk_variable_refs(value, symbols, scopes);
+        }
+        Node::FieldAccess { target, .. } => walk_variable_refs(target, symbols, scopes),
+        Node::FieldAssignment { target, value, .. } => {
+            walk_variable_refs(target, symbols, scopes);
+            walk_variable_refs(value, symbols, scopes);
+        }
+        Node::OptionalChain { object, access, .. } => {
+            walk_variable_refs(object, symbols, scopes);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for arg in args {
+                    walk_variable_refs(arg, symbols, scopes);
+                }
+            }
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for item in items {
+                walk_variable_refs(item, symbols, scopes);
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(base) = base {
+                walk_variable_refs(base, symbols, scopes);
+            }
+            for (_, value) in fields {
+                walk_variable_refs(value, symbols, scopes);
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_variable_refs(scrutinee, symbols, scopes);
+            for (_, guard, body) in arms {
+                if let Some(guard) = guard {
+                    walk_variable_refs(guard, symbols, scopes);
+                }
+                walk_variable_refs(body, symbols, scopes);
+            }
+        }
+        Node::FunctionLiteral {
+            parameters,
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
+            push_scope(scopes);
+            let fn_range = expression_span(node).map(span_to_range).unwrap_or_default();
+            for (_, name) in parameters {
+                bind_variable(symbols, scopes, name, fn_range);
+            }
+            for req in requires {
+                walk_variable_refs(req, symbols, scopes);
+            }
+            for ensure in ensures {
+                walk_variable_refs(ensure, symbols, scopes);
+            }
+            walk_variable_refs(body, symbols, scopes);
+            pop_scope(scopes);
+        }
+        _ => {}
+    }
+}
+
+fn collect_qualified_identifier_sites(src: &str, target: &str) -> Vec<Range> {
+    use crate::{Lexer, Token};
+    let mut ranges = Vec::new();
+    let mut lex = Lexer::new(src);
+    let mut tokens = Vec::new();
+    loop {
+        let (tok, span) = lex.next_token_with_span();
+        if matches!(tok, Token::Eof) {
+            break;
+        }
+        tokens.push((tok, span));
+    }
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let (Token::Identifier(name), span) = &tokens[i] else {
+            i += 1;
+            continue;
+        };
+        let mut full_name = name.clone();
+        let start_span = *span;
+        let mut end_span = *span;
+        let mut j = i;
+        while j + 2 < tokens.len()
+            && matches!(tokens[j + 1].0, Token::DoubleColon)
+            && matches!(tokens[j + 2].0, Token::Identifier(_))
+        {
+            if let Token::Identifier(seg) = &tokens[j + 2].0 {
+                full_name.push_str("::");
+                full_name.push_str(seg);
+            }
+            end_span = tokens[j + 2].1;
+            j += 2;
+        }
+        if full_name == target {
+            let start = Position::new(
+                start_span.start.line.saturating_sub(1) as u32,
+                start_span.start.column.saturating_sub(1) as u32,
+            );
+            let end = Position::new(
+                end_span.end.line.saturating_sub(1) as u32,
+                end_span.end.column.saturating_sub(1) as u32,
+            );
+            ranges.push(Range::new(start, end));
+        }
+        i = j + 1;
+    }
+    ranges
 }
 
 fn walk_identifier_refs(node: &Node, target: &str, out: &mut Vec<Range>) {
@@ -2240,22 +2752,10 @@ impl LanguageServer for Backend {
         })))
     }
 
-    /// RES-183: respond to `textDocument/references` — return every
-    /// call site in the current document where the top-level fn
-    /// under the cursor is invoked.
-    ///
-    /// Pipeline:
-    ///   1. Look up the cursor's identifier token via `identifier_at`.
-    ///   2. Confirm it names a top-level fn via `build_top_level_defs`
-    ///      + `find_top_level_def`. Non-fn identifiers return `Ok(None)`.
-    ///   3. Walk the cached AST with `collect_call_sites` to gather every
-    ///      `CallExpression` with that callee. Struct literals sharing
-    ///      the same name are excluded (AST-driven match).
-    ///   4. If `context.include_declaration` is `true`, prepend the
-    ///      defining span as the first `Location` in the result.
-    ///   5. Return `Ok(None)` (not an empty Vec) when nothing resolves,
-    ///      so compliant clients show "no references found" rather than
-    ///      an empty highlight list.
+    /// RES-2567: respond to `textDocument/references` for:
+    /// - top-level functions across workspace imports,
+    /// - struct types across workspace imports,
+    /// - same-file variable declarations / reads / writes.
     async fn references(&self, params: ReferenceParams) -> JsonResult<Option<Vec<Location>>> {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
@@ -2280,55 +2780,137 @@ impl LanguageServer for Backend {
         let Some(program) = program else {
             return Ok(None);
         };
+        let file_path = uri.to_file_path().ok().map(|p| canonicalize_or_self(&p));
 
-        // Only serve references for top-level fn declarations.
-        // Struct / type-alias / local-variable references are
-        // out of scope for this ticket (see RES-183 notes).
-        let defs = build_top_level_defs(&program);
-        let Some(def) = find_top_level_def(&defs, &name) else {
+        let variable_symbols = collect_variable_references(&program);
+        if let Some(variable) = variable_symbols.iter().find(|symbol| {
+            symbol.name == name
+                && (range_contains_pos(symbol.decl_range, pos)
+                    || symbol.decl_range.start.line == pos.line
+                    || symbol
+                        .refs
+                        .iter()
+                        .any(|range| range_contains_pos(*range, pos)))
+        }) {
+            let mut locations = Vec::new();
+            if include_decl {
+                locations.push(Location {
+                    uri: uri.clone(),
+                    range: variable.decl_range,
+                });
+            }
+            for range in &variable.refs {
+                locations.push(Location {
+                    uri: uri.clone(),
+                    range: *range,
+                });
+            }
+            return if locations.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(locations))
+            };
+        }
+
+        let Some(file_path) = file_path else {
             return Ok(None);
         };
-        // Confirm it is actually a fn (not a struct or type alias).
-        // `build_top_level_defs` collects all three, so check the AST.
-        let is_fn = if let Node::Program(stmts) = &program {
-            stmts
-                .iter()
-                .any(|s| matches!(&s.node, Node::Function { name: n, .. } if n == &name))
+        let mut source_overrides = HashMap::new();
+        source_overrides.insert(file_path.clone(), (text.clone(), program.clone()));
+        let mut exports_memo = HashMap::new();
+        let accessible =
+            accessible_symbols_for_file(&file_path, &source_overrides, &mut exports_memo);
+        let Some(symbol) = accessible.get(&name).cloned() else {
+            return Ok(None);
+        };
+        let mut search_files = match self.workspace_root.lock() {
+            Ok(root) => root
+                .as_ref()
+                .map(|p| walk_resilient_files(p))
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        if !search_files
+            .iter()
+            .any(|p| canonicalize_or_self(p) == file_path)
+        {
+            search_files.push(file_path.clone());
+        }
+
+        let mut seen = HashSet::new();
+        let mut locations = Vec::new();
+        if include_decl
+            && let Ok(decl_uri) = Url::from_file_path(&symbol.origin_path)
+            && seen.insert((
+                decl_uri.clone(),
+                symbol.decl_range.start.line,
+                symbol.decl_range.start.character,
+                symbol.decl_range.end.line,
+                symbol.decl_range.end.character,
+            ))
+        {
+            locations.push(Location {
+                uri: decl_uri,
+                range: symbol.decl_range,
+            });
+        }
+
+        for path in search_files {
+            let path = canonicalize_or_self(&path);
+            let Some((src, file_program)) = load_source_and_program(&path, &source_overrides)
+            else {
+                continue;
+            };
+            let visible = accessible_symbols_for_file(&path, &source_overrides, &mut exports_memo);
+            let spellings: Vec<String> = visible
+                .into_iter()
+                .filter_map(|(visible_name, visible_symbol)| {
+                    (visible_symbol.origin_path == symbol.origin_path
+                        && visible_symbol.origin_name == symbol.origin_name
+                        && visible_symbol.kind == symbol.kind)
+                        .then_some(visible_name)
+                })
+                .collect();
+            if spellings.is_empty() {
+                continue;
+            }
+            let Ok(file_uri) = Url::from_file_path(&path) else {
+                continue;
+            };
+            for spelling in spellings {
+                let mut ranges = match symbol.kind {
+                    ReferenceSymbolKind::Fn => collect_call_sites(&file_program, &spelling),
+                    ReferenceSymbolKind::Struct => {
+                        collect_qualified_identifier_sites(&src, &spelling)
+                    }
+                };
+                if matches!(symbol.kind, ReferenceSymbolKind::Struct) && path == symbol.origin_path
+                {
+                    ranges.retain(|range| *range != symbol.decl_range);
+                }
+                for range in ranges {
+                    let key = (
+                        file_uri.clone(),
+                        range.start.line,
+                        range.start.character,
+                        range.end.line,
+                        range.end.character,
+                    );
+                    if seen.insert(key) {
+                        locations.push(Location {
+                            uri: file_uri.clone(),
+                            range,
+                        });
+                    }
+                }
+            }
+        }
+
+        if locations.is_empty() {
+            Ok(None)
         } else {
-            false
-        };
-        if !is_fn {
-            return Ok(None);
+            Ok(Some(locations))
         }
-
-        let call_ranges = collect_call_sites(&program, &name);
-
-        // An empty call list with no declaration to include means
-        // "no references found" — return None so clients display
-        // the appropriate UX rather than an empty list.
-        if call_ranges.is_empty() && !include_decl {
-            return Ok(None);
-        }
-
-        let mut locations: Vec<Location> = Vec::new();
-
-        // Declaration site first when requested (matches VS Code
-        // "Go to References" + "Include Declaration" behaviour).
-        if include_decl {
-            locations.push(Location {
-                uri: uri.clone(),
-                range: def.range,
-            });
-        }
-
-        for range in call_ranges {
-            locations.push(Location {
-                uri: uri.clone(),
-                range,
-            });
-        }
-
-        Ok(Some(locations))
     }
 
     /// RES-184 / RES-2568: respond to `textDocument/prepareRename` — the
