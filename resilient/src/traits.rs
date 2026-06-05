@@ -691,113 +691,62 @@ fn walk_call_sites(
     assoc_type_map: &HashMap<(String, String, String), String>,
     source_path: &str,
 ) -> Result<(), String> {
-    let mut bindings = vec![HashMap::new()];
-    walk_call_sites_with_bindings(
-        node,
+    let ctx = CallSiteCheckCtx {
         fns_by_name,
         traits,
         type_methods,
         explicit_impls,
         assoc_type_map,
         source_path,
-        &mut bindings,
-    )
+    };
+    let mut bindings = vec![HashMap::new()];
+    walk_call_sites_with_bindings(node, &ctx, &mut bindings)
+}
+
+struct CallSiteCheckCtx<'a> {
+    fns_by_name: &'a HashMap<&'a str, &'a Node>,
+    traits: &'a HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
+    type_methods: &'a HashMap<String, HashMap<String, usize>>,
+    explicit_impls: &'a HashSet<(String, String)>,
+    assoc_type_map: &'a HashMap<(String, String, String), String>,
+    source_path: &'a str,
 }
 
 fn walk_call_sites_with_bindings(
     node: &Node,
-    fns_by_name: &HashMap<&str, &Node>,
-    traits: &HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
-    type_methods: &HashMap<String, HashMap<String, usize>>,
-    explicit_impls: &HashSet<(String, String)>,
-    assoc_type_map: &HashMap<(String, String, String), String>,
-    source_path: &str,
+    ctx: &CallSiteCheckCtx<'_>,
     bindings: &mut Vec<HashMap<String, String>>,
 ) -> Result<(), String> {
     match node {
         Node::Program(stmts) => {
             bindings.push(HashMap::new());
             for s in stmts {
-                walk_call_sites_with_bindings(
-                    &s.node,
-                    fns_by_name,
-                    traits,
-                    type_methods,
-                    explicit_impls,
-                    assoc_type_map,
-                    source_path,
-                    bindings,
-                )?;
+                walk_call_sites_with_bindings(&s.node, ctx, bindings)?;
             }
             bindings.pop();
         }
         Node::Block { stmts, .. } => {
             bindings.push(HashMap::new());
             for s in stmts {
-                walk_call_sites_with_bindings(
-                    s,
-                    fns_by_name,
-                    traits,
-                    type_methods,
-                    explicit_impls,
-                    assoc_type_map,
-                    source_path,
-                    bindings,
-                )?;
+                walk_call_sites_with_bindings(s, ctx, bindings)?;
             }
             bindings.pop();
         }
         Node::Function { body, .. } => {
             bindings.push(HashMap::new());
-            walk_call_sites_with_bindings(
-                body,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
+            walk_call_sites_with_bindings(body, ctx, bindings)?;
             bindings.pop();
         }
         Node::ImplBlock { methods, .. } => {
             for m in methods {
-                walk_call_sites_with_bindings(
-                    m,
-                    fns_by_name,
-                    traits,
-                    type_methods,
-                    explicit_impls,
-                    assoc_type_map,
-                    source_path,
-                    bindings,
-                )?;
+                walk_call_sites_with_bindings(m, ctx, bindings)?;
             }
         }
         Node::ExpressionStatement { expr, .. } => {
-            walk_call_sites_with_bindings(
-                expr,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
+            walk_call_sites_with_bindings(expr, ctx, bindings)?;
         }
         Node::LetStatement { name, value, .. } => {
-            walk_call_sites_with_bindings(
-                value,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
+            walk_call_sites_with_bindings(value, ctx, bindings)?;
             if let Some(concrete_type) = resolve_concrete_type(value, bindings) {
                 bindings
                     .last_mut()
@@ -806,16 +755,7 @@ fn walk_call_sites_with_bindings(
             }
         }
         Node::Assignment { name, value, .. } => {
-            walk_call_sites_with_bindings(
-                value,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
+            walk_call_sites_with_bindings(value, ctx, bindings)?;
             if let Some(concrete_type) = resolve_concrete_type(value, bindings) {
                 if let Some(scope) = bindings
                     .iter_mut()
@@ -832,16 +772,7 @@ fn walk_call_sites_with_bindings(
             }
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            walk_call_sites_with_bindings(
-                v,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
+            walk_call_sites_with_bindings(v, ctx, bindings)?;
         }
         Node::IfStatement {
             condition,
@@ -849,37 +780,10 @@ fn walk_call_sites_with_bindings(
             alternative,
             ..
         } => {
-            walk_call_sites_with_bindings(
-                condition,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
-            walk_call_sites_with_bindings(
-                consequence,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
+            walk_call_sites_with_bindings(condition, ctx, bindings)?;
+            walk_call_sites_with_bindings(consequence, ctx, bindings)?;
             if let Some(alt) = alternative {
-                walk_call_sites_with_bindings(
-                    alt,
-                    fns_by_name,
-                    traits,
-                    type_methods,
-                    explicit_impls,
-                    assoc_type_map,
-                    source_path,
-                    bindings,
-                )?;
+                walk_call_sites_with_bindings(alt, ctx, bindings)?;
             }
         }
         Node::CallExpression {
@@ -888,27 +792,9 @@ fn walk_call_sites_with_bindings(
             span,
         } => {
             // Recurse into nested calls / arguments first.
-            walk_call_sites_with_bindings(
-                function,
-                fns_by_name,
-                traits,
-                type_methods,
-                explicit_impls,
-                assoc_type_map,
-                source_path,
-                bindings,
-            )?;
+            walk_call_sites_with_bindings(function, ctx, bindings)?;
             for a in arguments {
-                walk_call_sites_with_bindings(
-                    a,
-                    fns_by_name,
-                    traits,
-                    type_methods,
-                    explicit_impls,
-                    assoc_type_map,
-                    source_path,
-                    bindings,
-                )?;
+                walk_call_sites_with_bindings(a, ctx, bindings)?;
             }
 
             // Identify the callee by name.
@@ -925,7 +811,7 @@ fn walk_call_sites_with_bindings(
                 Node::Identifier { name, .. } => name.as_str(),
                 _ => return Ok(()),
             };
-            let callee = match fns_by_name.get(callee_name) {
+            let callee = match ctx.fns_by_name.get(callee_name) {
                 Some(c) => *c,
                 None => return Ok(()),
             };
@@ -971,7 +857,8 @@ fn walk_call_sites_with_bindings(
                                     proj.split_once("::").map(|(_, a)| (a, tb))
                                 });
                                 if let Some((assoc_name, trait_bound)) = parsed {
-                                    let concrete_assoc = assoc_type_map
+                                    let concrete_assoc = ctx
+                                        .assoc_type_map
                                         .iter()
                                         .find(|((_, s, a), _)| {
                                             s.as_str() == ct && a.as_str() == assoc_name
@@ -980,7 +867,7 @@ fn walk_call_sites_with_bindings(
                                     match concrete_assoc {
                                         None => {
                                             return Err(format_err(
-                                                source_path,
+                                                ctx.source_path,
                                                 *span,
                                                 &format!(
                                                     "type `{}` does not define associated type `{}` required by bound `{}` at call to `{}`",
@@ -989,18 +876,18 @@ fn walk_call_sites_with_bindings(
                                             ));
                                         }
                                         Some(concrete_type) => {
-                                            let satisfied = explicit_impls.contains(&(
+                                            let satisfied = ctx.explicit_impls.contains(&(
                                                 trait_bound.to_string(),
                                                 concrete_type.to_string(),
                                             )) || trait_satisfied_structurally(
                                                 trait_bound,
                                                 concrete_type,
-                                                traits,
-                                                type_methods,
+                                                ctx.traits,
+                                                ctx.type_methods,
                                             );
                                             if !satisfied {
                                                 return Err(format_err(
-                                                    source_path,
+                                                    ctx.source_path,
                                                     *span,
                                                     &format!(
                                                         "associated type `{}::{}` = `{}` does not satisfy bound `{}` at call to `{}`",
@@ -1017,11 +904,17 @@ fn walk_call_sites_with_bindings(
                                 }
                                 continue; // projection bound handled above
                             }
-                            let satisfied = explicit_impls.contains(&(bound.clone(), ct.clone()))
-                                || trait_satisfied_structurally(bound, &ct, traits, type_methods);
+                            let satisfied =
+                                ctx.explicit_impls.contains(&(bound.clone(), ct.clone()))
+                                    || trait_satisfied_structurally(
+                                        bound,
+                                        &ct,
+                                        ctx.traits,
+                                        ctx.type_methods,
+                                    );
                             if !satisfied {
                                 return Err(format_err(
-                                    source_path,
+                                    ctx.source_path,
                                     *span,
                                     &format!(
                                         "type `{}` does not satisfy bound `{}: {}` at call to `{}` (no `impl {} for {}` and required methods are missing)",
