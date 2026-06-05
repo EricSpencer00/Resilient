@@ -691,10 +691,34 @@ fn walk_call_sites(
     assoc_type_map: &HashMap<(String, String, String), String>,
     source_path: &str,
 ) -> Result<(), String> {
+    let mut bindings = vec![HashMap::new()];
+    walk_call_sites_with_bindings(
+        node,
+        fns_by_name,
+        traits,
+        type_methods,
+        explicit_impls,
+        assoc_type_map,
+        source_path,
+        &mut bindings,
+    )
+}
+
+fn walk_call_sites_with_bindings(
+    node: &Node,
+    fns_by_name: &HashMap<&str, &Node>,
+    traits: &HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
+    type_methods: &HashMap<String, HashMap<String, usize>>,
+    explicit_impls: &HashSet<(String, String)>,
+    assoc_type_map: &HashMap<(String, String, String), String>,
+    source_path: &str,
+    bindings: &mut Vec<HashMap<String, String>>,
+) -> Result<(), String> {
     match node {
         Node::Program(stmts) => {
+            bindings.push(HashMap::new());
             for s in stmts {
-                walk_call_sites(
+                walk_call_sites_with_bindings(
                     &s.node,
                     fns_by_name,
                     traits,
@@ -702,12 +726,15 @@ fn walk_call_sites(
                     explicit_impls,
                     assoc_type_map,
                     source_path,
+                    bindings,
                 )?;
             }
+            bindings.pop();
         }
         Node::Block { stmts, .. } => {
+            bindings.push(HashMap::new());
             for s in stmts {
-                walk_call_sites(
+                walk_call_sites_with_bindings(
                     s,
                     fns_by_name,
                     traits,
@@ -715,11 +742,14 @@ fn walk_call_sites(
                     explicit_impls,
                     assoc_type_map,
                     source_path,
+                    bindings,
                 )?;
             }
+            bindings.pop();
         }
         Node::Function { body, .. } => {
-            walk_call_sites(
+            bindings.push(HashMap::new());
+            walk_call_sites_with_bindings(
                 body,
                 fns_by_name,
                 traits,
@@ -727,11 +757,13 @@ fn walk_call_sites(
                 explicit_impls,
                 assoc_type_map,
                 source_path,
+                bindings,
             )?;
+            bindings.pop();
         }
         Node::ImplBlock { methods, .. } => {
             for m in methods {
-                walk_call_sites(
+                walk_call_sites_with_bindings(
                     m,
                     fns_by_name,
                     traits,
@@ -739,11 +771,12 @@ fn walk_call_sites(
                     explicit_impls,
                     assoc_type_map,
                     source_path,
+                    bindings,
                 )?;
             }
         }
         Node::ExpressionStatement { expr, .. } => {
-            walk_call_sites(
+            walk_call_sites_with_bindings(
                 expr,
                 fns_by_name,
                 traits,
@@ -751,10 +784,11 @@ fn walk_call_sites(
                 explicit_impls,
                 assoc_type_map,
                 source_path,
+                bindings,
             )?;
         }
-        Node::LetStatement { value, .. } => {
-            walk_call_sites(
+        Node::LetStatement { name, value, .. } => {
+            walk_call_sites_with_bindings(
                 value,
                 fns_by_name,
                 traits,
@@ -762,10 +796,43 @@ fn walk_call_sites(
                 explicit_impls,
                 assoc_type_map,
                 source_path,
+                bindings,
             )?;
+            if let Some(concrete_type) = resolve_concrete_type(value, bindings) {
+                bindings
+                    .last_mut()
+                    .expect("call-site binding scope should exist")
+                    .insert(name.clone(), concrete_type);
+            }
+        }
+        Node::Assignment { name, value, .. } => {
+            walk_call_sites_with_bindings(
+                value,
+                fns_by_name,
+                traits,
+                type_methods,
+                explicit_impls,
+                assoc_type_map,
+                source_path,
+                bindings,
+            )?;
+            if let Some(concrete_type) = resolve_concrete_type(value, bindings) {
+                if let Some(scope) = bindings
+                    .iter_mut()
+                    .rev()
+                    .find(|scope| scope.contains_key(name))
+                {
+                    scope.insert(name.clone(), concrete_type);
+                } else {
+                    bindings
+                        .last_mut()
+                        .expect("call-site binding scope should exist")
+                        .insert(name.clone(), concrete_type);
+                }
+            }
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            walk_call_sites(
+            walk_call_sites_with_bindings(
                 v,
                 fns_by_name,
                 traits,
@@ -773,6 +840,7 @@ fn walk_call_sites(
                 explicit_impls,
                 assoc_type_map,
                 source_path,
+                bindings,
             )?;
         }
         Node::IfStatement {
@@ -781,7 +849,7 @@ fn walk_call_sites(
             alternative,
             ..
         } => {
-            walk_call_sites(
+            walk_call_sites_with_bindings(
                 condition,
                 fns_by_name,
                 traits,
@@ -789,8 +857,9 @@ fn walk_call_sites(
                 explicit_impls,
                 assoc_type_map,
                 source_path,
+                bindings,
             )?;
-            walk_call_sites(
+            walk_call_sites_with_bindings(
                 consequence,
                 fns_by_name,
                 traits,
@@ -798,9 +867,10 @@ fn walk_call_sites(
                 explicit_impls,
                 assoc_type_map,
                 source_path,
+                bindings,
             )?;
             if let Some(alt) = alternative {
-                walk_call_sites(
+                walk_call_sites_with_bindings(
                     alt,
                     fns_by_name,
                     traits,
@@ -808,6 +878,7 @@ fn walk_call_sites(
                     explicit_impls,
                     assoc_type_map,
                     source_path,
+                    bindings,
                 )?;
             }
         }
@@ -817,7 +888,7 @@ fn walk_call_sites(
             span,
         } => {
             // Recurse into nested calls / arguments first.
-            walk_call_sites(
+            walk_call_sites_with_bindings(
                 function,
                 fns_by_name,
                 traits,
@@ -825,9 +896,10 @@ fn walk_call_sites(
                 explicit_impls,
                 assoc_type_map,
                 source_path,
+                bindings,
             )?;
             for a in arguments {
-                walk_call_sites(
+                walk_call_sites_with_bindings(
                     a,
                     fns_by_name,
                     traits,
@@ -835,6 +907,7 @@ fn walk_call_sites(
                     explicit_impls,
                     assoc_type_map,
                     source_path,
+                    bindings,
                 )?;
             }
 
@@ -885,10 +958,7 @@ fn walk_call_sites(
                         Some(a) => a,
                         None => continue,
                     };
-                    let concrete_type = match arg {
-                        Node::StructLiteral { name, .. } => Some(name.clone()),
-                        _ => None,
-                    };
+                    let concrete_type = resolve_concrete_type(arg, bindings);
                     if let Some(ct) = concrete_type {
                         for bound in bounds {
                             // RES-2695: projection bound like "I::Item:Display"
@@ -969,6 +1039,17 @@ fn walk_call_sites(
     Ok(())
 }
 
+fn resolve_concrete_type(node: &Node, bindings: &[HashMap<String, String>]) -> Option<String> {
+    match node {
+        Node::StructLiteral { name, .. } => Some(name.clone()),
+        Node::Identifier { name, .. } => bindings
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned()),
+        _ => None,
+    }
+}
+
 fn trait_satisfied_structurally(
     trait_name: &str,
     type_name: &str,
@@ -1015,12 +1096,20 @@ pub fn build_assoc_type_map(
         {
             for (type_name, type_expr) in associated_type_impls {
                 let key = (t.clone(), struct_name.clone(), type_name.clone());
-                assoc_type_map.insert(key, type_expr.clone());
+                assoc_type_map.insert(key, normalize_assoc_type_expr(type_expr));
             }
         }
     }
 
     Ok(assoc_type_map)
+}
+
+fn normalize_assoc_type_expr(type_expr: &str) -> String {
+    type_expr
+        .strip_prefix("identifier `")
+        .and_then(|rest| rest.strip_suffix('`'))
+        .unwrap_or(type_expr)
+        .to_string()
 }
 
 fn format_err(source_path: &str, span: Span, msg: &str) -> String {
