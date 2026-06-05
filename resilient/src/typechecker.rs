@@ -9915,6 +9915,32 @@ impl TypeChecker {
                     return Ok(Type::Result);
                 }
 
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
+                    && callee_name == "StringBuilder_new"
+                {
+                    match arguments.as_slice() {
+                        [] => return Ok(Type::Any),
+                        [arg] => {
+                            let arg_ty = self.check_node(arg)?;
+                            if !compatible(&arg_ty, &Type::Int) {
+                                return Err(format!(
+                                    "StringBuilder_new capacity must be an integer, got {}",
+                                    arg_ty
+                                ));
+                            }
+                            return Ok(Type::Any);
+                        }
+                        _ => {
+                            return Err(format!(
+                                "StringBuilder_new expects 0 arguments or 1 integer capacity, got {}",
+                                arguments.len()
+                            ));
+                        }
+                    }
+                }
+
                 // RES-410: call-site type inference for numeric polymorphic
                 // builtins registered as (Any, Any) -> Any. When all
                 // arguments agree on the same concrete numeric type,
@@ -16750,6 +16776,11 @@ mod res2810_missing_builtin_types {
     #[test]
     fn string_builder_accepted() {
         check_ok("let sb = StringBuilder_new(256)\n");
+    }
+
+    #[test]
+    fn string_builder_zero_arg_constructor_accepted() {
+        check_ok("let sb = StringBuilder_new()\n");
     }
 
     fn check_err(src: &str) -> String {

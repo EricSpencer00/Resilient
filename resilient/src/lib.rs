@@ -23151,25 +23151,30 @@ fn builtin_live_retries(args: &[Value]) -> RResult<Value> {
     })
 }
 
-// ── RES-353: StringBuilder ────────────────────────────────────────────────────
+// ── RES-353 / RES-2584: StringBuilder ────────────────────────────────────────
 //
-// `StringBuilder_new(capacity)` allocates a fresh builder struct.
-// Methods (`append`, `append_int`, `append_float`, `append_char`, `build`,
-// `len`, `remaining`, `clear`) are dispatched in the special
-// `eval_string_builder_method` branch of `CallExpression` — they never go
-// through the generic `impl`-block / BUILTINS path because they need
-// write-back mutation of the caller's binding.
+// Builders now store their mutable state in a thread-local slab keyed by a
+// small integer handle. That makes `append*` amortized O(1): appending pushes
+// a new chunk and bumps a length counter instead of rebuilding the full
+// accumulated string on every call. `to_string()` / legacy `build()` perform
+// the one materialization pass when the caller actually needs the final string.
 //
-// Internal struct layout (fields in this order):
-//   _buf     : Value::String  — accumulated text
-//   _cap     : Value::Int     — capacity ceiling (bytes)
-//   _overflow: Value::Bool    — set once capacity is exceeded
+// The public value is still a plain `Value::Struct { name: "StringBuilder", .. }`
+// so existing method dispatch continues to route through
+// `eval_string_builder_method`. The struct only carries the opaque handle id.
 
-/// `StringBuilder_new(capacity: Int) -> StringBuilder`
-///
-/// Creates an empty StringBuilder with the given byte capacity.
+#[derive(Clone, Default)]
+struct StringBuilderState {
+    chunks: Vec<String>,
+    len: usize,
+    cap: Option<usize>,
+    overflow: bool,
+}
+
+/// `StringBuilder_new()` or legacy `StringBuilder_new(capacity: Int)`.
 fn builtin_string_builder_new(args: &[Value]) -> RResult<Value> {
     match args {
+        [] => sb_alloc(None),
         [Value::Int(cap)] => {
             if *cap < 0 {
                 return Err(format!(
@@ -23177,21 +23182,14 @@ fn builtin_string_builder_new(args: &[Value]) -> RResult<Value> {
                     cap
                 ));
             }
-            Ok(Value::Struct {
-                name: "StringBuilder".to_string(),
-                fields: vec![
-                    ("_buf".to_string(), Value::String(String::new())),
-                    ("_cap".to_string(), Value::Int(*cap)),
-                    ("_overflow".to_string(), Value::Bool(false)),
-                ],
-            })
+            sb_alloc(Some(*cap as usize))
         }
         [other] => Err(format!(
             "StringBuilder_new: capacity must be an Int, got {}",
             other
         )),
         _ => Err(format!(
-            "StringBuilder_new: expected 1 argument (capacity), got {}",
+            "StringBuilder_new: expected 0 arguments or 1 Int capacity, got {}",
             args.len()
         )),
     }
@@ -23258,6 +23256,9 @@ fn builtin_receive(args: &[Value]) -> RResult<Value> {
 thread_local! {
     static NEXT_SHARED_CELL_ID: Cell<i64> = const { Cell::new(0) };
     static SHARED_CELLS: RefCell<HashMap<i64, Value>> = RefCell::new(HashMap::new());
+    static NEXT_STRING_BUILDER_ID: Cell<i64> = const { Cell::new(0) };
+    static STRING_BUILDERS: RefCell<HashMap<i64, StringBuilderState>> =
+        RefCell::new(HashMap::new());
 }
 
 fn cell_alloc(initial: Value) -> RResult<Value> {
@@ -23293,66 +23294,125 @@ fn cell_set(id: i64, value: Value) -> RResult<Value> {
     })
 }
 
-/// Helper: read `_buf`, `_cap`, `_overflow` out of a StringBuilder struct.
-///
-/// Returns an error if any field is missing or has the wrong type —
-/// which should never happen for a legitimately-constructed builder, but
-/// guards against user code that manually constructs the struct with wrong
-/// field types.
-fn sb_fields(fields: &[(String, Value)]) -> RResult<(String, i64, bool)> {
-    let mut buf: Option<&str> = None;
-    let mut cap: Option<i64> = None;
-    let mut overflow: Option<bool> = None;
-
-    for (name, val) in fields {
-        match name.as_str() {
-            "_buf" => {
-                if let Value::String(s) = val {
-                    buf = Some(s);
-                } else {
-                    return Err(format!("StringBuilder._buf must be a String, got {}", val));
-                }
-            }
-            "_cap" => {
-                if let Value::Int(n) = val {
-                    cap = Some(*n);
-                } else {
-                    return Err(format!("StringBuilder._cap must be an Int, got {}", val));
-                }
-            }
-            "_overflow" => {
-                if let Value::Bool(b) = val {
-                    overflow = Some(*b);
-                } else {
-                    return Err(format!(
-                        "StringBuilder._overflow must be a Bool, got {}",
-                        val
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    match (buf, cap, overflow) {
-        (Some(b), Some(c), Some(o)) => Ok((b.to_string(), c, o)),
-        _ => Err(
-            "StringBuilder: internal layout missing required fields (_buf/_cap/_overflow); \
-                  was this struct created with StringBuilder_new?"
-                .to_string(),
-        ),
-    }
+fn sb_alloc(cap: Option<usize>) -> RResult<Value> {
+    let id = NEXT_STRING_BUILDER_ID.with(|next| {
+        let id = next.get();
+        next.set(id.saturating_add(1));
+        id
+    });
+    STRING_BUILDERS.with(|builders| {
+        builders.borrow_mut().insert(
+            id,
+            StringBuilderState {
+                chunks: Vec::new(),
+                len: 0,
+                cap,
+                overflow: false,
+            },
+        );
+    });
+    Ok(sb_struct(id))
 }
 
-/// Build an updated StringBuilder struct from component parts.
-fn sb_struct(buf: String, cap: i64, overflow: bool) -> Value {
+fn with_string_builder<T>(
+    id: i64,
+    f: impl FnOnce(&StringBuilderState) -> RResult<T>,
+) -> RResult<T> {
+    STRING_BUILDERS.with(|builders| {
+        let builders = builders.borrow();
+        let state = builders
+            .get(&id)
+            .ok_or_else(|| format!("StringBuilder {} no longer exists", id))?;
+        f(state)
+    })
+}
+
+fn with_string_builder_mut<T>(
+    id: i64,
+    f: impl FnOnce(&mut StringBuilderState) -> RResult<T>,
+) -> RResult<T> {
+    STRING_BUILDERS.with(|builders| {
+        let mut builders = builders.borrow_mut();
+        let state = builders
+            .get_mut(&id)
+            .ok_or_else(|| format!("StringBuilder {} no longer exists", id))?;
+        f(state)
+    })
+}
+
+fn sb_id(fields: &[(String, Value)]) -> RResult<i64> {
+    for (name, val) in fields {
+        if name == "_id" {
+            if let Value::Int(id) = val {
+                return Ok(*id);
+            }
+            return Err(format!("StringBuilder._id must be an Int, got {}", val));
+        }
+    }
+    Err(
+        "StringBuilder: internal layout missing required field (_id); was this struct created \
+         with StringBuilder_new?"
+            .to_string(),
+    )
+}
+
+fn sb_append_text(id: i64, text: &str) -> RResult<()> {
+    with_string_builder_mut(id, |state| {
+        if state.overflow {
+            return Ok(());
+        }
+        let new_len = state.len.saturating_add(text.len());
+        if state.cap.is_some_and(|cap| new_len > cap) {
+            state.overflow = true;
+            return Ok(());
+        }
+        state.chunks.push(text.to_string());
+        state.len = new_len;
+        Ok(())
+    })
+}
+
+fn sb_len(id: i64) -> RResult<i64> {
+    with_string_builder(id, |state| Ok(state.len as i64))
+}
+
+fn sb_remaining(id: i64) -> RResult<i64> {
+    with_string_builder(id, |state| {
+        Ok(match state.cap {
+            Some(cap) => cap.saturating_sub(state.len) as i64,
+            None => -1,
+        })
+    })
+}
+
+fn sb_to_string(id: i64) -> RResult<String> {
+    with_string_builder(id, |state| {
+        let mut out = String::with_capacity(state.len);
+        for chunk in &state.chunks {
+            out.push_str(chunk);
+        }
+        Ok(out)
+    })
+}
+
+fn sb_overflow(id: i64) -> RResult<bool> {
+    with_string_builder(id, |state| Ok(state.overflow))
+}
+
+fn sb_clear(id: i64) -> RResult<()> {
+    with_string_builder_mut(id, |state| {
+        state.chunks.clear();
+        state.len = 0;
+        state.overflow = false;
+        Ok(())
+    })
+}
+
+/// Build an updated StringBuilder handle struct.
+fn sb_struct(id: i64) -> Value {
     Value::Struct {
         name: "StringBuilder".to_string(),
-        fields: vec![
-            ("_buf".to_string(), Value::String(buf)),
-            ("_cap".to_string(), Value::Int(cap)),
-            ("_overflow".to_string(), Value::Bool(overflow)),
-        ],
+        fields: vec![("_id".to_string(), Value::Int(id))],
     }
 }
 
@@ -26781,20 +26841,14 @@ impl Interpreter {
         let Value::Struct { fields, .. } = sb else {
             return Err("StringBuilder: internal error — receiver is not a struct".to_string());
         };
-        let (buf, cap, overflow) = sb_fields(&fields)?;
+        let id = sb_id(&fields)?;
 
         match method {
-            // sb.append(s: String) — concat s if capacity not exceeded.
+            // sb.append(s: String)
             "append" => match extra_args {
                 [Value::String(s)] => {
-                    let (new_buf, new_overflow) = if overflow {
-                        (buf, true)
-                    } else if (buf.len() + s.len()) as i64 <= cap {
-                        (buf + s, false)
-                    } else {
-                        (buf, true)
-                    };
-                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    sb_append_text(id, s)?;
+                    let updated = sb_struct(id);
                     if let Some(name) = root_name {
                         let _ = self.env.reassign(name, updated.clone());
                     }
@@ -26812,15 +26866,8 @@ impl Interpreter {
             // sb.append_int(n: Int)
             "append_int" => match extra_args {
                 [Value::Int(n)] => {
-                    let s = n.to_string();
-                    let (new_buf, new_overflow) = if overflow {
-                        (buf, true)
-                    } else if (buf.len() + s.len()) as i64 <= cap {
-                        (buf + &s, false)
-                    } else {
-                        (buf, true)
-                    };
-                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    sb_append_text(id, &n.to_string())?;
+                    let updated = sb_struct(id);
                     if let Some(name) = root_name {
                         let _ = self.env.reassign(name, updated.clone());
                     }
@@ -26835,18 +26882,33 @@ impl Interpreter {
                     extra_args.len()
                 )),
             },
+            // sb.append_line(s: String)
+            "append_line" => match extra_args {
+                [Value::String(s)] => {
+                    let mut line = String::with_capacity(s.len() + 1);
+                    line.push_str(s);
+                    line.push('\n');
+                    sb_append_text(id, &line)?;
+                    let updated = sb_struct(id);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_line: expected String argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_line: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
             // sb.append_float(f: Float)
             "append_float" => match extra_args {
                 [Value::Float(f)] => {
-                    let s = format!("{}", f);
-                    let (new_buf, new_overflow) = if overflow {
-                        (buf, true)
-                    } else if (buf.len() + s.len()) as i64 <= cap {
-                        (buf + &s, false)
-                    } else {
-                        (buf, true)
-                    };
-                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    sb_append_text(id, &f.to_string())?;
+                    let updated = sb_struct(id);
                     if let Some(name) = root_name {
                         let _ = self.env.reassign(name, updated.clone());
                     }
@@ -26870,15 +26932,8 @@ impl Interpreter {
                             cp
                         )
                     })?;
-                    let s = c.to_string();
-                    let (new_buf, new_overflow) = if overflow {
-                        (buf, true)
-                    } else if (buf.len() + s.len()) as i64 <= cap {
-                        (buf + &s, false)
-                    } else {
-                        (buf, true)
-                    };
-                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    sb_append_text(id, &c.to_string())?;
+                    let updated = sb_struct(id);
                     if let Some(name) = root_name {
                         let _ = self.env.reassign(name, updated.clone());
                     }
@@ -26901,7 +26956,7 @@ impl Interpreter {
                         extra_args.len()
                     ));
                 }
-                if overflow {
+                if sb_overflow(id)? {
                     Ok(Value::Result {
                         ok: false,
                         payload: Box::new(Value::String("capacity exceeded".to_string())),
@@ -26909,9 +26964,22 @@ impl Interpreter {
                 } else {
                     Ok(Value::Result {
                         ok: true,
-                        payload: Box::new(Value::String(buf)),
+                        payload: Box::new(Value::String(sb_to_string(id)?)),
                     })
                 }
+            }
+            // sb.to_string() -> String
+            "to_string" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.to_string: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                if sb_overflow(id)? {
+                    return Err("StringBuilder.to_string: capacity exceeded".to_string());
+                }
+                Ok(Value::String(sb_to_string(id)?))
             }
             // sb.len() -> Int
             "len" => {
@@ -26921,7 +26989,7 @@ impl Interpreter {
                         extra_args.len()
                     ));
                 }
-                Ok(Value::Int(buf.len() as i64))
+                Ok(Value::Int(sb_len(id)?))
             }
             // sb.remaining() -> Int
             "remaining" => {
@@ -26931,7 +26999,7 @@ impl Interpreter {
                         extra_args.len()
                     ));
                 }
-                Ok(Value::Int(cap - buf.len() as i64))
+                Ok(Value::Int(sb_remaining(id)?))
             }
             // sb.clear() — reset buffer to empty.
             "clear" => {
@@ -26941,7 +27009,8 @@ impl Interpreter {
                         extra_args.len()
                     ));
                 }
-                let updated = sb_struct(String::new(), cap, false);
+                sb_clear(id)?;
+                let updated = sb_struct(id);
                 if let Some(name) = root_name {
                     let _ = self.env.reassign(name, updated.clone());
                 }
@@ -60688,6 +60757,33 @@ mod array_callback_tests {
             "expected true, got: {}",
             r.stdout
         );
+    }
+}
+
+#[cfg(test)]
+mod res2584_string_builder_tests {
+    use super::*;
+
+    fn run(src: &str) -> RunResult {
+        run_program(src)
+    }
+
+    #[test]
+    fn string_builder_supports_issue_api() {
+        let r = run(r#"
+            let sb = StringBuilder_new();
+            sb.append("hello");
+            sb.append(" ");
+            sb.append_int(42);
+            sb.append_line(" world");
+            println(sb.len());
+            println(sb.to_string());
+            sb.clear();
+            println(sb.len());
+            println(sb.to_string());
+            "#);
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert_eq!(r.stdout, "15\nhello 42 world\n\n0\n\n");
     }
 }
 
