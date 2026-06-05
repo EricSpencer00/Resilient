@@ -1,0 +1,6 @@
+exit=1
+<tmp>.rz:12:9: associated type `List::Item` = `BadType` does not satisfy bound `Show` at call to `collect`
+<tmp>.rz:12:9: associated type `List::Item` = `BadType` does not satisfy bound `Show` at call to `collect`
+error: associated type `List::Item` = `BadType` does not satisfy bound `Show` at call to `collect`
+   collect(it);
+           ^
