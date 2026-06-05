@@ -32031,6 +32031,7 @@ COMMON FLAGS:\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
+    bench <file>        Run `bench \"name\" {{ ... }}` benchmarks\n\
     stack-usage <file>  Print per-function worst-case stack usage (RES-2627)\n\
     debug <file>        Start the DAP debug server for a file\n\
     pkg <verb>          Package manager operations (RES-205)\n\
@@ -32042,6 +32043,23 @@ SUBCOMMANDS:\n\
 \n\
 See SYNTAX.md for the language reference."
     );
+}
+
+pub(crate) fn execute_benchmark_body(
+    program: &Node,
+    body: &Node,
+    std_bindings: &[(String, crate::stdlib::StdBinding)],
+    source_path: &str,
+) -> Result<(), String> {
+    let (result, _captured) = output_sink::with_captured_output(|| {
+        let mut interp = Interpreter::new();
+        interp.source_path = source_path.to_string();
+        crate::stdlib::inject_std_bindings(std_bindings, &interp.env);
+        interp.eval(program)?;
+        let _ = interp.eval(body)?;
+        Ok(())
+    });
+    result
 }
 
 /// RES-510 PR 2: result of running a Resilient program in-process.
@@ -32282,6 +32300,11 @@ pub fn run_cli() {
     // RES-test: `rz test [<file|dir>] [--filter <substr>]` —
     // discover and run test functions.
     if let Some(code) = test_runner::dispatch_test_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-2613: `rz bench <file>` — discover and run benchmark blocks.
+    if let Some(code) = bench::dispatch_bench_subcommand(&args) {
         std::process::exit(code);
     }
 

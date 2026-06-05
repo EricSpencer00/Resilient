@@ -4,15 +4,15 @@ bench "empty block" {
 }
 
 bench "integer arithmetic" {
-    int x = 5 + 10;
-    int y = x * 2;
-    int z = y / 3;
+    let x = 5 + 10;
+    let y = x * 2;
+    let z = y / 3;
 }
 
 bench "string operations" {
-    string s = "hello";
-    string t = s + " world";
-    string u = t + "!";
+    let s = "hello";
+    let t = s + " world";
+    let u = t + "!";
 }
 
 fn fibonacci(int n) -> int {
