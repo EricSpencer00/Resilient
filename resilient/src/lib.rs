@@ -403,6 +403,7 @@ mod monomorph;
 // RES-2615: type variance inference — classifies each generic type
 // parameter as covariant (+T), contravariant (-T), or invariant.
 // Stores results in a thread-local registry for downstream subtyping.
+mod generic_variance_call_sites;
 pub(crate) mod variance;
 // RES-319: newtype declarations — `newtype Meters = Float;`. All
 // logic lives here: post-parse lowering (rewrites CallExpression to
