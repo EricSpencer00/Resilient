@@ -122,6 +122,39 @@ fn collect_struct_decls(node: &Node, out: &mut HashMap<String, Vec<(String, Stri
     }
 }
 
+fn infer_literal_type_name(node: &Node) -> Option<String> {
+    match node {
+        Node::IntegerLiteral { .. } => Some("int".to_string()),
+        Node::FloatLiteral { .. } => Some("float".to_string()),
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => Some("string".to_string()),
+        Node::BooleanLiteral { .. } => Some("bool".to_string()),
+        Node::CharLiteral { .. } => Some("char".to_string()),
+        Node::BytesLiteral { .. } => Some("bytes".to_string()),
+        Node::StructLiteral { name, .. } if name != crate::ANONYMOUS_STRUCT_NAME => {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+fn literal_struct_fields(
+    literal: &Node,
+    struct_fields: &HashMap<String, Vec<(String, String)>>,
+) -> Option<Vec<(String, String)>> {
+    let Node::StructLiteral { name, fields, .. } = literal else {
+        return None;
+    };
+    if name == crate::ANONYMOUS_STRUCT_NAME {
+        let mut inferred = Vec::with_capacity(fields.len());
+        for (field_name, expr) in fields {
+            inferred.push((field_name.clone(), infer_literal_type_name(expr)?));
+        }
+        Some(inferred)
+    } else {
+        struct_fields.get(name).cloned()
+    }
+}
+
 /// Walk the AST and validate every `CallExpression` to a row-poly
 /// function whose first argument is a `StructLiteral`.
 ///
@@ -142,28 +175,23 @@ fn walk_calls(
             if let Node::Identifier { name: fn_name, .. } = function.as_ref() {
                 if let Some(spec) = specs.get(fn_name.as_str()) {
                     for arg in arguments.iter() {
-                        if let Node::StructLiteral {
-                            name: struct_name, ..
-                        } = arg
-                        {
-                            if let Some(fields) = struct_fields.get(struct_name.as_str()) {
-                                for (req_name, req_ty) in &spec.required {
-                                    let found =
-                                        fields.iter().any(|(n, t)| n == req_name && t == req_ty);
-                                    if !found {
-                                        let line = span.start.line;
-                                        let col = span.start.column;
-                                        let loc = if line > 0 {
-                                            format!("{}:{}:{}: ", source_path, line, col)
-                                        } else {
-                                            format!("{}: ", source_path)
-                                        };
-                                        return Err(format!(
-                                            "{}error: row-poly violation: \
-                                             fn `{}` requires field `{}: {}`",
-                                            loc, fn_name, req_name, req_ty
-                                        ));
-                                    }
+                        if let Some(fields) = literal_struct_fields(arg, struct_fields) {
+                            for (req_name, req_ty) in &spec.required {
+                                let found =
+                                    fields.iter().any(|(n, t)| n == req_name && t == req_ty);
+                                if !found {
+                                    let line = span.start.line;
+                                    let col = span.start.column;
+                                    let loc = if line > 0 {
+                                        format!("{}:{}:{}: ", source_path, line, col)
+                                    } else {
+                                        format!("{}: ", source_path)
+                                    };
+                                    return Err(format!(
+                                        "{}error: row-poly violation: \
+                                         fn `{}` requires field `{}: {}`",
+                                        loc, fn_name, req_name, req_ty
+                                    ));
                                 }
                             }
                         }
