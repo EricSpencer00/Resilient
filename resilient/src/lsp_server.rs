@@ -49,6 +49,12 @@ pub(crate) struct WorkspaceSymbolEntry {
     pub(crate) range: Range,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct InlayHintConfig {
+    types: bool,
+    parameters: bool,
+}
+
 /// The LSP backend. Holds a `Client` handle for publishing diagnostics.
 ///
 /// RES-185: the `documents` map caches each open document's last-
@@ -91,12 +97,15 @@ pub struct Backend {
     /// to false on `did_save` to trigger a lazy refresh on the
     /// next query.
     workspace_index_built: Mutex<bool>,
+    /// RES-2569: user preference for inferred-type inlay hints.
+    /// Defaults on so unannotated `let` / fn-return hints surface
+    /// without extra client config; `resilient.inlayHints.types: false`
+    /// disables them.
+    inlay_hint_types: Mutex<bool>,
     /// RES-189: user preference for inlay hints at call sites
     /// (`add(a: 1, b: 2)`-style parameter labels). Off by default
     /// per the ticket; the client flips it on via `initializationOptions`
     /// (`resilient.inlayHints.parameters: true`).
-    /// Type hints for unannotated `let` bindings always fire —
-    /// only parameter hints are gated here.
     inlay_hint_parameters: Mutex<bool>,
 }
 
@@ -109,6 +118,7 @@ impl Backend {
             workspace_index: Mutex::new(HashMap::new()),
             workspace_root: Mutex::new(None),
             workspace_index_built: Mutex::new(false),
+            inlay_hint_types: Mutex::new(true),
             inlay_hint_parameters: Mutex::new(false),
         }
     }
@@ -2332,31 +2342,151 @@ fn position_in_range(p: Position, range: Range) -> bool {
     !before_start && !after_end
 }
 
-/// RES-189: extract the `resilient.inlayHints.parameters` flag
-/// from the `initializationOptions` JSON blob. Tolerates two
-/// client-side representations:
-/// - flat:   `{"resilient.inlayHints.parameters": true}`
-/// - nested: `{"resilient": {"inlayHints": {"parameters": true}}}`
-///
-/// Returns `false` when the blob is absent, malformed, or the
-/// value isn't a boolean `true`. Exported pub(crate) so unit
-/// tests can exercise the parser without an LSP round-trip.
+fn read_init_inlay_hints_config(opts: Option<&tower_lsp::lsp_types::LSPAny>) -> InlayHintConfig {
+    fn read_flag(
+        opts: &tower_lsp::lsp_types::LSPAny,
+        flat_key: &str,
+        nested_key: &str,
+    ) -> Option<bool> {
+        opts.get(flat_key).and_then(|v| v.as_bool()).or_else(|| {
+            opts.get("resilient")
+                .and_then(|v| v.get("inlayHints"))
+                .and_then(|v| v.get(nested_key))
+                .and_then(|v| v.as_bool())
+        })
+    }
+
+    let Some(opts) = opts else {
+        return InlayHintConfig {
+            types: true,
+            parameters: false,
+        };
+    };
+    InlayHintConfig {
+        types: read_flag(opts, "resilient.inlayHints.types", "types").unwrap_or(true),
+        parameters: read_flag(opts, "resilient.inlayHints.parameters", "parameters")
+            .unwrap_or(false),
+    }
+}
+
+/// RES-189: compatibility shim for the existing parameter-hints parser
+/// tests; the canonical settings parser now lives in
+/// `read_init_inlay_hints_config`.
 #[allow(dead_code)]
 pub(crate) fn read_init_param_hints_flag(opts: Option<&tower_lsp::lsp_types::LSPAny>) -> bool {
-    let Some(opts) = opts else { return false };
-    // Flat form.
-    if let Some(v) = opts.get("resilient.inlayHints.parameters")
-        && v.as_bool() == Some(true)
-    {
-        return true;
+    read_init_inlay_hints_config(opts).parameters
+}
+
+fn inlay_hint_from_fn_return(
+    entry: &typechecker::FnReturnTypeHint,
+    src: &str,
+) -> Option<InlayHint> {
+    let position = find_signature_close_position(src, entry.fn_start, entry.body_start)?;
+    Some(InlayHint {
+        position,
+        label: InlayHintLabel::String(format!(" -> {}", entry.ty)),
+        kind: Some(InlayHintKind::TYPE),
+        text_edits: None,
+        tooltip: None,
+        padding_left: Some(true),
+        padding_right: None,
+        data: None,
+    })
+}
+
+fn find_signature_close_position(
+    src: &str,
+    fn_start: crate::span::Pos,
+    body_start: crate::span::Pos,
+) -> Option<Position> {
+    fn byte_index_for_position(src: &str, target: (u32, u32)) -> Option<usize> {
+        let mut line = 0u32;
+        let mut col = 0u32;
+        for (idx, ch) in src.char_indices() {
+            if (line, col) == target {
+                return Some(idx);
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        if (line, col) == target {
+            Some(src.len())
+        } else {
+            None
+        }
     }
-    // Nested form.
-    let nested = opts
-        .get("resilient")
-        .and_then(|v| v.get("inlayHints"))
-        .and_then(|v| v.get("parameters"))
-        .and_then(|v| v.as_bool());
-    matches!(nested, Some(true))
+
+    fn position_for_byte_index(src: &str, byte_idx: usize) -> Position {
+        let mut line = 0u32;
+        let mut col = 0u32;
+        for (idx, ch) in src.char_indices() {
+            if idx >= byte_idx {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        Position::new(line, col)
+    }
+
+    let mut line = 0u32;
+    let mut col = 0u32;
+    let mut seen_lparen = false;
+    let mut depth = 0usize;
+    let mut start = (
+        fn_start.line.saturating_sub(1) as u32,
+        fn_start.column.saturating_sub(1) as u32,
+    );
+    let end = (
+        body_start.line.saturating_sub(1) as u32,
+        body_start.column.saturating_sub(1) as u32,
+    );
+    if start >= end
+        && let Some(end_byte) = byte_index_for_position(src, end)
+        && let Some(fn_byte) = src[..end_byte].rfind("fn")
+    {
+        let pos = position_for_byte_index(src, fn_byte);
+        start = (pos.line, pos.character);
+    }
+
+    for ch in src.chars() {
+        let here = (line, col);
+        if here >= end {
+            break;
+        }
+        if here >= start {
+            match ch {
+                '(' => {
+                    seen_lparen = true;
+                    depth += 1;
+                }
+                ')' if seen_lparen && depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(Position::new(line, col + 1));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+
+    None
 }
 
 /// Best-effort span lookup for an expression node. Used to place
@@ -2417,15 +2547,13 @@ impl LanguageServer for Backend {
             *slot = Some(p);
         }
 
-        // RES-189: read the parameter-hints opt-in from
-        // `initializationOptions`. We probe two common shapes:
-        // `{"resilient.inlayHints.parameters": true}` (flat) and
-        // `{"resilient": {"inlayHints": {"parameters": true}}}`
-        // (nested). Either is fine; clients vary. Absent / false →
-        // parameter hints stay off.
-        let params_enabled = read_init_param_hints_flag(params.initialization_options.as_ref());
+        let inlay_hint_config =
+            read_init_inlay_hints_config(params.initialization_options.as_ref());
+        if let Ok(mut slot) = self.inlay_hint_types.lock() {
+            *slot = inlay_hint_config.types;
+        }
         if let Ok(mut slot) = self.inlay_hint_parameters.lock() {
-            *slot = params_enabled;
+            *slot = inlay_hint_config.parameters;
         }
 
         Ok(InitializeResult {
@@ -3349,6 +3477,10 @@ impl LanguageServer for Backend {
             Ok(map) => map.get(&uri).cloned(),
             Err(_) => None,
         };
+        let source_text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
         let Some(program) = program else {
             return Ok(None);
         };
@@ -3365,12 +3497,28 @@ impl LanguageServer for Backend {
         // hints.
         let mut tc = typechecker::TypeChecker::new().with_capture_inlay_hints(true);
         let _ = tc.check_program_with_source(&program, uri.as_str());
-        let let_hints: Vec<InlayHint> = tc.let_type_hints.iter().map(inlay_hint_from_let).collect();
+        let want_type_hints = match self.inlay_hint_types.lock() {
+            Ok(g) => *g,
+            Err(_) => true,
+        };
+        let mut out: Vec<InlayHint> = Vec::new();
 
-        let mut out: Vec<InlayHint> = let_hints
-            .into_iter()
-            .filter(|h| position_in_range(h.position, range))
-            .collect();
+        if want_type_hints {
+            out.extend(
+                tc.let_type_hints
+                    .iter()
+                    .map(inlay_hint_from_let)
+                    .filter(|h| position_in_range(h.position, range)),
+            );
+            if let Some(src) = source_text.as_deref() {
+                out.extend(
+                    tc.fn_return_type_hints
+                        .iter()
+                        .filter_map(|entry| inlay_hint_from_fn_return(entry, src))
+                        .filter(|h| position_in_range(h.position, range)),
+                );
+            }
+        }
 
         let want_param_hints = match self.inlay_hint_parameters.lock() {
             Ok(g) => *g,
