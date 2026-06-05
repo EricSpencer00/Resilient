@@ -1000,8 +1000,23 @@ Create a new string builder (for efficient string concatenation).
 **Example:**
 ```rust
 let sb = StringBuilder_new();
-// Use in I/O or specialized contexts
+sb.append("hello");
+sb.append(" ");
+sb.append_int(42);
+sb.append_line(" world");
+let out = sb.to_string();
 ```
+
+**Methods:**
+- `append(string)` — append text
+- `append_int(int)` — append an integer as text
+- `append_line(string)` — append text and a newline
+- `len()` — current byte length
+- `clear()` — reset to empty
+- `to_string()` — materialize the final string
+
+Compatibility: `StringBuilder_new(capacity)` and `build()` remain available for
+legacy capacity-capped call sites.
 
 ### `cell`
 **Signature:** `cell[T](value: T) -> Cell[T]`
