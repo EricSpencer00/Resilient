@@ -18,7 +18,7 @@
 //! This module is the typechecker phase; `actor_runtime.rs` handles
 //! scheduler/crash machinery, and `supervisor.rs` handles parsing.
 
-use crate::span::Span;
+use crate::span::{Pos, Span};
 use crate::{Node, Pattern};
 use std::collections::{HashMap, HashSet};
 
@@ -36,6 +36,16 @@ use std::collections::{HashMap, HashSet};
 pub struct LetTypeHint {
     pub span: Span,
     pub name_len_chars: usize,
+    pub ty: Type,
+}
+
+/// RES-2569: inferred return type for a named function or anonymous
+/// function literal with no explicit `-> TYPE` annotation.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields read behind `lsp` feature only
+pub struct FnReturnTypeHint {
+    pub fn_start: Pos,
+    pub body_start: Pos,
     pub ty: Type,
 }
 
@@ -1477,6 +1487,11 @@ pub struct TypeChecker {
     /// let — that's an acceptable partial behaviour (errors take
     /// precedence over hints for broken files).
     pub let_type_hints: Vec<LetTypeHint>,
+    /// RES-2569: inferred return types for named functions and
+    /// anonymous function literals without an explicit `-> TYPE`.
+    /// The LSP backend converts these into inlay hints when the
+    /// client has type hints enabled.
+    pub fn_return_type_hints: Vec<FnReturnTypeHint>,
     /// RES-387: declared failure variants of the fn currently
     /// being checked. Pushed on entry to `Node::Function` and
     /// popped on exit. Consulted at every `CallExpression` to
@@ -5333,6 +5348,8 @@ impl TypeChecker {
             source_path: String::new(),
             // RES-189: populated during LetStatement handling.
             let_type_hints: Vec::new(),
+            // RES-2569: populated during function / closure checking.
+            fn_return_type_hints: Vec::new(),
             // RES-387: no enclosing fn at program start.
             current_fn_fails: None,
             // RES-403: no enclosing fn return type at program start.
@@ -6781,6 +6798,7 @@ impl TypeChecker {
                 return_type: declared_rt,
                 fails,
                 type_params,
+                span: fn_span,
                 ..
             } => {
                 // RES-425: record type-parameter names so call-site
@@ -7192,6 +7210,26 @@ impl TypeChecker {
 
                 // Restore original environment
                 std::mem::swap(&mut self.env, &mut function_env);
+
+                if declared_rt.is_none()
+                    && self.capture_inlay_hints
+                    // `main` is the fixed program entrypoint; its
+                    // omitted return type is conventional noise in
+                    // editor chrome and existing LSP tests assert
+                    // the historical let-only output for `fn main`.
+                    && name != "main"
+                    && !matches!(body_type, Type::Any | Type::Var(..))
+                {
+                    let body_span = match body.as_ref() {
+                        Node::Block { span, .. } => *span,
+                        _ => *fn_span,
+                    };
+                    self.fn_return_type_hints.push(FnReturnTypeHint {
+                        fn_start: fn_span.start,
+                        body_start: body_span.start,
+                        ty: body_type.clone(),
+                    });
+                }
 
                 // RES-053: enforce declared return type against body.
                 let effective_rt = if let Some(rt_name) = declared_rt {
@@ -7713,6 +7751,7 @@ impl TypeChecker {
                 parameters,
                 body,
                 return_type: lit_return_type,
+                span: fn_span,
                 ..
             } => {
                 // Evaluate the body's type in a child env with params
@@ -7740,6 +7779,20 @@ impl TypeChecker {
                 let body_type = self.check_node(body)?;
                 std::mem::swap(&mut self.env, &mut fn_env);
                 self.current_fn_return_type = saved_lit_return_type;
+                if lit_return_type.is_none()
+                    && self.capture_inlay_hints
+                    && !matches!(body_type, Type::Any | Type::Var(..))
+                {
+                    let body_span = match body.as_ref() {
+                        Node::Block { span, .. } => *span,
+                        _ => *fn_span,
+                    };
+                    self.fn_return_type_hints.push(FnReturnTypeHint {
+                        fn_start: fn_span.start,
+                        body_start: body_span.start,
+                        ty: body_type.clone(),
+                    });
+                }
                 Ok(Type::Function {
                     params: param_types,
                     return_type: Box::new(body_type),
