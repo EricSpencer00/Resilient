@@ -1598,6 +1598,10 @@ pub struct TypeChecker {
     /// Used by `satisfies_trait_param` to allow a concrete struct to satisfy
     /// a trait-typed parameter, return annotation, or let binding.
     trait_impls: HashMap<String, HashSet<String>>,
+    /// RES-2616: trait name → transitive set of super-traits from
+    /// `trait Child extends Parent + ...`. Used by variance-aware
+    /// subtype checks at generic call sites.
+    trait_supers: HashMap<String, HashSet<String>>,
     /// RES-2697: trait name → set of method names that carry a default body.
     /// Populated when processing `TraitDecl` nodes. Used to allow
     /// `FieldAccess` type-checks to succeed for default methods even when
@@ -5414,6 +5418,7 @@ impl TypeChecker {
 
             fn_type_params: HashMap::new(),
             trait_impls: HashMap::new(),
+            trait_supers: HashMap::new(),
             trait_default_methods: HashMap::new(),
         }
     }
@@ -5625,6 +5630,236 @@ impl TypeChecker {
         }
     }
 
+    fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
+        if sub == sup
+            || matches!(sub, Type::Any)
+            || matches!(sup, Type::Any)
+            || compatible(sub, sup)
+        {
+            return true;
+        }
+        match (sub, sup) {
+            (Type::Option(sub_inner), Type::Option(sup_inner)) => {
+                self.is_subtype(sub_inner, sup_inner)
+            }
+            (Type::Tuple(sub_elems), Type::Tuple(sup_elems)) => {
+                sub_elems.len() == sup_elems.len()
+                    && sub_elems
+                        .iter()
+                        .zip(sup_elems.iter())
+                        .all(|(sub_elem, sup_elem)| self.is_subtype(sub_elem, sup_elem))
+            }
+            (
+                Type::Function {
+                    params: sub_params,
+                    return_type: sub_ret,
+                },
+                Type::Function {
+                    params: sup_params,
+                    return_type: sup_ret,
+                },
+            ) => {
+                sub_params.len() == sup_params.len()
+                    && sub_params
+                        .iter()
+                        .zip(sup_params.iter())
+                        .all(|(sub_param, sup_param)| self.is_subtype(sup_param, sub_param))
+                    && self.is_subtype(sub_ret, sup_ret)
+            }
+            (_, Type::AnonymousStruct(expected_fields)) => {
+                let Some(actual_fields) = self.structural_fields(sub) else {
+                    return false;
+                };
+                expected_fields.iter().all(|(expected_name, expected_ty)| {
+                    actual_fields
+                        .iter()
+                        .find(|(actual_name, _)| actual_name == expected_name)
+                        .is_some_and(|(_, actual_ty)| self.is_subtype(actual_ty, expected_ty))
+                })
+            }
+            (Type::Struct(sub_name), Type::Struct(sup_name)) => {
+                self.nominal_is_subtype(sub_name, sup_name)
+            }
+            _ => false,
+        }
+    }
+
+    fn nominal_is_subtype(&self, sub_name: &str, sup_name: &str) -> bool {
+        if sub_name == sup_name {
+            return true;
+        }
+        if self
+            .trait_supers
+            .get(sub_name)
+            .is_some_and(|supers| supers.contains(sup_name))
+        {
+            return true;
+        }
+        self.trait_impls.get(sub_name).is_some_and(|traits| {
+            traits.contains(sup_name)
+                || traits.iter().any(|implemented| {
+                    self.trait_supers
+                        .get(implemented.as_str())
+                        .is_some_and(|supers| supers.contains(sup_name))
+                })
+        })
+    }
+
+    fn bind_generic_type_uses(
+        &self,
+        fn_name: &str,
+        tp_set: &std::collections::HashSet<&str>,
+        tp_bindings: &mut std::collections::HashMap<String, Type>,
+        declared: &Type,
+        actual: &Type,
+    ) -> Result<(), String> {
+        match declared {
+            Type::Struct(tp_name) if tp_set.contains(tp_name.as_str()) => {
+                self.merge_generic_type_binding(fn_name, tp_name, tp_bindings, actual)
+            }
+            Type::Option(inner_declared) => {
+                if let Type::Option(inner_actual) = actual {
+                    self.bind_generic_type_uses(
+                        fn_name,
+                        tp_set,
+                        tp_bindings,
+                        inner_declared,
+                        inner_actual,
+                    )?;
+                }
+                Ok(())
+            }
+            Type::Tuple(declared_elems) => {
+                if let Type::Tuple(actual_elems) = actual
+                    && declared_elems.len() == actual_elems.len()
+                {
+                    for (declared_elem, actual_elem) in
+                        declared_elems.iter().zip(actual_elems.iter())
+                    {
+                        self.bind_generic_type_uses(
+                            fn_name,
+                            tp_set,
+                            tp_bindings,
+                            declared_elem,
+                            actual_elem,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+            Type::Function {
+                params: declared_params,
+                return_type: declared_return,
+            } => {
+                if let Type::Function {
+                    params: actual_params,
+                    return_type: actual_return,
+                } = actual
+                    && declared_params.len() == actual_params.len()
+                {
+                    for (declared_param, actual_param) in
+                        declared_params.iter().zip(actual_params.iter())
+                    {
+                        self.bind_generic_type_uses(
+                            fn_name,
+                            tp_set,
+                            tp_bindings,
+                            declared_param,
+                            actual_param,
+                        )?;
+                    }
+                    self.bind_generic_type_uses(
+                        fn_name,
+                        tp_set,
+                        tp_bindings,
+                        declared_return,
+                        actual_return,
+                    )?;
+                }
+                Ok(())
+            }
+            Type::AnonymousStruct(declared_fields) => {
+                let Some(actual_fields) = self.structural_fields(actual) else {
+                    return Ok(());
+                };
+                for (declared_name, declared_ty) in declared_fields {
+                    if let Some((_, actual_ty)) = actual_fields
+                        .iter()
+                        .find(|(actual_name, _)| actual_name == declared_name)
+                    {
+                        self.bind_generic_type_uses(
+                            fn_name,
+                            tp_set,
+                            tp_bindings,
+                            declared_ty,
+                            actual_ty,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn merge_generic_type_binding(
+        &self,
+        fn_name: &str,
+        tp_name: &str,
+        tp_bindings: &mut std::collections::HashMap<String, Type>,
+        candidate: &Type,
+    ) -> Result<(), String> {
+        if matches!(candidate, Type::Any) {
+            return Ok(());
+        }
+        let variance = crate::variance::get_variance(fn_name, tp_name);
+        match tp_bindings.get_mut(tp_name) {
+            None => {
+                tp_bindings.insert(tp_name.to_string(), candidate.clone());
+                Ok(())
+            }
+            Some(existing) => match variance {
+                crate::variance::Variance::Phantom => Ok(()),
+                crate::variance::Variance::Invariant => {
+                    if existing == candidate {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "type parameter `{}` is invariant — expected `{}`, got `{}`",
+                            tp_name, existing, candidate
+                        ))
+                    }
+                }
+                crate::variance::Variance::Covariant => {
+                    if self.is_subtype(candidate, existing) {
+                        *existing = candidate.clone();
+                        Ok(())
+                    } else if self.is_subtype(existing, candidate) {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "type parameter `{}` is covariant — `{}` and `{}` are not in a subtype relation",
+                            tp_name, existing, candidate
+                        ))
+                    }
+                }
+                crate::variance::Variance::Contravariant => {
+                    if self.is_subtype(existing, candidate) {
+                        *existing = candidate.clone();
+                        Ok(())
+                    } else if self.is_subtype(candidate, existing) {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "type parameter `{}` is contravariant — `{}` and `{}` are not in a subtype relation",
+                            tp_name, existing, candidate
+                        ))
+                    }
+                }
+            },
+        }
+    }
+
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
         // Backwards-compatible thin shim: callers that don't have a
         // source path (REPL, unit tests) keep the original signature.
@@ -5654,6 +5889,37 @@ impl TypeChecker {
         reset_z3_prove_cache();
         match program {
             Node::Program(statements) => {
+                let direct_trait_supers: HashMap<String, Vec<String>> = statements
+                    .iter()
+                    .filter_map(|stmt| {
+                        if let Node::TraitDecl { name, supers, .. } = &stmt.node {
+                            Some((name.clone(), supers.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.trait_supers = direct_trait_supers
+                    .keys()
+                    .cloned()
+                    .map(|trait_name| {
+                        let mut seen: HashSet<String> = HashSet::new();
+                        let mut work = direct_trait_supers
+                            .get(trait_name.as_str())
+                            .cloned()
+                            .unwrap_or_default();
+                        while let Some(next) = work.pop() {
+                            if seen.insert(next.clone())
+                                && let Some(more) = direct_trait_supers.get(next.as_str())
+                            {
+                                work.extend(more.iter().cloned());
+                            }
+                        }
+                        (trait_name, seen)
+                    })
+                    .collect();
+                crate::variance::check(program, source_path)?;
+
                 // RES-061: pre-pass to register every top-level Function
                 // in the contract table. Mirrors the interpreter's
                 // function-hoisting pass so call sites can fold contracts
@@ -10137,7 +10403,7 @@ impl TypeChecker {
                             .as_ref()
                             .map(|tp| tp.iter().map(String::as_str).collect())
                             .unwrap_or_default();
-                        let mut tp_bindings: std::collections::HashMap<&str, Type> =
+                        let mut tp_bindings: std::collections::HashMap<String, Type> =
                             std::collections::HashMap::new();
 
                         // Check each argument type
@@ -10148,16 +10414,17 @@ impl TypeChecker {
                         {
                             let arg_type = self.check_node(arg)?;
 
-                            // Infer type-parameter bindings from direct
-                            // Struct("T") parameters matched against
-                            // concrete argument types.
-                            if let Type::Struct(pname) = param_type
-                                && tp_set.contains(pname.as_str())
-                                && !matches!(arg_type, Type::Any)
+                            if let Node::Identifier {
+                                name: callee_name, ..
+                            } = function.as_ref()
                             {
-                                tp_bindings
-                                    .entry(pname.as_str())
-                                    .or_insert_with(|| arg_type.clone());
+                                self.bind_generic_type_uses(
+                                    callee_name,
+                                    &tp_set,
+                                    &mut tp_bindings,
+                                    param_type,
+                                    &arg_type,
+                                )?;
                             }
 
                             // RES-2701: substitute generic type params recursively
@@ -10209,10 +10476,15 @@ impl TypeChecker {
                         // type-parameter bindings collected above.
                         // Falls back to Any only when no binding was
                         // inferred (e.g. zero-arg generic, or arg was Any).
+                        let borrowed_tp_bindings: std::collections::HashMap<&str, Type> =
+                            tp_bindings
+                                .iter()
+                                .map(|(tp_name, ty)| (tp_name.as_str(), ty.clone()))
+                                .collect();
                         let effective_return = infer_generic_return_type(
                             &return_type,
                             &callee_type_params,
-                            &tp_bindings,
+                            &borrowed_tp_bindings,
                         );
                         Ok(effective_return)
                     }

@@ -339,7 +339,28 @@ pub fn get_variance(fn_name: &str, tp_name: &str) -> Variance {
 /// helper exists only so the variance pass can classify without
 /// importing the full parse machinery.
 fn parse_type_annotation(s: &str) -> Type {
-    match s.trim() {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix("fn(")
+        && let Some((params_src, return_src)) = split_function_annotation(rest)
+    {
+        let params = split_top_level(params_src, ',')
+            .into_iter()
+            .filter(|part| !part.trim().is_empty())
+            .map(parse_type_annotation)
+            .collect();
+        return Type::Function {
+            params,
+            return_type: Box::new(parse_type_annotation(return_src)),
+        };
+    }
+    if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let elems = split_top_level(inner, ',');
+        if elems.len() > 1 {
+            return Type::Tuple(elems.into_iter().map(parse_type_annotation).collect());
+        }
+    }
+    match trimmed {
         "int" | "Int" | "Int64" => Type::Int,
         "Int8" => Type::Int8,
         "Int16" => Type::Int16,
@@ -356,6 +377,44 @@ fn parse_type_annotation(s: &str) -> Type {
         // Anything else is either a type-parameter name or a nominal type.
         other => Type::Struct(other.to_string()),
     }
+}
+
+fn split_function_annotation(s: &str) -> Option<(&str, &str)> {
+    let mut depth = 1_i32;
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let tail = s[idx + 1..].trim_start();
+                    let return_src = tail.strip_prefix("->")?.trim();
+                    return Some((&s[..idx], return_src));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut paren_depth = 0_i32;
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            _ if ch == sep && paren_depth == 0 => {
+                parts.push(s[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
 }
 
 // ---------------------------------------------------------------------------
