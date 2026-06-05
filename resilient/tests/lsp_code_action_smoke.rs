@@ -13,7 +13,9 @@
 #![cfg(feature = "lsp")]
 
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 fn bin() -> &'static str {
@@ -108,6 +110,50 @@ fn read_until<R: Read>(
             return Ok(body);
         }
     }
+}
+
+fn tmp_workspace(tag: &str) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("res_2645_lsp_{}_{}_{}", tag, std::process::id(), n));
+    std::fs::create_dir_all(&root).expect("create workspace dir");
+    root
+}
+
+fn write_file(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create parent dirs");
+    }
+    std::fs::write(path, contents).expect("write workspace file");
+}
+
+fn file_uri(path: &Path) -> String {
+    format!("file://{}", path.display())
+}
+
+fn initialize_with_workspace(
+    stdin: &mut impl Write,
+    stdout: &mut impl Read,
+    workspace_root: &Path,
+    deadline: Instant,
+) {
+    let root_uri = file_uri(workspace_root);
+    let init = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{root_uri}","workspaceFolders":[{{"uri":"{root_uri}","name":"ws"}}],"capabilities":{{}}}}}}"#
+    );
+    stdin.write_all(frame(&init).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+    let init_resp = read_until_id(stdout, 1, deadline).unwrap();
+    assert!(
+        init_resp.contains(r#""codeActionProvider""#),
+        "expected codeActionProvider in capabilities, got:\n{}",
+        init_resp
+    );
+
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    stdin.write_all(frame(initialized).as_bytes()).unwrap();
+    stdin.flush().unwrap();
 }
 
 /// RES-357 AC: `textDocument/codeAction` for an L0010 diagnostic returns
@@ -272,4 +318,182 @@ fn lsp_code_action_returns_null_for_non_l0010_diagnostic() {
     drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn lsp_code_action_add_use_statement_single_match() {
+    let workspace = tmp_workspace("single");
+    let main_path = workspace.join("main.rz");
+    let helper_path = workspace.join("lib/helper.rz");
+    write_file(&main_path, "fn main() {\n    helper();\n}\n");
+    write_file(&helper_path, "pub fn helper() {\n    return 0;\n}\n");
+    let uri = file_uri(&main_path);
+
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let deadline = Instant::now() + Duration::from_secs(15);
+
+    initialize_with_workspace(&mut stdin, &mut stdout, &workspace, deadline);
+
+    let did_open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"resilient","version":1,"text":"fn main() {{\n    helper();\n}}\n"}}}}}}"#
+    );
+    stdin.write_all(frame(&did_open).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+
+    let _ = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        deadline,
+    )
+    .expect("read publishDiagnostics");
+
+    let ca_req = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":1,"character":4}},"end":{{"line":1,"character":10}}}},"context":{{"diagnostics":[{{"range":{{"start":{{"line":1,"character":4}},"end":{{"line":1,"character":10}}}},"severity":1,"source":"resilient-typechecker","message":"Undefined variable 'helper' at 2:5"}}]}}}}}}"#
+    );
+    stdin.write_all(frame(&ca_req).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+
+    let response = read_until_id(&mut stdout, 2, deadline).expect("read codeAction response");
+    assert!(
+        response.contains(r#""title":"Add `use \"lib/helper.rz\";`""#),
+        "expected add-use title in response:\n{response}"
+    );
+    assert!(
+        response.contains(r#"use \"lib/helper.rz\";\n"#),
+        "expected add-use edit in response:\n{response}"
+    );
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn lsp_code_action_add_use_statement_multiple_matches() {
+    let workspace = tmp_workspace("multi");
+    let main_path = workspace.join("main.rz");
+    write_file(&main_path, "fn main() {\n    helper();\n}\n");
+    write_file(
+        &workspace.join("lib/a.rz"),
+        "pub fn helper() {\n    return 0;\n}\n",
+    );
+    write_file(
+        &workspace.join("lib/b.rz"),
+        "pub fn helper() {\n    return 1;\n}\n",
+    );
+    let uri = file_uri(&main_path);
+
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let deadline = Instant::now() + Duration::from_secs(15);
+
+    initialize_with_workspace(&mut stdin, &mut stdout, &workspace, deadline);
+
+    let did_open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"resilient","version":1,"text":"fn main() {{\n    helper();\n}}\n"}}}}}}"#
+    );
+    stdin.write_all(frame(&did_open).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+
+    let _ = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        deadline,
+    )
+    .expect("read publishDiagnostics");
+
+    let ca_req = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":1,"character":4}},"end":{{"line":1,"character":10}}}},"context":{{"diagnostics":[{{"range":{{"start":{{"line":1,"character":4}},"end":{{"line":1,"character":10}}}},"severity":1,"source":"resilient-typechecker","message":"Undefined variable 'helper' at 2:5"}}]}}}}}}"#
+    );
+    stdin.write_all(frame(&ca_req).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+
+    let response = read_until_id(&mut stdout, 2, deadline).expect("read codeAction response");
+    assert!(
+        response.contains(r#""title":"Add `use \"lib/a.rz\";`""#),
+        "expected first add-use title in response:\n{response}"
+    );
+    assert!(
+        response.contains(r#""title":"Add `use \"lib/b.rz\";`""#),
+        "expected second add-use title in response:\n{response}"
+    );
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn lsp_code_action_add_use_statement_no_match() {
+    let workspace = tmp_workspace("none");
+    let main_path = workspace.join("main.rz");
+    write_file(&main_path, "fn main() {\n    helper();\n}\n");
+    write_file(
+        &workspace.join("lib/other.rz"),
+        "pub fn something_else() {\n    return 0;\n}\n",
+    );
+    let uri = file_uri(&main_path);
+
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let deadline = Instant::now() + Duration::from_secs(15);
+
+    initialize_with_workspace(&mut stdin, &mut stdout, &workspace, deadline);
+
+    let did_open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"resilient","version":1,"text":"fn main() {{\n    helper();\n}}\n"}}}}}}"#
+    );
+    stdin.write_all(frame(&did_open).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+
+    let _ = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        deadline,
+    )
+    .expect("read publishDiagnostics");
+
+    let ca_req = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":1,"character":4}},"end":{{"line":1,"character":10}}}},"context":{{"diagnostics":[{{"range":{{"start":{{"line":1,"character":4}},"end":{{"line":1,"character":10}}}},"severity":1,"source":"resilient-typechecker","message":"Undefined variable 'helper' at 2:5"}}]}}}}}}"#
+    );
+    stdin.write_all(frame(&ca_req).as_bytes()).unwrap();
+    stdin.flush().unwrap();
+
+    let response = read_until_id(&mut stdout, 2, deadline).expect("read codeAction response");
+    assert!(
+        response.contains(r#""result":null"#),
+        "expected null result when no helper import candidate exists:\n{response}"
+    );
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&workspace);
 }
