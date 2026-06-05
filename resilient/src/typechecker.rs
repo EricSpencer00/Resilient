@@ -104,6 +104,10 @@ pub enum Type {
     /// RES-053: user-defined record by name. Field types looked up
     /// against the struct table when G7 goes deeper.
     Struct(String),
+    /// RES-2602: anonymous structural record type `{ x: int, y: int }`.
+    /// Field order is preserved from source for diagnostics, but
+    /// compatibility checks are name-based rather than positional.
+    AnonymousStruct(Vec<(String, Type)>),
     Void,
     Any, // Used for untyped variables during inference
     /// RES-401: product tuple `(T0, T1, …)`. Element types are tracked
@@ -169,6 +173,16 @@ impl std::fmt::Display for Type {
                 }
             }
             Type::Struct(n) => write!(f, "{}", n),
+            Type::AnonymousStruct(fields) => {
+                write!(f, "{{ ")?;
+                for (i, (name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, ty)?;
+                }
+                write!(f, " }}")
+            }
             Type::Void => write!(f, "void"),
             Type::Any => write!(f, "any"),
             Type::Tuple(ts) => {
@@ -308,6 +322,12 @@ fn substitute_type_params(ty: &Type, type_params: &[String]) -> Type {
                 .map(|e| substitute_type_params(e, type_params))
                 .collect(),
         ),
+        Type::AnonymousStruct(fields) => Type::AnonymousStruct(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_type_params(ty, type_params)))
+                .collect(),
+        ),
         Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, type_params))),
         other => other.clone(),
     }
@@ -353,6 +373,17 @@ fn substitute_with_bindings(
             elems
                 .iter()
                 .map(|e| substitute_with_bindings(e, type_params, bindings))
+                .collect(),
+        ),
+        Type::AnonymousStruct(fields) => Type::AnonymousStruct(
+            fields
+                .iter()
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        substitute_with_bindings(ty, type_params, bindings),
+                    )
+                })
                 .collect(),
         ),
         Type::Option(inner) => Type::Option(Box::new(substitute_with_bindings(
@@ -5529,6 +5560,71 @@ impl TypeChecker {
             .is_some_and(|ts| ts.contains(a_name.as_str()))
     }
 
+    fn named_struct_fields(&self, name: &str) -> Option<Vec<(String, Type)>> {
+        self.struct_fields
+            .get(name)
+            .map(|fields| fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect())
+    }
+
+    fn structural_fields(&self, ty: &Type) -> Option<Vec<(String, Type)>> {
+        match ty {
+            Type::AnonymousStruct(fields) => Some(fields.clone()),
+            Type::Struct(name) => self.named_struct_fields(name),
+            _ => None,
+        }
+    }
+
+    fn type_satisfies(&self, actual: &Type, expected: &Type) -> bool {
+        if actual == expected
+            || matches!(actual, Type::Any)
+            || matches!(expected, Type::Any)
+            || compatible(actual, expected)
+        {
+            return true;
+        }
+        match (actual, expected) {
+            (Type::Option(actual_inner), Type::Option(expected_inner)) => {
+                self.type_satisfies(actual_inner, expected_inner)
+            }
+            (
+                Type::Function {
+                    params: actual_params,
+                    return_type: actual_ret,
+                },
+                Type::Function {
+                    params: expected_params,
+                    return_type: expected_ret,
+                },
+            ) => {
+                actual_params.len() == expected_params.len()
+                    && actual_params
+                        .iter()
+                        .zip(expected_params.iter())
+                        .all(|(a, e)| self.type_satisfies(a, e))
+                    && self.type_satisfies(actual_ret, expected_ret)
+            }
+            (Type::Tuple(actual_elems), Type::Tuple(expected_elems)) => {
+                actual_elems.len() == expected_elems.len()
+                    && actual_elems
+                        .iter()
+                        .zip(expected_elems.iter())
+                        .all(|(a, e)| self.type_satisfies(a, e))
+            }
+            (_, Type::AnonymousStruct(expected_fields)) => {
+                let Some(actual_fields) = self.structural_fields(actual) else {
+                    return false;
+                };
+                expected_fields.iter().all(|(expected_name, expected_ty)| {
+                    actual_fields
+                        .iter()
+                        .find(|(actual_name, _)| actual_name == expected_name)
+                        .is_some_and(|(_, actual_ty)| self.type_satisfies(actual_ty, expected_ty))
+                })
+            }
+            _ => false,
+        }
+    }
+
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
         // Backwards-compatible thin shim: callers that don't have a
         // source path (REPL, unit tests) keep the original signature.
@@ -7242,7 +7338,7 @@ impl TypeChecker {
                         Type::Void
                     } else {
                         let declared = self.parse_type_name(rt_name)?;
-                        if !compatible(&declared, &body_type)
+                        if !self.type_satisfies(&body_type, &declared)
                             // RES-2693: body that returns a concrete struct satisfies
                             // a trait-typed return annotation when the struct impls it.
                             && !self.satisfies_trait_param(&declared, &body_type)
@@ -7451,7 +7547,7 @@ impl TypeChecker {
                 // type isn't compatible with the declared annotation.
                 let bind_type = if let Some(ty_name) = type_annot {
                     let declared = self.parse_type_name(ty_name)?;
-                    if !compatible(&declared, &value_type)
+                    if !self.type_satisfies(&value_type, &declared)
                         // RES-2693: allow binding a struct to a trait annotation
                         // when the struct implements the trait.
                         && !self.satisfies_trait_param(&declared, &value_type)
@@ -8489,7 +8585,7 @@ impl TypeChecker {
                         }
                         // Type mismatch on a known field.
                         if let Some((_, field_ty)) = declared.iter().find(|(n, _)| n == field_name)
-                            && !compatible(field_ty, &val_ty)
+                            && !self.type_satisfies(&val_ty, field_ty)
                         {
                             return Err(format!(
                                 "struct `{}` field `{}` has type {}, \
@@ -8498,7 +8594,7 @@ impl TypeChecker {
                             ));
                         }
                     }
-                    if generic_info.is_some() {
+                    if generic_info.is_some() || name == crate::ANONYMOUS_STRUCT_NAME {
                         field_value_types.push((field_name.clone(), val_ty));
                     }
                 }
@@ -8515,7 +8611,7 @@ impl TypeChecker {
                             && tp_set.contains(raw_type.as_str())
                         {
                             if let Some(bound) = bindings.get(raw_type.as_str()) {
-                                if !compatible(bound, val_ty) {
+                                if !self.type_satisfies(val_ty, bound) {
                                     return Err(format!(
                                         "struct `{}`: type parameter `{}` \
                                          bound to `{}` by an earlier field, \
@@ -8528,6 +8624,9 @@ impl TypeChecker {
                             }
                         }
                     }
+                }
+                if name == crate::ANONYMOUS_STRUCT_NAME {
+                    return Ok(Type::AnonymousStruct(field_value_types));
                 }
                 // RES-400: if `name` is an enum-variant constructor
                 // (`EnumName::VariantName`), the resulting value's
@@ -8551,6 +8650,23 @@ impl TypeChecker {
             } => {
                 self.current_span = *span;
                 let tgt_ty = self.check_node(target)?;
+                if let Type::AnonymousStruct(fields) = &tgt_ty {
+                    if let Some((_, ty)) = fields.iter().find(|(name, _)| name == field) {
+                        return Ok(ty.clone());
+                    }
+                    let avail: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                    let hint = crate::did_you_mean::hint_from(field, avail.iter().copied());
+                    return Err(format!(
+                        "anonymous struct has no field `{}`{}; available fields: {}",
+                        field,
+                        hint,
+                        if avail.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            avail.join(", ")
+                        }
+                    ));
+                }
                 // RES-153: if the target is a known struct, return the
                 // declared field's type. When the struct IS declared but
                 // the field name is absent, emit a clear diagnostic
@@ -8807,7 +8923,7 @@ impl TypeChecker {
                         Some((_, field_ty)) => {
                             // RES-403 follow-up: validate the assigned
                             // value type against the declared field type.
-                            if !compatible(field_ty, &val_ty) {
+                            if !self.type_satisfies(&val_ty, field_ty) {
                                 return Err(format!(
                                     "struct `{}` field `{}` has type {}, cannot assign {}",
                                     sname, field, field_ty, val_ty
@@ -9108,7 +9224,7 @@ impl TypeChecker {
                 let value_type = self.check_node(value)?;
                 let bind_type = if let Some(ty_name) = type_annot {
                     let declared = self.parse_type_name(ty_name)?;
-                    if !compatible(&declared, &value_type)
+                    if !self.type_satisfies(&value_type, &declared)
                         && !self.satisfies_trait_param(&declared, &value_type)
                     {
                         return Err(format!(
@@ -9203,7 +9319,7 @@ impl TypeChecker {
                 // returns (inside if/match arms) can't silently return the
                 // wrong type while the body's last expression type matches.
                 if let Some(declared) = &self.current_fn_return_type
-                    && !compatible(declared, &ret_type)
+                    && !self.type_satisfies(&ret_type, declared)
                     // RES-2693: a struct returned where a trait is declared
                     // is valid when the struct implements that trait.
                     && !self.satisfies_trait_param(declared, &ret_type)
@@ -9670,7 +9786,7 @@ impl TypeChecker {
                             }
                             let arg_ty = self.check_node(arg)?;
                             if let Ok(expected_ty) = self.parse_type_name(type_str)
-                                && !compatible(&expected_ty, &arg_ty)
+                                && !self.type_satisfies(&arg_ty, &expected_ty)
                             {
                                 return Err(format!(
                                     "Constructor {}::{}: argument has type {}, expected {}",
@@ -10054,7 +10170,7 @@ impl TypeChecker {
                             } else {
                                 param_type
                             };
-                            if !compatible(&arg_type, effective_param)
+                            if !self.type_satisfies(&arg_type, effective_param)
                                 && !self.satisfies_trait_param(&arg_type, effective_param)
                             {
                                 if rich_diag_enabled() {
@@ -10359,6 +10475,47 @@ impl TypeChecker {
             // system will promote this to Type::Tuple once the full
             // tuple-type variant lands in G7).
             other if other.starts_with('(') && other.ends_with(')') => Ok(Type::Any),
+            other if other.starts_with('{') && other.ends_with('}') => {
+                let inner = &other[1..other.len() - 1];
+                let inner = inner.trim();
+                if inner.is_empty() {
+                    return Ok(Type::AnonymousStruct(Vec::new()));
+                }
+                let mut fields = Vec::with_capacity(2);
+                let mut depth = 0usize;
+                let mut start = 0usize;
+                for (idx, ch) in inner.char_indices() {
+                    match ch {
+                        '<' | '(' | '[' | '{' => depth += 1,
+                        '>' | ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                        ',' if depth == 0 => {
+                            let chunk = inner[start..idx].trim();
+                            if let Some((name, ty)) = chunk.split_once(':') {
+                                fields.push((
+                                    name.trim().to_string(),
+                                    self.parse_type_name_inner(ty.trim(), seen)?,
+                                ));
+                            } else {
+                                return Err(format!("invalid anonymous struct field `{}`", chunk));
+                            }
+                            start = idx + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                let chunk = inner[start..].trim();
+                if !chunk.is_empty() {
+                    if let Some((name, ty)) = chunk.split_once(':') {
+                        fields.push((
+                            name.trim().to_string(),
+                            self.parse_type_name_inner(ty.trim(), seen)?,
+                        ));
+                    } else {
+                        return Err(format!("invalid anonymous struct field `{}`", chunk));
+                    }
+                }
+                Ok(Type::AnonymousStruct(fields))
+            }
             // RES-128: a registered alias expands transitively.
             // RES-1894: single `.get()` replaces the former
             // `contains_key()` guard + `[]` index double-lookup.

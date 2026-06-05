@@ -128,6 +128,12 @@ pub fn apply_subst(ty: &Type, subst: &Subst) -> Type {
             params: params.iter().map(|p| apply_subst(p, subst)).collect(),
             return_type: Box::new(apply_subst(return_type, subst)),
         },
+        Type::AnonymousStruct(fields) => Type::AnonymousStruct(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), apply_subst(ty, subst)))
+                .collect(),
+        ),
         // Primitives / inference vars / other structural types pass
         // through unchanged.
         other => other.clone(),

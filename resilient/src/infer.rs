@@ -165,6 +165,11 @@ fn collect_ftv(ty: &Type, out: &mut std::collections::HashSet<u32>) {
             }
             collect_ftv(return_type, out);
         }
+        Type::AnonymousStruct(fields) => {
+            for (_, ty) in fields {
+                collect_ftv(ty, out);
+            }
+        }
         // Primitive / opaque types have no type variables.
         Type::Int
         | Type::Int8
@@ -175,10 +180,13 @@ fn collect_ftv(ty: &Type, out: &mut std::collections::HashSet<u32>) {
         | Type::UInt32
         | Type::UInt64
         | Type::Float
+        | Type::Float32
         | Type::String
         | Type::Bool
+        | Type::Char
         | Type::Bytes
         | Type::Array
+        | Type::Range
         | Type::Result
         | Type::Struct(_)
         | Type::Void

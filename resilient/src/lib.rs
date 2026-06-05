@@ -7,6 +7,8 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+pub(crate) const ANONYMOUS_STRUCT_NAME: &str = "__anon_struct";
+
 // Import modules
 // RES-1136: alignment helpers — `next_multiple_of` and `is_multiple_of`.
 // Pure leaf builtins; module-isolated so adding new bytes/int helpers
@@ -5670,6 +5672,55 @@ impl Parser {
                 self.next_token(); // skip `)`
                 Some(format!("({})", elem_types.join(", ")))
             }
+            Token::LeftBrace => {
+                self.next_token(); // skip `{`
+                let mut fields: Vec<String> = Vec::with_capacity(2);
+                while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+                    let field_name = match &self.current_token {
+                        Token::Identifier(name) => name.clone(),
+                        other => {
+                            let tok = other.clone();
+                            self.record_error(format!(
+                                "Expected field name in anonymous struct type {}, found {}",
+                                ctx, tok
+                            ));
+                            return None;
+                        }
+                    };
+                    self.next_token(); // skip field name
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ':' after field name '{}' in anonymous struct type {}, found {}",
+                            field_name, ctx, tok
+                        ));
+                        return None;
+                    }
+                    self.next_token(); // skip `:`
+                    let field_ty = self.parse_type_annotation(ctx)?;
+                    fields.push(format!("{}: {}", field_name, field_ty));
+                    if self.current_token == Token::Comma {
+                        self.next_token();
+                    } else if self.current_token != Token::RightBrace {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ',' or '}}' in anonymous struct type {}, found {}",
+                            ctx, tok
+                        ));
+                        return None;
+                    }
+                }
+                if self.current_token != Token::RightBrace {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected '}}' to close anonymous struct type {}, found {}",
+                        ctx, tok
+                    ));
+                    return None;
+                }
+                self.next_token(); // skip `}`
+                Some(format!("{{ {} }}", fields.join(", ")))
+            }
             // RES-2578: `!` — the never type for diverging functions.
             Token::Bang => {
                 self.next_token();
@@ -8571,13 +8622,11 @@ impl Parser {
             // items inside) lives in `tuples::parse_paren_or_tuple`.
             Token::LeftParen => crate::tuples::parse_paren_or_tuple(self),
             Token::LeftBracket => Some(self.parse_array_literal()),
-            // RES-148: `{"k" -> v, ...}` in expression position parses
-            // as a Map literal. Map literals are only valid in
-            // expression context; statement-level `{` still starts a
-            // block (e.g. fn body, live body, if/else blocks) and is
-            // parsed by the statement-level machinery, which never
-            // calls `parse_expression` at a `{` token.
-            Token::LeftBrace => Some(self.parse_map_literal()),
+            // `{ ... }` in expression position is either a map literal
+            // (`{"k" -> v}`) or an anonymous struct literal
+            // (`{ field: value }`). Statement-level `{` still starts a
+            // block and never reaches `parse_expression`.
+            Token::LeftBrace => Some(self.parse_braced_literal()),
             // RES-149: `#{1, 2, ...}` set literal. The dedicated
             // opener token sidesteps any ambiguity with `{` (map /
             // block) without needing the parser to peek ahead.
@@ -9748,6 +9797,93 @@ impl Parser {
         }
     }
 
+    fn parse_braced_literal(&mut self) -> Node {
+        let brace_span = self.span_at_current();
+        if self.peek_token == Token::RightBrace {
+            return self.parse_map_literal();
+        }
+        self.next_token(); // step past '{'
+        if matches!(self.current_token, Token::Identifier(_))
+            && matches!(
+                self.peek_token,
+                Token::Colon | Token::Comma | Token::RightBrace
+            )
+        {
+            return self.parse_anonymous_struct_literal_after_open(brace_span);
+        }
+        self.parse_map_literal_after_open(brace_span)
+    }
+
+    fn parse_anonymous_struct_literal_after_open(&mut self, brace_span: span::Span) -> Node {
+        let mut fields: Vec<(String, Node)> = Vec::with_capacity(4);
+        loop {
+            let fname_span = self.span_at_current();
+            let fname = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "Expected field name in anonymous struct literal, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+            self.next_token(); // skip field name
+            if self.current_token == Token::Comma || self.current_token == Token::RightBrace {
+                let value = Node::Identifier {
+                    name: fname.clone(),
+                    span: fname_span,
+                };
+                fields.push((fname, value));
+                if self.current_token == Token::Comma {
+                    self.next_token();
+                    if self.current_token == Token::RightBrace {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+            if self.current_token != Token::Colon {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ':' after field name '{}' in anonymous struct literal, found {}",
+                    fname, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip ':'
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+            fields.push((fname, value));
+            self.next_token();
+            if self.current_token == Token::Comma {
+                self.next_token();
+                if self.current_token == Token::RightBrace {
+                    break;
+                }
+            } else if self.current_token == Token::RightBrace {
+                break;
+            } else {
+                let tok_syntax = self.current_token.display_syntax();
+                self.record_error(format!(
+                    "in anonymous struct literal: {}",
+                    format_expected(&["`,`", "`}`"], &tok_syntax)
+                ));
+                break;
+            }
+        }
+        Node::StructLiteral {
+            name: ANONYMOUS_STRUCT_NAME.to_string(),
+            fields,
+            base: None,
+            span: brace_span,
+        }
+    }
+
     /// Parse an anonymous `fn(params) -> TYPE? requires/ensures? { body }`.
     fn parse_function_literal(&mut self) -> Node {
         self.next_token(); // skip 'fn'
@@ -10580,6 +10716,33 @@ impl Parser {
         }
     }
 
+    fn parse_map_literal_after_open(&mut self, brace_span: span::Span) -> Node {
+        let mut entries: Vec<(Node, Node)> = Vec::with_capacity(4);
+        if let Some((k, v)) = self.parse_map_entry() {
+            entries.push((k, v));
+        }
+        while self.peek_token == Token::Comma {
+            self.next_token(); // to ','
+            if self.peek_token == Token::RightBrace {
+                break;
+            }
+            self.next_token(); // step past ','
+            if let Some((k, v)) = self.parse_map_entry() {
+                entries.push((k, v));
+            }
+        }
+        if self.peek_token != Token::RightBrace {
+            let tok = self.peek_token.clone();
+            self.record_error(format!("Expected '}}' to close map literal, found {}", tok));
+        } else {
+            self.next_token(); // to '}'
+        }
+        Node::MapLiteral {
+            entries,
+            span: brace_span,
+        }
+    }
+
     /// RES-149: parse a set literal — `#{1, 2, 3}`. `current_token`
     /// is `#{` on entry; on exit it is the closing `}`. Mirrors the
     /// map parser's shape (comma-separated, trailing comma allowed,
@@ -11100,7 +11263,11 @@ impl std::fmt::Debug for Value {
             Value::Builtin { name, .. } => write!(f, "Builtin({})", name),
             Value::Array(items) => write!(f, "Array({} items)", items.len()),
             Value::Struct { name, fields } => {
-                write!(f, "Struct({}, {} fields)", name, fields.len())
+                if name == ANONYMOUS_STRUCT_NAME {
+                    write!(f, "Struct(<anonymous>, {} fields)", fields.len())
+                } else {
+                    write!(f, "Struct({}, {} fields)", name, fields.len())
+                }
             }
             Value::Result { ok, payload } => {
                 write!(f, "{}({:?})", if *ok { "Ok" } else { "Err" }, payload)
@@ -11229,7 +11396,10 @@ impl std::fmt::Display for Value {
                 write!(f, ")")
             }
             Value::Struct { name, fields } => {
-                write!(f, "{} {{ ", name)?;
+                if name != ANONYMOUS_STRUCT_NAME {
+                    write!(f, "{} ", name)?;
+                }
+                write!(f, "{{ ")?;
                 for (i, (fname, fval)) in fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

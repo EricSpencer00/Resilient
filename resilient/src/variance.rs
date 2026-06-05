@@ -224,6 +224,11 @@ fn walk_type(
                 walk_type(t, position, tp_set, vmap);
             }
         }
+        Type::AnonymousStruct(fields) => {
+            for (_, ty) in fields {
+                walk_type(ty, position, tp_set, vmap);
+            }
+        }
         // Primitive and opaque types contain no type-parameter references.
         _ => {}
     }

@@ -143,6 +143,12 @@ impl Substitution {
             },
             // RES-401: tuple element types may contain Var nodes.
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.apply(t)).collect()),
+            Type::AnonymousStruct(fields) => Type::AnonymousStruct(
+                fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.apply(ty)))
+                    .collect(),
+            ),
             // RES-2651: Option inner type may contain Var nodes.
             Type::Option(inner) => Type::Option(Box::new(self.apply(inner))),
             // Primitive and opaque variants have no sub-types.
@@ -237,6 +243,21 @@ impl Substitution {
                 }
                 Ok(())
             }
+            (Type::AnonymousStruct(a), Type::AnonymousStruct(b)) => {
+                if a.len() != b.len() {
+                    return Err(UnifyError::ArityMismatch(a.len(), b.len()));
+                }
+                for ((an, at), (bn, bt)) in a.iter().zip(b.iter()) {
+                    if an != bn {
+                        return Err(UnifyError::Mismatch(
+                            Type::AnonymousStruct(a.clone()),
+                            Type::AnonymousStruct(b.clone()),
+                        ));
+                    }
+                    self.unify(at, bt)?;
+                }
+                Ok(())
+            }
             // RES-2651: Option<T> unifies element-wise.
             (Type::Option(a), Type::Option(b)) => self.unify(&a, &b),
             (a, b) => Err(UnifyError::Mismatch(a, b)),
@@ -304,6 +325,7 @@ impl Substitution {
             } => params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, return_type),
             // RES-401: check element types of tuples.
             Type::Tuple(ts) => ts.iter().any(|t| self.occurs(v, t)),
+            Type::AnonymousStruct(fields) => fields.iter().any(|(_, ty)| self.occurs(v, ty)),
             // RES-2651: check inner type of Option.
             Type::Option(inner) => self.occurs(v, inner),
             _ => false,
