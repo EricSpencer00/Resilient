@@ -81,6 +81,7 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod hash_builtins;
+mod type_relations;
 // RES-2560 / RES-2561: SHA-256, SHA-512, CRC-32, CRC-16 builtins.
 mod crypto_hash;
 // RES-1172: small string + array gaps — split_once / rsplit_once /
