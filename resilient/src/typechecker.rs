@@ -279,18 +279,7 @@ pub(crate) fn body_yields_value(body: &Node) -> bool {
 /// to `Type::Any` when types differ (or when the slice is empty /
 /// all-Any), keeping inference conservative.
 fn infer_common_arm_type(types: &[Type]) -> Type {
-    let mut result: Option<&Type> = None;
-    for t in types {
-        if matches!(t, Type::Any) {
-            continue;
-        }
-        match result {
-            None => result = Some(t),
-            Some(r) if r == t => {}
-            _ => return Type::Any,
-        }
-    }
-    result.cloned().unwrap_or(Type::Any)
+    crate::type_relations::infer_common_type(types)
 }
 
 /// with every pinned integer type — assigning a literal `42` to an
@@ -304,33 +293,7 @@ fn infer_common_arm_type(types: &[Type]) -> Type {
 /// `Struct("T") → Any` substitution in RES-425 did not recurse into
 /// composite types (Function, Tuple, Option).
 fn substitute_type_params(ty: &Type, type_params: &[String]) -> Type {
-    match ty {
-        Type::Struct(name) if type_params.iter().any(|p| p == name) => Type::Any,
-        Type::Function {
-            params,
-            return_type,
-        } => Type::Function {
-            params: params
-                .iter()
-                .map(|p| substitute_type_params(p, type_params))
-                .collect(),
-            return_type: Box::new(substitute_type_params(return_type, type_params)),
-        },
-        Type::Tuple(elems) => Type::Tuple(
-            elems
-                .iter()
-                .map(|e| substitute_type_params(e, type_params))
-                .collect(),
-        ),
-        Type::AnonymousStruct(fields) => Type::AnonymousStruct(
-            fields
-                .iter()
-                .map(|(name, ty)| (name.clone(), substitute_type_params(ty, type_params)))
-                .collect(),
-        ),
-        Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, type_params))),
-        other => other.clone(),
-    }
+    crate::type_relations::substitute_type_params(ty, type_params)
 }
 
 /// RES-2805: produce a concrete return type for a generic function call
@@ -341,116 +304,11 @@ fn infer_generic_return_type(
     callee_type_params: &Option<Vec<String>>,
     tp_bindings: &std::collections::HashMap<&str, Type>,
 ) -> Type {
-    let tp = match callee_type_params {
-        Some(tp) if !tp.is_empty() => tp,
-        _ => return return_type.clone(),
-    };
-    substitute_with_bindings(return_type, tp, tp_bindings)
-}
-
-/// Recursively replace type-parameter references with their inferred
-/// concrete types. Unbound parameters fall back to `Type::Any`.
-fn substitute_with_bindings(
-    ty: &Type,
-    type_params: &[String],
-    bindings: &std::collections::HashMap<&str, Type>,
-) -> Type {
-    match ty {
-        Type::Struct(name) if type_params.iter().any(|p| p == name) => {
-            bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
-        }
-        Type::Function {
-            params,
-            return_type,
-        } => Type::Function {
-            params: params
-                .iter()
-                .map(|p| substitute_with_bindings(p, type_params, bindings))
-                .collect(),
-            return_type: Box::new(substitute_with_bindings(return_type, type_params, bindings)),
-        },
-        Type::Tuple(elems) => Type::Tuple(
-            elems
-                .iter()
-                .map(|e| substitute_with_bindings(e, type_params, bindings))
-                .collect(),
-        ),
-        Type::AnonymousStruct(fields) => Type::AnonymousStruct(
-            fields
-                .iter()
-                .map(|(name, ty)| {
-                    (
-                        name.clone(),
-                        substitute_with_bindings(ty, type_params, bindings),
-                    )
-                })
-                .collect(),
-        ),
-        Type::Option(inner) => Type::Option(Box::new(substitute_with_bindings(
-            inner,
-            type_params,
-            bindings,
-        ))),
-        other => other.clone(),
-    }
+    crate::type_relations::infer_generic_return_type(return_type, callee_type_params, tp_bindings)
 }
 
 fn compatible(a: &Type, b: &Type) -> bool {
-    if a == b {
-        return true;
-    }
-    if matches!(a, Type::Any) || matches!(b, Type::Any) {
-        return true;
-    }
-    // RES-2651: Option<T> is compatible with Option<U> when T and U
-    // are compatible, and also with the legacy unparameterised Result
-    // (which represented Option before this PR).
-    if let (Type::Option(inner_a), Type::Option(inner_b)) = (a, b) {
-        return compatible(inner_a, inner_b);
-    }
-    // RES-2701: Function types are compatible when all parameter types and
-    // the return type are pairwise compatible. This handles cases where
-    // substitute_type_params replaced type variables with Any — e.g.
-    // `fn(Any) -> Any` must accept a concrete `fn(int) -> int`.
-    if let (
-        Type::Function {
-            params: pa,
-            return_type: ra,
-        },
-        Type::Function {
-            params: pb,
-            return_type: rb,
-        },
-    ) = (a, b)
-    {
-        return pa.len() == pb.len()
-            && pa.iter().zip(pb.iter()).all(|(x, y)| compatible(x, y))
-            && compatible(ra, rb);
-    }
-    // RES-2801: Tuple types are compatible when element-wise compatible.
-    if let (Type::Tuple(a_elems), Type::Tuple(b_elems)) = (a, b) {
-        return a_elems.len() == b_elems.len()
-            && a_elems
-                .iter()
-                .zip(b_elems.iter())
-                .all(|(x, y)| compatible(x, y));
-    }
-    // Integer literals produce Type::Int; allow assigning them to any
-    // pinned integer type without an explicit cast.
-    if *a == Type::Int && is_pinned_int(b) {
-        return true;
-    }
-    if is_pinned_int(a) && *b == Type::Int {
-        return true;
-    }
-    // RES-2691: float literals produce Type::Float; allow assigning them to
-    // f32-annotated variables and vice-versa — mirrors the Int ↔ pinned-int rule.
-    // Note: unify() still errors on Float/Float32 in arithmetic to prevent
-    // implicit cross-width mixing.
-    if (*a == Type::Float32 && *b == Type::Float) || (*a == Type::Float && *b == Type::Float32) {
-        return true;
-    }
-    false
+    crate::type_relations::compatible(a, b)
 }
 
 /// RES-2713: map a literal-pattern node to its type so
@@ -668,16 +526,7 @@ fn pattern_is_exhaustive_wrt_scrutinee(
 /// `Type::Int` (= Int64) is the generic integer type and is NOT
 /// in this set; it's handled separately to allow literal assignment.
 fn is_pinned_int(t: &Type) -> bool {
-    matches!(
-        t,
-        Type::Int8
-            | Type::Int16
-            | Type::Int32
-            | Type::UInt8
-            | Type::UInt16
-            | Type::UInt32
-            | Type::UInt64
-    )
+    crate::type_relations::is_pinned_int(t)
 }
 
 /// RES-2831: is `t` a type that the `[]` index operator can never apply
@@ -16407,6 +16256,7 @@ mod res2701_generic_fn_type_params {
 #[cfg(test)]
 mod res2805_generic_return_type_inference {
     use super::*;
+    use crate::type_relations::substitute_with_bindings;
 
     fn check_ok(src: &str) {
         let (prog, errs) = crate::parse(src);
