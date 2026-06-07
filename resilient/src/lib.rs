@@ -654,6 +654,7 @@ mod recursive_types;
 mod refinement_types;
 mod resilience_score;
 mod row_polymorphism;
+mod self_host_parity_report;
 mod semantic_regression;
 mod semver_behavior;
 mod session_types;
@@ -28934,11 +28935,16 @@ fn parse_error_location(err: &str) -> (u32, u32, String) {
 /// variant naming, so adding a new `Token` variant automatically
 /// shows up here without a matching change.
 fn dump_tokens_to_stdout(src: &str) {
+    println!("{}", dump_tokens_string(src));
+}
+
+fn dump_tokens_string(src: &str) -> String {
     // Pre-index the source as chars so we can slice by the lexer's
     // char-offset `Span::{start.offset, end.offset}` regardless of
     // UTF-8 boundaries.
     let chars: Vec<char> = src.chars().collect();
     let mut lex = Lexer::new(src);
+    let mut lines = Vec::new();
     loop {
         let (tok, span) = lex.next_token_with_span();
         let is_eof = matches!(tok, Token::Eof);
@@ -28954,20 +28960,18 @@ fn dump_tokens_to_stdout(src: &str) {
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
             .replace('\n', "\\n");
-        println!(
+        lines.push(format!(
             "{}:{}  {:?}(\"{}\")",
             span.start.line, span.start.column, tok, lexeme
-        );
+        ));
         if is_eof {
             break;
         }
     }
+    lines.join("\n")
 }
 
-/// RES-781: dump a stable JSON view of the parsed AST for the
-/// self-hosting parity harness. The shape intentionally mirrors the
-/// self-hosted parser's current JSON output on the curated corpus.
-fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
+fn dump_ast_json_value(src: &str) -> Result<serde_json::Value, Vec<String>> {
     fn node_to_json(node: &Node) -> serde_json::Value {
         use serde_json::json;
 
@@ -29101,8 +29105,15 @@ fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
     if !errs.is_empty() {
         return Err(errs);
     }
+    Ok(node_to_json(&program))
+}
+
+/// RES-781: dump a stable JSON view of the parsed AST for the
+/// self-hosting parity harness. The shape intentionally mirrors the
+/// self-hosted parser's current JSON output on the curated corpus.
+fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
     let rendered =
-        serde_json::to_string(&node_to_json(&program)).expect("self-host parity AST dump JSON");
+        serde_json::to_string(&dump_ast_json_value(src)?).expect("self-host parity AST dump JSON");
     println!("{rendered}");
     Ok(())
 }
@@ -32035,6 +32046,9 @@ COMMON FLAGS:\n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
     bench <file>        Run `bench \"name\" {{ ... }}` benchmarks\n\
+    self-host-parity-report [DIR]\n\
+                        Publish grammar coverage / gap report for the\n\
+                        self-hosting parity corpus (RES-2992)\n\
     stack-usage <file>  Print per-function worst-case stack usage (RES-2627)\n\
     debug <file>        Start the DAP debug server for a file\n\
     pkg <verb>          Package manager operations (RES-205)\n\
@@ -32311,6 +32325,12 @@ pub fn run_cli() {
 
     // RES-2613: `rz bench <file>` — discover and run benchmark blocks.
     if let Some(code) = bench::dispatch_bench_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-2992: publish a corpus-backed self-hosting parity report.
+    if let Some(code) = self_host_parity_report::dispatch_self_host_parity_report_subcommand(&args)
+    {
         std::process::exit(code);
     }
 

@@ -84,6 +84,21 @@ output against the self-hosted parser on a curated corpus.
 rz --dump-ast-json self-host/parity_corpus/success/hello.rz
 ```
 
+### `self-host-parity-report [DIR]`
+
+Publishes a grammar coverage / gap report for the curated
+`self-host/parity_corpus/` harness instead of only surfacing a binary
+pass/fail outcome. The report summarizes token parity, AST parity, and
+parse-error location parity, then lists which grammar features are
+currently covered, missing from the corpus, or divergent.
+
+Use `--json-out <path>` to persist a stable JSON artifact for CI or
+handoff notes.
+
+```bash
+rz self-host-parity-report --json-out artifacts/self-host-parity.json
+```
+
 ### `--dump-chunks <file>`
 
 Compiles the program through the VM pipeline (including the
