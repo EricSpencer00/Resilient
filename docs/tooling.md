@@ -409,6 +409,7 @@ For CI, the model is the compiler's own test suite:
 ```bash
 cd resilient
 cargo test              # unit + integration tests
+cargo test --doc        # public API doctests
 cargo test --features z3  # also exercises the SMT layer
 ```
 
