@@ -350,7 +350,7 @@ set to the signer's key.
 
 ```bash
 # Sign during emit:
-rz -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem src/main.rz
+rz -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem resilient/examples/sensor_monitor.rz
 
 # Verify against the binary's embedded public key:
 rz verify-cert ./certs
@@ -720,7 +720,7 @@ stdout; pass `--in-place` to overwrite the file.
 
 ```bash
 rz fmt resilient/examples/hello.rz    # print to stdout
-rz fmt --in-place src/main.rz         # overwrite
+rz fmt --in-place resilient/examples/hello.rz  # overwrite
 ```
 
 The formatter refuses to touch input with parse errors (exits 1).
