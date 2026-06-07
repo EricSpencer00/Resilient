@@ -162,8 +162,8 @@ fn repl_token_points_to_direct_launch() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("`repl` is not a subcommand") &&
-            stderr.contains("Run `rz` with no arguments to start the REPL"),
+        stderr.contains("`repl` is not a subcommand")
+            && stderr.contains("Run `rz` with no arguments to start the REPL"),
         "`rz repl` error should guide users to REPL launch path; got: {stderr}"
     );
 }
