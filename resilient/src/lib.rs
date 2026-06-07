@@ -32044,6 +32044,7 @@ COMMON FLAGS:\n\
                                  debounce); press Ctrl-C to stop (RES-228)\n\
 \n\
 SUBCOMMANDS:\n\
+    repl                 Start interactive REPL (alias for bare `rz`)\n\
     check <file>        Type-check without running (RES-225)\n\
     bench <file>        Run `bench \"name\" {{ ... }}` benchmarks\n\
     self-host-parity-report [DIR]\n\
@@ -32062,6 +32063,26 @@ SUBCOMMANDS:\n\
 Tip: run `rz` with no file argument to start REPL.\n\
 `repl` is not a subcommand.\n\
 See SYNTAX.md for the language reference."
+    );
+}
+
+fn print_repl_help() {
+    println!(
+        "rz repl — start the interactive REPL\n\
+\n\
+USAGE:\n\
+    rz repl [--examples-dir DIR]\n\
+    rz repl --help\n\
+\n\
+FLAGS:\n\
+    --help, -h            Show this help and exit\n\
+    --examples-dir DIR     REPL examples directory\n\
+\n\
+EXAMPLES:\n\
+    rz repl                   # start REPL\n\
+    rz repl --examples-dir .   # use the current directory for `examples`\n\
+\n\
+For bare REPL startup, run plain `rz`."
     );
 }
 
@@ -32308,6 +32329,8 @@ pub fn run_cli() {
         std::process::exit(code);
     }
 
+    let explicit_repl = args.get(1).map(String::as_str) == Some("repl");
+
     // RES-205: intercept `pkg` subcommands before the normal flow.
     // Must run before the global --help check so that
     // `resilient pkg --help` reaches print_pkg_help() instead of
@@ -32337,7 +32360,7 @@ pub fn run_cli() {
     // RES-211: `--help` / `-h` prints a short usage summary listing
     // the most-used flags. Kept hand-rolled (no clap dep) to match
     // the rest of the driver's arg-parsing style.
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    if args.iter().any(|a| a == "--help" || a == "-h") && !explicit_repl {
         print_help();
         std::process::exit(0);
     }
@@ -32491,12 +32514,45 @@ pub fn run_cli() {
     // RES-228: `--watch` re-runs the program on every file save.
     let mut watch_mode = false;
     let mut filename = "";
+    let mut repl_help = false;
 
     // Simple argument parsing
     if args.len() > 1 {
         let mut i = 1;
         while i < args.len() {
             let arg = &args[i];
+            if explicit_repl {
+                if i == 1 {
+                    i += 1;
+                    continue;
+                }
+                if arg == "help" || arg == "--help" || arg == "-h" {
+                    repl_help = true;
+                    i += 1;
+                    continue;
+                }
+                if arg == "--examples-dir" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --examples-dir requires a directory argument");
+                        std::process::exit(2);
+                    }
+                    examples_dir = Some(PathBuf::from(&args[i]));
+                    i += 1;
+                    continue;
+                }
+                if let Some(dir) = arg.strip_prefix("--examples-dir=") {
+                    examples_dir = Some(PathBuf::from(dir));
+                    i += 1;
+                    continue;
+                }
+                if arg.starts_with('-') {
+                    eprintln!("Error: unknown flag `{}` to `rz repl`", arg);
+                    std::process::exit(2);
+                }
+                eprintln!("Error: `rz repl` does not take file arguments");
+                std::process::exit(2);
+            }
             if arg == "--typecheck" || arg == "-t" {
                 type_check = true;
             } else if arg == "--typecheck-strict" {
@@ -33133,6 +33189,19 @@ pub fn run_cli() {
                     }
                 }
             });
+            return;
+        }
+
+        if explicit_repl {
+            if repl_help {
+                print_repl_help();
+                return;
+            }
+            let mut enhanced_repl = repl::EnhancedREPL::with_examples_dir(examples_dir);
+            if let Err(e) = enhanced_repl.run() {
+                eprintln!("REPL error: {}", e);
+                std::process::exit(1);
+            }
             return;
         }
 
