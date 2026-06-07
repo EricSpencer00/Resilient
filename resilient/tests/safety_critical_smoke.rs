@@ -132,3 +132,38 @@ fn help_lists_safety_critical_flag() {
         "--help should mention --safety-critical; got:\n{stdout}"
     );
 }
+
+#[test]
+fn help_mentions_repl_launch_path() {
+    let out = Command::new(bin())
+        .arg("--help")
+        .output()
+        .expect("spawn rz --help");
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("start REPL") && stdout.contains("`repl` is not a subcommand"),
+        "--help should document REPL launch and state that `repl` is not a subcommand; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn repl_token_points_to_direct_launch() {
+    let out = Command::new(bin())
+        .arg("repl")
+        .output()
+        .expect("spawn rz repl");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "`rz repl` should be rejected as non-command; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("`repl` is not a subcommand") &&
+            stderr.contains("Run `rz` with no arguments to start the REPL"),
+        "`rz repl` error should guide users to REPL launch path; got: {stderr}"
+    );
+}

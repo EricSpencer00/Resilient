@@ -31974,7 +31974,8 @@ fn print_help() {
         "rz — the Resilient language compiler & interpreter\n\
 \n\
 USAGE:\n\
-    rz [FLAGS] <file>\n\
+    rz [FLAGS] [<file>]\n\
+    rz                      # start REPL when no file is provided\n\
     rz <subcommand> [ARGS]\n\
 \n\
 COMMON FLAGS:\n\
@@ -32043,6 +32044,9 @@ SUBCOMMANDS:\n\
     verify-cert <dir>   Verify an RES-071 certificate directory\n\
     verify-all <dir>    Re-check every obligation in a manifest\n\
 \n\
+\n\
+Tip: run `rz` with no file argument to start REPL.\n\
+`repl` is not a subcommand.\n\
 See SYNTAX.md for the language reference."
     );
 }
@@ -32810,6 +32814,13 @@ pub fn run_cli() {
                 filename = arg;
             }
             i += 1;
+        }
+
+        if filename == "repl" && !std::path::Path::new(filename).exists() {
+            eprintln!(
+                "Error: `repl` is not a subcommand. Run `rz` with no arguments to start the REPL."
+            );
+            std::process::exit(2);
         }
 
         // RES-343: install the cfg state before any parser runs. Every

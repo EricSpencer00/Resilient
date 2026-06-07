@@ -283,6 +283,8 @@ and the limitations or follow-up tickets.
 
 ### Running the REPL
 
+There is no `repl` subcommand.
+
 ```bash
 rz
 ```
