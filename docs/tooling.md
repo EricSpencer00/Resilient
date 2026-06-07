@@ -45,6 +45,22 @@ documented in [Performance](performance). Features outside the
 subset fall through to the interpreter at runtime rather than
 erroring.
 
+### Stability surface
+
+Public behavior is grouped by stability class:
+
+- **Stable:** `--check`, `--typecheck`, `--fmt`, `--lint`,
+  `--examples`, `--audit` (without SMT features), `--run`, and
+  the default/interpreter execution path.
+- **Backend-limited:** options that depend on backend/feature flags
+  and are not available in every build, including:
+  `--vm`, `--jit` (requires `--features jit`),
+  `--lsp` (requires `--features lsp`), and SMT-enabled
+  verification (`--features z3` / `--z3`).
+- **Experimental:** surfaces that may change while policy and
+  diagnostics are still evolving: `--ai-threats` and
+  `--dump-ast-json`.
+
 ## Inspection
 
 ### `--dump-tokens <file>`

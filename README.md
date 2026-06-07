@@ -223,6 +223,17 @@ This puts `rz` in `~/.cargo/bin/rz` (already on `PATH` if cargo is configured
 normally). Add `--features z3` for SMT-backed verification (requires
 `brew install z3` or `apt-get install libz3-dev`).
 
+### Feature tiers
+
+The project intentionally separates feature surfaces:
+
+- **Stable:** baseline CLI behavior and standard diagnostics on the default
+  build.
+- **Backend-limited:** commands that need optional runtime features:
+  `--jit` (`--features jit`), `--lsp` (`--features lsp`), and SMT-backed
+  modes (`--features z3`, `--z3`).
+- **Experimental:** surfaces with evolving contracts and policy (`--ai-threats`).
+
 #### Docker (RES-203)
 
 A prebuilt image is published to GitHub Container Registry on every
