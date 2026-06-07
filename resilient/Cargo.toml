@@ -17,17 +17,13 @@ autoexamples = false
 #                 matches the `.rz` source extension; from RES-219).
 # The bin's `main.rs` is a thin shim that calls `resilient::run_cli()`.
 #
-# `doctest = false` because the codebase pre-dates the lib split:
-# `///` doc comments throughout the moved code were authored as
-# bin-only documentation (no `use` statements, freely referencing
-# private items). Running them as doctests against the lib API
-# fails — fixing them is out of scope for the lib-split PR; a
-# follow-up can re-enable doctests once the visibility surface is
-# audited.
+# RES-2993: doctests are back on for the stable public API surface.
+# Legacy non-runnable snippets are marked as `text` / `ignore`
+# explicitly so they no longer force doctests off for the whole crate.
 [lib]
 name = "resilient"
 path = "src/lib.rs"
-doctest = false
+doctest = true
 
 [[bin]]
 name = "rz"
