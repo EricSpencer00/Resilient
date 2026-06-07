@@ -197,6 +197,20 @@ Built-in commands:
 
 History is persisted via `rustyline`. Multi-line input is supported.
 
+## Conditional Compilation
+
+Use the CLI flags below to select `#[cfg(...)]` branches in examples and
+real projects:
+
+```bash
+rz --feature verbose examples/cfg_feature.rz
+rz --target thumbv7em examples/cfg_target.rz
+rz --cfg mode=demo examples/cfg_kv_demo.rz
+```
+
+The examples in `resilient/examples/` show the expected stdout for each
+path and are covered by smoke tests.
+
 ## Language Server (LSP)
 
 Opt-in; requires building with `--features lsp`.
