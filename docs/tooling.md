@@ -319,6 +319,16 @@ implementations in `benchmarks/ref/`) and writes a Markdown table
 to `benchmarks/RESULTS.md`. See [Performance](performance) for the
 methodology and headline numbers.
 
+For file-local microbenchmarks, use `rz bench <file>`. Add
+`--summary-json <path>` when CI needs a stable artifact with the
+per-benchmark stats and baseline deltas, and the CLI will also echo
+`artifact.summary_json=<path>` on stdout for log scraping.
+
+```bash
+rz bench resilient/examples/bench_simple.rz \
+  --summary-json artifacts/bench-summary.json
+```
+
 ## Reproducibility
 
 ### `--seed <u64>`
