@@ -219,8 +219,8 @@ and pretty-prints it in canonical style:
 - `live` blocks follow the same brace style
 
 ```bash
-rz fmt src/main.rs              # print to stdout
-rz fmt --in-place src/main.rs   # overwrite the file
+rz fmt resilient/examples/hello.rz         # print to stdout
+rz fmt --in-place resilient/examples/hello.rz # overwrite the file
 ```
 
 Exit codes: `0` = formatted, `1` = parse errors (formatter refuses
@@ -241,7 +241,7 @@ Creates a new Resilient project layout in the current directory:
 ```
 <name>/
   src/
-    main.rs
+    main.rz
   README.md
   .gitignore
 ```
@@ -249,7 +249,7 @@ Creates a new Resilient project layout in the current directory:
 ```bash
 rz pkg init my-proj
 cd my-proj
-rz src/main.rs
+rz src/main.rz
 ```
 
 `rz pkg` is the umbrella for future package operations
@@ -369,9 +369,9 @@ see `resilient/src/lint.rs` for the full list). Supports
 `// resilient: allow <code>` suppression comments.
 
 ```bash
-rz lint src/main.rs
-rz lint src/main.rs --deny L001
-rz lint src/main.rs --allow L003
+rz lint resilient/examples/hello.rz
+rz lint resilient/examples/hello.rz --deny L001
+rz lint resilient/examples/hello.rz --allow L003
 ```
 
 Exit codes: `0` = no diagnostics, `1` = warnings only, `2` = any
