@@ -42,6 +42,7 @@ Full setup, feature flags, and cross-compile instructions are in
 4. Use `agent-scripts/ready-or-bail.sh --pr N` to leave draft state.
    Do not call `gh pr ready` directly for agent PRs.
 5. On merge, the issue closes automatically.
+6. If the active requester has write access and explicitly asks for an autonomous issue/PR cycle, treat that as approval to continue through the normal guardrailed merge workflow without a second confirmation.
 
 Commit format: `RES-NNN: short description` (≤72 chars).
 
