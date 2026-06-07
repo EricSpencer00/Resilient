@@ -2,6 +2,22 @@
 //!
 //! String interning deduplicates identical string literals into a single memory location.
 //! This reduces binary bloat and enables pointer-based equality checks.
+//!
+//! ```rust
+//! use resilient::string_interning::{
+//!     get_interned_string, intern_string, reset_interning_pool, strings_equal,
+//! };
+//!
+//! reset_interning_pool();
+//! let hello = intern_string("hello".to_string());
+//! let same = intern_string("hello".to_string());
+//! let world = intern_string("world".to_string());
+//!
+//! assert_eq!(hello, same);
+//! assert_ne!(hello, world);
+//! assert_eq!(get_interned_string(hello).as_deref(), Some("hello"));
+//! assert!(strings_equal(hello, same));
+//! ```
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};

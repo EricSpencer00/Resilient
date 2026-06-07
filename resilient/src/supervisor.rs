@@ -3,7 +3,7 @@ use crate::typechecker::TypeEnvironment;
 ///
 /// Supervisor declarations provide restart policies for actor failures.
 /// Syntax:
-/// ```
+/// ```text
 /// supervisor {
 ///     strategy: one_for_one,
 ///     children: [
