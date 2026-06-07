@@ -1,0 +1,21 @@
+// RES-2988: #[cfg(key = "value")] conditional compilation.
+//
+// Two versions of `banner` show how `--cfg mode=demo` selects a branch.
+// Default invocation (`rz examples/cfg_kv_demo.rz`) outputs "default mode".
+// `rz --cfg mode=demo examples/cfg_kv_demo.rz` outputs "demo mode".
+
+#[cfg(mode = "demo")]
+fn banner() {
+    println("demo mode");
+}
+
+#[cfg(not(mode = "demo"))]
+fn banner() {
+    println("default mode");
+}
+
+fn main() {
+    banner();
+}
+
+main();
