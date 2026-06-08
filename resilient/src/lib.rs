@@ -33410,10 +33410,7 @@ mod tests {
 
         let std_ok =
             crate::cfg_attr::with_test_config(CfgConfig::new(["std".to_string()], None), || {
-                match apply_builtin_by_name("clock_ms", &[]) {
-                    Some(Ok(_)) => true,
-                    _ => false,
-                }
+                matches!(apply_builtin_by_name("clock_ms", &[]), Some(Ok(_)))
             });
         assert!(std_ok, "clock_ms should dispatch when std is enabled");
 
