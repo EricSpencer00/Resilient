@@ -227,7 +227,7 @@ pub fn render_hello_world() -> &'static str {
     "// Welcome to Resilient.\n\
 //\n\
 // Run with:\n\
-//   resilient src/main.rz\n\
+//   rz src/main.rz\n\
 fn main(int _d) {\n    println(\"Hello, world!\");\n    return 0;\n}\nmain(0);\n"
 }
 

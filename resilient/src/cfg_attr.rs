@@ -86,6 +86,9 @@ impl CfgConfig {
 
 static ACTIVE_CFG: RwLock<Option<CfgConfig>> = RwLock::new(None);
 
+#[cfg(test)]
+static TEST_CFG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Install the active cfg config for the rest of this process. Called by
 /// the driver in `main.rs` after CLI parsing. Subsequent calls overwrite —
 /// the LSP / REPL re-installs on each compile.
@@ -93,6 +96,106 @@ pub fn set_active_config(cfg: CfgConfig) {
     if let Ok(mut guard) = ACTIVE_CFG.write() {
         *guard = Some(cfg);
     }
+}
+
+/// Shared list of std-only builtin names. Both the typechecker and
+/// runtime gate these when `std` is not in the active cfg feature set.
+const STD_ONLY_BUILTINS: &[&str] = &[
+    "acos",
+    "acosh",
+    "asin",
+    "asinh",
+    "atan",
+    "atan2",
+    "atanh",
+    "clock_ms",
+    "clock_now",
+    "clock_elapsed",
+    "env",
+    "copysign",
+    "exec",
+    "exec_shell",
+    "exp",
+    "exp2",
+    "file_close",
+    "file_exists",
+    "file_is_dir",
+    "file_is_file",
+    "file_open",
+    "file_read",
+    "file_read_chunk",
+    "file_seek",
+    "file_size",
+    "file_stat",
+    "file_write",
+    "file_write_chunk",
+    "dir_list",
+    "input",
+    "random_float",
+    "random_int",
+    "to_degrees",
+    "to_radians",
+    "log",
+    "log2",
+    "log10",
+    "ln",
+    "cos",
+    "cosh",
+    "tan",
+    "tanh",
+    "tcp_accept",
+    "tcp_close",
+    "tcp_connect",
+    "tcp_listen",
+    "tcp_read",
+    "tcp_set_timeout",
+    "tcp_write",
+    "sin",
+    "udp_bind",
+    "udp_close",
+    "udp_recv_from",
+    "udp_send_to",
+    "datetime_from_unix",
+    "datetime_format",
+    "datetime_now",
+    "datetime_parse",
+    "datetime_to_unix",
+    "sinh",
+    "http_get",
+    "http_post",
+    "hypot",
+    "cbrt",
+];
+
+/// `true` when the active cfg includes `feature = "std"`.
+pub fn std_builtins_allowed() -> bool {
+    if let Ok(guard) = ACTIVE_CFG.read() {
+        return guard
+            .as_ref()
+            .map(|cfg| cfg.features.contains("std"))
+            .unwrap_or(false);
+    }
+
+    false
+}
+
+/// `true` when `name` is a builtin that should be gated off
+/// without `feature = "std"`.
+pub fn is_std_only_builtin(name: &str) -> bool {
+    STD_ONLY_BUILTINS.contains(&name)
+}
+
+/// Test-only helper to run `f` with a known cfg state and no
+/// concurrent writers. Keeps parser/typechecker/runtime tests
+/// deterministic when they inspect cfg-gated features.
+#[cfg(test)]
+pub(crate) fn with_test_config<T>(cfg: CfgConfig, f: impl FnOnce() -> T) -> T {
+    let _guard = TEST_CFG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset_for_test();
+    set_active_config(cfg);
+    let out = f();
+    reset_for_test();
+    out
 }
 
 /// RES-1509: evaluate a predicate against the active config without
@@ -588,19 +691,9 @@ fn skip_until_close_bracket(parser: &mut Parser) {
 mod tests {
     use super::*;
     use crate::Node;
-    use std::sync::Mutex;
-
-    /// Tests in this module mutate the process-wide `ACTIVE_CFG`. Serialise
-    /// them with a Mutex so concurrent runs don't see each other's state.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn parse_with_cfg(src: &str, cfg: CfgConfig) -> (Node, Vec<String>) {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset_for_test();
-        set_active_config(cfg);
-        let result = crate::parse(src);
-        reset_for_test();
-        result
+        with_test_config(cfg, || crate::parse(src))
     }
 
     fn top_level_fn_names(program: &Node) -> Vec<String> {
@@ -636,6 +729,34 @@ mod tests {
         let cfg = CfgConfig::new(["std".to_string()], None);
         assert!(CfgPredicate::Feature("std".into()).eval(&cfg));
         assert!(!CfgPredicate::Feature("alloc".into()).eval(&cfg));
+    }
+
+    #[test]
+    fn std_builtins_allowed_tracks_std_feature() {
+        let cfg = CfgConfig::new(["std".to_string()], None);
+        with_test_config(cfg, || {
+            assert!(std_builtins_allowed());
+        });
+        let cfg = CfgConfig::default();
+        with_test_config(cfg, || {
+            assert!(!std_builtins_allowed());
+        });
+    }
+
+    #[test]
+    fn std_only_builtin_lookup() {
+        assert!(is_std_only_builtin("clock_ms"));
+        assert!(is_std_only_builtin("input"));
+        assert!(is_std_only_builtin("exec_shell"));
+        assert!(is_std_only_builtin("sin"));
+        assert!(is_std_only_builtin("to_radians"));
+        assert!(is_std_only_builtin("clock_now"));
+        assert!(is_std_only_builtin("datetime_parse"));
+        assert!(is_std_only_builtin("http_get"));
+        assert!(is_std_only_builtin("udp_send_to"));
+        assert!(!is_std_only_builtin("abs"));
+        assert!(!is_std_only_builtin("sqrt"));
+        assert!(!is_std_only_builtin("does_not_exist"));
     }
 
     #[test]

@@ -4,8 +4,10 @@
 # Shows:
 #   - active worktrees in .claude/worktrees/
 #   - open PRs (by author kind: human / copilot / claude)
+#   - queue-health counts for ready-ish, stale, and unclaimed PRs
 #   - unclaimed open PRs (no `Closes #N` in body)
 #   - stale PRs (>72h without an update)
+#   - stale claims whose branch no longer has an open PR
 #
 # Usage:
 #   agent-scripts/agent-status.sh
@@ -28,7 +30,7 @@ bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 dim()  { printf '\033[2m%s\033[0m\n' "$1"; }
 
 PRS_JSON="$(gh pr list --state open --limit 100 \
-  --json number,title,headRefName,isDraft,author,updatedAt,body 2>/dev/null || echo '[]')"
+  --json number,title,headRefName,baseRefName,isDraft,author,updatedAt,body 2>/dev/null || echo '[]')"
 CLAIMS_FILE="$PRIMARY_ROOT/agent-scripts/file-claims.json"
 WORKTREES_RAW="$(git -C "$PRIMARY_ROOT" worktree list --porcelain)"
 WORKTREES_JSON="$(WORKTREES_RAW="$WORKTREES_RAW" python3 <<'PYEOF'
@@ -58,10 +60,62 @@ print(json.dumps(items))
 PYEOF
 )"
 CLAIMS_JSON="$(if [ -f "$CLAIMS_FILE" ]; then cat "$CLAIMS_FILE"; else printf '{"claims":{}}'; fi)"
+QUEUE_HEALTH_JSON="$(PRS_JSON="$PRS_JSON" CLAIMS_JSON="$CLAIMS_JSON" python3 <<'PYEOF'
+import datetime as dt
+import json
+import os
+import re
+
+prs = json.loads(os.environ.get("PRS_JSON") or "[]")
+claims = json.loads(os.environ.get("CLAIMS_JSON") or '{"claims":{}}').get("claims", {})
+now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+ref_re = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+
+main_prs = [pr for pr in prs if pr.get("baseRefName") == "main"]
+draft_prs = [pr for pr in prs if pr.get("isDraft")]
+readyish_prs = [pr for pr in main_prs if not pr.get("isDraft")]
+stale_prs = []
+unclaimed_prs = []
+
+for pr in prs:
+    updated = pr.get("updatedAt") or ""
+    try:
+        age_h = int((now - dt.datetime.fromisoformat(updated.replace("Z", "+00:00"))).total_seconds() // 3600)
+    except Exception:
+        age_h = 0
+    if age_h >= 72:
+        stale_prs.append({"number": pr["number"], "title": pr.get("title") or "", "age_h": age_h})
+    if not ref_re.findall(pr.get("body") or ""):
+        unclaimed_prs.append(pr["number"])
+
+open_heads = {pr.get("headRefName") for pr in prs if pr.get("headRefName")}
+stale_claims = []
+for file_path, info in claims.items():
+    branch = info.get("branch") or ""
+    if branch and branch not in open_heads:
+        stale_claims.append({"file": file_path, "branch": branch})
+
+print(json.dumps({
+    "open_prs": len(prs),
+    "main_prs": len(main_prs),
+    "draft_prs": len(draft_prs),
+    "readyish_prs": len(readyish_prs),
+    "stale_prs": len(stale_prs),
+    "unclaimed_prs": len(unclaimed_prs),
+    "claims": len(claims),
+    "stale_claim_count": len(stale_claims),
+    "draft_pr_numbers": [pr["number"] for pr in draft_prs],
+    "readyish_pr_numbers": [pr["number"] for pr in readyish_prs],
+    "stale_pr_numbers": [item["number"] for item in stale_prs],
+    "unclaimed_pr_numbers": unclaimed_prs,
+    "stale_claims": stale_claims,
+}))
+PYEOF
+)"
 NEXT_TICKET="$(bash "$(dirname "$0")/pick-ticket.sh" 2>/dev/null || true)"
 
 if (( WANT_JSON == 1 )); then
-  WORKTREES_JSON="$WORKTREES_JSON" PRS_JSON="$PRS_JSON" CLAIMS_JSON="$CLAIMS_JSON" NEXT_TICKET="$NEXT_TICKET" python3 <<'PYEOF'
+  WORKTREES_JSON="$WORKTREES_JSON" PRS_JSON="$PRS_JSON" CLAIMS_JSON="$CLAIMS_JSON" QUEUE_HEALTH_JSON="$QUEUE_HEALTH_JSON" NEXT_TICKET="$NEXT_TICKET" python3 <<'PYEOF'
 import json
 import os
 
@@ -69,6 +123,7 @@ print(json.dumps({
     "worktrees": json.loads(os.environ["WORKTREES_JSON"]),
     "pull_requests": json.loads(os.environ["PRS_JSON"]),
     "file_claims": json.loads(os.environ["CLAIMS_JSON"]).get("claims", {}),
+    "queue_health": json.loads(os.environ["QUEUE_HEALTH_JSON"]),
     "next_ticket": os.environ.get("NEXT_TICKET") or None,
 }, indent=2))
 PYEOF
@@ -104,15 +159,32 @@ for pr in sorted(prs, key=lambda p: p["updatedAt"]):
     draft = " [draft]" if pr["isDraft"] else ""
     closes = ref_re.findall(pr.get("body") or "")
     claim = f" closes #{','.join(closes)}" if closes else " [UNCLAIMED]"
-    print(f"  #{pr['number']:>4} [{kind:<7}] {age_h:>3}h{draft}{stale}{claim}  {pr['title'][:70]}")
+    base = "" if pr.get("baseRefName") == "main" else f" [base:{pr.get('baseRefName') or '?'}]"
+    print(f"  #{pr['number']:>4} [{kind:<7}] {age_h:>3}h{draft}{stale}{claim}{base}  {pr['title'][:70]}")
+PYEOF
+
+echo
+bold "Queue health"
+QUEUE_HEALTH_JSON="$QUEUE_HEALTH_JSON" python3 <<'PYEOF'
+import json
+import os
+
+q = json.loads(os.environ["QUEUE_HEALTH_JSON"])
+print(f"  open PRs: {q['open_prs']} (main {q['main_prs']}, drafts {q['draft_prs']}, ready-ish {q['readyish_prs']}, stale {q['stale_prs']}, unclaimed {q['unclaimed_prs']})")
+print(f"  claims: {q['claims']} (stale {q['stale_claim_count']})")
+if q["stale_claims"]:
+    print("  stale claims:")
+    for claim in q["stale_claims"]:
+        print(f"    {claim['file']} ({claim['branch']})")
 PYEOF
 
 echo
 bold "File claims"
-CLAIMS_JSON="$CLAIMS_JSON" python3 <<'PYEOF'
+CLAIMS_JSON="$CLAIMS_JSON" QUEUE_HEALTH_JSON="$QUEUE_HEALTH_JSON" python3 <<'PYEOF'
 import json, os
 data = json.loads(os.environ["CLAIMS_JSON"])
 claims = data.get("claims", {})
+stale_branches = {item["branch"] for item in json.loads(os.environ["QUEUE_HEALTH_JSON"]).get("stale_claims", [])}
 if not claims:
     print("  (none)")
 else:
@@ -120,7 +192,8 @@ else:
     for f, v in claims.items():
         by_branch.setdefault(v["branch"], []).append(f)
     for b, fs in sorted(by_branch.items()):
-        print(f"  {b}")
+        suffix = " [STALE]" if b in stale_branches else ""
+        print(f"  {b}{suffix}")
         for f in fs:
             print(f"    {f}")
 PYEOF

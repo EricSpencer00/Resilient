@@ -1,4 +1,4 @@
-name: Release file claims on merge
+name: Release file claims on PR close
 
 on:
   pull_request:
@@ -6,20 +6,31 @@ on:
 
 jobs:
   release-claims:
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Release claims for merged branch
+      - name: Release claims for closed branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          MERGED="${{ github.event.pull_request.merged }}"
           bash agent-scripts/release-claims.sh "$BRANCH"
+
+          if [ "$MERGED" != "true" ]; then
+            gh pr comment "$PR_NUMBER" --body "This PR was closed without merge. The branch claims were released and the ticket returned to the queue." >/dev/null || true
+          fi
 
       # RES-1260: self-healing sweep. Stale claims from earlier merged
       # PRs can re-enter `file-claims.json` if a subsequent PR's rebase

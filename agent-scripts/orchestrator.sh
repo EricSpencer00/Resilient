@@ -154,9 +154,9 @@ while true; do
     BATCH=()
     for ((k=0; k<PARALLEL; k++)); do
       if (( ${#EXCLUDED[@]} > 0 )); then
-        issue="$(pick_next "${EXCLUDED[@]}")"
+        if issue="$(pick_next "${EXCLUDED[@]}")"; then :; else issue=""; fi
       else
-        issue="$(pick_next)"
+        if issue="$(pick_next)"; then :; else issue=""; fi
       fi
       [ -z "$issue" ] && break
       EXCLUDED+=("$issue")
@@ -172,9 +172,9 @@ while true; do
     COUNT=$(( COUNT + ${#BATCH[@]} ))
   else
     if (( ${#EXCLUDED[@]} > 0 )); then
-      issue="$(pick_next "${EXCLUDED[@]}")"
+      if issue="$(pick_next "${EXCLUDED[@]}")"; then :; else issue=""; fi
     else
-      issue="$(pick_next)"
+      if issue="$(pick_next)"; then :; else issue=""; fi
     fi
     [ -z "$issue" ] && { log "no more tickets"; break; }
     EXCLUDED+=("$issue")

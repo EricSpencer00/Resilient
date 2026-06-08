@@ -409,12 +409,17 @@ mod tests {
         Value::String(v.to_string())
     }
 
-    fn typechecks(src: &str) {
+    fn typechecks_std(src: &str) {
         let (prog, errs) = crate::parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        TypeChecker::new()
-            .check_program(&prog)
-            .expect("program should typecheck");
+        crate::cfg_attr::with_test_config(
+            crate::cfg_attr::CfgConfig::new(["std".to_string()], None),
+            || {
+                TypeChecker::new()
+                    .check_program(&prog)
+                    .expect("program should typecheck");
+            },
+        );
     }
 
     fn headers_map(pairs: &[(&str, &str)]) -> Value {
@@ -725,7 +730,7 @@ mod tests {
 
     #[test]
     fn http_get_accepts_optional_headers_and_timeout_in_typechecker() {
-        typechecks(
+        typechecks_std(
             r#"
 let headers = {"X-Test" -> "one"};
 let resp = http_get("http://example.com/data", headers, 50);

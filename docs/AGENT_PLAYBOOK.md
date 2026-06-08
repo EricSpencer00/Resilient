@@ -31,11 +31,11 @@ safely re-converges.
 | Pick | `pick-ticket.sh` | `<issue-number>\t<title>` from the highest-priority eligible issue |
 | Dispatch | `dispatch-agent.sh --issue N` | Worktree at `.claude/worktrees/res-N/`, draft PR with `Closes #N` |
 | Implement | (agent free-form) | Follow feature-isolation pattern in CLAUDE.md |
-| Verify | `ready-or-bail.sh --pr P` | Runs `verify-scope.sh` + `sync-integration.sh`; marks PR ready on green |
+| Verify | `ready-or-bail.sh --pr P` | Runs `verify-scope.sh` + `sync-integration.sh`; reruns `verify-scope.sh` if sync moved HEAD; marks PR ready on green |
 | Sync | `sync-integration.sh` (called by ready-or-bail) | Rebases branch onto `origin/main`, fast-forwards `agents/integration`, stamps PR with `integration-synced` label |
 | Auto-merge | `agent-auto-merge.yml` (CI) | Enables `gh pr merge --auto` when every check is green AND PR is labeled `integration-synced` |
-| Follow-main | `integration-follow-main.yml` (CI) | Fast-forwards `agents/integration` to `main` after every merge |
-| Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch |
+| Follow-main | `integration-follow-main.yml` (CI) | Fast-forwards `agents/integration` to `main` after every merge, refreshes every open non-draft PR branch against `main`, and runs a periodic safety sweep |
+| Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch on PR close; linked issues are explicitly closed or flagged if the close fails; stale claims are swept and closed PRs re-enter the queue |
 
 ---
 
@@ -56,8 +56,9 @@ A JSON ledger of `{ "file-path": "branch-name" }`. Every agent:
 
 Claims are automatically released by
 [`.github/workflows/release-file-claims.yml`](../.github/workflows/release-file-claims.yml)
-on PR merge, and by `agent-scripts/release-claims.sh` locally when a
-branch is abandoned.
+on PR merge or close, and by `agent-scripts/release-claims.sh` locally
+when a branch is abandoned. Merged PRs that carry closing keywords also
+trigger an explicit linked-issue close attempt so the queue stays honest.
 
 **Stale-claim rule**: a claim is stale when its branch no longer has an
 open PR. `check-overlaps.sh` treats stale entries as informational only,
@@ -92,14 +93,19 @@ corrupt logic code.
 **every in-flight agent commit**. It's always at-or-ahead of `main`:
 
 - When `main` advances (a PR merges), `integration-follow-main.yml`
-  fast-forwards `agents/integration` to the new main.
+  fast-forwards `agents/integration` to the new main and refreshes
+  every open non-draft PR branch so stale work gets rebased before
+  auto-merge can stall. The same workflow also runs on a periodic
+  safety sweep so stale branches do not linger if a push is missed.
 - When an agent runs `sync-integration.sh`, the agent's rebased HEAD
   is fast-forward-pushed into `agents/integration`, making that work
   visible to every sibling agent within seconds.
 
 The rule: **before marking a PR ready, the agent must sync**. That is
 exactly what `ready-or-bail.sh` enforces — it runs `verify-scope.sh`
-first, then `sync-integration.sh`. If either fails, the PR stays draft.
+first, then `sync-integration.sh`. If the sync moves the branch, it
+reruns `verify-scope.sh` on the refreshed HEAD before the PR is marked
+ready. If either pass fails, the PR stays draft.
 
 `sync-integration.sh` does:
 

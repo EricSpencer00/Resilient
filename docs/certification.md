@@ -300,12 +300,12 @@ The three commands that produce certifiable evidence are
 
 ```bash
 # One shot: typecheck + verify + audit + emit signed certificates.
-resilient \
+rz \
     --features z3 \
     --audit \
     --emit-certificate ./artifacts/certs \
     --sign-cert ~/.resilient-priv.pem \
-    src/main.rs \
+    resilient/examples/cert_demo.rz \
     > ./artifacts/audit.txt
 ```
 
