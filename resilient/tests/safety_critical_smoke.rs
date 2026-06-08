@@ -166,5 +166,8 @@ fn repl_token_points_to_direct_launch() {
         "`rz repl` should print the REPL banner and exit cleanly on EOF; got: {stdout}"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("seed="), "`rz repl` should still seed the REPL; got: {stderr}");
+    assert!(
+        stderr.contains("seed="),
+        "`rz repl` should still seed the REPL; got: {stderr}"
+    );
 }
