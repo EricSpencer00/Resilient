@@ -8,7 +8,7 @@
 //!
 //! # Pattern
 //!
-//! ```
+//! ```text
 //! // register at startup:
 //! McpBridgeRegistry::global().register(tlc_adapter());
 //!

@@ -134,27 +134,23 @@ impl VarianceMap {
     /// - Invariant: `actual` must equal `expected` exactly.
     /// - Phantom: always OK.
     ///
-    /// When a full subtype lattice is added, Covariant will allow
-    /// `actual :> expected` and Contravariant will allow
-    /// `actual <: expected`.  Today the check is just equality, which
-    /// is always sound — it may over-reject valid programs once the
-    /// lattice exists, but it never accepts unsound ones.
+    /// The shared relation layer keeps this conservative and future-proof:
+    /// covariant positions accept subtypes, contravariant positions accept
+    /// supertypes, and invariants stay exact.
     pub fn check_use(&self, tp_name: &str, expected: &Type, actual: &Type) -> Result<(), String> {
         let v = self.get(tp_name);
         match v {
             Variance::Phantom => Ok(()),
-            Variance::Covariant | Variance::Contravariant | Variance::Invariant => {
-                if expected == actual {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "type parameter `{}` is {} — expected `{}`, got `{}`. \
-                         Variance violation: the types must agree exactly until \
-                         a subtype lattice is defined.",
-                        tp_name, v, expected, actual
-                    ))
-                }
+            Variance::Covariant if crate::type_relations::is_subtype(actual, expected) => Ok(()),
+            Variance::Contravariant if crate::type_relations::is_subtype(expected, actual) => {
+                Ok(())
             }
+            Variance::Invariant if expected == actual => Ok(()),
+            _ => Err(format!(
+                "type parameter `{}` is {} — expected `{}`, got `{}`. \
+                 Variance violation: the relation does not hold.",
+                tp_name, v, expected, actual
+            )),
         }
     }
 }
@@ -518,6 +514,20 @@ mod tests {
         let vmap = infer_variance(&["T".to_string()], &[], &s("T")); // Covariant
         vmap.check_use("T", &Type::Int, &Type::Int)
             .expect("same type must be acceptable");
+    }
+
+    #[test]
+    fn check_use_accepts_covariant_subtype() {
+        let vmap = infer_variance(&["T".to_string()], &[], &s("T"));
+        vmap.check_use("T", &Type::Any, &Type::Int)
+            .expect("subtype should be acceptable in covariant position");
+    }
+
+    #[test]
+    fn check_use_accepts_contravariant_supertype() {
+        let vmap = infer_variance(&["T".to_string()], &[s("T")], &Type::Void);
+        vmap.check_use("T", &Type::Int, &Type::Any)
+            .expect("supertype should be acceptable in contravariant position");
     }
 
     #[test]

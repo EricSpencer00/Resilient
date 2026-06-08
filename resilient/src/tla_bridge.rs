@@ -16,7 +16,7 @@
 //!
 //! TLC output is parsed into Resilient diagnostics:
 //!
-//! ```
+//! ```text
 //! tla:1:0: error: Invariant Inv violated.
 //! tla:0:0: info: Model checking completed — no errors found.
 //! ```
@@ -99,7 +99,7 @@ pub fn java_available() -> bool {
 /// Parse TLC's stdout/stderr into Resilient-format diagnostics.
 ///
 /// TLC emits lines like:
-/// ```
+/// ```text
 /// TLC2 Version 2.16 of 31 December 2021 (rev: ...)
 /// @!@!@STARTMSG 2189:0 @!@!@
 /// Model checking completed. No error has been found.

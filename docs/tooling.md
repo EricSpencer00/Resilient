@@ -45,6 +45,22 @@ documented in [Performance](performance). Features outside the
 subset fall through to the interpreter at runtime rather than
 erroring.
 
+### Stability surface
+
+Public behavior is grouped by stability class:
+
+- **Stable:** `--check`, `--typecheck`, `--fmt`, `--lint`,
+  `--examples`, `--audit` (without SMT features), `--run`, and
+  the default/interpreter execution path.
+- **Backend-limited:** options that depend on backend/feature flags
+  and are not available in every build, including:
+  `--vm`, `--jit` (requires `--features jit`),
+  `--lsp` (requires `--features lsp`), and SMT-enabled
+  verification (`--features z3` / `--z3`).
+- **Experimental:** surfaces that may change while policy and
+  diagnostics are still evolving: `--ai-threats` and
+  `--dump-ast-json`.
+
 ## Inspection
 
 ### `--dump-tokens <file>`
@@ -66,6 +82,21 @@ output against the self-hosted parser on a curated corpus.
 
 ```bash
 rz --dump-ast-json self-host/parity_corpus/success/hello.rz
+```
+
+### `self-host-parity-report [DIR]`
+
+Publishes a grammar coverage / gap report for the curated
+`self-host/parity_corpus/` harness instead of only surfacing a binary
+pass/fail outcome. The report summarizes token parity, AST parity, and
+parse-error location parity, then lists which grammar features are
+currently covered, missing from the corpus, or divergent.
+
+Use `--json-out <path>` to persist a stable JSON artifact for CI or
+handoff notes.
+
+```bash
+rz self-host-parity-report --json-out artifacts/self-host-parity.json
 ```
 
 ### `--dump-chunks <file>`
@@ -161,6 +192,9 @@ rz verify-all ./certs --z3
 
 Launched by running `rz` with no file argument.
 
+There is no dedicated `repl` subcommand; `rz repl` now prints a helpful
+`repl is not a subcommand` error and points users to the REPL launch path.
+
 ```bash
 rz                           # start REPL
 rz --examples-dir ./ex       # override the `examples` command's search path
@@ -177,6 +211,20 @@ Built-in commands:
 | `typecheck` | Toggle static type checking on/off for the session. |
 
 History is persisted via `rustyline`. Multi-line input is supported.
+
+## Conditional Compilation
+
+Use the CLI flags below to select `#[cfg(...)]` branches in examples and
+real projects:
+
+```bash
+rz --feature verbose examples/cfg_feature.rz
+rz --target thumbv7em examples/cfg_target.rz
+rz --cfg mode=demo examples/cfg_kv_demo.rz
+```
+
+The examples in `resilient/examples/` show the expected stdout for each
+path and are covered by smoke tests.
 
 ## Language Server (LSP)
 
@@ -216,8 +264,8 @@ and pretty-prints it in canonical style:
 - `live` blocks follow the same brace style
 
 ```bash
-rz fmt src/main.rs              # print to stdout
-rz fmt --in-place src/main.rs   # overwrite the file
+rz fmt resilient/examples/hello.rz         # print to stdout
+rz fmt --in-place resilient/examples/hello.rz # overwrite the file
 ```
 
 Exit codes: `0` = formatted, `1` = parse errors (formatter refuses
@@ -238,7 +286,7 @@ Creates a new Resilient project layout in the current directory:
 ```
 <name>/
   src/
-    main.rs
+    main.rz
   README.md
   .gitignore
 ```
@@ -246,7 +294,7 @@ Creates a new Resilient project layout in the current directory:
 ```bash
 rz pkg init my-proj
 cd my-proj
-rz src/main.rs
+rz src/main.rz
 ```
 
 `rz pkg` is the umbrella for future package operations
@@ -285,6 +333,16 @@ JIT, and the reference Rust / Python / Node / Lua / Ruby
 implementations in `benchmarks/ref/`) and writes a Markdown table
 to `benchmarks/RESULTS.md`. See [Performance](performance) for the
 methodology and headline numbers.
+
+For file-local microbenchmarks, use `rz bench <file>`. Add
+`--summary-json <path>` when CI needs a stable artifact with the
+per-benchmark stats and baseline deltas, and the CLI will also echo
+`artifact.summary_json=<path>` on stdout for log scraping.
+
+```bash
+rz bench resilient/examples/bench_simple.rz \
+  --summary-json artifacts/bench-summary.json
+```
 
 ## Reproducibility
 
@@ -351,6 +409,7 @@ For CI, the model is the compiler's own test suite:
 ```bash
 cd resilient
 cargo test              # unit + integration tests
+cargo test --doc        # public API doctests
 cargo test --features z3  # also exercises the SMT layer
 ```
 
@@ -366,9 +425,9 @@ see `resilient/src/lint.rs` for the full list). Supports
 `// resilient: allow <code>` suppression comments.
 
 ```bash
-rz lint src/main.rs
-rz lint src/main.rs --deny L001
-rz lint src/main.rs --allow L003
+rz lint resilient/examples/hello.rz
+rz lint resilient/examples/hello.rz --deny L001
+rz lint resilient/examples/hello.rz --allow L003
 ```
 
 Exit codes: `0` = no diagnostics, `1` = warnings only, `2` = any

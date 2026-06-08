@@ -223,6 +223,17 @@ This puts `rz` in `~/.cargo/bin/rz` (already on `PATH` if cargo is configured
 normally). Add `--features z3` for SMT-backed verification (requires
 `brew install z3` or `apt-get install libz3-dev`).
 
+### Feature tiers
+
+The project intentionally separates feature surfaces:
+
+- **Stable:** baseline CLI behavior and standard diagnostics on the default
+  build.
+- **Backend-limited:** commands that need optional runtime features:
+  `--jit` (`--features jit`), `--lsp` (`--features lsp`), and SMT-backed
+  modes (`--features z3`, `--z3`).
+- **Experimental:** surfaces with evolving contracts and policy (`--ai-threats`).
+
 #### Docker (RES-203)
 
 A prebuilt image is published to GitHub Container Registry on every
@@ -282,6 +293,8 @@ explaining the safety property, the language features it exercises,
 and the limitations or follow-up tickets.
 
 ### Running the REPL
+
+There is no `repl` subcommand.
 
 ```bash
 rz
@@ -348,7 +361,7 @@ set to the signer's key.
 
 ```bash
 # Sign during emit:
-rz -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem src/main.rz
+rz -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem resilient/examples/sensor_monitor.rz
 
 # Verify against the binary's embedded public key:
 rz verify-cert ./certs
@@ -718,7 +731,7 @@ stdout; pass `--in-place` to overwrite the file.
 
 ```bash
 rz fmt resilient/examples/hello.rz    # print to stdout
-rz fmt --in-place src/main.rz         # overwrite
+rz fmt --in-place resilient/examples/hello.rz  # overwrite
 ```
 
 The formatter refuses to touch input with parse errors (exits 1).

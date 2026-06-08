@@ -46,6 +46,20 @@ Failures name the corpus file plus the mismatching artifact (`tokens`,
 `AST`, or parser-failure location), so regressions are easy to
 triage.
 
+For a contributor-facing coverage artifact instead of a binary gate,
+publish the grammar gap report:
+
+```bash
+cargo run --manifest-path resilient/Cargo.toml -- \
+  self-host-parity-report \
+  --json-out artifacts/self-host-parity.json
+```
+
+This reports which grammar features the curated corpus currently
+covers, which are still missing from the corpus, and whether any
+exercised feature is divergent between the Rust and self-hosted
+front ends.
+
 ## Adding a snapshot test
 
 ```bash
