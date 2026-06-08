@@ -190,13 +190,15 @@ rz verify-all ./certs --z3
 
 ## REPL
 
-Launched by running `rz` with no file argument.
+Launched by running `rz` with no file argument, or explicitly via
+`rz repl`.
 
-There is no dedicated `repl` subcommand; `rz repl` now prints a helpful
-`repl is not a subcommand` error and points users to the REPL launch path.
+`rz repl` is an explicit alias for the same interactive REPL that
+starts when `rz` is invoked with no file argument.
 
 ```bash
 rz                           # start REPL
+rz repl                      # explicit alias for REPL
 rz --examples-dir ./ex       # override the `examples` command's search path
 ```
 
