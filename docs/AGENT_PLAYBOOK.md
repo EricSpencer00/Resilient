@@ -35,7 +35,7 @@ safely re-converges.
 | Sync | `sync-integration.sh` (called by ready-or-bail) | Rebases branch onto `origin/main`, fast-forwards `agents/integration`, stamps PR with `integration-synced` label |
 | Auto-merge | `agent-auto-merge.yml` (CI) | Enables `gh pr merge --auto` when every check is green AND PR is labeled `integration-synced` |
 | Follow-main | `integration-follow-main.yml` (CI) | Fast-forwards `agents/integration` to `main` after every merge, refreshes every open non-draft PR branch against `main`, and runs a periodic safety sweep |
-| Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch on PR close; stale claims are swept and closed PRs re-enter the queue |
+| Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch on PR close; linked issues are explicitly closed or flagged if the close fails; stale claims are swept and closed PRs re-enter the queue |
 
 ---
 
@@ -57,7 +57,8 @@ A JSON ledger of `{ "file-path": "branch-name" }`. Every agent:
 Claims are automatically released by
 [`.github/workflows/release-file-claims.yml`](../.github/workflows/release-file-claims.yml)
 on PR merge or close, and by `agent-scripts/release-claims.sh` locally
-when a branch is abandoned.
+when a branch is abandoned. Merged PRs that carry closing keywords also
+trigger an explicit linked-issue close attempt so the queue stays honest.
 
 **Stale-claim rule**: a claim is stale when its branch no longer has an
 open PR. `check-overlaps.sh` treats stale entries as informational only,

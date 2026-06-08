@@ -96,8 +96,20 @@ while IFS= read -r issue; do
   state="$(gh issue view "$issue" --json state -q .state || echo "UNKNOWN")"
   if [ "$state" = "OPEN" ]; then
     if gh issue close "$issue" --reason completed --comment "Closed automatically because PR #${PR_NUMBER} was merged."; then
-      echo "Closed linked issue #${issue} for PR #${PR_NUMBER}."
+      post_state="$(gh issue view "$issue" --json state -q .state || echo "UNKNOWN")"
+      if [ "$post_state" = "OPEN" ]; then
+        echo "WARNING: issue #${issue} remained open after the close attempt for PR #${PR_NUMBER}."
+        if [ -n "$PR_NUMBER" ]; then
+          gh pr comment "$PR_NUMBER" --body "Linked issue #${issue} remained open after the merge workflow attempted to close it. Please close it manually." >/dev/null || true
+        fi
+      else
+        echo "Closed linked issue #${issue} for PR #${PR_NUMBER}."
+      fi
       continue
+    fi
+    echo "WARNING: failed to close linked issue #${issue} for PR #${PR_NUMBER}."
+    if [ -n "$PR_NUMBER" ]; then
+      gh pr comment "$PR_NUMBER" --body "Linked issue #${issue} could not be closed automatically after merge. Please close it manually." >/dev/null || true
     fi
   else
     echo "Issue #${issue} is already ${state}; no action."
