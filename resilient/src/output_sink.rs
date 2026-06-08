@@ -20,10 +20,12 @@
 //! outer buffer (with the inner's contents merged in) on exit. That
 //! matches what a caller writing
 //!
-//!     with_captured_output(|| {
-//!         with_captured_output(|| inner());
-//!         outer();
-//!     })
+//! ```text
+//! with_captured_output(|| {
+//!     with_captured_output(|| inner());
+//!     outer();
+//! })
+//! ```
 //!
 //! intuitively expects.
 

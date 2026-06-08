@@ -196,7 +196,7 @@ fn is_valid_semver(s: &str) -> bool {
 }
 
 /// Parse a simple `resilient.lock` format:
-/// ```
+/// ```text
 /// dep_name = "resolved_version"
 /// ```
 fn parse_lock_file(s: &str) -> std::collections::HashMap<String, String> {

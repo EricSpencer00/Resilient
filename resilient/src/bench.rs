@@ -67,6 +67,7 @@ pub fn dispatch_bench_subcommand(args: &[String]) -> Option<i32> {
     let mut file: Option<PathBuf> = None;
     let mut baseline_ref: Option<String> = None;
     let mut filter: Option<String> = None;
+    let mut summary_json_path: Option<PathBuf> = None;
     let mut warmup_iters = DEFAULT_WARMUP_ITERS;
     let mut run_iters = DEFAULT_RUN_ITERS;
 
@@ -94,6 +95,15 @@ pub fn dispatch_bench_subcommand(args: &[String]) -> Option<i32> {
             filter = Some(args[i].clone());
         } else if let Some(value) = arg.strip_prefix("--filter=") {
             filter = Some(value.to_string());
+        } else if arg == "--summary-json" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --summary-json requires a file path");
+                return Some(2);
+            }
+            summary_json_path = Some(PathBuf::from(&args[i]));
+        } else if let Some(value) = arg.strip_prefix("--summary-json=") {
+            summary_json_path = Some(PathBuf::from(value));
         } else if arg == "--warmup" {
             i += 1;
             if i >= args.len() {
@@ -211,12 +221,29 @@ pub fn dispatch_bench_subcommand(args: &[String]) -> Option<i32> {
         None
     };
 
+    if let Some(output_path) = summary_json_path.as_deref()
+        && let Err(err) = write_summary_json(
+            output_path,
+            &path,
+            &current_results,
+            baseline_results.as_ref(),
+            warmup_iters,
+            run_iters,
+            baseline_ref.as_deref(),
+        )
+    {
+        eprintln!("Error: could not write summary JSON: {err}");
+        return Some(1);
+    }
+
     print_results(
+        &path,
         &current_results,
         baseline_results.as_ref(),
         warmup_iters,
         run_iters,
         baseline_ref.as_deref(),
+        summary_json_path.as_deref(),
     );
     Some(0)
 }
@@ -251,12 +278,15 @@ struct BenchmarkResult {
 }
 
 fn print_bench_help() {
-    println!("Usage: rz bench <file> [--baseline <git-ref>] [--warmup N] [--runs N]");
+    println!(
+        "Usage: rz bench <file> [--baseline <git-ref>] [--summary-json <path>] [--warmup N] [--runs N]"
+    );
     println!();
     println!("Discover and run `bench \"name\" {{ ... }}` blocks.");
     println!();
     println!("Options:");
     println!("  --baseline <ref>   Compare mean ns/op against a git ref");
+    println!("  --summary-json <path>  Write a stable JSON summary artifact");
     println!("  --warmup <N>       Warmup iterations before timing (default: 1)");
     println!("  --runs <N>         Timed iterations per benchmark (default: 3)");
     println!("  --filter <substr>  Only run benchmarks whose names contain <substr>");
@@ -446,11 +476,13 @@ fn compute_stats(samples_ns: &[f64]) -> BenchmarkStats {
 }
 
 fn print_results(
+    source_path: &Path,
     current: &[BenchmarkResult],
     baseline: Option<&Vec<BenchmarkResult>>,
     warmup_iters: usize,
     run_iters: usize,
     baseline_ref: Option<&str>,
+    summary_json_path: Option<&Path>,
 ) {
     println!("Benchmark results (warmup: {warmup_iters}, runs: {run_iters})");
 
@@ -497,6 +529,84 @@ fn print_results(
             delta_text,
         );
     }
+
+    println!();
+    println!("summary.source={}", source_path.display());
+    println!("summary.benchmarks={}", current.len());
+    println!("summary.warmup_iters={warmup_iters}");
+    println!("summary.run_iters={run_iters}");
+    if let Some(reference) = baseline_ref {
+        println!("summary.baseline_ref={reference}");
+    }
+    if let Some(path) = summary_json_path {
+        println!("artifact.summary_json={}", path.display());
+    }
+}
+
+fn write_summary_json(
+    output_path: &Path,
+    source_path: &Path,
+    current: &[BenchmarkResult],
+    baseline: Option<&Vec<BenchmarkResult>>,
+    warmup_iters: usize,
+    run_iters: usize,
+    baseline_ref: Option<&str>,
+) -> Result<(), String> {
+    let baseline_by_name: HashMap<&str, &BenchmarkResult> = baseline
+        .into_iter()
+        .flat_map(|results| results.iter())
+        .map(|result| (result.name.as_str(), result))
+        .collect();
+
+    let benches: Vec<_> = current
+        .iter()
+        .map(|result| {
+            let (baseline_mean_ns, delta_pct) = if let Some(base) =
+                baseline_by_name.get(result.name.as_str())
+            {
+                let delta_pct = if base.stats.mean_ns == 0.0 {
+                    None
+                } else {
+                    Some(((result.stats.mean_ns - base.stats.mean_ns) / base.stats.mean_ns) * 100.0)
+                };
+                (Some(base.stats.mean_ns), delta_pct)
+            } else {
+                (None, None)
+            };
+            serde_json::json!({
+                "name": result.name,
+                "mean_ns": result.stats.mean_ns,
+                "median_ns": result.stats.median_ns,
+                "stddev_ns": result.stats.stddev_ns,
+                "min_ns": result.stats.min_ns,
+                "max_ns": result.stats.max_ns,
+                "baseline_mean_ns": baseline_mean_ns,
+                "delta_pct": delta_pct,
+            })
+        })
+        .collect();
+
+    let summary = serde_json::json!({
+        "schema_version": 1,
+        "source": source_path.display().to_string(),
+        "warmup_iters": warmup_iters,
+        "run_iters": run_iters,
+        "benchmark_count": current.len(),
+        "baseline_ref": baseline_ref,
+        "benchmarks": benches,
+    });
+
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&summary)
+        .map_err(|e| format!("could not serialize summary JSON: {e}"))?;
+    fs::write(output_path, text)
+        .map_err(|e| format!("could not write {}: {e}", output_path.display()))?;
+    Ok(())
 }
 
 fn format_ns(value: f64) -> String {
