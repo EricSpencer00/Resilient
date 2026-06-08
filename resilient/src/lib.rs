@@ -32061,7 +32061,7 @@ SUBCOMMANDS:\n\
 \n\
 \n\
 Tip: run `rz` with no file argument to start REPL.\n\
-`repl` is not a subcommand.\n\
+`rz repl` is an explicit alias for the REPL.\n\
 See SYNTAX.md for the language reference."
     );
 }

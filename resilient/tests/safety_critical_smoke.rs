@@ -142,8 +142,8 @@ fn help_mentions_repl_launch_path() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("start REPL") && stdout.contains("`repl` is not a subcommand"),
-        "--help should document REPL launch and state that `repl` is not a subcommand; got:\n{stdout}"
+        stdout.contains("start REPL") && stdout.contains("explicit alias"),
+        "--help should document the explicit REPL alias; got:\n{stdout}"
     );
 }
 
@@ -155,15 +155,16 @@ fn repl_token_points_to_direct_launch() {
         .expect("spawn rz repl");
     assert_eq!(
         out.status.code(),
-        Some(2),
-        "`rz repl` should be rejected as non-command; stdout={} stderr={}",
+        Some(0),
+        "`rz repl` should launch the REPL directly; stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stderr.contains("`repl` is not a subcommand")
-            && stderr.contains("Run `rz` with no arguments to start the REPL"),
-        "`rz repl` error should guide users to REPL launch path; got: {stderr}"
+        stdout.contains("Resilient Programming Language REPL") && stdout.contains("CTRL-D"),
+        "`rz repl` should print the REPL banner and exit cleanly on EOF; got: {stdout}"
     );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("seed="), "`rz repl` should still seed the REPL; got: {stderr}");
 }

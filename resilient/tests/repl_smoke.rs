@@ -36,7 +36,7 @@ fn help_includes_repl_subcommand() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("repl"),
-        "global help output missing repl subcommand: {stdout}"
+        stdout.contains("repl                 Start interactive REPL (alias for bare `rz`)"),
+        "global help output missing repl alias entry: {stdout}"
     );
 }
