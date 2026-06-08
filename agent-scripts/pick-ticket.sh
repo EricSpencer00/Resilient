@@ -43,14 +43,18 @@ ISSUES_JSON="$(gh issue list \
   --json number,title,body,assignees,labels,createdAt 2>/dev/null || echo '[]')"
 
 PRS_JSON="$(gh pr list --state open --limit 100 --json number,title,body,headRefName 2>/dev/null || echo '[]')"
+WORKTREES_RAW="$(git worktree list --porcelain 2>/dev/null || true)"
+LOCAL_BRANCHES="$(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null || true)"
 
 EXCLUDE_CSV="$EXCLUDE_CSV" WANT_JSON="$WANT_JSON" \
-ISSUES_JSON="$ISSUES_JSON" PRS_JSON="$PRS_JSON" \
+ISSUES_JSON="$ISSUES_JSON" PRS_JSON="$PRS_JSON" WORKTREES_RAW="$WORKTREES_RAW" LOCAL_BRANCHES="$LOCAL_BRANCHES" \
 python3 <<'PYEOF'
 import json, os, re, sys
 
 issues = json.loads(os.environ.get("ISSUES_JSON") or "[]")
 prs = json.loads(os.environ.get("PRS_JSON") or "[]")
+worktrees_raw = os.environ.get("WORKTREES_RAW") or ""
+local_branches = os.environ.get("LOCAL_BRANCHES") or ""
 
 excluded = {int(x) for x in os.environ.get("EXCLUDE_CSV", "").split(",") if x.strip().isdigit()}
 
@@ -80,6 +84,25 @@ for pr in prs:
         res_num = int(m.group(1))
         if res_num in res_to_issue:
             pr_refs.add(res_to_issue[res_num])
+
+occupied = set()
+worktree_branch_re = re.compile(r"refs/heads/res-(\d+)-", re.IGNORECASE)
+worktree_path_re = re.compile(r"/res-(\d+)$", re.IGNORECASE)
+for raw in worktrees_raw.splitlines():
+    raw = raw.strip()
+    if raw.startswith("worktree "):
+        m = worktree_path_re.search(raw[len("worktree "):])
+        if m:
+          occupied.add(int(m.group(1)))
+    elif raw.startswith("branch "):
+        m = worktree_branch_re.search(raw)
+        if m:
+          occupied.add(int(m.group(1)))
+
+for branch in local_branches.splitlines():
+    m = re.match(r"res-(\d+)-", branch, re.IGNORECASE)
+    if m:
+        occupied.add(int(m.group(1)))
 
 heading_re = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 
@@ -146,7 +169,7 @@ allowed_bots = {"Copilot", "Claude", "claude", "copilot-swe-agent", "anthropic-c
 eligible = []
 for issue in issues:
     n = issue["number"]
-    if n in excluded or n in pr_refs:
+    if n in excluded or n in pr_refs or n in occupied:
         continue
     assignees = issue.get("assignees") or []
     non_bot = [a for a in assignees if a.get("login", "") not in allowed_bots]
