@@ -820,6 +820,24 @@ impl TypeEnvironment {
         }
     }
 
+    pub fn has_user_binding(&self, name: &str) -> bool {
+        if self.store.contains_key(name) {
+            return true;
+        }
+        if let Some(outer) = &self.outer {
+            // RES-2989: stop before the shared builtin root so that
+            // std-only builtins can be distinguished from true user
+            // shadowing (e.g. local `fn clock_ms() { ... }`).
+            if outer.outer.is_some() {
+                outer.has_user_binding(name)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn set(&mut self, name: String, typ: Type) {
         self.store.insert(name, typ);
     }
@@ -9913,6 +9931,18 @@ impl TypeChecker {
                     }
                 }
                 let func_type = self.check_node(function)?;
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
+                    && crate::cfg_attr::is_std_only_builtin(callee_name.as_str())
+                    && !crate::cfg_attr::std_builtins_allowed()
+                    && !self.env.has_user_binding(callee_name)
+                {
+                    return Err(format!(
+                        "builtin `{}` is unavailable without `feature = \"std\"`",
+                        callee_name
+                    ));
+                }
 
                 // RES-061 + RES-063: if the callee is a known top-level
                 // fn with contracts, fold each requires clause with the
@@ -16996,15 +17026,22 @@ mod res2807_float32_gaps {
 
 #[cfg(test)]
 mod res2810_missing_builtin_types {
+    use crate::cfg_attr::{CfgConfig, with_test_config};
     use crate::parse;
     use crate::typechecker::TypeChecker;
+
+    fn with_std_feature<T>(f: impl FnOnce() -> T) -> T {
+        with_test_config(CfgConfig::new(["std".to_string()], None), f)
+    }
 
     fn check_ok(src: &str) {
         let (prog, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        TypeChecker::new()
-            .check_program(&prog)
-            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+        with_std_feature(|| {
+            TypeChecker::new()
+                .check_program(&prog)
+                .unwrap_or_else(|e| panic!("unexpected type error: {e}"))
+        });
     }
 
     #[test]
@@ -17065,9 +17102,11 @@ mod res2810_missing_builtin_types {
     fn check_err(src: &str) -> String {
         let (prog, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        TypeChecker::new()
-            .check_program(&prog)
-            .expect_err("expected a type error")
+        with_std_feature(|| {
+            TypeChecker::new()
+                .check_program(&prog)
+                .expect_err("expected a type error")
+        })
     }
 
     #[test]
@@ -17350,6 +17389,54 @@ mod res2822_never_type_return {
     fn never_return_fn_callable() {
         check_ok(
             "fn fail(string msg) -> ! {\nloop { }\n}\nfn check(int x) -> int {\nif x == 0 { fail(\"zero\") }\nx\n}\n",
+        );
+    }
+}
+
+#[cfg(test)]
+mod std_only_builtin_gating_tests {
+    use super::*;
+    use crate::cfg_attr::{CfgConfig, with_test_config};
+
+    fn check_with_cfg(src: &str, cfg: CfgConfig) -> Result<(), String> {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        with_test_config(cfg, || {
+            TypeChecker::new()
+                .check_program_with_source(&prog, "<t>")
+                .map(|_| ())
+        })
+    }
+
+    #[test]
+    fn std_only_builtins_require_feature_in_typechecker() {
+        let src = "fn f() { return clock_ms(); }\n";
+        let err = check_with_cfg(src, CfgConfig::default())
+            .expect_err("std-only builtin should be rejected when std is disabled");
+        assert!(
+            err.contains("builtin `clock_ms` is unavailable without `feature = \"std\"`"),
+            "unexpected error: {err}"
+        );
+
+        let ok = check_with_cfg(src, CfgConfig::new(["std".to_string()], None)).is_ok();
+        assert!(ok, "clock_ms should typecheck when std is enabled");
+
+        let src = "fn f() { return sin(1.0); }\n";
+        let err = check_with_cfg(src, CfgConfig::default())
+            .expect_err("trig builtin should be rejected when std is disabled");
+        assert!(
+            err.contains("builtin `sin` is unavailable without `feature = \"std\"`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn user_binding_shadows_std_only_builtin_name() {
+        let src = "fn clock_ms() { return 1; }\nfn f() { return clock_ms(); }\n";
+        let ok = check_with_cfg(src, CfgConfig::default()).is_ok();
+        assert!(
+            ok,
+            "user-defined `clock_ms` should shadow the std-only builtin when std is disabled"
         );
     }
 }

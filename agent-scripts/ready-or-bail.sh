@@ -36,6 +36,7 @@ if [ -z "$PR" ]; then
 fi
 
 REPORT=/tmp/agent-guardrail-report.json
+PRE_SYNC_HEAD="$(git rev-parse HEAD)"
 
 if bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
   echo
@@ -46,13 +47,52 @@ if bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
       gh pr comment "$PR" --body "Guardrail passed, but \`sync-integration.sh\` failed — conflicts outside the append-only allowlist. Resolve manually, then re-run \`agent-scripts/ready-or-bail.sh\`." >/dev/null
       exit 2
     fi
+
+    POST_SYNC_HEAD="$(git rev-parse HEAD)"
+    if [ "$PRE_SYNC_HEAD" != "$POST_SYNC_HEAD" ]; then
+      echo "Branch changed while syncing — rerunning guardrail on refreshed HEAD."
+      if ! bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
+        echo "refreshed guardrail failed after sync — leaving PR #$PR as draft."
+        BODY="$(python3 - "$REPORT" <<'PYEOF'
+import json, sys
+try:
+    r = json.load(open(sys.argv[1]))
+except Exception:
+    print("Guardrail passed before sync, but the branch changed while syncing against `agents/integration` and the refreshed guardrail failed.")
+    sys.exit(0)
+lines = [
+    "Guardrail passed before sync, but the branch changed while syncing against `agents/integration` and the refreshed guardrail failed.",
+    "",
+    "Violations:",
+]
+for f in r.get("failures", []):
+    lines.append(f"- {f}")
+lines += ["", "Fix the items above, push new commits, and re-run `agent-scripts/ready-or-bail.sh`."]
+print("\n".join(lines))
+PYEOF
+)"
+        gh pr comment "$PR" --body "$BODY" >/dev/null
+        "$SCRIPT_DIR/agent-handoff.sh" \
+          --pr "$PR" \
+          --phase guardrail-red \
+          --status "left draft after refreshed guardrail failure" \
+          --summary "$BODY" >/dev/null || true
+        exit 1
+      fi
+    fi
+
     gh pr ready "$PR" 2>&1 | tail -2
-    gh pr comment "$PR" --body "Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\`. Auto-merge will fire once remaining checks complete." >/dev/null
+    if [ "$PRE_SYNC_HEAD" != "$POST_SYNC_HEAD" ]; then
+      READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\` and rechecked on the refreshed branch. Auto-merge will fire once remaining checks complete."
+    else
+      READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\`. Auto-merge will fire once remaining checks complete."
+    fi
+    gh pr comment "$PR" --body "$READY_BODY" >/dev/null
     "$SCRIPT_DIR/agent-handoff.sh" \
       --pr "$PR" \
       --phase guardrail-green \
-      --status "ready for review after local guardrail and integration sync" \
-      --summary "Local guardrail passed; branch was synced against agents/integration and marked ready." >/dev/null || true
+      --status "ready for review after local guardrail, integration sync, and freshness recheck" \
+      --summary "Local guardrail passed; branch was synced against agents/integration, rechecked if the branch moved, and marked ready." >/dev/null || true
   else
     echo "(dry-run) would also run sync-integration.sh"
   fi

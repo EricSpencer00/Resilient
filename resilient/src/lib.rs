@@ -11989,6 +11989,12 @@ fn builtin_intern(args: &[Value]) -> RResult<Value> {
 /// the BUILTINS table; per-builtin argument errors flow through the
 /// inner `RResult` exactly as for prefix calls.
 fn apply_builtin_by_name(name: &str, args: &[Value]) -> Option<RResult<Value>> {
+    if crate::cfg_attr::is_std_only_builtin(name) && !crate::cfg_attr::std_builtins_allowed() {
+        return Some(Err(format!(
+            "builtin `{}` is unavailable without `feature = \"std\"`",
+            name
+        )));
+    }
     BUILTINS
         .iter()
         .find(|(n, _)| *n == name)
@@ -30770,7 +30776,7 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
                     }
                     println!("\nNext steps:");
                     println!("  cd {}", name);
-                    println!("  rz src/main.rs");
+                    println!("  rz src/main.rz");
                     Some(0)
                 }
                 Err(e) => {
@@ -30956,7 +30962,7 @@ fn print_pkg_help() {
              rz pkg <subcommand> [options]\n\
          \n\
          SUBCOMMANDS:\n    \
-             init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
+             init     Scaffold a new project (resilient.toml + src/main.rz + .gitignore)\n    \
              publish  (RES-342) Package the current project for upload to a registry\n    \
              add      Add a dependency to resilient.toml\n    \
              help     Show this message\n\
@@ -30977,7 +30983,7 @@ fn print_pkg_help_to_stderr() {
              rz pkg <subcommand> [options]\n\
          \n\
          SUBCOMMANDS:\n    \
-             init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
+             init     Scaffold a new project (resilient.toml + src/main.rz + .gitignore)\n    \
              publish  Package the current project for upload to a registry\n    \
              add      Add a dependency to resilient.toml\n    \
              help     Show this message\n\
@@ -30996,7 +31002,7 @@ fn print_pkg_init_help() {
              rz pkg init <name>\n    \
              rz pkg init --name <n>\n\
          \n\
-         Creates `<name>/resilient.toml`, `<name>/src/main.rs`, and\n\
+         Creates `<name>/resilient.toml`, `<name>/src/main.rz`, and\n\
          `<name>/.gitignore`. Refuses to overwrite an existing manifest\n\
          or scaffold into a non-empty directory."
     );
@@ -33370,6 +33376,52 @@ mod tests {
             }
             other => panic!("expected Node::Extern, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn apply_builtin_by_name_respects_std_feature() {
+        use crate::cfg_attr::CfgConfig;
+
+        let no_std_blocked =
+            crate::cfg_attr::with_test_config(
+                CfgConfig::default(),
+                || match apply_builtin_by_name("clock_ms", &[]) {
+                    Some(Err(msg)) => msg.contains("feature = \"std\""),
+                    _ => false,
+                },
+            );
+        assert!(
+            no_std_blocked,
+            "clock_ms should require std feature at runtime dispatch"
+        );
+
+        let trig_blocked =
+            crate::cfg_attr::with_test_config(
+                CfgConfig::default(),
+                || match apply_builtin_by_name("sin", &[Value::Float(1.0)]) {
+                    Some(Err(msg)) => msg.contains("feature = \"std\""),
+                    _ => false,
+                },
+            );
+        assert!(
+            trig_blocked,
+            "trig builtin `sin` should require std feature at runtime dispatch"
+        );
+
+        let std_ok =
+            crate::cfg_attr::with_test_config(CfgConfig::new(["std".to_string()], None), || {
+                match apply_builtin_by_name("clock_ms", &[]) {
+                    Some(Ok(_)) => true,
+                    _ => false,
+                }
+            });
+        assert!(std_ok, "clock_ms should dispatch when std is enabled");
+
+        let unknown = apply_builtin_by_name("definitely_not_a_builtin", &[]);
+        assert!(
+            unknown.is_none(),
+            "unknown builtin names should stay unmapped"
+        );
     }
 
     #[test]
