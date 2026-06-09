@@ -294,10 +294,12 @@ and the limitations or follow-up tickets.
 
 ### Running the REPL
 
-There is no `repl` subcommand.
+Run `rz` with no file argument to start the REPL, or use `rz repl`
+as an explicit alias if you prefer to spell it out.
 
 ```bash
 rz
+rz repl
 ```
 
 ### Building from source without installing

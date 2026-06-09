@@ -199,7 +199,7 @@ starts when `rz` is invoked with no file argument.
 ```bash
 rz                           # start REPL
 rz repl                      # explicit alias for REPL
-rz --examples-dir ./ex       # override the `examples` command's search path
+rz repl --examples-dir ./ex  # override the REPL examples directory
 ```
 
 Built-in commands:
