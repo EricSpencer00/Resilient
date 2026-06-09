@@ -49,7 +49,7 @@ erroring.
 
 Public behavior is grouped by stability class:
 
-- **Stable:** `--check`, `--typecheck`, `--fmt`, `--lint`,
+- **Stable:** `--check`, `--typecheck`, `--typecheck-strict`, `--fmt`, `--lint`,
   `--examples`, `--audit` (without SMT features), `--run`, and
   the default/interpreter execution path.
 - **Backend-limited:** options that depend on backend/feature flags
@@ -129,6 +129,8 @@ rz -t prog.rz
 ```
 
 `--typecheck` is implied by `--emit-certificate`.
+`--typecheck-strict` keeps the same checker but turns any type error
+into a fatal exit instead of a soft diagnostic.
 
 ## Verification
 
