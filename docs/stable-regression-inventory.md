@@ -34,6 +34,7 @@ Scope rules:
 | Global help and REPL discoverability | `resilient/tests/repl_smoke.rs`, `resilient/tests/safety_critical_smoke.rs` | Covered | Pins `rz --help`, `rz repl --help`, and explicit REPL alias text. |
 | REPL startup path | `resilient/tests/safety_critical_smoke.rs` | Covered | Direct `rz repl` launch smoke. |
 | `rz check <file>` | `resilient/tests/check_smoke.rs` | Covered | Success, type-error, quiet, and usage paths. |
+| `--typecheck-strict` | `resilient/tests/typecheck_strict_smoke.rs` | Covered | Pins the fatal typecheck path that turns soft diagnostics into a hard error. |
 | `rz fmt <file>` stdout path | `resilient/tests/roundtrip.rs` | Covered | Canonical round-trip formatting. |
 | `rz fmt <file> --in-place` | `resilient/tests/stable_cli_surface_smoke.rs` | Covered | Added for RES-3128. |
 | `rz lint <file>` | `resilient/tests/lint_smoke.rs` | Covered | Dedicated CLI wiring coverage. |
