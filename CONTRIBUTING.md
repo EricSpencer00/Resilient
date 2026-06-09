@@ -117,6 +117,20 @@ cargo test --manifest-path resilient-runtime/Cargo.toml
 cargo test --manifest-path resilient/Cargo.toml <test_name>
 ```
 
+### Direct regression coverage
+
+Shipped language features and shipped CLI workflows should keep at least
+one direct regression or smoke test instead of relying on incidental
+coverage.
+
+- Update or extend the tracked inventory in
+  [`docs/stable-regression-inventory.md`](docs/stable-regression-inventory.md)
+  when you add a stable surface or intentionally defer one.
+- Prefer focused integration tests under `resilient/tests/` for CLI
+  wiring and end-to-end feature behavior.
+- If a behavior is not stable yet, document that explicitly rather than
+  treating it as uncovered stable functionality.
+
 ### With Z3 (contract verification)
 
 ```bash
