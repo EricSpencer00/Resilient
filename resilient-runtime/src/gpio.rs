@@ -288,7 +288,15 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
     /// other pin writes on the same port.
     #[inline]
     pub fn set_high(&self) {
-        let base = CFG::port_base_addr(self.port).expect("pin built => port addr exists");
+        let _ = self.try_set_high();
+    }
+
+    /// Fallible variant of [`set_high`](Self::set_high) for callers
+    /// that want to handle a chip config rejecting this port after
+    /// the pin handle was constructed.
+    #[inline]
+    pub fn try_set_high(&self) -> Result<(), GpioError> {
+        let base = GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
         let bsrr_addr = base + CFG::bsrr_offset();
         let bit = 1u32 << self.pin;
         // SAFETY: `bsrr_addr` is `base + bsrr_offset`, still inside
@@ -298,13 +306,20 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
         unsafe {
             core::ptr::write_volatile(bsrr_addr as *mut u32, bit);
         }
+        Ok(())
     }
 
     /// Drive the pin low. Uses the upper half of BSRR (the reset
     /// bits) — bit `pin + 16` resets pin `pin`.
     #[inline]
     pub fn set_low(&self) {
-        let base = CFG::port_base_addr(self.port).expect("pin built => port addr exists");
+        let _ = self.try_set_low();
+    }
+
+    /// Fallible variant of [`set_low`](Self::set_low).
+    #[inline]
+    pub fn try_set_low(&self) -> Result<(), GpioError> {
+        let base = GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
         let bsrr_addr = base + CFG::bsrr_offset();
         let bit = 1u32 << (self.pin as u32 + 16);
         // SAFETY: same reasoning as `set_high`. The upper-half
@@ -312,6 +327,7 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
         unsafe {
             core::ptr::write_volatile(bsrr_addr as *mut u32, bit);
         }
+        Ok(())
     }
 
     /// Invert the pin level. Reads `ODR` (so we can see what we
@@ -320,7 +336,13 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
     /// you must serialise via a critical section.
     #[inline]
     pub fn toggle(&self) {
-        let base = CFG::port_base_addr(self.port).expect("pin built => port addr exists");
+        let _ = self.try_toggle();
+    }
+
+    /// Fallible variant of [`toggle`](Self::toggle).
+    #[inline]
+    pub fn try_toggle(&self) -> Result<(), GpioError> {
+        let base = GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
         let odr_addr = base + CFG::odr_offset();
         let bit = 1u32 << self.pin;
         // SAFETY: `odr_addr` is `base + odr_offset`, still inside
@@ -332,6 +354,7 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
             let current = core::ptr::read_volatile(odr_addr as *const u32);
             core::ptr::write_volatile(odr_addr as *mut u32, current ^ bit);
         }
+        Ok(())
     }
 
     /// Reconfigure this pin as an input, consuming the output
@@ -341,7 +364,23 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
     /// reset value (no pull).
     #[inline]
     pub fn into_input(self) -> GpioPin<CFG, Input> {
-        gpio_input::<CFG>(self.port, self.pin).expect("pin built => valid")
+        let port = self.port;
+        let pin = self.pin;
+        match self.try_into_input() {
+            Ok(pin) => pin,
+            Err(_) => GpioPin {
+                port,
+                pin,
+                _cfg: PhantomData,
+                _mode: PhantomData,
+            },
+        }
+    }
+
+    /// Fallible variant of [`into_input`](Self::into_input).
+    #[inline]
+    pub fn try_into_input(self) -> Result<GpioPin<CFG, Input>, GpioError> {
+        gpio_input::<CFG>(self.port, self.pin)
     }
 }
 
@@ -351,13 +390,19 @@ impl<CFG: GpioConfig> GpioPin<CFG, Input> {
     /// the bus clock — there is no debounce.
     #[inline]
     pub fn read(&self) -> bool {
-        let base = CFG::port_base_addr(self.port).expect("pin built => port addr exists");
+        self.try_read().unwrap_or_default()
+    }
+
+    /// Fallible variant of [`read`](Self::read).
+    #[inline]
+    pub fn try_read(&self) -> Result<bool, GpioError> {
+        let base = GpioPin::<CFG, Input>::resolve(self.port, self.pin)?;
         let idr_addr = base + CFG::idr_offset();
         let bit = 1u32 << self.pin;
         // SAFETY: `idr_addr` is `base + idr_offset`, still inside
         // the port block. IDR is read-only; a volatile read returns
         // the live level.
-        unsafe { (core::ptr::read_volatile(idr_addr as *const u32) & bit) != 0 }
+        Ok(unsafe { (core::ptr::read_volatile(idr_addr as *const u32) & bit) != 0 })
     }
 
     /// Reconfigure this pin as an output, consuming the input
@@ -366,7 +411,23 @@ impl<CFG: GpioConfig> GpioPin<CFG, Input> {
     /// need a defined initial state.
     #[inline]
     pub fn into_output(self) -> GpioPin<CFG, Output> {
-        gpio_output::<CFG>(self.port, self.pin).expect("pin built => valid")
+        let port = self.port;
+        let pin = self.pin;
+        match self.try_into_output() {
+            Ok(pin) => pin,
+            Err(_) => GpioPin {
+                port,
+                pin,
+                _cfg: PhantomData,
+                _mode: PhantomData,
+            },
+        }
+    }
+
+    /// Fallible variant of [`into_output`](Self::into_output).
+    #[inline]
+    pub fn try_into_output(self) -> Result<GpioPin<CFG, Output>, GpioError> {
+        gpio_output::<CFG>(self.port, self.pin)
     }
 }
 
@@ -448,6 +509,7 @@ mod tests {
     //! discipline; these tests are ground truth for the logic.
 
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     // 8 ports × 0x40 bytes (enough to cover MODER 0x00, IDR 0x10,
@@ -541,6 +603,41 @@ mod tests {
         }
     }
 
+    static FLAKY_PORT_ENABLED: AtomicBool = AtomicBool::new(true);
+
+    #[derive(Debug, Clone, Copy)]
+    struct FlakyGpio;
+
+    // SAFETY: When enabled, this delegates to `MockGpio`, whose safety
+    // contract is documented above. When disabled, it returns `None`
+    // and no volatile access is attempted by the production API.
+    unsafe impl GpioConfig for FlakyGpio {
+        fn port_base_addr(port: Port) -> Option<usize> {
+            if FLAKY_PORT_ENABLED.load(Ordering::SeqCst) {
+                MockGpio::port_base_addr(port)
+            } else {
+                None
+            }
+        }
+        fn moder_offset() -> usize {
+            MockGpio::moder_offset()
+        }
+        fn odr_offset() -> usize {
+            MockGpio::odr_offset()
+        }
+        fn idr_offset() -> usize {
+            MockGpio::idr_offset()
+        }
+        fn bsrr_offset() -> usize {
+            MockGpio::bsrr_offset()
+        }
+        fn mode_input() -> u32 {
+            MockGpio::mode_input()
+        }
+        fn mode_output() -> u32 {
+            MockGpio::mode_output()
+        }
+    }
     /// Read a u32 register from the mock buffer using the same
     /// address arithmetic the production code uses. Used by tests
     /// to verify that what the production code wrote is what we
@@ -699,6 +796,31 @@ mod tests {
     }
 
     // ---------- STM32F4 reference-manual addresses ----------
+
+    #[test]
+    fn gpio_pin_methods_offer_fallible_no_panic_paths() {
+        mock_reset();
+        FLAKY_PORT_ENABLED.store(true, Ordering::SeqCst);
+        let out = gpio_output::<FlakyGpio>(Port::A, 1).expect("valid while enabled");
+        FLAKY_PORT_ENABLED.store(false, Ordering::SeqCst);
+
+        assert_eq!(out.try_set_high(), Err(GpioError::UnsupportedPort(Port::A)));
+        assert_eq!(out.try_set_low(), Err(GpioError::UnsupportedPort(Port::A)));
+        assert_eq!(out.try_toggle(), Err(GpioError::UnsupportedPort(Port::A)));
+        out.set_high();
+        out.set_low();
+        out.toggle();
+
+        let input = out.into_input();
+        assert_eq!(input.port(), Port::A);
+        assert_eq!(input.pin(), 1);
+        assert_eq!(input.try_read(), Err(GpioError::UnsupportedPort(Port::A)));
+        assert!(!input.read());
+        assert_eq!(
+            input.try_into_output().unwrap_err(),
+            GpioError::UnsupportedPort(Port::A)
+        );
+    }
 
     #[test]
     fn stm32f4_port_addresses_match_reference_manual() {
