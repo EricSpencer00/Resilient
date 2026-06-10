@@ -30038,6 +30038,26 @@ fn run_pending_actors(interpreter: &mut Interpreter) -> RResult<()> {
     Ok(())
 }
 
+fn backend_limited_feature_message(
+    surface: &str,
+    feature: &str,
+    stable_path: Option<&str>,
+) -> String {
+    let mut message = format!(
+        "Backend-limited: {surface} requires the `{feature}` feature. Rebuild with:\n  cargo build --features {feature}"
+    );
+    if let Some(stable_path) = stable_path {
+        message.push_str("\nStable path: ");
+        message.push_str(stable_path);
+    }
+    message
+}
+
+const DEFAULT_BUILD_CERT_STABLE_PATH: &str = "run `rz --typecheck <file>` or `rz --audit <file>` without certificate flags on the default build.";
+const DEFAULT_BUILD_VERIFY_STABLE_PATH: &str = "run `rz --typecheck <file>` or `rz --audit <file>` without certificate verification on the default build.";
+const DEFAULT_BUILD_Z3_THEORY_STABLE_PATH: &str =
+    "omit --z3-theory; the default build still runs non-SMT type checks.";
+
 // Execute a Resilient source file
 #[allow(clippy::too_many_arguments)] // CLI glue fn — all args come from flags
 fn execute_file(
@@ -30060,6 +30080,25 @@ fn execute_file(
     // without the verbose status lines that `--typecheck` prints.
     type_strict: bool,
 ) -> RResult<()> {
+    #[cfg(not(feature = "z3"))]
+    if emit_cert_dir.is_some() {
+        return Err(backend_limited_feature_message(
+            "--emit-certificate",
+            "z3",
+            Some(DEFAULT_BUILD_CERT_STABLE_PATH),
+        ));
+    }
+    #[cfg(not(feature = "z3"))]
+    if sign_cert_key.is_some() {
+        return Err(backend_limited_feature_message(
+            "--sign-cert",
+            "z3",
+            Some(
+                "run without certificate signing on the default build, or pair it with --emit-certificate in a z3-enabled build.",
+            ),
+        ));
+    }
+
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
 
@@ -30390,11 +30429,7 @@ fn execute_file(
         }
         #[cfg(not(feature = "jit"))]
         {
-            return Err(
-                "Backend-limited: --jit requires the `jit` feature. Rebuild with:\n  \
-                 cargo build --features jit"
-                    .to_string(),
-            );
+            return Err(backend_limited_feature_message("--jit", "jit", None));
         }
     }
 
@@ -31091,8 +31126,10 @@ fn print_pkg_add_help() {
 /// RES-1202: subcommand is z3-only — without the verifier active the
 /// `cert_sign` module (and ed25519-dalek / sha2 / serde_json) aren't
 /// linked into the binary, so the cert-verification CLI path goes
-/// with them. A default `cargo build` user who tries `rz verify-cert`
-/// falls through to the standard "unknown subcommand" handler.
+/// with them.
+///
+/// RES-3153: default builds still dispatch the command name so users
+/// get an explicit backend-limited rebuild hint instead of fallthrough.
 #[cfg(feature = "z3")]
 fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("verify-cert") {
@@ -31389,6 +31426,20 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
         eprintln!("\n\x1B[31mverify-all: one or more checks FAILED\x1B[0m");
         Some(1)
     }
+}
+
+#[cfg(not(feature = "z3"))]
+fn dispatch_z3_backend_limited_subcommand(args: &[String]) -> Option<i32> {
+    let surface = match args.get(1).map(|s| s.as_str()) {
+        Some("verify-cert") => "rz verify-cert",
+        Some("verify-all") => "rz verify-all",
+        _ => return None,
+    };
+    eprintln!(
+        "{}",
+        backend_limited_feature_message(surface, "z3", Some(DEFAULT_BUILD_VERIFY_STABLE_PATH),)
+    );
+    Some(1)
 }
 
 // RES-1202: helper used only by `dispatch_verify_all_subcommand`,
@@ -31716,6 +31767,18 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                     }
                 };
             }
+            #[cfg(not(feature = "z3"))]
+            {
+                eprintln!(
+                    "{}",
+                    backend_limited_feature_message(
+                        "--z3-theory",
+                        "z3",
+                        Some(DEFAULT_BUILD_Z3_THEORY_STABLE_PATH),
+                    )
+                );
+                return Some(2);
+            }
         } else if let Some(val) = a.strip_prefix("--z3-theory=") {
             #[cfg(feature = "z3")]
             {
@@ -31733,7 +31796,18 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                 };
             }
             #[cfg(not(feature = "z3"))]
-            let _ = val;
+            {
+                let _ = val;
+                eprintln!(
+                    "{}",
+                    backend_limited_feature_message(
+                        "--z3-theory",
+                        "z3",
+                        Some(DEFAULT_BUILD_Z3_THEORY_STABLE_PATH),
+                    )
+                );
+                return Some(2);
+            }
         } else if file.is_none() && !a.starts_with('-') {
             file = Some(PathBuf::from(a));
         } else {
@@ -32027,10 +32101,12 @@ COMMON FLAGS:\n\
         --explain-effects        Print the inferred effect (@pure / @io)\n\
                                  for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
+                                 (backend-limited; requires --features z3)\n\
         --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)\n\
         --safety-critical        Promote vacuous proof-discharge constructs\n\
                                  such as `assume(false)` to hard errors\n\
         --sign-cert PATH         Ed25519-sign the emitted certificate\n\
+                                 (backend-limited; requires --features z3)\n\
         --vm                     Route through the bytecode VM\n\
         --jit                    Route through the Cranelift JIT\n\
                                  (backend-limited; requires --features jit)\n\
@@ -32086,7 +32162,9 @@ SUBCOMMANDS:\n\
     lint <file>         Run the starter lints\n\
     tla check <file>    TLA+ model checking via TLC\n\
     verify-cert <dir>   Verify an RES-071 certificate directory\n\
+                        (backend-limited; requires --features z3)\n\
     verify-all <dir>    Re-check every obligation in a manifest\n\
+                        (backend-limited; requires --features z3)\n\
 \n\
 \n\
 Tip: run `rz` with no file argument to start REPL.\n\
@@ -32413,8 +32491,12 @@ pub fn run_cli() {
     // RES-1202: cert verification depends on `cert_sign`, which is
     // gated on `feature = "z3"` (it has no work to do without the
     // verifier active and would otherwise drag ed25519-dalek + sha2
-    // + serde_json into every default build). Dispatch is therefore
-    // also feature-gated; without z3 the subcommand falls through.
+    // + serde_json into every default build). Default builds still
+    // dispatch these command names to a backend-limited diagnostic.
+    #[cfg(not(feature = "z3"))]
+    if let Some(code) = dispatch_z3_backend_limited_subcommand(&args) {
+        std::process::exit(code);
+    }
     #[cfg(feature = "z3")]
     if let Some(code) = dispatch_verify_cert_subcommand(&args) {
         std::process::exit(code);
@@ -32779,6 +32861,18 @@ pub fn run_cli() {
                         }
                     };
                 }
+                #[cfg(not(feature = "z3"))]
+                {
+                    eprintln!(
+                        "{}",
+                        backend_limited_feature_message(
+                            "--z3-theory",
+                            "z3",
+                            Some(DEFAULT_BUILD_Z3_THEORY_STABLE_PATH),
+                        )
+                    );
+                    std::process::exit(2);
+                }
             } else if let Some(val) = arg.strip_prefix("--z3-theory=") {
                 #[cfg(feature = "z3")]
                 {
@@ -32796,7 +32890,18 @@ pub fn run_cli() {
                     };
                 }
                 #[cfg(not(feature = "z3"))]
-                let _ = val; // silence unused warning on non-z3 builds
+                {
+                    let _ = val;
+                    eprintln!(
+                        "{}",
+                        backend_limited_feature_message(
+                            "--z3-theory",
+                            "z3",
+                            Some(DEFAULT_BUILD_Z3_THEORY_STABLE_PATH),
+                        )
+                    );
+                    std::process::exit(2);
+                }
             } else if arg == "--seed" {
                 // RES-150: `--seed <u64>` pins the SplitMix64 PRNG.
                 // Reproducible runs: same seed → same sequence.
@@ -33330,9 +33435,7 @@ pub fn run_cli() {
         }
         #[cfg(not(feature = "lsp"))]
         {
-            eprintln!(
-                "Backend-limited: --lsp requires the `lsp` feature. Rebuild with:\n  cargo build --features lsp"
-            );
+            eprintln!("{}", backend_limited_feature_message("--lsp", "lsp", None));
             std::process::exit(1);
         }
     }
