@@ -33109,6 +33109,26 @@ pub fn run_cli() {
             );
             std::process::exit(2);
         }
+        if dump_tokens && filename.is_empty() {
+            eprintln!("Error: --dump-tokens requires a path argument");
+            std::process::exit(2);
+        }
+        if ai_threats_mode && filename.is_empty() {
+            eprintln!("Error: --ai-threats requires a path argument");
+            std::process::exit(2);
+        }
+        if emit_lean_spec_fn.is_some() && filename.is_empty() {
+            eprintln!("Error: --emit-lean-spec requires a path argument");
+            std::process::exit(2);
+        }
+        if dump_ast_json && filename.is_empty() {
+            eprintln!("Error: --dump-ast-json requires a path argument");
+            std::process::exit(2);
+        }
+        if dump_chunks && filename.is_empty() {
+            eprintln!("Error: --dump-chunks requires a path argument");
+            std::process::exit(2);
+        }
 
         // RES-150: install the RNG seed before any user program
         // can pull from it. `--seed <N>` pins the sequence
