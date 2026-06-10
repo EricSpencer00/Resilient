@@ -71,6 +71,16 @@ There are four feature configs depending on what you need:
 You can stack them with `cargo install`:
 `cargo install --path resilient --features "z3 lsp jit"`.
 
+## Status vocabulary
+
+`rz --help` and the public docs use the same status classes:
+
+- **Stable:** Supported for scripts and CI on the default build.
+- **Backend-limited:** Stable when the named backend/build feature is present;
+  unavailable builds print a rebuild hint. Examples in this guide name the
+  required `--features ...` build at the point of use.
+- **Experimental:** User-facing, but policy/output may still evolve.
+
 ## Hello, world
 
 ```rust
@@ -177,7 +187,7 @@ rz --vm prog.rz
 # real, so use this for hot loops and long-running programs
 # where compile cost amortizes.
 cargo install --path resilient --features jit  # one-time
-rz --jit prog.rz
+rz --jit prog.rz                                # requires --features jit
 ```
 
 See the [performance page](performance) for the actual numbers
@@ -210,10 +220,11 @@ the verifier (`--features z3`); proofs that succeed don't emit
 runtime checks. For compliance / certification:
 `--emit-certificate ./certs prog.rz` writes one SMT-LIB2 file
 per discharged obligation, each independently re-verifiable
-under any compatible solver.
+under any compatible solver. Default builds report a `Backend-limited:`
+rebuild hint for certificate flags.
 
 ```bash
-rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # binary built with --features z3
+rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # requires a --features z3 build
 z3 -smt2 ./certs/ident_round__decl__0.smt2
 # unsat   ← the proof: negation is unsatisfiable, so the original holds
 ```
@@ -241,8 +252,17 @@ relevant JIT phase ships.
 
 ## REPL
 
+Run bare `rz` with no file argument, or use the explicit `rz repl`
+alias when you want the launch path spelled out.
+
 ```bash
-rz
+rz       # bare launch path
+rz repl  # explicit alias
+```
+
+Inside either launch path:
+
+```text
 > let x = 5;
 > x + 10
 15
@@ -255,7 +275,8 @@ checking.
 
 ## Editor integration
 
-Run the LSP server (built with `--features lsp`):
+Run the LSP server. This is backend-limited and requires a binary
+built with `--features lsp`:
 
 ```bash
 rz --lsp
