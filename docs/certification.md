@@ -326,10 +326,10 @@ needed beyond the verifier subcommand):
 
 ```bash
 # Cryptographic regression check — fast.
-resilient verify-all ./artifacts/certs
+rz verify-all ./artifacts/certs
 
 # With re-run of Z3 on every certificate — slower but strongest.
-resilient verify-all ./artifacts/certs --z3
+rz verify-all ./artifacts/certs --z3
 ```
 
 ### Incorporating into a DO-178C Software Accomplishment Summary
