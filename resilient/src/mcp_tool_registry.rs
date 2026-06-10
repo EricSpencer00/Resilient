@@ -1,6 +1,6 @@
 //! MCP external-tool bridge registry.
 //!
-//! Provides a generic scaffolding framework for connecting external
+//! Provides a generic integration framework for connecting external
 //! verification and analysis tools to the Resilient MCP server.  Each
 //! external tool — TLA+ TLC, Z3, Lean 4, CBMC, or a user-supplied binary
 //! — is registered as a `BridgedTool` and exposed automatically via the
@@ -875,7 +875,7 @@ fn cmd_check(args: &[String]) -> i32 {
 
 fn print_tool_help() {
     println!(
-        "rz tool — external tool bridge (MCP scaffolding)
+        "rz tool — external tool bridge (MCP integration)
 
 USAGE:
     rz tool list                     List all registered external tools
