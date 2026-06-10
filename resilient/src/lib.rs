@@ -30914,6 +30914,10 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
         }
         Some("add") => {
             // `pkg add <name> <spec> [--rev X] [--tag X] [--branch X]`
+            if args.get(3).map(|s| s.as_str()) == Some("help") && args.len() == 4 {
+                print_pkg_add_help();
+                return Some(0);
+            }
             let mut name: Option<String> = None;
             let mut spec: Option<String> = None;
             let mut opts = pkg_deps::AddOpts::default();
