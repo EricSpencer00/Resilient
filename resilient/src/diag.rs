@@ -177,14 +177,12 @@ fn expand_tabs(line: &str) -> String {
 }
 
 // ============================================================
-// RES-119 (scaffolding-only): unified Diagnostic data model.
+// RES-119: shared Diagnostic data model.
 // ============================================================
 //
-// This section lands the data types + terminal renderer. Call-
-// site migration (parser / typechecker / VM / verifier / LSP)
-// is deliberately NOT in scope here per the bail's Option 2 —
-// the existing pipelines keep emitting `String` errors unchanged
-// until follow-up tickets migrate each phase individually.
+// This section owns the typed diagnostic data structures and
+// terminal renderer. Some call sites still emit `String` errors;
+// follow-up migrations can adopt these types phase by phase.
 //
 // The types are `pub` so RES-206 (error-code registry) and
 // later phase-migration tickets can consume them directly.
@@ -492,7 +490,7 @@ mod tests {
         assert!(d.contains("^"), "missing caret even on empty line: {}", d);
     }
 
-    // ---------- RES-119: Diagnostic scaffolding ----------
+    // ---------- RES-119: Diagnostic model ----------
 
     #[test]
     fn severity_renders_lowercase_rustc_style() {
