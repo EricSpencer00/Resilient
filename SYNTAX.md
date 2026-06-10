@@ -407,8 +407,8 @@ trait Iterator {
 ```
 
 Method signatures must include `self` (method receiver) as the first parameter.
-Method names must be unique within a trait. RES-779 (future) will add associated
-types.
+Method names must be unique within a trait. Associated type members are
+documented later in this trait section.
 
 ### Trait Implementation
 
