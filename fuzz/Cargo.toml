@@ -25,9 +25,11 @@ jit = []
 # fuzz recommended pin.
 libfuzzer-sys = "0.4"
 
-# All targets shell out to the built `resilient` binary (since
-# `resilient` is binary-only; there's no lib surface to link
-# against). `tempfile` gives us the scratch .rs files.
+# All targets shell out to the built `rz` binary. The compiler has
+# a library target, but these harnesses intentionally exercise the
+# shipped CLI boundary instead of depending on private parser/lexer
+# internals as an in-process fuzzing API. `tempfile` gives us the
+# scratch .rs files.
 tempfile = "3"
 
 [[bin]]
