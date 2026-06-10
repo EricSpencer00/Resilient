@@ -1,17 +1,16 @@
 //! RES-075 Phase A: minimal `#![no_std]` runtime for Resilient.
 //!
 //! Carves out the value layer + core ops in a separate crate so it
-//! can eventually run on a Cortex-M class MCU. Phase A stays
-//! alloc-free — it carries `Int(i64)` and `Bool(bool)` only.
-//! Float/String/Array/closure variants need allocator support and
-//! will land with RES-101 (embedded-alloc) once the no_std boundary
-//! is proven.
+//! can run on Cortex-M and RISC-V class MCUs. The default posture is
+//! alloc-free and carries `Int(i64)`, `Bool(bool)`, and stack-only
+//! `Float(f64)`. `Value::String` is available behind the `alloc`
+//! feature, with the binary responsible for wiring a global allocator.
 //!
 //! Intentionally NOT pulled into the main `resilient/` crate as a
 //! shared dep yet. The two value enums diverge today (the main
 //! interpreter's `Value` carries `Box<Node>` for closures, which
 //! pulls in alloc transitively); convergence is a follow-up after
-//! RES-101 + RES-102 (the embedded example) prove what the
+//! the embedded runtime surface and Cortex-M demo prove what the
 //! embedded surface actually needs.
 
 // `cfg_attr(not(any(test, feature = "std-sink")), no_std)` lets
