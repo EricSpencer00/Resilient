@@ -2,7 +2,7 @@
 //! `logos-lexer` feature flag).
 //!
 //! This module defines a `#[derive(Logos)]` token enum that mirrors
-//! every variant the hand-rolled scanner in `main.rs` produces, and
+//! every variant the hand-rolled scanner in `lib.rs` produces, and
 //! exposes `tokenize` — the entry point `Lexer::new` reaches for when
 //! the `logos-lexer` feature is enabled.
 //!
