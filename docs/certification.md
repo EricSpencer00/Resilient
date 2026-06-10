@@ -365,7 +365,9 @@ of the verification artifact.
 
 The gap between "features that contribute to a safety argument"
 and "a qualified toolchain" is the honest subject of this
-section. Items below are planned, not delivered.
+section. The items below are roadmap work only: they are not
+current toolchain capability, certification evidence, or a claim of
+conformance.
 
 - **Tool qualification dossier (G19+).** A DO-330 TQL-5 (or
   ISO 26262 TCL3) evaluation of the verifier subset used for
