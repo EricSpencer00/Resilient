@@ -32245,6 +32245,34 @@ fn print_fmt_help() {
     print!("{}", FMT_HELP_TEXT);
 }
 
+const DEBUG_HELP_TEXT: &str = r#"rz debug — start the Debug Adapter Protocol server
+
+USAGE:
+    rz debug <file>
+
+BEHAVIOR:
+    Starts a DAP server on stdin/stdout for an editor or debugger client.
+    The file argument labels the session; the DAP launch request supplies the program path.
+
+EXAMPLES:
+    rz debug examples/hello.rz
+
+For direct adapter launches, clients may use `rz --dap`.
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_debug_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("debug")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn print_debug_help() {
+    print!("{}", DEBUG_HELP_TEXT);
+}
+
 const LINT_HELP_TEXT: &str = r#"rz lint — run Resilient lints without executing the file
 
 USAGE:
@@ -32660,6 +32688,10 @@ pub fn run_cli() {
 
     if is_fmt_help_request(&args) {
         print_fmt_help();
+        std::process::exit(0);
+    }
+    if is_debug_help_request(&args) {
+        print_debug_help();
         std::process::exit(0);
     }
     if is_check_help_request(&args) {
