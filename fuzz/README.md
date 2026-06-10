@@ -8,8 +8,8 @@ libFuzzer.
 
 | Target  | Ticket   | What it fuzzes                                                                              |
 | ------- | -------- | ------------------------------------------------------------------------------------------- |
-| `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `resilient -t`. Fails on panic.                   |
-| `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `resilient --dump-tokens`. Fails on panic.         |
+| `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `rz -t`. Fails on panic.                          |
+| `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `rz --dump-tokens`. Fails on panic.                |
 | `jit`   | RES-310  | The Cranelift JIT lowering path: random bytes → UTF-8 filter → `rz --jit`. Fails on panic.  |
 
 Additional targets slot in by adding a file under
