@@ -32266,6 +32266,38 @@ fn print_check_help() {
     print!("{}", CHECK_HELP_TEXT);
 }
 
+const STACK_USAGE_HELP_TEXT: &str = r#"rz stack-usage — estimate per-function worst-case stack use
+
+USAGE:
+    rz stack-usage <file>
+
+OUTPUT:
+    Prints one row per user function with estimated bytes and notes.
+    Recursive call chains are reported as unbounded.
+
+BUDGETS:
+    #[stack(bytes=N)] declarations are checked against estimates.
+    The command exits 1 when any declared budget is exceeded.
+
+EXAMPLES:
+    rz stack-usage examples/stack_budget.rz
+    rz stack-usage firmware/control.rz
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_stack_usage_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("stack-usage")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn print_stack_usage_help() {
+    print!("{}", STACK_USAGE_HELP_TEXT);
+}
+
 fn should_report_unknown_command_or_file(filename: &str) -> bool {
     !filename.is_empty()
         && !filename.contains('/')
@@ -32376,6 +32408,10 @@ pub fn run_program(src: &str) -> RunResult {
 fn dispatch_stack_usage_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("stack-usage") {
         return None;
+    }
+    if is_stack_usage_help_request(args) {
+        print_stack_usage_help();
+        return Some(0);
     }
 
     let mut file: Option<PathBuf> = None;
@@ -32516,6 +32552,10 @@ pub fn run_cli() {
     }
     if is_lint_help_request(&args) {
         print_lint_help();
+        std::process::exit(0);
+    }
+    if is_stack_usage_help_request(&args) {
+        print_stack_usage_help();
         std::process::exit(0);
     }
 
