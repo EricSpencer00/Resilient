@@ -5,9 +5,10 @@
 //! and publish diagnostics with source ranges derived from
 //! RES-077's per-statement `Spanned<Node>` wrappers.
 //!
-//! Nothing else yet — no hover, no completion, no go-to-definition.
-//! Those are dedicated follow-up tickets. This ticket is the
-//! scaffolding that makes an editor light up with red squiggles.
+//! The same server also exposes best-effort hover, completion,
+//! go-to-definition, references, semantic tokens, inlay hints, rename,
+//! document symbols, and code actions. Unsupported cursor positions
+//! return the normal empty/null LSP result instead of a guessed answer.
 //!
 //! The `mod lsp_server;` declaration in `main.rs` is already
 //! gated on `cfg(feature = "lsp")`, so this file is only compiled
