@@ -199,9 +199,9 @@ Backoff sleeps count against the budget. A `live backoff(...) within
 the deadline check on its next retry attempt even if the body's
 execution time is trivial.
 
-The `no_std` runtime's clock is a placeholder and does NOT enforce
-`within` today — embedded targets ignore the clause until a real
-monotonic clock lands. This is a known divergence noted in
+The `no_std` runtime does not provide `within` wall-clock enforcement
+yet: embedded targets ignore the clause until a monotonic clock hook is
+wired in. This is a known divergence noted in
 [`SYNTAX.md`](../SYNTAX.md).
 
 ## 7. State roll-back contract

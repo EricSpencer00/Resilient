@@ -256,10 +256,9 @@ Runtime error: Live block timed out after 1 attempt(s) (retry depth: 1):
     ASSERTION ERROR: forced
 ```
 
-Note: the `no_std` embedded runtime shares RES-139's clock
-placeholder — the wall-clock check is currently std-only;
-embedded targets ignore the clause until a real monotonic
-clock is wired in.
+Note: the `no_std` embedded runtime does not enforce `within`
+wall-clock budgets yet; the check is currently std-only until a
+monotonic clock hook is wired in.
 
 ## Assertions
 
