@@ -151,7 +151,9 @@ For each contract obligation that Z3 discharges, writes a self-
 contained SMT-LIB2 file so a downstream consumer can re-verify
 the proof under their own solver without trusting the Resilient
 binary. One file per obligation, named `<fn>__<kind>__<idx>.smt2`.
-Implies `--typecheck`. Requires `--features z3`.
+Implies `--typecheck`. Requires a `--features z3` build; default
+builds report a `Backend-limited:` rebuild hint instead of silently
+ignoring the flag.
 
 ```bash
 rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # binary built with --features z3
@@ -166,12 +168,14 @@ Signs the concatenated certificate payload with an Ed25519
 private key, writing a 64-byte signature to `<dir>/cert.sig`.
 Only meaningful when paired with `--emit-certificate`. The PEM
 envelope format is documented in `resilient/src/cert_sign.rs`.
+Requires a `--features z3` build.
 
 ### `rz verify-cert <dir>`
 
 Re-checks `<dir>/cert.sig` against the binary's embedded public
 key (or a `--pubkey <path>` override). Exits 0 on match, 1 on
-tamper / wrong key, 2 on usage error.
+tamper / wrong key, 2 on usage error. Requires a `--features z3`
+build; default builds report a `Backend-limited:` rebuild hint.
 
 ```bash
 rz verify-cert ./certs
@@ -185,6 +189,8 @@ SHA-256 of the `.smt2` file, Ed25519 signature (if present), and
 optionally re-runs Z3 on each certificate when `--z3` is passed
 (requires the `z3` binary on `PATH`). Output is a one-row-per-
 obligation table; exit 0 iff every checked cell passes.
+Requires a `--features z3` build; default builds report a
+`Backend-limited:` rebuild hint.
 
 ```bash
 rz verify-all ./certs
