@@ -31502,6 +31502,10 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("lint") {
         return None;
     }
+    if is_lint_help_request(args) {
+        print_lint_help();
+        return Some(0);
+    }
 
     // Fast path: `rz lint --explain LXXXX` prints explanation and exits.
     if args.get(2).map(|s| s.as_str()) == Some("--explain") {
@@ -32198,6 +32202,39 @@ fn print_repl_help() {
     print!("{}", REPL_HELP_TEXT);
 }
 
+const LINT_HELP_TEXT: &str = r#"rz lint — run Resilient lints without executing the file
+
+USAGE:
+    rz lint <file> [FLAGS]
+    rz lint --explain LCODE
+
+FLAGS:
+        --deny LCODE            Promote the named lint to error severity
+        --allow LCODE           Suppress the named lint
+        --explain LCODE         Print the lint explanation and exit
+        --emit-diagnostics-json Emit lint diagnostics as JSON
+        --safety-critical       Promote safety-critical lint failures
+
+EXAMPLES:
+    rz lint examples/hello.rz
+    rz lint --deny L0010 examples/hello.rz
+    rz lint --explain L0006
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_lint_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("lint")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn print_lint_help() {
+    print!("{}", LINT_HELP_TEXT);
+}
+
 const CHECK_HELP_TEXT: &str = r#"rz check — type-check a file without running it
 
 USAGE:
@@ -32475,6 +32512,10 @@ pub fn run_cli() {
 
     if is_check_help_request(&args) {
         print_check_help();
+        std::process::exit(0);
+    }
+    if is_lint_help_request(&args) {
+        print_lint_help();
         std::process::exit(0);
     }
 
