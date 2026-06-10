@@ -228,9 +228,9 @@ Use the CLI flags below to select `#[cfg(...)]` branches in examples and
 real projects:
 
 ```bash
-rz --feature verbose examples/cfg_feature.rz
-rz --target thumbv7em examples/cfg_target.rz
-rz --cfg mode=demo examples/cfg_kv_demo.rz
+rz --feature verbose resilient/examples/cfg_feature.rz
+rz --target thumbv7em resilient/examples/cfg_target.rz
+rz --cfg mode=demo resilient/examples/cfg_kv_demo.rz
 ```
 
 The examples in `resilient/examples/` show the expected stdout for each
