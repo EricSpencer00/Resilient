@@ -170,8 +170,8 @@ extension (e.g. *Generic LSP Client*). Point `command` at the
 `rz` binary with `--lsp` as the argument and set the language
 ID to `resilient` for `.rz` files.
 
-The `vscode-extension/` directory in the repo contains a minimal
-extension scaffold — `npm install && vsce package` inside it
+The `vscode-extension/` directory in the repo contains a minimal VS Code
+extension workspace; `npm install && vsce package` inside it
 produces an installable `.vsix`.
 
 ---
