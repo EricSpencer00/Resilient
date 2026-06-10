@@ -32204,6 +32204,7 @@ const REPL_HELP_TEXT: &str = r#"rz repl — start the interactive REPL
 USAGE:
     rz repl [--examples-dir DIR]
     rz repl --help
+    rz repl help
 
 FLAGS:
     --help, -h            Show this help and exit
