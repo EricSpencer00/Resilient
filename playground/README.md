@@ -69,9 +69,9 @@ command on every PR that touches `playground/`.
 | Criterion | State |
 |---|---|
 | `wasm32-unknown-unknown` target added to CI | ✅ — `.github/workflows/playground.yml` |
-| `resilient` binary compiles to WASM via `wasm-bindgen` | 🟡 — scaffold uses a stand-alone `resilient-playground` crate with a stub interpreter; full integration pending the lib refactor described above |
+| `resilient` binary compiles to WASM via `wasm-bindgen` | ✅ — `resilient-playground` builds against the compiler library target and calls the real `resilient::run_program` tree-walker; native CLI-only pieces stay cfg-gated |
 | HTML+JS page at `playground/index.html` with CodeMirror + run button | ✅ — `playground/web/index.html` |
-| Run → WASM → stdout in result pane | ✅ — round-trip works; output is a stub message until full integration |
+| Run → WASM → stdout in result pane | ✅ — round-trip returns stdout, diagnostics, exit code, duration, and `flavor: "tree-walker"`; no stub output remains |
 | Examples dropdown pre-loads `resilient/examples/` | ✅ — baked into `dist/examples.json` at build time |
 | GitHub Pages deploy on push to main | ✅ — `.github/workflows/playground.yml` deploy job |
 | Size gate ≤ 2 MiB gzip | ✅ — `playground/build.sh --check-size` |
