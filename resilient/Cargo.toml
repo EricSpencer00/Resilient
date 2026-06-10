@@ -4,9 +4,9 @@ version = "0.2.0"
 edition = "2024"
 description = "A programming language designed for extreme reliability in embedded and safety-critical systems"
 authors = ["Eric Spencer"]
-# `examples/*.rs` holds Resilient-language source files (they use the `.rs`
-# extension for editor support), not Rust. Disable Cargo's auto-discovery so
-# it doesn't try to build them as Rust examples.
+# `examples/*.rz` holds Resilient-language source files, not Rust examples.
+# Disable Cargo's auto-discovery so it doesn't try to build example sidecars
+# or future helper files as Rust examples.
 autoexamples = false
 
 # RES-510: the compiler is exposed as both a library and a binary.
