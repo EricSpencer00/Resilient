@@ -76,8 +76,10 @@ of a guessed type.
 ### Go-to-definition
 
 Clicking "go to definition" on any **top-level function or struct
-name** jumps to its declaration site. Works across a single file;
-multi-file workspace lookup is a follow-up.
+name** jumps to its declaration site in the current file or an imported
+workspace file. Workspace lookup follows `use "..."` imports for
+top-level functions and structs, including unopened files under the
+initialized workspace folder.
 
 ### Completion
 
@@ -145,4 +147,3 @@ highlighting alone provides.
 - Scope-aware local-variable completion.
 - Post-dot field completion for structs.
 - Finer-grained parser error positions.
-- Multi-file workspace go-to-definition.
