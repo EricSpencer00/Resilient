@@ -483,7 +483,7 @@ static GLOBAL_JIT_COMPILES: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 
 /// Read the process-wide JIT cache counters. Returns `(hits,
 /// misses, compiles)`. Called by the CLI's `--jit-cache-stats`
-/// handler from `main.rs` at program exit.
+/// handler from `lib.rs` at program exit.
 pub fn cache_stats() -> (u64, u64, u64) {
     use std::sync::atomic::Ordering;
     (
@@ -1214,7 +1214,7 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
 // ============================================================
 //
 // The interpreter's builtin functions (`abs`, `min`, `max`, etc.
-// — see `BUILTINS` in main.rs) take `&[Value]` and return
+// — see `BUILTINS` in lib.rs) take `&[Value]` and return
 // `RResult<Value>`. That signature isn't callable from
 // Cranelift-compiled code, which only speaks i64 (and soon f64
 // via RES-098). This module provides thin `extern "C-unwind"`
@@ -1240,7 +1240,7 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
 
 pub(crate) mod jit_builtins {
     //! RES-167a: extern-"C-unwind" shim wrappers over the arity-
-    //! stable Int builtins in main.rs's BUILTINS table. These
+    //! stable Int builtins in lib.rs's BUILTINS table. These
     //! match the interpreter's semantics for the integer-only
     //! case so tree-walker and JIT output agree.
     //!
@@ -1248,7 +1248,7 @@ pub(crate) mod jit_builtins {
     //! the shims directly without going through Cranelift.
 
     /// Integer absolute value. Matches `builtin_abs` for the
-    /// `Value::Int` case in main.rs. `i64::MIN` wraps (same as
+    /// `Value::Int` case in lib.rs. `i64::MIN` wraps (same as
     /// `wrapping_abs`) to avoid a panic on the minimum value —
     /// the interpreter does the same via `.abs()` on two's-
     /// complement, which panics in debug but wraps in release.
@@ -1258,13 +1258,13 @@ pub(crate) mod jit_builtins {
     }
 
     /// Two-argument integer min. Matches `builtin_min` for the
-    /// two-Int case in main.rs.
+    /// two-Int case in lib.rs.
     pub extern "C-unwind" fn res_jit_min(a: i64, b: i64) -> i64 {
         a.min(b)
     }
 
     /// Two-argument integer max. Matches `builtin_max` for the
-    /// two-Int case in main.rs.
+    /// two-Int case in lib.rs.
     pub extern "C-unwind" fn res_jit_max(a: i64, b: i64) -> i64 {
         a.max(b)
     }
@@ -1606,7 +1606,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     };
     // RES-174: fold this run's cache stats into the process-wide
     // counters so `--jit-cache-stats` can print lifetime totals
-    // from `main.rs` at exit. Counters are relaxed-atomic — no
+    // from `lib.rs` at exit. Counters are relaxed-atomic — no
     // synchronization semantics, just diagnostic accumulation.
     flush_cache_stats_to_globals(&cache);
     Ok((result, cache))
