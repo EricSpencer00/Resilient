@@ -390,20 +390,30 @@ rz --seed=42 prog.rz
 **Security note.** SplitMix64 is not cryptographic. Do not use
 `random_*` for key material, nonces, or session tokens.
 
-## Debugger — *future*
+## Debugger
 
-There is no standalone step-debugger today. The current debugging
-aids are:
+### `rz debug <file>`
+
+Starts the Debug Adapter Protocol (DAP) server on stdin/stdout for an
+editor or debugger client. The file argument labels the session; the
+DAP launch request supplies the program path.
+
+```bash
+rz debug examples/hello.rz
+```
+
+For direct adapter launches, clients may also use `rz --dap`.
+
+Other debugging aids are:
 
 - `--dump-tokens` — inspect the lexer output
 - `--dump-chunks` — inspect the compiled bytecode
 - `println()` / `print()` in user code
 - The LSP server's hover and diagnostics
 
-A proper debugger (breakpoints, stepping, watch expressions, DAP
-server) is tracked as a future deliverable. Until it lands,
-bytecode-level inspection via `--dump-chunks` is the closest
-equivalent.
+Breakpoints, stepping, and watch expressions are still maturing; keep
+bytecode-level inspection via `--dump-chunks` in the toolbox when
+debug-adapter behavior is not enough.
 
 ## Profiler — *future*
 
@@ -418,13 +428,23 @@ a future deliverable.
 rz --jit --jit-cache-stats prog.rz   # requires a --features jit build
 ```
 
-## Test framework — *future*
+## Test framework
 
-Resilient programs express tests using ordinary `assert()` and
-`assert(cond, msg)` calls — there is no `rz test`
-subcommand yet. The assertion failure path includes the operand
-values, which makes most failure modes easy to debug without a
-dedicated framework.
+### `rz test [<file|dir>] [--filter <substring>]`
+
+Discovers and runs `fn test_*()` functions in `.rz` files. With no
+path argument, discovery starts from the current directory. Use
+`--filter` to run only tests whose function name contains a substring.
+
+```bash
+rz test
+rz test resilient/examples/test_runner_demo.rz
+rz test resilient/examples --filter smoke
+```
+
+Resilient programs can also express lightweight checks with ordinary
+`assert()` and `assert(cond, msg)` calls. The assertion failure path
+includes operand values, which keeps many failures easy to debug.
 
 ```rust
 fn main() {
@@ -442,8 +462,8 @@ cargo test --doc        # public API doctests
 cargo test --features z3  # also exercises the SMT layer
 ```
 
-A first-class `rz test` runner (test discovery, parallel
-execution, JUnit output) is tracked as a future deliverable.
+Parallel execution and JUnit output are still future test-runner
+extensions.
 
 ## Lint
 
