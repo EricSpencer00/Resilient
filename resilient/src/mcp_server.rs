@@ -641,7 +641,7 @@ fn resource_syntax_doc() -> String {
      ## Types\n\
      int    float    bool    string    array    void\n\
      fn(T, ...) -> R   // function type\n\
-     Array<T>          // typed array (planned)\n\n\
+     Array<T>          // typed array (not yet supported)\n\n\
      ## Control Flow\n\
      if COND { ... } else { ... }\n\
      while COND { ... }\n\
@@ -666,7 +666,7 @@ fn resource_syntax_doc() -> String {
      live { ... }             // retry block\n\n\
      ## Closures\n\
      fn(int x) -> int { x * 2 }     // anonymous function\n\
-     fn(x) { x + 1 }                // type-inferred params (planned)\n\n\
+     fn(x) { x + 1 }                // type-inferred params (not yet supported)\n\n\
      ## String Interpolation\n\
      let msg = \"value is {x}\";\n\n\
      ## Pattern Matching\n\
