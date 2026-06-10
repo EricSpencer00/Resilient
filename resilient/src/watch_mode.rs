@@ -1,7 +1,7 @@
 // RES-228: `rz run --watch <file>` — re-run the program on every save.
 //
 // All watch-mode logic lives here per the feature-isolation pattern in
-// CLAUDE.md.  The only changes to main.rs are:
+// CLAUDE.md. The library dispatcher touchpoints in `lib.rs` are:
 //   1. `mod watch_mode;`
 //   2. a dispatch call just before the normal `execute_file` path.
 //
@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer, notify::RecursiveMode};
 
-/// Entry point called from `main()` when `--watch` is passed.
+/// Entry point called from the library CLI dispatcher when `--watch` is passed.
 ///
 /// Runs `file_path` immediately, then re-runs it on every save until
 /// the user presses Ctrl-C.  `execute_once` is a closure that
