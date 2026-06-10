@@ -1,11 +1,11 @@
 ---
-title: Certificate Manifest Schema v1
+title: Certificate Manifest Schema
 parent: Standards
 nav_order: 2
 permalink: /certificates
 ---
 
-# Certificate Manifest Schema v1
+# Certificate Manifest Schema
 {: .no_toc }
 
 Schema reference for the proof-carrying certificate manifests that
@@ -28,7 +28,7 @@ the compiler writes:
 
 - One `<fn>__<kind>__<idx>.smt2` file per discharged Z3 obligation
   (see `format_cert_filename` in `cert_sign.rs`).
-- A `MANIFEST.json` enumerating every obligation, its certificate
+- A `manifest.json` enumerating every obligation, its certificate
   filename, and a SHA-256 over the certificate bytes.
 - (Optional, with `--sign-cert <key>`) Ed25519 signatures attached to
   each obligation entry, signing the certificate bytes.
@@ -37,14 +37,15 @@ The manifest is the **proof-carrying binary** artifact:
 hand it to a downstream consumer alongside the binary, and they can
 re-verify every obligation through Z3 with `rz verify-all <DIR>`.
 
-## Schema v1
+## Manifest JSON shape
+
+The current writer emits the two top-level fields below. Verifiers
+must tolerate unknown top-level and obligation-entry fields, so future
+releases can add optional metadata such as schema version, compiler
+version, Z3 version, or timestamps without breaking older consumers.
 
 ```json
 {
-  "schema": "v1",
-  "compiler": "resilient 0.1.0",
-  "z3": "4.13.0",
-  "timestamp": "2026-04-29T03:24:00Z",
   "program": "examples/sensor.rz",
   "obligations": [
     {
@@ -61,14 +62,10 @@ re-verify every obligation through Z3 with `rz verify-all <DIR>`.
 
 ### Top-level fields
 
-| Field         | Type    | Required | Description                                              |
-| ------------- | ------- | -------- | -------------------------------------------------------- |
-| `schema`      | string  | yes      | Always `"v1"` for this version.                          |
-| `compiler`    | string  | yes      | Compiler name + version that produced the manifest.      |
-| `z3`          | string  | yes      | Z3 version used (from `z3 --version`).                   |
-| `timestamp`   | string  | yes      | ISO-8601 UTC timestamp at emit time.                     |
-| `program`     | string  | yes      | Path to the source file (relative or absolute).          |
-| `obligations` | array   | yes      | One entry per discharged obligation. Order is stable.    |
+| Field         | Type   | Required | Description                                           |
+| ------------- | ------ | -------- | ----------------------------------------------------- |
+| `program`     | string | yes      | Path to the source file (relative or absolute).       |
+| `obligations` | array  | yes      | One entry per discharged obligation. Order is stable. |
 
 ### Obligation entry fields
 
@@ -102,11 +99,11 @@ of "what we proved", not a negative one.
 
 ```text
 $ rz --emit-certificate ./certs --sign-cert priv.pem prog.rz
-... compiles, emits ./certs/MANIFEST.json + per-obligation .smt2 files
+... compiles, emits ./certs/manifest.json + per-obligation .smt2 files
 ... signs each cert with Ed25519
 
 $ rz verify-all ./certs --pubkey pub.pem
-... walks MANIFEST.json
+... walks manifest.json
 ... for each obligation:
 ...   1. recompute SHA-256 over cert bytes
 ...   2. verify Ed25519 sig (if --pubkey supplied)
@@ -124,10 +121,11 @@ A non-zero exit code from `verify-all` indicates one of:
 
 ## Compatibility
 
-- Schema v1 is the inaugural version.
-- New fields may be added at any time without bumping the schema.
-- Removing or renaming a field requires bumping to v2 and emitting a
-  migration path in this doc.
+- The current manifest shape is the inaugural version.
+- New optional fields may be added at any time without changing the
+  required field set above.
+- Removing or renaming a required field requires a versioned migration
+  path in this doc.
 - Verifiers MUST tolerate unknown top-level and obligation-entry
   fields (forward compatibility).
 
