@@ -11,6 +11,13 @@ Scope rules:
 - When a surface is not yet stable, call it out explicitly instead of
   treating it as uncovered stable behavior.
 
+## Status Vocabulary
+
+- **Stable:** Supported for scripts and CI on the default build.
+- **Backend-limited:** Stable when the named backend/build feature is present;
+  unavailable builds print a rebuild hint.
+- **Experimental:** User-facing, but policy/output may still evolve.
+
 ## Stable Language Surface
 
 | Surface | Direct coverage | Status | Notes |
@@ -49,9 +56,9 @@ Scope rules:
 | `bench <file>` | `resilient/tests/bench_cli.rs`, `resilient/tests/bench_cli_summary_json.rs` | Covered | Human and machine-readable outputs. |
 | Example corpus smoke | `resilient/tests/examples_smoke.rs`, `resilient/tests/examples_golden.rs` | Covered | Direct shipped-example coverage. |
 | Self-host parity report | `resilient/tests/self_host_parity_report_cli.rs` | Covered | Dedicated report artifact smoke. |
-| Certificate verification (`verify-cert`, `verify-all`) | `resilient/tests/verify_cert_smoke.rs`, `resilient/tests/verify_all_smoke.rs` | Covered | Stable when built with `--features z3`. |
-| Backend-limited execution (`--vm`, `--jit`) | `resilient/tests/examples_smoke.rs` | Covered | Stable subset / feature-gated, but still pinned by direct smoke. |
-| LSP server | `resilient/tests/lsp_smoke.rs` and focused LSP smoke files | Covered | Feature-gated shipped surface. |
+| Certificate verification (`verify-cert`, `verify-all`) | `resilient/tests/verify_cert_smoke.rs`, `resilient/tests/verify_all_smoke.rs` | Covered | Backend-limited; stable when built with `--features z3`, and default builds print a rebuild hint. |
+| Backend execution (`--vm`, `--jit`) | `resilient/tests/examples_smoke.rs` | Covered | `--vm` is stable on the default build; `--jit` is backend-limited and requires `--features jit`. |
+| LSP server | `resilient/tests/lsp_smoke.rs` and focused LSP smoke files | Covered | Backend-limited; stable when built with `--features lsp`, and default builds print a rebuild hint. |
 
 ## Intentionally Deferred / Not Yet Stable
 

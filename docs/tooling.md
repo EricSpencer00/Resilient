@@ -50,17 +50,16 @@ erroring.
 Public behavior is grouped by the same stability classes printed by
 `rz --help`:
 
-- **Stable:** supported for scripts and CI on the default build:
-  `--check`, `--typecheck`, `--typecheck-strict`, `--fmt`, `--lint`,
+- **Stable:** Supported for scripts and CI on the default build. Examples
+  include `--check`, `--typecheck`, `--typecheck-strict`, `--fmt`, `--lint`,
   `--examples`, `--audit` (without SMT features), `--run`, and the
   default/interpreter execution path.
-- **Backend-limited:** stable when the named backend/build feature is
-  present; unavailable builds print a rebuild hint. This includes
-  `--vm`, `--jit` (requires `--features jit`), `--lsp` (requires
-  `--features lsp`), and SMT-enabled verification (`--features z3` /
-  `--z3`).
-- **Experimental:** user-facing, but policy/output may still evolve:
-  `--ai-threats` and `--dump-ast-json`.
+- **Backend-limited:** Stable when the named backend/build feature is present;
+  unavailable builds print a rebuild hint. This includes `--jit` (requires
+  `--features jit`), `--lsp` (requires `--features lsp`), and SMT-enabled
+  verification (`--features z3` / `--z3`).
+- **Experimental:** User-facing, but policy/output may still evolve. Examples
+  include `--ai-threats` and `--dump-ast-json`.
 
 ## Inspection
 
@@ -398,7 +397,7 @@ a future deliverable.
 
 ```bash
 # What exists today:
-rz --jit --jit-cache-stats prog.rz
+rz --jit --jit-cache-stats prog.rz   # requires a --features jit build
 ```
 
 ## Test framework — *future*
