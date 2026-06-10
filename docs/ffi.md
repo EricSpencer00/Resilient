@@ -60,7 +60,7 @@ Only primitive types are supported in FFI Phase 1:
 | `String`    | variadic `printf`-style format strings; fixed-arity string ABI arms remain limited to implemented trampoline shapes |
 | `Void`      | `void`                                         |
 | `OpaquePtr` | `void*` (opaque)                               |
-| `Callback`  | C function pointer (Phase 1 stub — see below)  |
+| `Callback`  | C function pointer (recognised in declarations; calls unsupported in Phase 1) |
 
 At most 8 parameters per extern function.
 
@@ -112,7 +112,7 @@ Trampoline coverage today:
 Higher arities extend mechanically by adding an arm to
 `dispatch_explicit` in `ffi_trampolines.rs`.
 
-### `Callback` — Phase 1 stub
+### `Callback` — declaration-only in Phase 1
 
 Callback types are recognised in FFI declarations:
 
@@ -122,8 +122,8 @@ extern "libfoo.so" {
 }
 ```
 
-Passing a Resilient function as `Callback` is stubbed in Phase 1 and returns
-a clean error:
+Passing a Resilient function as `Callback` is not supported in Phase 1 and
+returns a clean error:
 
 ```
 FFI: extern fn `register_handler` uses a Callback parameter; callbacks
