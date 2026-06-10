@@ -95,14 +95,14 @@ the merge.** Your job is to make CI green.
      pick a different ticket.
 2. **Pre-dispatch overlap check.** Before creating your branch:
    ```bash
-   agent-scripts/check-overlaps.sh resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
+   agent-scripts/check-overlaps.sh resilient/src/lib.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
    ```
    If conflicts are reported, wait for those PRs to merge before starting.
 3. **Claim the ticket.** Comment on the issue, then create a branch named
    `res-NNN-short-title`.
 4. **Claim core files** immediately (before any edits):
    ```bash
-   agent-scripts/claim-files.sh res-NNN-short-title resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
+   agent-scripts/claim-files.sh res-NNN-short-title resilient/src/lib.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
    ```
 5. **Open a draft PR early** with `Closes #N` in the body — this signals
    the ticket is taken.
