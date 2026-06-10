@@ -21,8 +21,9 @@ The language of this page:
   diverge from only when a ticket-level ADR records the deviation.
 - **MAY** — strictly permissive; not part of the contract.
 
-Line references below point at `resilient/src/main.rs` on the branch
-that landed RES-210.
+Implementation references below name symbols in `resilient/src/lib.rs`;
+line numbers are intentionally omitted because the compiler library
+moves quickly.
 
 ## 1. Entry conditions
 
@@ -38,21 +39,21 @@ A `live` block begins executing the moment control reaches the
   block are scoped to the block's body.
 - On entry, the interpreter:
   1. Takes a **deep clone** of the current environment as
-     `env_snapshot` (`main.rs` line ~6695). This is what each retry
-     attempt restores from.
+     `env_snapshot` inside `eval_live_block`. This is what each
+     retry attempt restores from.
   2. Pushes a new retry counter (initial value `0`) onto the
      thread-local `LIVE_RETRY_STACK` so `live_retries()` inside the
      body reads `0` on the first attempt. An RAII guard
-     (`LiveRetryGuard`, `main.rs` line ~6706) removes the counter on
-     every exit path — success, exhaustion, timeout, or a Rust panic
-     unwinding through the block.
+     (`LiveRetryGuard`) removes the counter on every exit path —
+     success, exhaustion, timeout, or a Rust panic unwinding through
+     the block.
   3. If the block has a `within <duration>` clause, samples
      `std::time::Instant::now()` as the wall-clock deadline anchor.
 
 ## 2. Retry loop
 
-The body is evaluated inside a `loop { ... }` (`main.rs` line ~6715).
-On each iteration:
+The body is evaluated inside the retry loop in `eval_live_block`. On
+each iteration:
 
 1. The body runs once.
 2. Invariants (if any) are re-checked (see §3).
@@ -78,10 +79,10 @@ The retry arm:
    fresh clone per retry; otherwise the first retry's mutations would
    leak into the second).
 
-The retry cap is a compile-time constant: `MAX_RETRIES = 3`
-(`main.rs` line ~6688). A plain `live { ... }` block therefore runs
-its body up to **three times** in total: one original attempt plus
-two retries. After the third failure the block propagates.
+The default retry cap is `DEFAULT_LIVE_MAX_RETRIES = 3`. A plain
+`live { ... }` block therefore runs its body up to **three times** in
+total: one original attempt plus two retries. After the third failure
+the block propagates.
 
 `retry_count` semantics:
 
@@ -101,8 +102,8 @@ because the block has already escalated by then.
 
 Invariants (RES-036) are clauses that MUST hold at the end of every
 successful body evaluation. They are recorded on the `LiveBlock`
-AST node as `invariants: Vec<Node>` (`main.rs` line ~991) and
-evaluated in source order after the body's final expression.
+AST node as `invariants: Vec<Node>` and evaluated in source order
+after the body's final expression.
 
 Ordering on a single attempt:
 
@@ -157,8 +158,7 @@ on to retry its own body.
 
 When the block is written with a `backoff(...)` prefix, the retry
 arm sleeps for `cfg.delay_ms(retry_count - 1)` milliseconds between
-retries (`main.rs` line ~6836). The default `BackoffConfig`
-policy (RES-139) is:
+retries. The default `BackoffConfig` policy (RES-139) is:
 
 - `delay_ms(n) = min(base_ms * factor^n, max_ms)`
 - `base_ms` default: `1` ms
@@ -178,9 +178,9 @@ behaviour preserved for source compatibility.
 ## 6. Timeout
 
 The `within <duration>` clause (RES-142) is a wall-clock deadline
-anchored at block entry (`main.rs` line ~6712). Duration literals
-are `<integer><unit>` where `unit ∈ {ns, us, ms, s}`; they exist
-ONLY inside this clause.
+anchored at block entry inside `eval_live_block`. Duration literals are
+`<integer><unit>` where `unit ∈ {ns, us, ms, s}`; they exist ONLY
+inside this clause.
 
 On every retry, before the backoff sleep and before the retry-cap
 check's "should we try again?" branch, the runtime computes the
@@ -220,10 +220,9 @@ clone of the entry-time `env_snapshot`. That covers:
 The roll-back contract EXPLICITLY EXCLUDES:
 
 - **`static let` declarations.** `static let` values live in
-  `self.statics`, which is shared across attempts by design
-  (`main.rs` line ~6211). Users relying on the retry semantics for
-  a counter or cache MUST use `static let`; users wanting roll-back
-  MUST use ordinary `let`.
+  `self.statics`, which is shared across attempts by design. Users
+  relying on the retry semantics for a counter or cache MUST use
+  `static let`; users wanting roll-back MUST use ordinary `let`.
 - **External side effects.** Writes to files, sockets, hardware
   registers, `println`-style stdout, memory-mapped peripherals, FFI
   calls with observable effects — none of these are rolled back by
@@ -269,9 +268,8 @@ Nesting is allowed and composes exactly as described in
 
 ## 9. `live_retries()` builtin
 
-`live_retries() -> Int` (RES-138, registered in the builtin table at
-`main.rs` line ~4536) reports the retry counter of the innermost
-enclosing live block.
+`live_retries() -> Int` (RES-138, registered in the `BUILTINS` table)
+reports the retry counter of the innermost enclosing live block.
 
 - The first attempt reads `0`.
 - The Nth retry reads `N - 1 + 1 = N` after the increment (so the
