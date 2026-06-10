@@ -184,7 +184,7 @@ pub enum Op {
     ///
     /// Storing the name (rather than a function pointer index) keeps the
     /// `Op` enum `Copy` and avoids embedding a separate per-program
-    /// builtin table — the canonical `BUILTINS` slice in `main.rs` is
+    /// builtin table — the canonical `BUILTINS` slice in `lib.rs` is
     /// the single source of truth and is consulted at dispatch time.
     CallBuiltin { name_const: u16, arity: u8 },
     /// RES-335: build a `Value::Struct` from `field_count` `(name, value)`
