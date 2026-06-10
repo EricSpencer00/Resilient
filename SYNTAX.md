@@ -1123,10 +1123,14 @@ extern "LIBRARY_PATH" {
 | `Int`     | `int64_t` |
 | `Float`   | `double` |
 | `Bool`    | `bool` (i8) |
-| `String`  | not yet supported |
+| `String`  | variadic `printf`-style format strings; fixed-arity string ABI arms remain limited to implemented trampoline shapes |
 | `Void`    | `void` / no return |
 
 At most 8 parameters per extern function (v1 limit).
+String FFI is narrower than ordinary language string support: use it
+for documented trampoline shapes such as `fn c_printf(fmt: String, ...) -> Int`;
+do not assume arbitrary C string ownership or fixed-arity `char*`
+signatures are available without a matching trampoline arm.
 
 ### Contracts on extern fns
 
