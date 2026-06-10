@@ -682,8 +682,8 @@ async function runCode(isAuto = false) {
   if (!isAuto) footerEl.textContent = "";
 
   // Yield to the event loop so the "Running…" placeholder paints
-  // before the (potentially blocking) WASM call. Stubs are fast,
-  // but the full interpreter will benefit from this once integrated.
+  // before the WASM tree-walker call. Fast snippets should still show
+  // the pending state consistently.
   await new Promise((r) => setTimeout(r, 0));
 
   let result;
