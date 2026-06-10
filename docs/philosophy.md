@@ -51,7 +51,7 @@ caller's perspective, the live block either eventually
 succeeds or escalates after exhausting its retry budget. The
 unhappy path is the runtime's problem, not the programmer's.
 
-```rust
+```resilient
 live {
     let frame = read_sensor();        // may transient-fail
     assert(is_valid(frame), "bad frame");
@@ -79,7 +79,7 @@ clause at compile time. With `--features z3`, hard clauses
 get dispatched to Z3. What can't be proven becomes a runtime
 check — same semantics, different cost.
 
-```rust
+```resilient
 fn safe_div(int a, int b)
     requires b != 0
     ensures  result * b == a
@@ -95,7 +95,7 @@ to trust the Resilient binary — they re-run the proof under
 any compatible solver and confirm the answer themselves.
 
 ```bash
-cargo run --features z3 -- --emit-certificate ./certs prog.rz
+cargo run --manifest-path resilient/Cargo.toml --features z3 -- --emit-certificate ./certs prog.rz
 z3 -smt2 ./certs/safe_div__post__0.smt2
 # unsat
 ```
