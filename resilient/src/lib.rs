@@ -32030,6 +32030,10 @@ fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("fmt") {
         return None;
     }
+    if is_fmt_help_request(args) {
+        print_fmt_help();
+        return Some(0);
+    }
 
     let mut file: Option<PathBuf> = None;
     let mut in_place = false;
@@ -32208,6 +32212,37 @@ fn print_help() {
 
 fn print_repl_help() {
     print!("{}", REPL_HELP_TEXT);
+}
+
+const FMT_HELP_TEXT: &str = r#"rz fmt — format a Resilient source file
+
+USAGE:
+    rz fmt <file> [--in-place]
+
+OUTPUT:
+    By default, prints the formatted source to stdout.
+    With --in-place, rewrites the file and prints nothing on success.
+
+FLAGS:
+    -i, --in-place    Rewrite the file instead of printing formatted source
+
+EXAMPLES:
+    rz fmt examples/hello.rz
+    rz fmt --in-place examples/hello.rz
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_fmt_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("fmt")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn print_fmt_help() {
+    print!("{}", FMT_HELP_TEXT);
 }
 
 const LINT_HELP_TEXT: &str = r#"rz lint — run Resilient lints without executing the file
@@ -32623,6 +32658,10 @@ pub fn run_cli() {
         std::process::exit(0);
     }
 
+    if is_fmt_help_request(&args) {
+        print_fmt_help();
+        std::process::exit(0);
+    }
     if is_check_help_request(&args) {
         print_check_help();
         std::process::exit(0);
