@@ -53,8 +53,8 @@ JSON-RPC LSP framing. Your editor client manages the process.
 Every `did_open` or `did_change` event re-runs the full parse +
 typecheck pipeline and publishes structured diagnostics with
 `<uri>:<line>:<col>:` locations. Editor squiggles appear in the
-correct column for type errors. Parser errors currently appear at
-line 1, column 1 — finer-grained parser spans land in a follow-up.
+reported column for parser and typechecker errors; lint diagnostics use
+the source positions recorded by the lint pass.
 
 ### Hover
 
