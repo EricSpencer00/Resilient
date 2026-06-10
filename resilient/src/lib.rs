@@ -139,7 +139,7 @@ mod dap_server;
 #[cfg(not(target_arch = "wasm32"))]
 mod debugger;
 
-/// RES-2645: MCP external-tool bridge registry — generic scaffolding for
+/// RES-2645: MCP external-tool bridge registry — integration support for
 /// connecting external verification/analysis tools as MCP tool providers.
 pub mod mcp_tool_registry;
 
