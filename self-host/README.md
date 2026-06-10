@@ -93,7 +93,7 @@ the harness pass).
 |---|---|
 | `self-host/lexer.rz` implements the complete Resilient lexer | 🟡 — covers significantly more than the RES-196 prototype (verification keywords, escapes, hex/bin, block comments, 3-char ops); full coverage matching every example in `resilient/examples/` is a follow-up |
 | Test harness compares against the Rust frontend on a representative corpus | ✅ — `cargo test --manifest-path resilient/Cargo.toml --test self_host_parity` cross-checks lexer parity, parser AST parity, and one diagnostic-path case |
-| `resilient run self-host/lexer.rz -- <input_file>` | ✅ — `SELF_HOST_INPUT` env var; CLI arg passing isn't a current language surface, env var is the idiomatic substitute |
+| `SELF_HOST_INPUT=<input_file> rz self-host/lexer.rz` | ✅ — env-var input is the current language-level substitute for CLI arg passing |
 | No new language features added to support this | ✅ — uses existing `file_read`, `env`, `is_ok`, `unwrap`, `split`, `push`, `len`, struct field access |
 
 ## What's next
