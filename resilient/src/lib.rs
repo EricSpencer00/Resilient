@@ -33344,7 +33344,7 @@ pub fn run_cli() {
         }
         if should_report_unknown_command_or_file(filename) {
             eprintln!(
-                "Error: unknown command or file `{}`. Run `rz --help` to list subcommands, or pass an existing file path.",
+                "Error: unknown command or file `{}`. Run `rz help` or `rz --help` to list subcommands, or pass an existing file path.",
                 filename
             );
             std::process::exit(2);
