@@ -287,6 +287,11 @@ pub fn dispatch_tla_subcommand(args: &[String]) -> Option<i32> {
 }
 
 fn run_tla_check(args: &[String]) -> i32 {
+    if is_tla_check_help_args(args) {
+        print_tla_check_help();
+        return 0;
+    }
+
     // Trivial flag parser: --tlc-jar PATH, --verbose, positional = file.
     let mut tla_file: Option<&str> = None;
     let mut tlc_jar: Option<&str> = None;
@@ -371,6 +376,48 @@ EXIT CODES:
     0 — no violations found
     1 — violation found, parse error, or TLC unavailable"
     );
+}
+
+const TLA_CHECK_HELP_TEXT: &str = r#"rz tla check — run TLC model checking for a TLA+ spec
+
+USAGE:
+    rz tla check [OPTIONS] <file.tla>
+
+BEHAVIOR:
+    Shells out to TLC via `java -jar tla2tools.jar`.
+    TLC output is surfaced as Resilient-style diagnostics.
+
+OPTIONS:
+    --tlc-jar PATH   Path to tla2tools.jar; overrides RESILIENT_TLC_JAR
+    --verbose        Print raw TLC output before diagnostics
+
+DISCOVERY:
+    1. --tlc-jar PATH
+    2. RESILIENT_TLC_JAR environment variable
+    3. tlc.jar or tla2tools.jar anywhere on PATH
+
+EXAMPLES:
+    rz tla check MySpec.tla
+    rz tla check --tlc-jar /opt/tla2tools.jar --verbose MySpec.tla
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+pub(crate) fn is_tla_check_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("tla")
+        && args.get(2).map(String::as_str) == Some("check")
+        && is_tla_check_help_args(&args[3..])
+}
+
+fn is_tla_check_help_args(args: &[String]) -> bool {
+    matches!(
+        args.first().map(String::as_str),
+        Some("--help" | "-h" | "help")
+    )
+}
+
+pub(crate) fn print_tla_check_help() {
+    print!("{}", TLA_CHECK_HELP_TEXT);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
