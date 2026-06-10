@@ -32768,10 +32768,14 @@ pub fn run_cli() {
         std::process::exit(code);
     }
 
-    // RES-211: `--help` / `-h` prints a short usage summary listing
-    // the most-used flags. Kept hand-rolled (no clap dep) to match
-    // the rest of the driver's arg-parsing style.
-    if args.iter().any(|a| a == "--help" || a == "-h") && !explicit_repl {
+    let top_level_help_word = args.get(1).map(String::as_str) == Some("help")
+        && args.len() == 2
+        && !Path::new("help").is_file();
+
+    // RES-211: `--help` / `-h` / top-level `help` prints a short
+    // usage summary listing the most-used flags. Kept hand-rolled
+    // (no clap dep) to match the rest of the driver's arg-parsing style.
+    if (top_level_help_word || args.iter().any(|a| a == "--help" || a == "-h")) && !explicit_repl {
         print_help();
         std::process::exit(0);
     }
