@@ -1,11 +1,12 @@
 # self-host/ — Resilient compiler in Resilient
 
-Two artifacts live here, in increasing scope:
+Three artifact generations live here, in increasing scope:
 
 | Path | Ticket | Scope |
 |---|---|---|
 | `lex.rs` + `hello.tokens.txt` + `run.sh` | RES-196 | Prototype lexer covering a restricted Resilient subset; one snapshot input (`hello.rz`). Goal was "prove the language can express scanning at all." |
 | `lexer.rz` + `lexer_tests/` + `lexer_check.sh` | RES-323 | Production-step-up lexer covering the verification surface (requires/ensures/invariant/assume/assert/...), block comments, escapes, hex/bin literals, and 2/3-char operators. |
+| `parser.rz` + `parser_tests/` + `parity_corpus/` | RES-379 | Self-hosted parser step that consumes lexer tokens and emits JSON for the curated success/error corpus checked by `self_host_parity`. |
 
 ## Running the RES-323 harness
 
@@ -104,5 +105,7 @@ the harness pass).
    — that would be a bigger lexer extension.
 2. **Multi-line strings.** If/when Resilient grows raw string
    literals, the `scan_string` function will need a separate path.
-3. **Self-hosting parser** is tracked as the follow-up [#171](https://github.com/EricSpencer00/Resilient/issues/171)
-   (RES-379). Sequenced after this lexer ships.
+3. **Parser coverage expansion.** `parser.rz` exists and is covered by
+   `self_host_parity` on the curated corpus. The next step is widening
+   grammar coverage and corpus breadth toward the stable language
+   surface.
