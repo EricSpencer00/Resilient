@@ -98,7 +98,7 @@ the harness pass).
 
 ## What's next
 
-1. **All-examples sweep.** Walk `resilient/examples/*.{rz,res}` and
+1. **All-examples sweep.** Walk `resilient/examples/*.rz` and
    add a snapshot per file. Some inputs use string interpolation
    (`{...}` segments inside string literals) which the current
    self-hosted lexer does not yet decompose into nested expressions
