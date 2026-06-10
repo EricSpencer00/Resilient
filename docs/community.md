@@ -84,7 +84,7 @@ Found a bug? Have a feature idea? Open an issue on GitHub:
 
 For compiler crashes, please include:
 - The Resilient source that triggered the crash
-- The full error output (`RUST_BACKTRACE=1 resilient your_file.rs`)
+- The full error output (`RUST_BACKTRACE=1 rz your_file.rz`)
 - Your OS and `cargo --version`
 
 ---
