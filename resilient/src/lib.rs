@@ -30777,6 +30777,10 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
             // command line wins, which matches how most CLI parsers
             // resolve the conflict. Future `pkg add`, `pkg build`,
             // etc. will branch here.
+            if args.get(3).map(|s| s.as_str()) == Some("help") && args.len() == 4 {
+                print_pkg_init_help();
+                return Some(0);
+            }
             let mut name: Option<String> = None;
             let mut i = 3;
             while i < args.len() {
