@@ -32714,6 +32714,10 @@ pub fn run_cli() {
         print_verify_all_help();
         std::process::exit(0);
     }
+    if source_map::is_dump_source_map_help_request(&args) {
+        source_map::print_dump_source_map_help();
+        std::process::exit(0);
+    }
 
     // TLA+ bridge: `rz tla check <file.tla>` — shells out to TLC and
     // surfaces results in Resilient's diagnostic format.
