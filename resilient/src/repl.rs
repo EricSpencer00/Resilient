@@ -24,7 +24,7 @@ const BLUE: &str = "\x1B[34m";
 const CYAN: &str = "\x1B[36m";
 
 /// RES-311: language keywords surfaced as tab-completion candidates.
-/// Mirrors the keyword table in `main.rs::Lexer::next_token`. Hand-curated
+/// Mirrors the keyword table in `lib.rs::Lexer::next_token`. Hand-curated
 /// (the lexer hard-codes its keyword arms in a non-iterable `match`); when
 /// new keywords arrive there, append them here.
 const REPL_KEYWORDS: &[&str] = &[
