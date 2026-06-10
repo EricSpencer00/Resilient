@@ -1,7 +1,7 @@
 # Resilient Standard Library
 
 Reference for built-in functions visible in every Resilient program.
-Implementations live in `resilient/src/main.rs` (table: `BUILTINS`); type
+Implementations live in `resilient/src/lib.rs` (table: `BUILTINS`); type
 signatures live in `resilient/src/typechecker.rs` (`prelude` setup).
 
 The canonical, machine-checkable list of names is the `BUILTINS` table.
@@ -318,8 +318,8 @@ dispatched via the special StringBuilder method handler in
 
 When adding a new builtin, the canonical list to update is:
 
-1. The `BUILTINS` table in `resilient/src/main.rs`.
+1. The `BUILTINS` table in `resilient/src/lib.rs`.
 2. The type signature in the prelude block of `resilient/src/typechecker.rs`.
 3. The `PURE_BUILTINS` list in `resilient/src/typechecker.rs` (unless impure).
 4. A row in this file and in `SYNTAX.md`.
-5. A unit test in `resilient/src/main.rs`'s `mod tests`.
+5. A focused Rust test in `resilient/src/lib.rs` or `resilient/tests/`.
