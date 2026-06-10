@@ -30,7 +30,7 @@
 //! | `resilient_verify` | Z3 contract verification (requires `--features z3`) |
 //!
 
-//! ## Prompts exposed (RES-2645 MCP Scaffolding)
+//! ## Prompts exposed (RES-2645 MCP Integration)
 //!
 //! | Prompt | Description |
 //! |---|---|
@@ -40,7 +40,7 @@
 //! | `explain_lint` | Guided workflow: understand and fix a lint warning |
 //! | `safety_review` | Guided workflow: full safety-critical review |
 //!
-//! ## Resources exposed (RES-2645 MCP Scaffolding)
+//! ## Resources exposed (RES-2645 MCP Integration)
 //!
 //! | Resource | Description |
 //! |---|---|
@@ -135,7 +135,7 @@ fn dispatch(
         "tools/list" => Some(handle_tools_list(id)),
         "tools/call" => Some(handle_tools_call(id, params)),
 
-        // RES-2645: MCP Scaffolding — prompts and resources support.
+        // RES-2645: MCP integration — prompts and resources support.
         "prompts/list" => Some(handle_prompts_list(id)),
         "prompts/get" => Some(handle_prompts_get(id, params)),
         "resources/list" => Some(handle_resources_list(id)),
@@ -256,7 +256,7 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
     }
 }
 
-// ── Prompts (RES-2645: MCP Scaffolding) ──────────────────────────────────────
+// ── Prompts (RES-2645: MCP integration) ──────────────────────────────────────
 
 /// Guided workflow prompt descriptors surfaced via `prompts/list`.
 fn prompt_descriptors() -> Vec<Value> {
@@ -535,7 +535,7 @@ fn handle_prompts_get(id: &Value, params: Option<&Value>) -> Value {
     ok(id, json!({ "messages": messages }))
 }
 
-// ── Resources (RES-2645: MCP Scaffolding) ────────────────────────────────────
+// ── Resources (RES-2645: MCP integration) ────────────────────────────────────
 
 /// Static documentation resource descriptors.
 fn resource_descriptors() -> Vec<Value> {
