@@ -48,10 +48,10 @@
 //! - It doesn't follow `use` imports (those are resolved before
 //!   this pass runs — RES-073).
 //!
-//! The public entry point `free_vars` is only consumed from the
-//! tests in this module today; RES-164c/d will wire it into the
-//! JIT lowering. We `allow(dead_code)` at the module level so the
-//! regular build stays warning-clean until then.
+//! The public entry point `free_vars` is consumed by recovery
+//! checking and by this module's regression tests today. It stays
+//! pure so RES-164c/d can reuse it for JIT closure capture without
+//! threading runtime `Environment` state through the analysis.
 
 #![allow(dead_code)]
 
