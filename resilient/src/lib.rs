@@ -32074,123 +32074,124 @@ fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
 /// RES-211: help text printed by `--help` / `-h`. Lists the most
 /// commonly used driver flags; kept short because the full
 /// reference lives in SYNTAX.md and the per-subcommand dispatchers.
+const GLOBAL_HELP_TEXT: &str = r#"rz — the Resilient language compiler & interpreter
+
+USAGE:
+    rz [FLAGS] [<file>]
+    rz                      # start REPL when no file is provided
+    rz <subcommand> [ARGS]
+
+COMMON FLAGS:
+    -h, --help                   Show this help and exit
+    -t, --typecheck              Run the static type checker in strict mode
+                                 (fail with exit 1 on any type error). The
+                                 type checker also runs by default in soft
+                                 mode — diagnostics print to stderr but the
+                                 program still executes (RES-1088).
+        --typecheck-strict       Make any type error fatal (exit 1) without
+                                 the verbose status lines of --typecheck.
+                                 Suitable for CI scripts that want strict
+                                 checking without extra output (RES-2646).
+        --no-typecheck           Skip the static type checker entirely
+        --audit                  Print the verification audit trail
+        --verbose                Print one stderr line per loop
+                                 invariant statically proven (RES-318)
+        --explain-effects        Print the inferred effect (@pure / @io)
+                                 for every user function
+        --emit-certificate DIR   Dump SMT-LIB2 certs per obligation
+                                 (backend-limited; requires --features z3)
+        --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)
+        --safety-critical        Promote vacuous proof-discharge constructs
+                                 such as `assume(false)` to hard errors
+        --sign-cert PATH         Ed25519-sign the emitted certificate
+                                 (backend-limited; requires --features z3)
+        --vm                     Route through the bytecode VM
+        --jit                    Route through the Cranelift JIT
+                                 (backend-limited; requires --features jit)
+        --dump-tokens            Print the lexer stream and exit
+        --dump-ast-json          Print the parsed AST as JSON and exit
+                                 (experimental tooling surface)
+        --dump-chunks            Print the VM disassembly and exit
+        --verifier-timeout-ms N  Per-Z3-query timeout (ms, 0 = off)
+        --seed N                 Pin the RNG seed for determinism
+        --panic-on-fault         Disable live-block retry healing;
+                                 abort with exit 1 on the first fault
+        --no-panic-on-fault      Restore default retry behaviour
+        --emit-live-log PATH     NDJSON log of live-block retries (RES-371)
+        --examples-dir DIR       REPL examples directory
+        --lsp                    Run the LSP server on stdio
+                                 (backend-limited; requires --features lsp)
+        --mcp                    Run the MCP server on stdio
+                                 Exposes compiler tools (parse/typecheck/run/
+                                 lint/format/verify) to AI assistants via the
+                                 Model Context Protocol (2024-11-05)
+        --dap                    Run the DAP (Debug Adapter Protocol) server
+                                 on stdio for interactive debugging
+        --no-cache               Disable the incremental compilation cache
+                                 for this run (RES-355)
+        --feature NAME           Activate a `#[cfg(feature="NAME")]` flag
+                                 (repeatable; RES-343)
+        --target TRIPLE          Set the active triple for `#[cfg(target=...)]`
+                                 predicates (RES-343)
+        --cfg KEY=VALUE          Set a generic cfg key-value pair for
+                                 `#[cfg(key = "value")]` predicates
+                                 (repeatable; --cfg test sets the test flag)
+                                 (RES-2581)
+        --watch                  Re-run the file on every save (200 ms
+                                 debounce); press Ctrl-C to stop (RES-228)
+
+STATUS:
+    stable             Supported for scripts and CI on the default build
+    backend-limited    Stable when the named backend/build feature is present;
+                       unavailable builds print a rebuild hint
+    experimental       User-facing, but policy/output may still evolve
+
+SUBCOMMANDS:
+    repl                 Start interactive REPL (alias for bare `rz`)
+    check <file>         Type-check without running (RES-225)
+    bench <file>         Run `bench "name" { ... }` benchmarks
+    self-host-parity-report [DIR]
+                        Publish grammar coverage / gap report for the
+                        self-hosting parity corpus (RES-2992)
+    stack-usage <file>   Print per-function worst-case stack usage (RES-2627)
+    debug <file>         Start the DAP debug server for a file
+    pkg <verb>           Package manager operations (RES-205)
+    fmt <file>           Canonical source formatter
+    lint <file>          Run the starter lints
+    tla check <file>     TLA+ model checking via TLC
+    verify-cert <dir>    Verify an RES-071 certificate directory
+                        (backend-limited; requires --features z3)
+    verify-all <dir>     Re-check every obligation in a manifest
+                        (backend-limited; requires --features z3)
+
+Tip: run `rz` with no file argument to start REPL.
+`rz repl` is an explicit alias for the REPL.
+See SYNTAX.md for the language reference.
+"#;
+
+const REPL_HELP_TEXT: &str = r#"rz repl — start the interactive REPL
+
+USAGE:
+    rz repl [--examples-dir DIR]
+    rz repl --help
+
+FLAGS:
+    --help, -h            Show this help and exit
+    --examples-dir DIR    REPL examples directory
+
+EXAMPLES:
+    rz repl                   # start REPL
+    rz repl --examples-dir .  # use the current directory for `examples`
+
+For bare REPL startup, run plain `rz`.
+"#;
+
 fn print_help() {
-    println!(
-        "rz — the Resilient language compiler & interpreter\n\
-\n\
-USAGE:\n\
-    rz [FLAGS] [<file>]\n\
-    rz                      # start REPL when no file is provided\n\
-    rz <subcommand> [ARGS]\n\
-\n\
-COMMON FLAGS:\n\
-    -h, --help                   Show this help and exit\n\
-    -t, --typecheck              Run the static type checker in strict mode\n\
-                                 (fail with exit 1 on any type error). The\n\
-                                 type checker also runs by default in soft\n\
-                                 mode — diagnostics print to stderr but the\n\
-                                 program still executes (RES-1088).\n\
-        --typecheck-strict       Make any type error fatal (exit 1) without\n\
-                                 the verbose status lines of --typecheck.\n\
-                                 Suitable for CI scripts that want strict\n\
-                                 checking without extra output (RES-2646).\n\
-        --no-typecheck           Skip the static type checker entirely\n\
-        --audit                  Print the verification audit trail\n\
-        --verbose                Print one stderr line per loop\n\
-                                 invariant statically proven (RES-318)\n\
-        --explain-effects        Print the inferred effect (@pure / @io)\n\
-                                 for every user function\n\
-        --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
-                                 (backend-limited; requires --features z3)\n\
-        --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)\n\
-        --safety-critical        Promote vacuous proof-discharge constructs\n\
-                                 such as `assume(false)` to hard errors\n\
-        --sign-cert PATH         Ed25519-sign the emitted certificate\n\
-                                 (backend-limited; requires --features z3)\n\
-        --vm                     Route through the bytecode VM\n\
-        --jit                    Route through the Cranelift JIT\n\
-                                 (backend-limited; requires --features jit)\n\
-        --dump-tokens            Print the lexer stream and exit\n\
-        --dump-ast-json          Print the parsed AST as JSON and exit\n\
-                                 (experimental tooling surface)\n\
-        --dump-chunks            Print the VM disassembly and exit\n\
-        --verifier-timeout-ms N  Per-Z3-query timeout (ms, 0 = off)\n\
-        --seed N                 Pin the RNG seed for determinism\n\
-        --panic-on-fault         Disable live-block retry healing;\n\
-                                 abort with exit 1 on the first fault\n\
-        --no-panic-on-fault      Restore default retry behaviour\n\
-        --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
-        --examples-dir DIR       REPL examples directory\n\
-        --lsp                    Run the LSP server on stdio\n\
-                                 (backend-limited; requires --features lsp)\n\
-        --mcp                    Run the MCP server on stdio\n\
-                                 Exposes compiler tools (parse/typecheck/run/\n\
-                                 lint/format/verify) to AI assistants via the\n\
-                                 Model Context Protocol (2024-11-05)\n\
-        --dap                    Run the DAP (Debug Adapter Protocol) server\n\
-                                 on stdio for interactive debugging\n\
-        --no-cache               Disable the incremental compilation cache\n\
-                                 for this run (RES-355)\n\
-        --feature NAME           Activate a `#[cfg(feature=\"NAME\")]` flag\n\
-                                 (repeatable; RES-343)\n\
-        --target TRIPLE          Set the active triple for `#[cfg(target=...)]`\n\
-                                 predicates (RES-343)\n\
-        --cfg KEY=VALUE          Set a generic cfg key-value pair for\n\
-                                 `#[cfg(key = \"value\")]` predicates\n\
-                                 (repeatable; --cfg test sets the test flag)\n\
-                                 (RES-2581)\n\
-        --watch                  Re-run the file on every save (200 ms\n\
-                                 debounce); press Ctrl-C to stop (RES-228)\n\
-\n\
-STATUS:\n\
-    stable             Supported for scripts and CI on the default build\n\
-    backend-limited    Stable when the named backend/build feature is present;\n\
-                       unavailable builds print a rebuild hint\n\
-    experimental       User-facing, but policy/output may still evolve\n\
-\n\
-SUBCOMMANDS:\n\
-    repl                 Start interactive REPL (alias for bare `rz`)\n\
-    check <file>        Type-check without running (RES-225)\n\
-    bench <file>        Run `bench \"name\" {{ ... }}` benchmarks\n\
-    self-host-parity-report [DIR]\n\
-                        Publish grammar coverage / gap report for the\n\
-                        self-hosting parity corpus (RES-2992)\n\
-    stack-usage <file>  Print per-function worst-case stack usage (RES-2627)\n\
-    debug <file>        Start the DAP debug server for a file\n\
-    pkg <verb>          Package manager operations (RES-205)\n\
-    fmt <file>          Canonical source formatter\n\
-    lint <file>         Run the starter lints\n\
-    tla check <file>    TLA+ model checking via TLC\n\
-    verify-cert <dir>   Verify an RES-071 certificate directory\n\
-                        (backend-limited; requires --features z3)\n\
-    verify-all <dir>    Re-check every obligation in a manifest\n\
-                        (backend-limited; requires --features z3)\n\
-\n\
-\n\
-Tip: run `rz` with no file argument to start REPL.\n\
-`rz repl` is an explicit alias for the REPL.\n\
-See SYNTAX.md for the language reference."
-    );
+    print!("{}", GLOBAL_HELP_TEXT);
 }
 
 fn print_repl_help() {
-    println!(
-        "rz repl — start the interactive REPL\n\
-\n\
-USAGE:\n\
-    rz repl [--examples-dir DIR]\n\
-    rz repl --help\n\
-\n\
-FLAGS:\n\
-    --help, -h            Show this help and exit\n\
-    --examples-dir DIR     REPL examples directory\n\
-\n\
-EXAMPLES:\n\
-    rz repl                   # start REPL\n\
-    rz repl --examples-dir .   # use the current directory for `examples`\n\
-\n\
-For bare REPL startup, run plain `rz`."
-    );
+    print!("{}", REPL_HELP_TEXT);
 }
 
 pub(crate) fn execute_benchmark_body(
