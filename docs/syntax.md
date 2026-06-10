@@ -68,9 +68,9 @@ fn identity<T>(T x) -> T { return x; }
 fn swap<A, B>(A a, B b) { return [b, a]; }
 ```
 
-Type parameters are currently parse-and-AST only; the
-typechecker uses the HM scaffolding from RES-122 and
-monomorphizes at the call site. Constraints (`fn<T: Trait>`)
+Type parameters currently have parser/AST support plus call-site
+monomorphization. The typechecker builds on the Hindley-Milner
+inference machinery from RES-122. Constraints (`fn<T: Trait>`)
 are a future extension.
 
 ### Contracts
