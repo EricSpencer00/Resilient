@@ -2928,24 +2928,23 @@ impl LanguageServer for Backend {
         }))
     }
 
-    /// RES-182a: respond to `textDocument/definition` — jump to
-    /// the defining span of the symbol under the cursor.
-    /// Currently handles only TOP-LEVEL declarations (fn / struct
-    /// / type alias) within the same document. Local bindings /
-    /// parameters (RES-182b) and cross-file imports (RES-182c)
-    /// return `Ok(None)` so the editor's "no definition found"
-    /// UX kicks in. That's a graceful degradation — picking the
-    /// wrong jump target would be strictly worse than "I don't
-    /// know yet."
+    /// RES-182a / RES-3135: respond to `textDocument/definition` —
+    /// jump to the defining span of the symbol under the cursor.
+    /// Handles visible top-level `fn` / `struct` declarations across
+    /// the current file's `use "..."` graph, with a same-document
+    /// `type` alias fallback. Local bindings / parameters (RES-182b)
+    /// still return `Ok(None)` so the editor's "no definition found"
+    /// UX kicks in. That's a graceful degradation — picking the wrong
+    /// jump target would be strictly worse than "I don't know yet."
     ///
     /// Implementation:
     ///   1. Look up the cursor's identifier token via
     ///      `identifier_at` (same token-level plumbing as
     ///      RES-181a's hover).
-    ///   2. Rebuild the top-level def map from the cached AST
-    ///      and look the name up.
-    ///   3. Wrap the result in a `Location` pointing at the same
-    ///      document URI (cross-file is RES-182c).
+    ///   2. Resolve visible workspace symbols from the current file,
+    ///      honoring unopened on-disk imports.
+    ///   3. Fall back to the original same-document top-level lookup
+    ///      for declaration shapes not yet in the workspace graph.
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
@@ -2969,6 +2968,21 @@ impl LanguageServer for Backend {
         let Some(program) = program else {
             return Ok(None);
         };
+        if let Some(file_path) = uri.to_file_path().ok().map(|p| canonicalize_or_self(&p)) {
+            let mut source_overrides = HashMap::new();
+            source_overrides.insert(file_path.clone(), (text.clone(), program.clone()));
+            let mut exports_memo = HashMap::new();
+            let accessible =
+                accessible_symbols_for_file(&file_path, &source_overrides, &mut exports_memo);
+            if let Some(symbol) = accessible.get(&name)
+                && let Ok(target_uri) = Url::from_file_path(&symbol.origin_path)
+            {
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: target_uri,
+                    range: symbol.decl_range,
+                })));
+            }
+        }
         let defs = build_top_level_defs(&program);
         let Some(def) = find_top_level_def(&defs, &name) else {
             return Ok(None);
