@@ -67,8 +67,10 @@ opportunistically when a new claim is recorded.
 
 ### 2b. Append-only extension points
 
-`resilient/src/{main.rs,typechecker.rs,lexer_logos.rs}` are shared by
-every feature. They contain explicit comment markers:
+`resilient/src/{lib.rs,typechecker.rs,lexer_logos.rs}` are shared by
+every feature. `lib.rs` is the large core file; `main.rs` remains in
+the resolver allowlist only for legacy compatibility. The shared files
+contain explicit comment markers:
 
 ```rust
 // <EXTENSION_TOKENS>
@@ -112,8 +114,9 @@ ready. If either pass fails, the PR stays draft.
 1. `git fetch origin` and rebase the current branch onto
    `origin/main`.
 2. If the rebase hits conflicts, check each file against the
-   append-only allowlist (main.rs, typechecker.rs, lexer_logos.rs,
-   file-claims.json). If all conflict files are in the allowlist, run
+   append-only allowlist (lib.rs, typechecker.rs, lexer_logos.rs,
+   file-claims.json; main.rs is legacy-compatible). If all conflict
+   files are in the allowlist, run
    `auto-resolve-extensions.sh` and continue. Otherwise abort — a
    human or a sonnet-tier agent must resolve.
 3. `git push --force-with-lease` the rebased feature branch.
