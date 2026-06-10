@@ -227,12 +227,13 @@ normally). Add `--features z3` for SMT-backed verification (requires
 
 The project intentionally separates feature surfaces:
 
-- **Stable:** baseline CLI behavior and standard diagnostics on the default
-  build.
-- **Backend-limited:** commands that need optional runtime features:
-  `--jit` (`--features jit`), `--lsp` (`--features lsp`), and SMT-backed
-  modes (`--features z3`, `--z3`).
-- **Experimental:** surfaces with evolving contracts and policy (`--ai-threats`).
+- **Stable:** Supported for scripts and CI on the default build.
+- **Backend-limited:** Stable when the named backend/build feature is present;
+  unavailable builds print a rebuild hint. Examples include `--jit`
+  (`--features jit`), `--lsp` (`--features lsp`), and SMT-backed modes
+  (`--features z3`, `--z3`).
+- **Experimental:** User-facing, but policy/output may still evolve. Examples
+  include `--ai-threats` and `--dump-ast-json`.
 
 #### Docker (RES-203)
 
@@ -322,7 +323,7 @@ optional `z3` feature to get full SMT-backed proofs:
 ```bash
 # macOS:  brew install z3
 # Linux:  sudo apt-get install libz3-dev z3
-rz --audit prog.rz   # requires the binary built with --features z3
+rz --audit prog.rz   # SMT proofs require a binary built with --features z3
 ```
 
 The audit report tags clauses proven by Z3 separately so users can
@@ -336,7 +337,7 @@ re-verify it under their own solver — without trusting the Resilient
 binary:
 
 ```bash
-rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # requires --features z3 build
+rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # requires a --features z3 build
 ```
 
 One file is written per discharged obligation:
@@ -349,8 +350,8 @@ z3 -smt2 ./certs/ident_round__decl__0.smt2
 # unsat        ← the proof: negation is unsatisfiable, so the original holds
 ```
 
-Implies `--typecheck`. Without `--features z3`, no certificates are
-emitted (the cheap folder isn't asked to produce them).
+Implies `--typecheck`. Default builds report a `Backend-limited:`
+rebuild hint instead of emitting certificates.
 
 #### Signed certificates (RES-194)
 
@@ -359,13 +360,13 @@ Pass `--sign-cert <path-to-ed25519-private-key.pem>` alongside
 `<dir>/cert.sig`. The signed payload is the byte-for-byte
 concatenation of the `.smt2` files in the directory (sorted by
 filename, joined with `\n`); the signature binds the certificate
-set to the signer's key.
+set to the signer's key. Requires a `--features z3` build.
 
 ```bash
 # Sign during emit:
 rz -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem resilient/examples/sensor_monitor.rz
 
-# Verify against the binary's embedded public key:
+# Verify against the binary's embedded public key (requires --features z3):
 rz verify-cert ./certs
 
 # Or against a custom public key (e.g. a rotated / test key):
@@ -417,7 +418,9 @@ Every `--emit-certificate <dir>` run also writes a
   payload — both are written on signed runs so either can be
   used for verification.
 
-The `verify-all` subcommand re-checks every obligation:
+The `verify-all` subcommand re-checks every obligation. It requires
+a `--features z3` build; default builds report a `Backend-limited:`
+rebuild hint.
 
 ```bash
 # Fast cryptographic-only pass:
@@ -794,7 +797,7 @@ Resilient supports LSP, so any editor with LSP client support (Vim, Neovim, Emac
 
 \`\`\`bash
 # Start the LSP server:
-rz --lsp
+rz --lsp   # requires a binary built with --features lsp
 
 # Then point your editor's LSP client to this process.
 \`\`\`
