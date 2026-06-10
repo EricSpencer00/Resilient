@@ -30408,11 +30408,10 @@ fn execute_file(
     }
 
     if use_jit {
-        // RES-072 Phase A: Cranelift JIT path. Stub today; RES-096+
-        // will add real AST lowering. Surfaces a clean error
+        // RES-072 / RES-096: Cranelift JIT path for the supported
+        // tree-walker subset. Unsupported AST shapes surface cleanly
         // through the same `<file>: ...` shape as the VM (RES-095)
-        // so the user knows the JIT isn't implemented yet without
-        // a panic or opaque message.
+        // so callers can fall back without a panic or opaque message.
         #[cfg(feature = "jit")]
         {
             // RES-405 PR 3: monomorphize before JIT compilation.
