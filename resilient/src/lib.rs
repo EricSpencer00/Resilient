@@ -33429,6 +33429,11 @@ pub fn run_cli() {
             std::process::exit(2);
         }
 
+        if explicit_repl && repl_help {
+            print_repl_help();
+            return;
+        }
+
         // RES-150: install the RNG seed before any user program
         // can pull from it. `--seed <N>` pins the sequence
         // (silently, since the user asked for reproducibility);
@@ -33662,10 +33667,6 @@ pub fn run_cli() {
         }
 
         if explicit_repl {
-            if repl_help {
-                print_repl_help();
-                return;
-            }
             let mut enhanced_repl = repl::EnhancedREPL::with_examples_dir(examples_dir);
             if let Err(e) = enhanced_repl.run() {
                 eprintln!("REPL error: {}", e);
