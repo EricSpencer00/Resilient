@@ -2195,7 +2195,7 @@ fn filter_workspace_symbols(
 }
 
 /// RES-187: the semantic-tokens legend. The order here MUST match
-/// the `sem_tok::*` token-type indices declared in `main.rs`
+/// the `sem_tok::*` token-type indices declared in `lib.rs`
 /// (KEYWORD=0 … OPERATOR=8) and the modifier bit positions
 /// (MOD_DECLARATION=bit0, MOD_READONLY=bit1). Any drift between
 /// these two tables yields mis-colored output in every client.

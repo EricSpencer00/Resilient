@@ -254,7 +254,7 @@ Speaks LSP over stdio. Shipped features:
 - Completion (builtins + top-level decls; RES-188)
 - Semantic tokens (keyword / function / variable / parameter / type /
   string / number / comment / operator; see `sem_tok` in
-  `resilient/src/main.rs`)
+  `resilient/src/lib.rs`)
 
 See [LSP / Editor Integration](lsp) for editor config examples.
 
