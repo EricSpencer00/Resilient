@@ -51,7 +51,7 @@ z3 = ["dep:z3", "dep:ed25519-dalek", "dep:rand_core"]
 #
 #   cargo build --features lsp
 #
-# and run `resilient --lsp` to speak Language Server Protocol over
+# and run `rz --lsp` to speak Language Server Protocol over
 # stdio. Editor config examples in LSP.md at repo root.
 lsp = ["dep:tower-lsp", "dep:tokio"]
 # RES-072: opt-in Cranelift JIT backend. Default off so the default
@@ -60,7 +60,7 @@ lsp = ["dep:tower-lsp", "dep:tokio"]
 #
 #   cargo build --features jit
 #
-# and run `resilient --jit prog.rs` to lower the program to native
+# and run `rz --jit prog.rz` to lower the program to native
 # code instead of going through the tree walker / bytecode VM.
 # Phase A only ships the scaffolding; RES-096+ adds AST lowering.
 jit = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-native", "dep:cranelift-module"]
@@ -199,7 +199,7 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 [[bench]]
 # RES-218: Criterion-driven baselines for the tree-walker. `harness
 # = false` lets Criterion own `main`; the benchmark invokes the
-# compiled `resilient` binary (the language's only supported entry
+# compiled `rz` binary (the language's only supported entry
 # point today — main.rs is not exposed as a library) against
 # inline Resilient source.
 name = "interpreter"
