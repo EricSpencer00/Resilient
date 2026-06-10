@@ -1,6 +1,6 @@
 [package]
 name = "resilient-runtime"
-version = "0.2.0"
+version = "1.6.0"
 edition = "2024"
 description = "Minimal #![no_std] runtime types for Resilient — Value enum + core ops, suitable for embedded targets"
 authors = ["Eric Spencer"]

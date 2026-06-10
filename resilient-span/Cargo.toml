@@ -1,6 +1,6 @@
 [package]
 name = "resilient-span"
-version = "0.2.0"
+version = "1.6.0"
 edition = "2024"
 description = "Source-position (Pos / Span / Spanned) types used by the Resilient compiler pipeline — lexer, parser, typechecker, LSP, and future tooling — extracted into a standalone crate so downstream tools can depend on just the span layer without pulling in the whole compiler (RES-115)."
 authors = ["Eric Spencer"]
