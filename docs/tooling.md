@@ -243,7 +243,8 @@ Speaks LSP over stdio. Shipped features:
 
 - Diagnostics (parse errors, type errors, lint output)
 - Hover (types, contracts)
-- Go-to-definition (top-level declarations)
+- Go-to-definition (functions/structs across on-disk workspace imports,
+  plus same-file type aliases)
 - Completion (builtins + top-level decls; RES-188)
 - Semantic tokens (keyword / function / variable / parameter / type /
   string / number / comment / operator; see `sem_tok` in
