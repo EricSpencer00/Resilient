@@ -261,6 +261,10 @@ pub(crate) fn dispatch_self_host_parity_report_subcommand(args: &[String]) -> Op
     if args.get(1).map(|arg| arg.as_str()) != Some("self-host-parity-report") {
         return None;
     }
+    if is_self_host_parity_report_help_request(args) {
+        print_self_host_parity_report_help();
+        return Some(0);
+    }
 
     let mut corpus_root: Option<PathBuf> = None;
     let mut json_out: Option<PathBuf> = None;
@@ -305,6 +309,40 @@ pub(crate) fn dispatch_self_host_parity_report_subcommand(args: &[String]) -> Op
             Some(1)
         }
     }
+}
+
+const SELF_HOST_PARITY_REPORT_HELP_TEXT: &str = r#"rz self-host-parity-report — publish self-hosting parity coverage
+
+USAGE:
+    rz self-host-parity-report [DIR] [--json-out PATH]
+
+INPUT:
+    DIR defaults to self-host/parity_corpus.
+    The report compares Rust and self-host lexer/parser output for that corpus.
+
+OUTPUT:
+    Prints a coverage and divergence summary to stdout.
+    With --json-out, also writes a stable JSON report artifact.
+
+FLAGS:
+        --json-out PATH    Write the machine-readable report to PATH
+
+EXAMPLES:
+    rz self-host-parity-report
+    rz self-host-parity-report self-host/parity_corpus --json-out parity.json
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_self_host_parity_report_help_request(args: &[String]) -> bool {
+    matches!(
+        args.get(2).map(String::as_str),
+        Some("--help" | "-h" | "help")
+    )
+}
+
+fn print_self_host_parity_report_help() {
+    print!("{}", SELF_HOST_PARITY_REPORT_HELP_TEXT);
 }
 
 fn build_report(corpus_root: &Path) -> Result<Report, String> {
