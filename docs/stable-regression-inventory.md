@@ -53,6 +53,7 @@ Scope rules:
 | `--version` / `--version --verbose` | `resilient/tests/stable_cli_surface_smoke.rs` | Covered | Added for RES-3128. |
 | `stack-usage <file>` | `resilient/tests/stable_cli_surface_smoke.rs` | Covered | Added for RES-3128. |
 | `pkg init` workflow | `resilient/tests/pkg_init_smoke.rs` | Covered | Dedicated project-scaffolding smoke. |
+| `rz test [<file|dir>]` | `resilient/tests/stable_inventory_rz_test_smoke.rs`, `resilient/tests/test_help_smoke.rs` | Covered | Direct runner execution and focused help smoke. |
 | `bench <file>` | `resilient/tests/bench_cli.rs`, `resilient/tests/bench_cli_summary_json.rs` | Covered | Human and machine-readable outputs. |
 | Example corpus smoke | `resilient/tests/examples_smoke.rs`, `resilient/tests/examples_golden.rs` | Covered | Direct shipped-example coverage. |
 | Self-host parity report | `resilient/tests/self_host_parity_report_cli.rs` | Covered | Dedicated report artifact smoke. |
@@ -64,7 +65,6 @@ Scope rules:
 
 | Surface | Reason | Follow-up shape |
 |---|---|---|
-| `rz test` | `docs/tooling.md` still classifies the first-class test runner as future work, so it is not counted as part of the stable surface in this inventory. | Reclassify in docs and add dedicated CLI smoke when the runner is promoted to stable. |
 | `rz tool ...` external tool bridge | Present in code but not documented as stable in the public tooling reference or top-level help. | Promote/document the subcommand first, then add direct smoke coverage as part of that stabilization slice. |
 | Debugger / profiler paths | Public docs classify them as future work. | Stabilize the user-facing workflows before adding them to this inventory. |
 
