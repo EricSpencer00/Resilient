@@ -10,22 +10,22 @@
 //    random byte sequence is usually not valid UTF-8; reject
 //    early so libFuzzer doesn't waste budget on the str ctor.
 // 2. Write the input to a temp file.
-// 3. Spawn `resilient --typecheck --seed 0 <tempfile>` and
+// 3. Spawn `rz -t --seed 0 <tempfile>` and
 //    wait for it to exit. A clean exit (any status) is a pass;
 //    a signal (SIGABRT from a Rust panic) is a fail we re-raise
 //    as a panic so libFuzzer records the input.
 //
-// Why subprocess, not in-process? The `resilient` crate is
-// binary-only (no `src/lib.rs`), so there's no library we can
-// link against and call `parse(&str)` directly. Subprocess is
-// ~1ms per iteration — slower than in-process would be, but
-// still millions of iters/hour, which is enough to surface
-// parser panics in a CI budget.
+// Why subprocess, not in-process? These fuzzers exercise the
+// shipped CLI boundary because the parser internals are not a
+// committed public fuzzing API. Subprocess is ~1ms per iteration
+// — slower than in-process would be, but still millions of
+// iters/hour, which is enough to surface parser panics in a CI
+// budget.
 //
 // Runner expectations:
-// - The `resilient` binary must be built (debug or release).
+// - The `rz` binary must be built (debug or release).
 // - Its path is read from `RESILIENT_FUZZ_BIN` (preferred) or
-//   assumed to be `resilient` on `PATH`. The workflow in
+//   assumed to be `rz` on `PATH`. The workflow in
 //   `.github/workflows/fuzz.yml` sets `RESILIENT_FUZZ_BIN` to
 //   the release build.
 
