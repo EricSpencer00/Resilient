@@ -282,11 +282,10 @@ rz fmt --in-place resilient/examples/hello.rz # overwrite the file
 Exit codes: `0` = formatted, `1` = parse errors (formatter refuses
 to touch broken input), `2` = usage error.
 
-**Known limitation.** The formatter is a structural round-trip.
-Comments are not preserved today (the parser discards them). Run
-`fmt` only on code you're willing to re-attach comments to by
-hand. Comment-aware formatting is the next planned formatter
-improvement.
+**Known limitation.** The formatter is a structural round-trip,
+and the parser discards comments. Comments are not preserved today.
+Run `fmt` only on code you're willing to re-attach comments to by
+hand; comment-preserving formatting is not available yet.
 
 ## Package tooling
 
