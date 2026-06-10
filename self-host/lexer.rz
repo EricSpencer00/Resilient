@@ -365,7 +365,7 @@ fn resolve_input_path() {
         return unwrap(r);
     }
     // Fallback keeps the harness usable when the env var isn't set
-    // (e.g. running `lexer.res` directly during local development).
+    // (e.g. running `lexer.rz` directly during local development).
     return "resilient/examples/hello.rz";
 }
 
