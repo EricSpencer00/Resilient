@@ -10,7 +10,7 @@
 //!
 //! Two predicates classify tokens for the synchronization scanner
 //! used by `Parser::synchronize_top_level` and
-//! `Parser::synchronize_in_block` in `main.rs`:
+//! `Parser::synchronize_in_block` in `lib.rs`:
 //!
 //! * [`starts_top_level_item`] — tokens that unambiguously start a
 //!   fresh top-level construct (`fn`, `let`, `struct`, …). When the

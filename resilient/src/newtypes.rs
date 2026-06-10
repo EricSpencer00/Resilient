@@ -52,7 +52,7 @@ fn collect_newtypes_from_program(program: &Node) -> HashMap<String, String> {
 ///
 /// Accepts the root `Node::Program` node. No-ops on anything else. The
 /// function signature mirrors the pattern used by `try_catch`, `type_aliases`,
-/// and other post-parse passes so the `<EXTENSION_PASSES>` block in `main.rs`
+/// and other post-parse passes so the `<EXTENSION_PASSES>` block in `lib.rs`
 /// can call it uniformly.
 pub fn lower_program(program: &mut Node) {
     // Collect before mutating to avoid borrow-checker conflict.
