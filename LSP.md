@@ -61,7 +61,7 @@ lspconfig.resilient.setup({})
 
 ### VS Code
 
-Use the bundled `vscode-extension/` scaffold or any generic LSP runner
+Use the bundled `vscode-extension/` workspace or any generic LSP runner
 extension. Point `command` at the Resilient binary and pass `--lsp` as
 the argument.
 
