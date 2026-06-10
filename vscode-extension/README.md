@@ -20,7 +20,7 @@ Full tutorial: [ericspencer.us/Resilient/tutorial](https://ericspencer.us/Resili
    git clone https://github.com/EricSpencer00/Resilient.git
    cd Resilient/resilient
    cargo build --release
-   # Add resilient/target/release/ to your PATH
+   # Add resilient/target/release/ to your PATH; it contains the rz binary
    ```
 
 2. Create `hello.rz`:
@@ -52,7 +52,7 @@ println(divide(10, 2));   // prints: 5
 
 Run with:
 ```bash
-resilient --typecheck --audit divide.rz
+rz --typecheck --audit divide.rz
 ```
 
 `requires` / `ensures` are checked statically; the compiler rejects a call like `divide(10, 0)` at compile time.
@@ -95,7 +95,7 @@ This release tracks the major language milestone shipped in the Resilient 1.5 co
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `resilient.serverPath` | `resilient` | Path to the `resilient` binary. Point at a dev build when hacking. |
+| `resilient.serverPath` | `rz` | Path to the `rz` binary. Defaults to the one on PATH; point at a dev build such as `resilient/target/debug/rz` when hacking. |
 | `resilient.serverArgs` | `["--lsp"]` | Arguments passed to the binary when starting the LSP. |
 | `resilient.trace.server` | `off` | `off` / `messages` / `verbose` — traces LSP traffic to the output channel. |
 
