@@ -110,9 +110,10 @@ useless. This is a real gap. Our answer:
    <api-contract>". The point is that the invariant has a paper trail
    independent of the LLM that wrote the surrounding code.
 
-3. **Future work**: validate that the cited source actually exists
-   (resolvable URL, ISBN, repo path), promote the lint to a hard gate
-   for safety-critical builds.
+3. **Citation validation boundary**: today L0012 requires the source
+   comment; a later hardening pass should also validate that the cited
+   source resolves (URL, ISBN, repo path) and promote unresolved
+   citations to a hard gate for safety-critical builds.
 
 ## What's still expressible-but-invalid
 
