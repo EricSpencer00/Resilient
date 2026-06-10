@@ -40,8 +40,8 @@ struct RunResult {
     /// "ran in N ms" footer.
     duration_ms: f64,
     /// Build flavor — `"tree-walker"` once the real interpreter is
-    /// wired (RES-510 PR 3). The page's "scaffold" banner hides
-    /// itself on any non-`"stub"` flavor.
+    /// wired (RES-510 PR 3). The page's fallback banner remains
+    /// hidden for any non-`"stub"` flavor.
     flavor: &'static str,
 }
 

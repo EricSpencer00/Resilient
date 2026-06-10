@@ -506,7 +506,7 @@ const runBtn = document.getElementById("run-btn");
 const shareBtn = document.getElementById("share-btn");
 const clearBtn = document.getElementById("clear-btn");
 const select = document.getElementById("example-select");
-const banner = document.getElementById("scaffold-banner");
+const banner = document.getElementById("fallback-banner");
 
 // RES-2624: restore code from URL hash before initialising the editor
 function getHashCode() {
