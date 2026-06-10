@@ -58,17 +58,20 @@ line 1, column 1 — finer-grained parser spans land in a follow-up.
 
 ### Hover
 
-Hovering over any **literal token** shows its type:
+Hovering over any **literal token** shows its surface type:
 
 | Literal | Hover shows |
 |---------|-------------|
-| `42`    | `int`       |
-| `3.14`  | `float`     |
-| `"hi"`  | `string`    |
-| `true`  | `bool`      |
+| `42`    | `Int`       |
+| `3.14`  | `Float`     |
+| `"hi"`  | `String`    |
+| `true`  | `Bool`      |
 
-Hover over identifiers (variables, functions) is a planned
-follow-up that depends on the full type-inference pass.
+Hovering over identifiers also returns current best-effort type or
+signature information for top-level `let`, `const`, `static let`,
+top-level function names, function parameters, and local `let`
+bindings. Names outside those supported scopes return no hover instead
+of a guessed type.
 
 ### Go-to-definition
 
@@ -139,7 +142,6 @@ highlighting alone provides.
 
 ## What's next
 
-- Hover for identifiers (variables, parameters, function names).
 - Scope-aware local-variable completion.
 - Post-dot field completion for structs.
 - Finer-grained parser error positions.
