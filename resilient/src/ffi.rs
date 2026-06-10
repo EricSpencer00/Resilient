@@ -7,9 +7,10 @@
 //!   registry populated by the embedder. Lives in `resilient-runtime`
 //!   and is not referenced here — this module is host-only.
 
-// Phase 1 skeleton: public types/functions here are wired up in later
-// tasks (tree-walker dispatch, trampoline layer). Suppress dead-code and
-// unused-import lints so the build stays warning-clean as a stub.
+// FFI v1 ships as a shared API plus backend boundary: `ffi` enables
+// dynamic loading, while the default backend returns `FfiDisabled`.
+// Keep dead-code allowances because cfg-specific backend paths do not
+// all compile into every build.
 #![allow(dead_code)]
 
 use crate::ExternDecl;
