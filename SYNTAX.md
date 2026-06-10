@@ -1201,7 +1201,7 @@ unaffected by this flag.
 After installing `rz` (see [README's Getting Started](README.md#getting-started)):
 
 ```bash
-rz examples/hello.rz                   # run a program
+rz resilient/examples/hello.rz         # run a program
 rz --typecheck foo.rz                  # with type checking
 rz                                     # interactive REPL
 ```
