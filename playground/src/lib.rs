@@ -8,12 +8,11 @@
 // and the playground value is the language semantics, not the
 // supporting tooling).
 //
-// RES-510 PR 3: previously a stub that echoed the source text. Now
-// calls into the real `resilient::run_program` interpreter — the lib
-// refactor (PR 1) and injectable stdout sink (PR 2) made that
-// possible. The CLI-only deps in `resilient` are cfg-gated on
-// `not(target_arch = "wasm32")`, so this crate compiles to
-// `wasm32-unknown-unknown` without dragging termios or fs-watcher
+// RES-510 PR 3 calls into the real `resilient::run_program`
+// tree-walker. The lib refactor (PR 1) and injectable stdout sink
+// (PR 2) made that possible. The CLI-only deps in `resilient` are
+// cfg-gated on `not(target_arch = "wasm32")`, so this crate compiles
+// to `wasm32-unknown-unknown` without dragging termios or fs-watcher
 // platform APIs in.
 
 #![allow(clippy::needless_pass_by_value)]
