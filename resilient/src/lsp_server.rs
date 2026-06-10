@@ -10,7 +10,7 @@
 //! document symbols, and code actions. Unsupported cursor positions
 //! return the normal empty/null LSP result instead of a guessed answer.
 //!
-//! The `mod lsp_server;` declaration in `main.rs` is already
+//! The `mod lsp_server;` declaration in `lib.rs` is already
 //! gated on `cfg(feature = "lsp")`, so this file is only compiled
 //! when the feature is on — no per-file `#![cfg]` needed.
 
@@ -4152,8 +4152,8 @@ pub(crate) fn build_suppress_lint_action(
 }
 
 /// Run the LSP server on stdin/stdout until the client shuts down.
-/// Invoked from `main()` when `--lsp` is on the command line AND the
-/// `lsp` feature is enabled.
+/// Invoked from the library CLI dispatcher when `--lsp` is on the
+/// command line AND the `lsp` feature is enabled.
 pub fn run() {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     runtime.block_on(async {
@@ -4435,7 +4435,7 @@ mod tests {
     // ---------- RES-187: semantic tokens legend + wire glue ----------
 
     /// The legend's type-index order MUST match the `sem_tok::*`
-    /// constants in main.rs. If someone adds a new token type
+    /// constants in lib.rs. If someone adds a new token type
     /// between them, this test catches the drift before an editor
     /// starts mis-coloring things.
     #[test]
@@ -5121,7 +5121,7 @@ fn main(int n) {\n\
     fn res183_collect_call_sites_range_points_at_callee() {
         // The range in the returned Location should be derived from the
         // callee Identifier's AST span. The parser uses zero-width spans
-        // (known limitation per the "span unreliability" note in main.rs),
+        // (known limitation per the "span unreliability" note in lib.rs),
         // so start == end. The important invariant is that the LINE is
         // correct — it points at the call site's line, not the decl's.
         let src = "fn foo(int n) { return n; }\nfoo(1);\n";
