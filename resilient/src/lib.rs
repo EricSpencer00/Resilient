@@ -33069,8 +33069,8 @@ pub fn run_cli() {
                 // the tree-walking interpreter.
                 use_vm = true;
             } else if arg == "--jit" {
-                // RES-072: route through the Cranelift JIT backend.
-                // Phase A is a stub — RES-096+ adds real lowering.
+                // RES-072 / RES-096: route through the Cranelift JIT
+                // backend for the supported tree-walker subset.
                 use_jit = true;
             } else if arg == "--lsp" {
                 // RES-074: start the Language Server on stdio. Only
