@@ -8,7 +8,7 @@ permalink: /no-std
 # `#![no_std]` Runtime
 {: .no_toc }
 
-Embedding Resilient on a Cortex-M class MCU.
+Embedding Resilient on Cortex-M and RISC-V class MCUs.
 {: .fs-6 .fw-300 }
 
 <details open markdown="block">
@@ -25,14 +25,21 @@ Embedding Resilient on a Cortex-M class MCU.
 Resilient ships a sibling crate at
 [`resilient-runtime/`](https://github.com/EricSpencer00/Resilient/tree/main/resilient-runtime)
 that carves out the value layer + core ops in a
-`#![no_std]`-compatible form. It's verified to cross-compile to
-`thumbv7em-none-eabihf` (Cortex-M4F class MCU) in both feature
-configs.
+`#![no_std]`-compatible form. It is verified to cross-compile to
+the shipped embedded targets in both alloc-free and `alloc`
+postures.
 
 This is the foundation for running Resilient programs on a
 microcontroller. The host build (`resilient/`) uses the full
 interpreter / VM / JIT; the embedded build uses just this
 runtime crate plus a future `Program` evaluator.
+
+The host-only scheduler surfaces, including actor task spawning,
+mailboxes, and channel-style examples, live in the `resilient/`
+CLI interpreter today. The `resilient-runtime/` crate stays focused
+on portable value semantics plus HAL-style peripherals so the
+default embedded build has no heap, no host scheduler dependency,
+and no `std`.
 
 ## Feature configs
 
@@ -40,28 +47,43 @@ runtime crate plus a future `Program` evaluator.
 |-------------------|-------------------------------------|---------------------------------------|
 | (default)         | `Value::Int`, `Value::Bool`, `Value::Float` | Stack-only types, no allocator needed |
 | `--features alloc`| `Value::String`                     | When you need string values; pulls in `embedded-alloc` |
+| `--features static-only` | Assertion that heap-bearing values stay absent | Safety-critical builds that forbid allocation |
+| `--features std-sink` | `StdoutSink` convenience adapter | Host-side telemetry tests and tools only |
+| `--features ffi-static-*` | Fixed-capacity FFI registry | Embedded FFI tables without a heap |
 
 The `alloc` feature does NOT pick a `#[global_allocator]` — that's
 the binary's responsibility (see below).
+`alloc` and `static-only` are mutually exclusive and fail the build
+with a `compile_error!` when both are enabled.
+
+## Supported target gates
+
+| Target | Runtime posture | Notes |
+|---|---|---|
+| `thumbv7em-none-eabihf` | Default and `alloc` | Cortex-M4F demo target with native FPU support. |
+| `thumbv6m-none-eabi` | Default and `alloc` | Cortex-M0/M0+ class target; atomics and FPU are absent, so runtime code must keep fallback gates clean. |
+| `riscv32imac-unknown-none-elf` | Default and `alloc` | Baseline embedded RISC-V target; covered by the same runtime feature matrix. |
 
 ## Build for host
 
 ```bash
 cd resilient-runtime
 
-# Default (alloc-free) — 11 unit tests
+# Default (alloc-free)
 cargo build
 cargo test
 
-# With alloc — 14 unit tests (adds Float + String coverage)
+# With alloc (adds String coverage)
 cargo build --features alloc
 cargo test  --features alloc
 ```
 
-## Cross-compile to Cortex-M4F
+## Cross-compile to embedded targets
 
 ```bash
 rustup target add thumbv7em-none-eabihf
+rustup target add thumbv6m-none-eabi
+rustup target add riscv32imac-unknown-none-elf
 
 # Default — Cortex-M4F has native i64 instruction support, no
 # compiler_builtins shim needed.
@@ -71,6 +93,12 @@ cargo clippy --target thumbv7em-none-eabihf -- -D warnings
 # With --features alloc, embedded-alloc 0.5 is pulled in.
 cargo build  --target thumbv7em-none-eabihf --features alloc
 cargo clippy --target thumbv7em-none-eabihf --features alloc -- -D warnings
+
+# The lower-end Arm and RISC-V targets use the same feature posture.
+cargo build --target thumbv6m-none-eabi
+cargo build --target thumbv6m-none-eabi --features alloc
+cargo build --target riscv32imac-unknown-none-elf
+cargo build --target riscv32imac-unknown-none-elf --features alloc
 ```
 
 ## Wiring an allocator (binary side)
@@ -93,7 +121,7 @@ fn main() -> ! {
         [MaybeUninit::uninit(); HEAP_SIZE];
     unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE); }
 
-    // Now resilient_runtime::Value::String / Float work.
+    // Value::Float is stack-only; Value::String is available with alloc.
     use resilient_runtime::Value;
     let _ = Value::Float(2.5).add(Value::Float(1.5));
 
@@ -101,8 +129,8 @@ fn main() -> ! {
 }
 ```
 
-A buildable example crate is planned (RES-101). Until then the
-sketch above is the canonical pattern.
+For a buildable Cortex-M4F allocator wiring example, see
+[`resilient-runtime-cortex-m-demo/`](https://github.com/EricSpencer00/Resilient/tree/main/resilient-runtime-cortex-m-demo).
 
 ## Value semantics
 
@@ -131,7 +159,7 @@ Resilient programs on bare-metal MCUs. Concretely:
 
 1. **RES-075/097/098** ✅ — value layer + cross-compile +
    `alloc` feature
-2. **RES-101** (open) — buildable Cortex-M demo crate with
+2. **RES-101** ✅ — buildable Cortex-M demo crate with
    `LlffHeap` and a `#[entry]` function
 3. **Future** — port a subset of the bytecode VM into
    `resilient-runtime` so embedded programs can run pre-compiled
