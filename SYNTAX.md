@@ -566,9 +566,9 @@ Associated types enable polymorphic interfaces where each implementation can spe
 The current trait system does not support:
 - Projection syntax (`T::AssocType`) in generic bounds (RES-779 follow-up)
 - `dyn Trait` / virtual tables (RES-293)
-- Generic associated types (future)
-- Default method bodies (future)
-- Blanket impls or specialization (future)
+- Generic associated types are not supported yet
+- Default method bodies are not supported yet
+- Blanket impls and specialization are not supported yet
 
 ## Data Types
 
