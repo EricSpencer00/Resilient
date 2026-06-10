@@ -31135,6 +31135,10 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("verify-cert") {
         return None;
     }
+    if is_verify_cert_help_request(args) {
+        print_verify_cert_help();
+        return Some(0);
+    }
 
     let mut dir_path: Option<PathBuf> = None;
     let mut pubkey_path: Option<PathBuf> = None;
@@ -31261,6 +31265,10 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
 fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("verify-all") {
         return None;
+    }
+    if is_verify_all_help_request(args) {
+        print_verify_all_help();
+        return Some(0);
     }
 
     let mut dir_path: Option<PathBuf> = None;
@@ -32298,6 +32306,75 @@ fn print_stack_usage_help() {
     print!("{}", STACK_USAGE_HELP_TEXT);
 }
 
+const VERIFY_CERT_HELP_TEXT: &str = r#"rz verify-cert — verify a signed certificate directory
+
+USAGE:
+    rz verify-cert <dir> [--pubkey <path>]
+
+STATUS:
+    backend-limited; requires --features z3
+
+CHECKS:
+    Reads cert.sig and every .smt2 file in the directory.
+    Verifies the directory signature with the embedded key or --pubkey.
+
+FLAGS:
+        --pubkey PATH    Verify with a PEM public key instead of the embedded key
+
+EXAMPLES:
+    rz verify-cert certs/
+    rz verify-cert certs/ --pubkey keys/pub.pem
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+const VERIFY_ALL_HELP_TEXT: &str = r#"rz verify-all — re-check every obligation in a manifest
+
+USAGE:
+    rz verify-all <dir> [--pubkey <path>] [--z3]
+
+STATUS:
+    backend-limited; requires --features z3
+
+CHECKS:
+    Reads manifest.json, checks certificate hashes, and verifies signatures.
+    With --z3, also runs `z3 -smt2` for solver re-verification when z3 is on PATH.
+
+FLAGS:
+        --pubkey PATH    Verify signatures with a PEM public key override
+        --z3             Re-run Z3 on each certificate when the z3 binary is available
+
+EXAMPLES:
+    rz verify-all certs/
+    rz verify-all certs/ --z3
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_verify_cert_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("verify-cert")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn is_verify_all_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("verify-all")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn print_verify_cert_help() {
+    print!("{}", VERIFY_CERT_HELP_TEXT);
+}
+
+fn print_verify_all_help() {
+    print!("{}", VERIFY_ALL_HELP_TEXT);
+}
+
 fn should_report_unknown_command_or_file(filename: &str) -> bool {
     !filename.is_empty()
         && !filename.contains('/')
@@ -32556,6 +32633,14 @@ pub fn run_cli() {
     }
     if is_stack_usage_help_request(&args) {
         print_stack_usage_help();
+        std::process::exit(0);
+    }
+    if is_verify_cert_help_request(&args) {
+        print_verify_cert_help();
+        std::process::exit(0);
+    }
+    if is_verify_all_help_request(&args) {
+        print_verify_all_help();
         std::process::exit(0);
     }
 
