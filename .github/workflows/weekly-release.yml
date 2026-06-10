@@ -7,7 +7,9 @@
 #  current.
 #
 #  On schedule (Mondays 12:00 UTC) or `workflow_dispatch`:
-#   1. Read the current version from `vscode-extension/package.json`.
+#   1. Read the current version from `resilient/Cargo.toml` (the
+#      language/compiler semver — not the VS Code extension, which
+#      tracks its own version in `vscode-extension/package.json`).
 #   2. If the matching tag `v<version>` already exists, no-op (a release
 #      was already cut for the current version, no new work has merged).
 #   3. Otherwise, create the annotated tag at the current `main` HEAD,
@@ -45,8 +47,12 @@ jobs:
         id: version
         run: |
           VERSION=$(python3 -c '
-          import json, pathlib
-          print(json.loads(pathlib.Path("vscode-extension/package.json").read_text())["version"])
+          import pathlib, re
+          text = pathlib.Path("resilient/Cargo.toml").read_text()
+          m = re.search(r"^version = \"([^\"]+)\"", text, re.M)
+          if not m:
+              raise SystemExit("version not found in resilient/Cargo.toml")
+          print(m.group(1))
           ')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Current version: ${VERSION}"
