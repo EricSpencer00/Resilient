@@ -30,8 +30,8 @@
 //! All cfg logic lives in this module. The core files only touch:
 //!
 //! * `lexer_logos.rs` `<EXTENSION_TOKENS>` — the `#[` opener.
-//! * `main.rs` `<EXTENSION_TOKENS>` — same opener for the hand-rolled lexer.
-//! * `main.rs` `parse_statement` — one dispatch arm that calls
+//! * `lib.rs` `<EXTENSION_TOKENS>` — same opener for the hand-rolled lexer.
+//! * `lib.rs` `parse_statement` — one dispatch arm that calls
 //!   [`parse_cfg_attribute`] when the lexer emits `Token::HashLeftBracket`.
 //!
 //! No typechecker, no runtime, no VM hooks. Stripping is a pure parser-time
@@ -48,7 +48,7 @@ use std::sync::RwLock;
 /// The shape mirrors how `bounds_check::set_deny_unproven_bounds` threads
 /// CLI flags into a parser-time pass without widening the `Parser`
 /// constructor — this is the established pattern in CLAUDE.md and keeps
-/// the `main.rs` extension footprint minimal (one CLI-arg arm + one
+/// the `lib.rs` extension footprint minimal (one CLI-arg arm + one
 /// dispatch line).
 #[derive(Debug, Default, Clone)]
 pub struct CfgConfig {
@@ -90,7 +90,7 @@ static ACTIVE_CFG: RwLock<Option<CfgConfig>> = RwLock::new(None);
 static TEST_CFG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Install the active cfg config for the rest of this process. Called by
-/// the driver in `main.rs` after CLI parsing. Subsequent calls overwrite —
+/// the driver in `lib.rs` after CLI parsing. Subsequent calls overwrite —
 /// the LSP / REPL re-installs on each compile.
 pub fn set_active_config(cfg: CfgConfig) {
     if let Ok(mut guard) = ACTIVE_CFG.write() {
@@ -272,7 +272,7 @@ impl CfgPredicate {
 }
 
 /// Result of parsing one `#[cfg(...)]` attribute. The parser hook in
-/// `main.rs` consults `is_active` to decide whether to keep or drop the
+/// `lib.rs` consults `is_active` to decide whether to keep or drop the
 /// following item.
 #[derive(Debug, Clone)]
 pub struct CfgAttribute {
@@ -302,7 +302,7 @@ impl CfgAttribute {
 // ---------------------------------------------------------------------------
 // Parser entry point.
 //
-// The body of the cfg attribute lives here so `main.rs` only adds a single
+// The body of the cfg attribute lives here so `lib.rs` only adds a single
 // dispatch arm. The parser hook signature mirrors the existing
 // `parse_attributed_item` / `parse_repr_attribute` shape: it receives `&mut
 // crate::Parser`, mutates the cursor, and returns the next AST node — or
@@ -317,7 +317,7 @@ use crate::{Parser, Token};
 /// RES-343: parse `#[cfg(<predicate>)]` followed by the gated item. Returns
 /// `Some(node)` if the predicate is active (the item is kept), `None` if
 /// the item is stripped from the AST. The caller is `Parser::parse_statement`
-/// in `main.rs`; the dispatch hook lives in the existing match arm for the
+/// in `lib.rs`; the dispatch hook lives in the existing match arm for the
 /// new `Token::HashLeftBracket`.
 ///
 /// Error-recovery strategy: if the attribute itself is malformed, record an
