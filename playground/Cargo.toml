@@ -2,7 +2,7 @@
 name = "resilient-playground"
 version = "0.2.0"
 edition = "2024"
-description = "RES-368: WASM-targeted scaffold for the Resilient web playground."
+description = "RES-368: WASM-targeted Resilient web playground."
 authors = ["Eric Spencer"]
 publish = false
 

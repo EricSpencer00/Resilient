@@ -14,36 +14,31 @@ playground/
 
 ## Status
 
-This is the **scaffold** PR for [#160 (RES-368)](https://github.com/EricSpencer00/Resilient/issues/160).
 The page round-trip works end to end: load → init WASM → run → render
-result. The interpreter integration is **stubbed** — `compile_and_run`
-echoes the source with a "scaffold" notice, so the deploy pipeline,
-size budget, and UI flow can be verified before the real interpreter
-lands. The page surfaces this with a yellow banner so a casual visitor
-is not misled.
+result. `compile_and_run` now calls the real
+`resilient::run_program` tree-walker through the compiler crate's
+library target and returns a JSON result with stdout, diagnostics,
+exit code, duration, and `flavor: "tree-walker"`.
 
-## What's blocking full integration
+## Current limits
 
-The `resilient` crate is currently `[[bin]]`-only (see the comment at
-`resilient/Cargo.toml:138` and the `[[bin]] name = "rz"` block above
-it). To embed the tree-walker in WASM we need a `[lib]` target that
-re-exports at minimum the lexer, parser, type checker, and interpreter
-modules. That requires editing `resilient/src/main.rs` to extract
-module declarations into a sibling `lib.rs` — currently held by the
-`res-333-supervisor-fresh` file claim. Tracked as a follow-up.
+The playground is a browser demo surface, not the full native CLI.
+The real tree-walker path is wired, but JIT, FFI, Z3-backed
+verification, file I/O, the REPL, and watch mode are intentionally
+absent from the WASM build.
 
-A second blocker: several unconditional dependencies in
-`resilient/Cargo.toml` use platform APIs that won't compile to
-`wasm32-unknown-unknown`:
+The compiler crate already cfg-gates native-only dependencies so this
+package can compile to `wasm32-unknown-unknown`:
 
 | Dep | Use | WASM-safe path |
 |---|---|---|
-| `notify` + `notify-debouncer-mini` | `--watch` mode | gate behind `#[cfg(not(target_arch = "wasm32"))]` |
-| `rustyline` | REPL | gate behind `#[cfg(not(target_arch = "wasm32"))]` |
-| `rand_core` (getrandom) | cert-key generation | activate the `js` feature on `wasm32` |
+| `notify` + `notify-debouncer-mini` | `--watch` mode | gated behind `#[cfg(not(target_arch = "wasm32"))]` |
+| `rustyline` | REPL | gated behind `#[cfg(not(target_arch = "wasm32"))]` |
+| `rand_core` (getrandom) | cert-key generation | uses the `js` feature on wasm32 |
 
-The follow-up ticket for the lib refactor should fold these into
-either feature gates or `cfg`-gated compilation.
+The `_input` parameter to `compile_and_run(source, _input)` is still
+reserved for future stdin-style examples; `input()` calls do not have
+useful browser-backed stdin today.
 
 ## Local development
 
