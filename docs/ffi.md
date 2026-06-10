@@ -57,12 +57,18 @@ Only primitive types are supported in FFI Phase 1:
 | `Int`       | `int64_t`                                      |
 | `Float`     | `double`                                       |
 | `Bool`      | `bool`                                         |
-| `String`    | not yet supported                              |
+| `String`    | variadic `printf`-style format strings; fixed-arity string ABI arms remain limited to implemented trampoline shapes |
 | `Void`      | `void`                                         |
 | `OpaquePtr` | `void*` (opaque)                               |
 | `Callback`  | C function pointer (Phase 1 stub — see below)  |
 
 At most 8 parameters per extern function.
+
+String FFI is intentionally narrower than ordinary language string
+support. The shipped trampoline table covers the documented
+`fn c_printf(fmt: String, ...) -> Int` shape for `printf`-style
+variadic calls; arbitrary C string ownership and fixed-arity `char*`
+signatures need an explicitly documented trampoline arm before use.
 
 ### `OpaquePtr` — opaque C handles
 
