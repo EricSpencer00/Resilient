@@ -155,6 +155,19 @@ highlighting alone provides.
 
 ---
 
+## Inlay hints
+
+The server advertises `textDocument/inlayHint` support. Type hints are
+enabled by default for inferred `let` bindings and omitted function
+return types, including anonymous function literals. Disable those
+hints with the initialization option
+`resilient.inlayHints.types: false`.
+
+Parameter hints for user-function call sites are opt-in. Enable them
+with `resilient.inlayHints.parameters: true`.
+
+---
+
 ## What's next
 
 - Scope-aware local-variable completion.
