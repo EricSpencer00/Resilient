@@ -288,7 +288,7 @@ Comments are not preserved today (the parser discards them). Run
 hand. Comment-aware formatting is the next planned formatter
 improvement.
 
-## Package scaffolding
+## Package tooling
 
 ### `rz pkg init <name>`
 
@@ -308,8 +308,26 @@ cd my-proj
 rz src/main.rz
 ```
 
-`rz pkg` is the umbrella for future package operations
-(`pkg add`, `pkg build`, etc.); only `init` exists today.
+### `rz pkg add <name> <spec>`
+
+Adds a dependency to `[dependencies]` in `resilient.toml` and records
+the resolved source in `resilient.lock`. The source specifier can point
+at a local package or a pinned Git source:
+
+```bash
+rz pkg add mylib path:../libs/mylib
+rz pkg add netutil git:https://github.com/user/netutil --rev abc123
+```
+
+### `rz pkg publish --dry-run`
+
+Packages the current project and prints the upload summary without
+contacting a registry. The real registry POST path is still future
+work, so `--dry-run` is required today:
+
+```bash
+rz pkg publish --dry-run
+```
 
 ## Fuzz testing
 
