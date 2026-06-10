@@ -1,19 +1,18 @@
 //! RES-218: Criterion benchmark harness for the tree-walker interpreter.
 //!
 //! Drives three representative Resilient workloads through the compiled
-//! `resilient` binary:
+//! `rz` binary:
 //!
 //!   1. `fib(25)` — exponential recursion; stresses dispatch + env cloning.
 //!   2. Bubble-sort on a 50-element descending array — O(n^2) array ops.
 //!   3. String-concatenation loop — exercises the string builtins path.
 //!
-//! Why shell out to the binary instead of calling an in-process entry
-//! point? `resilient/src/main.rs` is a 16k-line binary crate with no
-//! public `lib.rs`; carving out a library surface for benchmarks alone
-//! would be a bigger ticket than RES-218 is scoped for. The process
-//! startup overhead is visible in the numbers but is constant across
-//! runs, so deltas between commits still show the shape the harness is
-//! meant to surface.
+//! Why shell out to the binary instead of calling the library directly?
+//! This harness measures the CLI path users invoke, including argument
+//! parsing, diagnostics, process startup, and stdout capture around the
+//! tree-walker. The process startup overhead is visible in the numbers
+//! but is constant across runs, so deltas between commits still show the
+//! shape the harness is meant to surface.
 //!
 //! Sample sizes are deliberately small (10 samples per bench) because
 //! the tree-walker is slow enough that a default 100-sample run would
