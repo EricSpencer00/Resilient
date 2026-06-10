@@ -31024,7 +31024,8 @@ fn print_pkg_help() {
              add      Add a dependency to resilient.toml\n    \
              help     Show this message\n\
          \n\
-         Run `rz pkg <subcommand> --help` for subcommand-specific options."
+         Run `rz pkg <subcommand> --help` or `rz pkg <subcommand> help`\n\
+         for subcommand-specific options."
     );
 }
 
