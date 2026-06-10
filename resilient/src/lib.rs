@@ -31706,6 +31706,10 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("check") {
         return None;
     }
+    if is_check_help_request(args) {
+        print_check_help();
+        return Some(0);
+    }
 
     let mut file: Option<PathBuf> = None;
     let mut quiet = false;
@@ -32194,6 +32198,37 @@ fn print_repl_help() {
     print!("{}", REPL_HELP_TEXT);
 }
 
+const CHECK_HELP_TEXT: &str = r#"rz check — type-check a file without running it
+
+USAGE:
+    rz check <file> [FLAGS]
+
+FLAGS:
+    -q, --quiet                 Suppress success output
+        --emit-diagnostics-json Emit parse/type diagnostics as JSON
+        --safety-critical       Promote safety-critical lint failures
+        --verifier-timeout-ms N Per-Z3-query timeout in milliseconds
+        --z3-theory MODE        Backend-limited; requires --features z3
+
+EXAMPLES:
+    rz check examples/hello.rz
+    rz check --quiet examples/hello.rz
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_check_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("check")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn print_check_help() {
+    print!("{}", CHECK_HELP_TEXT);
+}
+
 fn should_report_unknown_command_or_file(filename: &str) -> bool {
     !filename.is_empty()
         && !filename.contains('/')
@@ -32435,6 +32470,11 @@ pub fn run_cli() {
             version_info::short()
         };
         print!("{}", banner);
+        std::process::exit(0);
+    }
+
+    if is_check_help_request(&args) {
+        print_check_help();
         std::process::exit(0);
     }
 
