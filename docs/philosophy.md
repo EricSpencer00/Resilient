@@ -199,10 +199,12 @@ Honest self-criticism (more useful than marketing):
   immutable `let`. Reassignment + `while` loops are the next
   small JIT phase (RES-107). Until then, the JIT can't take
   loop-heavy workloads — use the VM.
-- **The error type carries `&'static str`.** Diagnostics for
-  things like "call to unknown function: NAME" can't include
-  the actual name. A future ticket will widen `JitError` to
-  carry owned strings.
+- **Unsupported JIT diagnostics still use static labels.**
+  `JitError::Unsupported(&'static str)` covers shapes the JIT
+  cannot lower, so messages like "call to unknown function" can't
+  include the actual name yet. A follow-up should let that variant
+  carry owned context without changing the already string-backed
+  JIT errors.
 - **No struct system yet.** `Node::StructDecl` exists in the
   AST and the interpreter handles it; the bytecode VM and JIT
   don't. Plays in goalpost G11+.
