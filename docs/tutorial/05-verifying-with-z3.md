@@ -134,7 +134,7 @@ cert + SHA-256 + (optionally) Ed25519 signature. The
 `verify-all` subcommand walks it:
 
 ```bash
-resilient verify-all certs
+rz verify-all certs
 ```
 
 ```
@@ -149,7 +149,7 @@ The `z3` column is skipped by default — add `--z3` to have
 require `unsat`:
 
 ```bash
-resilient verify-all --z3 certs
+rz verify-all --z3 certs
 ```
 
 ## What you learned
