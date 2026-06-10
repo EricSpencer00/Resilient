@@ -97,6 +97,10 @@ pub(crate) fn dispatch_dump_source_map(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("dump-source-map") {
         return None;
     }
+    if is_dump_source_map_help_request(args) {
+        print_dump_source_map_help();
+        return Some(0);
+    }
 
     let file = match args.get(2) {
         Some(f) => f.clone(),
@@ -158,6 +162,34 @@ pub(crate) fn dispatch_dump_source_map(args: &[String]) -> Option<i32> {
     }
 
     Some(0)
+}
+
+const DUMP_SOURCE_MAP_HELP_TEXT: &str = r#"rz dump-source-map — print bytecode-to-source-line mappings
+
+USAGE:
+    rz dump-source-map <file>
+
+OUTPUT:
+    Compiles the file, then prints bytecode program counters with source lines.
+    The report includes the main chunk and one section per compiled function.
+
+EXAMPLES:
+    rz dump-source-map examples/hello.rz
+    rz dump-source-map firmware/control.rz
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+pub(crate) fn is_dump_source_map_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("dump-source-map")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+pub(crate) fn print_dump_source_map_help() {
+    print!("{}", DUMP_SOURCE_MAP_HELP_TEXT);
 }
 
 // ---------------------------------------------------------------------------
