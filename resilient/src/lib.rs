@@ -32194,6 +32194,14 @@ fn print_repl_help() {
     print!("{}", REPL_HELP_TEXT);
 }
 
+fn should_report_unknown_command_or_file(filename: &str) -> bool {
+    !filename.is_empty()
+        && !filename.contains('/')
+        && !filename.contains('\\')
+        && Path::new(filename).extension().is_none()
+        && !Path::new(filename).exists()
+}
+
 pub(crate) fn execute_benchmark_body(
     program: &Node,
     body: &Node,
@@ -33030,6 +33038,13 @@ pub fn run_cli() {
         if filename == "repl" && !std::path::Path::new(filename).exists() {
             eprintln!(
                 "Error: `repl` is not a subcommand. Run `rz` with no arguments to start the REPL."
+            );
+            std::process::exit(2);
+        }
+        if should_report_unknown_command_or_file(filename) {
+            eprintln!(
+                "Error: unknown command or file `{}`. Run `rz --help` to list subcommands, or pass an existing file path.",
+                filename
             );
             std::process::exit(2);
         }
