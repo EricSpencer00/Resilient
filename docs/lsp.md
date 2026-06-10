@@ -100,8 +100,8 @@ local configs   = require("lspconfig.configs")
 if not configs.resilient then
   configs.resilient = {
     default_config = {
-      cmd      = { "/absolute/path/to/resilient", "--lsp" },
-      filetypes = { "rust" },   -- .rs files; change to "resilient" if you register a custom filetype
+      cmd      = { "/absolute/path/to/rz", "--lsp" },
+      filetypes = { "resilient" }, -- .rz files
       root_dir  = lspconfig.util.root_pattern("Cargo.toml", ".git"),
       settings  = {},
     },
@@ -110,15 +110,17 @@ end
 lspconfig.resilient.setup({})
 ```
 
-Replace `/absolute/path/to/resilient` with the path to your built
+Replace `/absolute/path/to/rz` with the path to your built
 binary (e.g. `~/GitHub/Resilient/resilient/target/release/rz`).
+If your editor does not already know the `resilient` filetype, map
+`.rz` files to it before starting the client.
 
 ### VS Code
 
 Use the bundled `vscode-extension/` or any generic LSP runner
 extension (e.g. *Generic LSP Client*). Point `command` at the
-Resilient binary with `--lsp` as the argument and set the language
-ID to `rust` (or register a custom `resilient` language ID).
+`rz` binary with `--lsp` as the argument and set the language
+ID to `resilient` for `.rz` files.
 
 The `vscode-extension/` directory in the repo contains a minimal
 extension scaffold — `npm install && vsce package` inside it
