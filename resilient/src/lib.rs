@@ -247,11 +247,11 @@ mod formatter;
 // RES-test: `rz test` subcommand — discover and run `fn test_*()`
 // functions. Standalone from the compiler pipeline.
 mod test_runner;
-// RES-164a: pure free-variable analysis on the AST. Phase-K
-// scaffolding for JIT closure capture (RES-164c/d) — returns the
-// set of names referenced inside a subtree that aren't bound
-// by a parameter / let / for-in / match pattern within it.
-// No runtime deps; no Environment touched.
+// RES-164a: reusable pure free-variable analysis on the AST.
+// Returns the set of names referenced inside a subtree that aren't
+// bound by a parameter / let / for-in / match pattern within it.
+// Used by recovery checking today and kept runtime-free so JIT
+// closure capture can reuse it without Environment state.
 mod free_vars;
 // RES-355: function-level bytecode cache. Stores a small JSON header per
 // source-file SHA-256 so re-runs of unchanged programs skip re-parsing.
