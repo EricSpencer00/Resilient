@@ -32196,6 +32196,8 @@ SUBCOMMANDS:
 
 Tip: run `rz` with no file argument to start REPL.
 `rz repl` is an explicit alias for the REPL.
+Run `rz <subcommand> --help` (or `rz <subcommand> help` where supported)
+for focused usage.
 See SYNTAX.md for the language reference.
 "#;
 
