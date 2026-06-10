@@ -32107,6 +32107,7 @@ const GLOBAL_HELP_TEXT: &str = r#"rz — the Resilient language compiler & inter
 USAGE:
     rz [FLAGS] [<file>]
     rz                      # start REPL when no file is provided
+    rz help                 # show this help
     rz <subcommand> [ARGS]
 
 COMMON FLAGS:
