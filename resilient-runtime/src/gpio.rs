@@ -288,15 +288,9 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
     /// other pin writes on the same port.
     #[inline]
     pub fn set_high(&self) {
-        let _ = self.try_set_high();
-    }
-
-    /// Fallible variant of [`set_high`](Self::set_high) for callers
-    /// that want to handle a chip config rejecting this port after
-    /// the pin handle was constructed.
-    #[inline]
-    pub fn try_set_high(&self) -> Result<(), GpioError> {
-        let base = GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
+        let Ok(base) = GpioPin::<CFG, Output>::resolve(self.port, self.pin) else {
+            return;
+        };
         let bsrr_addr = base + CFG::bsrr_offset();
         let bit = 1u32 << self.pin;
         // SAFETY: `bsrr_addr` is `base + bsrr_offset`, still inside
@@ -306,6 +300,15 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
         unsafe {
             core::ptr::write_volatile(bsrr_addr as *mut u32, bit);
         }
+    }
+
+    /// Fallible variant of [`set_high`](Self::set_high) for callers
+    /// that want to handle a chip config rejecting this port after
+    /// the pin handle was constructed.
+    #[inline]
+    pub fn try_set_high(&self) -> Result<(), GpioError> {
+        GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
+        self.set_high();
         Ok(())
     }
 
@@ -313,13 +316,9 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
     /// bits) — bit `pin + 16` resets pin `pin`.
     #[inline]
     pub fn set_low(&self) {
-        let _ = self.try_set_low();
-    }
-
-    /// Fallible variant of [`set_low`](Self::set_low).
-    #[inline]
-    pub fn try_set_low(&self) -> Result<(), GpioError> {
-        let base = GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
+        let Ok(base) = GpioPin::<CFG, Output>::resolve(self.port, self.pin) else {
+            return;
+        };
         let bsrr_addr = base + CFG::bsrr_offset();
         let bit = 1u32 << (self.pin as u32 + 16);
         // SAFETY: same reasoning as `set_high`. The upper-half
@@ -327,6 +326,13 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
         unsafe {
             core::ptr::write_volatile(bsrr_addr as *mut u32, bit);
         }
+    }
+
+    /// Fallible variant of [`set_low`](Self::set_low).
+    #[inline]
+    pub fn try_set_low(&self) -> Result<(), GpioError> {
+        GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
+        self.set_low();
         Ok(())
     }
 
@@ -336,13 +342,9 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
     /// you must serialise via a critical section.
     #[inline]
     pub fn toggle(&self) {
-        let _ = self.try_toggle();
-    }
-
-    /// Fallible variant of [`toggle`](Self::toggle).
-    #[inline]
-    pub fn try_toggle(&self) -> Result<(), GpioError> {
-        let base = GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
+        let Ok(base) = GpioPin::<CFG, Output>::resolve(self.port, self.pin) else {
+            return;
+        };
         let odr_addr = base + CFG::odr_offset();
         let bit = 1u32 << self.pin;
         // SAFETY: `odr_addr` is `base + odr_offset`, still inside
@@ -354,6 +356,13 @@ impl<CFG: GpioConfig> GpioPin<CFG, Output> {
             let current = core::ptr::read_volatile(odr_addr as *const u32);
             core::ptr::write_volatile(odr_addr as *mut u32, current ^ bit);
         }
+    }
+
+    /// Fallible variant of [`toggle`](Self::toggle).
+    #[inline]
+    pub fn try_toggle(&self) -> Result<(), GpioError> {
+        GpioPin::<CFG, Output>::resolve(self.port, self.pin)?;
+        self.toggle();
         Ok(())
     }
 
@@ -390,19 +399,22 @@ impl<CFG: GpioConfig> GpioPin<CFG, Input> {
     /// the bus clock — there is no debounce.
     #[inline]
     pub fn read(&self) -> bool {
-        self.try_read().unwrap_or_default()
-    }
-
-    /// Fallible variant of [`read`](Self::read).
-    #[inline]
-    pub fn try_read(&self) -> Result<bool, GpioError> {
-        let base = GpioPin::<CFG, Input>::resolve(self.port, self.pin)?;
+        let Ok(base) = GpioPin::<CFG, Input>::resolve(self.port, self.pin) else {
+            return false;
+        };
         let idr_addr = base + CFG::idr_offset();
         let bit = 1u32 << self.pin;
         // SAFETY: `idr_addr` is `base + idr_offset`, still inside
         // the port block. IDR is read-only; a volatile read returns
         // the live level.
-        Ok(unsafe { (core::ptr::read_volatile(idr_addr as *const u32) & bit) != 0 })
+        unsafe { (core::ptr::read_volatile(idr_addr as *const u32) & bit) != 0 }
+    }
+
+    /// Fallible variant of [`read`](Self::read).
+    #[inline]
+    pub fn try_read(&self) -> Result<bool, GpioError> {
+        GpioPin::<CFG, Input>::resolve(self.port, self.pin)?;
+        Ok(self.read())
     }
 
     /// Reconfigure this pin as an output, consuming the input
