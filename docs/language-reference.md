@@ -613,7 +613,7 @@ calls observe the value left by the previous call.
 
 ### `use` semantics
 
-`use "path/to/file.rs";` is a textual splice performed by the
+`use "path/to/file.rz";` is a textual splice performed by the
 importer *before* parsing of the importing file completes — the
 imported file's top-level declarations become part of the importing
 file. Imports are resolved relative to the importing file's
