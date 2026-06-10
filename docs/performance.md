@@ -106,10 +106,10 @@ As of Phase H (RES-105), the JIT lowers:
 - `fn name(int p1, int p2, ...)` declarations
 - Direct `name(args)` calls including recursion + mutual recursion
 
-What it doesn't yet do (use the VM instead):
+What it doesn't yet do (use the VM or tree walker for these today):
 
-- Reassignment (`x = x + 1`) — RES-107 (planned)
-- `while` loops — RES-107 (planned)
+- Reassignment (`x = x + 1`) — tracked by RES-107
+- `while` loops — tracked by RES-107
 - Closures / nested fns
 - Structs, arrays, strings
 - `live { }` blocks
