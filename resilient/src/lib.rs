@@ -352,7 +352,7 @@ mod ranges;
 
 // RES-343: conditional compilation via `#[cfg(...)]` attributes. The body
 // of the parser hook (predicate parsing + active-feature evaluation) lives
-// in this module; the main module only adds:
+// in this module; the core library only adds:
 //   * one Token variant for `#[` (in <EXTENSION_TOKENS>)
 //   * one lexer arm to emit it
 //   * one match arm in `parse_statement` to dispatch
@@ -366,18 +366,18 @@ mod cfg_attr;
 // must follow positional, no duplicates) lives next to the parser.
 mod named_args;
 
-// RES-221: string interpolation — `"text {expr} more"`. All feature
-// logic lives here; main.rs only adds a Node variant and two small
-// dispatch calls.
+// RES-221: string interpolation — `"text {expr} more"`. Feature logic
+// lives in `string_interp.rs`; `lib.rs` carries the Node variant and
+// two small dispatch calls.
 mod string_interp;
 // RES-401: tuples — literals, element access, destructuring let. All
 // feature logic (parser dispatch, interpreter helpers) lives in
-// `tuples.rs`; main.rs only adds the Node / Value variants and routes
+// `tuples.rs`; `lib.rs` carries the Node / Value variants and routes
 // through to the helpers.
 mod tuples;
 // RES-409: streaming file I/O — `file_open`, `file_read_chunk`,
 // `file_seek`, `file_close`, `file_write_chunk`. All builtins and the
-// thread-local handle registry live here; main.rs just registers
+// thread-local handle registry live here; `lib.rs` just registers
 // them in the BUILTINS table.
 mod file_io;
 // RES-324: `mod name { ... }` inline namespace blocks. All namespace
@@ -390,7 +390,7 @@ mod modules;
 mod default_params;
 // RES-289 (RES-81): generic type parameters — `fn identity<T>(x: T) -> T`.
 // Parse-time support (Token::Less/Greater reuse, parse_optional_type_params,
-// Node::Function::type_params field) lives in main.rs; this module owns the
+// Node::Function::type_params field) lives in lib.rs; this module owns the
 // typechecker validation pass (duplicate type-param detection).
 mod generics;
 // RES-2576: call-site type inference for generic function calls.
@@ -410,7 +410,7 @@ pub(crate) mod variance;
 // logic lives here: post-parse lowering (rewrites CallExpression to
 // NewtypeConstruct) and the typechecker validation pass. The hot
 // eval path is not touched — only two thin eval arms are added in
-// main.rs for NewtypeDecl (register) and NewtypeConstruct (wrap).
+// lib.rs for NewtypeDecl (register) and NewtypeConstruct (wrap).
 mod newtypes;
 // RES-394: region inference — assigns region variables to unlabeled
 // reference parameters; PR D5 integrates results into
@@ -25539,7 +25539,7 @@ impl Interpreter {
                 Ok(Value::Array(out))
             }
             // RES-401: tuple literal / element access / let destructure.
-            // All three dispatch into helpers in `tuples.rs`; main.rs
+            // All three dispatch into helpers in `tuples.rs`; `lib.rs`
             // just routes here so the feature stays isolated.
             Node::TupleLiteral { items, .. } => crate::tuples::eval_tuple_literal(self, items),
             Node::TupleIndex { tuple, index, span } => {
