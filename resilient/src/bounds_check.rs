@@ -41,8 +41,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// pattern in CLAUDE.md.
 static DENY_UNPROVEN_BOUNDS: AtomicBool = AtomicBool::new(false);
 
-/// Enable `--deny-unproven-bounds` mode. Called from `main.rs` CLI
-/// parsing before `check_program_with_source` runs.
+/// Enable `--deny-unproven-bounds` mode. Called from the `lib.rs` CLI
+/// dispatcher before `check_program_with_source` runs.
 pub fn set_deny_unproven_bounds(on: bool) {
     DENY_UNPROVEN_BOUNDS.store(on, Ordering::Relaxed);
 }
