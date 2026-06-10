@@ -114,6 +114,16 @@ top-level functions, structs, and type aliases in the current file.
 `workspace/symbol` indexes `.rz` files under the initialized workspace
 folder and returns matching top-level symbols across those files.
 
+### Code actions
+
+`textDocument/codeAction` offers quick fixes derived from diagnostics.
+Current actions include adding `requires true;` / `ensures true;`
+contract stubs for no-contract lint diagnostics, inserting a missing
+semicolon, suppressing lint diagnostics with `// resilient: allow`,
+prefixing unused variables or dead functions with `_`, adding numeric
+`as <type>` casts for type mismatches, and adding `use "..."` imports
+for undefined names found in the workspace index.
+
 ### Completion
 
 Triggering completion offers:
