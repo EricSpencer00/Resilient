@@ -4,16 +4,17 @@
 // emit a token stream ending in EOF or record a diagnostic and
 // stop cleanly. Never panic, never loop.
 //
-// Same subprocess pattern as RES-201's `parse` target: we shell
-// out to the built `resilient` binary with `--dump-tokens`,
+// Same CLI-boundary pattern as RES-201's `parse` target: we shell
+// out to the built `rz` binary with `--dump-tokens`,
 // which calls `Lexer::new(input).next_token_with_span()` to EOF
 // and prints one token per line. A child exit via signal (Rust
 // panic → SIGABRT) is re-raised as a local panic so libFuzzer
 // records the offending input.
 //
-// Why subprocess, not in-process? The `resilient` crate is
-// binary-only today (no `src/lib.rs`). Same trade-off as the
-// parse target — see `fuzz/README.md`.
+// Why subprocess, not in-process? These fuzzers exercise the
+// shipped CLI boundary because lexer internals are not a committed
+// public fuzzing API. Same trade-off as the parse target — see
+// `fuzz/README.md`.
 //
 // Runner expectations:
 // - `RESILIENT_FUZZ_BIN` points at the release binary (set by

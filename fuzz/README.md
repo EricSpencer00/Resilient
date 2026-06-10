@@ -19,17 +19,21 @@ them up via the `target:` key.
 
 ## Design note: subprocess, not in-process
 
-The `resilient` crate is binary-only (no `src/lib.rs`) today, so
-the fuzz target can't call `parse()` directly. It shells out to
-the built binary via `RESILIENT_FUZZ_BIN` and re-raises
-subprocess crashes as local panics so libFuzzer records the
+The compiler crate now exposes a library target, but these fuzz
+targets still exercise the shipped CLI boundary. That keeps fuzz
+coverage aligned with the parser, lexer, feature flags, diagnostics,
+and panic hooks users reach through `rz` instead of depending on
+private parser/lexer internals as an in-process fuzzing API. The
+harness shells out to the built binary via `RESILIENT_FUZZ_BIN` and
+re-raises subprocess crashes as local panics so libFuzzer records the
 input.
 
 This is slower than an in-process fuzzer would be — expect
 hundreds to a few thousand iterations per second instead of
 millions. Still fast enough to find parser panics in a CI
-budget; moving to in-process would require a library refactor
-(`src/lib.rs` exposing `pub fn parse`) and is a follow-up.
+budget. Moving selected targets in-process would require committing a
+small public fuzzing API, such as stable parse/lex entry points with
+diagnostic guarantees.
 
 ## Running locally
 
@@ -80,12 +84,12 @@ a parser fix is expected to land in the same PR that reports it:
 
 ```bash
 # Reproduce locally:
-resilient -t fuzz/artifacts/parse/crash-<hash>
+rz -t fuzz/artifacts/parse/crash-<hash>
 
 # Add the input to a Rust unit test under
-# `resilient/src/main.rs` `mod tests`, asserting that parsing
-# the bytes returns an error vec instead of panicking. Then fix
-# the parser site.
+# `resilient/src/lib.rs` or an integration test, asserting that
+# parsing the bytes returns an error vec instead of panicking.
+# Then fix the parser site.
 ```
 
 ## CI
