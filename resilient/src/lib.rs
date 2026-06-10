@@ -4702,7 +4702,11 @@ impl Parser {
                     if !type_expr.is_empty() {
                         type_expr.push(' ');
                     }
-                    type_expr.push_str(&self.current_token.to_string());
+                    let token_text = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        _ => self.current_token.to_string(),
+                    };
+                    type_expr.push_str(&token_text);
                     self.next_token();
                 }
                 Token::RightBrace | Token::RightParen | Token::RightBracket => {
@@ -4710,14 +4714,22 @@ impl Parser {
                     if !type_expr.is_empty() {
                         type_expr.push(' ');
                     }
-                    type_expr.push_str(&self.current_token.to_string());
+                    let token_text = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        _ => self.current_token.to_string(),
+                    };
+                    type_expr.push_str(&token_text);
                     self.next_token();
                 }
                 _ => {
                     if !type_expr.is_empty() {
                         type_expr.push(' ');
                     }
-                    type_expr.push_str(&self.current_token.to_string());
+                    let token_text = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        _ => self.current_token.to_string(),
+                    };
+                    type_expr.push_str(&token_text);
                     self.next_token();
                 }
             }
