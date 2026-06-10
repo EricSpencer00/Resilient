@@ -296,12 +296,12 @@ naming conventions, file organization).
 ## Generating audit artifacts
 
 The three commands that produce certifiable evidence are
-`--audit`, `--emit-certificate`, and `--sign-cert`. They compose:
+`--audit`, `--emit-certificate`, and `--sign-cert`. They compose when
+the `rz` binary was built with `--features z3`:
 
 ```bash
 # One shot: typecheck + verify + audit + emit signed certificates.
 rz \
-    --features z3 \
     --audit \
     --emit-certificate ./artifacts/certs \
     --sign-cert ~/.resilient-priv.pem \
