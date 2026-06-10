@@ -50,6 +50,7 @@ Scope rules:
 | `--dump-chunks` | `resilient/tests/dump_chunks_smoke.rs` | Covered | Direct VM disassembly smoke. |
 | `--audit` | `resilient/tests/bounds_elision_smoke.rs` | Covered | Direct verification audit coverage. |
 | `--explain-effects` | `resilient/tests/explain_effects_cli.rs` | Covered | Dedicated CLI coverage. |
+| `rz debug <file>` / `--dap` | `resilient/tests/debug_help_smoke.rs`, `resilient/src/dap_server.rs` | Covered | DAP server CLI entrypoints are documented and help-covered; breakpoints, stepping, and watch expressions remain maturing. |
 | `--version` / `--version --verbose` | `resilient/tests/stable_cli_surface_smoke.rs` | Covered | Added for RES-3128. |
 | `stack-usage <file>` | `resilient/tests/stable_cli_surface_smoke.rs` | Covered | Added for RES-3128. |
 | `pkg init` workflow | `resilient/tests/pkg_init_smoke.rs` | Covered | Dedicated project-scaffolding smoke. |
@@ -66,7 +67,7 @@ Scope rules:
 | Surface | Reason | Follow-up shape |
 |---|---|---|
 | `rz tool ...` external tool bridge | Present in code but not documented as stable in the public tooling reference or top-level help. | Promote/document the subcommand first, then add direct smoke coverage as part of that stabilization slice. |
-| Debugger / profiler paths | Public docs classify them as future work. | Stabilize the user-facing workflows before adding them to this inventory. |
+| Profiler path | `docs/tooling.md` documents the profiler as future; current timing data comes from `rz bench` and `--jit-cache-stats`. | Stabilize a profiler CLI and add direct smoke coverage before promoting it. |
 
 ## Maintenance Rule
 
