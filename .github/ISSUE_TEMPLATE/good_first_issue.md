@@ -26,7 +26,7 @@ _What should the state of the codebase be when this ticket is closed?_
 
 ## Acceptance criteria
 
-- [ ] _Criterion 1 — something observable, e.g. "`foo.rs` example runs and
+- [ ] _Criterion 1 — something observable, e.g. "`foo.rz` example runs and
       matches its `.expected.txt`"_
 - [ ] _Criterion 2_
 - [ ] _Criterion 3_
@@ -35,9 +35,9 @@ _What should the state of the codebase be when this ticket is closed?_
 
 - **Where to start**: _file / module / function the contributor should open
   first._
-- **Where to add tests**: _e.g. `resilient/src/main.rs` under `#[cfg(test)]
-  mod tests`, or a new `resilient/examples/foo.rs` with a
-  `foo.expected.txt` sidecar._
+- **Where to add tests**: _e.g. a unit test in `resilient/src/lib.rs`, a
+  focused integration test under `resilient/tests/`, or a new
+  `resilient/examples/foo.rz` with a `foo.expected.txt` sidecar._
 - **Relevant docs**: _links to SYNTAX.md / STABILITY.md / ROADMAP.md
   sections that explain surrounding context._
 
