@@ -10726,7 +10726,7 @@ impl TypeChecker {
 /// observable side effects or nondeterminism. Any `@pure` fn
 /// that calls one of these is rejected at type-check time.
 ///
-/// Keep in sync with `resilient/src/main.rs::BUILTINS` — adding a
+/// Keep in sync with `resilient/src/lib.rs::BUILTINS` — adding a
 /// new I/O / clock / env builtin there means adding it here.
 const IMPURE_BUILTINS: &[&str] = &[
     // RES-004 / RES-144: stdio.
@@ -11133,7 +11133,7 @@ fn check_body_purity(
 /// Input is the callee name. Returns true iff the name is one of
 /// the pure-by-default builtins we ship.
 fn is_known_pure_builtin(name: &str) -> bool {
-    // Keep this list in sync with `resilient/src/main.rs::BUILTINS`
+    // Keep this list in sync with `resilient/src/lib.rs::BUILTINS`
     // minus the names in `IMPURE_BUILTINS`.
     const PURE_BUILTINS: &[&str] = &[
         // Math.
