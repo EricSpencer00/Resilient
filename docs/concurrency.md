@@ -583,8 +583,8 @@ Resilient today is qualification-ready.
   actor-safety argument; V1 actors are for interpreter use only.
 - The roadmap points to Erlang-style actors + supervisor trees,
   built on top of effect tracking and an AOT path.
-- Real-time scheduling guarantees are a future work item gated
-  on AOT; today, hard-RT code stays in C.
+- Real-time scheduling guarantees depend on the planned AOT path;
+  today's runtime does not provide them, so hard-RT code stays in C.
 
 If you are evaluating Resilient for a safety-critical project:
 the honest pitch is "a single-threaded, verifiable,
