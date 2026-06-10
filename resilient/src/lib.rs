@@ -32726,8 +32726,10 @@ pub fn run_cli() {
     // TLA+ bridge: `rz tla check <file.tla>` — shells out to TLC and
     // surfaces results in Resilient's diagnostic format.
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(code) = tla_bridge::dispatch_tla_subcommand(&args) {
-        std::process::exit(code);
+    if args.len() > 1 {
+        if let Some(code) = tla_bridge::dispatch_tla_subcommand(&args[1..]) {
+            std::process::exit(code);
+        }
     }
 
     let explicit_repl = args.get(1).map(String::as_str) == Some("repl");
