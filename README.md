@@ -495,10 +495,11 @@ fn main() -> ! {
 }
 ```
 
-The `resilient/` crate is unaffected — it stays a single-crate
-project; `resilient-runtime/` is a separate Cargo project alongside
-it. A future ticket can promote both to a workspace if there's a
-real reason (shared profile config, cross-crate testing).
+The root Cargo workspace keeps `resilient/`, `resilient-runtime/`,
+and `resilient-span/` as separate packages while sharing profile
+settings and a single target directory. `resilient-runtime/` remains
+the no-std runtime package that embedded applications can depend on
+directly.
 
 See [`resilient-runtime-cortex-m-demo/`](resilient-runtime-cortex-m-demo/)
 for a buildable example that links the runtime with an
