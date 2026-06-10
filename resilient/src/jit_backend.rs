@@ -1,9 +1,7 @@
-//! RES-072 Phase A + RES-096 Phase B: Cranelift JIT backend.
+//! RES-072 / RES-096: Cranelift JIT backend.
 //!
-//! Phase A wired the dep tree, the `--jit` flag, and a stub
-//! `run` that returned `JitError::Unsupported`. Phase B (this
-//! revision) actually lowers a tiny subset of the AST to native
-//! code and executes it:
+//! The backend lowers the currently supported tree-walker subset to
+//! native code and executes it:
 //!
 //! - `Node::IntegerLiteral { value, .. }` → `iconst`
 //! - `Node::InfixExpression` with `+` → recursive lower + `iadd`
@@ -12,9 +10,8 @@
 //! - Top-level `Node::Program` containing a single
 //!   `ReturnStatement` is wrapped as the JIT's `main`
 //!
-//! Anything else returns `JitError::Unsupported(...)`. Future
-//! tickets layer on let bindings (RES-097-?), control flow,
-//! function calls, etc.
+//! Unsupported AST shapes return `JitError::Unsupported(...)` cleanly
+//! so callers can fall back to the interpreter instead of panicking.
 
 #![allow(dead_code)]
 
