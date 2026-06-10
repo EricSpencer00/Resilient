@@ -8,11 +8,11 @@
 // SIGABRT on Linux, similar on macOS) is re-raised as a local
 // panic so libFuzzer records the offending input.
 //
-// Same subprocess pattern as RES-201's `parse` target and
+// Same CLI-boundary pattern as RES-201's `parse` target and
 // RES-111's `lex` target — see `fuzz/README.md` for the design
-// rationale (TL;DR: `resilient` is binary-only, no library
-// surface to link against). We shell out to `rz --jit <file>`
-// which routes through:
+// rationale. We shell out to `rz --jit <file>`, keeping coverage
+// aligned with the shipped binary while avoiding private
+// in-process parser/lexer/JIT APIs. The command routes through:
 //
 //     lex (lexer)
 //   -> parse (parser)

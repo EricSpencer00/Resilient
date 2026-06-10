@@ -61,7 +61,7 @@ fuzz_target!(|data: &[u8]| {
     if output.status.code().is_none() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         panic!(
-            "resilient --dump-tokens process crashed (signal) on fuzz input:\n\
+            "rz --dump-tokens process crashed (signal) on fuzz input:\n\
              stderr tail: {}",
             stderr.lines().rev().take(5).collect::<Vec<_>>().join(" | ")
         );
