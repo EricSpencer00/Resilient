@@ -105,8 +105,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// change. Mirrors the `bounds_check::DENY_UNPROVEN_BOUNDS` pattern.
 static STRICT_TERMINATION: AtomicBool = AtomicBool::new(false);
 
-/// Enable `--strict-termination` mode. Called from `main.rs` CLI
-/// parsing before `check_program_with_source` runs.
+/// Enable `--strict-termination` mode. Called from the `lib.rs` CLI
+/// dispatcher before `check_program_with_source` runs.
 pub fn set_strict_termination(on: bool) {
     STRICT_TERMINATION.store(on, Ordering::Relaxed);
 }
