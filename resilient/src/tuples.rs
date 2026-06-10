@@ -16,14 +16,14 @@
 //! dedicated tuple shape.
 //!
 //! The tuple AST is stored as three new `Node` variants and one new
-//! `Value` variant in `main.rs` (per the feature-isolation pattern,
-//! these are the only main.rs touch points).
+//! `Value` variant in `lib.rs` (per the feature-isolation pattern,
+//! these are the only lib.rs touch points).
 
 use crate::span::Span;
 use crate::{Interpreter, Node, Parser, RResult, Token, Value};
 
 /// Parser entry — called from the `Token::LeftParen` prefix arm in
-/// `main.rs`. On entry, `parser.current_token` is `(`. On exit,
+/// `lib.rs`. On entry, `parser.current_token` is `(`. On exit,
 /// `parser.current_token` sits on the closing `)`.
 ///
 /// Disambiguation:

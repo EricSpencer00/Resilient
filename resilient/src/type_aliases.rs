@@ -14,13 +14,13 @@
 //!
 //! ## What lives elsewhere (and why)
 //!
-//! - **Token + keyword + AST node**: `main.rs` (`Token::Type`,
+//! - **Token + keyword + AST node**: `lib.rs` (`Token::Type`,
 //!   `"type" => Token::Type`, `Node::TypeAlias { name, target, span }`).
 //!   Predates the feature-isolation refactor — kept in place to avoid
 //!   churning every consumer (`free_vars`, `compiler`, `formatter`,
 //!   `lsp_server`, `jit_backend`).
 //! - **Logos token**: `lexer_logos.rs` (`#[token("type")] Type`).
-//! - **Parser**: `Parser::parse_type_alias` in `main.rs`.
+//! - **Parser**: `Parser::parse_type_alias` in `lib.rs`.
 //! - **Lazy alias expansion**: `TypeChecker::parse_type_name` in
 //!   `typechecker.rs` — the actual structural-equivalence step that
 //!   makes `Meters` interchangeable with `float`.
