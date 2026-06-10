@@ -36,7 +36,7 @@ pub fn dispatch_test_subcommand(args: &[String]) -> Option<i32> {
             filter = Some(args[i].clone());
         } else if let Some(f) = a.strip_prefix("--filter=") {
             filter = Some(f.to_string());
-        } else if a == "--help" || a == "-h" {
+        } else if a == "--help" || a == "-h" || a == "help" {
             print_test_help();
             return Some(0);
         } else if target.is_none() {
