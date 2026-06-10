@@ -192,7 +192,7 @@ curl -fsSL https://raw.githubusercontent.com/EricSpencer00/Resilient/main/script
 
 Then add `~/.rz/bin` to `PATH` (the script prints the exact line for your
 shell). For a system-wide install: `RZ_PREFIX=/usr/local sudo bash`.
-Pin a version with `RZ_VERSION=v0.1.0 …`.
+Pin a version with `RZ_VERSION=v0.2.0 …`.
 
 #### Pre-built binaries
 
@@ -201,7 +201,7 @@ Grab the archive matching your platform from the
 extract `rz`, and put it on `PATH`:
 
 ```bash
-TAG=v0.1.0  # see the releases page for the latest
+TAG=v0.2.0  # see the releases page for the latest
 TARGET=aarch64-apple-darwin  # or x86_64-apple-darwin / *-unknown-linux-gnu
 curl -fSL "https://github.com/EricSpencer00/Resilient/releases/download/${TAG}/rz-${TAG}-${TARGET}.tar.gz" \
     | tar xz -C /usr/local/bin
