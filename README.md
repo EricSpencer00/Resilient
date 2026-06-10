@@ -876,23 +876,22 @@ ticket-sized work.
 
 ### Self-hosting progress (G20)
 
-G20 is a long arc. The first milestone is a Resilient program
-that can lex Resilient source.
+G20 is a long arc. The tree keeps the original RES-196 lexer
+prototype for history, and the current parity harness now
+cross-checks self-hosted front-end pieces against the Rust front end.
 
-- **RES-196** — [`self-host/lex.rs`](./self-host/lex.rs): a byte-
-  level lexer for a restricted subset of the language, written
-  in Resilient itself. Recognizes identifiers, integer + string
-  literals, the `fn` / `let` / `return` / `if` / `else` / `while` /
-  `true` / `false` keywords, single-char punctuation,
-  single-char operators, the two-char comparison / logical
-  operators, and `//` line comments. Whitespace-skipping with
-  line / column tracking.
+- **RES-196 prototype** — [`self-host/lex.rs`](./self-host/lex.rs)
+  plus [`self-host/run.sh`](./self-host/run.sh) remains the first
+  proof that Resilient could express a lexer at all.
+- **Current parity path** — [`self-host/lexer.rz`](./self-host/lexer.rz)
+  and [`self-host/parser.rz`](./self-host/parser.rz) run against
+  `self-host/parity_corpus/` through:
 
-  Run it: `./self-host/run.sh` (diffs output against
-  [`self-host/hello.tokens.txt`](./self-host/hello.tokens.txt)).
+  ```bash
+  cargo test --manifest-path resilient/Cargo.toml --test self_host_parity
+  ```
 
-  Not in CI — informative only until the self-hosted toolchain
-  becomes load-bearing. See the source file's top-comment for
-  the feature gaps (multiline strings, block comments, `live`
-  contracts, float / bytes literals) and the parser workarounds
-  the prototype needed to land today.
+  For a contributor-facing coverage artifact, run
+  `rz self-host-parity-report --json-out artifacts/self-host-parity.json`.
+  See [`self-host/README.md`](./self-host/README.md) for the harness
+  details and current coverage limits.
