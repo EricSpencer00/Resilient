@@ -30390,9 +30390,11 @@ fn execute_file(
         }
         #[cfg(not(feature = "jit"))]
         {
-            return Err("--jit requires the `jit` feature. Rebuild with:\n  \
+            return Err(
+                "Backend-limited: --jit requires the `jit` feature. Rebuild with:\n  \
                  cargo build --features jit"
-                .to_string());
+                    .to_string(),
+            );
         }
     }
 
@@ -32031,8 +32033,10 @@ COMMON FLAGS:\n\
         --sign-cert PATH         Ed25519-sign the emitted certificate\n\
         --vm                     Route through the bytecode VM\n\
         --jit                    Route through the Cranelift JIT\n\
+                                 (backend-limited; requires --features jit)\n\
         --dump-tokens            Print the lexer stream and exit\n\
         --dump-ast-json          Print the parsed AST as JSON and exit\n\
+                                 (experimental tooling surface)\n\
         --dump-chunks            Print the VM disassembly and exit\n\
         --verifier-timeout-ms N  Per-Z3-query timeout (ms, 0 = off)\n\
         --seed N                 Pin the RNG seed for determinism\n\
@@ -32042,6 +32046,7 @@ COMMON FLAGS:\n\
         --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
+                                 (backend-limited; requires --features lsp)\n\
         --mcp                    Run the MCP server on stdio\n\
                                  Exposes compiler tools (parse/typecheck/run/\n\
                                  lint/format/verify) to AI assistants via the\n\
@@ -32060,6 +32065,12 @@ COMMON FLAGS:\n\
                                  (RES-2581)\n\
         --watch                  Re-run the file on every save (200 ms\n\
                                  debounce); press Ctrl-C to stop (RES-228)\n\
+\n\
+STATUS:\n\
+    stable             Supported for scripts and CI on the default build\n\
+    backend-limited    Stable when the named backend/build feature is present;\n\
+                       unavailable builds print a rebuild hint\n\
+    experimental       User-facing, but policy/output may still evolve\n\
 \n\
 SUBCOMMANDS:\n\
     repl                 Start interactive REPL (alias for bare `rz`)\n\
@@ -33320,7 +33331,7 @@ pub fn run_cli() {
         #[cfg(not(feature = "lsp"))]
         {
             eprintln!(
-                "--lsp requires the `lsp` feature. Rebuild with:\n  cargo build --features lsp"
+                "Backend-limited: --lsp requires the `lsp` feature. Rebuild with:\n  cargo build --features lsp"
             );
             std::process::exit(1);
         }
