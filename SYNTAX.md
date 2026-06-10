@@ -766,8 +766,9 @@ loop {
 ```
 
 Equivalent to `while true { ... }` and shares the same 1M-iteration
-runaway guard. `loop` is a statement, not an expression — `let x =
-loop { break v; }` (loop-with-value) is a future enhancement.
+runaway guard. `loop` is a statement, not an expression;
+loop-with-value forms such as `let x = loop { break v; }` are not
+supported yet.
 
 ### `while let` (RES-914)
 
@@ -1007,8 +1008,8 @@ match n {
 Both endpoints must be integer literals (negative `hi` allowed:
 `1..=-3` is degenerate and matches nothing). Range patterns only
 fire on `Int` scrutinees; non-Int values fall through to the
-wildcard. Range patterns bind no names today (`1..=5 @ x` binding
-is a future enhancement).
+wildcard. Range patterns bind no names today; forms such as
+`1..=5 @ x` are not supported yet.
 
 ### `if let` (RES-908)
 
