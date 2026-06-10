@@ -117,14 +117,14 @@ dependencies = [
 
 [[package]]
 name = "resilient-runtime"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "embedded-alloc",
 ]
 
 [[package]]
 name = "resilient-runtime-cortex-m-demo"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
