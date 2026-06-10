@@ -2941,10 +2941,10 @@ impl LanguageServer for Backend {
     ///   1. Look up the cursor's identifier token via
     ///      `identifier_at` (same token-level plumbing as
     ///      RES-181a's hover).
-    ///   2. Resolve visible workspace symbols from the current file,
-    ///      honoring unopened on-disk imports.
-    ///   3. Fall back to the original same-document top-level lookup
-    ///      for declaration shapes not yet in the workspace graph.
+    ///   2. Rebuild the same-document top-level def map first so
+    ///      existing location ranges and local shadowing stay stable.
+    ///   3. Resolve visible workspace symbols from the current file,
+    ///      honoring unopened on-disk imports when no local def exists.
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
@@ -2968,6 +2968,13 @@ impl LanguageServer for Backend {
         let Some(program) = program else {
             return Ok(None);
         };
+        let defs = build_top_level_defs(&program);
+        if let Some(def) = find_top_level_def(&defs, &name) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri,
+                range: def.range,
+            })));
+        }
         if let Some(file_path) = uri.to_file_path().ok().map(|p| canonicalize_or_self(&p)) {
             let mut source_overrides = HashMap::new();
             source_overrides.insert(file_path.clone(), (text.clone(), program.clone()));
@@ -2983,14 +2990,7 @@ impl LanguageServer for Backend {
                 })));
             }
         }
-        let defs = build_top_level_defs(&program);
-        let Some(def) = find_top_level_def(&defs, &name) else {
-            return Ok(None);
-        };
-        Ok(Some(GotoDefinitionResponse::Scalar(Location {
-            uri,
-            range: def.range,
-        })))
+        Ok(None)
     }
 
     /// RES-2567: respond to `textDocument/references` for:
