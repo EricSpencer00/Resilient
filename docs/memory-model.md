@@ -40,7 +40,7 @@ memory strategy.
 
 | Tier                     | Implementation                               | Allocation strategy                    |
 |--------------------------|----------------------------------------------|----------------------------------------|
-| Host interpreter         | `resilient/src/main.rs` — tree walker        | `Rc<RefCell<EnvFrame>>` (refcount + interior mutability) |
+| Host interpreter         | `resilient/src/lib.rs` — tree walker         | `Rc<RefCell<EnvFrame>>` (refcount + interior mutability) |
 | Bytecode VM              | `resilient/src/vm.rs` — stack machine        | Owned `Vec<Value>` operand stack + locals slab |
 | Cranelift JIT            | `resilient/src/jit_backend.rs`               | Cranelift-managed native stack frames + closure upvalues |
 | Embedded runtime         | `resilient-runtime/` (`#![no_std]`)          | Stack-only by default; optional `alloc` feature |
@@ -54,7 +54,7 @@ the configuration shipped onto hardware.
 
 ### Host `Value` enum
 
-Defined at `resilient/src/main.rs:4000`. The variants are:
+Defined by the `Value` enum in `resilient/src/lib.rs`. The variants are:
 
 | Variant      | Payload                                          | Backing storage                     |
 |--------------|--------------------------------------------------|-------------------------------------|
@@ -148,8 +148,8 @@ a language-level reference type, which Resilient does not expose.
 ## The live-block memory contract
 
 A `live { }` block is the language's recoverable-failure primitive.
-The host implementation is at `resilient/src/main.rs:6679`
-(`eval_live_block`).
+The host implementation is `eval_live_block` in
+`resilient/src/lib.rs`.
 
 ### What is snapshotted
 
