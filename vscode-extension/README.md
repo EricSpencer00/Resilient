@@ -87,7 +87,7 @@ This release tracks the major language milestone shipped in the Resilient 1.5 co
 
 **Self-hosting parser (RES-379)** — `self-host/parser.rz` PR 1: recursive-descent Pratt parser emitting JSON AST; covers expressions, statements, and fn declarations
 
-*Note: V2 design work is tracked internally and will be scoped separately. This release is purely additive on the V1 surface.*
+*Note: V2 design work is tracked separately and will be scoped independently. This release is purely additive on the V1 surface.*
 
 ---
 
