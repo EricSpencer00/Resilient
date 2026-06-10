@@ -74,7 +74,7 @@ pub fn dispatch_bench_subcommand(args: &[String]) -> Option<i32> {
     let mut i = 2;
     while i < args.len() {
         let arg = &args[i];
-        if arg == "--help" || arg == "-h" {
+        if arg == "--help" || arg == "-h" || arg == "help" {
             print_bench_help();
             return Some(0);
         } else if arg == "--baseline" {
