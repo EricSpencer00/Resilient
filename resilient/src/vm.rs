@@ -248,7 +248,7 @@ impl OverflowMode {
         Ok(a % b)
     }
 
-    /// RES-349: tree-walker variant. The interpreter in `main.rs`
+    /// RES-349: tree-walker variant. The tree-walker interpreter in `lib.rs`
     /// reports errors as `String`, not `VmError`, so the trap path
     /// formats a matching diagnostic.
     pub fn add_for_eval(self, a: i64, b: i64, op: &str) -> Result<i64, String> {
