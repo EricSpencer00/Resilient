@@ -127,10 +127,9 @@ diffs, and a clear explanation of what changed and why.
 Resilient is being built incrementally through the ticket system.
 The current focus is on:
 
-- Expanding JIT coverage (while loops, closures, structs)
-- Growing the error code registry
-- Strengthening the Z3 contract prover
-- Improving the LSP experience
+- The roadmap-reset parent issue [#3132](https://github.com/EricSpencer00/Resilient/issues/3132), which maps the current language-forwarding audit onto agent-dispatchable child tickets
+- Child implementation tickets [#3133](https://github.com/EricSpencer00/Resilient/issues/3133) through [#3137](https://github.com/EricSpencer00/Resilient/issues/3137) for stability surfacing, type-system frontier work, LSP parity, runtime/backend parity, and docs/examples parity
+- Existing cross-cutting follow-ups [#3128](https://github.com/EricSpencer00/Resilient/issues/3128) (stable regression coverage inventory) and [#3129](https://github.com/EricSpencer00/Resilient/issues/3129) (linked-issue closure audit trail)
 
 Follow along in
 [ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md)

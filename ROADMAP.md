@@ -13,6 +13,29 @@ formally-verifiable language for safety-critical embedded systems.
 - **Simplicity** — minimal syntax, no dummy-parameter hacks, clear
   diagnostics with file:line:col.
 
+## 2026-06 roadmap reset backlog map
+
+GitHub Issues remain the canonical queue. This section is only the
+roadmap-facing projection of the audited language-forwarding slice so an
+agent can see which open ticket owns which recently merged user-visible
+surface without reconstructing it from old PR history.
+
+| Queue item | Scope | Verification anchor | Audited merged surface / done note |
+|---|---|---|---|
+| **#3132** Parent: roadmap reset | Backlog navigation only. Child implementation lives in the tickets below. | `gh issue list --state open --label agent-ready` | Parent tracker for the 2026-06 language-forwarding audit. |
+| **#3128** Stable regression coverage backfill | Existing cross-cutting coverage inventory kept explicitly in the reset. | `cargo test --manifest-path resilient/Cargo.toml --test safety_critical_smoke --test repl_smoke --test examples_smoke -- --nocapture` | Covers stable-surface follow-through for recently merged CLI/help/docs work, including PRs #3092, #3093, #3064, #3073, #3118, and #3130. |
+| **#3129** Linked-issue closure hygiene | Existing workflow-hygiene item kept explicitly in the reset. | `gh issue view 3129` | Done note: PR #3130 landed explicit linked-issue close handling and failure warnings; keep this issue as the audit trail for that workflow fix. |
+| **#3133** Stability matrix | Stable vs experimental vs backend-limited wording across docs/help. | `cargo run --manifest-path resilient/Cargo.toml -- --help` | Builds on merged user-visible work already landed in PRs #3118, #3093, #3064, #3088, and the feature-gating/help updates in #3130. |
+| **#3134** Type-system frontier | Narrow frontier for anonymous structs, projection bounds, and variance-aware generics. | `cargo test --manifest-path resilient/Cargo.toml --test anonymous_structs_smoke -- --nocapture` | Canonical follow-on for merged surface in PRs #3123, #3125, and #3127. Those MVPs are done; remaining user-visible parity belongs here. |
+| **#3135** LSP/editor parity | Workspace-wide editor behavior across real on-disk projects. | `cargo test --manifest-path resilient/Cargo.toml --test lsp_smoke --test lsp_goto_def_smoke --test lsp_references_smoke --test lsp_code_action_smoke -- --nocapture` | Canonical follow-on for merged LSP surface in PRs #3114, #3119, #3120, #3121, and #3126. MVP slices landed; remaining parity belongs here. |
+| **#3136** Runtime/backend parity | Bench, spawn, channels, and target/backend gating. | `cargo test --manifest-path resilient/Cargo.toml --test bench_cli --test safety_critical_smoke -- --nocapture` | Canonical follow-on for merged runtime/backend surface in PRs #3124, #3110, #3102, #3112, #3113, and the std-only gating work in #3130. |
+| **#3137** Documentation/examples parity | Public docs, examples, and generated help stay aligned. | `cargo test --manifest-path resilient/Cargo.toml --test examples_smoke --test safety_critical_smoke -- --nocapture` | Canonical follow-on for merged docs/help/examples cleanup in PRs #3065, #3066, #3067, #3070, #3071, #3073, #3082, #3083, #3092, and #3118. |
+
+The reset rule for this slice is simple: every user-visible merged
+surface belongs either to one open ticket above or to the explicit done
+note recorded for #3129. Future roadmap resets should extend this table
+rather than starting a second backlog artifact elsewhere.
+
 ## Goalpost ladder
 
 Each goalpost is a checkpoint that unlocks the next. We land one at a
