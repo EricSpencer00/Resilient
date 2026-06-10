@@ -32,7 +32,7 @@ three different backends.
 |------|------|--------|-------|
 | Tree-walking interpreter | *(default)* | stable | Fastest to iterate on. Accepts every language feature. |
 | Bytecode VM | `--vm` | stable | ~12x faster than the interpreter on `fib(25)`. Stack-based. |
-| Cranelift JIT | `--jit` | stable subset | Requires `--features jit`. ~12x faster than the VM. |
+| Cranelift JIT | `--jit` | backend-limited stable subset | Requires `--features jit`. ~12x faster than the VM. |
 
 ```bash
 rz prog.rz              # interpreter
@@ -47,19 +47,20 @@ erroring.
 
 ### Stability surface
 
-Public behavior is grouped by stability class:
+Public behavior is grouped by the same stability classes printed by
+`rz --help`:
 
-- **Stable:** `--check`, `--typecheck`, `--typecheck-strict`, `--fmt`, `--lint`,
-  `--examples`, `--audit` (without SMT features), `--run`, and
-  the default/interpreter execution path.
-- **Backend-limited:** options that depend on backend/feature flags
-  and are not available in every build, including:
-  `--vm`, `--jit` (requires `--features jit`),
-  `--lsp` (requires `--features lsp`), and SMT-enabled
-  verification (`--features z3` / `--z3`).
-- **Experimental:** surfaces that may change while policy and
-  diagnostics are still evolving: `--ai-threats` and
-  `--dump-ast-json`.
+- **Stable:** supported for scripts and CI on the default build:
+  `--check`, `--typecheck`, `--typecheck-strict`, `--fmt`, `--lint`,
+  `--examples`, `--audit` (without SMT features), `--run`, and the
+  default/interpreter execution path.
+- **Backend-limited:** stable when the named backend/build feature is
+  present; unavailable builds print a rebuild hint. This includes
+  `--vm`, `--jit` (requires `--features jit`), `--lsp` (requires
+  `--features lsp`), and SMT-enabled verification (`--features z3` /
+  `--z3`).
+- **Experimental:** user-facing, but policy/output may still evolve:
+  `--ai-threats` and `--dump-ast-json`.
 
 ## Inspection
 
