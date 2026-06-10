@@ -81,6 +81,19 @@ workspace file. Workspace lookup follows `use "..."` imports for
 top-level functions and structs, including unopened files under the
 initialized workspace folder.
 
+### Find references
+
+Running "find references" on a supported identifier returns LSP
+locations for:
+
+1. Top-level functions across the current file and imported workspace
+   files.
+2. Struct types across the current file and imported workspace files.
+3. Same-file variable declarations, reads, and writes.
+
+The client controls whether the declaration site is included through
+the standard `includeDeclaration` request flag.
+
 ### Completion
 
 Triggering completion offers:
