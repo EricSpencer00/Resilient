@@ -30840,7 +30840,7 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
             let mut i = 3;
             while i < args.len() {
                 let a = &args[i];
-                if a == "--help" || a == "-h" {
+                if a == "--help" || a == "-h" || a == "help" {
                     print_pkg_publish_help();
                     return Some(0);
                 } else if a == "--dry-run" {
