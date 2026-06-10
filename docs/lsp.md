@@ -94,6 +94,18 @@ locations for:
 The client controls whether the declaration site is included through
 the standard `includeDeclaration` request flag.
 
+### Rename
+
+Rename requests use `textDocument/prepareRename` first, so editors can
+reject unsupported cursor positions before prompting for a new name.
+Supported targets are top-level functions, top-level structs, and
+top-level `let`, `const`, or `static let` bindings.
+
+`textDocument/rename` validates the new identifier, rejects names that
+would shadow an existing visible top-level binding, and returns a
+workspace edit for matching references in open documents and workspace
+`.rz` files.
+
 ### Completion
 
 Triggering completion offers:
