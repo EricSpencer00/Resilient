@@ -509,7 +509,6 @@ mod tests {
     //! discipline; these tests are ground truth for the logic.
 
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     // 8 ports × 0x40 bytes (enough to cover MODER 0x00, IDR 0x10,
@@ -600,42 +599,6 @@ mod tests {
         }
         fn mode_output() -> u32 {
             0b01
-        }
-    }
-
-    static FLAKY_PORT_ENABLED: AtomicBool = AtomicBool::new(true);
-
-    #[derive(Debug, Clone, Copy)]
-    struct FlakyGpio;
-
-    // SAFETY: When enabled, this delegates to `MockGpio`, whose safety
-    // contract is documented above. When disabled, it returns `None`
-    // and no volatile access is attempted by the production API.
-    unsafe impl GpioConfig for FlakyGpio {
-        fn port_base_addr(port: Port) -> Option<usize> {
-            if FLAKY_PORT_ENABLED.load(Ordering::SeqCst) {
-                MockGpio::port_base_addr(port)
-            } else {
-                None
-            }
-        }
-        fn moder_offset() -> usize {
-            MockGpio::moder_offset()
-        }
-        fn odr_offset() -> usize {
-            MockGpio::odr_offset()
-        }
-        fn idr_offset() -> usize {
-            MockGpio::idr_offset()
-        }
-        fn bsrr_offset() -> usize {
-            MockGpio::bsrr_offset()
-        }
-        fn mode_input() -> u32 {
-            MockGpio::mode_input()
-        }
-        fn mode_output() -> u32 {
-            MockGpio::mode_output()
         }
     }
     /// Read a u32 register from the mock buffer using the same
@@ -799,26 +762,28 @@ mod tests {
 
     #[test]
     fn gpio_pin_methods_offer_fallible_no_panic_paths() {
-        mock_reset();
-        FLAKY_PORT_ENABLED.store(true, Ordering::SeqCst);
-        let out = gpio_output::<FlakyGpio>(Port::A, 1).expect("valid while enabled");
-        FLAKY_PORT_ENABLED.store(false, Ordering::SeqCst);
+        let out = GpioPin::<MockGpio, Output> {
+            port: Port::A,
+            pin: 16,
+            _cfg: PhantomData,
+            _mode: PhantomData,
+        };
 
-        assert_eq!(out.try_set_high(), Err(GpioError::UnsupportedPort(Port::A)));
-        assert_eq!(out.try_set_low(), Err(GpioError::UnsupportedPort(Port::A)));
-        assert_eq!(out.try_toggle(), Err(GpioError::UnsupportedPort(Port::A)));
+        assert_eq!(out.try_set_high(), Err(GpioError::InvalidPin(16)));
+        assert_eq!(out.try_set_low(), Err(GpioError::InvalidPin(16)));
+        assert_eq!(out.try_toggle(), Err(GpioError::InvalidPin(16)));
         out.set_high();
         out.set_low();
         out.toggle();
 
         let input = out.into_input();
         assert_eq!(input.port(), Port::A);
-        assert_eq!(input.pin(), 1);
-        assert_eq!(input.try_read(), Err(GpioError::UnsupportedPort(Port::A)));
+        assert_eq!(input.pin(), 16);
+        assert_eq!(input.try_read(), Err(GpioError::InvalidPin(16)));
         assert!(!input.read());
         assert_eq!(
             input.try_into_output().unwrap_err(),
-            GpioError::UnsupportedPort(Port::A)
+            GpioError::InvalidPin(16)
         );
     }
 
