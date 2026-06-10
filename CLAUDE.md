@@ -138,7 +138,7 @@ Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
 
 **This is the single most important rule for parallel agent work.**
 
-> **Heads up (RES-929):** historical references in this file say
+> **Heads up (RES-929):** older issues, handoffs, or scripts may say
 > `src/main.rs` for the big core file. The actual file is now
 > `src/lib.rs` (1.8 MB; `main.rs` is a 463-byte binary entry).
 > The append-only allowlist in `agent-scripts/auto-resolve-extensions.sh`
@@ -172,13 +172,13 @@ produce a conflict that's trivially resolved by keeping all lines.
 | Element | Location |
 |---|---|
 | All feature logic (parser, type check, Z3 proofs) | `src/my_feature.rs` |
-| Token enum variant | `main.rs` `<EXTENSION_TOKENS>` |
-| Keyword → Token mapping | `main.rs` `<EXTENSION_KEYWORDS>` |
+| Token enum variant | `lib.rs` `<EXTENSION_TOKENS>` |
+| Keyword → Token mapping | `lib.rs` `<EXTENSION_KEYWORDS>` |
 | Logos lexer token | `lexer_logos.rs` `<EXTENSION_TOKENS>` |
 | Top-level check call | `typechecker.rs` `<EXTENSION_PASSES>` |
-| AST node variant | `main.rs` `Node` enum — add to the end |
+| AST node variant | `lib.rs` `Node` enum — add to the end |
 
-### Minimal main.rs touch example
+### Minimal lib.rs touch example
 
 ```rust
 // In Token enum — <EXTENSION_TOKENS> block:
@@ -256,9 +256,9 @@ You can ship without asking on any of these:
   finish a ticket, as long as each PR ships a coherent green story.
 - Open a "sibling" PR to unblock a prerequisite ticket so your main
   ticket stops being blocked.
-- Refactor `main.rs` (35k+ lines) — including extracting modules,
-  changing visibility, splitting the binary into a `[lib]` + `[[bin]]`,
-  and rewriting whole subsystems — as long as tests stay green.
+- Refactor `lib.rs` (the large core file) — including extracting modules,
+  changing visibility, and rewriting whole subsystems — as long as tests
+  stay green.
 - Add new source files, tests, and `.expected.txt` golden sidecars.
 - Fix compiler warnings and clippy lints anywhere in the codebase.
 - Add or expand documentation (README, docs/, SYNTAX.md, LSP.md).
@@ -408,7 +408,7 @@ if any are not `SUCCESS`):
 - `cortex-m demo .text budget check`
 
 The `diff-shape guardrail` reports overlaps but does not block merge —
-overlaps on `main.rs` extension blocks are expected and are resolved
+overlaps on `lib.rs` extension blocks are expected and are resolved
 during integration sync.
 
 ---
