@@ -30993,7 +30993,7 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
         Some(other) => {
             eprintln!(
                 "Error: unknown pkg subcommand `{}`. Known: init, publish, add. \
-                 Run `rz pkg --help` for usage.",
+                 Run `rz pkg help` or `rz pkg --help` for usage.",
                 other
             );
             Some(2)
