@@ -869,13 +869,10 @@ calls); for one-shot arithmetic the VM is the right backend.
 
 ### What's next
 
-- G4 (full source spans with snippets / carets)
-- G5 (replace hand-rolled lexer with `logos`)
-- G6 (one canonical AST, retire the unwired `parser.rs`)
-- G7 (real type checker: inference, unification, exhaustiveness)
-- G8–G10 (function contracts, symbolic assert, live-block invariants)
-- G11+ (stdlib, structs, pattern matching, cranelift backend, LSP,
-  `no_std`, self-hosting)
+Current priorities live in [ROADMAP.md](ROADMAP.md) and the
+[GitHub issue queue](https://github.com/EricSpencer00/Resilient/issues).
+Use the roadmap for the goalpost ladder and issues for active,
+ticket-sized work.
 
 ### Self-hosting progress (G20)
 
