@@ -106,6 +106,14 @@ would shadow an existing visible top-level binding, and returns a
 workspace edit for matching references in open documents and workspace
 `.rz` files.
 
+### Symbols
+
+`textDocument/documentSymbol` returns a source-ordered outline for
+top-level functions, structs, and type aliases in the current file.
+
+`workspace/symbol` indexes `.rz` files under the initialized workspace
+folder and returns matching top-level symbols across those files.
+
 ### Completion
 
 Triggering completion offers:
