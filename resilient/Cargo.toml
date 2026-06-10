@@ -62,7 +62,8 @@ lsp = ["dep:tower-lsp", "dep:tokio"]
 #
 # and run `rz --jit prog.rz` to lower the program to native
 # code instead of going through the tree walker / bytecode VM.
-# Phase A only ships the scaffolding; RES-096+ adds AST lowering.
+# The JIT lowers the supported tree-walker subset to native code and
+# reports unsupported AST shapes cleanly so callers can fall back.
 jit = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-native", "dep:cranelift-module"]
 # RES-108: opt-in logos-based lexer (G5 foundation). Default off so the
 # hand-rolled scanner stays authoritative until RES-109 benchmarks land.
