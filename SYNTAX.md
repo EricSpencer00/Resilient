@@ -575,14 +575,20 @@ The current trait system does not support:
 - `int`: 64-bit signed integer. Accepts decimal (`42`), hex (`0xFF`),
   and binary (`0b1010`) literals. Underscore separators allowed in all
   three forms: `0xDEAD_BEEF`, `0b1010_0001`, `1_000_000` (RES-909).
-- `float`: 64-bit floating point. Accepts decimal-point literals
-  (`1.5`, `42.`), RES-906 scientific notation (`1e9`, `2E10`,
-  `1.5e-3`, `1.e3`), and RES-909 underscore separators in mantissa
-  and exponent body (`1_000.5e1_0`). Exponent body (`+`/`-` optional,
-  then ≥1 digit) must follow `e`/`E` — bare `1e` lexes as
+- `float`: 64-bit floating point (IEEE-754 binary64 / `f64`). Accepts
+  decimal-point literals (`1.5`, `42.`), RES-906 scientific notation
+  (`1e9`, `2E10`, `1.5e-3`, `1.e3`), and RES-909 underscore separators
+  in mantissa and exponent body (`1_000.5e1_0`). Exponent body (`+`/`-`
+  optional, then ≥1 digit) must follow `e`/`E` — bare `1e` lexes as
   `Int(1) Ident("e")`. An underscore must sit between two digits;
   `1_a` lexes as `Int(1) Ident("_a")`, never silently swallowing the
   separator.
+- `f32`: 32-bit floating point (IEEE-754 binary32). A distinct type
+  from `float` — mixing `f32` and `float` in arithmetic without an
+  explicit cast is a type error. Use on embedded targets with a
+  hardware single-precision FPU (e.g. Cortex-M4F); `float` is
+  software-emulated there and much slower. Literals: `3.14 as f32`,
+  `let x: f32 = 3.14`, or `as_f32(expr)`. Aliases: `Float32`.
 - `string`: UTF-8 text; `len(s)` returns scalar count
 - `bytes`: raw byte sequence, `b"\x00\x01abc"` literal (RES-152)
 - `bool`: `true` / `false`
@@ -642,7 +648,7 @@ let value = "Pi: " + 3.14;              // "Pi: 3.14"
 | Array index | `arr[i]` — single element |
 | Array slice | `arr[lo..hi]`, `arr[lo..=hi]`, `arr[lo..]`, `arr[..hi]`, `arr[..]` (RES-911) — returns a fresh array |
 | Compound assign | `+= -= *= /= %= &= \|= ^= <<= >>=` (RES-912) — `x OP= rhs` desugars to `x = x OP rhs` for plain identifiers |
-| Cast | `<expr> as int` / `as float` / `as string` (RES-934) — postfix sugar over `to_int`, `to_float`, `to_string` builtins; high precedence (`1 + 2 as float` is `1 + (2 as float)`) |
+| Cast | `<expr> as int` / `as float` / `as f32` / `as f64` / `as string` (RES-934, RES-2618) — postfix sugar over conversion builtins; high precedence (`1 + 2 as float` is `1 + (2 as float)`) |
 
 ## `as` cast (RES-934)
 
@@ -653,18 +659,20 @@ conversion builtin:
 let n = 3.7 as int;           // to_int(3.7)   → 3 (truncates)
 let f = 42 as float;          // to_float(42)  → 42.0
 let s = true as string;       // to_string(true) → "true"
+let narrow = 1.0 / 3.0 as f32; // as_f32 — single-precision truncate
+let wide = narrow as f64;     // as_f64 — widen back to f64
 
 let chained = 3.5 as int as float as string;   // "3"
 let sum_cast = (1 + 2) as float;               // parens to cast a sum
 ```
 
 Supported targets are `int` (also `Int` / `Int64`), `float` (also
-`Float`), and `string` (also `String`). An unsupported target name
-(`as MyStruct`) is a parse error: *"Cannot cast to `MyStruct` — `as`
-supports int / float / string"*. The runtime semantics match the
-underlying builtin, including its error policy — `to_int(NaN)`,
-`to_int(∞)`, and out-of-range floats raise runtime errors rather
-than silently saturating.
+`Float` / `f64`), `f32` (also `Float32`), `f64` (alias of `float`),
+and `string` (also `String`). An unsupported target name (`as MyStruct`)
+is a parse error. The runtime semantics match the underlying builtin,
+including its error policy — `to_int(NaN)`, `to_int(∞)`, and
+out-of-range floats raise runtime errors rather than silently
+saturating.
 
 `as` binds tightly (precedence 11, same as `.`/`?`), mirroring Rust:
 

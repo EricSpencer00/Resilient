@@ -171,7 +171,8 @@ assume(x > 0, "must be positive");  // optional message shown on trap
 | Type     | Notes                                                              |
 |----------|--------------------------------------------------------------------|
 | `int`    | 64-bit signed. Decimal (`42`), hex (`0xFF`), binary (`0b1010`). Underscore separators allowed: `0xDEAD_BEEF`. |
-| `float`  | 64-bit IEEE-754                                                    |
+| `float`  | 64-bit IEEE-754 binary64 (`f64`)                                   |
+| `f32`    | 32-bit IEEE-754 binary32 — distinct from `float`; use on embedded FPU targets. Literals: `3.14 as f32`, `as_f32(x)`. |
 | `string` | UTF-8 text; `len(s)` returns scalar count                          |
 | `bytes`  | Raw byte sequence; `b"\x00\x01abc"` literal                        |
 | `bool`   | `true` / `false`                                                   |
@@ -179,8 +180,8 @@ assume(x > 0, "must be positive");  // optional message shown on trap
 ### Numeric coercion
 
 Resilient does not implicitly coerce between numeric types.
-Mixing `int` and `float` in arithmetic or comparisons is a
-type error. Use the explicit converters:
+Mixing `int` and `float`, or `f32` and `float`, in arithmetic or
+comparisons is a type error. Use the explicit converters:
 
 ```rust
 let a = 1 + 2.0;              // ERROR: Cannot apply '+' to int and float
@@ -192,6 +193,8 @@ let c = 1 + to_int(2.0);      // ok → int 3
 |---|---|
 | `to_float(int) -> float` | Exact widening (for `abs(x) < 2^53`) |
 | `to_int(float) -> int` | Truncate toward zero; `NaN` / `±∞` / out-of-range are runtime errors |
+| `as_f32(int\|float) -> f32` | Truncate to binary32; also `expr as f32` |
+| `as_f64(int\|f32\|float) -> float` | Widen to binary64; also `expr as f64` |
 
 ---
 

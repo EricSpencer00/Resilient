@@ -31,12 +31,18 @@ expression on the right is evaluated eagerly; there's no lazy
 
 ## Primitive types
 
-| Type     | Literal example   |
-| -------- | ----------------- |
-| `int`    | `42`, `-3`, `0`   |
-| `float`  | `3.14`, `-0.5`    |
-| `bool`   | `true`, `false`   |
-| `string` | `"hi"`            |
+| Type     | Literal example              | Notes |
+| -------- | ---------------------------- | ----- |
+| `int`    | `42`, `-3`, `0`              | 64-bit signed |
+| `float`  | `3.14`, `-0.5`               | IEEE-754 binary64 (`f64`) |
+| `f32`    | `3.14 as f32`, `as_f32(1.5)` | IEEE-754 binary32 — use on embedded FPU targets |
+| `bool`   | `true`, `false`              | |
+| `string` | `"hi"`                       | |
+
+`float` and `f32` are **distinct types**. Mixing them in arithmetic
+without an explicit cast is a type error — the checker suggests
+`as f32` or `as f64`. On Cortex-M4F, `f32` maps to the hardware
+single-precision FPU; `float` is software-emulated and slower.
 
 You can spell the type explicitly when clarity helps:
 
@@ -54,9 +60,9 @@ main();
 
 ## Turning on static type checking
 
-By default the interpreter runs whatever parses, deferring
-type errors to runtime. The `--typecheck` (or `-t`) flag
-enables the static checker:
+By default `rz` runs the type checker in **soft mode**: mismatches
+print to stderr but the program still executes. Use `--typecheck`
+(or `-t`) for **strict mode** — any type error aborts before run:
 
 ```bash
 rz --typecheck hello.rz
@@ -91,9 +97,9 @@ Error: Type check failed
 ```
 
 The checker reports the first mismatch and refuses to run the
-program. Without `-t`, the same program would crash at runtime
-when `"oops"` hit the `println(bad)` site — same outcome,
-later signal.
+program. Without `-t`, soft mode prints the same diagnostic but
+still runs — you get the runtime failure on the crashing line
+instead of an early exit.
 
 ## Mutation and shadowing
 
@@ -117,7 +123,7 @@ point forward. (Shadowing is common in match-arm bodies.)
 
 - `let` for locals; annotations are optional and never
   required.
-- Four primitives: `int`, `float`, `bool`, `string`.
+- Primitives: `int`, `float` (f64), `f32`, `bool`, `string`.
 - `--typecheck` surfaces mismatches at compile time instead of
   on the crashing line.
 - Bindings are mutable; reassignment uses `=`.
