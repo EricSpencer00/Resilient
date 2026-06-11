@@ -14,6 +14,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use crate::span::Span;
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -30,6 +31,10 @@ pub fn collect_names() -> Vec<String> {
         .into_iter()
         .map(|(item, _)| item)
         .collect()
+}
+
+fn collect_attrs() -> Vec<(String, crate::feature_attrs::AttrRecord)> {
+    crate::feature_attrs::find_kind("atomic")
 }
 
 // RES-1406: removed `fn ensure()` — its sole caller was `declare`,
@@ -86,14 +91,196 @@ pub fn fetch_add(name: &str, delta: i64) -> Option<i64> {
     })
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+#[derive(Clone, Copy)]
+enum AtomicTarget<'a> {
+    StaticLet { value: &'a Node, span: Span },
+    Other { kind: &'static str, span: Span },
+}
+
+fn find_atomic_target<'a>(node: &'a Node, name: &str) -> Option<AtomicTarget<'a>> {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                if let Some(found) = find_atomic_target(&stmt.node, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                if let Some(found) = find_atomic_target(stmt, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Node::StaticLet {
+            name: decl_name,
+            value,
+            span,
+        } if decl_name == name => Some(AtomicTarget::StaticLet {
+            value: value.as_ref(),
+            span: *span,
+        }),
+        Node::LetStatement {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "`let` binding",
+            span: *span,
+        }),
+        Node::Function {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "function",
+            span: *span,
+        }),
+        Node::StructDecl {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "struct",
+            span: *span,
+        }),
+        Node::TypeAlias {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "type alias",
+            span: *span,
+        }),
+        Node::NewtypeDecl {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "newtype",
+            span: *span,
+        }),
+        Node::EnumDecl {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "enum",
+            span: *span,
+        }),
+        Node::TraitDecl {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "trait",
+            span: *span,
+        }),
+        Node::ActorDecl {
+            name: decl_name,
+            span,
+            ..
+        } if decl_name == name => Some(AtomicTarget::Other {
+            kind: "actor",
+            span: *span,
+        }),
+        Node::Function { body, .. } => find_atomic_target(body, name),
+        _ => None,
+    }
+}
+
+fn static_integer_value(node: &Node) -> Option<i64> {
+    match node {
+        Node::IntegerLiteral { value, .. } => Some(*value),
+        Node::PrefixExpression {
+            operator: "-",
+            right,
+            ..
+        } => match right.as_ref() {
+            Node::IntegerLiteral { value, .. } => value.checked_neg(),
+            _ => None,
+        },
+        Node::PrefixExpression {
+            operator: "+",
+            right,
+            ..
+        } => match right.as_ref() {
+            Node::IntegerLiteral { value, .. } => Some(*value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn diagnostic(source_path: &str, span: Span, message: &str) -> String {
+    format!(
+        "{}:{}:{}: error: {}",
+        source_path, span.start.line, span.start.column, message
+    )
+}
+
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let attrs = collect_attrs();
+    if attrs.is_empty() {
+        return Ok(());
+    }
+
     // RES-2206: move each owned `String` straight into the registry
     // via `declare_owned`. The previous `declare(&n, 0)` form borrowed
     // `n` into `declare`, which then called `name.to_string()` —
     // paying a fresh allocation per `#[atomic]` name on top of the
     // one `collect_names` already produced.
-    for n in collect_names() {
-        declare_owned(n, 0);
+    for (name, rec) in attrs {
+        let target = find_atomic_target(program, name.as_str());
+        let span = match target {
+            Some(AtomicTarget::StaticLet { span, .. } | AtomicTarget::Other { span, .. }) => span,
+            None => Span::default(),
+        };
+        if !rec.args.trim().is_empty() {
+            return Err(diagnostic(
+                source_path,
+                span,
+                &format!(
+                    "#[atomic] on `{}` does not accept arguments; use bare #[atomic]",
+                    name
+                ),
+            ));
+        }
+        match target {
+            Some(AtomicTarget::StaticLet { value, span }) => {
+                let Some(initial) = static_integer_value(value) else {
+                    return Err(diagnostic(
+                        source_path,
+                        span,
+                        &format!(
+                            "atomic type `{}` must be initialized with an integer literal",
+                            name
+                        ),
+                    ));
+                };
+                declare_owned(name, initial);
+            }
+            Some(AtomicTarget::Other { kind, span }) => {
+                return Err(diagnostic(
+                    source_path,
+                    span,
+                    &format!(
+                        "atomic type `{}` must be declared as `static let`, found {}",
+                        name, kind
+                    ),
+                ));
+            }
+            None => {
+                return Err(diagnostic(
+                    source_path,
+                    span,
+                    &format!("atomic type `{}` is missing a matching declaration", name),
+                ));
+            }
+        }
     }
     Ok(())
 }

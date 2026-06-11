@@ -482,7 +482,11 @@ fn parse_feature_attribute(parser: &mut Parser, name: String) -> Option<crate::N
     // best-effort lookup — anonymous statements don't get a key.
     let item = parser.parse_statement();
     if let Some(node) = &item
-        && let Some(item_name) = node_item_name(node)
+        && let Some(item_name) = if name == "atomic" {
+            atomic_node_item_name(node)
+        } else {
+            node_item_name(node)
+        }
     {
         crate::feature_attrs::record(
             item_name,
@@ -515,6 +519,21 @@ fn node_item_name(node: &crate::Node) -> Option<&str> {
         crate::Node::EnumDecl { name, .. } => Some(name.as_str()),
         crate::Node::TraitDecl { name, .. } => Some(name.as_str()),
         crate::Node::ActorDecl { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn atomic_node_item_name(node: &crate::Node) -> Option<&str> {
+    match node {
+        crate::Node::LetStatement { name, .. }
+        | crate::Node::StaticLet { name, .. }
+        | crate::Node::Function { name, .. }
+        | crate::Node::StructDecl { name, .. }
+        | crate::Node::TypeAlias { name, .. }
+        | crate::Node::NewtypeDecl { name, .. }
+        | crate::Node::EnumDecl { name, .. }
+        | crate::Node::TraitDecl { name, .. }
+        | crate::Node::ActorDecl { name, .. } => Some(name.as_str()),
         _ => None,
     }
 }
