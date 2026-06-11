@@ -148,6 +148,8 @@ pub mod mcp_tool_registry;
 pub mod output_sink;
 mod peephole;
 mod span;
+#[cfg(all(not(target_arch = "wasm32"), feature = "stateright"))]
+mod stateright_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod tla_bridge;
 // RES-400: sum-type declarations. PR 1 lands the parser scaffold for
@@ -32734,12 +32736,23 @@ pub fn run_cli() {
         tla_bridge::print_tla_check_help();
         std::process::exit(0);
     }
+    #[cfg(all(not(target_arch = "wasm32"), feature = "stateright"))]
+    if stateright_bridge::is_stateright_check_help_request(&args) {
+        stateright_bridge::print_stateright_check_help();
+        std::process::exit(0);
+    }
 
     // TLA+ bridge: `rz tla check <file.tla>` — shells out to TLC and
     // surfaces results in Resilient's diagnostic format.
     #[cfg(not(target_arch = "wasm32"))]
     if args.len() > 1
         && let Some(code) = tla_bridge::dispatch_tla_subcommand(&args[1..])
+    {
+        std::process::exit(code);
+    }
+    #[cfg(all(not(target_arch = "wasm32"), feature = "stateright"))]
+    if args.len() > 1
+        && let Some(code) = stateright_bridge::dispatch_stateright_subcommand(&args[1..])
     {
         std::process::exit(code);
     }

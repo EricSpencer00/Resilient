@@ -94,6 +94,9 @@ ffi = ["dep:libloading"]
 #   cargo test --features proptest
 #
 proptest = ["dep:proptest"]
+# RES-3010: optional Stateright bridge for actor-state model checking.
+# Default off so distributed verification dependencies stay opt-in.
+stateright = ["dep:stateright"]
 
 [dependencies]
 # RES-115: source-position types live in their own crate so
@@ -144,6 +147,7 @@ rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 regex = "1"
 sha2 = "0.10"
 serde_json = "1"
+stateright = { version = "0.31.0", optional = true }
 
 # RES-510 PR 3: deps that are CLI-only and don't compile to wasm32
 # (or aren't useful there). Moved out of the unconditional
