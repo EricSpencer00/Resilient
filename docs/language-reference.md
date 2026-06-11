@@ -264,7 +264,7 @@ FunctionType   ::= "fn" "(" [ Type { "," Type } ] ")" "->" Type
 ### Type universe
 
 ```
-T ::= int | float | string | bool | bytes | void | any
+T ::= int | float | f32 | string | bool | bytes | void | any
     | [T]                    -- dynamic array, element T
     | [T; N]                 -- fixed-length array, element T, length N
     | fn(T1,...,Tn) -> T     -- function type
@@ -281,6 +281,11 @@ Semantics:
   operation.
 - `float` is IEEE-754 binary64 (`f64`). NaN and infinities are
   representable; `to_int` rejects them.
+- `f32` is IEEE-754 binary32, distinct from `float`. The
+  interpreter stores f32 values as f64 with truncated precision.
+  `f32` and `float` do not unify — arithmetic and assignment
+  across widths require an explicit `as f32` / `as f64` cast
+  (RES-2618).
 - `string` is an owned UTF-8 sequence. `len(s)` returns the **Unicode
   scalar** count, not the byte length.
 - `bytes` is a raw byte sequence, distinct from `string`. No implicit
@@ -322,14 +327,22 @@ arithmetic and comparison operator `⊕ ∈ {+, -, *, /, %, ==, !=, <,
 Γ ⊢ e1 : float   Γ ⊢ e2 : float
 ────────────────────────────────  (T-ArithFloat)
       Γ ⊢ e1 ⊕ e2 : float
+
+Γ ⊢ e1 : f32     Γ ⊢ e2 : f32
+────────────────────────────────  (T-ArithF32)
+      Γ ⊢ e1 ⊕ e2 : f32
 ```
 
-Mixing `int` and `float` is a static error. Users bridge explicitly:
+Mixing `int` and `float` is a static error. Mixing `f32` and `float`
+is also a static error — use `as f32` or `as f64` explicitly. Users
+bridge int/float explicitly:
 
 | Signature                 | Semantics                                          |
 |:--------------------------|:---------------------------------------------------|
 | `to_float(int) -> float`  | exact widening (faithful for \|x\| < 2<sup>53</sup>) |
 | `to_int(float) -> int`    | truncate toward zero; NaN / ±∞ / out-of-range → runtime error |
+| `as_f32(int\|float) -> f32` | truncate to binary32 precision                    |
+| `as_f64(int\|f32\|float) -> float` | widen to binary64                          |
 
 Comparison and equality operators share the same same-numeric-type
 rule and produce `bool`.
