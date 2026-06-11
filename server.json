@@ -3,7 +3,7 @@
   "name": "io.github.EricSpencer00/resilient",
   "title": "Resilient",
   "description": "Resilient compiler-as-MCP — parse, typecheck, run, lint, format, and Z3-verify Resilient programs.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "websiteUrl": "https://github.com/EricSpencer00/Resilient",
   "repository": {
     "url": "https://github.com/EricSpencer00/Resilient",
@@ -13,7 +13,7 @@
     {
       "registryType": "oci",
       "registryBaseUrl": "https://ghcr.io",
-      "identifier": "ghcr.io/ericspencer00/resilient:0.2.0",
+      "identifier": "ghcr.io/ericspencer00/resilient:0.2.1",
       "transport": {
         "type": "stdio"
       },
