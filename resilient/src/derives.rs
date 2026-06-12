@@ -20,7 +20,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, RwLock};
 
 /// RES-2174: dropped the redundant `type_name: String` field. It was
@@ -93,6 +93,20 @@ pub fn derives_trait(type_name: &str, trait_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn reject_duplicate_derive_records(source_path: &str) -> Result<(), String> {
+    let attrs = crate::feature_attrs::find_kind("derive");
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for (type_name, rec) in attrs {
+        if let Some(first_line) = seen.insert(type_name.clone(), rec.line) {
+            return Err(format!(
+                "{}:{}:0: error: duplicate derive registration for `{}`; first declaration at line {}",
+                source_path, rec.line, type_name, first_line
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1402: gate `install` on the non-empty case. The historical
     // wiring called `install(sets.clone())` before the trait-validation
@@ -117,8 +131,16 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     if sets.is_empty() {
         return Ok(());
     }
+    reject_duplicate_derive_records(source_path)?;
     for (type_name, s) in &sets {
+        let mut seen_traits: HashSet<&str> = HashSet::new();
         for t in &s.traits {
+            if !seen_traits.insert(t.as_str()) {
+                return Err(format!(
+                    "{}:0:0: error: `#[derive({})]` on `{}` duplicate trait `{}`",
+                    source_path, t, type_name, t
+                ));
+            }
             if !SUPPORTED.contains(&t.as_str()) {
                 return Err(format!(
                     "{}:0:0: error: `#[derive({})]` on `{}` — unknown trait. Supported: {:?}",
@@ -169,6 +191,50 @@ mod tests {
         );
         let res = check(&Node::Program(vec![]), "test");
         assert!(res.is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn duplicate_trait_in_derive_list_rejected() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Reading",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug, Debug".into(),
+                line: 7,
+            },
+        );
+        let err =
+            check(&Node::Program(vec![]), "test").expect_err("duplicate derive trait must fail");
+        assert!(err.contains("duplicate trait `Debug`"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn duplicate_derive_registration_rejected() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Reading",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug".into(),
+                line: 8,
+            },
+        );
+        crate::feature_attrs::record(
+            "Reading",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Eq".into(),
+                line: 9,
+            },
+        );
+        let err =
+            check(&Node::Program(vec![]), "test").expect_err("duplicate derive record must fail");
+        assert!(err.contains("duplicate derive registration for `Reading`"));
         crate::feature_attrs::reset();
     }
 
