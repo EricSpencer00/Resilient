@@ -51,6 +51,296 @@ pub fn parse_manifest(s: &str) -> Manifest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestSection {
+    Package,
+    Dependencies,
+}
+
+fn diagnostic(source_path: &str, line: usize, column: usize, message: &str) -> String {
+    format!("{source_path}:{line}:{column}: error[pkg]: {message}")
+}
+
+fn first_non_ws_column(line: &str) -> usize {
+    line.chars()
+        .position(|ch| !ch.is_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(1)
+}
+
+fn parse_quoted_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if !raw.starts_with('"') {
+        return None;
+    }
+
+    let mut escaped = false;
+    let mut closing_quote = None;
+    for (idx, ch) in raw.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escaped = true,
+            '"' => {
+                closing_quote = Some(idx);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let closing_quote = closing_quote?;
+    let value = &raw[1..closing_quote];
+    let trailing = raw[closing_quote + 1..].trim();
+    if trailing.is_empty() || trailing.starts_with('#') {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_manifest_strict(manifest: &str, manifest_display: &str) -> Result<Manifest, Vec<String>> {
+    let mut out = Manifest::default();
+    let mut errors = Vec::new();
+    let mut section: Option<ManifestSection> = None;
+    let mut saw_package = false;
+    let mut saw_dependencies = false;
+    let mut name_line: Option<(usize, usize)> = None;
+    let mut version_line: Option<(usize, usize)> = None;
+    let mut seen_dependencies = HashMap::new();
+
+    for (idx, raw_line) in manifest.lines().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = raw_line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with("[[") {
+            errors.push(diagnostic(
+                manifest_display,
+                line_no,
+                first_non_ws_column(raw_line),
+                "invalid package manifest declaration shape: array-of-tables are not supported",
+            ));
+            section = None;
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            let header_col = first_non_ws_column(raw_line);
+            let Some(end) = rest.find(']') else {
+                errors.push(diagnostic(
+                    manifest_display,
+                    line_no,
+                    header_col,
+                    "invalid package manifest declaration shape: malformed section header",
+                ));
+                section = None;
+                continue;
+            };
+
+            let header = rest[..end].trim();
+            let trailing = rest[end + 1..].trim();
+            if header.is_empty() || (!trailing.is_empty() && !trailing.starts_with('#')) {
+                errors.push(diagnostic(
+                    manifest_display,
+                    line_no,
+                    header_col,
+                    "invalid package manifest declaration shape: malformed section header",
+                ));
+                section = None;
+                continue;
+            }
+
+            match header {
+                "package" => {
+                    if saw_package {
+                        errors.push(diagnostic(
+                            manifest_display,
+                            line_no,
+                            header_col,
+                            "invalid package manifest combination: duplicate `[package]` section",
+                        ));
+                        section = None;
+                    } else {
+                        saw_package = true;
+                        section = Some(ManifestSection::Package);
+                    }
+                }
+                "dependencies" => {
+                    if saw_dependencies {
+                        errors.push(diagnostic(
+                            manifest_display,
+                            line_no,
+                            header_col,
+                            "invalid package manifest combination: duplicate `[dependencies]` section",
+                        ));
+                        section = None;
+                    } else {
+                        saw_dependencies = true;
+                        section = Some(ManifestSection::Dependencies);
+                    }
+                }
+                other => {
+                    errors.push(diagnostic(
+                        manifest_display,
+                        line_no,
+                        header_col,
+                        &format!(
+                            "invalid package manifest declaration shape: unknown section `{other}`"
+                        ),
+                    ));
+                    section = None;
+                }
+            }
+            continue;
+        }
+
+        let Some(eq_idx) = raw_line.find('=') else {
+            errors.push(diagnostic(
+                manifest_display,
+                line_no,
+                first_non_ws_column(raw_line),
+                "invalid package manifest declaration shape: expected `key = \"value\"`",
+            ));
+            continue;
+        };
+
+        let key = raw_line[..eq_idx].trim();
+        let value_part = raw_line[eq_idx + 1..].trim();
+        let key_col = raw_line
+            .find(key)
+            .map(|idx| idx + 1)
+            .unwrap_or_else(|| first_non_ws_column(raw_line));
+
+        if key.is_empty() {
+            errors.push(diagnostic(
+                manifest_display,
+                line_no,
+                first_non_ws_column(raw_line),
+                "invalid package manifest declaration shape: missing key",
+            ));
+            continue;
+        }
+
+        let Some(value) = parse_quoted_value(value_part) else {
+            errors.push(diagnostic(
+                manifest_display,
+                line_no,
+                key_col,
+                "invalid package manifest declaration shape: expected quoted string value",
+            ));
+            continue;
+        };
+
+        match section {
+            Some(ManifestSection::Package) => match key {
+                "name" => {
+                    if name_line.is_some() {
+                        errors.push(diagnostic(
+                            manifest_display,
+                            line_no,
+                            key_col,
+                            "invalid package manifest combination: duplicate `name` declaration",
+                        ));
+                    } else {
+                        name_line = Some((line_no, key_col));
+                        out.name = value;
+                    }
+                }
+                "version" => {
+                    if version_line.is_some() {
+                        errors.push(diagnostic(
+                            manifest_display,
+                            line_no,
+                            key_col,
+                            "invalid package manifest combination: duplicate `version` declaration",
+                        ));
+                    } else {
+                        version_line = Some((line_no, key_col));
+                        out.version = value;
+                    }
+                }
+                other => {
+                    errors.push(diagnostic(
+                        manifest_display,
+                        line_no,
+                        key_col,
+                        &format!(
+                            "invalid package manifest combination: `{other}` is not allowed in `[package]`"
+                        ),
+                    ));
+                }
+            },
+            Some(ManifestSection::Dependencies) => {
+                if seen_dependencies.contains_key(key) {
+                    errors.push(diagnostic(
+                        manifest_display,
+                        line_no,
+                        key_col,
+                        &format!(
+                            "invalid package manifest combination: duplicate dependency `{key}`"
+                        ),
+                    ));
+                } else {
+                    seen_dependencies.insert(key.to_string(), (line_no, key_col));
+                    out.dependencies.insert(key.to_string(), value);
+                }
+            }
+            None => {
+                errors.push(diagnostic(
+                    manifest_display,
+                    line_no,
+                    key_col,
+                    "invalid package manifest combination: declaration appears outside `[package]` or `[dependencies]`",
+                ));
+            }
+        }
+    }
+
+    if out.name.is_empty() {
+        let (line, column) = name_line.or(version_line).unwrap_or((1, 1));
+        errors.push(diagnostic(
+            manifest_display,
+            line,
+            column,
+            "manifest missing required `name` field in `[package]` section",
+        ));
+    }
+
+    if out.version.is_empty() {
+        let (line, column) = version_line.or(name_line).unwrap_or((1, 1));
+        errors.push(diagnostic(
+            manifest_display,
+            line,
+            column,
+            "manifest missing required `version` field in `[package]` section",
+        ));
+    } else if !is_valid_semver(&out.version) {
+        let (line, column) = version_line.unwrap_or((1, 1));
+        errors.push(diagnostic(
+            manifest_display,
+            line,
+            column,
+            &format!(
+                "manifest `version` `{}` is not a valid semver triple (MAJOR.MINOR.PATCH)",
+                out.version
+            ),
+        ));
+    }
+
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemverRange {
     Exact,
     Caret,
@@ -99,64 +389,53 @@ pub fn matches(constraint: &str, version: &str) -> bool {
 /// exists adjacent to `source_path`.
 ///
 /// Checks:
-/// 1. Manifest parses without errors (name, version present).
-/// 2. Version field is a valid semver triple (`MAJOR.MINOR.PATCH`).
-/// 3. Each dependency constraint is parseable (`^`, `~`, or exact).
-/// 4. If a `resilient.lock` exists, locked versions satisfy the constraints.
+/// 1. Manifest declaration shapes and section/key combinations are valid.
+/// 2. Package section includes required `name` and `version` fields.
+/// 3. Version field valid semver triple (`MAJOR.MINOR.PATCH`).
+/// 4. Dependency constraint parseable (`^`, `~`, exact).
+/// 5. `resilient.lock` exists, locked versions satisfy constraints.
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     let source_dir = std::path::Path::new(source_path)
         .parent()
         .unwrap_or(std::path::Path::new("."));
 
-    // Look for manifest in the source directory or cwd
     let manifest_path = ["rz.toml", "resilient.toml"]
         .iter()
         .map(|name| source_dir.join(name))
         .find(|p| p.exists());
 
-    let manifest_content = match manifest_path {
-        Some(ref p) => match std::fs::read_to_string(p) {
-            Ok(s) => s,
-            Err(_) => return Ok(()), // unreadable — skip silently
-        },
-        None => return Ok(()), // no manifest — nothing to check
+    let manifest_path = match manifest_path {
+        Some(path) => path,
+        None => return Ok(()),
     };
 
-    let manifest = parse_manifest(&manifest_content);
+    let manifest_display = manifest_path.display().to_string();
+    let manifest_content = match std::fs::read_to_string(&manifest_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+
+    let manifest = match parse_manifest_strict(&manifest_content, &manifest_display) {
+        Ok(manifest) => manifest,
+        Err(errors) => {
+            return Err(errors.join(
+                "
+",
+            ));
+        }
+    };
 
     let mut errors: Vec<String> = Vec::new();
 
-    // Validate package name and version
-    if manifest.name.is_empty() {
-        errors.push(format!(
-            "{source_path}:0:0: error[pkg]: manifest is missing `name` field"
-        ));
-    }
-    if manifest.version.is_empty() {
-        errors.push(format!(
-            "{source_path}:0:0: error[pkg]: manifest is missing `version` field"
-        ));
-    } else if !is_valid_semver(&manifest.version) {
-        errors.push(format!(
-            "{source_path}:0:0: error[pkg]: manifest `version` `{}` is not a \
-             valid semver triple (MAJOR.MINOR.PATCH)",
-            manifest.version
-        ));
-    }
-
-    // Validate dependency constraint syntax
     for (dep, constraint) in &manifest.dependencies {
         let (_, base) = parse_constraint(constraint);
         if !is_valid_semver(&base) {
             errors.push(format!(
-                "{source_path}:0:0: error[pkg]: dependency `{dep}` has \
-                 invalid constraint `{constraint}` — expected semver \
-                 optionally prefixed with `^` or `~`"
+                "{manifest_display}:0:0: error[pkg]: dependency `{dep}` has                  invalid constraint `{constraint}`; expected semver                  optionally prefixed by `^` or `~`"
             ));
         }
     }
 
-    // If lock file exists, check locked versions satisfy constraints
     let lock_path = source_dir.join("resilient.lock");
     if lock_path.exists() {
         if let Ok(lock_content) = std::fs::read_to_string(&lock_path) {
@@ -165,9 +444,7 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
                 if let Some(locked_version) = locked.get(dep) {
                     if !matches(constraint, locked_version) {
                         errors.push(format!(
-                            "{source_path}:0:0: error[pkg]: locked version \
-                             `{locked_version}` for `{dep}` does not satisfy \
-                             constraint `{constraint}`"
+                            "{manifest_display}:0:0: error[pkg]: locked version                              `{locked_version}` for `{dep}` does not satisfy                              constraint `{constraint}`"
                         ));
                     }
                 }
@@ -186,7 +463,10 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
         }
         Ok(())
     } else {
-        Err(errors.join("\n"))
+        Err(errors.join(
+            "
+",
+        ))
     }
 }
 
@@ -357,6 +637,90 @@ utils = "latest"
         let (prog, _) = crate::parse("fn main() {}");
         let result = check(&prog, src_path.to_str().unwrap());
         assert!(result.is_err(), "expected error for invalid constraint");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_malformed_section_header() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badheader");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package
+name = "myapp"
+version = "1.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+        assert!(
+            result.contains("rz.toml:2:1: error[pkg]: invalid package manifest declaration shape: malformed section header"),
+            "unexpected diagnostic: {result}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_malformed_entry_shape() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badentry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = myapp
+version = "1.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+        assert!(
+            result.contains("rz.toml:3:1: error[pkg]: invalid package manifest declaration shape: expected quoted string value"),
+            "unexpected diagnostic: {result}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_invalid_package_combination() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badcombo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+extra = "nope"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+        assert!(
+            result.contains("rz.toml:5:1: error[pkg]: invalid package manifest combination: `extra` is not allowed in `[package]`"),
+            "unexpected diagnostic: {result}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_missing_required_fields() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_missing_version");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+        assert!(
+            result.contains("rz.toml:3:1: error[pkg]: manifest missing required `version` field in `[package]` section"),
+            "unexpected diagnostic: {result}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
