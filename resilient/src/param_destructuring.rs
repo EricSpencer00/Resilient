@@ -56,7 +56,7 @@ pub fn analyze(program: &Node) -> Vec<DestructureRequest> {
     out
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let reqs = analyze(program);
     for r in &reqs {
         if r.locals.is_empty() {
@@ -65,7 +65,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                  destructuring syntax but no local names after \
                  underscore-stripping. Use `(T1, T2, ...)` with \
                  underscore-separated identifiers like `_x_y_z`",
-                _source_path, r.fn_name, r.param_index
+                source_path, r.fn_name, r.param_index
             ));
         }
 
@@ -75,7 +75,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     "{}:0:0: param_destructuring: `{}` parameter {} local #{} \
                      has invalid name `{}` — destructured locals must be \
                      valid identifiers",
-                    _source_path, r.fn_name, r.param_index, i, local
+                    source_path, r.fn_name, r.param_index, i, local
                 ));
             }
         }
@@ -86,8 +86,41 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                 return Err(format!(
                     "{}:0:0: param_destructuring: `{}` parameter {} \
                      has duplicate local name `{}`",
-                    _source_path, r.fn_name, r.param_index, local
+                    source_path, r.fn_name, r.param_index, local
                 ));
+            }
+        }
+
+        if let Node::Program(stmts) = program {
+            for s in stmts {
+                if let Node::Function {
+                    name, parameters, ..
+                } = &s.node
+                {
+                    if name == &r.fn_name && r.param_index < parameters.len() {
+                        let (ty, _) = &parameters[r.param_index];
+                        let Some(tuple_arity) = tuple_type_arity(ty) else {
+                            return Err(format!(
+                                "{}:0:0: param_destructuring: `{}` parameter {} \
+                                 has malformed tuple type `{}`. Tuple types must be \
+                                 non-empty and comma-separated, like `(int, int)` or `(int, float, bool)`",
+                                source_path, r.fn_name, r.param_index, ty
+                            ));
+                        };
+                        if tuple_arity != r.locals.len() {
+                            return Err(format!(
+                                "{}:0:0: param_destructuring: `{}` parameter {} \
+                                 destructures {} local names from tuple type `{}` with {} element(s)",
+                                source_path,
+                                r.fn_name,
+                                r.param_index,
+                                r.locals.len(),
+                                ty,
+                                tuple_arity
+                            ));
+                        }
+                    }
+                }
             }
         }
 
@@ -101,6 +134,25 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+fn validate_tuple_type(ty: &str) -> bool {
+    tuple_type_arity(ty).is_some()
+}
+
+fn tuple_type_arity(ty: &str) -> Option<usize> {
+    if !ty.starts_with('(') || !ty.ends_with(')') {
+        return None;
+    }
+    let inner = ty[1..ty.len() - 1].trim();
+    if inner.is_empty() {
+        return None;
+    }
+    let parts = inner.split(',').map(str::trim).collect::<Vec<_>>();
+    if parts.len() < 2 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some(parts.len())
 }
 
 fn is_valid_identifier(s: &str) -> bool {
@@ -233,5 +285,104 @@ mod tests {
             0,
             "simple params should not trigger destructuring"
         );
+    }
+
+    #[test]
+    fn check_rejects_empty_tuple_type() {
+        let prog = program_with_destructure_param("()", "_x");
+        let err = check(&prog, "test").expect_err("empty tuple must fail");
+        assert!(
+            err.contains("malformed tuple type") || err.contains("non-empty"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_tuple_ending_with_comma() {
+        let prog = program_with_destructure_param("(int,)", "_x");
+        let err = check(&prog, "test").expect_err("trailing comma must fail");
+        assert!(
+            err.contains("malformed tuple type") || err.contains("comma"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_single_element_tuple_no_comma() {
+        let prog = program_with_destructure_param("(int)", "_x");
+        let err = check(&prog, "test").expect_err("single-element tuple without comma must fail");
+        assert!(
+            err.contains("malformed tuple type") || err.contains("comma-separated"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_tuple_local_arity_mismatch() {
+        let prog = program_with_destructure_param("(int,int)", "_x_y_z");
+        let err = check(&prog, "test").expect_err("arity mismatch must fail");
+        assert!(
+            err.contains("destructures 3 local names") && err.contains("2 element"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_accepts_valid_two_element_tuple() {
+        let prog = program_with_destructure_param("(int,int)", "_x_y");
+        assert!(
+            check(&prog, "test").is_ok(),
+            "valid two-element tuple must pass"
+        );
+    }
+
+    #[test]
+    fn check_accepts_valid_three_element_tuple_with_spaces() {
+        let prog = program_with_destructure_param("(int, float, bool)", "_x_y_z");
+        assert!(check(&prog, "test").is_ok(), "tuple with spaces must pass");
+    }
+
+    #[test]
+    fn check_accepts_valid_many_element_tuple() {
+        let prog = program_with_destructure_param("(int,int,int,int,int)", "_a_b_c_d_e");
+        assert!(check(&prog, "test").is_ok(), "many-element tuple must pass");
+    }
+
+    #[test]
+    fn validate_tuple_type_empty() {
+        assert!(!validate_tuple_type("()"));
+    }
+
+    #[test]
+    fn validate_tuple_type_single_no_comma() {
+        assert!(!validate_tuple_type("(int)"));
+    }
+
+    #[test]
+    fn validate_tuple_type_trailing_comma() {
+        assert!(!validate_tuple_type("(int,)"));
+    }
+
+    #[test]
+    fn validate_tuple_type_missing_parens() {
+        assert!(!validate_tuple_type("int,int"));
+        assert!(!validate_tuple_type("(int,int"));
+        assert!(!validate_tuple_type("int,int)"));
+    }
+
+    #[test]
+    fn validate_tuple_type_valid_two_element() {
+        assert!(validate_tuple_type("(int,int)"));
+    }
+
+    #[test]
+    fn validate_tuple_type_valid_with_spaces() {
+        assert!(validate_tuple_type("(int, float)"));
+        assert!(validate_tuple_type("( int , float )"));
+    }
+
+    #[test]
+    fn validate_tuple_type_valid_many_element() {
+        assert!(validate_tuple_type("(int,int,int,int,int)"));
     }
 }
