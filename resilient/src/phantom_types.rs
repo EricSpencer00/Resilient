@@ -52,6 +52,93 @@ pub fn collect() -> Vec<(String, PhantomSpec)> {
     out
 }
 
+fn phantom_diag(source_path: &str, line: usize, message: String) -> String {
+    format!("{source_path}:{line}:0: error[phantom-types]: {message}")
+}
+
+fn parse_phantom_spec(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+) -> Result<PhantomSpec, String> {
+    let mut unit: Option<String> = None;
+    for chunk in rec.args.split(',') {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        let Some((raw_key, raw_value)) = chunk.split_once('=') else {
+            return Err(phantom_diag(
+                source_path,
+                rec.line,
+                format!("#[phantom] on `{item}` malformed argument `{chunk}`"),
+            ));
+        };
+        let key = raw_key.trim();
+        let raw_value = raw_value.trim();
+        match key {
+            "units" => {
+                if unit.is_some() {
+                    return Err(phantom_diag(
+                        source_path,
+                        rec.line,
+                        format!("#[phantom] on `{item}` duplicate `units` argument"),
+                    ));
+                }
+                if !(raw_value.starts_with('"') && raw_value.ends_with('"') && raw_value.len() >= 2)
+                {
+                    return Err(phantom_diag(
+                        source_path,
+                        rec.line,
+                        format!("#[phantom] on `{item}` `units` value must be quoted"),
+                    ));
+                }
+                let parsed = raw_value.trim_matches('"').trim().to_string();
+                if parsed.is_empty() {
+                    return Err(phantom_diag(
+                        source_path,
+                        rec.line,
+                        format!("#[phantom] on `{item}` unit name must not be empty"),
+                    ));
+                }
+                unit = Some(parsed);
+            }
+            "" => {
+                return Err(phantom_diag(
+                    source_path,
+                    rec.line,
+                    format!("#[phantom] on `{item}` malformed argument `{chunk}`"),
+                ));
+            }
+            other => {
+                return Err(phantom_diag(
+                    source_path,
+                    rec.line,
+                    format!("#[phantom] on `{item}` unknown argument `{other}`"),
+                ));
+            }
+        }
+    }
+    let unit = unit.ok_or_else(|| {
+        phantom_diag(
+            source_path,
+            rec.line,
+            format!("#[phantom] on `{item}` missing required `units` argument"),
+        )
+    })?;
+    Ok(PhantomSpec { unit })
+}
+
+fn collect_checked(source_path: &str) -> Result<Vec<(String, PhantomSpec)>, String> {
+    let attrs = crate::feature_attrs::find_kind("phantom");
+    let mut out = Vec::with_capacity(attrs.len());
+    for (item, rec) in attrs {
+        let spec = parse_phantom_spec(&item, &rec, source_path)?;
+        out.push((item, spec));
+    }
+    Ok(out)
+}
+
 pub fn install(specs: Vec<(String, PhantomSpec)>) {
     if let Ok(mut g) = SPECS.write() {
         g.clear();
@@ -91,7 +178,7 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
     // RES-1308: gate `install` on the non-empty case — see RES-1302
     // for the wipe-on-empty race rationale; same pattern saves a
     // wasted RwLock write per compile in the common case.
-    let specs = collect();
+    let specs = collect_checked(_source_path)?;
     if specs.is_empty() {
         return Ok(());
     }
@@ -112,6 +199,71 @@ mod tests {
                 line: 0,
             },
         );
+    }
+
+    fn record_phantom_args(type_name: &str, args: &str, line: usize) {
+        crate::feature_attrs::record(
+            type_name,
+            crate::feature_attrs::AttrRecord {
+                name: "phantom".into(),
+                args: args.into(),
+                line,
+            },
+        );
+    }
+
+    #[test]
+    fn check_rejects_malformed_phantom_declarations() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let program = Node::Program(vec![]);
+        let cases = [
+            (
+                "missing units",
+                "Meters",
+                "",
+                3,
+                "missing required `units` argument",
+            ),
+            (
+                "empty units",
+                "Meters",
+                r#"units = """#,
+                4,
+                "unit name must not be empty",
+            ),
+            (
+                "duplicate units",
+                "Meters",
+                r#"units = "Meters", units = "Seconds""#,
+                5,
+                "duplicate `units` argument",
+            ),
+            (
+                "unknown argument",
+                "Meters",
+                r#"unit = "Meters""#,
+                6,
+                "unknown argument `unit`",
+            ),
+            (
+                "unquoted units",
+                "Meters",
+                "units = Meters",
+                7,
+                "`units` value must be quoted",
+            ),
+        ];
+
+        for (name, type_name, args, line, expected) in cases {
+            crate::feature_attrs::reset();
+            record_phantom_args(type_name, args, line);
+            let err = check(&program, "test.rz").expect_err(name);
+            assert!(
+                err.contains(expected),
+                "{name} diagnostic must mention `{expected}`; got {err}"
+            );
+        }
+        crate::feature_attrs::reset();
     }
 
     #[test]
