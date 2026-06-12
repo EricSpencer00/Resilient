@@ -307,6 +307,7 @@ mod tests {
             "Open".to_string()
         );
         assert!(validate_call("File", "Closed", "close").is_err());
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -330,6 +331,7 @@ mod tests {
         );
         assert!(validate_call("Lock", "Locked", "lock").is_err());
         assert!(validate_call("Lock", "Unlocked", "unlock").is_err());
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -350,6 +352,7 @@ mod tests {
             msg.contains("Nonexistent"),
             "error must name unknown struct: {msg}"
         );
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -360,6 +363,7 @@ mod tests {
         let src = "fn f(int x) -> int { return x; }\n";
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test").is_ok());
+        install(Vec::new());
     }
 
     #[test]
@@ -370,6 +374,7 @@ mod tests {
         let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
         assert!(err.contains("test:11:0: error:"), "{err}");
         assert!(err.contains("missing `states`"), "{err}");
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -381,6 +386,7 @@ mod tests {
         let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
         assert!(err.contains("test:12:0: error:"), "{err}");
         assert!(err.contains("missing `transitions`"), "{err}");
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -396,6 +402,7 @@ mod tests {
         let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
         assert!(err.contains("test:13:0: error:"), "{err}");
         assert!(err.contains("unknown typestate argument `mode`"), "{err}");
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -419,6 +426,7 @@ mod tests {
             err.contains("duplicate typestate declaration `Thing`"),
             "{err}"
         );
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -430,6 +438,7 @@ mod tests {
         let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
         assert!(err.contains("test:16:0: error:"), "{err}");
         assert!(err.contains("malformed transition"), "{err}");
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -441,6 +450,7 @@ mod tests {
         let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
         assert!(err.contains("test:17:0: error:"), "{err}");
         assert!(err.contains("requires quoted `states` string"), "{err}");
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -455,6 +465,7 @@ mod tests {
             err.contains("requires quoted `transitions` string"),
             "{err}"
         );
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 }
