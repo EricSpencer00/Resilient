@@ -532,6 +532,9 @@ fn extract_quoted_string(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+
+    const MANIFEST_PREFIX: &str = "[package]\nname = \"myapp\"\nversion = \"1.0.0\"\n\n";
 
     fn make_manifest(extra: &str) -> String {
         format!(
@@ -879,5 +882,179 @@ opt_level = "3"
         assert_eq!(p.opt_level, "s");
         // `foo` should NOT appear in cfg.
         assert!(!p.cfg.contains_key("foo"));
+    }
+
+    struct ManifestFixture {
+        dir: PathBuf,
+    }
+
+    impl Drop for ManifestFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn manifest_text(body: &str) -> String {
+        format!("{MANIFEST_PREFIX}{body}")
+    }
+
+    fn prepare_manifest_fixture(name: &str, body: &str) -> (ManifestFixture, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("__resilient_tp_regression_{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest_path = dir.join("rz.toml");
+        std::fs::write(&manifest_path, manifest_text(body)).unwrap();
+        let source_path = dir.join("main.rz");
+        std::fs::write(&source_path, b"fn main() {}\n").unwrap();
+        (ManifestFixture { dir }, manifest_path, source_path)
+    }
+
+    fn expected_error(manifest_path: &Path, line: usize, column: usize, message: &str) -> String {
+        format!(
+            "{}:{}:{}: error[target-profiles]: {}",
+            manifest_path.display(),
+            line,
+            column,
+            message
+        )
+    }
+
+    fn assert_check_error(case_name: &str, body: &str, line: usize, column: usize, message: &str) {
+        let (_fixture, manifest_path, source_path) = prepare_manifest_fixture(case_name, body);
+        let (prog, _) = crate::parse("fn main() {}");
+        let err = check(&prog, source_path.to_str().unwrap())
+            .expect_err("expected target profile validation failure");
+        assert_eq!(
+            err.trim(),
+            expected_error(&manifest_path, line, column, message)
+        );
+    }
+
+    #[test]
+    fn check_rejects_malformed_target_profile_declarations_regression() {
+        let cases = [
+            (
+                "array_of_tables",
+                "[[target.thumbv7em-none-eabihf]]\nopt_level = \"s\"\n",
+                5,
+                1,
+                "invalid target profile declaration shape: array-of-tables syntax is not supported",
+            ),
+            (
+                "missing_triple",
+                "[target]\nopt_level = \"s\"\n",
+                5,
+                1,
+                "invalid target profile declaration: missing required field `triple`",
+            ),
+            (
+                "bad_triple",
+                "[target.thumbv7em-none-eabihf!]\nopt_level = \"s\"\n",
+                5,
+                1,
+                "invalid target profile declaration shape: malformed target triple `thumbv7em-none-eabihf!`",
+            ),
+            (
+                "invalid_opt_level",
+                "[target.arm]\nopt_level = \"fast\"\n",
+                6,
+                1,
+                "invalid [target.arm] declaration: `opt_level` `fast`; expected one of: 0, 1, 2, 3, s",
+            ),
+            (
+                "invalid_stack_size",
+                "[target.arm]\nstack_size = 0\n",
+                6,
+                1,
+                "invalid [target.arm] declaration: `stack_size` must be a positive integer, got `0`",
+            ),
+            (
+                "invalid_features",
+                "[target.arm]\nfeatures = [std]\n",
+                6,
+                1,
+                "invalid [target.arm] declaration: `features` entries must be double-quoted strings",
+            ),
+        ];
+
+        for (case_name, body, line, column, message) in cases {
+            assert_check_error(case_name, body, line, column, message);
+        }
+    }
+
+    #[test]
+    fn check_rejects_duplicate_target_profile_forms_regression() {
+        let (_fixture, manifest_path, source_path) = prepare_manifest_fixture(
+            "duplicate_sections",
+            "[target.arm]\nopt_level = \"s\"\n[target.arm]\nstack_size = 4096\n",
+        );
+        let (prog, _) = crate::parse("fn main() {}");
+        let err = check(&prog, source_path.to_str().unwrap())
+            .expect_err("expected duplicate target section to fail");
+        let expected_prefix = format!(
+            "{}:7:1: error[target-profiles]: invalid target profile combination:",
+            manifest_path.display()
+        );
+        assert!(
+            err.trim().starts_with(&expected_prefix),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("duplicate `[target.arm]` declaration"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("previous declaration at line 5"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn check_accepts_valid_target_profile_baselines_regression() {
+        let (_fixture, _manifest_path, source_path) = prepare_manifest_fixture(
+            "minimal",
+            "[target.arm]\nopt_level = \"s\"\nstack_size = 4096\n",
+        );
+        let (prog, _) = crate::parse("fn main() {}");
+        assert!(check(&prog, source_path.to_str().unwrap()).is_ok());
+        let profiles = parse_target_profiles(&manifest_text(
+            "[target.arm]\nopt_level = \"s\"\nstack_size = 4096\n",
+        ));
+        let p = &profiles["arm"];
+        assert_eq!(p.opt_level, "s");
+        assert_eq!(p.stack_size, Some(4096));
+        assert!(p.features.is_empty());
+        assert!(p.cfg.is_empty());
+
+        let (_fixture, _manifest_path, source_path) = prepare_manifest_fixture(
+            "features_and_cfg",
+            "[target.thumbv7em-none-eabihf]\nfeatures = [\"no_std\", \"cortex-m\"]\nopt_level = 3\nstack_size = 8192\nlinker = \"ld.lld\"\n",
+        );
+        let (prog, _) = crate::parse("fn main() {}");
+        assert!(check(&prog, source_path.to_str().unwrap()).is_ok());
+        let profiles = parse_target_profiles(&manifest_text(
+            "[target.thumbv7em-none-eabihf]\nfeatures = [\"no_std\", \"cortex-m\"]\nopt_level = 3\nstack_size = 8192\nlinker = \"ld.lld\"\n",
+        ));
+        let p = &profiles["thumbv7em-none-eabihf"];
+        assert_eq!(p.features, vec!["no_std", "cortex-m"]);
+        assert_eq!(p.opt_level, "3");
+        assert_eq!(p.stack_size, Some(8192));
+        assert_eq!(p.cfg.get("linker").map(|s| s.as_str()), Some("ld.lld"));
+
+        let (_fixture, _manifest_path, source_path) = prepare_manifest_fixture(
+            "multiple_sections",
+            "[target.arm]\nopt_level = \"s\"\nstack_size = 4096\n\n[target.x86_64-unknown-linux]\nfeatures = [\"std\", \"networking\"]\nopt_level = \"3\"\n",
+        );
+        let (prog, _) = crate::parse("fn main() {}");
+        assert!(check(&prog, source_path.to_str().unwrap()).is_ok());
+        let profiles = parse_target_profiles(&manifest_text(
+            "[target.arm]\nopt_level = \"s\"\nstack_size = 4096\n\n[target.x86_64-unknown-linux]\nfeatures = [\"std\", \"networking\"]\nopt_level = \"3\"\n",
+        ));
+        assert_eq!(profiles.len(), 2);
+        let arm = &profiles["arm"];
+        assert_eq!(arm.opt_level, "s");
+        assert_eq!(arm.stack_size, Some(4096));
+        let linux = &profiles["x86_64-unknown-linux"];
+        assert_eq!(linux.features, vec!["std", "networking"]);
+        assert_eq!(linux.opt_level, "3");
     }
 }
