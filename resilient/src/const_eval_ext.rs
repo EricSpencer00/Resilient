@@ -1,7 +1,7 @@
 //! RES-2580: extended compile-time constant evaluation.
 //!
-//! Extends `Interpreter::eval_const_expr` with the following forms that
-//! were previously rejected with "not a valid constant expression":
+//! Extends `Interpreter::eval_const_expr`
+//! previously rejected "not valid constant expression":
 //!
 //! - **String concatenation**: `const GREETING = "Hello, " + NAME;`
 //! - **String ordering**: `const OK = "alpha" < "beta";`
@@ -11,16 +11,75 @@
 //! - **Tuple literals**: `const PAIR = (1, 2);`
 //!
 //! All new cases live in `Interpreter::eval_const_expr` in `lib.rs`.
-//! This module provides the typecheck registration hook (no-op — the
-//! extension is in the evaluator, not the typechecker) and unit tests.
+//! This module now also validates malformed const declarations so
+//! recovery placeholders do not leak into later phases.
 
 use crate::Node;
+use crate::span::Span;
 
-/// No-op typecheck pass — the extension is purely in the const evaluator.
-/// Registered in `<EXTENSION_PASSES>` to give const_eval_ext a CI-visible
-/// footprint and to allow future validation to be added here.
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    Ok(())
+fn diagnostic(source_path: &str, span: Span, message: &str) -> String {
+    format!(
+        "{}:{}:{}: error: {}",
+        source_path, span.start.line, span.start.column, message
+    )
+}
+
+fn is_missing_initializer(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::IntegerLiteral {
+            value: 0,
+            span,
+        } if *span == Span::default()
+    )
+}
+
+/// Validate const declarations before const evaluation runs.
+///
+/// The parser can recover from malformed `const` statements by
+/// synthesizing placeholder nodes. Reject those here so later phases
+/// never see a structurally-invalid declaration.
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let mut error = None;
+
+    crate::uniqueness_walk::visit(program, &mut |node| {
+        if error.is_some() {
+            return;
+        }
+
+        let Node::Const {
+            name,
+            value,
+            type_annot,
+            span,
+        } = node
+        else {
+            return;
+        };
+
+        if name.trim().is_empty() {
+            error = Some(diagnostic(
+                source_path,
+                *span,
+                "invalid const declaration: missing name",
+            ));
+            return;
+        }
+
+        if is_missing_initializer(value) {
+            let message = if type_annot.is_some() {
+                "invalid const declaration: type annotations require an initializer"
+            } else {
+                "invalid const declaration: missing initializer"
+            };
+            error = Some(diagnostic(source_path, *span, message));
+        }
+    });
+
+    match error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -29,7 +88,10 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::check;
+    use crate::Node;
     use crate::run_program;
+    use crate::span::{Pos, Span, Spanned};
 
     fn run(src: &str) -> String {
         let r = run_program(src);
@@ -41,6 +103,44 @@ mod tests {
         let r = run_program(src);
         assert!(!r.ok, "expected error but program succeeded");
         r.errors.join("\n")
+    }
+
+    fn pos(line: usize, column: usize) -> Pos {
+        Pos::new(line, column, 0)
+    }
+
+    fn span(line: usize, column: usize) -> Span {
+        Span::new(pos(line, column), pos(line, column + 1))
+    }
+
+    fn spanned(node: Node, line: usize, column: usize) -> Spanned<Node> {
+        Spanned {
+            node,
+            span: span(line, column),
+        }
+    }
+
+    fn const_stmt(
+        name: &str,
+        value: Node,
+        type_annot: Option<&str>,
+        line: usize,
+        column: usize,
+    ) -> Spanned<Node> {
+        spanned(
+            Node::Const {
+                name: name.to_string(),
+                value: Box::new(value),
+                type_annot: type_annot.map(str::to_string),
+                span: span(line, column),
+            },
+            line,
+            column,
+        )
+    }
+
+    fn program(stmt: Spanned<Node>) -> Node {
+        Node::Program(vec![stmt])
     }
 
     #[test]
@@ -146,6 +246,66 @@ println(to_string(a + b));
         assert!(
             err.contains("circular"),
             "expected circular error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn const_decl_missing_name_is_rejected() {
+        let program = program(const_stmt(
+            "",
+            Node::IntegerLiteral {
+                value: 1,
+                span: span(1, 14),
+            },
+            None,
+            1,
+            1,
+        ));
+
+        let err = check(&program, "test.rz").unwrap_err();
+        assert_eq!(
+            err,
+            "test.rz:1:1: error: invalid const declaration: missing name"
+        );
+    }
+
+    #[test]
+    fn const_decl_missing_initializer_is_rejected() {
+        let program = program(const_stmt(
+            "ANSWER",
+            Node::IntegerLiteral {
+                value: 0,
+                span: Span::default(),
+            },
+            None,
+            3,
+            5,
+        ));
+
+        let err = check(&program, "test.rz").unwrap_err();
+        assert_eq!(
+            err,
+            "test.rz:3:5: error: invalid const declaration: missing initializer"
+        );
+    }
+
+    #[test]
+    fn annotated_const_decl_without_initializer_is_rejected() {
+        let program = program(const_stmt(
+            "VALUE",
+            Node::IntegerLiteral {
+                value: 0,
+                span: Span::default(),
+            },
+            Some("int"),
+            7,
+            2,
+        ));
+
+        let err = check(&program, "test.rz").unwrap_err();
+        assert_eq!(
+            err,
+            "test.rz:7:2: error: invalid const declaration: type annotations require an initializer"
         );
     }
 }
