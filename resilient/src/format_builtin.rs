@@ -193,6 +193,9 @@ pub fn render_float(spec: &str, value: f64) -> Result<String, String> {
 /// 2. Each format specifier in the template is valid for its type.
 /// 3. Placeholder count matches argument count.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let mut errors: Vec<String> = Vec::new();
+    check_format_builtin_declarations(source_path, &mut errors);
+
     let has_format_call = crate::uniqueness_walk::any_node(program, |n| {
         if let Node::CallExpression { function, .. } = n {
             if let Node::Identifier { name, .. } = function.as_ref() {
@@ -201,16 +204,177 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         }
         false
     });
-    if !has_format_call {
-        return Ok(());
+    if has_format_call {
+        check_format_calls(program, source_path, &mut errors);
     }
 
-    let mut errors: Vec<String> = Vec::new();
-    check_format_calls(program, source_path, &mut errors);
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors.join("\n"))
+    }
+}
+
+fn format_builtin_diag(source_path: &str, line: usize, item: &str, msg: impl AsRef<str>) -> String {
+    format!(
+        "{source_path}:{line}:0: error[fmt]: format_builtin declaration on `{item}` {}",
+        msg.as_ref()
+    )
+}
+
+fn parse_quoted_string(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return None;
+    }
+    Some(&value[1..value.len() - 1])
+}
+
+fn validate_format_spec(spec: &str) -> Result<(), String> {
+    if spec.is_empty() {
+        return Ok(());
+    }
+    if spec.contains('.') || spec == ":e" || spec == ":E" {
+        render_float(spec, 0.0).map(|_| ())
+    } else {
+        render_int(spec, 0).map(|_| ())
+    }
+}
+
+fn check_format_builtin_declarations(source_path: &str, errors: &mut Vec<String>) {
+    for (item, rec) in crate::feature_attrs::find_kind("format_builtin") {
+        let mut template: Option<String> = None;
+        let mut arg_count: Option<usize> = None;
+        let mut malformed = false;
+
+        for chunk in rec.args.split(',') {
+            let chunk = chunk.trim();
+            if chunk.is_empty() {
+                errors.push(format_builtin_diag(
+                    source_path,
+                    rec.line,
+                    &item,
+                    "has empty argument",
+                ));
+                malformed = true;
+                continue;
+            }
+
+            let Some((key, value)) = chunk.split_once('=') else {
+                errors.push(format_builtin_diag(
+                    source_path,
+                    rec.line,
+                    &item,
+                    "requires `key = value` arguments",
+                ));
+                malformed = true;
+                continue;
+            };
+            let key = key.trim();
+            let value = value.trim();
+
+            match key {
+                "template" => {
+                    if template.is_some() {
+                        errors.push(format!(
+                            "{source_path}:{}:0: error[fmt]: duplicate `template` argument on `{item}`",
+                            rec.line
+                        ));
+                        malformed = true;
+                        continue;
+                    }
+                    let Some(value) = parse_quoted_string(value) else {
+                        errors.push(format_builtin_diag(
+                            source_path,
+                            rec.line,
+                            &item,
+                            "requires quoted `template` string",
+                        ));
+                        malformed = true;
+                        continue;
+                    };
+                    template = Some(value.to_string());
+                }
+                "args" => {
+                    if arg_count.is_some() {
+                        errors.push(format!(
+                            "{source_path}:{}:0: error[fmt]: duplicate `args` argument on `{item}`",
+                            rec.line
+                        ));
+                        malformed = true;
+                        continue;
+                    }
+                    let Ok(parsed) = value.parse::<usize>() else {
+                        errors.push(format_builtin_diag(
+                            source_path,
+                            rec.line,
+                            &item,
+                            "requires integer `args`",
+                        ));
+                        malformed = true;
+                        continue;
+                    };
+                    arg_count = Some(parsed);
+                }
+                other => {
+                    errors.push(format!(
+                        "{source_path}:{}:0: error[fmt]: unknown format_builtin argument `{other}` on `{item}`",
+                        rec.line
+                    ));
+                    malformed = true;
+                }
+            }
+        }
+
+        if malformed {
+            continue;
+        }
+
+        let Some(template) = template else {
+            errors.push(format_builtin_diag(
+                source_path,
+                rec.line,
+                &item,
+                "missing `template`",
+            ));
+            continue;
+        };
+        let Some(arg_count) = arg_count else {
+            errors.push(format_builtin_diag(
+                source_path,
+                rec.line,
+                &item,
+                "missing `args`",
+            ));
+            continue;
+        };
+
+        let segments = match parse_template(&template) {
+            Ok(segments) => segments,
+            Err(err) => {
+                errors.push(format_builtin_diag(source_path, rec.line, &item, err));
+                continue;
+            }
+        };
+
+        let placeholder_count = segments
+            .iter()
+            .filter(|s| matches!(s, FormatSegment::Placeholder(_)))
+            .count();
+        if placeholder_count != arg_count {
+            errors.push(format!(
+                "{source_path}:{}:0: error[fmt]: format_builtin declaration on `{item}` expects {placeholder_count} template placeholder(s) but declares {arg_count} arg(s)",
+                rec.line
+            ));
+        }
+
+        for segment in &segments {
+            if let FormatSegment::Placeholder(spec) = segment {
+                if let Err(err) = validate_format_spec(spec) {
+                    errors.push(format_builtin_diag(source_path, rec.line, &item, err));
+                }
+            }
+        }
     }
 }
 
@@ -398,5 +562,156 @@ mod tests {
     fn check_passes_on_empty_program() {
         let (prog, _) = crate::parse("");
         assert!(check(&prog, "<test>").is_ok());
+    }
+
+    fn record_format_builtin(item: &str, args: &str, line: usize) {
+        crate::feature_attrs::record(
+            item,
+            crate::feature_attrs::AttrRecord {
+                name: "format_builtin".into(),
+                args: args.into(),
+                line,
+            },
+        );
+    }
+
+    fn run_decl_check(source_path: &str) -> Result<(), String> {
+        let (prog, _) = crate::parse("");
+        check(&prog, source_path)
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_missing_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"args = 1"#, 11);
+
+        let err = run_decl_check("test.rz").expect_err("expected missing template error");
+        assert!(err.contains("test.rz:11:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("format_builtin declaration on `fmt` missing `template`"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_missing_args() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}""#, 12);
+
+        let err = run_decl_check("test.rz").expect_err("expected missing args error");
+        assert!(err.contains("test.rz:12:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("format_builtin declaration on `fmt` missing `args`"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_unknown_argument() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = 1, mode = "strict""#, 13);
+
+        let err = run_decl_check("test.rz").expect_err("expected unknown argument error");
+        assert!(err.contains("test.rz:13:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("unknown format_builtin argument `mode` on `fmt`"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_duplicate_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", template = "{}", args = 1"#, 14);
+
+        let err = run_decl_check("test.rz").expect_err("expected duplicate template error");
+        assert!(err.contains("test.rz:14:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("duplicate `template` argument on `fmt`"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_non_numeric_args() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = "one""#, 15);
+
+        let err = run_decl_check("test.rz").expect_err("expected invalid args error");
+        assert!(err.contains("test.rz:15:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("format_builtin declaration on `fmt` requires integer `args`"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_malformed_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{", args = 1"#, 16);
+
+        let err = run_decl_check("test.rz").expect_err("expected malformed template error");
+        assert!(err.contains("test.rz:16:0: error[fmt]"), "{err}");
+        assert!(err.contains("unterminated"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_arg_count_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {}", args = 1"#, 17);
+
+        let err = run_decl_check("test.rz").expect_err("expected arg count mismatch");
+        assert!(err.contains("test.rz:17:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("expects 2 template placeholder(s) but declares 1 arg(s)"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_valid_format_builtin_declaration() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {}", args = 2"#, 18);
+
+        run_decl_check("test.rz").expect("valid format_builtin declaration should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn typechecker_rejects_parser_recorded_format_builtin_declaration() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+#[format_builtin(template = "{} {}", args = 1)]
+fn fmt(int x) -> int { return x; }
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        let mut checker = crate::typechecker::TypeChecker::new();
+        let err = checker
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected typechecker to reject malformed declaration");
+        assert!(err.contains("test.rz:0:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("expects 2 template placeholder(s) but declares 1 arg(s)"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
     }
 }

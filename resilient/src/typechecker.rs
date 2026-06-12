@@ -6524,9 +6524,12 @@ impl TypeChecker {
                 }
                 // RES-1605: `param_destructuring::check` is a no-op stub;
                 // the parser handles destructured-param desugaring.
-                // RES-1605: `format_builtin::check` is a no-op stub;
-                // the `format` builtin is registered in the builtin
-                // table at startup, not per-typecheck.
+                // RES-3482: validate recorded `#[format_builtin(...)]`
+                // declaration metadata. Ordinary `format(...)` call-site
+                // validation remains in `fmt_validation` below.
+                if !crate::feature_attrs::find_kind("format_builtin").is_empty() {
+                    crate::format_builtin::check(program, source_path)?;
+                }
                 // RES-1597: gate on `has_match_expr` — avoids the
                 // struct-pattern walk when the program has no match
                 // expressions at all.

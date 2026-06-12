@@ -38,6 +38,7 @@
 //! | `#[lock_priority(N)]` | `lock_priority` | Static lock ordering |
 //! | `#[peripheral]` | `hw_state_machine` | Hardware lifecycle type |
 //! | `#[autopilot]` | `autopilot` | Mark for safety audit |
+//! | `#[format_builtin(...)]` | `format_builtin` | Format declaration metadata |
 //!
 //! Attributes that do not match a known kind fall through to
 //! `cfg_attr`'s existing "unknown attribute" error path.
@@ -349,10 +350,11 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "ghost_fn"
             | "blame"
             | "version"
-            | "ai_review_required"
-            | "lean_spec"
-            // RES-2592: tail call optimization enforcement.
-            | "must_tail_call"
+        | "ai_review_required"
+        | "lean_spec"
+        | "format_builtin"
+        // RES-2592: tail call optimization enforcement.
+        | "must_tail_call"
             // RES-2659: mutual tail call optimization.
             | "mutual_tail_call"
     )
