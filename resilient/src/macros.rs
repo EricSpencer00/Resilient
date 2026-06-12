@@ -221,6 +221,10 @@ fn macro_diagnostic(source_path: &str, line: usize, message: &str) -> String {
     format!("{source_path}:{line}:0: error: {message}")
 }
 
+fn macro_location(source_path: &str, line: usize) -> String {
+    format!("{source_path}:{line}:0")
+}
+
 fn parse_macro_decl(
     item: &str,
     rec: &crate::feature_attrs::AttrRecord,
@@ -323,7 +327,8 @@ fn parse_macro_part(
 
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     let attrs = crate::feature_attrs::find_kind("macro");
-    let mut macros = Vec::with_capacity(attrs.len());
+    let mut macros: Vec<(usize, MacroDef)> = Vec::with_capacity(attrs.len());
+    let mut seen: HashMap<String, usize> = HashMap::with_capacity(attrs.len());
 
     for (item, rec) in attrs {
         let macro_def = parse_macro_decl(&item, &rec).map_err(|msg| {
@@ -333,13 +338,32 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
                 &format!("invalid #[macro] declaration for `{item}`: {msg}"),
             )
         })?;
-        macros.push(macro_def);
+
+        if let Some(&prev_idx) = seen.get(&item) {
+            let (prev_line, prev_def) = &macros[prev_idx];
+            let kind = if prev_def.pattern == macro_def.pattern
+                && prev_def.expansion == macro_def.expansion
+            {
+                "duplicate"
+            } else {
+                "conflicting"
+            };
+            let prev_loc = macro_location(source_path, *prev_line);
+            let current_loc = macro_location(source_path, rec.line);
+            return Err(format!(
+                "{current_loc}: error: {kind} #[macro] declaration `{item}`; first declared at {prev_loc}, second declared at {current_loc}"
+            ));
+        }
+
+        seen.insert(item.clone(), macros.len());
+        macros.push((rec.line, macro_def));
     }
 
     if macros.is_empty() {
         return Ok(());
     }
-    install(macros);
+
+    install(macros.into_iter().map(|(_, def)| def).collect());
     Ok(())
 }
 
@@ -348,19 +372,26 @@ mod tests {
     use super::*;
 
     fn check_macro_decl(args: &str) -> Result<(), String> {
+        check_macro_decls(&[("macro_target", 0, args)])
+    }
+
+    fn check_macro_decls(decls: &[(&str, usize, &str)]) -> Result<(), String> {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         if let Ok(mut g) = MACROS.write() {
             g.clear();
         }
-        crate::feature_attrs::record(
-            "macro_target",
-            crate::feature_attrs::AttrRecord {
-                name: "macro".into(),
-                args: args.into(),
-                line: 0,
-            },
-        );
+
+        for (item_name, line, args) in decls {
+            crate::feature_attrs::record(
+                item_name,
+                crate::feature_attrs::AttrRecord {
+                    name: "macro".into(),
+                    args: (*args).into(),
+                    line: *line,
+                },
+            );
+        }
 
         let program = Node::Program(vec![]);
         let result = check(&program, "test.rz");
@@ -541,6 +572,48 @@ mod tests {
         assert_eq!(
             result,
             "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: duplicate `pattern` field"
+        );
+    }
+
+    #[test]
+    fn check_rejects_duplicate_macro_registration() {
+        let result = check_macro_decls(&[
+            (
+                "macro_target",
+                12,
+                r#"pattern = "$1", expansion = "prefix($1)""#,
+            ),
+            (
+                "macro_target",
+                34,
+                r#"pattern = "$1", expansion = "prefix($1)""#,
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            result,
+            "test.rz:34:0: error: duplicate #[macro] declaration `macro_target`; first declared at test.rz:12:0, second declared at test.rz:34:0"
+        );
+    }
+
+    #[test]
+    fn check_rejects_conflicting_macro_registration() {
+        let result = check_macro_decls(&[
+            (
+                "macro_target",
+                12,
+                r#"pattern = "$1", expansion = "prefix($1)""#,
+            ),
+            (
+                "macro_target",
+                34,
+                r#"pattern = "$1", expansion = "suffix($1)""#,
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            result,
+            "test.rz:34:0: error: conflicting #[macro] declaration `macro_target`; first declared at test.rz:12:0, second declared at test.rz:34:0"
         );
     }
 
