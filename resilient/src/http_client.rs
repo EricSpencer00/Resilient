@@ -7,6 +7,7 @@
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation)]
 
+use crate::span::Span;
 use crate::{MapKey, Node, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -172,6 +173,381 @@ fn parse_request_options(args: &[Value], start: usize, builtin: &str) -> RResult
         }
     }
     Ok(options)
+}
+
+fn diagnostic(source_path: &str, span: Span, message: &str) -> String {
+    format!(
+        "{}:{}:{}: error: {}",
+        source_path, span.start.line, span.start.column, message
+    )
+}
+
+fn span_of(node: &Node) -> Span {
+    match node {
+        Node::Identifier { span, .. }
+        | Node::IntegerLiteral { span, .. }
+        | Node::FloatLiteral { span, .. }
+        | Node::StringLiteral { span, .. }
+        | Node::StringInternLiteral { span, .. }
+        | Node::BytesLiteral { span, .. }
+        | Node::CharLiteral { span, .. }
+        | Node::BooleanLiteral { span, .. }
+        | Node::PrefixExpression { span, .. }
+        | Node::InfixExpression { span, .. }
+        | Node::CallExpression { span, .. }
+        | Node::TryExpression { span, .. }
+        | Node::OptionalChain { span, .. }
+        | Node::FunctionLiteral { span, .. }
+        | Node::Match { span, .. }
+        | Node::StructDecl { span, .. }
+        | Node::LetDestructureStruct { span, .. }
+        | Node::StructLiteral { span, .. }
+        | Node::FieldAccess { span, .. }
+        | Node::FieldAssignment { span, .. }
+        | Node::ArrayLiteral { span, .. }
+        | Node::IndexExpression { span, .. }
+        | Node::Slice { span, .. }
+        | Node::IndexAssignment { span, .. }
+        | Node::MapLiteral { span, .. }
+        | Node::SetLiteral { span, .. }
+        | Node::ImplBlock { span, .. }
+        | Node::TraitDecl { span, .. }
+        | Node::TypeAlias { span, .. }
+        | Node::RegionDecl { span, .. }
+        | Node::Actor { span, .. }
+        | Node::ActorDecl { span, .. }
+        | Node::ClusterDecl { span, .. }
+        | Node::TryCatch { span, .. }
+        | Node::Quantifier { span, .. }
+        | Node::InvariantStatement { span, .. }
+        | Node::Range { span, .. }
+        | Node::NamedArg { span, .. }
+        | Node::InterpolatedString { span, .. }
+        | Node::ModuleDecl { span, .. }
+        | Node::NewtypeDecl { span, .. }
+        | Node::NewtypeConstruct { span, .. }
+        | Node::SupervisorDecl { span, .. }
+        | Node::TupleLiteral { span, .. }
+        | Node::Function { span, .. }
+        | Node::LiveBlock { span, .. }
+        | Node::DurationLiteral { span, .. }
+        | Node::Assert { span, .. }
+        | Node::Assume { span, .. }
+        | Node::Block { span, .. }
+        | Node::LetStatement { span, .. }
+        | Node::StaticLet { span, .. }
+        | Node::Const { span, .. }
+        | Node::Assignment { span, .. }
+        | Node::ReturnStatement { span, .. }
+        | Node::Break { span, .. }
+        | Node::BreakWith { span, .. }
+        | Node::Continue { span, .. }
+        | Node::BreakLabel { span, .. }
+        | Node::ContinueLabel { span, .. }
+        | Node::DeferStatement { span, .. }
+        | Node::IfStatement { span, .. }
+        | Node::WhileStatement { span, .. }
+        | Node::ForInStatement { span, .. }
+        | Node::ExpressionStatement { span, .. } => *span,
+        Node::Program(_) => Span::default(),
+        _ => Span::default(),
+    }
+}
+
+fn node_kind(node: &Node) -> &'static str {
+    match node {
+        Node::Identifier { .. } => "identifier",
+        Node::IntegerLiteral { .. } | Node::FloatLiteral { .. } => "number literal",
+        Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
+        | Node::InterpolatedString { .. } => "string literal",
+        Node::BooleanLiteral { .. } => "boolean literal",
+        Node::ArrayLiteral { .. } => "array literal",
+        Node::MapLiteral { .. } => "map literal",
+        Node::TupleLiteral { .. } => "tuple literal",
+        Node::StructLiteral { .. } => "struct literal",
+        Node::CallExpression { .. } => "call expression",
+        Node::PrefixExpression { .. } => "prefix expression",
+        Node::InfixExpression { .. } => "infix expression",
+        Node::OptionalChain { .. } => "optional chain",
+        Node::NamedArg { .. } => "named argument",
+        Node::DurationLiteral { .. } => "duration literal",
+        _ => "expression",
+    }
+}
+
+fn validate_http_options(
+    source_path: &str,
+    builtin: &str,
+    args: &[Node],
+    start: usize,
+) -> Result<(), String> {
+    let mut saw_headers = false;
+    let mut saw_timeout = false;
+    for arg in &args[start..] {
+        match arg {
+            Node::MapLiteral { entries, .. } => {
+                if saw_headers {
+                    return Err(diagnostic(
+                        source_path,
+                        span_of(arg),
+                        &format!("{builtin}: request headers specified more than once"),
+                    ));
+                }
+
+                for (key, value) in entries {
+                    let header_name = match key {
+                        Node::StringLiteral { value, .. }
+                        | Node::StringInternLiteral { content: value, .. } => value,
+                        other => {
+                            return Err(diagnostic(
+                                source_path,
+                                span_of(other),
+                                &format!(
+                                    "{builtin}: header names must be strings, got {}",
+                                    node_kind(other)
+                                ),
+                            ));
+                        }
+                    };
+
+                    match value {
+                        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => {}
+                        other => {
+                            return Err(diagnostic(
+                                source_path,
+                                span_of(other),
+                                &format!(
+                                    "{builtin}: header `{}` must be string value, got {}",
+                                    header_name,
+                                    node_kind(other)
+                                ),
+                            ));
+                        }
+                    }
+                }
+
+                saw_headers = true;
+            }
+            Node::IntegerLiteral { value, .. } => {
+                if saw_timeout {
+                    return Err(diagnostic(
+                        source_path,
+                        span_of(arg),
+                        &format!("{builtin}: timeout specified more than once"),
+                    ));
+                }
+                if *value <= 0 {
+                    return Err(diagnostic(
+                        source_path,
+                        span_of(arg),
+                        &format!("{builtin}: timeout must be positive integer number milliseconds"),
+                    ));
+                }
+                saw_timeout = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn walk(node: &Node, source_path: &str) -> Result<(), String> {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                walk(&stmt.node, source_path)?;
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                walk(stmt, source_path)?;
+            }
+        }
+        Node::ExpressionStatement { expr, .. }
+        | Node::TryExpression { expr, .. }
+        | Node::InvariantStatement { expr, .. }
+        | Node::DeferStatement { expr, .. }
+        | Node::NamedArg { value: expr, .. }
+        | Node::BreakWith { value: expr, .. }
+        | Node::NewtypeConstruct { value: expr, .. } => walk(expr, source_path)?,
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. }
+        | Node::ReturnStatement {
+            value: Some(value), ..
+        } => walk(value, source_path)?,
+        Node::ReturnStatement { value: None, .. } => {}
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            walk(condition, source_path)?;
+            if let Some(message) = message {
+                walk(message, source_path)?;
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            walk(condition, source_path)?;
+            walk(consequence, source_path)?;
+            if let Some(alternative) = alternative {
+                walk(alternative, source_path)?;
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        }
+        | Node::ForInStatement {
+            iterable: condition,
+            body,
+            ..
+        } => {
+            walk(condition, source_path)?;
+            walk(body, source_path)?;
+        }
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        }
+        | Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            walk(body, source_path)?;
+            for req in requires {
+                walk(req, source_path)?;
+            }
+            for ens in ensures {
+                walk(ens, source_path)?;
+            }
+            if let Some(recovers_to) = recovers_to {
+                walk(recovers_to, source_path)?;
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk(scrutinee, source_path)?;
+            for (_, guard, body) in arms {
+                if let Some(guard) = guard {
+                    walk(guard, source_path)?;
+                }
+                walk(body, source_path)?;
+            }
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for stmt in body {
+                walk(stmt, source_path)?;
+            }
+            for (_, handler_body) in handlers {
+                for stmt in handler_body {
+                    walk(stmt, source_path)?;
+                }
+            }
+        }
+        Node::LiveBlock {
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            walk(body, source_path)?;
+            for inv in invariants {
+                walk(inv, source_path)?;
+            }
+            if let Some(timeout) = timeout {
+                walk(timeout, source_path)?;
+            }
+        }
+        Node::OptionalChain { object, .. } => walk(object, source_path)?,
+        Node::PrefixExpression { right, .. } => walk(right, source_path)?,
+        Node::InfixExpression { left, right, .. } => {
+            walk(left, source_path)?;
+            walk(right, source_path)?;
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            span: _,
+        } => {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                match name.as_str() {
+                    "http_get" => validate_http_options(source_path, "http_get", arguments, 1)?,
+                    "http_post" => validate_http_options(source_path, "http_post", arguments, 2)?,
+                    _ => {}
+                }
+            }
+            walk(function, source_path)?;
+            for arg in arguments {
+                walk(arg, source_path)?;
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            for (_, value) in fields {
+                walk(value, source_path)?;
+            }
+            if let Some(base) = base {
+                walk(base, source_path)?;
+            }
+        }
+        Node::ArrayLiteral { items, .. }
+        | Node::TupleLiteral { items, .. }
+        | Node::SetLiteral { items, .. } => {
+            for item in items {
+                walk(item, source_path)?;
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries {
+                walk(key, source_path)?;
+                walk(value, source_path)?;
+            }
+        }
+        Node::FieldAccess { target, .. }
+        | Node::IndexExpression { target, .. }
+        | Node::Slice { target, .. } => walk(target, source_path)?,
+        Node::FieldAssignment { target, value, .. }
+        | Node::IndexAssignment { target, value, .. } => {
+            walk(target, source_path)?;
+            walk(value, source_path)?;
+        }
+        Node::Quantifier { range, body, .. } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    walk(lo, source_path)?;
+                    walk(hi, source_path)?;
+                }
+                crate::quantifiers::QuantRange::Iterable(expr) => {
+                    walk(expr, source_path)?;
+                }
+            }
+            walk(body, source_path)?;
+        }
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    walk(expr, source_path)?;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 fn connect_with_timeout(parsed: &ParsedUrl, timeout: Duration) -> Result<TcpStream, String> {
@@ -388,8 +764,8 @@ pub(crate) fn builtin_http_post(args: &[Value]) -> RResult<Value> {
 // Feature pass (no-op)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    Ok(())
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    walk(program, source_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +796,18 @@ mod tests {
                     .expect("program should typecheck");
             },
         );
+    }
+
+    fn check_std_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        check(&prog, "<test>").expect("program should pass http_client::check");
+    }
+
+    fn check_std_err(src: &str) -> String {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        check(&prog, "<test>").expect_err("expected http_client::check failure")
     }
 
     fn headers_map(pairs: &[(&str, &str)]) -> Value {
@@ -744,12 +1132,68 @@ let resp = http_get("http://example.com/data", headers, 50);
             r#"
 let result = http_get("ftp://bad")
 match result {
-    Ok(r) => println("unexpected ok"),
-    Err(e) => println("error: " + e),
+Ok(r) => println("unexpected ok"),
+Err(e) => println("error: " + e),
 }
 "#,
         );
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("error:"));
+    }
+
+    #[test]
+    fn http_client_check_accepts_minimal_http_get() {
+        check_std_ok(r#"let resp = http_get("http://example.com/data");"#);
+    }
+
+    #[test]
+    fn http_client_check_accepts_headers_only() {
+        check_std_ok(r#"let resp = http_get("http://example.com/data", {"X-Test" -> "one"});"#);
+    }
+
+    #[test]
+    fn http_client_check_accepts_http_post_headers_and_timeout() {
+        check_std_ok(
+            r#"let resp = http_post("http://example.com/data", "body", {"X-Test" -> "one"}, 50);"#,
+        );
+    }
+
+    #[test]
+    fn http_client_check_rejects_non_positive_timeout() {
+        let err = check_std_err(r#"let resp = http_get("http://example.com", 0);"#);
+        assert!(err.starts_with("<test>:1:"));
+        assert!(err.contains("timeout must be positive integer number milliseconds"));
+    }
+
+    #[test]
+    fn http_client_check_rejects_duplicate_headers() {
+        let err = check_std_err(
+            r#"let resp = http_get("http://example.com", {"X-Test" -> "one"}, {"X-Other" -> "two"});"#,
+        );
+        assert!(err.starts_with("<test>:1:"));
+        assert!(err.contains("request headers specified more than once"));
+    }
+
+    #[test]
+    fn http_client_check_rejects_duplicate_timeouts() {
+        let err = check_std_err(r#"let resp = http_get("http://example.com", 50, 75);"#);
+        assert!(err.starts_with("<test>:1:"));
+        assert!(err.contains("timeout specified more than once"));
+    }
+
+    #[test]
+    fn http_client_check_rejects_non_string_header_name() {
+        let err = check_std_err(r#"let resp = http_get("http://example.com", {1 -> "one"});"#);
+        assert!(err.starts_with("<test>:1:"));
+        assert!(err.contains("header names must be strings, got number literal"));
+    }
+
+    #[test]
+    fn http_client_check_rejects_non_string_header_value() {
+        let err = check_std_err(
+            r#"let resp = http_post("http://example.com", "body", {"X-Test" -> 1});"#,
+        );
+        assert!(err.starts_with("<test>:1:"));
+        assert!(err.contains("header `X-Test` must be string value, got number literal"));
     }
 }
