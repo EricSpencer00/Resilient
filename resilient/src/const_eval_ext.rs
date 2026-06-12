@@ -16,6 +16,8 @@
 
 use crate::Node;
 use crate::span::Span;
+#[path = "contracts.rs"]
+mod contracts;
 
 fn diagnostic(source_path: &str, span: Span, message: &str) -> String {
     format!(
@@ -76,10 +78,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         }
     });
 
-    match error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
+match error {
+    Some(err) => Err(err),
+    None => contracts::check(program, source_path),
+}
 }
 
 // ---------------------------------------------------------------------------
