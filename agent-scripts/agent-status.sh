@@ -5,7 +5,7 @@
 #   - active worktrees in .claude/worktrees/
 #   - open PRs (by author kind: human / copilot / claude)
 #   - queue-health counts for ready-ish, stale, and unclaimed PRs
-#   - unclaimed open PRs (no `Closes #N` in body)
+#   - unclaimed open PRs (no `Refs #N`, `Closes #N`, or RES-NNN marker)
 #   - stale PRs (>72h without an update)
 #   - stale claims whose branch no longer has an open PR
 #
@@ -68,8 +68,8 @@ import re
 
 prs = json.loads(os.environ.get("PRS_JSON") or "[]")
 claims = json.loads(os.environ.get("CLAIMS_JSON") or '{"claims":{}}').get("claims", {})
-now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
-ref_re = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+now = dt.datetime.now(dt.timezone.utc)
+ref_re = re.compile(r"(?:refs|closes|fixes|resolves)\s+#(\d+)|\bRES-(\d+)\b", re.IGNORECASE)
 
 main_prs = [pr for pr in prs if pr.get("baseRefName") == "main"]
 draft_prs = [pr for pr in prs if pr.get("isDraft")]
@@ -85,7 +85,8 @@ for pr in prs:
         age_h = 0
     if age_h >= 72:
         stale_prs.append({"number": pr["number"], "title": pr.get("title") or "", "age_h": age_h})
-    if not ref_re.findall(pr.get("body") or ""):
+    haystack = " ".join([pr.get("title") or "", pr.get("body") or "", pr.get("headRefName") or ""])
+    if not ref_re.findall(haystack):
         unclaimed_prs.append(pr["number"])
 
 open_heads = {pr.get("headRefName") for pr in prs if pr.get("headRefName")}
@@ -148,8 +149,8 @@ if not prs:
     print("  (none)")
     sys.exit(0)
 
-now = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
-ref_re = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+now = dt.datetime.now(dt.timezone.utc)
+ref_re = re.compile(r"(?:refs|closes|fixes|resolves)\s+#(\d+)|\bRES-(\d+)\b", re.IGNORECASE)
 
 for pr in sorted(prs, key=lambda p: p["updatedAt"]):
     login = pr["author"].get("login") or "?"
@@ -157,8 +158,12 @@ for pr in sorted(prs, key=lambda p: p["updatedAt"]):
     age_h = int((now - dt.datetime.fromisoformat(pr["updatedAt"].replace("Z", "+00:00"))).total_seconds() // 3600)
     stale = " [STALE]" if age_h >= 72 else ""
     draft = " [draft]" if pr["isDraft"] else ""
-    closes = ref_re.findall(pr.get("body") or "")
-    claim = f" closes #{','.join(closes)}" if closes else " [UNCLAIMED]"
+    refs = []
+    for match in ref_re.findall(" ".join([pr.get("title") or "", pr.get("body") or ""])):
+        issue = match[0] or match[1]
+        if issue and issue not in refs:
+            refs.append(issue)
+    claim = f" refs #{','.join(refs)}" if refs else " [UNCLAIMED]"
     base = "" if pr.get("baseRefName") == "main" else f" [base:{pr.get('baseRefName') or '?'}]"
     print(f"  #{pr['number']:>4} [{kind:<7}] {age_h:>3}h{draft}{stale}{claim}{base}  {pr['title'][:70]}")
 PYEOF

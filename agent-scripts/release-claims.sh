@@ -55,6 +55,19 @@ fi
 
 echo "Resolved merged PR #${PR_NUMBER} for branch ${BRANCH}."
 
+PR_STATE="$(gh pr view "$PR_NUMBER" --json state -q .state 2>/dev/null || echo "UNKNOWN")"
+PR_MERGED_AT="$(gh pr view "$PR_NUMBER" --json mergedAt -q '.mergedAt // ""' 2>/dev/null || true)"
+if [ "$PR_STATE" != "MERGED" ] && [ -z "$PR_MERGED_AT" ]; then
+  echo "PR #${PR_NUMBER} is ${PR_STATE}; claims released but linked-issue closure skipped."
+  exit 0
+fi
+
+if ! gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' | grep -Fxq "agent-vetted"; then
+  echo "PR #${PR_NUMBER} is not agent-vetted; claims released but linked-issue closure skipped."
+  gh pr comment "$PR_NUMBER" --body "Linked issue closure skipped because this merged PR was not marked \`agent-vetted\` by \`agent-scripts/ready-or-bail.sh\`." >/dev/null || true
+  exit 0
+fi
+
 CLOSING_ISSUES="$(python3 - "$PR_NUMBER" "$REPO_SLUG" <<'PYEOF'
 import json
 import os

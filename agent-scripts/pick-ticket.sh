@@ -4,7 +4,7 @@
 # Filters:
 #   - label `agent-ready`
 #   - state open
-#   - no open PR whose body or branch references `#<number>`
+#   - no open PR whose title, body, or branch references `#<number>`
 #   - not assigned (or only the agent bots)
 #
 # Ordering:

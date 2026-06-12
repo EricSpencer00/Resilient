@@ -9,5 +9,6 @@ GitHub Issues:
 
 Each issue has concrete, verifiable acceptance criteria. Claim one by
 commenting on it, create a branch named `res-NNN-short-title`, open a draft PR
-with `Closes #N` in the body, and land the work. Commit with
-`RES-NNN: one-line summary`.
+with `Refs #N` in the body, and land the work through
+`agent-scripts/ready-or-bail.sh`. That guardrail adds `Closes #N` only after
+substantive work is vetted. Commit with `RES-NNN: one-line summary`.

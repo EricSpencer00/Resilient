@@ -31,11 +31,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
+if [ -f "$SCRIPT_DIR/agent-profile.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$SCRIPT_DIR/agent-profile.sh"
+fi
+
 N=1
 UNBOUNDED=0
 PARALLEL=1
 DRY_RUN=0
-AGENT_CMD="${AGENT_CMD:-claude -p --permission-mode acceptEdits}"
+AGENT_CMD="${AGENT_CMD:?set AGENT_CMD or RESILIENT_IMPROVEMENT_AGENT_CMD}"
 LOOP_PROMPT_FILE="${AGENT_LOOP_PROMPT_FILE:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -80,6 +85,12 @@ run_one() {
   gh issue view "$issue" --json title,body -q '.title + "\n\n" + .body' > "$body_file"
 
   local prompt_file="/tmp/agent-prompt-${issue}.md"
+  local coauthor_instruction
+  if [ -n "${AGENT_COAUTHOR_NAME:-}" ] && [ -n "${AGENT_COAUTHOR_EMAIL:-}" ]; then
+    coauthor_instruction="If and only if that is accurate for the executor that performed the work, include this trailer on implementation commits: Co-Authored-By: ${AGENT_COAUTHOR_NAME} <${AGENT_COAUTHOR_EMAIL}>."
+  else
+    coauthor_instruction="Do not add a Co-Authored-By trailer unless this run explicitly configured the executor identity. Never hardcode Claude, Codex, or any other agent as coauthor."
+  fi
   {
     if [ -n "$LOOP_PROMPT_FILE" ] && [ -f "$LOOP_PROMPT_FILE" ]; then
       cat "$LOOP_PROMPT_FILE"
@@ -88,7 +99,7 @@ run_one() {
     cat <<EOF
 You are working on Resilient. A worktree is prepared at:
   ${worktree}
-Branch is pushed and tracks origin. Draft PR is #${pr} with 'Closes #${issue}'.
+Branch is pushed and tracks origin. Draft PR is #${pr} with 'Refs #${issue}'.
 The single existing commit is an empty claim commit — don't amend it, add new commits on top.
 
 Your ticket (from GitHub):
@@ -106,7 +117,7 @@ Rules (enforced post-hoc by agent-scripts/verify-scope.sh, which decides whether
 Work in this order:
   1. cd ${worktree}
   2. Read CLAUDE.md, explore the relevant source files.
-  3. Implement. Commit in logical chunks with 'RES-${issue}: ...' subject lines and a Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com> trailer.
+  3. Implement a substantive improvement. Commit in logical chunks with 'RES-${issue}: ...' subject lines. ${coauthor_instruction}
   4. Push (the branch already tracks).
   5. Run agent-scripts/ready-or-bail.sh --pr ${pr}. If it fails, read the comment it posts, fix the issues, push again, re-run. Do NOT run 'gh pr ready' manually — let the guardrail decide.
 

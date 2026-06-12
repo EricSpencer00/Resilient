@@ -5,11 +5,12 @@ name: agent-auto-merge
 # Preconditions — all must hold before a PR is eligible:
 #   1. PR is not a draft.
 #   2. PR has the `integration-synced` label (applied by sync-integration.sh).
-#   3. Every required check has conclusion == SUCCESS.
+#   3. PR has the `agent-vetted` label (applied by ready-or-bail.sh).
+#   4. Every required check has conclusion == SUCCESS.
 #      The diff-shape guardrail's "overlap" sub-check is allowed to be
 #      FAILURE here because the admin merge handles append-only conflicts;
 #      the shape-rules portion still must pass.
-#   4. PR base is `main`.
+#   5. PR base is `main`.
 #
 # The merge itself uses `gh pr merge --squash --auto` with GitHub's
 # auto-merge feature. That ensures a final freshness re-check happens
@@ -67,11 +68,13 @@ jobs:
             is_draft=$(echo "$info" | jq -r '.isDraft')
             base=$(echo "$info" | jq -r '.baseRefName')
             synced=$(echo "$info" | jq -r '[.labels[].name] | index("integration-synced") // empty')
+            vetted=$(echo "$info" | jq -r '[.labels[].name] | index("agent-vetted") // empty')
 
             if [[ "$state" != "OPEN" ]]; then echo "  state=$state — skip"; continue; fi
             if [[ "$is_draft" == "true" ]]; then echo "  draft — skip"; continue; fi
             if [[ "$base" != "main" ]]; then echo "  base=$base (not main) — skip"; continue; fi
             if [[ -z "$synced" ]]; then echo "  not integration-synced — skip"; continue; fi
+            if [[ -z "$vetted" ]]; then echo "  not agent-vetted — skip"; continue; fi
 
             # Exclude checks that aren't in branch protection's
             # required-status-checks list. Two known non-blocking checks
