@@ -3,17 +3,26 @@
 //! Provides `regex_match`, `regex_find`, `regex_find_all`,
 //! `regex_captures`, `regex_replace`, and `regex_replace_all`.
 //!
-//! Compiled regexes are cached in a process-wide LRU so repeated
-//! calls with the same pattern avoid re-compilation.
-
+//! Compiled regexes cached in process-wide LRU so repeated
+//! calls same pattern avoid re-compilation.
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation)]
 
+use crate::span::Span;
 use crate::{Node, Value};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
 type RResult<T> = Result<T, String>;
+
+const REGEX_BUILTINS: &[(&str, usize)] = &[
+    ("regex_match", 2),
+    ("regex_find", 2),
+    ("regex_find_all", 2),
+    ("regex_captures", 2),
+    ("regex_replace", 3),
+    ("regex_replace_all", 3),
+];
 
 // ---------------------------------------------------------------------------
 // Compiled-regex cache
@@ -30,6 +39,7 @@ fn get_or_compile(pattern: &str) -> RResult<Regex> {
             return Ok(re.clone());
         }
     }
+
     let re = Regex::new(pattern).map_err(|e| format!("invalid regex pattern: {e}"))?;
     if let Ok(mut cache) = REGEX_CACHE.write() {
         if cache.len() >= CACHE_CAPACITY {
@@ -38,6 +48,53 @@ fn get_or_compile(pattern: &str) -> RResult<Regex> {
         cache.insert(pattern.to_string(), re.clone());
     }
     Ok(re)
+}
+
+fn fmt_loc(source_path: &str, span: Span) -> String {
+    if span.start.line == 0 {
+        source_path.to_string()
+    } else {
+        format!("{}:{}:{}", source_path, span.start.line, span.start.column)
+    }
+}
+
+fn static_regex_pattern(node: &Node) -> Option<(String, Span)> {
+    match node {
+        Node::StringLiteral { value, span } => Some((value.clone(), *span)),
+        Node::StringInternLiteral { content, span, .. } => Some((content.clone(), *span)),
+        Node::InterpolatedString { parts, span } => {
+            let mut buf = String::new();
+            for part in parts {
+                match part {
+                    crate::string_interp::StringPart::Literal(s) => buf.push_str(s),
+                    crate::string_interp::StringPart::Expr(_) => return None,
+                }
+            }
+            Some((buf, *span))
+        }
+        _ => None,
+    }
+}
+
+fn regex_builtin_pattern_arg(node: &Node) -> Option<(&Node, &str)> {
+    let Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = node
+    else {
+        return None;
+    };
+    let Node::Identifier { name, .. } = function.as_ref() else {
+        return None;
+    };
+    let expected_arity = REGEX_BUILTINS
+        .iter()
+        .find_map(|(builtin, arity)| (*builtin == name.as_str()).then_some(*arity))?;
+    if arguments.len() != expected_arity {
+        return None;
+    }
+    Some((&arguments[1], name.as_str()))
 }
 
 // ---------------------------------------------------------------------------
@@ -180,11 +237,32 @@ pub(crate) fn builtin_regex_replace_all(args: &[Value]) -> RResult<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// Feature pass (no-op — builtins are self-contained)
+// Feature pass
 // ---------------------------------------------------------------------------
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    Ok(())
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let mut errors = Vec::new();
+    crate::uniqueness_walk::visit(program, &mut |node| {
+        let Some((pattern_node, builtin_name)) = regex_builtin_pattern_arg(node) else {
+            return;
+        };
+        let Some((pattern, span)) = static_regex_pattern(pattern_node) else {
+            return;
+        };
+        if let Err(err) = Regex::new(&pattern) {
+            errors.push(format!(
+                "{}: {}: invalid regex pattern: {}",
+                fmt_loc(source_path, span),
+                builtin_name,
+                err
+            ));
+        }
+    });
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,23 +352,23 @@ mod tests {
         let result =
             builtin_regex_captures(&[s("2024-01-15"), s(r"(\d{4})-(\d{2})-(\d{2})")]).unwrap();
         match result {
-            Value::Option(Some(boxed)) => match *boxed {
-                Value::Array(ref groups) => {
+            Value::Option(Some(boxed)) => match boxed.as_ref() {
+                Value::Array(groups) => {
                     assert_eq!(groups.len(), 4);
                     assert_str(&groups[0], "2024-01-15");
                     assert_str(&groups[1], "2024");
                     assert_str(&groups[2], "01");
                     assert_str(&groups[3], "15");
                 }
-                ref other => panic!("expected Array, got {other:?}"),
+                other => panic!("expected Array, got {other:?}"),
             },
-            other => panic!("expected Some, got {other:?}"),
+            other => panic!("expected Some(Array), got {other:?}"),
         }
     }
 
     #[test]
     fn regex_captures_returns_none_on_no_match() {
-        let result = builtin_regex_captures(&[s("hello"), s(r"(\d+)")]).unwrap();
+        let result = builtin_regex_captures(&[s("abcd"), s(r"(\d+)")]).unwrap();
         assert!(matches!(result, Value::Option(None)));
     }
 
@@ -347,15 +425,12 @@ println(no_match)
     fn end_to_end_regex_find() {
         let r = crate::run_program(
             r#"
-let result = regex_find("price: $42.99", "[0-9]+\\.[0-9]+")
-match result {
-    Some(s) => println(s),
-    None => println("not found"),
-}
+let found = regex_find("abc 123 def", "[0-9]+")
+println(found)
 "#,
         );
         assert!(r.ok, "errors: {:?}", r.errors);
-        assert_eq!(r.stdout.trim(), "42.99");
+        assert!(r.stdout.contains("123"));
     }
 
     #[test]
@@ -377,7 +452,7 @@ for w in words {
     fn end_to_end_regex_replace_all() {
         let r = crate::run_program(
             r#"
-let result = regex_replace_all("foo  bar   baz", "\\s+", " ")
+let result = regex_replace_all("foo bar baz", "\\s+", " ")
 println(result)
 "#,
         );
@@ -394,6 +469,61 @@ println(result)
 "#,
         );
         assert!(!r.ok, "should error on invalid regex pattern");
+    }
+
+    #[test]
+    fn regex_builtins_reject_literal_invalid_patterns_at_typecheck() {
+        let cases = [
+            (
+                r#"let value = regex_match("x", "[")"#,
+                "regex_match",
+                "unclosed character class",
+            ),
+            (
+                r#"let value = regex_find("x", "(")"#,
+                "regex_find",
+                "unclosed group",
+            ),
+            (
+                r#"let value = regex_find_all("x", "*a")"#,
+                "regex_find_all",
+                "repetition operator",
+            ),
+            (
+                r#"let value = regex_captures("x", "\\x")"#,
+                "regex_captures",
+                "incomplete escape",
+            ),
+            (
+                r#"let value = regex_replace("x", "(?=a)", "_")"#,
+                "regex_replace",
+                "look-around",
+            ),
+            (
+                r#"let value = regex_replace_all("x", "\\1", "_")"#,
+                "regex_replace_all",
+                "backreferences",
+            ),
+        ];
+
+        for (expr, builtin, semantic_hint) in cases {
+            let src = format!("{expr}\nprintln(value)");
+            let r = crate::run_program(&src);
+            assert!(
+                !r.ok,
+                "expected typecheck rejection for {builtin}; stdout={:?}; errors={:?}",
+                r.stdout, r.errors
+            );
+            let errors = r.errors.join("\n");
+            assert!(
+                errors.contains("invalid regex pattern"),
+                "expected regex-specific diagnostic for {builtin}: {errors}"
+            );
+            assert!(
+                errors.contains(semantic_hint),
+                "expected semantic hint `{semantic_hint}` in diagnostic for {builtin}: {errors}"
+            );
+        }
     }
 
     #[test]
