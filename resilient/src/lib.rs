@@ -652,6 +652,8 @@ mod phantom_types;
 mod power_contracts;
 mod probabilistic_contracts;
 mod property_tests;
+#[cfg(test)]
+mod property_tests_regression;
 mod recursive_types;
 mod refinement_types;
 mod resilience_score;
