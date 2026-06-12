@@ -1,13 +1,13 @@
-//! Feature 39/50 — Macros (Compile-Time Substitution).
+//! Feature 39/50 - Macros (Compile-Time Substitution).
 //!
 //! `#[macro(pattern = "...", expansion = "...")]` declares a simple
-//! syntactic macro: when the parser sees a call to the macro's name,
-//! it substitutes the expansion template (with `$arg` placeholders
-//! filled in from the call site).
+//! syntactic macro: when the parser sees a call to the macro's name, it
+//! substitutes the expansion template with `$arg` placeholders filled in
+//! from the call site.
 //!
-//! This is a textual macro system (not hygienic), suitable for
-//! `assert_eq!`, `format!`, and small DSLs. Hygiene + procedural
-//! macros are downstream tickets.
+//! This is a textual macro system, not hygienic, and is intended for
+//! `assert_eq!`, `format!`, and small DSLs. Hygiene and procedural macros
+//! are downstream tickets.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
@@ -27,29 +27,12 @@ static MACROS: LazyLock<RwLock<HashMap<String, MacroDef>>> =
 
 pub fn collect() -> Vec<MacroDef> {
     let attrs = crate::feature_attrs::find_kind("macro");
-    // RES-1764: pre-size to attrs.len() — exactly one push per
-    // attribute record.
+    // RES-1764: pre-size `attrs.len()` exactly one push per attribute record.
     let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
-        let mut pattern = String::new();
-        let mut expansion = String::new();
-        for chunk in rec.args.split(',') {
-            let chunk = chunk.trim();
-            if let Some((k, v)) = chunk.split_once('=') {
-                let k = k.trim();
-                let v = v.trim().trim_matches('"');
-                match k {
-                    "pattern" => pattern = v.to_string(),
-                    "expansion" => expansion = v.to_string(),
-                    _ => {}
-                }
-            }
+        if let Ok(def) = parse_macro_decl(&item, &rec) {
+            out.push(def);
         }
-        out.push(MacroDef {
-            name: item,
-            pattern,
-            expansion,
-        });
     }
     out
 }
@@ -75,27 +58,19 @@ pub fn expand(name: &str, args: &[String]) -> Option<String> {
 
 /// AST-level macro expansion pass.
 ///
-/// Called during the lowering pipeline (after newtypes::lower_program)
-/// so that expanded forms participate in typechecking and evaluation.
+/// Called by the lowering pipeline so expanded forms participate in
+/// typechecking and evaluation.
 ///
-/// For every `CallExpression` whose callee is a registered `#[macro(...)]`
-/// name:
-/// 1. Serialize each argument back to a source string.
+/// `CallExpression` whose callee matches a registered `#[macro(...)]` name:
+/// 1. Serialize arguments back to source strings.
 /// 2. Substitute into the expansion template.
-/// 3. Re-parse the result as a single expression via
-///    `crate::parse_single_expression`.
-/// 4. Replace the call node in place.
-///
-/// Expansions that fail to parse (e.g. multi-statement bodies) are left
-/// unexpanded — the typechecker will emit an "unknown function" error, which
-/// is more useful than a silent no-op.
+/// 3. Re-parse as a single expression with `crate::parse_single_expression`.
+/// 4. Replace the node in place.
 pub fn lower_program(program: &mut Node) {
     let macros_snapshot: Vec<(String, MacroDef)> = {
         let Ok(g) = MACROS.read() else { return };
         if g.is_empty() {
-            // Fast path: no macros installed — also try feature_attrs
-            // in case check() hasn't run yet (e.g. during lowering before
-            // the EXTENSION_PASSES typecheck phase).
+            // Fast path: no macros installed yet and `check()` has not run.
             drop(g);
             let defs = collect();
             if defs.is_empty() {
@@ -107,9 +82,11 @@ pub fn lower_program(program: &mut Node) {
             g.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         }
     };
+
     if macros_snapshot.is_empty() {
         return;
     }
+
     let macro_names: std::collections::HashSet<String> =
         macros_snapshot.iter().map(|(k, _)| k.clone()).collect();
     lower_node(program, &macro_names);
@@ -122,10 +99,10 @@ fn lower_node(node: &mut Node, macro_names: &std::collections::HashSet<String>) 
             arguments,
             ..
         } => {
-            // Recurse into arguments first (inside-out expansion).
             for arg in arguments.iter_mut() {
                 lower_node(arg, macro_names);
             }
+
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if macro_names.contains(name) {
                     let arg_strs: Vec<String> = arguments.iter().map(node_to_source).collect();
@@ -138,8 +115,8 @@ fn lower_node(node: &mut Node, macro_names: &std::collections::HashSet<String>) 
             }
         }
         Node::Program(items) => {
-            for s in items.iter_mut() {
-                lower_node(&mut s.node, macro_names);
+            for item in items.iter_mut() {
+                lower_node(&mut item.node, macro_names);
             }
         }
         Node::Function { body, .. } => lower_node(body, macro_names),
@@ -199,12 +176,8 @@ fn lower_node(node: &mut Node, macro_names: &std::collections::HashSet<String>) 
     }
 }
 
-/// Serialize an expression node back to a minimal source string so it
-/// can be substituted into a macro expansion template.
-///
-/// Handles the common cases used in macro arguments. Complex sub-
-/// expressions fall back to a placeholder that will produce a parse
-/// error in the expansion, making the failure explicit.
+/// Serialize an expression node back to a minimal source string so it can be
+/// substituted into a macro expansion template.
 fn node_to_source(node: &Node) -> String {
     match node {
         Node::IntegerLiteral { value, .. } => value.to_string(),
@@ -244,11 +217,125 @@ fn node_to_source(node: &Node) -> String {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1308: gate `install` on the non-empty case — see RES-1302
-    // for the wipe-on-empty race rationale; same pattern saves a
-    // wasted RwLock write per compile in the common case.
-    let macros = collect();
+fn macro_diagnostic(source_path: &str, line: usize, message: &str) -> String {
+    format!("{source_path}:{line}:0: error: {message}")
+}
+
+fn parse_macro_decl(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+) -> Result<MacroDef, String> {
+    let mut pattern: Option<String> = None;
+    let mut expansion: Option<String> = None;
+    let args = rec.args.trim();
+
+    if !args.is_empty() {
+        let mut start = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+
+        for (idx, ch) in rec.args.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' if in_string => escaped = true,
+                '"' => in_string = !in_string,
+                ',' if !in_string => {
+                    parse_macro_part(item, &rec.args[start..idx], &mut pattern, &mut expansion)?;
+                    start = idx + ch.len_utf8();
+                }
+                _ => {}
+            }
+        }
+
+        if in_string {
+            return Err("unterminated quoted string".to_string());
+        }
+
+        let tail = rec.args[start..].trim();
+        if !tail.is_empty() {
+            parse_macro_part(item, tail, &mut pattern, &mut expansion)?;
+        } else if rec.args.trim_end().ends_with(',') {
+            return Err("trailing comma in declaration".to_string());
+        }
+    }
+
+    let pattern = pattern.ok_or_else(|| "missing required `pattern` field".to_string())?;
+    let expansion = expansion.ok_or_else(|| "missing required `expansion` field".to_string())?;
+
+    Ok(MacroDef {
+        name: item.to_string(),
+        pattern,
+        expansion,
+    })
+}
+
+fn parse_macro_part(
+    item: &str,
+    part: &str,
+    pattern: &mut Option<String>,
+    expansion: &mut Option<String>,
+) -> Result<(), String> {
+    let part = part.trim();
+    if part.is_empty() {
+        return Err("empty declaration entry".to_string());
+    }
+
+    let (key, value) = part
+        .split_once('=')
+        .ok_or_else(|| format!("malformed entry `{part}`; expected `key = \"value\"`"))?;
+    let key = key.trim();
+    let value = value.trim();
+
+    if key.is_empty() {
+        return Err(format!("malformed entry `{part}`; missing field name"));
+    }
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return Err(format!(
+            "malformed entry `{part}`; expected quoted string value"
+        ));
+    }
+
+    let value = value[1..value.len() - 1].to_string();
+    match key {
+        "pattern" => {
+            if pattern.replace(value).is_some() {
+                return Err("duplicate `pattern` field".to_string());
+            }
+        }
+        "expansion" => {
+            if expansion.replace(value).is_some() {
+                return Err("duplicate `expansion` field".to_string());
+            }
+        }
+        other => {
+            return Err(format!(
+                "unknown field `{other}` in macro declaration for `{item}`"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+    let attrs = crate::feature_attrs::find_kind("macro");
+    let mut macros = Vec::with_capacity(attrs.len());
+
+    for (item, rec) in attrs {
+        let macro_def = parse_macro_decl(&item, &rec).map_err(|msg| {
+            macro_diagnostic(
+                source_path,
+                rec.line,
+                &format!("invalid #[macro] declaration for `{item}`: {msg}"),
+            )
+        })?;
+        macros.push(macro_def);
+    }
+
     if macros.is_empty() {
         return Ok(());
     }
@@ -259,6 +346,31 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_macro_decl(args: &str) -> Result<(), String> {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        if let Ok(mut g) = MACROS.write() {
+            g.clear();
+        }
+        crate::feature_attrs::record(
+            "macro_target",
+            crate::feature_attrs::AttrRecord {
+                name: "macro".into(),
+                args: args.into(),
+                line: 0,
+            },
+        );
+
+        let program = Node::Program(vec![]);
+        let result = check(&program, "test.rz");
+
+        if let Ok(mut g) = MACROS.write() {
+            g.clear();
+        }
+        crate::feature_attrs::reset();
+        result
+    }
 
     #[test]
     fn expands_assert_eq() {
@@ -321,7 +433,7 @@ mod tests {
     fn lower_program_is_noop_when_no_macros() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        // Clear MACROS registry.
+        // MACROS registry.
         if let Ok(mut g) = MACROS.write() {
             g.clear();
         }
@@ -335,14 +447,14 @@ mod tests {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
 
-        // Register a trivial identity macro: `id(x)` → `x`
+        // Register trivial identity macro: `id(x)` => `x`
         install(vec![MacroDef {
             name: "id".into(),
             pattern: "$1".into(),
             expansion: "$1".into(),
         }]);
 
-        // Build a minimal program: `id(99)`
+        // Build minimal program: `id(99)`
         let call = Node::CallExpression {
             function: Box::new(Node::Identifier {
                 name: "id".into(),
@@ -364,7 +476,7 @@ mod tests {
 
         lower_program(&mut program);
 
-        // After lowering, the ExpressionStatement's expr should be
+        // After lowering, ExpressionStatement's expr should be
         // IntegerLiteral(99), not CallExpression.
         if let Node::Program(stmts) = &program {
             if let Node::ExpressionStatement { expr, .. } = &stmts[0].node {
@@ -385,5 +497,60 @@ mod tests {
             g.clear();
         }
         crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_well_formed_macro_decl() {
+        let result = check_macro_decl(
+            r#"pattern = "$1, $2", expansion = "if $1 != $2 { panic(\"not equal\") }""#,
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn check_rejects_missing_pattern() {
+        let result = check_macro_decl(r#"expansion = "$1""#).unwrap_err();
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: missing required `pattern` field"
+        );
+    }
+
+    #[test]
+    fn check_rejects_missing_expansion() {
+        let result = check_macro_decl(r#"pattern = "$1""#).unwrap_err();
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: missing required `expansion` field"
+        );
+    }
+
+    #[test]
+    fn check_rejects_malformed_entry() {
+        let result = check_macro_decl(r#"pattern "$1", expansion = "$1""#).unwrap_err();
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: malformed entry `pattern \"$1\"`; expected `key = \"value\"`"
+        );
+    }
+
+    #[test]
+    fn check_rejects_duplicate_pattern() {
+        let result =
+            check_macro_decl(r#"pattern = "$1", pattern = "$2", expansion = "$3""#).unwrap_err();
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: duplicate `pattern` field"
+        );
+    }
+
+    #[test]
+    fn check_rejects_unknown_field() {
+        let result = check_macro_decl(r#"pattern = "$1", replacement = "$2", expansion = "$3""#)
+            .unwrap_err();
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: unknown field `replacement` in macro declaration for `macro_target`"
+        );
     }
 }
