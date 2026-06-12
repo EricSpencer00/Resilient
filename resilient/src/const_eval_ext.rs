@@ -16,11 +16,29 @@
 
 use crate::Node;
 use crate::span::Span;
+use std::collections::HashMap;
 
 fn diagnostic(source_path: &str, span: Span, message: &str) -> String {
     format!(
         "{}:{}:{}: error: {}",
         source_path, span.start.line, span.start.column, message
+    )
+}
+
+fn location(source_path: &str, span: Span) -> String {
+    format!("{}:{}:{}", source_path, span.start.line, span.start.column)
+}
+
+fn conflict_diagnostic(
+    source_path: &str,
+    name: &str,
+    first_span: Span,
+    second_span: Span,
+) -> String {
+    let first_loc = location(source_path, first_span);
+    let second_loc = location(source_path, second_span);
+    format!(
+        "{second_loc}: error: conflicting const declaration `{name}`; first declared at {first_loc}, second declared at {second_loc}"
     )
 }
 
@@ -41,6 +59,7 @@ fn is_missing_initializer(node: &Node) -> bool {
 /// never see a structurally-invalid declaration.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let mut error = None;
+    let mut seen: HashMap<String, Span> = HashMap::new();
 
     crate::uniqueness_walk::visit(program, &mut |node| {
         if error.is_some() {
@@ -73,6 +92,11 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 "invalid const declaration: missing initializer"
             };
             error = Some(diagnostic(source_path, *span, message));
+            return;
+        }
+
+        if let Some(first_span) = seen.insert(name.clone(), *span) {
+            error = Some(conflict_diagnostic(source_path, name, first_span, *span));
         }
     });
 
@@ -141,6 +165,10 @@ mod tests {
 
     fn program(stmt: Spanned<Node>) -> Node {
         Node::Program(vec![stmt])
+    }
+
+    fn program_many(stmts: Vec<Spanned<Node>>) -> Node {
+        Node::Program(stmts)
     }
 
     #[test]
@@ -306,6 +334,70 @@ println(to_string(a + b));
         assert_eq!(
             err,
             "test.rz:7:2: error: invalid const declaration: type annotations require an initializer"
+        );
+    }
+
+    #[test]
+    fn duplicate_const_decl_is_rejected() {
+        let program = program_many(vec![
+            const_stmt(
+                "ANSWER",
+                Node::IntegerLiteral {
+                    value: 1,
+                    span: span(1, 12),
+                },
+                None,
+                1,
+                1,
+            ),
+            const_stmt(
+                "ANSWER",
+                Node::IntegerLiteral {
+                    value: 2,
+                    span: span(4, 12),
+                },
+                None,
+                4,
+                3,
+            ),
+        ]);
+
+        let err = check(&program, "test.rz").unwrap_err();
+        assert_eq!(
+            err,
+            "test.rz:4:3: error: conflicting const declaration `ANSWER`; first declared at test.rz:1:1, second declared at test.rz:4:3"
+        );
+    }
+
+    #[test]
+    fn conflicting_const_decl_is_rejected() {
+        let program = program_many(vec![
+            const_stmt(
+                "MODE",
+                Node::BooleanLiteral {
+                    value: true,
+                    span: span(2, 14),
+                },
+                Some("bool"),
+                2,
+                5,
+            ),
+            const_stmt(
+                "MODE",
+                Node::BooleanLiteral {
+                    value: false,
+                    span: span(8, 14),
+                },
+                Some("int"),
+                8,
+                9,
+            ),
+        ]);
+
+        let err = check(&program, "test.rz").unwrap_err();
+        assert_eq!(
+            err,
+            "test.rz:8:9: error: conflicting const declaration `MODE`; first declared at test.rz:2:5, second declared at test.rz:8:9"
         );
     }
 }
