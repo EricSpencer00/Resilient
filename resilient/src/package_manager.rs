@@ -50,6 +50,58 @@ pub fn parse_manifest(s: &str) -> Manifest {
     m
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DependencyRegistration {
+    name: String,
+    constraint: String,
+    line: usize,
+    column: usize,
+}
+
+fn first_dependency_registration_conflict(
+    manifest: &str,
+) -> Option<(DependencyRegistration, DependencyRegistration)> {
+    let mut section = "package".to_string();
+    let mut seen: HashMap<String, DependencyRegistration> = HashMap::new();
+
+    for (line_index, raw_line) in manifest.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some(next_section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = next_section.to_string();
+            continue;
+        }
+        if section != "dependencies" {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+
+        let name = key.trim().to_string();
+        let column = raw_line
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace())
+            .map(|(idx, _)| idx + 1)
+            .unwrap_or(1);
+        let registration = DependencyRegistration {
+            name: name.clone(),
+            constraint: value.trim().trim_matches('"').to_string(),
+            line: line_index + 1,
+            column,
+        };
+
+        if let Some(first) = seen.get(&name) {
+            return Some((first.clone(), registration));
+        }
+        seen.insert(name, registration);
+    }
+
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemverRange {
     Exact,
@@ -122,9 +174,29 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
         None => return Ok(()), // no manifest — nothing to check
     };
 
+    let manifest_name = manifest_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("manifest");
     let manifest = parse_manifest(&manifest_content);
 
     let mut errors: Vec<String> = Vec::new();
+
+    if let Some((first, duplicate)) = first_dependency_registration_conflict(&manifest_content) {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: duplicate dependency `{}`: \
+             first declared at {manifest_name}:{}:{} with constraint `{}`; \
+             redeclared at {manifest_name}:{}:{} with constraint `{}`",
+            duplicate.name,
+            first.line,
+            first.column,
+            first.constraint,
+            duplicate.line,
+            duplicate.column,
+            duplicate.constraint
+        ));
+    }
 
     // Validate package name and version
     if manifest.name.is_empty() {
@@ -357,6 +429,41 @@ utils = "latest"
         let (prog, _) = crate::parse("fn main() {}");
         let result = check(&prog, src_path.to_str().unwrap());
         assert!(result.is_err(), "expected error for invalid constraint");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_duplicate_dependency_registration() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_duplicate_dep");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[dependencies]
+utils = "^2.0.0"
+utils = "~2.1.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+
+        let err = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+
+        assert!(
+            err.contains("error[pkg]: duplicate dependency `utils`"),
+            "unexpected diagnostic: {err}"
+        );
+        assert!(
+            err.contains("first declared at rz.toml:7:1"),
+            "missing first declaration location: {err}"
+        );
+        assert!(
+            err.contains("redeclared at rz.toml:8:1"),
+            "missing duplicate declaration location: {err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
