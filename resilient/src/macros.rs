@@ -303,7 +303,7 @@ fn parse_macro_part(
         ));
     }
 
-    let value = value[1..value.len() - 1].to_string();
+    let value = unescape_macro_value(&value[1..value.len() - 1])?;
     match key {
         "pattern" => {
             if pattern.replace(value).is_some() {
@@ -325,13 +325,126 @@ fn parse_macro_part(
     Ok(())
 }
 
+fn unescape_macro_value(value: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    let slash = char::from(92);
+
+    while let Some(ch) = chars.next() {
+        if ch != slash {
+            out.push(ch);
+            continue;
+        }
+
+        let Some(next) = chars.next() else {
+            return Err("unterminated escape sequence in quoted string".to_string());
+        };
+
+        match next {
+            c if c == slash => out.push(slash),
+            '"' => out.push('"'),
+            other => {
+                out.push(slash);
+                out.push(other);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn scan_placeholders(field: &str, text: &str) -> Result<Vec<usize>, String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+
+        let start = i + 1;
+        if start >= bytes.len() || !bytes[start].is_ascii_digit() {
+            return Err(format!(
+                "invalid placeholder `$` in `{field}`: expected `$N`"
+            ));
+        }
+
+        let mut end = start;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+
+        let digits = &text[start..end];
+        if digits.len() > 1 {
+            if digits.starts_with('0') {
+                return Err(format!(
+                    "invalid placeholder `${digits}` in `{field}`: leading zeroes are not allowed"
+                ));
+            }
+            return Err(format!(
+                "invalid placeholder `${digits}` in `{field}`: multi-digit placeholders are not supported"
+            ));
+        }
+
+        let idx = digits.parse::<usize>().unwrap();
+        if idx == 0 {
+            return Err(format!(
+                "invalid placeholder `$0` in `{field}`: placeholder indices start at 1"
+            ));
+        }
+        out.push(idx);
+        i = end;
+    }
+
+    Ok(out)
+}
+
+fn validate_macro_decl(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+) -> Result<MacroDef, String> {
+    let def = parse_macro_decl(item, rec)?;
+
+    let pattern_placeholders = scan_placeholders("pattern", &def.pattern)?;
+    let pattern_arity = pattern_placeholders.iter().copied().max().unwrap_or(0);
+
+    let expansion_placeholders = scan_placeholders("expansion", &def.expansion)?;
+    if let Some(bad_idx) = expansion_placeholders
+        .iter()
+        .copied()
+        .find(|idx| *idx > pattern_arity)
+    {
+        return Err(format!(
+            "expansion references placeholder `${bad_idx}` but `pattern` only declares `$1..${pattern_arity}`"
+        ));
+    }
+
+    let parsed_expansion = if pattern_arity == 0 {
+        def.expansion.clone()
+    } else {
+        let mut expanded = def.expansion.clone();
+        for idx in 1..=pattern_arity {
+            expanded = expanded.replace(&format!("${idx}"), &format!("__macro_arg_{idx}__"));
+        }
+        expanded
+    };
+
+    if crate::parse_single_expression(&parsed_expansion).is_none() {
+        return Err("expansion does not parse after placeholder substitution".to_string());
+    }
+
+    Ok(def)
+}
+
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     let attrs = crate::feature_attrs::find_kind("macro");
     let mut macros: Vec<(usize, MacroDef)> = Vec::with_capacity(attrs.len());
     let mut seen: HashMap<String, usize> = HashMap::with_capacity(attrs.len());
 
     for (item, rec) in attrs {
-        let macro_def = parse_macro_decl(&item, &rec).map_err(|msg| {
+        let macro_def = validate_macro_decl(&item, &rec).map_err(|msg| {
             macro_diagnostic(
                 source_path,
                 rec.line,
@@ -401,6 +514,10 @@ mod tests {
         }
         crate::feature_attrs::reset();
         result
+    }
+
+    fn check_macro_decl_err(args: &str) -> String {
+        check_macro_decl(args).unwrap_err()
     }
 
     #[test]
@@ -624,6 +741,60 @@ mod tests {
         assert_eq!(
             result,
             "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: unknown field `replacement` in macro declaration for `macro_target`"
+        );
+    }
+
+    #[test]
+    fn check_rejects_bare_placeholder_marker() {
+        let result = check_macro_decl_err(r#"pattern = "$1", expansion = "foo $""#);
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: invalid placeholder `$` in `expansion`: expected `$N`"
+        );
+    }
+
+    #[test]
+    fn check_rejects_zero_placeholder_index() {
+        let result = check_macro_decl_err(r#"pattern = "$0", expansion = "$0""#);
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: invalid placeholder `$0` in `pattern`: placeholder indices start at 1"
+        );
+    }
+
+    #[test]
+    fn check_rejects_leading_zero_placeholder_index() {
+        let result = check_macro_decl_err(r#"pattern = "$01", expansion = "$01""#);
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: invalid placeholder `$01` in `pattern`: leading zeroes are not allowed"
+        );
+    }
+
+    #[test]
+    fn check_rejects_multi_digit_placeholder_index() {
+        let result = check_macro_decl_err(r#"pattern = "$10", expansion = "$10""#);
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: invalid placeholder `$10` in `pattern`: multi-digit placeholders are not supported"
+        );
+    }
+
+    #[test]
+    fn check_rejects_expansion_placeholder_past_arity() {
+        let result = check_macro_decl_err(r#"pattern = "$1", expansion = "$2""#);
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: expansion references placeholder `$2` but `pattern` only declares `$1..$1`"
+        );
+    }
+
+    #[test]
+    fn check_rejects_unparseable_expansion_after_substitution() {
+        let result = check_macro_decl_err(r#"pattern = "$1", expansion = "$1 +""#);
+        assert_eq!(
+            result,
+            "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: expansion does not parse after placeholder substitution"
         );
     }
 }
