@@ -21,9 +21,11 @@ static SPECS: LazyLock<RwLock<HashMap<String, SessionSpec>>> =
 
 pub fn parse_protocol(s: &str) -> Vec<SessionOp> {
     let mut out = Vec::new();
-    for op in s.split('.') {
-        let op = op.trim();
-        if let Some(rest) = op.strip_prefix("send(") {
+    for raw in s.split('.') {
+        let op = raw.trim();
+        if op == "close" {
+            out.push(SessionOp::Close);
+        } else if let Some(rest) = op.strip_prefix("send(") {
             if let Some(t) = rest.strip_suffix(')') {
                 out.push(SessionOp::Send(t.trim().to_string()));
             }
@@ -31,8 +33,6 @@ pub fn parse_protocol(s: &str) -> Vec<SessionOp> {
             if let Some(t) = rest.strip_suffix(')') {
                 out.push(SessionOp::Recv(t.trim().to_string()));
             }
-        } else if op == "close" {
-            out.push(SessionOp::Close);
         }
     }
     out
@@ -40,8 +40,8 @@ pub fn parse_protocol(s: &str) -> Vec<SessionOp> {
 
 fn parse_protocol_checked(s: &str) -> Result<Vec<SessionOp>, String> {
     let mut out = Vec::new();
-    for op in s.split('.') {
-        let op = op.trim();
+    for raw in s.split('.') {
+        let op = raw.trim();
         if op.is_empty() {
             return Err("invalid session protocol: empty operation".to_string());
         }
@@ -49,6 +49,7 @@ fn parse_protocol_checked(s: &str) -> Result<Vec<SessionOp>, String> {
             out.push(SessionOp::Close);
             continue;
         }
+
         if let Some(rest) = op.strip_prefix("send(") {
             let Some(t) = rest.strip_suffix(')') else {
                 return Err(format!(
@@ -57,11 +58,12 @@ fn parse_protocol_checked(s: &str) -> Result<Vec<SessionOp>, String> {
             };
             let t = t.trim();
             if t.is_empty() {
-                return Err("invalid session protocol: `send` requires a type argument".to_string());
+                return Err("invalid session protocol: `send` requires type argument".to_string());
             }
             out.push(SessionOp::Send(t.to_string()));
             continue;
         }
+
         if let Some(rest) = op.strip_prefix("recv(") {
             let Some(t) = rest.strip_suffix(')') else {
                 return Err(format!(
@@ -70,11 +72,12 @@ fn parse_protocol_checked(s: &str) -> Result<Vec<SessionOp>, String> {
             };
             let t = t.trim();
             if t.is_empty() {
-                return Err("invalid session protocol: `recv` requires a type argument".to_string());
+                return Err("invalid session protocol: `recv` requires type argument".to_string());
             }
             out.push(SessionOp::Recv(t.to_string()));
             continue;
         }
+
         return Err(format!(
             "invalid session protocol: unknown operation `{op}`"
         ));
@@ -120,7 +123,7 @@ fn collect_checked(source_path: &str) -> Result<Vec<(String, SessionSpec)>, Stri
 
         if rec.args.trim().is_empty() {
             return Err(format!(
-                "{source_path}:{}:0: error: session attribute on `{item}` is missing `protocol`",
+                "{source_path}:{}:0: error: session attribute on `{item}` missing `protocol`",
                 rec.line
             ));
         }
@@ -145,7 +148,6 @@ fn collect_checked(source_path: &str) -> Result<Vec<(String, SessionSpec)>, Stri
 
             let key = key.trim();
             let value = value.trim();
-
             if key != "protocol" {
                 return Err(format!(
                     "{source_path}:{}:0: error: unknown session argument `{key}` on `{item}`",
@@ -162,7 +164,7 @@ fn collect_checked(source_path: &str) -> Result<Vec<(String, SessionSpec)>, Stri
 
             let Some(stripped) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
                 return Err(format!(
-                    "{source_path}:{}:0: error: session attribute on `{item}` requires a quoted `protocol` string",
+                    "{source_path}:{}:0: error: session attribute on `{item}` requires quoted `protocol` string",
                     rec.line
                 ));
             };
@@ -171,7 +173,7 @@ fn collect_checked(source_path: &str) -> Result<Vec<(String, SessionSpec)>, Stri
 
         let Some(proto_str) = proto_str else {
             return Err(format!(
-                "{source_path}:{}:0: error: session attribute on `{item}` is missing `protocol`",
+                "{source_path}:{}:0: error: session attribute on `{item}` missing `protocol`",
                 rec.line
             ));
         };
@@ -182,7 +184,6 @@ fn collect_checked(source_path: &str) -> Result<Vec<(String, SessionSpec)>, Stri
                 rec.line
             )
         })?;
-
         out.push((item, SessionSpec { protocol }));
     }
 
@@ -314,14 +315,14 @@ mod tests {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         record_session("ch", "", 31);
-        let err = run_check("session.rz").expect_err("expected error for missing protocol");
+        let err = run_check("session.rz").expect_err("expected error missing protocol");
         assert!(
             err.contains("session.rz:31:0: error:"),
             "missing line/column in diagnostic: {err}"
         );
         assert!(
             err.contains("missing `protocol`"),
-            "wrong diagnostic for missing protocol: {err}"
+            "wrong diagnostic missing protocol: {err}"
         );
         crate::feature_attrs::reset();
     }
@@ -335,14 +336,14 @@ mod tests {
             r#"protocol = "send(int).close", protocol = "recv(int).close""#,
             32,
         );
-        let err = run_check("session.rz").expect_err("expected error for duplicate protocol");
+        let err = run_check("session.rz").expect_err("expected error duplicate protocol");
         assert!(
             err.contains("session.rz:32:0: error:"),
             "missing line/column in diagnostic: {err}"
         );
         assert!(
             err.contains("duplicate `protocol`"),
-            "wrong diagnostic for duplicate protocol argument: {err}"
+            "wrong diagnostic duplicate protocol argument: {err}"
         );
         crate::feature_attrs::reset();
     }
@@ -352,14 +353,14 @@ mod tests {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         record_session("ch", r#"protocol = "send(int).close", mode = "strict""#, 33);
-        let err = run_check("session.rz").expect_err("expected error for unknown argument");
+        let err = run_check("session.rz").expect_err("expected error unknown argument");
         assert!(
             err.contains("session.rz:33:0: error:"),
             "missing line/column in diagnostic: {err}"
         );
         assert!(
             err.contains("unknown session argument `mode`"),
-            "wrong diagnostic for unknown argument: {err}"
+            "wrong diagnostic unknown argument: {err}"
         );
         crate::feature_attrs::reset();
     }
@@ -370,14 +371,14 @@ mod tests {
         crate::feature_attrs::reset();
         record_session("ch", r#"protocol = "send(int).close""#, 41);
         record_session("ch", r#"protocol = "recv(int).close""#, 42);
-        let err = run_check("session.rz").expect_err("expected error for duplicate declarations");
+        let err = run_check("session.rz").expect_err("expected error duplicate declarations");
         assert!(
             err.contains("session.rz:42:0: error:"),
             "expected second declaration location in diagnostic: {err}"
         );
         assert!(
             err.contains("duplicate session declaration"),
-            "wrong diagnostic for duplicate session declaration: {err}"
+            "wrong diagnostic duplicate session declaration: {err}"
         );
         crate::feature_attrs::reset();
     }
@@ -387,14 +388,14 @@ mod tests {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         record_session("ch", r#"protocol = "send(int).bogus.close""#, 51);
-        let err = run_check("session.rz").expect_err("expected error for malformed protocol");
+        let err = run_check("session.rz").expect_err("expected error malformed protocol");
         assert!(
             err.contains("session.rz:51:0: error:"),
             "missing line/column in diagnostic: {err}"
         );
         assert!(
             err.contains("invalid session protocol"),
-            "wrong diagnostic for malformed protocol: {err}"
+            "wrong diagnostic malformed protocol: {err}"
         );
         crate::feature_attrs::reset();
     }
@@ -404,7 +405,7 @@ mod tests {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         record_session("ch", r#"protocol = "send(int.close""#, 52);
-        let err = run_check("session.rz").expect_err("expected error for malformed send");
+        let err = run_check("session.rz").expect_err("expected error malformed send");
         assert!(
             err.contains("session.rz:52:0: error:"),
             "missing line/column in diagnostic: {err}"
