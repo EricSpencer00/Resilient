@@ -626,4 +626,84 @@ mod tests {
             "test.rz:0:0: error: invalid #[macro] declaration for `macro_target`: unknown field `replacement` in macro declaration for `macro_target`"
         );
     }
+
+    fn assert_macro_check_ok(decls: &[(&str, usize, &str)]) {
+        assert!(
+            check_macro_decls(decls).is_ok(),
+            "expected macro declaration check to succeed for {decls:?}"
+        );
+    }
+
+    fn assert_macro_check_err(decls: &[(&str, usize, &str)], expected: &str) {
+        assert_eq!(check_macro_decls(decls).unwrap_err(), expected);
+    }
+
+    #[test]
+    fn check_accepts_macro_decl_baselines() {
+        for decls in [
+            &[("macro_target", 3, r#"pattern = "$1", expansion = "$1""#)][..],
+            &[(
+                "macro_target",
+                11,
+                r#"pattern = "$1, $2", expansion = "pair($1, $2)""#,
+            )][..],
+            &[(
+                "macro_target",
+                19,
+                r#"pattern = "$1", expansion = "wrap($1)""#,
+            )][..],
+        ] {
+            assert_macro_check_ok(decls);
+        }
+    }
+
+    #[test]
+    fn check_rejects_malformed_macro_decl_corpus() {
+        let cases = [
+            (
+                &[("macro_target", 7, r#"pattern "$1", expansion = "$1""#)][..],
+                "test.rz:7:0: error: invalid #[macro] declaration for `macro_target`: malformed entry `pattern \"$1\"`; expected `key = \"value\"`",
+            ),
+            (
+                &[("macro_target", 8, r#"expansion = "$1""#)][..],
+                "test.rz:8:0: error: invalid #[macro] declaration for `macro_target`: missing required `pattern` field",
+            ),
+            (
+                &[("macro_target", 9, r#"pattern = "$1""#)][..],
+                "test.rz:9:0: error: invalid #[macro] declaration for `macro_target`: missing required `expansion` field",
+            ),
+            (
+                &[(
+                    "macro_target",
+                    10,
+                    r#"pattern = "$1", pattern = "$2", expansion = "$3""#,
+                )][..],
+                "test.rz:10:0: error: invalid #[macro] declaration for `macro_target`: duplicate `pattern` field",
+            ),
+            (
+                &[(
+                    "macro_target",
+                    11,
+                    r#"pattern = "$1", expansion = "$2", expansion = "$3""#,
+                )][..],
+                "test.rz:11:0: error: invalid #[macro] declaration for `macro_target`: duplicate `expansion` field",
+            ),
+            (
+                &[(
+                    "macro_target",
+                    12,
+                    r#"pattern = "$1", replacement = "$2", expansion = "$3""#,
+                )][..],
+                "test.rz:12:0: error: invalid #[macro] declaration for `macro_target`: unknown field `replacement` in macro declaration for `macro_target`",
+            ),
+            (
+                &[("macro_target", 13, r#"pattern = $1, expansion = "$1""#)][..],
+                "test.rz:13:0: error: invalid #[macro] declaration for `macro_target`: malformed entry `pattern = $1`; expected quoted string value",
+            ),
+        ];
+
+        for (decls, expected) in cases {
+            assert_macro_check_err(decls, expected);
+        }
+    }
 }
