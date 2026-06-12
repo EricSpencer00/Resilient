@@ -13,7 +13,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct PropertySpec {
@@ -169,8 +169,261 @@ impl PropRng {
     }
 }
 
-/// Validate `#[property_test]` annotations and verify their target functions
-/// have contract clauses to exercise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropertyArgKind {
+    Number,
+    String,
+    List,
+    Struct,
+}
+
+impl PropertyArgKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            PropertyArgKind::Number => "number",
+            PropertyArgKind::String => "string",
+            PropertyArgKind::List => "list",
+            PropertyArgKind::Struct => "struct",
+        }
+    }
+}
+
+fn expected_kind_from_type_name(type_name: &str) -> Option<PropertyArgKind> {
+    let ty = type_name.trim();
+    let lower = ty.to_ascii_lowercase();
+
+    if matches!(
+        lower.as_str(),
+        "int"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "isize"
+            | "uint"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "usize"
+            | "float"
+            | "f32"
+            | "f64"
+            | "number"
+    ) {
+        Some(PropertyArgKind::Number)
+    } else if lower == "string" || lower == "str" || lower == "bytes" {
+        Some(PropertyArgKind::String)
+    } else if lower == "array"
+        || lower == "list"
+        || lower == "set"
+        || lower.contains("array<")
+        || lower.contains("list<")
+        || lower.contains("set<")
+    {
+        Some(PropertyArgKind::List)
+    } else if ty.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+        Some(PropertyArgKind::Struct)
+    } else {
+        None
+    }
+}
+
+fn actual_kind_from_node(node: &Node) -> Option<PropertyArgKind> {
+    match node {
+        Node::IntegerLiteral { .. } | Node::FloatLiteral { .. } => Some(PropertyArgKind::Number),
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => {
+            Some(PropertyArgKind::String)
+        }
+        Node::ArrayLiteral { .. } | Node::SetLiteral { .. } => Some(PropertyArgKind::List),
+        Node::StructLiteral { .. } => Some(PropertyArgKind::Struct),
+        _ => None,
+    }
+}
+
+fn validate_property_test_call_site(
+    source_path: &str,
+    fn_name: &str,
+    param_types: &[(String, String)],
+    arguments: &[Node],
+    span: &crate::span::Span,
+) -> Result<(), String> {
+    if param_types.len() != arguments.len() {
+        return Err(property_test_diagnostic(
+            source_path,
+            span.start.line,
+            &format!(
+                "invalid #[property_test] call site `{fn_name}`: expected {} argument(s), got {}",
+                param_types.len(),
+                arguments.len()
+            ),
+        ));
+    }
+
+    for (idx, ((ty, _param_name), arg)) in param_types.iter().zip(arguments.iter()).enumerate() {
+        let Some(expected_kind) = expected_kind_from_type_name(ty) else {
+            continue;
+        };
+        let Some(actual_kind) = actual_kind_from_node(arg) else {
+            continue;
+        };
+        if expected_kind != actual_kind {
+            return Err(property_test_diagnostic(
+                source_path,
+                span.start.line,
+                &format!(
+                    "invalid #[property_test] call site `{fn_name}`: argument {} expected {} value, found {}",
+                    idx + 1,
+                    expected_kind.as_str(),
+                    actual_kind.as_str()
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate `#[property_test]` annotations target functions and the call sites
+/// that exercise them.
+fn check_property_test_call_sites(
+    node: &Node,
+    source_path: &str,
+    property_test_fns: &HashMap<String, Vec<(String, String)>>,
+) -> Result<(), String> {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                check_property_test_call_sites(&stmt.node, source_path, property_test_fns)?;
+            }
+        }
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
+            for clause in requires {
+                check_property_test_call_sites(clause, source_path, property_test_fns)?;
+            }
+            for clause in ensures {
+                check_property_test_call_sites(clause, source_path, property_test_fns)?;
+            }
+            check_property_test_call_sites(body, source_path, property_test_fns)?;
+        }
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                check_property_test_call_sites(method, source_path, property_test_fns)?;
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                check_property_test_call_sites(stmt, source_path, property_test_fns)?;
+            }
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            span,
+        } => {
+            check_property_test_call_sites(function, source_path, property_test_fns)?;
+            for arg in arguments {
+                check_property_test_call_sites(arg, source_path, property_test_fns)?;
+            }
+
+            if let Node::Identifier { name, .. } = function.as_ref()
+                && let Some(param_types) = property_test_fns.get(name)
+            {
+                validate_property_test_call_site(source_path, name, param_types, arguments, span)?;
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            check_property_test_call_sites(condition, source_path, property_test_fns)?;
+            check_property_test_call_sites(consequence, source_path, property_test_fns)?;
+            if let Some(alt) = alternative {
+                check_property_test_call_sites(alt, source_path, property_test_fns)?;
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            check_property_test_call_sites(condition, source_path, property_test_fns)?;
+            check_property_test_call_sites(body, source_path, property_test_fns)?;
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            check_property_test_call_sites(iterable, source_path, property_test_fns)?;
+            check_property_test_call_sites(body, source_path, property_test_fns)?;
+        }
+        Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
+            check_property_test_call_sites(value, source_path, property_test_fns)?;
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. }
+        | Node::ExpressionStatement { expr: value, .. } => {
+            check_property_test_call_sites(value, source_path, property_test_fns)?;
+        }
+        Node::InfixExpression { left, right, .. } => {
+            check_property_test_call_sites(left, source_path, property_test_fns)?;
+            check_property_test_call_sites(right, source_path, property_test_fns)?;
+        }
+        Node::PrefixExpression { right, .. } => {
+            check_property_test_call_sites(right, source_path, property_test_fns)?;
+        }
+        Node::ArrayLiteral { items, .. } | Node::SetLiteral { items, .. } => {
+            for item in items {
+                check_property_test_call_sites(item, source_path, property_test_fns)?;
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries {
+                check_property_test_call_sites(key, source_path, property_test_fns)?;
+                check_property_test_call_sites(value, source_path, property_test_fns)?;
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(base) = base {
+                check_property_test_call_sites(base, source_path, property_test_fns)?;
+            }
+            for (_, value) in fields {
+                check_property_test_call_sites(value, source_path, property_test_fns)?;
+            }
+        }
+        Node::FieldAccess { target, .. } | Node::IndexExpression { target, .. } => {
+            check_property_test_call_sites(target, source_path, property_test_fns)?;
+        }
+        Node::FieldAssignment { target, value, .. }
+        | Node::IndexAssignment { target, value, .. } => {
+            check_property_test_call_sites(target, source_path, property_test_fns)?;
+            check_property_test_call_sites(value, source_path, property_test_fns)?;
+        }
+        Node::OptionalChain { object, access, .. } => {
+            check_property_test_call_sites(object, source_path, property_test_fns)?;
+            if let crate::ChainAccess::Method(_, args) = access {
+                for arg in args {
+                    check_property_test_call_sites(arg, source_path, property_test_fns)?;
+                }
+            }
+        }
+        Node::TryExpression { expr, .. } => {
+            check_property_test_call_sites(expr, source_path, property_test_fns)?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Validate `#[property_test]` annotations target functions and the call sites
+/// that exercise them.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let attrs = crate::feature_attrs::find_kind("property_test");
     if attrs.is_empty() {
@@ -178,17 +431,20 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
 
     let mut function_names = HashSet::new();
+    let mut function_param_types: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut functions_with_contracts = HashSet::new();
     if let Node::Program(stmts) = program {
         for stmt in stmts {
             if let Node::Function {
                 name,
+                parameters,
                 requires,
                 ensures,
                 ..
             } = &stmt.node
             {
                 function_names.insert(name.clone());
+                function_param_types.insert(name.clone(), parameters.clone());
                 if !requires.is_empty() || !ensures.is_empty() {
                     functions_with_contracts.insert(name.clone());
                 }
@@ -197,6 +453,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
 
     let mut seen = HashSet::new();
+    let mut property_test_fns: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for (fn_name, rec) in attrs {
         if !function_names.contains(fn_name.as_str()) {
             continue;
@@ -223,6 +480,14 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 ),
             ));
         }
+
+        if let Some(params) = function_param_types.get(&fn_name) {
+            property_test_fns.insert(fn_name.clone(), params.clone());
+        }
+    }
+
+    if !property_test_fns.is_empty() {
+        check_property_test_call_sites(program, source_path, &property_test_fns)?;
     }
 
     Ok(())
@@ -384,6 +649,169 @@ mod tests {
         assert_eq!(
             err,
             "<test>:0:0: error[property_test]: invalid #[property_test] declaration `duplicate`: duplicate declaration for this function"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_with_supported_property_test_call_site_kinds() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        for name in ["takes_number", "takes_string", "takes_list", "takes_struct"] {
+            crate::feature_attrs::record(
+                name,
+                crate::feature_attrs::AttrRecord {
+                    name: "property_test".into(),
+                    args: "samples = 10".into(),
+                    line: 0,
+                },
+            );
+        }
+
+        let src = r#"
+struct Point { int value, }
+fn takes_number(int x) requires true ensures true { return x; }
+fn takes_string(string x) requires true ensures true { return x; }
+fn takes_list(array xs) requires true ensures true { return 0; }
+fn takes_struct(Point p) requires true ensures true { return 0; }
+fn main() {
+    takes_number(1);
+    takes_string("hi");
+    takes_list([1, 2]);
+    takes_struct(new Point { value: 1 });
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_property_test_call_site_arity_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "arity_target",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 10".into(),
+                line: 0,
+            },
+        );
+
+        let src = r#"
+fn arity_target(int x, int y) requires true ensures true { return x; }
+fn main() { arity_target(1); }
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected arity error");
+        assert!(
+            err.contains("expected 2 argument(s), got 1"),
+            "unexpected arity diagnostic: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_property_test_call_site_string_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "string_target",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 10".into(),
+                line: 0,
+            },
+        );
+
+        let src = r#"
+fn string_target(string value) requires true ensures true { return value; }
+fn main() { string_target(1); }
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected string mismatch");
+        assert!(
+            err.contains("argument 1 expected string value, found number"),
+            "unexpected string-kind diagnostic: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_property_test_call_site_number_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "number_target",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 10".into(),
+                line: 0,
+            },
+        );
+
+        let src = r#"
+fn number_target(int value) requires true ensures true { return value; }
+fn main() { number_target("oops"); }
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected number mismatch");
+        assert!(
+            err.contains("argument 1 expected number value, found string"),
+            "unexpected number-kind diagnostic: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_property_test_call_site_list_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "list_target",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 10".into(),
+                line: 0,
+            },
+        );
+
+        let src = r#"
+fn list_target(array xs) requires true ensures true { return 0; }
+fn main() { list_target("oops"); }
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected list mismatch");
+        assert!(
+            err.contains("argument 1 expected list value, found string"),
+            "unexpected list-kind diagnostic: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_property_test_call_site_struct_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "struct_target",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 10".into(),
+                line: 0,
+            },
+        );
+
+        let src = r#"
+fn struct_target(Point p) requires true ensures true { return 0; }
+fn main() { struct_target(1); }
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected struct mismatch");
+        assert!(
+            err.contains("argument 1 expected struct value, found number"),
+            "unexpected struct-kind diagnostic: {err}"
         );
         crate::feature_attrs::reset();
     }
