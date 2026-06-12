@@ -40,7 +40,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // ── Data types ──────────────────────────────────────────────────────────────
@@ -188,48 +188,40 @@ pub fn resolve_profile<'a>(
 /// manifest is found.  Errors are reported as structured diagnostics.
 pub(crate) fn check(_program: &crate::Node, source_path: &str) -> Result<(), String> {
     let source_dir = Path::new(source_path).parent().unwrap_or(Path::new("."));
-
     let manifest_path = ["rz.toml", "resilient.toml"]
         .iter()
         .map(|name| source_dir.join(name))
         .find(|p| p.exists());
-
     let manifest_path = match manifest_path {
         Some(path) => path,
         None => return Ok(()),
     };
-
     let manifest_content = match std::fs::read_to_string(&manifest_path) {
         Ok(s) => s,
         Err(_) => return Ok(()),
     };
-
     let manifest_display = manifest_path.display().to_string();
     let mut errors: Vec<String> = Vec::new();
-    let mut seen_triples: HashMap<String, usize> = HashMap::new();
+    let mut seen_sections: HashMap<String, SectionState> = HashMap::new();
+    let mut reported_conflicts: HashSet<String> = HashSet::new();
     let mut current_section: Option<SectionState> = None;
 
     for (idx, raw_line) in manifest_content.lines().enumerate() {
         let line_no = idx + 1;
         let trimmed = raw_line.trim();
-
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
         if trimmed.starts_with('[') {
-            if let Some(section) = current_section.take()
-                && !section.saw_field
-            {
-                errors.push(diagnostic(
+            if let Some(section) = current_section.take() {
+                finalize_section(
                     &manifest_display,
-                    section.header_line,
-                    1,
-                    &format!(
-                        "invalid [target.{}] declaration: missing required fields",
-                        section.triple
-                    ),
-                ));
+                    &mut errors,
+                    &mut seen_sections,
+                    &mut reported_conflicts,
+                    section,
+                );
             }
 
             if trimmed.starts_with("[[") {
@@ -238,7 +230,7 @@ pub(crate) fn check(_program: &crate::Node, source_path: &str) -> Result<(), Str
                         &manifest_display,
                         line_no,
                         raw_line.find('[').map(|idx| idx + 1).unwrap_or(1),
-                        "invalid target profile declaration shape: array-of-tables syntax is not supported",
+                        "invalid target profile declaration shape: array-of-tables not supported",
                     ));
                 }
                 continue;
@@ -300,20 +292,7 @@ pub(crate) fn check(_program: &crate::Node, source_path: &str) -> Result<(), Str
                 continue;
             }
 
-            if let Some(previous_line) = seen_triples.insert(triple.to_string(), line_no) {
-                errors.push(diagnostic(
-                    &manifest_display,
-                    line_no,
-                    header_col,
-                    &format!(
-                        "invalid target profile combination: duplicate `[target.{triple}]` declaration; previous declaration at line {previous_line}"
-                    ),
-                ));
-                current_section = None;
-                continue;
-            }
-
-            current_section = Some(SectionState::new(triple.to_string(), line_no));
+            current_section = Some(SectionState::new(triple.to_string(), line_no, header_col));
             continue;
         }
 
@@ -333,7 +312,6 @@ pub(crate) fn check(_program: &crate::Node, source_path: &str) -> Result<(), Str
             ));
             continue;
         };
-
         let key = raw_key.trim();
         let value = raw_value.trim();
         if key.is_empty() {
@@ -368,38 +346,42 @@ pub(crate) fn check(_program: &crate::Node, source_path: &str) -> Result<(), Str
             "features" => {
                 if let Err(message) = validate_features_value(value, &section.triple) {
                     errors.push(diagnostic(&manifest_display, line_no, key_col, &message));
+                } else {
+                    section.profile.features = parse_string_array(value);
                 }
             }
             "opt_level" => {
                 if let Err(message) = validate_opt_level_value(value, &section.triple) {
                     errors.push(diagnostic(&manifest_display, line_no, key_col, &message));
+                } else {
+                    section.profile.opt_level = value.trim().trim_matches('"').to_string();
                 }
             }
             "stack_size" => {
                 if let Err(message) = validate_stack_size_value(value, &section.triple) {
                     errors.push(diagnostic(&manifest_display, line_no, key_col, &message));
+                } else if let Ok(n) = value.trim().trim_matches('"').parse::<u64>() {
+                    section.profile.stack_size = Some(n);
                 }
             }
             _ => {
                 if let Err(message) = validate_cfg_value(value, &section.triple, key) {
                     errors.push(diagnostic(&manifest_display, line_no, key_col, &message));
+                } else if let Some(v) = extract_quoted_string(value) {
+                    section.profile.cfg.insert(key.to_string(), v);
                 }
             }
         }
     }
 
-    if let Some(section) = current_section
-        && !section.saw_field
-    {
-        errors.push(diagnostic(
+    if let Some(section) = current_section {
+        finalize_section(
             &manifest_display,
-            section.header_line,
-            1,
-            &format!(
-                "invalid [target.{}] declaration: missing required fields",
-                section.triple
-            ),
-        ));
+            &mut errors,
+            &mut seen_sections,
+            &mut reported_conflicts,
+            section,
+        );
     }
 
     if errors.is_empty() {
@@ -416,21 +398,66 @@ fn diagnostic(source_path: &str, line: usize, column: usize, message: &str) -> S
     format!("{source_path}:{line}:{column}: error[target-profiles]: {message}")
 }
 
-#[derive(Default)]
+fn section_location(source_path: &str, line: usize, column: usize) -> String {
+    format!("{source_path}:{line}:{column}")
+}
+
+fn finalize_section(
+    source_path: &str,
+    errors: &mut Vec<String>,
+    seen_sections: &mut HashMap<String, SectionState>,
+    reported_conflicts: &mut HashSet<String>,
+    section: SectionState,
+) {
+    if !section.saw_field {
+        errors.push(diagnostic(
+            source_path,
+            section.header_line,
+            section.header_col,
+            &format!(
+                "invalid [target.{}] declaration: missing required fields",
+                section.triple
+            ),
+        ));
+        return;
+    }
+
+    if reported_conflicts.contains(&section.triple) {
+        return;
+    }
+
+    if let Some(previous) = seen_sections.get(&section.triple) {
+        let prev_loc = section_location(source_path, previous.header_line, previous.header_col);
+        let current_loc = section_location(source_path, section.header_line, section.header_col);
+        errors.push(format!(
+            "{current_loc}: error[target-profiles]: duplicate `[target.{triple}]` declaration; conflicting `[target.{triple}]` declaration; first declared at {prev_loc}, second declared at {current_loc}",
+            triple = section.triple
+        ));
+        reported_conflicts.insert(section.triple);
+        return;
+    }
+
+    seen_sections.insert(section.triple.clone(), section);
+}
+
 struct SectionState {
     triple: String,
     header_line: usize,
+    header_col: usize,
     saw_field: bool,
     seen_keys: HashMap<String, usize>,
+    profile: TargetProfile,
 }
 
 impl SectionState {
-    fn new(triple: String, header_line: usize) -> Self {
+    fn new(triple: String, header_line: usize, header_col: usize) -> Self {
         Self {
             triple,
             header_line,
+            header_col,
             saw_field: false,
             seen_keys: HashMap::new(),
+            profile: TargetProfile::default_profile(),
         }
     }
 }
@@ -526,8 +553,6 @@ fn extract_quoted_string(s: &str) -> Option<String> {
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -879,5 +904,69 @@ opt_level = "3"
         assert_eq!(p.opt_level, "s");
         // `foo` should NOT appear in cfg.
         assert!(!p.cfg.contains_key("foo"));
+    }
+
+    #[test]
+    fn check_rejects_duplicate_target_sections_reports_both_locations() {
+        let dir = std::env::temp_dir().join("__resilient_tp_dup_section_locations");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "s"
+[target.arm]
+stack_size = 4096
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src = dir.join("main.rz");
+        std::fs::write(&src, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src.to_str().unwrap());
+        let err = result.expect_err("expected duplicate target section fail");
+        assert!(
+            err.contains("duplicate `[target.arm]` declaration"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("first declared at"), "unexpected error: {err}");
+        assert!(
+            err.contains("second declared at"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains(":4:1"), "unexpected error: {err}");
+        assert!(err.contains(":6:1"), "unexpected error: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_conflicting_target_sections() {
+        let dir = std::env::temp_dir().join("__resilient_tp_conflicting_section");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "s"
+[target.arm]
+opt_level = "3"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src = dir.join("main.rz");
+        std::fs::write(&src, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src.to_str().unwrap());
+        let err = result.expect_err("expected conflicting target section fail");
+        assert!(
+            err.contains("conflicting `[target.arm]` declaration"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("first declared at"), "unexpected error: {err}");
+        assert!(
+            err.contains("second declared at"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains(":4:1"), "unexpected error: {err}");
+        assert!(err.contains(":6:1"), "unexpected error: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
