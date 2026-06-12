@@ -61,7 +61,9 @@ PRs that fail any CI test will not be merged.
 - Commits: `RES-NNN: short description` (≤72 chars).
 - All CI checks must be green: build, test, clippy, fmt, embedded
   cross-compile, size gate, perf gate.
-- Link the GitHub issue (`Closes #N`) in the PR body.
-- Close the GitHub Issue via `Closes #N` in the PR body.
+- Link the GitHub issue with `Refs #N` while the PR is draft.
+- Do not add `Closes #N` until the PR contains substantive work and the
+  guardrailed ready path has vetted it.
+- Do not ready, merge, or ask to merge empty or claim-only PRs.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full checklist.

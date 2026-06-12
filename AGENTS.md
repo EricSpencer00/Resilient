@@ -38,10 +38,12 @@ Full setup, feature flags, and cross-compile instructions are in
 
 1. Browse [open issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen).
 2. Comment to claim, then create a branch `res-NNN-short-title`.
-3. Open a draft PR early with `Closes #N` in the body.
+3. Open a draft PR early with `Refs #N` in the body.
 4. Use `agent-scripts/ready-or-bail.sh --pr N` to leave draft state.
-   Do not call `gh pr ready` directly for agent PRs.
-5. On merge, the issue closes automatically.
+   Do not call `gh pr ready` directly for agent PRs. The script verifies
+   substantive work, syncs integration, applies `agent-vetted`, and adds
+   `Closes #N`.
+5. On vetted merge, the issue closes automatically.
 6. If the active requester has write access and explicitly asks for an autonomous issue/PR cycle, treat that as approval to continue through the normal guardrailed merge workflow without a second confirmation.
 
 Commit format: `RES-NNN: short description` (≤72 chars).
@@ -145,3 +147,4 @@ local gate is green.
 - Leave half-implemented features with `TODO` markers — scope them to a
   follow-up ticket instead.
 - Force-push or amend commits that have been reviewed.
+- Ready, merge, or ask to merge empty or claim-only PRs.

@@ -16,7 +16,7 @@ file-claims + extension-point system introduced in PR #230.
 | `refresh-open-prs.sh` | Rebase every open non-draft PR branch against `main` after `main` advances |
 | `agent-status.sh` | One-screen or JSON view of worktrees, open PRs, queue health, claims, and the next ticket |
 | **`verify-scope.sh`** | Guardrail: diff-shape + fmt + clippy + test + overlap, writes JSON report |
-| **`ready-or-bail.sh`** | Runs `verify-scope.sh`; marks PR ready on green, posts failure comment on red |
+| **`ready-or-bail.sh`** | Runs `verify-scope.sh`; marks PR ready, labels `agent-vetted`, and adds `Closes #N` only on green |
 | **`orchestrator.sh`** | The grand loop: pick → dispatch → sub-agent → ready-or-bail |
 | **`ralph-loop.sh`** | The reusable open-ended improvement loop, preloaded with the Ralph prompt |
 
@@ -98,7 +98,7 @@ own pipeline) with `--skip tests --skip clippy --skip fmt`.
 `pick-ticket.sh` excludes an issue if:
 
 - It isn't labeled `agent-ready`, or it's closed.
-- An open PR references it — either `Closes #N` in the body, a matching
+- An open PR references it — either `Refs #N` or `Closes #N` in the body, a matching
   `RES-NNN` in the title/body/branch, or a `res-NNN-*` branch name.
 - It's assigned to a human (non-bot). The Copilot and Claude bot
   accounts are treated as non-human and don't block the pick.
@@ -114,9 +114,12 @@ own pipeline) with `--skip tests --skip clippy --skip fmt`.
 
 - Always branches off `origin/main`, not off any in-flight branch.
 - Creates the worktree at `.claude/worktrees/res-<N>/`.
-- Opens a draft PR with `Closes #<N>` so `pick-ticket.sh` sees it as
-  claimed on the next run. An empty claim commit lets `gh pr create`
-  compute a diff.
+- Opens a draft PR with `Refs #<N>` so `pick-ticket.sh` sees it as claimed
+  without closing the issue. An empty claim commit lets `gh pr create`
+  compute a diff, but that metadata alone must never be readied or merged.
+- `ready-or-bail.sh` is the only agent path that may add `Closes #<N>`; it
+  does so after substantive guardrails pass and the PR receives
+  `agent-vetted`.
 - Does **not** run the agent itself. The caller (a human, another
   script, or a spawned Claude agent) does the actual work inside the
   worktree.

@@ -81,10 +81,11 @@ Each issue carries a unique `RES-NNN` identifier, a clear goal,
 priority, roadmap goal, and concrete acceptance criteria.
 
 - **Claiming a ticket**: create a branch named `res-NNN-short-title`
-  and open a draft PR with `Closes #N` in the body. Commenting on the
+  and open a draft PR with `Refs #N` in the body. Commenting on the
   issue is optional.
-- **Landing a ticket**: open a PR with `Closes #N` in the body; the
-  commit message should reference the ticket ID
+- **Landing a ticket**: for agent PRs, run `agent-scripts/ready-or-bail.sh`
+  so substantive guardrails pass before `Closes #N` is added. The commit
+  message should reference the ticket ID
   (e.g. `RES-042: add float division`).
 - **Opening a ticket**: file a GitHub issue using the Agent-Ready
   Ticket template with a clear goal and acceptance criteria.

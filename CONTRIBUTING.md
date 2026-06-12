@@ -52,9 +52,10 @@ Welcome! Resilient is an open project for safety-critical embedded systems. Cont
 3. Create a branch named `res-NNN-short-title` (e.g., `res-376-contributing-guide`)
    - `NNN` is the issue number
    - Use lowercase with hyphens for multi-word titles
-4. Open a **draft PR** immediately with `Closes #NNN` in the description
+4. Open a **draft PR** immediately with `Refs #NNN` in the description
    - The draft PR is the canonical claim signal
-   - Convert to ready-for-review with `agent-scripts/ready-or-bail.sh --pr <number>` when you're done
+   - `agent-scripts/ready-or-bail.sh --pr <number>` adds `Closes #NNN`
+     only after it verifies substantive work and applies `agent-vetted`
 
 ---
 
@@ -67,16 +68,12 @@ RES-NNN: short description (≤72 characters)
 
 Optional longer explanation if the commit warrants it.
 Wrap at ~72 characters.
-
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ```
 
 ### Examples
 
 ```
 RES-376: CONTRIBUTING.md documentation
-
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ```
 
 ```
@@ -84,15 +81,15 @@ RES-150: fix clippy warning in type checker
 
 The pattern matching on Token could be simplified by using
 unreachable_patterns. Applied the suggestion.
-
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ```
 
 ### Notes
 
 - The issue number `NNN` is **required**
 - First line must be ≤72 characters (git standard)
-- Include the `Co-Authored-By` trailer for all commits
+- Do not add a `Co-Authored-By` trailer unless the actual executor identity
+  is explicitly configured and accurate. Never hardcode Claude, Codex, or
+  another agent as coauthor.
 - **Push immediately** after each commit — don't accumulate local commits
 
 ---
@@ -345,19 +342,19 @@ Resilient tracks active work in GitHub Issues and pull requests. The
 `agent-ready` issue template is the live queue.
 
 - **OPEN**: Ticket is available; nobody is actively working on it
-- **CLAIMED**: An agent has opened a draft PR with `Closes #NNN`
-- **DONE**: PR is merged; the issue closes automatically when you add
-  `Closes #NNN` in the PR body
+- **CLAIMED**: An agent has opened a draft PR with `Refs #NNN`
+- **DONE**: A vetted PR is merged; the issue closes automatically after
+  `ready-or-bail.sh` has added `Closes #NNN`
 
 ### Workflow
 
 1. **Pick** an `agent-ready` issue.
 2. **Create a branch** named `res-NNN-short-title`.
-3. **Open a draft PR** immediately with `Closes #NNN` in the body.
+3. **Open a draft PR** immediately with `Refs #NNN` in the body.
 4. **Push after every commit** — don't accumulate local commits.
-5. **Mark ready for review** with `agent-scripts/ready-or-bail.sh --pr <number>` once the implementation and CI are green.
+5. **Mark ready for review** with `agent-scripts/ready-or-bail.sh --pr <number>` once the implementation and CI are green. The script rejects empty or claim-only PRs, applies `agent-vetted`, and adds `Closes #NNN` only after guardrails pass.
 6. **Monitor for feedback** via the PR comment subscription.
-7. Merge is automatic once CI is green and the PR has been synced; the issue closes.
+7. Merge is automatic once CI is green and the PR is synced and vetted; the issue closes only after that vetted merge.
 
 ### Legacy Local Ledger
 

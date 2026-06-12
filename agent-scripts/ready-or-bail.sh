@@ -79,10 +79,28 @@ PYEOF
           --summary "$BODY" >/dev/null || true
         exit 1
       fi
-    fi
+  fi
 
-    gh pr ready "$PR" 2>&1 | tail -2
-    if [ "$PRE_SYNC_HEAD" != "$POST_SYNC_HEAD" ]; then
+  gh pr ready "$PR" 2>&1 | tail -2
+  gh label create "agent-vetted" \
+    --color "0E8A16" \
+    --description "ready-or-bail passed substantive local guardrails and integration sync" \
+    >/dev/null 2>&1 || true
+  gh pr edit "$PR" --add-label "agent-vetted" >/dev/null
+
+  BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-body.XXXXXX")"
+  gh pr view "$PR" --json body -q '.body // ""' > "$BODY_FILE"
+  ISSUE="$(sed -nE 's/.*([Rr]efs|[Cc]loses) #([0-9]+).*/\2/p' "$BODY_FILE" | head -1 || true)"
+  if [ -n "$ISSUE" ] && ! grep -qiE "(^|[^A-Za-z])Closes #${ISSUE}([^0-9]|$)" "$BODY_FILE"; then
+    {
+      cat "$BODY_FILE"
+      printf '\n\nCloses #%s\n' "$ISSUE"
+    } > "${BODY_FILE}.next"
+    gh pr edit "$PR" --body-file "${BODY_FILE}.next" >/dev/null
+  fi
+  rm -f "$BODY_FILE" "${BODY_FILE}.next"
+
+  if [ "$PRE_SYNC_HEAD" != "$POST_SYNC_HEAD" ]; then
       READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\` and rechecked on the refreshed branch. Auto-merge will fire once remaining checks complete."
     else
       READY_BODY="Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\`. Auto-merge will fire once remaining checks complete."

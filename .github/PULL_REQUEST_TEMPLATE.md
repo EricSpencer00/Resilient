@@ -14,7 +14,12 @@ reviewers can read the diff for the what._
 
 ## Linked issue
 
-Closes #<issue-number>
+Refs #<issue-number>
+
+<!-- Agent PRs must not use `Closes #N` while draft. `ready-or-bail.sh`
+adds `Closes #N` only after substantive guardrails pass and `agent-vetted`
+is applied. Human-maintained PRs may use `Closes #N` only when intentionally
+closing the issue. -->
 
 
 ## Acceptance criteria
@@ -41,6 +46,8 @@ $ cargo test --manifest-path resilient/Cargo.toml
 - [ ] `cargo clippy --all-targets -- -D warnings` clean
 - [ ] `cargo build --manifest-path resilient/Cargo.toml` succeeds with any
       feature flags this PR touches
+- [ ] PR contains substantive source, test, documentation, or tooling changes
+      beyond claim metadata
 
 ## Stability impact
 
@@ -50,7 +57,8 @@ Delete this section if it is purely internal / not surface-visible. -->
 
 - [ ] STABILITY.md CHANGELOG updated (if user-visible syntax or builtin
       changed)
-- [ ] GitHub Issue closed via `Closes #N` in the PR body
+- [ ] Agent PRs: `ready-or-bail.sh` passed, `agent-vetted` is applied, and
+      only then `Closes #N` is present
 
 ## Notes for reviewers
 

@@ -7,8 +7,8 @@
 #      new branch `res-<N>-<short-slug>` based on origin/main.
 #   3. Extracts expected file ownership from the issue form and refuses
 #      overlapping dispatches before the agent starts editing.
-#   4. Opens a draft PR against origin/main with `Closes #<N>` so the
-#      ticket is visibly claimed.
+#   4. Opens a draft PR against origin/main with `Refs #<N>` so the ticket is
+#      visibly claimed without closing the issue before vetting.
 #   5. Prints the worktree path + branch + PR URL.
 #
 # Usage:
@@ -173,10 +173,11 @@ fi
 PR_URL="$(cd "$WORKTREE" && gh pr create --draft --base main --head "$BRANCH" \
   --title "RES-${ISSUE}: ${TITLE#RES-*: }" \
   --body "$(cat <<EOF
-Closes #${ISSUE}.
+Refs #${ISSUE}.
 
 Draft PR auto-opened by \`agent-scripts/dispatch-agent.sh\` to claim the
-ticket. The agent will push real work here shortly.
+ticket. \`agent-scripts/ready-or-bail.sh\` will add \`Closes #${ISSUE}\`
+only after it verifies substantive work and marks this PR ready.
 
 Branch: \`${BRANCH}\`
 Worktree: \`${WORKTREE#${PRIMARY_ROOT}/}\`

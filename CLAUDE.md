@@ -104,8 +104,8 @@ the merge.** Your job is to make CI green.
    ```bash
    agent-scripts/claim-files.sh res-NNN-short-title resilient/src/lib.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
    ```
-5. **Open a draft PR early** with `Closes #N` in the body — this signals
-   the ticket is taken.
+5. **Open a draft PR early** with `Refs #N` in the body — this signals the
+   ticket is taken without closing the issue before vetting.
 6. **Build, test, lint locally.** Match every CI gate (see "CI gates"
    below) before pushing. A red CI run wastes minutes you could spend
    shipping.
@@ -115,22 +115,24 @@ the merge.** Your job is to make CI green.
    ```bash
    agent-scripts/ready-or-bail.sh --pr N
    ```
-   This runs the local guardrail, syncs your branch onto
-   `agents/integration`, marks the PR ready, and applies the
-   `integration-synced` label that releases the auto-merge gate.
+   This runs the local guardrail, rejects empty or claim-only PRs, syncs your
+   branch onto `agents/integration`, marks the PR ready, applies
+   `integration-synced` and `agent-vetted`, and adds `Closes #N`.
    Do not call `gh pr ready` directly — the guardrail owns the
    draft-to-ready transition.
-9. **Walk away.** Once the PR is ready + integration-synced, the
+9. **Walk away.** Once the PR is ready + integration-synced + agent-vetted, the
    `agent-auto-merge` workflow watches CI. As soon as every required
    check is `SUCCESS`, GitHub squashes and merges the PR
-   (`gh pr merge --squash --auto --delete-branch`). The issue closes
-   automatically; file claims release on merge.
+   (`gh pr merge --squash --auto --delete-branch`). The issue closes only
+   after that vetted merge; file claims release on merge.
 
 If you spot CI fail-then-pass flakiness, open a follow-up ticket — do
 not retry blindly.
 
 Commit format: `RES-NNN: short description` (≤72 chars on the first line).
-Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
+Do not add a `Co-Authored-By` trailer unless the actual executor identity is
+explicitly configured and accurate. Never hardcode Claude, Codex, or another
+agent as coauthor.
 
 ---
 
@@ -433,14 +435,15 @@ workflow file.
 - **Action**: workflow runs `gh pr merge $PR --squash --auto --delete-branch`.
   GitHub's server-side auto-merge then waits for any in-flight checks
   to settle and lands the squash merge.
-- **Issue closure**: GitHub closes the issue when the squash commit
-  containing `Closes #N` lands on `main`.
+- **Issue closure**: `ready-or-bail.sh` adds `Closes #N` only after
+  substantive guardrails pass; the issue closes when that vetted squash commit
+  lands on `main`.
 - **File-claim release**: `.github/workflows/release-file-claims.yml`
   fires on the merge commit and clears the agent's claim entries.
 
-If your PR is ready + green but not merging, the most likely cause is
-a missing `integration-synced` label. Re-run `ready-or-bail.sh` to
-re-apply it.
+If your PR is ready + green but not merging, the most likely cause is a
+missing `integration-synced` or `agent-vetted` label. Re-run
+`ready-or-bail.sh` to re-apply the gate labels.
 
 ---
 

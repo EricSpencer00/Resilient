@@ -26,7 +26,7 @@ jobs:
           BRANCH="${{ github.event.pull_request.head.ref }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
           MERGED="${{ github.event.pull_request.merged }}"
-          bash agent-scripts/release-claims.sh "$BRANCH"
+          bash agent-scripts/release-claims.sh "$BRANCH" "$PR_NUMBER"
 
           if [ "$MERGED" != "true" ]; then
             gh pr comment "$PR_NUMBER" --body "This PR was closed without merge. The branch claims were released and the ticket returned to the queue." >/dev/null || true

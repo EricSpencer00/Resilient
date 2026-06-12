@@ -76,7 +76,20 @@ for entry in "${MAPFILE_DIFF[@]}"; do
   esac
 done
 
-# Rule 1a: existing tests can't be weakened.
+# Rule 1a: agent PRs must contain real work. The initial claim commit and
+# file-claims registry changes are orchestration metadata, not an improvement.
+SUBSTANTIVE_FILES=()
+for f in "${MODIFIED_FILES[@]}" "${ADDED_FILES[@]}" "${DELETED_FILES[@]}"; do
+  case "$f" in
+    ""|agent-scripts/file-claims.json) ;;
+    *) SUBSTANTIVE_FILES+=("$f") ;;
+  esac
+done
+if (( ${#SUBSTANTIVE_FILES[@]} == 0 )); then
+  fail "no substantive changes beyond claim metadata — do not ready or merge empty/claim-only PRs"
+fi
+
+# Rule 1b: existing tests can't be weakened.
 #
 # We allow modifications to test files (mechanical renames across the
 # suite are common — e.g. when a public API or env var name changes),
@@ -201,8 +214,8 @@ if bad:
 PYEOF
 fi
 
-# Rule 1f: claim commit stays at the bottom (if present) — the orchestrator
-# needs the empty claim commit so the PR's "Closes #N" is preserved.
+# Rule 1f: claim commit stays at the bottom (if present). It is only claim
+# metadata; ready-or-bail adds "Closes #N" after substantive guardrails pass.
 FIRST_COMMIT_MSG=$(git log --format=%s "${BASE}..${HEAD}" --reverse 2>/dev/null | head -1)
 if [[ "$FIRST_COMMIT_MSG" =~ ^res-[0-9]+:\ claim\ ticket ]]; then
   pass "claim commit preserved at base of branch"

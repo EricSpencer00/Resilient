@@ -29,13 +29,13 @@ safely re-converges.
 | Stage | Mechanism | Output |
 |---|---|---|
 | Pick | `pick-ticket.sh` | `<issue-number>\t<title>` from the highest-priority eligible issue |
-| Dispatch | `dispatch-agent.sh --issue N` | Worktree at `.claude/worktrees/res-N/`, draft PR with `Closes #N` |
+| Dispatch | `dispatch-agent.sh --issue N` | Worktree at `.claude/worktrees/res-N/`, draft PR with `Refs #N` |
 | Implement | (agent free-form) | Follow feature-isolation pattern in CLAUDE.md |
-| Verify | `ready-or-bail.sh --pr P` | Runs `verify-scope.sh` + `sync-integration.sh`; reruns `verify-scope.sh` if sync moved HEAD; marks PR ready on green |
+| Verify | `ready-or-bail.sh --pr P` | Runs `verify-scope.sh` + `sync-integration.sh`; reruns `verify-scope.sh` if sync moved HEAD; rejects empty or claim-only PRs; marks PR ready, applies `agent-vetted`, and adds `Closes #N` on green |
 | Sync | `sync-integration.sh` (called by ready-or-bail) | Rebases branch onto `origin/main`, fast-forwards `agents/integration`, stamps PR with `integration-synced` label |
-| Auto-merge | `agent-auto-merge.yml` (CI) | Enables `gh pr merge --auto` when every check is green AND PR is labeled `integration-synced` |
+| Auto-merge | `agent-auto-merge.yml` (CI) | Enables `gh pr merge --auto` when every check is green AND PR is labeled `integration-synced` and `agent-vetted` |
 | Follow-main | `integration-follow-main.yml` (CI) | Fast-forwards `agents/integration` to `main` after every merge, refreshes every open non-draft PR branch against `main`, and runs a periodic safety sweep |
-| Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch on PR close; linked issues are explicitly closed or flagged if the close fails; stale claims are swept and closed PRs re-enter the queue |
+| Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch on PR close; linked issues close only for merged `agent-vetted` PRs; stale claims are swept so closed PRs don't re-enter the queue |
 
 ---
 
