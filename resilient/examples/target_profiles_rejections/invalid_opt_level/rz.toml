@@ -1,0 +1,6 @@
+[package]
+name = "target_profiles_rejections"
+version = "0.1.0"
+
+[target.arm]
+opt_level = "fast"
