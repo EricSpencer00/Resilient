@@ -387,4 +387,92 @@ mod tests {
         );
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn check_rejects_duplicate_samples_field() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "duplicate_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 25, samples = 50".into(),
+                line: 0,
+            },
+        );
+        let src = "fn duplicate_samples(int x) requires x > 0 ensures result > 0 { return x + 1; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected duplicate samples error");
+        assert_eq!(
+            err,
+            "<test>:0:0: error[property_test]: invalid #[property_test] declaration `duplicate_samples`: duplicate `samples` field"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_zero_sample_count() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "zero_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 0".into(),
+                line: 0,
+            },
+        );
+        let src = "fn zero_samples(int x) requires x > 0 ensures result > 0 { return x + 1; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected zero samples error");
+        assert_eq!(
+            err,
+            "<test>:0:0: error[property_test]: invalid #[property_test] declaration `zero_samples`: `samples` must be greater than zero"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_unknown_property_test_field() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "unknown_field",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 25, fuzz = 1".into(),
+                line: 0,
+            },
+        );
+        let src = "fn unknown_field(int x) requires x > 0 ensures result > 0 { return x + 1; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected unknown field error");
+        assert_eq!(
+            err,
+            "<test>:0:0: error[property_test]: invalid #[property_test] declaration `unknown_field`: unknown field `fuzz`"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_non_integer_sample_count() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = nope".into(),
+                line: 0,
+            },
+        );
+        let src = "fn bad_samples(int x) requires x > 0 ensures result > 0 { return x + 1; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("expected non-integer samples error");
+        assert_eq!(
+            err,
+            "<test>:0:0: error[property_test]: invalid #[property_test] declaration `bad_samples`: `samples` must be a positive integer"
+        );
+        crate::feature_attrs::reset();
+    }
 }
