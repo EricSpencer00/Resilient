@@ -1,16 +1,16 @@
 {
   "claims": {
-    "resilient/src/param_destructuring.rs": {
-      "branch": "res-3490-param-destructuring-align",
-      "claimed_at": "2026-06-12T19:41:50Z"
+    "resilient/src/mutex_rwlock.rs": {
+      "branch": "res-3385-validate-mutex-rwlock-builtin-arguments",
+      "claimed_at": "2026-06-12T20:11:02Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-3490-param-destructuring-align",
-      "claimed_at": "2026-06-12T19:41:50Z"
+      "branch": "res-3385-validate-mutex-rwlock-builtin-arguments",
+      "claimed_at": "2026-06-12T20:11:02Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-3490-param-destructuring-align",
-      "claimed_at": "2026-06-12T19:41:50Z"
+      "branch": "res-3385-validate-mutex-rwlock-builtin-arguments",
+      "claimed_at": "2026-06-12T20:11:02Z"
     }
   }
 }
