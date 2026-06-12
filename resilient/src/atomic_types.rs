@@ -332,6 +332,222 @@ fn arg_kind(node: &Node) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AtomicValueKind {
+    String,
+    Boolean,
+    Float,
+    List,
+    Struct,
+    Map,
+    Set,
+    Bytes,
+    Char,
+}
+
+impl AtomicValueKind {
+    fn expression_label(self) -> &'static str {
+        match self {
+            AtomicValueKind::String => "string expression",
+            AtomicValueKind::Boolean => "boolean expression",
+            AtomicValueKind::Float => "float expression",
+            AtomicValueKind::List => "list expression",
+            AtomicValueKind::Struct => "struct expression",
+            AtomicValueKind::Map => "map expression",
+            AtomicValueKind::Set => "set expression",
+            AtomicValueKind::Bytes => "bytes expression",
+            AtomicValueKind::Char => "char expression",
+        }
+    }
+
+    fn binding_label(self) -> &'static str {
+        match self {
+            AtomicValueKind::String => "string binding",
+            AtomicValueKind::Boolean => "boolean binding",
+            AtomicValueKind::Float => "float binding",
+            AtomicValueKind::List => "list binding",
+            AtomicValueKind::Struct => "struct binding",
+            AtomicValueKind::Map => "map binding",
+            AtomicValueKind::Set => "set binding",
+            AtomicValueKind::Bytes => "bytes binding",
+            AtomicValueKind::Char => "char binding",
+        }
+    }
+
+    fn return_label(self) -> &'static str {
+        match self {
+            AtomicValueKind::String => "string",
+            AtomicValueKind::Boolean => "bool",
+            AtomicValueKind::Float => "float",
+            AtomicValueKind::List => "list",
+            AtomicValueKind::Struct => "struct",
+            AtomicValueKind::Map => "map",
+            AtomicValueKind::Set => "set",
+            AtomicValueKind::Bytes => "bytes",
+            AtomicValueKind::Char => "char",
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct AtomicValueFacts {
+    bindings: HashMap<String, Option<AtomicValueKind>>,
+    returns: HashMap<String, Option<AtomicValueKind>>,
+}
+
+impl AtomicValueFacts {
+    fn record_binding(&mut self, name: &str, kind: AtomicValueKind) {
+        self.bindings.insert(name.to_string(), Some(kind));
+    }
+
+    fn binding_kind(&self, name: &str) -> Option<AtomicValueKind> {
+        self.bindings.get(name).copied().flatten()
+    }
+
+    fn record_unknown_binding(&mut self, name: &str) {
+        self.bindings.insert(name.to_string(), None);
+    }
+
+    fn record_return(&mut self, name: &str, kind: AtomicValueKind) {
+        match self.returns.get(name).copied().flatten() {
+            None if !self.returns.contains_key(name) => {
+                self.returns.insert(name.to_string(), Some(kind));
+            }
+            Some(existing) if existing == kind => {}
+            _ => {
+                self.returns.insert(name.to_string(), None);
+            }
+        }
+    }
+
+    fn return_kind(&self, name: &str) -> Option<AtomicValueKind> {
+        self.returns.get(name).copied().flatten()
+    }
+
+    fn record_unknown_return(&mut self, name: &str) {
+        if self.returns.contains_key(name) {
+            self.returns.insert(name.to_string(), None);
+        }
+    }
+
+    fn child_scope(&self) -> Self {
+        self.clone()
+    }
+}
+
+fn type_non_integer_kind(type_name: &str) -> Option<AtomicValueKind> {
+    match type_name.trim() {
+        "string" | "String" => Some(AtomicValueKind::String),
+        "bool" | "boolean" | "Bool" | "Boolean" => Some(AtomicValueKind::Boolean),
+        "float" | "Float" => Some(AtomicValueKind::Float),
+        "bytes" | "Bytes" => Some(AtomicValueKind::Bytes),
+        "char" | "Char" => Some(AtomicValueKind::Char),
+        _ => None,
+    }
+}
+
+fn expression_non_integer_kind(node: &Node, facts: &AtomicValueFacts) -> Option<AtomicValueKind> {
+    match node {
+        Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
+        | Node::InterpolatedString { .. } => Some(AtomicValueKind::String),
+        Node::BooleanLiteral { .. } => Some(AtomicValueKind::Boolean),
+        Node::FloatLiteral { .. } => Some(AtomicValueKind::Float),
+        Node::PrefixExpression {
+            operator: "+" | "-",
+            right,
+            ..
+        } if matches!(right.as_ref(), Node::FloatLiteral { .. }) => Some(AtomicValueKind::Float),
+        Node::PrefixExpression { operator: "!", .. } => Some(AtomicValueKind::Boolean),
+        Node::InfixExpression { operator, .. }
+            if matches!(
+                *operator,
+                "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+            ) =>
+        {
+            Some(AtomicValueKind::Boolean)
+        }
+        Node::ArrayLiteral { .. } => Some(AtomicValueKind::List),
+        Node::StructLiteral { .. } => Some(AtomicValueKind::Struct),
+        Node::MapLiteral { .. } => Some(AtomicValueKind::Map),
+        Node::SetLiteral { .. } => Some(AtomicValueKind::Set),
+        Node::BytesLiteral { .. } => Some(AtomicValueKind::Bytes),
+        Node::CharLiteral { .. } => Some(AtomicValueKind::Char),
+        Node::Identifier { name, .. } => facts.binding_kind(name),
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => facts.return_kind(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn atomic_value_error_label(arg: &Node, kind: AtomicValueKind) -> String {
+    match arg {
+        Node::Identifier { name, .. } => format!("{} `{}`", kind.binding_label(), name),
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { .. } => format!("call returning {}", kind.return_label()),
+            _ => kind.expression_label().to_string(),
+        },
+        Node::FloatLiteral { .. } => "float literal".to_string(),
+        Node::PrefixExpression {
+            operator: "+" | "-",
+            right,
+            ..
+        } if matches!(right.as_ref(), Node::FloatLiteral { .. }) => "float literal".to_string(),
+        Node::InfixExpression { .. } | Node::PrefixExpression { .. } => {
+            kind.expression_label().to_string()
+        }
+        _ => arg_kind(arg).to_string(),
+    }
+}
+
+fn collect_atomic_value_facts(node: &Node, facts: &mut AtomicValueFacts) {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                collect_atomic_value_facts(&stmt.node, facts);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                collect_atomic_value_facts(stmt, facts);
+            }
+        }
+        Node::Function {
+            name,
+            return_type,
+            defaults,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            match return_type.as_deref().and_then(type_non_integer_kind) {
+                Some(kind) => facts.record_return(name, kind),
+                None => facts.record_unknown_return(name),
+            }
+            for default in defaults.iter().flatten() {
+                collect_atomic_value_facts(default, facts);
+            }
+            for expr in requires.iter().chain(ensures.iter()) {
+                collect_atomic_value_facts(expr, facts);
+            }
+            if let Some(recovers_to) = recovers_to {
+                collect_atomic_value_facts(recovers_to, facts);
+            }
+            collect_atomic_value_facts(body, facts);
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. } => {
+            collect_atomic_value_facts(value, facts);
+        }
+        _ => {}
+    }
+}
+
 fn atomic_call_name(function: &Node) -> Option<&'static str> {
     match function {
         Node::Identifier { name, .. } => match name.as_str() {
@@ -375,27 +591,19 @@ fn validate_atomic_target(
 }
 
 fn validate_atomic_integer_arg(source_path: &str, op: &str, arg: &Node) -> Result<(), String> {
-    match arg {
-        Node::StringLiteral { .. }
-        | Node::StringInternLiteral { .. }
-        | Node::InterpolatedString { .. }
-        | Node::ArrayLiteral { .. }
-        | Node::StructLiteral { .. }
-        | Node::MapLiteral { .. }
-        | Node::SetLiteral { .. }
-        | Node::BooleanLiteral { .. }
-        | Node::BytesLiteral { .. }
-        | Node::CharLiteral { .. } => Err(diagnostic(
+    let facts = AtomicValueFacts::default();
+    if let Some(kind) = expression_non_integer_kind(arg, &facts) {
+        return Err(diagnostic(
             source_path,
             span_of(arg),
             &format!(
                 "{} value must be an integer expression, got {}",
                 op,
-                arg_kind(arg)
+                atomic_value_error_label(arg, kind)
             ),
-        )),
-        _ => Ok(()),
+        ));
     }
+    Ok(())
 }
 
 fn validate_atomic_call(
@@ -421,6 +629,386 @@ fn validate_atomic_call(
     validate_atomic_target(source_path, op, &arguments[0], atomic_names)?;
     if expected == 2 {
         validate_atomic_integer_arg(source_path, op, &arguments[1])?;
+    }
+    Ok(())
+}
+
+fn validate_atomic_value_with_facts(
+    source_path: &str,
+    op: &str,
+    arg: &Node,
+    facts: &AtomicValueFacts,
+) -> Result<(), String> {
+    if let Some(kind) = expression_non_integer_kind(arg, facts) {
+        return Err(diagnostic(
+            source_path,
+            span_of(arg),
+            &format!(
+                "{} value must be an integer expression, got {}",
+                op,
+                atomic_value_error_label(arg, kind)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn check_atomic_value_parity(
+    node: &Node,
+    source_path: &str,
+    facts: &mut AtomicValueFacts,
+) -> Result<(), String> {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                check_atomic_value_parity(&stmt.node, source_path, facts)?;
+            }
+        }
+        Node::Block { stmts, .. } => {
+            let mut block_facts = facts.child_scope();
+            for stmt in stmts {
+                check_atomic_value_parity(stmt, source_path, &mut block_facts)?;
+            }
+        }
+        Node::Function {
+            defaults,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            let mut child_facts = facts.child_scope();
+            for default in defaults.iter().flatten() {
+                check_atomic_value_parity(default, source_path, &mut child_facts)?;
+            }
+            for expr in requires.iter().chain(ensures.iter()) {
+                check_atomic_value_parity(expr, source_path, &mut child_facts)?;
+            }
+            if let Some(recovers_to) = recovers_to {
+                check_atomic_value_parity(recovers_to, source_path, &mut child_facts)?;
+            }
+            check_atomic_value_parity(body, source_path, &mut child_facts)?;
+        }
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            let mut child_facts = facts.child_scope();
+            for expr in requires.iter().chain(ensures.iter()) {
+                check_atomic_value_parity(expr, source_path, &mut child_facts)?;
+            }
+            if let Some(recovers_to) = recovers_to {
+                check_atomic_value_parity(recovers_to, source_path, &mut child_facts)?;
+            }
+            check_atomic_value_parity(body, source_path, &mut child_facts)?;
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if let Some(op) = atomic_call_name(function)
+                && op != "atomic_load"
+                && arguments.len() == 2
+            {
+                validate_atomic_value_with_facts(source_path, op, &arguments[1], facts)?;
+            }
+            check_atomic_value_parity(function, source_path, facts)?;
+            for arg in arguments {
+                check_atomic_value_parity(arg, source_path, facts)?;
+            }
+        }
+        Node::LetStatement { name, value, .. }
+        | Node::StaticLet { name, value, .. }
+        | Node::Const { name, value, .. } => {
+            check_atomic_value_parity(value, source_path, facts)?;
+            match expression_non_integer_kind(value, facts) {
+                Some(kind) => facts.record_binding(name, kind),
+                None => facts.record_unknown_binding(name),
+            }
+        }
+        Node::Assignment { value, .. }
+        | Node::BreakWith { value, .. }
+        | Node::ExpressionStatement { expr: value, .. }
+        | Node::TryExpression { expr: value, .. }
+        | Node::DeferStatement { expr: value, .. }
+        | Node::InvariantStatement { expr: value, .. }
+        | Node::NamedArg { value, .. }
+        | Node::NewtypeConstruct { value, .. }
+        | Node::BenchBlock { body: value, .. }
+        | Node::UnsafeBlock { body: value, .. } => {
+            check_atomic_value_parity(value, source_path, facts)?;
+        }
+        Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
+            check_atomic_value_parity(value, source_path, facts)?;
+        }
+        Node::ReturnStatement { value: None, .. } => {}
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            check_atomic_value_parity(condition, source_path, facts)?;
+            if let Some(message) = message {
+                check_atomic_value_parity(message, source_path, facts)?;
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            check_atomic_value_parity(condition, source_path, facts)?;
+            let mut consequence_facts = facts.clone();
+            check_atomic_value_parity(consequence, source_path, &mut consequence_facts)?;
+            if let Some(alternative) = alternative {
+                let mut alternative_facts = facts.clone();
+                check_atomic_value_parity(alternative, source_path, &mut alternative_facts)?;
+            }
+        }
+        Node::WhileStatement {
+            condition,
+            body,
+            invariants,
+            ..
+        } => {
+            check_atomic_value_parity(condition, source_path, facts)?;
+            for invariant in invariants {
+                check_atomic_value_parity(invariant, source_path, facts)?;
+            }
+            let mut body_facts = facts.clone();
+            check_atomic_value_parity(body, source_path, &mut body_facts)?;
+        }
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            check_atomic_value_parity(iterable, source_path, facts)?;
+            for invariant in invariants {
+                check_atomic_value_parity(invariant, source_path, facts)?;
+            }
+            let mut body_facts = facts.clone();
+            check_atomic_value_parity(body, source_path, &mut body_facts)?;
+        }
+        Node::PrefixExpression { right, .. } => {
+            check_atomic_value_parity(right, source_path, facts)?;
+        }
+        Node::InfixExpression { left, right, .. } => {
+            check_atomic_value_parity(left, source_path, facts)?;
+            check_atomic_value_parity(right, source_path, facts)?;
+        }
+        Node::OptionalChain { object, access, .. } => {
+            check_atomic_value_parity(object, source_path, facts)?;
+            if let crate::ChainAccess::Method(_, arguments) = access {
+                for arg in arguments {
+                    check_atomic_value_parity(arg, source_path, facts)?;
+                }
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            check_atomic_value_parity(scrutinee, source_path, facts)?;
+            for (_, guard, body) in arms {
+                let mut arm_facts = facts.child_scope();
+                if let Some(guard) = guard {
+                    check_atomic_value_parity(guard, source_path, &mut arm_facts)?;
+                }
+                check_atomic_value_parity(body, source_path, &mut arm_facts)?;
+            }
+        }
+        Node::LetDestructureStruct { value, .. }
+        | Node::FieldAccess { target: value, .. }
+        | Node::TupleIndex { tuple: value, .. }
+        | Node::LetTupleDestructure { value, .. } => {
+            check_atomic_value_parity(value, source_path, facts)?;
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(base) = base {
+                check_atomic_value_parity(base, source_path, facts)?;
+            }
+            for (_, value) in fields {
+                check_atomic_value_parity(value, source_path, facts)?;
+            }
+        }
+        Node::FieldAssignment { target, value, .. } => {
+            check_atomic_value_parity(target, source_path, facts)?;
+            check_atomic_value_parity(value, source_path, facts)?;
+        }
+        Node::ArrayLiteral { items, .. }
+        | Node::SetLiteral { items, .. }
+        | Node::TupleLiteral { items, .. } => {
+            for item in items {
+                check_atomic_value_parity(item, source_path, facts)?;
+            }
+        }
+        Node::IndexExpression { target, index, .. } => {
+            check_atomic_value_parity(target, source_path, facts)?;
+            check_atomic_value_parity(index, source_path, facts)?;
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            check_atomic_value_parity(target, source_path, facts)?;
+            if let Some(lo) = lo {
+                check_atomic_value_parity(lo, source_path, facts)?;
+            }
+            if let Some(hi) = hi {
+                check_atomic_value_parity(hi, source_path, facts)?;
+            }
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            check_atomic_value_parity(target, source_path, facts)?;
+            check_atomic_value_parity(index, source_path, facts)?;
+            check_atomic_value_parity(value, source_path, facts)?;
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries {
+                check_atomic_value_parity(key, source_path, facts)?;
+                check_atomic_value_parity(value, source_path, facts)?;
+            }
+        }
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            for method in methods {
+                check_atomic_value_parity(method, source_path, facts)?;
+            }
+        }
+        Node::Actor {
+            state_init,
+            concurrent_ensures,
+            handlers,
+            ..
+        } => {
+            check_atomic_value_parity(state_init, source_path, facts)?;
+            for expr in concurrent_ensures {
+                check_atomic_value_parity(expr, source_path, facts)?;
+            }
+            for handler in handlers {
+                let mut handler_facts = facts.child_scope();
+                check_atomic_value_parity(&handler.body, source_path, &mut handler_facts)?;
+                for expr in &handler.ensures {
+                    check_atomic_value_parity(expr, source_path, &mut handler_facts)?;
+                }
+            }
+        }
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            eventually_clauses,
+            receive_handlers,
+            handlers,
+            ..
+        } => {
+            for (_, _, init) in state_fields {
+                check_atomic_value_parity(init, source_path, facts)?;
+            }
+            for expr in always_clauses {
+                check_atomic_value_parity(expr, source_path, facts)?;
+            }
+            for clause in eventually_clauses {
+                check_atomic_value_parity(&clause.post, source_path, facts)?;
+            }
+            for handler in receive_handlers {
+                let mut handler_facts = facts.child_scope();
+                check_atomic_value_parity(&handler.body, source_path, &mut handler_facts)?;
+                for expr in handler.requires.iter().chain(handler.ensures.iter()) {
+                    check_atomic_value_parity(expr, source_path, &mut handler_facts)?;
+                }
+            }
+            for handler in handlers {
+                let mut handler_facts = facts.child_scope();
+                check_atomic_value_parity(&handler.body, source_path, &mut handler_facts)?;
+                for expr in &handler.ensures {
+                    check_atomic_value_parity(expr, source_path, &mut handler_facts)?;
+                }
+            }
+        }
+        Node::ClusterDecl { invariants, .. } => {
+            for invariant in invariants {
+                check_atomic_value_parity(invariant, source_path, facts)?;
+            }
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            let mut body_facts = facts.child_scope();
+            for stmt in body {
+                check_atomic_value_parity(stmt, source_path, &mut body_facts)?;
+            }
+            for (_, stmts) in handlers {
+                let mut handler_facts = facts.child_scope();
+                for stmt in stmts {
+                    check_atomic_value_parity(stmt, source_path, &mut handler_facts)?;
+                }
+            }
+        }
+        Node::Quantifier { range, body, .. } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    check_atomic_value_parity(lo, source_path, facts)?;
+                    check_atomic_value_parity(hi, source_path, facts)?;
+                }
+                crate::quantifiers::QuantRange::Iterable(expr) => {
+                    check_atomic_value_parity(expr, source_path, facts)?;
+                }
+            }
+            let mut body_facts = facts.child_scope();
+            check_atomic_value_parity(body, source_path, &mut body_facts)?;
+        }
+        Node::Range { lo, hi, .. } => {
+            check_atomic_value_parity(lo, source_path, facts)?;
+            check_atomic_value_parity(hi, source_path, facts)?;
+        }
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    check_atomic_value_parity(expr, source_path, facts)?;
+                }
+            }
+        }
+        Node::ModuleDecl { body, .. } => {
+            let mut module_facts = facts.child_scope();
+            for stmt in body {
+                check_atomic_value_parity(stmt, source_path, &mut module_facts)?;
+            }
+        }
+        Node::StaticAssert { condition, .. } => {
+            check_atomic_value_parity(condition, source_path, facts)?;
+        }
+        Node::LiveBlock {
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            let mut body_facts = facts.child_scope();
+            check_atomic_value_parity(body, source_path, &mut body_facts)?;
+            for invariant in invariants {
+                check_atomic_value_parity(invariant, source_path, facts)?;
+            }
+            if let Some(timeout) = timeout {
+                check_atomic_value_parity(timeout, source_path, facts)?;
+            }
+        }
+        Node::Extern { decls, .. } => {
+            for decl in decls {
+                for expr in &decl.requires {
+                    check_atomic_value_parity(expr, source_path, facts)?;
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -839,6 +1427,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         }
     }
     check_atomic_call_sites(program, source_path, &atomic_names)?;
+    let mut value_facts = AtomicValueFacts::default();
+    collect_atomic_value_facts(program, &mut value_facts);
+    check_atomic_value_parity(program, source_path, &mut value_facts)?;
     Ok(())
 }
 
