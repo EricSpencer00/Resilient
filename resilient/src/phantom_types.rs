@@ -132,8 +132,24 @@ fn parse_phantom_spec(
 fn collect_checked(source_path: &str) -> Result<Vec<(String, PhantomSpec)>, String> {
     let attrs = crate::feature_attrs::find_kind("phantom");
     let mut out = Vec::with_capacity(attrs.len());
+    let mut seen: HashMap<String, (String, usize)> = HashMap::new();
     for (item, rec) in attrs {
         let spec = parse_phantom_spec(&item, &rec, source_path)?;
+        if let Some((existing_unit, first_line)) = seen.get(&item) {
+            let kind = if existing_unit == &spec.unit {
+                "duplicate"
+            } else {
+                "conflicting"
+            };
+            return Err(phantom_diag(
+                source_path,
+                rec.line,
+                format!(
+                    "{kind} phantom registration for `{item}`; first declaration at line {first_line}"
+                ),
+            ));
+        }
+        seen.insert(item.clone(), (spec.unit.clone(), rec.line));
         out.push((item, spec));
     }
     Ok(out)
@@ -263,6 +279,32 @@ mod tests {
                 "{name} diagnostic must mention `{expected}`; got {err}"
             );
         }
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_duplicate_phantom_registrations() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let program = Node::Program(vec![]);
+
+        crate::feature_attrs::reset();
+        record_phantom_args("Distance", r#"units = "Meters""#, 8);
+        record_phantom_args("Distance", r#"units = "Meters""#, 9);
+        let err = check(&program, "test.rz").expect_err("duplicate registration must fail");
+        assert!(
+            err.contains("duplicate phantom registration for `Distance`"),
+            "duplicate diagnostic should mention Distance; got {err}"
+        );
+
+        crate::feature_attrs::reset();
+        record_phantom_args("Distance", r#"units = "Meters""#, 10);
+        record_phantom_args("Distance", r#"units = "Seconds""#, 11);
+        let err = check(&program, "test.rz").expect_err("conflicting registration must fail");
+        assert!(
+            err.contains("conflicting phantom registration for `Distance`"),
+            "conflict diagnostic should mention Distance; got {err}"
+        );
+
         crate::feature_attrs::reset();
     }
 
