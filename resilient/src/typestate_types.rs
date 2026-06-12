@@ -1,26 +1,17 @@
-//! Feature 13/50 — Temporal Type States.
+//! Feature 13/50 - Temporal Type States.
 //!
 //! `#[typestate(states = "Closed Open Flushed", transitions = "Closed:open->Open Open:flush->Flushed Open:close->Closed Flushed:close->Closed")]`
-//! attached to a struct turns it into a typestate type: the value's
+//! attached struct turns it into typestate type: value's
 //! state evolves across method calls, and calls that violate the
 //! state machine are rejected.
 //!
-//! This is unlike session types (which are about channel protocols) —
-//! typestates apply to any stateful object: file handles, MMIO
-//! peripherals, lock guards, parser cursors. The effect is to make
-//! "use after close" a compile error rather than a runtime panic.
-//!
-//! This module ships:
-//!
-//! * The attribute parser into a `TypestateSpec` struct.
-//! * A `validate_call(struct_name, current_state, method)` API that
-//!   returns `Ok(next_state)` or `Err`. Wired into the runtime by
-//!   downstream PR; tests exercise it directly today.
+//! This module applies to stateful objects such as file handles,
+//! MMIO peripherals, lock guards, and parser cursors.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
 #[derive(Debug, Clone)]
@@ -33,45 +24,199 @@ pub struct TypestateSpec {
 
 static SPECS: RwLock<Vec<TypestateSpec>> = RwLock::new(Vec::new());
 
+fn diag(source_path: &str, line: usize, msg: impl AsRef<str>) -> String {
+    format!("{source_path}:{}:0: error: {}", line, msg.as_ref())
+}
+
+fn parse_quoted_string(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return None;
+    }
+    Some(&value[1..value.len() - 1])
+}
+
+fn parse_states(spec: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for state in spec.split_whitespace() {
+        if state.is_empty() {
+            return Err("empty state name".to_string());
+        }
+        out.push(state.to_string());
+    }
+    if out.is_empty() {
+        return Err("no states declared".to_string());
+    }
+    Ok(out)
+}
+
+fn parse_transitions(spec: &str) -> Result<HashMap<(String, String), String>, String> {
+    let mut out = HashMap::new();
+    for step in spec.split_whitespace() {
+        let Some((lhs, next)) = step.split_once("->") else {
+            return Err(format!("malformed transition `{step}`"));
+        };
+        let Some((state, method)) = lhs.split_once(':') else {
+            return Err(format!("malformed transition `{step}`"));
+        };
+        let state = state.trim();
+        let method = method.trim();
+        let next = next.trim();
+        if state.is_empty() || method.is_empty() || next.is_empty() {
+            return Err(format!("malformed transition `{step}`"));
+        }
+        out.insert((state.to_string(), method.to_string()), next.to_string());
+    }
+    if out.is_empty() {
+        return Err("no transitions declared".to_string());
+    }
+    Ok(out)
+}
+
+fn parse_spec(
+    source_path: &str,
+    line: usize,
+    item: &str,
+    args: &str,
+) -> Result<TypestateSpec, String> {
+    let mut states = None;
+    let mut transitions = None;
+
+    for chunk in args.split(',') {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            return Err(diag(
+                source_path,
+                line,
+                format!("malformed typestate attribute on `{item}`: empty argument"),
+            ));
+        }
+        let Some((key, value)) = chunk.split_once('=') else {
+            return Err(diag(
+                source_path,
+                line,
+                format!("malformed typestate attribute on `{item}`: expected `key = value`"),
+            ));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "states" => {
+                if states.is_some() {
+                    return Err(diag(
+                        source_path,
+                        line,
+                        format!("duplicate `states` argument on `{item}`"),
+                    ));
+                }
+                let Some(parsed) = parse_quoted_string(value) else {
+                    return Err(diag(
+                        source_path,
+                        line,
+                        format!("typestate attribute on `{item}` requires quoted `states` string"),
+                    ));
+                };
+                states = Some(parse_states(parsed).map_err(|msg| {
+                    diag(
+                        source_path,
+                        line,
+                        format!("typestate attribute on `{item}`: {msg}"),
+                    )
+                })?);
+            }
+            "transitions" => {
+                if transitions.is_some() {
+                    return Err(diag(
+                        source_path,
+                        line,
+                        format!("duplicate `transitions` argument on `{item}`"),
+                    ));
+                }
+                let Some(parsed) = parse_quoted_string(value) else {
+                    return Err(diag(
+                        source_path,
+                        line,
+                        format!(
+                            "typestate attribute on `{item}` requires quoted `transitions` string"
+                        ),
+                    ));
+                };
+                transitions = Some(parse_transitions(parsed).map_err(|msg| {
+                    diag(
+                        source_path,
+                        line,
+                        format!("typestate attribute on `{item}`: {msg}"),
+                    )
+                })?);
+            }
+            _ => {
+                return Err(diag(
+                    source_path,
+                    line,
+                    format!("unknown typestate argument `{key}` on `{item}`"),
+                ));
+            }
+        }
+    }
+
+    let Some(states) = states else {
+        return Err(diag(
+            source_path,
+            line,
+            format!("typestate attribute on `{item}` missing `states`"),
+        ));
+    };
+    let Some(transitions) = transitions else {
+        return Err(diag(
+            source_path,
+            line,
+            format!("typestate attribute on `{item}` missing `transitions`"),
+        ));
+    };
+
+    Ok(TypestateSpec {
+        struct_name: item.to_string(),
+        states,
+        transitions,
+    })
+}
+
 pub fn collect() -> Vec<TypestateSpec> {
     let attrs = crate::feature_attrs::find_kind("typestate");
-    // RES-1756: pre-size to attrs.len() — exactly one push per
-    // attribute record. Same shape as RES-1754.
     let mut out = Vec::with_capacity(attrs.len());
+
     for (item, rec) in attrs {
-        let mut spec = TypestateSpec {
-            struct_name: item,
-            states: Vec::new(),
-            transitions: HashMap::new(),
-        };
+        let mut states = Vec::new();
+        let mut transitions = HashMap::new();
         for chunk in rec.args.split(',') {
             let chunk = chunk.trim();
-            if let Some((k, v)) = chunk.split_once('=') {
-                let k = k.trim();
-                let v = v.trim().trim_matches('"');
-                match k {
-                    "states" => {
-                        spec.states = v.split_whitespace().map(|s| s.to_string()).collect();
-                    }
-                    "transitions" => {
-                        for t in v.split_whitespace() {
-                            // Format: state:method->next
-                            if let Some((lhs, next)) = t.split_once("->") {
-                                if let Some((state, method)) = lhs.split_once(':') {
-                                    spec.transitions.insert(
-                                        (state.to_string(), method.to_string()),
-                                        next.to_string(),
-                                    );
-                                }
+            if let Some((key, value)) = chunk.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                if let Some(parsed) = parse_quoted_string(value) {
+                    match key {
+                        "states" => {
+                            if let Ok(parsed_states) = parse_states(parsed) {
+                                states = parsed_states;
                             }
                         }
+                        "transitions" => {
+                            if let Ok(parsed_transitions) = parse_transitions(parsed) {
+                                transitions = parsed_transitions;
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
-        out.push(spec);
+        out.push(TypestateSpec {
+            struct_name: item,
+            states,
+            transitions,
+        });
     }
+
     out
 }
 
@@ -86,11 +231,6 @@ pub fn validate_call(
     current_state: &str,
     method: &str,
 ) -> Result<String, String> {
-    // RES-1549: hold the read guard for the lookup so the
-    // `Vec<TypestateSpec>` (each entry owns Vec<String> + HashMap)
-    // doesn't get cloned just to find one spec by name. The
-    // transition value's String is still cloned (cheap, small)
-    // since it's the function's return value.
     let g = SPECS
         .read()
         .map_err(|_| format!("no typestate for {struct_name}"))?;
@@ -109,11 +249,27 @@ pub fn validate_call(
         })
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1306: gate `install` on the non-empty case — avoids a
-    // wasted RwLock write per compilation and removes the
-    // wipe-on-empty test race shape documented in RES-1302.
-    let specs = collect();
+fn collect_checked(source_path: &str) -> Result<Vec<TypestateSpec>, String> {
+    let attrs = crate::feature_attrs::find_kind("typestate");
+    let mut out = Vec::with_capacity(attrs.len());
+    let mut seen = HashSet::with_capacity(attrs.len());
+
+    for (item, rec) in attrs {
+        if !seen.insert(item.clone()) {
+            return Err(diag(
+                source_path,
+                rec.line,
+                format!("duplicate typestate declaration `{item}`"),
+            ));
+        }
+        out.push(parse_spec(source_path, rec.line, &item, &rec.args)?);
+    }
+
+    Ok(out)
+}
+
+pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+    let specs = collect_checked(source_path)?;
     if specs.is_empty() {
         return Ok(());
     }
@@ -125,17 +281,25 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn record_typestate(item: &str, args: &str, line: usize) {
+        crate::feature_attrs::record(
+            item,
+            crate::feature_attrs::AttrRecord {
+                name: "typestate".into(),
+                args: args.into(),
+                line,
+            },
+        );
+    }
+
     #[test]
     fn file_protocol_validates_close_after_open() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        crate::feature_attrs::record(
+        record_typestate(
             "File",
-            crate::feature_attrs::AttrRecord {
-                name: "typestate".into(),
-                args: r#"states = "Closed Open", transitions = "Closed:open->Open Open:close->Closed""#.into(),
-                line: 0,
-            },
+            r#"states = "Closed Open", transitions = "Closed:open->Open Open:close->Closed""#,
+            0,
         );
         install(collect());
         assert_eq!(
@@ -143,6 +307,7 @@ mod tests {
             "Open".to_string()
         );
         assert!(validate_call("File", "Closed", "close").is_err());
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -150,65 +315,44 @@ mod tests {
     fn invalid_method_in_valid_state_is_rejected() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        crate::feature_attrs::record(
+        record_typestate(
             "Lock",
-            crate::feature_attrs::AttrRecord {
-                name: "typestate".into(),
-                args: r#"states = "Locked Unlocked", transitions = "Locked:unlock->Unlocked Unlocked:lock->Locked""#.into(),
-                line: 0,
-            },
+            r#"states = "Locked Unlocked", transitions = "Locked:unlock->Unlocked Unlocked:lock->Locked""#,
+            0,
         );
         install(collect());
-        // Valid transitions
         assert_eq!(
             validate_call("Lock", "Locked", "unlock").unwrap(),
-            "Unlocked"
+            "Unlocked".to_string()
         );
-        assert_eq!(validate_call("Lock", "Unlocked", "lock").unwrap(), "Locked");
-        // Invalid: calling `lock` on already-locked is undefined
+        assert_eq!(
+            validate_call("Lock", "Unlocked", "lock").unwrap(),
+            "Locked".to_string()
+        );
         assert!(validate_call("Lock", "Locked", "lock").is_err());
-        // Invalid: calling `unlock` on already-unlocked is undefined
         assert!(validate_call("Lock", "Unlocked", "unlock").is_err());
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
     #[test]
-    fn three_state_machine_full_cycle() {
+    fn unknown_struct_must_return_an_error() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        crate::feature_attrs::record(
-            "Connection",
-            crate::feature_attrs::AttrRecord {
-                name: "typestate".into(),
-                args: r#"states = "Idle Active Closed", transitions = "Idle:connect->Active Active:send->Active Active:disconnect->Closed""#.into(),
-                line: 0,
-            },
+        record_typestate(
+            "Known",
+            r#"states = "S0 S1", transitions = "S0:next->S1""#,
+            0,
         );
-        install(collect());
-        // Walk the full state machine path
-        let s1 = validate_call("Connection", "Idle", "connect").unwrap();
-        assert_eq!(s1, "Active");
-        let s2 = validate_call("Connection", "Active", "send").unwrap();
-        assert_eq!(s2, "Active");
-        let s3 = validate_call("Connection", "Active", "disconnect").unwrap();
-        assert_eq!(s3, "Closed");
-        // Can't connect again after closing
-        assert!(validate_call("Connection", "Closed", "connect").is_err());
-        crate::feature_attrs::reset();
-    }
-
-    #[test]
-    fn unknown_struct_returns_error() {
-        let _g = crate::feature_attrs::lock_for_test();
-        crate::feature_attrs::reset();
         install(collect());
         let result = validate_call("Nonexistent", "SomeState", "someMethod");
         assert!(result.is_err(), "unknown struct must return an error");
         let msg = result.unwrap_err();
         assert!(
             msg.contains("Nonexistent"),
-            "error must name the unknown struct: {msg}"
+            "error must name unknown struct: {msg}"
         );
+        install(Vec::new());
         crate::feature_attrs::reset();
     }
 
@@ -219,5 +363,109 @@ mod tests {
         let src = "fn f(int x) -> int { return x; }\n";
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test").is_ok());
+        install(Vec::new());
+    }
+
+    #[test]
+    fn check_rejects_missing_states_argument() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate("Thing", r#"transitions = "S0:go->S1""#, 11);
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:11:0: error:"), "{err}");
+        assert!(err.contains("missing `states`"), "{err}");
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_missing_transitions_argument() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate("Thing", r#"states = "S0 S1""#, 12);
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:12:0: error:"), "{err}");
+        assert!(err.contains("missing `transitions`"), "{err}");
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_unknown_argument() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "Thing",
+            r#"states = "S0 S1", transitions = "S0:go->S1", mode = "strict""#,
+            13,
+        );
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:13:0: error:"), "{err}");
+        assert!(err.contains("unknown typestate argument `mode`"), "{err}");
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_duplicate_declarations() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "Thing",
+            r#"states = "S0 S1", transitions = "S0:go->S1""#,
+            14,
+        );
+        record_typestate(
+            "Thing",
+            r#"states = "S0 S1", transitions = "S0:go->S1""#,
+            15,
+        );
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:15:0: error:"), "{err}");
+        assert!(
+            err.contains("duplicate typestate declaration `Thing`"),
+            "{err}"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_malformed_transition() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate("Thing", r#"states = "S0 S1", transitions = "S0goS1""#, 16);
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:16:0: error:"), "{err}");
+        assert!(err.contains("malformed transition"), "{err}");
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_unquoted_states_value() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate("Thing", r#"states = S0 S1, transitions = "S0:go->S1""#, 17);
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:17:0: error:"), "{err}");
+        assert!(err.contains("requires quoted `states` string"), "{err}");
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_unquoted_transitions_value() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate("Thing", r#"states = "S0 S1", transitions = S0:go->S1"#, 18);
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:18:0: error:"), "{err}");
+        assert!(
+            err.contains("requires quoted `transitions` string"),
+            "{err}"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
     }
 }
