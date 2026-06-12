@@ -45,8 +45,11 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation)]
 
 use std::collections::HashMap;
+#[cfg(not(test))]
+use std::sync::RwLock;
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, RwLock};
+use std::sync::{Mutex, MutexGuard};
 
 /// One recorded attribute application. The arguments string is kept
 /// raw (as written between the parens) so each feature module can
@@ -78,6 +81,7 @@ struct Registry {
     by_kind: HashMap<String, Vec<(String, AttrRecord)>>,
 }
 
+#[cfg(not(test))]
 static ATTR_REGISTRY: RwLock<Option<Registry>> = RwLock::new(None);
 
 /// RES-1374: cheap fast-reject mirror of "registry contains at least
@@ -97,6 +101,7 @@ static ATTR_REGISTRY: RwLock<Option<Registry>> = RwLock::new(None);
 /// The Release / Acquire pair ensures any registry write made before
 /// the `record`-side store is visible to a `find_kind` that took the
 /// lock after observing `true`.
+#[cfg(not(test))]
 static ATTR_REGISTRY_HAS_ENTRIES: AtomicBool = AtomicBool::new(false);
 
 /// 50-feature pass: any test that mutates the global attribute
@@ -115,6 +120,12 @@ static ATTR_REGISTRY_HAS_ENTRIES: AtomicBool = AtomicBool::new(false);
 /// ```
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
+thread_local! {
+    static TEST_REGISTRY: std::cell::RefCell<Registry> =
+        std::cell::RefCell::new(Registry::default());
+}
+
 /// Acquire the test serialisation lock. Poison-tolerant: a panicking
 /// test that held the lock leaves it poisoned, but the next test
 /// recovers via `into_inner`.
@@ -126,6 +137,15 @@ pub fn lock_for_test() -> MutexGuard<'static, ()> {
 /// Reset the registry. Must be called at the start of every parse so
 /// the LSP / REPL / test harness don't see stale entries from a
 /// previous compile.
+#[cfg(test)]
+#[allow(dead_code)]
+pub fn reset() {
+    TEST_REGISTRY.with(|registry| {
+        *registry.borrow_mut() = Registry::default();
+    });
+}
+
+#[cfg(not(test))]
 #[allow(dead_code)]
 pub fn reset() {
     // RES-2438: if the atomic flag is already false, no `record()` call
@@ -162,6 +182,29 @@ pub fn reset() {
 /// trailing clone. Worst case one allocation per call (the value-side
 /// `item_name.to_string()` that lives in the `by_kind` tuple), down from
 /// three.
+#[cfg(test)]
+pub fn record(item_name: &str, record: AttrRecord) {
+    TEST_REGISTRY.with(|registry| {
+        let mut reg = registry.borrow_mut();
+        match reg.by_item.get_mut(item_name) {
+            Some(entries) => entries.push(record.clone()),
+            None => {
+                reg.by_item
+                    .insert(item_name.to_string(), vec![record.clone()]);
+            }
+        }
+        match reg.by_kind.get_mut(record.name.as_str()) {
+            Some(entries) => entries.push((item_name.to_string(), record)),
+            None => {
+                let kind = record.name.clone();
+                reg.by_kind
+                    .insert(kind, vec![(item_name.to_string(), record)]);
+            }
+        }
+    });
+}
+
+#[cfg(not(test))]
 pub fn record(item_name: &str, record: AttrRecord) {
     if let Ok(mut g) = ATTR_REGISTRY.write() {
         let reg = g.get_or_insert_with(Registry::default);
@@ -201,6 +244,13 @@ pub fn record(item_name: &str, record: AttrRecord) {
 /// clone — but the function is kept public for callers that want the
 /// whole map (e.g. the `--audit` reporter and any external integrator).
 #[allow(dead_code)]
+#[cfg(test)]
+pub fn snapshot() -> AttrMap {
+    TEST_REGISTRY.with(|registry| registry.borrow().by_item.clone())
+}
+
+#[allow(dead_code)]
+#[cfg(not(test))]
 pub fn snapshot() -> AttrMap {
     ATTR_REGISTRY
         .read()
@@ -225,6 +275,19 @@ pub fn snapshot() -> AttrMap {
 ///
 /// The lock is held read-only so concurrent readers (parallel tests)
 /// don't serialise; insertion order within a kind is preserved.
+#[cfg(test)]
+pub fn find_kind(kind: &str) -> Vec<(String, AttrRecord)> {
+    TEST_REGISTRY.with(|registry| {
+        registry
+            .borrow()
+            .by_kind
+            .get(kind)
+            .cloned()
+            .unwrap_or_default()
+    })
+}
+
+#[cfg(not(test))]
 pub fn find_kind(kind: &str) -> Vec<(String, AttrRecord)> {
     // RES-1374: fast-reject before touching the `RwLock` when the
     // registry has no recorded attributes. With ~31 EXTENSION_PASSES
