@@ -94,6 +94,14 @@ fn regex_builtin_pattern_arg(node: &Node) -> Option<(&Node, &str)> {
     if arguments.len() != expected_arity {
         return None;
     }
+
+    if let Some(pattern) = arguments.iter().find_map(|arg| match arg {
+        Node::NamedArg { name, value, .. } if name == "pattern" => Some(value.as_ref()),
+        _ => None,
+    }) {
+        return Some((pattern, name.as_str()));
+    }
+
     Some((&arguments[1], name.as_str()))
 }
 
@@ -524,6 +532,42 @@ println(result)
                 "expected semantic hint `{semantic_hint}` in diagnostic for {builtin}: {errors}"
             );
         }
+    }
+
+    #[test]
+    fn regex_builtins_reject_named_literal_invalid_patterns_at_typecheck() {
+        let (program, parse_errors) =
+            crate::parse(r#"let value = regex_match(pattern: "[", text: "x")"#);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+
+        let errors = check(&program, "named_regex.rz")
+            .expect_err("expected named regex literal pattern rejection");
+        assert!(
+            errors.contains("regex_match"),
+            "expected builtin name in diagnostic: {errors}"
+        );
+        assert!(
+            errors.contains("invalid regex pattern"),
+            "expected regex-specific diagnostic: {errors}"
+        );
+    }
+
+    #[test]
+    fn regex_builtins_reject_mixed_positional_literal_invalid_patterns_at_typecheck() {
+        let (program, parse_errors) =
+            crate::parse(r#"let value = regex_replace("x", "[", replacement: "_")"#);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+
+        let errors = check(&program, "mixed_regex.rz")
+            .expect_err("expected mixed regex literal pattern rejection");
+        assert!(
+            errors.contains("regex_replace"),
+            "expected builtin name in diagnostic: {errors}"
+        );
+        assert!(
+            errors.contains("invalid regex pattern"),
+            "expected regex-specific diagnostic: {errors}"
+        );
     }
 
     #[test]
