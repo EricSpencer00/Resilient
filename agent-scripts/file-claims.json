@@ -1,16 +1,12 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-3133-mutex-rwlock-typechecking",
-      "claimed_at": "2026-06-13T03:17:36Z"
+    "resilient/src/regex_builtins.rs": {
+      "branch": "res-3384-regex-builtins-should-reject-invalid-lit",
+      "claimed_at": "2026-06-13T05:33:28Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-3133-mutex-rwlock-typechecking",
-      "claimed_at": "2026-06-13T03:17:36Z"
-    },
-    "resilient/src/mutex_rwlock.rs": {
-      "branch": "res-3133-mutex-rwlock-typechecking",
-      "claimed_at": "2026-06-13T03:17:36Z"
+      "branch": "res-3384-regex-builtins-should-reject-invalid-lit",
+      "claimed_at": "2026-06-13T05:33:28Z"
     }
   }
 }
