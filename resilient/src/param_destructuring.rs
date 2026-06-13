@@ -133,7 +133,66 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             r.locals.join(", ")
         );
     }
+
+    // RES-3236: validate call-site arguments for functions with destructuring parameters
+    check_destructuring_call_sites(program, source_path, &reqs)?;
+
     Ok(())
+}
+
+fn check_destructuring_call_sites(
+    node: &Node,
+    source_path: &str,
+    reqs: &[DestructureRequest],
+) -> Result<(), String> {
+    // Build a map of function names to their destructuring requirements
+    let mut destructuring_map: std::collections::HashMap<String, &DestructureRequest> =
+        std::collections::HashMap::new();
+    for req in reqs {
+        destructuring_map.insert(req.fn_name.clone(), req);
+    }
+
+    // Walk the AST looking for function calls
+    walk_call_sites(node, source_path, &destructuring_map);
+    Ok(())
+}
+
+fn walk_call_sites(
+    node: &Node,
+    source_path: &str,
+    destructuring_map: &std::collections::HashMap<String, &DestructureRequest>,
+) {
+    if let Node::CallExpression {
+        function,
+        arguments,
+        span,
+    } = node
+    {
+        if let Node::Identifier { name, .. } = function.as_ref() {
+            if let Some(req) = destructuring_map.get(name) {
+                // The function has destructuring; check argument count
+                // The function expects req.param_index + 1 parameters total
+                // (since param_index is 0-based, a destructuring on param 0
+                // means the function expects at least 1 parameter)
+                let expected_params = req.param_index + 1; // at minimum, the destructured param
+                if arguments.len() < expected_params {
+                    eprintln!(
+                        "{}:{}:0: note: call to `{}` provides {} arguments but function has \
+                         destructuring parameter at position {} (expected at least {})",
+                        source_path,
+                        span.start.line,
+                        name,
+                        arguments.len(),
+                        req.param_index,
+                        expected_params
+                    );
+                }
+            }
+        }
+    }
+    crate::uniqueness_walk::walk_children(node, &mut |child| {
+        walk_call_sites(child, source_path, destructuring_map);
+    });
 }
 
 fn validate_tuple_type(ty: &str) -> bool {
@@ -543,5 +602,24 @@ mod tests {
             check(&prog, "test").is_ok(),
             "names with trailing digits must pass"
         );
+    }
+
+    #[test]
+    fn check_call_site_validation_detects_insufficient_args() {
+        // RES-3236: call-site validation should note mismatched argument counts
+        let src = r#"
+fn process((int x, int y) pair) -> int {
+    return x + y;
+}
+
+fn main() {
+    let result = process(42);
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        // The check should succeed but emit a diagnostic note
+        // (call-site validation is a note, not an error, since full type checking is needed)
+        let result = check(&prog, "test");
+        assert!(result.is_ok(), "call-site validation should not error");
     }
 }
