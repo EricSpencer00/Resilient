@@ -1,8 +1,8 @@
 {
   "claims": {
-    "resilient/src/format_builtin.rs": {
-      "branch": "res-3486-format-builtin-regression",
-      "claimed_at": "2026-06-13T00:01:57Z"
+    "resilient/src/param_destructuring.rs": {
+      "branch": "res-3239-param-destructuring-regression",
+      "claimed_at": "2026-06-13T00:42:09Z"
     }
   }
 }
