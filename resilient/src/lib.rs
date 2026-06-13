@@ -3419,6 +3419,7 @@ struct Parser {
     peek_line: usize,
     peek_column: usize,
     errors: Vec<String>,
+    emit_errors: bool,
     /// RES-156: fresh-name counter for array-comprehension
     /// desugaring. Each comprehension bumps this to mint a unique
     /// `_r$N` accumulator so nested / multiple comprehensions
@@ -3430,6 +3431,14 @@ struct Parser {
 
 impl Parser {
     fn new(lexer: Lexer) -> Self {
+        Self::new_with_emit_errors(lexer, true)
+    }
+
+    fn new_silent(lexer: Lexer) -> Self {
+        Self::new_with_emit_errors(lexer, false)
+    }
+
+    fn new_with_emit_errors(lexer: Lexer, emit_errors: bool) -> Self {
         let mut parser = Parser {
             lexer,
             current_token: Token::Eof,
@@ -3439,6 +3448,7 @@ impl Parser {
             peek_line: 1,
             peek_column: 1,
             errors: Vec::new(),
+            emit_errors,
             comprehension_counter: 0,
         };
 
@@ -3461,7 +3471,9 @@ impl Parser {
             return;
         }
         let full = format!("{}:{}: {}", self.current_line, self.current_column, msg);
-        eprintln!("\x1B[31mParser error: {}\x1B[0m", full);
+        if self.emit_errors {
+            eprintln!("\x1B[31mParser error: {}\x1B[0m", full);
+        }
         self.errors.push(full);
     }
 
@@ -29144,8 +29156,20 @@ fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
 /// parser error strings collected along the way. Used by both the
 /// driver and `imports::expand_uses`.
 fn parse(src: &str) -> (Node, Vec<String>) {
+    parse_with_emit_errors(src, true)
+}
+
+fn parse_silent(src: &str) -> (Node, Vec<String>) {
+    parse_with_emit_errors(src, false)
+}
+
+fn parse_with_emit_errors(src: &str, emit_errors: bool) -> (Node, Vec<String>) {
     let lexer = Lexer::new(src);
-    let mut parser = Parser::new(lexer);
+    let mut parser = if emit_errors {
+        Parser::new(lexer)
+    } else {
+        Parser::new_silent(lexer)
+    };
     let mut program = parser.parse_program();
     // RES-1343: `parser.errors` is already `Vec<String>`; move it
     // directly instead of the round-trip
@@ -29172,6 +29196,27 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     // RES-2685: synthesize concrete ImplBlocks from BlanketImpl nodes.
     crate::blanket_impl::lower_program(&mut program);
     (program, errs)
+}
+
+fn parse_diagnostics_json_values<'a>(
+    parse_errs: impl IntoIterator<Item = &'a String>,
+    path: &Path,
+) -> Vec<serde_json::Value> {
+    let path_str = path.to_string_lossy();
+    parse_errs
+        .into_iter()
+        .map(|e| {
+            let (line, col, msg) = parse_error_location(e);
+            serde_json::json!({
+                "severity": "error",
+                "code": "parse",
+                "line": line,
+                "column": col,
+                "message": msg,
+                "file": path_str.as_ref(),
+            })
+        })
+        .collect()
 }
 
 /// Macro expansion helper: parse a single expression string into a `Node`.
@@ -31637,8 +31682,20 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
             return Some(2);
         }
     };
-    let (program, parse_errs) = parse(&src);
+    let (program, parse_errs) = if emit_diagnostics_json {
+        parse_silent(&src)
+    } else {
+        parse(&src)
+    };
     if !parse_errs.is_empty() {
+        if emit_diagnostics_json {
+            let json_diags = parse_diagnostics_json_values(&parse_errs, &path);
+            println!(
+                "{}",
+                serde_json::to_string(&json_diags).expect("parse diagnostics JSON")
+            );
+            return Some(2);
+        }
         for e in &parse_errs {
             eprintln!("{}", e);
         }
