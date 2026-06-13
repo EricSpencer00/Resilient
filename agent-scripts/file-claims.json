@@ -1,16 +1,8 @@
 {
   "claims": {
-    "resilient/src/param_destructuring.rs": {
-      "branch": "res-3490-param-destructuring-align",
-      "claimed_at": "2026-06-12T19:41:50Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-3490-param-destructuring-align",
-      "claimed_at": "2026-06-12T19:41:50Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-3490-param-destructuring-align",
-      "claimed_at": "2026-06-12T19:41:50Z"
+    "resilient/src/format_builtin.rs": {
+      "branch": "res-3486-format-builtin-regression",
+      "claimed_at": "2026-06-13T00:01:57Z"
     }
   }
 }
