@@ -1,20 +1,8 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-3233-format-builtin-alignment",
-      "claimed_at": "2026-06-13T01:23:56Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-3233-format-builtin-alignment",
-      "claimed_at": "2026-06-13T01:23:56Z"
-    },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-3233-format-builtin-alignment",
-      "claimed_at": "2026-06-13T01:23:56Z"
-    },
     "resilient/src/format_builtin.rs": {
-      "branch": "res-3233-format-builtin-alignment",
-      "claimed_at": "2026-06-13T01:23:56Z"
+      "branch": "res-3232-format-builtin-duplicates",
+      "claimed_at": "2026-06-13T01:52:10Z"
     }
   }
 }

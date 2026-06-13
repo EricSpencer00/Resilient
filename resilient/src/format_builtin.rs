@@ -373,7 +373,20 @@ fn validate_format_spec(spec: &str) -> Result<(), String> {
 }
 
 fn check_format_builtin_declarations(source_path: &str, errors: &mut Vec<String>) {
+    let mut seen_items: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
     for (item, rec) in crate::feature_attrs::find_kind("format_builtin") {
+        // RES-3232: detect duplicate/conflicting registrations
+        if let Some(&first_line) = seen_items.get(&item) {
+            errors.push(format!(
+                "{source_path}:{}:0: error[fmt]: duplicate format_builtin registration for `{item}` \
+                 (first declared on line {})",
+                rec.line, first_line
+            ));
+            continue;
+        }
+        seen_items.insert(item.clone(), rec.line);
+
         let mut template: Option<String> = None;
         let mut arg_count: Option<usize> = None;
         let mut malformed = false;
@@ -1140,5 +1153,23 @@ fn main() {
         assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
 
         check(&prog, "test.rz").expect("string literal with default format should pass");
+    }
+
+    #[test]
+    fn check_rejects_duplicate_format_builtin_registration() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        // Register "fmt" twice with different line numbers
+        record_format_builtin("fmt", r#"template = "Hello {}", args = 1"#, 10);
+        record_format_builtin("fmt", r#"template = "Goodbye {}", args = 1"#, 20);
+
+        let err = run_decl_check("test.rz").expect_err("expected duplicate registration error");
+        assert!(err.contains("test.rz:20:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("duplicate format_builtin registration for `fmt`"),
+            "{err}"
+        );
+        assert!(err.contains("first declared on line 10"), "{err}");
+        crate::feature_attrs::reset();
     }
 }
