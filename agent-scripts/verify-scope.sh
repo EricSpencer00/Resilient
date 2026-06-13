@@ -89,7 +89,23 @@ if (( ${#SUBSTANTIVE_FILES[@]} == 0 )); then
   fail "no substantive changes beyond claim metadata — do not ready or merge empty/claim-only PRs"
 fi
 
-# Rule 1b: existing tests can't be weakened.
+# Rule 1b: coauthor trailers must be explicitly configured.
+COAUTHOR_TRAILERS="$(git log --format=%B "${BASE}..${HEAD}" 2>/dev/null \
+  | grep -iE '^Co-Authored-By:' || true)"
+if [ -n "$COAUTHOR_TRAILERS" ]; then
+  if [ -z "${AGENT_COAUTHOR_NAME:-}" ] || [ -z "${AGENT_COAUTHOR_EMAIL:-}" ]; then
+    fail "Co-Authored-By trailer present but AGENT_COAUTHOR_NAME/EMAIL not configured"
+  else
+    EXPECTED_TRAILER="Co-Authored-By: ${AGENT_COAUTHOR_NAME} <${AGENT_COAUTHOR_EMAIL}>"
+    UNEXPECTED_TRAILERS="$(printf '%s\n' "$COAUTHOR_TRAILERS" \
+      | grep -Fivx "$EXPECTED_TRAILER" || true)"
+    if [ -n "$UNEXPECTED_TRAILERS" ]; then
+      fail "Co-Authored-By trailer does not match configured executor identity"
+    fi
+  fi
+fi
+
+# Rule 1c: existing tests can't be weakened.
 #
 # We allow modifications to test files (mechanical renames across the
 # suite are common — e.g. when a public API or env var name changes),
