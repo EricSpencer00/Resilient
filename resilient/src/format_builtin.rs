@@ -714,4 +714,156 @@ fn fmt(int x) -> int { return x; }
         );
         crate::feature_attrs::reset();
     }
+
+    // ── Malformed-input regression corpus ─────────────────────────────────
+
+    #[test]
+    fn check_rejects_format_builtin_empty_argument() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = 1, "#, 20);
+
+        let err = run_decl_check("test.rz").expect_err("expected empty argument error");
+        assert!(err.contains("test.rz:20:0: error[fmt]"), "{err}");
+        assert!(err.contains("has empty argument"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_no_equals() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template "{}", args = 1"#, 21);
+
+        let err = run_decl_check("test.rz").expect_err("expected no equals error");
+        assert!(err.contains("test.rz:21:0: error[fmt]"), "{err}");
+        assert!(err.contains("requires `key = value` arguments"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_unquoted_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = {}, args = 1"#, 22);
+
+        let err = run_decl_check("test.rz").expect_err("expected unquoted template error");
+        assert!(err.contains("test.rz:22:0: error[fmt]"), "{err}");
+        assert!(err.contains("requires quoted `template` string"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_duplicate_args() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = 1, args = 2"#, 23);
+
+        let err = run_decl_check("test.rz").expect_err("expected duplicate args error");
+        assert!(err.contains("test.rz:23:0: error[fmt]"), "{err}");
+        assert!(err.contains("duplicate `args` argument on `fmt`"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_negative_args() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = -1"#, 24);
+
+        let err = run_decl_check("test.rz").expect_err("expected negative args error");
+        assert!(err.contains("test.rz:24:0: error[fmt]"), "{err}");
+        assert!(err.contains("requires integer"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_args_zero_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = 0"#, 25);
+
+        let err = run_decl_check("test.rz").expect_err("expected args zero mismatch error");
+        assert!(err.contains("test.rz:25:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("expects 1 template placeholder(s) but declares 0 arg(s)"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_empty_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "", args = 0"#, 26);
+
+        run_decl_check("test.rz").expect("empty template with zero args should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_no_placeholder_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "hello world", args = 0"#, 27);
+
+        run_decl_check("test.rz").expect("template with no placeholders and zero args should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_multiple_placeholders() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {} {}", args = 3"#, 28);
+
+        run_decl_check("test.rz").expect("multiple placeholders should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_many_placeholders_few_args() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {} {} {}", args = 2"#, 29);
+
+        let err = run_decl_check("test.rz").expect_err("expected many placeholders error");
+        assert!(err.contains("test.rz:29:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("expects 4 template placeholder(s) but declares 2 arg(s)"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_escaped_brace_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{{ }}", args = 1"#, 30);
+
+        let err = run_decl_check("test.rz").expect_err("expected brace mismatch error");
+        assert!(err.contains("test.rz:30:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("expects 0 template placeholder(s) but declares 1 arg(s)"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_mixed_escaped_real_braces() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{{ {}", args = 2"#, 31);
+
+        let err = run_decl_check("test.rz").expect_err("expected mixed braces error");
+        assert!(err.contains("test.rz:31:0: error[fmt]"), "{err}");
+        assert!(
+            err.contains("expects 1 template placeholder(s) but declares 2 arg(s)"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
 }
