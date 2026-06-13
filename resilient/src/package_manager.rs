@@ -359,4 +359,294 @@ utils = "latest"
         assert!(result.is_err(), "expected error for invalid constraint");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── Malformed-input regression corpus ──────────────────────────────────
+    // Comprehensive test cases for malformed package_manager declarations,
+    // invalid manifests, and constraint violations.
+
+    #[test]
+    fn check_errors_on_missing_name_field() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_noname");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+version = "1.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("missing name must fail");
+        assert!(err.contains("missing `name` field"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_missing_version_field() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_noversion");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("missing version must fail");
+        assert!(err.contains("missing `version` field"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_version_with_trailing_part() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badver_extra");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0.1"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("too many version parts must fail");
+        assert!(err.contains("not a valid semver triple"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_version_with_missing_part() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badver_missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("too few version parts must fail");
+        assert!(err.contains("not a valid semver triple"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_version_with_nonnumeric() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badver_nonnumeric");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.x.3"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("non-numeric version must fail");
+        assert!(err.contains("not a valid semver triple"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_constraint_with_invalid_prefix() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badconstraint_prefix");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = ">=1.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("invalid constraint prefix must fail");
+        assert!(err.contains("invalid constraint"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_constraint_with_malformed_version() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badconstraint_ver");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = "^1.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("malformed constraint version must fail");
+        assert!(err.contains("invalid constraint"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_when_lock_version_violates_caret_constraint() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_lock_caret_violation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = "^1.2.0"
+"#;
+        let lockfile = r#"
+utils = "2.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        std::fs::write(dir.join("resilient.lock"), lockfile).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("caret violation must fail");
+        assert!(err.contains("does not satisfy constraint"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_when_lock_version_violates_tilde_constraint() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_lock_tilde_violation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = "~1.2.0"
+"#;
+        let lockfile = r#"
+utils = "1.3.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        std::fs::write(dir.join("resilient.lock"), lockfile).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("tilde violation must fail");
+        assert!(err.contains("does not satisfy constraint"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_when_lock_version_violates_exact_constraint() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_lock_exact_violation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = "1.2.3"
+"#;
+        let lockfile = r#"
+utils = "1.2.4"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        std::fs::write(dir.join("resilient.lock"), lockfile).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        let err = result.expect_err("exact violation must fail");
+        assert!(err.contains("does not satisfy constraint"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Valid baseline cases ──────────────────────────────────────────────────
+
+    #[test]
+    fn check_accepts_valid_manifest_with_dependencies() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_valid_multi");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "complex-app"
+version = "2.5.10"
+[dependencies]
+logger = "^1.0.0"
+utils = "~0.5.0"
+crypto = "3.2.1"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(
+            result.is_ok(),
+            "valid manifest with multiple deps must pass"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_accepts_version_with_large_numbers() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_large_numbers");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "999.888.777"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(result.is_ok(), "large semver numbers must pass");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_accepts_lock_file_matching_all_constraints() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_lock_valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+alpha = "^1.5.0"
+beta = "~2.0.0"
+gamma = "3.1.4"
+"#;
+        let lockfile = r#"
+alpha = "1.6.2"
+beta = "2.0.5"
+gamma = "3.1.4"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        std::fs::write(dir.join("resilient.lock"), lockfile).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(
+            result.is_ok(),
+            "valid lockfile matching all constraints must pass"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
