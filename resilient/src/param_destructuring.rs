@@ -385,4 +385,163 @@ mod tests {
     fn validate_tuple_type_valid_many_element() {
         assert!(validate_tuple_type("(int,int,int,int,int)"));
     }
+
+    // ── Malformed-input regression corpus ──────────────────────────────────
+    // Comprehensive test cases for malformed param_destructuring declarations,
+    // duplicate forms, and invalid arguments.
+
+    #[test]
+    fn check_rejects_local_starting_with_digit() {
+        let prog = program_with_destructure_param("(int, int)", "_1x_2y");
+        let err = check(&prog, "test").expect_err("digit-start local must fail");
+        assert!(
+            err.contains("invalid name") && err.contains("valid identifier"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_local_with_special_chars() {
+        let prog = program_with_destructure_param("(int, int)", "_x@_y");
+        let err = check(&prog, "test").expect_err("special char local must fail");
+        assert!(
+            err.contains("invalid name") && err.contains("valid identifier"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_local_with_hyphen() {
+        let prog = program_with_destructure_param("(int, int)", "_x-y_z");
+        let err = check(&prog, "test").expect_err("hyphen local must fail");
+        assert!(
+            err.contains("invalid name") && err.contains("valid identifier"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_duplicate_local_exact() {
+        let prog = program_with_destructure_param("(int, int, int)", "_x_y_x");
+        let err = check(&prog, "test").expect_err("duplicate local exact must fail");
+        assert!(err.contains("duplicate local name"), "{err}");
+    }
+
+    #[test]
+    fn check_rejects_duplicate_local_case_sensitive() {
+        // Case-sensitivity: x and X should be different
+        let prog = program_with_destructure_param("(int, int)", "_x_X");
+        assert!(check(&prog, "test").is_ok(), "x and X must be distinct");
+    }
+
+    #[test]
+    fn check_rejects_arity_mismatch_too_few_locals() {
+        let prog = program_with_destructure_param("(int, int, int, int)", "_x_y");
+        let err = check(&prog, "test").expect_err("too few locals must fail");
+        assert!(
+            err.contains("destructures") && err.contains("4 element"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_arity_mismatch_too_many_locals() {
+        let prog = program_with_destructure_param("(int, int)", "_x_y_z");
+        let err = check(&prog, "test").expect_err("too many locals must fail");
+        assert!(
+            err.contains("destructures") && err.contains("2 element"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_malformed_tuple_empty_parens() {
+        let prog = program_with_destructure_param("()", "_x");
+        let err = check(&prog, "test").expect_err("empty tuple must fail");
+        assert!(err.contains("malformed tuple type"), "{err}");
+    }
+
+    #[test]
+    fn check_rejects_malformed_tuple_single_no_comma() {
+        let prog = program_with_destructure_param("(int)", "_x");
+        let err = check(&prog, "test").expect_err("single element no comma must fail");
+        assert!(err.contains("malformed tuple type"), "{err}");
+    }
+
+    #[test]
+    fn check_rejects_local_with_unicode_special() {
+        let prog = program_with_destructure_param("(int, int)", "_x_€");
+        let err = check(&prog, "test").expect_err("unicode special char must fail");
+        assert!(
+            err.contains("invalid name") && err.contains("valid identifier"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_local_with_space() {
+        let prog = program_with_destructure_param("(int, int)", "_x _y");
+        let err = check(&prog, "test").expect_err("space in local must fail");
+        // Space is not a valid identifier character
+        assert!(err.contains("invalid name"), "{err}");
+    }
+
+    // Valid baseline cases for regression detection
+
+    #[test]
+    fn check_accepts_valid_two_element_basic() {
+        let prog = program_with_destructure_param("(int,int)", "_x_y");
+        assert!(check(&prog, "test").is_ok(), "basic two-element must pass");
+    }
+
+    #[test]
+    fn check_accepts_valid_three_element_with_spaces() {
+        let prog = program_with_destructure_param("(int, string, bool)", "_a_b_c");
+        assert!(
+            check(&prog, "test").is_ok(),
+            "three-element with spaces must pass"
+        );
+    }
+
+    #[test]
+    fn check_accepts_uppercase_identifiers() {
+        let prog = program_with_destructure_param("(int, int)", "_X_Y");
+        assert!(
+            check(&prog, "test").is_ok(),
+            "uppercase identifiers must pass"
+        );
+    }
+
+    #[test]
+    fn check_accepts_many_element_tuple() {
+        let prog = program_with_destructure_param("(int,int,int,int,int,int)", "_a_b_c_d_e_f");
+        assert!(check(&prog, "test").is_ok(), "many-element tuple must pass");
+    }
+
+    #[test]
+    fn check_accepts_leading_underscores() {
+        let prog = program_with_destructure_param("(int, int)", "___x_y");
+        assert!(
+            check(&prog, "test").is_ok(),
+            "leading underscores must pass"
+        );
+    }
+
+    #[test]
+    fn check_accepts_single_letter_names() {
+        let prog = program_with_destructure_param("(int, int, int)", "_a_b_c");
+        assert!(
+            check(&prog, "test").is_ok(),
+            "single-letter names must pass"
+        );
+    }
+
+    #[test]
+    fn check_accepts_names_with_digits() {
+        let prog = program_with_destructure_param("(int, int)", "_x1_y2");
+        assert!(
+            check(&prog, "test").is_ok(),
+            "names with trailing digits must pass"
+        );
+    }
 }
