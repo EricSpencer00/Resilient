@@ -1,3 +1,12 @@
 {
-  "claims": {}
+  "claims": {
+    "resilient/src/regex_builtins.rs": {
+      "branch": "res-3384-regex-builtins-should-reject-invalid-lit",
+      "claimed_at": "2026-06-13T05:37:49Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-3384-regex-builtins-should-reject-invalid-lit",
+      "claimed_at": "2026-06-13T05:37:49Z"
+    }
+  }
 }
