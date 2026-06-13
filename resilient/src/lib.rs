@@ -31916,7 +31916,11 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     };
 
     // Parse.
-    let (mut program, parse_errs) = parse(&src);
+    let (mut program, parse_errs) = if emit_diagnostics_json {
+        parse_silent(&src)
+    } else {
+        parse(&src)
+    };
     if !parse_errs.is_empty() {
         if emit_diagnostics_json {
             let path_str = path.to_string_lossy();
@@ -32736,7 +32740,29 @@ fn dispatch_stack_usage_subcommand(args: &[String]) -> Option<i32> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_cli() {
     // Get command line arguments
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some(
+                "bench"
+                    | "check"
+                    | "debug"
+                    | "fmt"
+                    | "lint"
+                    | "pkg"
+                    | "repl"
+                    | "self-host-parity-report"
+                    | "stack-usage"
+                    | "test"
+                    | "tla"
+                    | "verify-all"
+                    | "verify-cert"
+            )
+        )
+    {
+        args.remove(1);
+    }
 
     // RES-209: `--version` / `-V` prints the compiler version plus a
     // pre-1.0 stability notice and exits. See STABILITY.md at the
