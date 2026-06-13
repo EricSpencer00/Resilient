@@ -78,7 +78,7 @@ pub fn format_chain(target_actor: u64) -> String {
     s
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Fast-reject: skip programs with no actor call sites.
     let has_actor_call = crate::uniqueness_walk::any_node(program, |n| {
         if let Node::CallExpression { function, .. } = n {
@@ -92,11 +92,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     let site_count = count_actor_sites(program);
-    eprintln!(
+    let plain = format!(
         "causal-trace: {} actor call site(s) detected — \
          circular trace buffer active ({} entries capacity)",
         site_count, TRACE_CAPACITY
     );
+    crate::typechecker::emit_check_warning_plain(plain, source_path, "causal_trace");
     Ok(())
 }
 

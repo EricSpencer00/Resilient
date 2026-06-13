@@ -235,13 +235,13 @@ fn count_body_statements(node: &Node) -> usize {
 ///
 /// A low resilience score is diagnostic, not a compile error — the
 /// developer may be in the middle of adding contracts. The warning
-/// surface is kept as `eprintln!` so it shows up in the build log
-/// without blocking compilation.
+/// surface is kept in the check diagnostic stream so it shows up in
+/// build logs without blocking compilation.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let scores = score_program(program);
     let f_grade: Vec<&ResilienceScore> = scores.iter().filter(|s| s.total < 40).collect();
     for s in &f_grade {
-        eprintln!(
+        let plain = format!(
             "{source_path}:0:0: warning[resilience]: \
              `{}` scores {}/100 ({}) — \
              add `requires`/`ensures` contracts to improve resilience",
@@ -249,6 +249,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             s.total,
             s.grade()
         );
+        crate::typechecker::emit_check_warning_plain(plain, source_path, "resilience");
     }
     Ok(())
 }
