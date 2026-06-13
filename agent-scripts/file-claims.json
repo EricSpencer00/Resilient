@@ -3,6 +3,42 @@
     "resilient/src/lib.rs": {
       "branch": "res-3382-check-emit-diagnostics-json-should-emit",
       "claimed_at": "2026-06-13T06:41:51Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/autopilot.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/property_tests.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/mutation_testing.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/causal_trace.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/snapshot_regression.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/labeled_break.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/lean_spec.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
+    },
+    "resilient/src/package_manager.rs": {
+      "branch": "res-3386-make-emit-diagnostics-json-consume-eprin",
+      "claimed_at": "2026-06-13T06:58:02Z"
     }
   }
 }

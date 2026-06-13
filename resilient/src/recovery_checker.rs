@@ -11,25 +11,27 @@
 use crate::Node;
 use std::collections::HashSet;
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1270 / RES-1916: the typechecker gates this call behind
     // `markers.has_live_block`, so the program is guaranteed to
     // contain at least one `LiveBlock`. The previous `any_node`
     // pre-scan was redundant — removed.
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(source_path);
     ctx.collect_declarations(program);
     ctx.check_live_blocks(program);
     Ok(())
 }
 
 struct Context {
+    source_path: String,
     extern_fns: HashSet<String>,
     current_fn: Option<String>,
 }
 
 impl Context {
-    fn new() -> Self {
+    fn new(source_path: &str) -> Self {
         Context {
+            source_path: source_path.to_string(),
             extern_fns: HashSet::new(),
             current_fn: None,
         }
@@ -132,17 +134,27 @@ impl Context {
                 // `Borrow<str>`, so the clone-per-call-site was wasted.
                 if let Some(fn_name) = extract_identifier(function) {
                     if self.extern_fns.contains(fn_name) {
-                        eprintln!(
+                        let plain = format!(
                             "warning: opaque FFI call to '{}' in recovery body \
-                            cannot be modeled as TLA+ action",
+                             cannot be modeled as TLA+ action",
                             fn_name
+                        );
+                        crate::typechecker::emit_check_warning_plain(
+                            plain,
+                            &self.source_path,
+                            "recovery",
                         );
                     } else if let Some(current) = self.current_fn.as_deref()
                         && fn_name == current
                     {
-                        eprintln!(
+                        let plain = format!(
                             "warning: function '{}' recursively calls itself in recovery body",
                             current
+                        );
+                        crate::typechecker::emit_check_warning_plain(
+                            plain,
+                            &self.source_path,
+                            "recovery",
                         );
                     }
                 }
@@ -154,9 +166,14 @@ impl Context {
                 let free = crate::free_vars::free_vars(node);
                 if !free.is_empty() {
                     let captured: Vec<_> = free.iter().cloned().collect();
-                    eprintln!(
+                    let plain = format!(
                         "warning: closure in recovery body captures [{}] from outer scope",
                         captured.join(", ")
+                    );
+                    crate::typechecker::emit_check_warning_plain(
+                        plain,
+                        &self.source_path,
+                        "recovery",
                     );
                 }
             }

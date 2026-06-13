@@ -85,7 +85,7 @@ pub fn install_snapshot_baseline(snapshots: HashMap<String, Snapshot>) {
     }
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Fast-reject: skip programs with no function declarations.
     let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
     if !has_fn {
@@ -102,17 +102,23 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if let Some(baseline) = baseline {
         let changed = diff(&baseline, &current);
         if !changed.is_empty() {
-            eprintln!(
+            let plain = format!(
                 "snapshot-regression: {} function(s) have changed behavioral \
                  fingerprints: [{}]",
                 changed.len(),
                 changed.join(", ")
             );
+            crate::typechecker::emit_check_warning_plain(plain, source_path, "snapshot_regression");
             for name in &changed {
                 if let (Some(old), Some(new)) = (baseline.get(name), current.get(name)) {
-                    eprintln!(
+                    let plain = format!(
                         "snapshot-regression:   `{name}`: {} → {}",
                         old.fingerprint_digest, new.fingerprint_digest
+                    );
+                    crate::typechecker::emit_check_warning_plain(
+                        plain,
+                        source_path,
+                        "snapshot_regression",
                     );
                 }
             }

@@ -429,20 +429,22 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
     let summary = summarize(&mutations);
     let total: usize = summary.values().map(|(c, _)| c).sum();
-    eprintln!(
+    let plain = format!(
         "mutation: {} total mutation site(s) across {} function(s)",
         total,
         summary.len()
     );
+    crate::typechecker::emit_check_warning_plain(plain, source_path, "mutation");
     let mut fns: Vec<_> = summary.iter().collect();
     fns.sort_by_key(|(n, _)| n.as_str());
     for (fn_name, (count, kinds)) in &fns {
         let mut kinds_sorted = kinds.clone();
         kinds_sorted.sort();
-        eprintln!(
+        let plain = format!(
             "mutation:   `{fn_name}`: {count} site(s) [{}]",
             kinds_sorted.join(", ")
         );
+        crate::typechecker::emit_check_warning_plain(plain, source_path, "mutation");
     }
 
     // Cross-reference with contract declarations to identify unconstrained sites.
@@ -460,17 +462,19 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if !unconstrained.is_empty() {
         let unconstrained_total: usize = unconstrained.iter().map(|(_, n)| n).sum();
         let pct = unconstrained_total * 100 / total.max(1);
-        eprintln!(
+        let plain = format!(
             "{source_path}:0:0: warning[mutation]: \
              {unconstrained_total}/{total} mutation site(s) ({pct}%) are in \
              functions with no contracts — the Z3 verifier cannot kill them"
         );
+        crate::typechecker::emit_check_warning_plain(plain, source_path, "mutation");
         for (name, count) in &unconstrained {
-            eprintln!(
+            let plain = format!(
                 "{source_path}:0:0: warning[mutation]: \
                  `{name}`: {count} unconstrained mutation site(s) — \
                  add `requires`/`ensures` contracts"
             );
+            crate::typechecker::emit_check_warning_plain(plain, source_path, "mutation");
         }
     }
     Ok(())

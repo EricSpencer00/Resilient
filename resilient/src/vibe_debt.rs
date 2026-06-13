@@ -204,15 +204,16 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     for entry in report.entries.iter().filter(|e| e.is_full_vibe()) {
-        eprintln!(
+        let plain = format!(
             "{source_path}:0:0: warning[vibe_debt]: \
              `{}` has no contracts, no effect annotation, and is \
              unreferenced — fully vibe-coded",
             entry.function_name
         );
+        crate::typechecker::emit_check_warning_plain(plain, source_path, "vibe_debt");
     }
     if report.debt_percent > 75.0 {
-        eprintln!(
+        let plain = format!(
             "{source_path}:0:0: warning[vibe_debt]: \
              program-wide vibe debt is {:.1}% \
              ({} of {} function(s) have zero verification signals)",
@@ -220,6 +221,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             report.fully_vibe_count,
             report.entries.len()
         );
+        crate::typechecker::emit_check_warning_plain(plain, source_path, "vibe_debt");
     }
     Ok(())
 }

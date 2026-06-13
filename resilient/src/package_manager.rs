@@ -177,12 +177,13 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
 
     if errors.is_empty() {
         if !manifest.dependencies.is_empty() {
-            eprintln!(
+            let plain = format!(
                 "pkg: manifest `{}` v{} with {} dependency/ies validated",
                 manifest.name,
                 manifest.version,
                 manifest.dependencies.len()
             );
+            crate::typechecker::emit_check_warning_plain(plain, source_path, "pkg");
         }
         Ok(())
     } else {

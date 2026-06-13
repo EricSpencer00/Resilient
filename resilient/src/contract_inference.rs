@@ -532,11 +532,22 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         for e in &ic.ensures {
             parts.push(format!("ensures {e}"));
         }
-        eprintln!(
+        let plain = format!(
             "{source_path}:0:0: {label}: `{}` — \
              inferred suggestion: {}",
             ic.function_name,
             parts.join(", ")
+        );
+        let severity = if label.starts_with("warning") {
+            "warning"
+        } else {
+            "note"
+        };
+        crate::typechecker::emit_check_diagnostic_plain(
+            plain,
+            severity,
+            source_path,
+            "contract_infer",
         );
     }
     Ok(())

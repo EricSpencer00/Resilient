@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 /// Run all dead-code lint checks on `program` and print warnings to stderr.
 pub(crate) fn check(program: &Node, source_path: &str) {
     for msg in collect_warnings(program, source_path) {
-        eprintln!("{msg}");
+        crate::typechecker::emit_check_warning_plain(msg, source_path, "dead_code");
     }
 }
 

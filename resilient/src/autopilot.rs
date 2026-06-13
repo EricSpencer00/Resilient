@@ -112,7 +112,7 @@ pub fn format_report(report: &AutopilotReport) -> String {
     s
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
     if !has_fn {
         return Ok(());
@@ -121,24 +121,28 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if report.entries.is_empty() {
         return Ok(());
     }
-    eprintln!(
+    let plain = format!(
         "autopilot: program-wide vibe debt {:.1}%",
         report.program_debt_pct
     );
+    crate::typechecker::emit_check_warning_plain(plain, source_path, "autopilot");
     for e in &report.entries {
         if !e.action_items.is_empty() {
-            eprintln!(
+            let plain = format!(
                 "autopilot: `{}` [{}] — {}",
                 e.function_name,
                 e.grade,
                 e.action_items.join("; ")
             );
+            crate::typechecker::emit_check_warning_plain(plain, source_path, "autopilot");
         }
         for r in &e.inferred_requires {
-            eprintln!("autopilot: `{}` suggested: requires {}", e.function_name, r);
+            let plain = format!("autopilot: `{}` suggested: requires {}", e.function_name, r);
+            crate::typechecker::emit_check_warning_plain(plain, source_path, "autopilot");
         }
         for r in &e.inferred_ensures {
-            eprintln!("autopilot: `{}` suggested: ensures {}", e.function_name, r);
+            let plain = format!("autopilot: `{}` suggested: ensures {}", e.function_name, r);
+            crate::typechecker::emit_check_warning_plain(plain, source_path, "autopilot");
         }
     }
     Ok(())

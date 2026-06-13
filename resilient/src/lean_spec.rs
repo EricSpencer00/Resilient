@@ -310,7 +310,7 @@ pub fn list_emittable(program: &Node) -> Vec<String> {
     out
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Fast-reject: skip programs with no functions.
     let has_fn = crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::Function { .. }));
     if !has_fn {
@@ -320,11 +320,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if emittable.is_empty() {
         return Ok(());
     }
-    eprintln!(
+    let plain = format!(
         "lean-spec: {} function(s) can be lowered to Lean 4 formal specs: [{}]",
         emittable.len(),
         emittable.join(", ")
     );
+    crate::typechecker::emit_check_warning_plain(plain, source_path, "lean_spec");
     // Emit a per-function note for functions with contracts so the
     // user knows formal theorem generation is available.
     let Node::Program(stmts) = program else {
@@ -339,12 +340,13 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         } = &s.node
         {
             if emittable.contains(name) && (!requires.is_empty() || !ensures.is_empty()) {
-                eprintln!(
+                let plain = format!(
                     "lean-spec:   `{name}` has {} requires + {} ensures clause(s) — \
                      use `rz emit-lean {name}` to generate the theorem",
                     requires.len(),
                     ensures.len()
                 );
+                crate::typechecker::emit_check_warning_plain(plain, source_path, "lean_spec");
             }
         }
     }

@@ -29219,6 +29219,24 @@ fn parse_diagnostics_json_values<'a>(
         .collect()
 }
 
+fn check_diagnostics_json_values(
+    diagnostics: &[typechecker::CheckDiagnostic],
+) -> Vec<serde_json::Value> {
+    diagnostics
+        .iter()
+        .map(|diag| {
+            serde_json::json!({
+                "severity": diag.severity,
+                "code": diag.code,
+                "line": diag.line,
+                "column": diag.column,
+                "message": diag.message,
+                "file": diag.file,
+            })
+        })
+        .collect()
+}
+
 /// Macro expansion helper: parse a single expression string into a `Node`.
 ///
 /// The source is wrapped in a synthetic function body so the existing
@@ -32007,7 +32025,17 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     #[cfg(not(feature = "z3"))]
     let mut tc = tc_base;
     let path_str = path.to_string_lossy();
-    match tc.check_program_with_source(&program, path_str.as_ref()) {
+    let (check_result, check_diagnostics) = if emit_diagnostics_json {
+        typechecker::collect_check_diagnostics(|| {
+            tc.check_program_with_source(&program, path_str.as_ref())
+        })
+    } else {
+        (
+            tc.check_program_with_source(&program, path_str.as_ref()),
+            Vec::new(),
+        )
+    };
+    match check_result {
         Ok(_) => {
             // RES-390: distributed-invariant verification runs
             // AFTER successful typechecking — we only try to
@@ -32060,7 +32088,11 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                 }
             }
             if emit_diagnostics_json {
-                println!("[]");
+                let json_diags = check_diagnostics_json_values(&check_diagnostics);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+                );
             } else if !quiet {
                 println!("{}: ok", path.display());
             }
@@ -32069,14 +32101,15 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
         Err(e) => {
             if emit_diagnostics_json {
                 let (line, col, msg) = parse_error_location(&e);
-                let json_diags = serde_json::json!([{
+                let mut json_diags = check_diagnostics_json_values(&check_diagnostics);
+                json_diags.push(serde_json::json!({
                     "severity": "error",
                     "code": "typecheck",
                     "line": line,
                     "column": col,
                     "message": msg,
                     "file": path_str.as_ref(),
-                }]);
+                }));
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_diags).unwrap_or_default()

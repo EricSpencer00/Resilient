@@ -69,7 +69,7 @@ fn walk<'a>(node: &'a Node, fn_name: &'a str, depth: u32, out: &mut Vec<DeepBrea
     }
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Fast-reject: skip programs with no loops at all.
     let has_loop = crate::uniqueness_walk::any_node(program, |n| {
         matches!(n, Node::WhileStatement { .. } | Node::ForInStatement { .. })
@@ -79,11 +79,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
     let warnings = analyze(program);
     for w in &warnings {
-        eprintln!(
+        let plain = format!(
             "warning: `{}` has a break/continue nested {} loop(s) deep — \
              consider refactoring with labeled break once the syntax is available",
             w.function, w.depth
         );
+        crate::typechecker::emit_check_warning_plain(plain, source_path, "labeled_break");
     }
     Ok(())
 }

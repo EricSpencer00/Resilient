@@ -20,7 +20,169 @@
 
 use crate::span::{Pos, Span};
 use crate::{Node, Pattern};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckDiagnostic {
+    pub severity: String,
+    pub code: String,
+    pub file: String,
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+    pub plain: String,
+}
+
+thread_local! {
+    static CHECK_DIAGNOSTIC_COLLECTOR: RefCell<Option<Vec<CheckDiagnostic>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn collect_check_diagnostics<T>(f: impl FnOnce() -> T) -> (T, Vec<CheckDiagnostic>) {
+    let previous = CHECK_DIAGNOSTIC_COLLECTOR.with(|slot| slot.replace(Some(Vec::new())));
+    let result = f();
+    let diagnostics =
+        CHECK_DIAGNOSTIC_COLLECTOR.with(|slot| slot.replace(previous).unwrap_or_default());
+    (result, diagnostics)
+}
+
+pub(crate) fn emit_check_warning_plain(
+    plain: impl Into<String>,
+    fallback_file: &str,
+    fallback_code: &str,
+) {
+    emit_check_diagnostic_plain(plain, "warning", fallback_file, fallback_code);
+}
+
+pub(crate) fn emit_check_diagnostic_plain(
+    plain: impl Into<String>,
+    fallback_severity: &str,
+    fallback_file: &str,
+    fallback_code: &str,
+) {
+    let plain = plain.into();
+    let diagnostic =
+        check_diagnostic_from_plain(&plain, fallback_severity, fallback_file, fallback_code);
+    let captured = CHECK_DIAGNOSTIC_COLLECTOR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(diagnostics) = slot.as_mut() {
+            diagnostics.push(diagnostic);
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        eprintln!("{plain}");
+    }
+}
+
+fn check_diagnostic_from_plain(
+    plain: &str,
+    fallback_severity: &str,
+    fallback_file: &str,
+    fallback_code: &str,
+) -> CheckDiagnostic {
+    for severity in ["warning", "note", "hint"] {
+        let needle = format!(": {severity}[");
+        if let Some((loc, rest)) = plain.split_once(&needle)
+            && let Some((code, message)) = rest.split_once("]: ")
+            && let Some((file, line, column)) = parse_plain_location(loc)
+        {
+            return CheckDiagnostic {
+                severity: severity.to_string(),
+                code: code.to_string(),
+                file,
+                line,
+                column,
+                message: message.to_string(),
+                plain: plain.to_string(),
+            };
+        }
+    }
+
+    for severity in ["warning", "note", "hint"] {
+        let prefix = format!("{severity}[");
+        if let Some(rest) = plain.strip_prefix(&prefix)
+            && let Some((code, message)) = rest.split_once("]: ")
+        {
+            return fallback_diagnostic(plain, severity, fallback_file, code, message, 0, 0);
+        }
+    }
+
+    if let Some(rest) = plain.strip_prefix("warning: ") {
+        if let Some((file, line, column, message)) = parse_plain_location_message(rest) {
+            return CheckDiagnostic {
+                severity: "warning".to_string(),
+                code: fallback_code.to_string(),
+                file,
+                line,
+                column,
+                message,
+                plain: plain.to_string(),
+            };
+        }
+        return fallback_diagnostic(plain, "warning", fallback_file, fallback_code, rest, 0, 0);
+    }
+
+    if let Some(rest) = plain.strip_prefix("hint: ") {
+        return fallback_diagnostic(plain, "hint", fallback_file, fallback_code, rest, 0, 0);
+    }
+
+    fallback_diagnostic(
+        plain,
+        fallback_severity,
+        fallback_file,
+        fallback_code,
+        plain,
+        0,
+        0,
+    )
+}
+
+fn fallback_diagnostic(
+    plain: &str,
+    severity: &str,
+    fallback_file: &str,
+    code: &str,
+    message: &str,
+    line: usize,
+    column: usize,
+) -> CheckDiagnostic {
+    CheckDiagnostic {
+        severity: severity.to_string(),
+        code: code.to_string(),
+        file: fallback_file.to_string(),
+        line,
+        column,
+        message: message.to_string(),
+        plain: plain.to_string(),
+    }
+}
+
+fn parse_plain_location_message(rest: &str) -> Option<(String, usize, usize, String)> {
+    let marker = rest.find(": ")?;
+    let mut search_start = marker + 2;
+    loop {
+        let (loc, message) = rest.split_at(search_start - 2);
+        if let Some((file, line, column)) = parse_plain_location(loc) {
+            return Some((file, line, column, message[2..].to_string()));
+        }
+        let Some(next) = rest[search_start..].find(": ") else {
+            break;
+        };
+        search_start += next + 2;
+    }
+    None
+}
+
+fn parse_plain_location(loc: &str) -> Option<(String, usize, usize)> {
+    let mut parts = loc.rsplitn(3, ':');
+    let column = parts.next()?.parse().ok()?;
+    let line = parts.next()?.parse().ok()?;
+    let file = parts.next()?.to_string();
+    Some((file, line, column))
+}
 
 /// RES-189: one entry in the typechecker's post-walk inlay-hint
 /// cache. Produced for every unannotated `let` binding (i.e.
@@ -1270,10 +1432,11 @@ fn emit_partial_proof_warning(source_path: &str, clause: &Node) {
     } else {
         format!("{}:{}:{}", file, span.start.line, span.start.column)
     };
-    eprintln!(
+    let plain = format!(
         "warning[partial-proof]: Z3 returned Unknown for assertion at {} \u{2014} proof is incomplete",
         location
     );
+    emit_check_warning_plain(plain, source_path, "partial-proof");
 }
 
 /// RES-071: a single SMT-LIB2 proof certificate that the typechecker
@@ -6025,18 +6188,20 @@ impl TypeChecker {
                         }
                         crate::verifier_actors::ActorProofResult::Unknown => {
                             if self.warn_unverified {
-                                eprintln!(
+                                let plain = format!(
                                     "warning[partial-proof]: actor `{}` `always: {}` could not be proven on handler `{}` — Z3 returned Unknown",
                                     o.actor_name, o.invariant_label, o.handler_name,
                                 );
+                                emit_check_warning_plain(plain, source_path, "partial-proof");
                             }
                         }
                         crate::verifier_actors::ActorProofResult::Unsupported { reason } => {
                             if self.warn_unverified {
-                                eprintln!(
+                                let plain = format!(
                                     "warning[partial-proof]: actor `{}` `always: {}` not verified on handler `{}` — {}",
                                     o.actor_name, o.invariant_label, o.handler_name, reason,
                                 );
+                                emit_check_warning_plain(plain, source_path, "partial-proof");
                             }
                         }
                     }
@@ -7163,9 +7328,15 @@ impl TypeChecker {
                                 // continues, runtime check stays in,
                                 // audit counter bumps, user sees a hint.
                                 self.stats.verifier_timeouts += 1;
-                                eprintln!(
+                                let plain = format!(
                                     "hint: proof timed out after {}ms — runtime check retained (fn {})",
                                     self.verifier_timeout_ms, name
+                                );
+                                emit_check_diagnostic_plain(
+                                    plain,
+                                    "hint",
+                                    &self.source_path,
+                                    "proof-timeout",
                                 );
                             }
                             // RES-217: any unresolved verdict (timeout OR a
@@ -7329,9 +7500,15 @@ impl TypeChecker {
                     if verdict.is_none() && !fails.is_empty() {
                         if timed_out_flag {
                             self.stats.verifier_timeouts += 1;
-                            eprintln!(
+                            let plain = format!(
                                 "hint: proof timed out after {}ms — runtime check retained (fn {}, recovers_to)",
                                 self.verifier_timeout_ms, name
+                            );
+                            emit_check_diagnostic_plain(
+                                plain,
+                                "hint",
+                                &self.source_path,
+                                "proof-timeout",
                             );
                             if self.warn_unverified {
                                 emit_partial_proof_warning(&self.source_path, clause);
@@ -7380,7 +7557,11 @@ impl TypeChecker {
                     if let Err(bmc_msg) =
                         crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)
                     {
-                        eprintln!("warning[bmc]: {bmc_msg}");
+                        emit_check_warning_plain(
+                            format!("warning[bmc]: {bmc_msg}"),
+                            &self.source_path,
+                            "bmc",
+                        );
                     }
                 }
 
@@ -9669,7 +9850,11 @@ impl TypeChecker {
                         // that can't be typed (e.g. genuinely undefined name)
                         // should still allow the program to continue running.
                         if let Err(e) = self.check_node(expr) {
-                            eprintln!("warning: {loc}in interpolated string: {e}");
+                            emit_check_warning_plain(
+                                format!("warning: {loc}in interpolated string: {e}"),
+                                &self.source_path,
+                                "string_interp",
+                            );
                         }
                     }
                 }
@@ -10040,9 +10225,15 @@ impl TypeChecker {
                                     // RES-137: soft-failure — runtime
                                     // check stays in; audit bumps.
                                     self.stats.verifier_timeouts += 1;
-                                    eprintln!(
+                                    let plain = format!(
                                         "hint: proof timed out after {}ms — runtime check retained (call to fn {})",
                                         self.verifier_timeout_ms, callee_name
+                                    );
+                                    emit_check_diagnostic_plain(
+                                        plain,
+                                        "hint",
+                                        &self.source_path,
+                                        "proof-timeout",
                                     );
                                 }
                                 // RES-217: any unresolved verdict (timeout
