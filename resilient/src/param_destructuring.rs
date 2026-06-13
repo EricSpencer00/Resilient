@@ -164,7 +164,65 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             r.locals.join(", ")
         );
     }
+
+    // RES-3236: validate call-site argument contracts for destructuring parameters
+    validate_destructuring_calls(program, source_path, &reqs)?;
+
     Ok(())
+}
+
+fn validate_destructuring_calls(
+    node: &Node,
+    source_path: &str,
+    reqs: &[DestructureRequest],
+) -> Result<(), String> {
+    // Build map of function names to their destructuring param indices
+    let mut destructuring_funcs: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for req in reqs {
+        destructuring_funcs.insert(req.fn_name.clone(), req.param_index);
+    }
+
+    let mut errors = Vec::new();
+    check_calls_recursive(node, source_path, &destructuring_funcs, &mut errors);
+
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    Ok(())
+}
+
+fn check_calls_recursive(
+    node: &Node,
+    source_path: &str,
+    destructuring_funcs: &std::collections::HashMap<String, usize>,
+    errors: &mut Vec<String>,
+) {
+    if let Node::CallExpression {
+        function,
+        arguments,
+        span,
+    } = node
+    {
+        if let Node::Identifier { name, .. } = function.as_ref() {
+            if let Some(&param_idx) = destructuring_funcs.get(name) {
+                // Function has destructuring at param_idx; calls must provide at least param_idx + 1 args
+                let required_args = param_idx + 1;
+                if arguments.len() < required_args {
+                    let line = span.start.line;
+                    let col = span.start.column;
+                    errors.push(format!(
+                        "{}:{}:{}: error[param_destructuring]: call to `{}` provides {} argument(s), \
+                         but function declares destructuring parameter at position {} (requires at least {})",
+                        source_path, line, col, name, arguments.len(), param_idx, required_args
+                    ));
+                }
+            }
+        }
+    }
+    crate::uniqueness_walk::walk_children(node, &mut |child| {
+        check_calls_recursive(child, source_path, destructuring_funcs, errors);
+    });
 }
 
 fn validate_tuple_type(ty: &str) -> bool {
@@ -595,5 +653,126 @@ fn process((int,int) vals) -> int {
             "{err}"
         );
         assert!(err.contains("first declared on line"), "{err}");
+    }
+
+    #[test]
+    fn check_call_site_rejects_insufficient_args() {
+        // RES-3236: calling a function with destructuring param without args should fail
+        let src = r#"
+fn add_pair((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn main() {
+    let result = add_pair();
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test").expect_err("insufficient call args must fail");
+        assert!(
+            err.contains("call to `add_pair` provides 0 argument(s)"),
+            "Expected insufficient args message, got: {err}"
+        );
+        assert!(
+            err.contains("destructuring parameter"),
+            "Expected destructuring mention, got: {err}"
+        );
+        assert!(
+            err.contains("error[param_destructuring]"),
+            "Expected error code, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_call_site_accepts_sufficient_args() {
+        // RES-3236: calling with correct args should pass
+        let src = r#"
+fn add_pair((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn main() {
+    let result = add_pair((3, 5));
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "call with sufficient args should pass"
+        );
+    }
+
+    #[test]
+    fn check_call_site_multiple_calls() {
+        // RES-3236: should catch all insufficient calls in a program
+        let src = r#"
+fn add((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn main() {
+    let x = add();
+    let y = add((1, 2));
+    let z = add();
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test").expect_err("multiple insufficient calls must fail");
+        // Should have at least 2 errors for the two add() calls
+        let error_count = err.matches("call to `add`").count();
+        assert!(
+            error_count >= 2,
+            "Expected at least 2 errors for insufficient add() calls, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_call_site_ignores_regular_functions() {
+        // RES-3236: regular functions (no destructuring) should not be checked
+        let src = r#"
+fn regular(int x) -> int {
+    return x;
+}
+
+fn main() {
+    let result = regular();
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        // This passes param_destructuring validation (regular() has no destructuring)
+        // Other checks would catch the missing arg, but not this one
+        assert!(
+            check(&prog, "test").is_ok(),
+            "regular functions bypass destructuring call-site check"
+        );
+    }
+
+    #[test]
+    fn check_call_site_with_multiple_destructuring_functions() {
+        // RES-3236: should validate calls to multiple destructuring functions
+        let src = r#"
+fn add((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn multiply((int, int) _x_y) -> int {
+    return 0;
+}
+
+fn main() {
+    let sum = add((1, 2));
+    let prod = multiply();
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test").expect_err("missing arg to multiply must fail");
+        assert!(
+            err.contains("multiply"),
+            "Expected error for multiply call, got: {err}"
+        );
+        assert!(
+            err.contains("0 argument(s)"),
+            "Expected 0-arg message, got: {err}"
+        );
     }
 }
