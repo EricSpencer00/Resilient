@@ -58,6 +58,37 @@ pub fn analyze(program: &Node) -> Vec<DestructureRequest> {
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let reqs = analyze(program);
+    // RES-3237: detect duplicate/conflicting registrations
+    let mut seen_functions: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+
+    if let Node::Program(stmts) = program {
+        for (stmt_idx, s) in stmts.iter().enumerate() {
+            if let Node::Function {
+                name, parameters, ..
+            } = &s.node
+            {
+                // Check if this function has destructuring syntax on any parameter
+                let has_destructuring = parameters
+                    .iter()
+                    .any(|(ty, _)| ty.starts_with('(') && ty.ends_with(')'));
+                if has_destructuring {
+                    if let Some(&(first_idx, _)) = seen_functions.get(name) {
+                        let current_line = s.span.start.line;
+                        let first_stmt = &stmts[first_idx];
+                        let first_line_actual = first_stmt.span.start.line;
+                        return Err(format!(
+                            "{}:{}:0: param_destructuring: duplicate function `{}` with \
+                             destructuring syntax (first declared on line {})",
+                            source_path, current_line, name, first_line_actual
+                        ));
+                    }
+                    seen_functions.insert(name.clone(), (stmt_idx, s.span.start.line));
+                }
+            }
+        }
+    }
+
     for r in &reqs {
         if r.locals.is_empty() {
             return Err(format!(
@@ -543,5 +574,26 @@ mod tests {
             check(&prog, "test").is_ok(),
             "names with trailing digits must pass"
         );
+    }
+
+    #[test]
+    fn check_rejects_duplicate_param_destructuring_functions() {
+        // RES-3237: two functions with the same name and destructuring syntax should fail
+        let src = r#"
+fn process((int,int) pair) -> int {
+    return 0;
+}
+
+fn process((int,int) vals) -> int {
+    return 1;
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test").expect_err("duplicate destructuring functions must fail");
+        assert!(
+            err.contains("duplicate function `process` with destructuring syntax"),
+            "{err}"
+        );
+        assert!(err.contains("first declared on line"), "{err}");
     }
 }
