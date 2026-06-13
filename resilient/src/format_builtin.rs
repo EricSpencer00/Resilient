@@ -298,20 +298,21 @@ fn validate_argument_type(
 /// 2. Each format specifier in the template is valid for its type.
 /// 3. Placeholder count matches argument count.
 /// 4. Argument types are compatible with their format specifiers (RES-3233).
+/// 5. Format builtin call sites match their declarations (RES-3231).
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
-    check_format_builtin_declarations(source_path, &mut errors);
+    let format_builtins = check_format_builtin_declarations(source_path, &mut errors);
 
     let has_format_call = crate::uniqueness_walk::any_node(program, |n| {
         if let Node::CallExpression { function, .. } = n {
             if let Node::Identifier { name, .. } = function.as_ref() {
-                return name == "format";
+                return name == "format" || format_builtins.contains_key(name);
             }
         }
         false
     });
     if has_format_call {
-        check_format_calls(program, source_path, &mut errors);
+        check_format_calls(program, source_path, &mut errors, &format_builtins);
     }
 
     if errors.is_empty() {
@@ -372,8 +373,17 @@ fn validate_format_spec(spec: &str) -> Result<(), String> {
     }
 }
 
-fn check_format_builtin_declarations(source_path: &str, errors: &mut Vec<String>) {
+struct FormatBuiltinDecl {
+    template: String,
+    arg_count: usize,
+}
+
+fn check_format_builtin_declarations(
+    source_path: &str,
+    errors: &mut Vec<String>,
+) -> std::collections::HashMap<String, FormatBuiltinDecl> {
     let mut seen_items: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut decls = std::collections::HashMap::new();
 
     for (item, rec) in crate::feature_attrs::find_kind("format_builtin") {
         // RES-3232: detect duplicate/conflicting registrations
@@ -516,13 +526,29 @@ fn check_format_builtin_declarations(source_path: &str, errors: &mut Vec<String>
             if let FormatSegment::Placeholder(spec) = segment {
                 if let Err(err) = validate_format_spec(spec) {
                     errors.push(format_builtin_diag(source_path, rec.line, &item, err));
+                    continue;
                 }
             }
         }
+
+        decls.insert(
+            item.clone(),
+            FormatBuiltinDecl {
+                template,
+                arg_count,
+            },
+        );
     }
+
+    decls
 }
 
-fn check_format_calls(node: &Node, source_path: &str, errors: &mut Vec<String>) {
+fn check_format_calls(
+    node: &Node,
+    source_path: &str,
+    errors: &mut Vec<String>,
+    format_builtins: &std::collections::HashMap<String, FormatBuiltinDecl>,
+) {
     if let Node::CallExpression {
         function,
         arguments,
@@ -589,11 +615,45 @@ fn check_format_calls(node: &Node, source_path: &str, errors: &mut Vec<String>) 
                         }
                     }
                 }
+            } else if let Some(decl) = format_builtins.get(name) {
+                // RES-3231: validate format_builtin call sites
+                let line = span.start.line;
+                let col = span.start.column;
+                let loc = format!("{source_path}:{line}:{col}");
+
+                // Check argument count matches declaration
+                if arguments.len() != decl.arg_count {
+                    errors.push(format!(
+                        "{loc}: error[fmt]: `{name}` is registered with {arg_count} argument(s), \
+                         but call provides {actual_count} argument(s)",
+                        arg_count = decl.arg_count,
+                        actual_count = arguments.len()
+                    ));
+                } else {
+                    // Parse the template to validate argument types
+                    if let Ok(segments) = parse_template(&decl.template) {
+                        let mut arg_index = 0;
+                        for seg in &segments {
+                            if let FormatSegment::Placeholder(spec) = seg {
+                                if arg_index < arguments.len() {
+                                    let arg = &arguments[arg_index];
+                                    let arg_kind = infer_arg_kind(arg);
+                                    if let Some(type_err) =
+                                        validate_argument_type(source_path, arg_kind, spec, arg)
+                                    {
+                                        errors.push(type_err);
+                                    }
+                                }
+                                arg_index += 1;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
     crate::uniqueness_walk::walk_children(node, &mut |child| {
-        check_format_calls(child, source_path, errors);
+        check_format_calls(child, source_path, errors, format_builtins);
     });
 }
 
@@ -1170,6 +1230,101 @@ fn main() {
             "{err}"
         );
         assert!(err.contains("first declared on line 10"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    // ── RES-3231: format_builtin call-site validation tests ──────────────────
+
+    #[test]
+    fn check_rejects_format_builtin_call_with_wrong_arg_count() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {}", args = 2"#, 10);
+
+        let src = r#"
+fn main() {
+    fmt(1);
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test.rz").expect_err("expected arg count mismatch");
+        assert!(
+            err.contains("is registered with 2 argument(s), but call provides 1 argument(s)"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_format_builtin_call_with_correct_args() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {}", args = 2"#, 10);
+
+        let src = r#"
+fn main() {
+    fmt(1, 2);
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        check(&prog, "test.rz").expect("fmt call with correct args should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_format_builtin_call_with_type_mismatch() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{:d}", args = 1"#, 10);
+
+        let src = r#"
+fn main() {
+    fmt("string");
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test.rz").expect_err("expected type mismatch");
+        assert!(
+            err.contains("requires integer argument, got string"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_format_builtin_call_with_correct_types() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{:.2f}", args = 1"#, 10);
+
+        let src = r#"
+fn main() {
+    fmt(3.14);
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        check(&prog, "test.rz").expect("fmt call with correct type should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_validates_multiple_format_builtin_calls() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{:d}", args = 1"#, 10);
+
+        let src = r#"
+fn main() {
+    fmt(1);
+    fmt("invalid");
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test.rz").expect_err("expected second call to fail");
+        assert!(
+            err.contains("requires integer argument, got string"),
+            "{err}"
+        );
         crate::feature_attrs::reset();
     }
 }
