@@ -176,8 +176,8 @@ PR_URL="$(cd "$WORKTREE" && gh pr create --draft --base main --head "$BRANCH" \
 Refs #${ISSUE}.
 
 Draft PR auto-opened by \`agent-scripts/dispatch-agent.sh\` to claim the
-ticket. \`agent-scripts/ready-or-bail.sh\` will add \`Closes #${ISSUE}\`
-only after it verifies substantive work and marks this PR ready.
+ticket. \`agent-scripts/ready-or-bail.sh\` will add the closing issue
+reference only after it verifies substantive work and marks this PR ready.
 
 Branch: \`${BRANCH}\`
 Worktree: \`${WORKTREE#${PRIMARY_ROOT}/}\`

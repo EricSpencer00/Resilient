@@ -90,8 +90,8 @@ PYEOF
 
   BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-body.XXXXXX")"
   gh pr view "$PR" --json body -q '.body // ""' > "$BODY_FILE"
-  ISSUE="$(sed -nE 's/.*([Rr]efs|[Cc]loses) #([0-9]+).*/\2/p' "$BODY_FILE" | head -1 || true)"
-  if [ -n "$ISSUE" ] && ! grep -qiE "(^|[^A-Za-z])Closes #${ISSUE}([^0-9]|$)" "$BODY_FILE"; then
+  ISSUE="$(sed -nE 's/^[[:space:]]*([Rr]efs|[Cc]loses)[[:space:]]+#([0-9]+).*/\2/p' "$BODY_FILE" | head -1 || true)"
+  if [ -n "$ISSUE" ] && ! grep -qiE "^[[:space:]]*Closes[[:space:]]+#${ISSUE}([^0-9]|$)" "$BODY_FILE"; then
     {
       cat "$BODY_FILE"
       printf '\n\nCloses #%s\n' "$ISSUE"
