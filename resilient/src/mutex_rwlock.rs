@@ -136,10 +136,79 @@ pub(crate) fn builtin_rwlock_unlock(args: &[Value]) -> RResult<Value> {
 // Advisory type-check pass
 // ---------------------------------------------------------------------------
 
-/// No-op check: static analysis for mutex usage is handled by the existing
-/// `deadlock_freedom` and `lock_priority` modules.
-pub(crate) fn check(_program: &crate::Node, _source_path: &str) -> Result<(), String> {
-    Ok(())
+/// RES-3133: Validate mutex/rwlock builtin arguments at compile time.
+/// Rejects invalid argument types in mutex_lock/unlock/try_lock and rwlock_read/write/unlock calls.
+pub(crate) fn check(program: &crate::Node, source_path: &str) -> Result<(), String> {
+    let mut errors: Vec<String> = Vec::new();
+
+    crate::uniqueness_walk::visit(program, &mut |node| {
+        let crate::Node::CallExpression {
+            function,
+            arguments,
+            span,
+        } = node
+        else {
+            return;
+        };
+
+        let crate::Node::Identifier { name, .. } = function.as_ref() else {
+            return;
+        };
+
+        let (builtin_name, expected_arg_type) = match name.as_str() {
+            "mutex_lock" | "mutex_unlock" | "mutex_try_lock" => ("mutex", "Mutex"),
+            "rwlock_read" | "rwlock_write" | "rwlock_unlock" => ("rwlock", "RwLock"),
+            _ => return,
+        };
+
+        if arguments.len() != 1 {
+            return;
+        }
+
+        let arg = &arguments[0];
+        if !argument_could_be_mutex_or_rwlock(arg) {
+            errors.push(format!(
+                "{}:{}:{}: error[mutex]: `{}` expects a {} argument, but got type that cannot be {}",
+                source_path,
+                span.start.line,
+                span.start.column,
+                name,
+                expected_arg_type,
+                if builtin_name == "mutex" {
+                    "a mutex (created with mutex_new)"
+                } else {
+                    "an rwlock (created with rwlock_new)"
+                }
+            ));
+        }
+    });
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+/// Helper: check if an expression could plausibly be a mutex or rwlock.
+/// Mutex/RwLock are represented as Array values, so we check:
+/// - Identifiers (could reference a variable bound to a mutex/rwlock)
+/// - Function calls that could return a mutex/rwlock (mutex_new, rwlock_new)
+/// - Array indexing (could be accessing a mutex/rwlock from a collection)
+fn argument_could_be_mutex_or_rwlock(node: &crate::Node) -> bool {
+    match node {
+        crate::Node::Identifier { .. } => true,
+        crate::Node::CallExpression { function, .. } => {
+            if let crate::Node::Identifier { name, .. } = function.as_ref() {
+                matches!(name.as_str(), "mutex_new" | "rwlock_new")
+            } else {
+                false
+            }
+        }
+        crate::Node::IndexExpression { .. } => true,
+        crate::Node::FieldAccess { .. } => true,
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

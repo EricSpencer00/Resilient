@@ -1,8 +1,16 @@
 {
   "claims": {
-    "resilient/src/format_builtin.rs": {
-      "branch": "res-3232-format-builtin-duplicates",
-      "claimed_at": "2026-06-13T01:52:10Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-3133-mutex-rwlock-typechecking",
+      "claimed_at": "2026-06-13T03:17:36Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-3133-mutex-rwlock-typechecking",
+      "claimed_at": "2026-06-13T03:17:36Z"
+    },
+    "resilient/src/mutex_rwlock.rs": {
+      "branch": "res-3133-mutex-rwlock-typechecking",
+      "claimed_at": "2026-06-13T03:17:36Z"
     }
   }
 }
