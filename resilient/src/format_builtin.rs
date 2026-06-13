@@ -21,6 +21,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatSegment {
@@ -186,12 +187,117 @@ pub fn render_float(spec: &str, value: f64) -> Result<String, String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FormatArgumentKind {
+    Integer,
+    Float,
+    String,
+    Boolean,
+    Other,
+    Unknown,
+}
+
+impl FormatArgumentKind {
+    fn label(self) -> &'static str {
+        match self {
+            FormatArgumentKind::Integer => "integer",
+            FormatArgumentKind::Float => "float",
+            FormatArgumentKind::String => "string",
+            FormatArgumentKind::Boolean => "boolean",
+            FormatArgumentKind::Other => "other",
+            FormatArgumentKind::Unknown => "unknown",
+        }
+    }
+}
+
+fn infer_arg_kind(arg: &Node) -> FormatArgumentKind {
+    match arg {
+        Node::IntegerLiteral { .. } => FormatArgumentKind::Integer,
+        Node::FloatLiteral { .. } => FormatArgumentKind::Float,
+        Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
+        | Node::InterpolatedString { .. } => FormatArgumentKind::String,
+        Node::BooleanLiteral { .. } => FormatArgumentKind::Boolean,
+        Node::PrefixExpression {
+            operator: "+" | "-",
+            right,
+            ..
+        } if matches!(right.as_ref(), Node::IntegerLiteral { .. }) => FormatArgumentKind::Integer,
+        Node::PrefixExpression {
+            operator: "+" | "-",
+            right,
+            ..
+        } if matches!(right.as_ref(), Node::FloatLiteral { .. }) => FormatArgumentKind::Float,
+        Node::PrefixExpression { operator: "!", .. } => FormatArgumentKind::Boolean,
+        _ => FormatArgumentKind::Unknown,
+    }
+}
+
+fn spec_requires_integer(spec: &str) -> bool {
+    if spec.is_empty() {
+        return false;
+    }
+    let Some(rest) = spec.strip_prefix(':') else {
+        return false;
+    };
+    rest.ends_with('d') || rest == "x" || rest == "X" || rest == "b" || rest == "o"
+}
+
+fn spec_requires_float(spec: &str) -> bool {
+    if spec.is_empty() {
+        return false;
+    }
+    spec.contains('.') || spec == ":e" || spec == ":E"
+}
+
+fn validate_argument_type(
+    source_path: &str,
+    arg_kind: FormatArgumentKind,
+    spec: &str,
+    arg: &Node,
+) -> Option<String> {
+    if arg_kind == FormatArgumentKind::Unknown {
+        return None;
+    }
+    let requires_int = spec_requires_integer(spec);
+    let requires_float = spec_requires_float(spec);
+
+    let span_val = span_of(arg);
+    let loc = format!(
+        "{source_path}:{}:{}",
+        span_val.start.line, span_val.start.column
+    );
+
+    match (arg_kind, requires_int, requires_float) {
+        (FormatArgumentKind::String, true, _) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires integer argument, got string"
+        )),
+        (FormatArgumentKind::String, false, true) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires float argument, got string"
+        )),
+        (FormatArgumentKind::Boolean, true, _) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires integer argument, got boolean"
+        )),
+        (FormatArgumentKind::Boolean, false, true) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires float argument, got boolean"
+        )),
+        (FormatArgumentKind::Integer, false, true) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires float argument, got integer"
+        )),
+        (FormatArgumentKind::Float, true, false) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires integer argument, got float"
+        )),
+        _ => None,
+    }
+}
+
 /// Walk the AST and validate every `format(template, ...)` call site.
 ///
 /// Checks:
 /// 1. The template string can be parsed (no unterminated braces).
 /// 2. Each format specifier in the template is valid for its type.
 /// 3. Placeholder count matches argument count.
+/// 4. Argument types are compatible with their format specifiers (RES-3233).
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
     check_format_builtin_declarations(source_path, &mut errors);
@@ -220,6 +326,31 @@ fn format_builtin_diag(source_path: &str, line: usize, item: &str, msg: impl AsR
         "{source_path}:{line}:0: error[fmt]: format_builtin declaration on `{item}` {}",
         msg.as_ref()
     )
+}
+
+fn span_of(node: &Node) -> Span {
+    match node {
+        Node::Identifier { span, .. }
+        | Node::IntegerLiteral { span, .. }
+        | Node::FloatLiteral { span, .. }
+        | Node::StringLiteral { span, .. }
+        | Node::StringInternLiteral { span, .. }
+        | Node::InterpolatedString { span, .. }
+        | Node::BooleanLiteral { span, .. }
+        | Node::BytesLiteral { span, .. }
+        | Node::CharLiteral { span, .. }
+        | Node::PrefixExpression { span, .. }
+        | Node::CallExpression { span, .. } => *span,
+        _ => Span::default(),
+    }
+}
+
+fn infer_literal_string(node: &Node) -> Option<&str> {
+    match node {
+        Node::StringLiteral { value, .. } => Some(value),
+        Node::StringInternLiteral { content, .. } => Some(content),
+        _ => None,
+    }
 }
 
 fn parse_quoted_string(value: &str) -> Option<&str> {
@@ -390,7 +521,13 @@ fn check_format_calls(node: &Node, source_path: &str, errors: &mut Vec<String>) 
                 let line = span.start.line;
                 let col = span.start.column;
                 let loc = format!("{source_path}:{line}:{col}");
-                if let Node::StringLiteral { value, .. } = &arguments[0] {
+                let template_str = match &arguments[0] {
+                    Node::StringLiteral { value, .. } => Some(value.as_str()),
+                    Node::StringInternLiteral { content, .. } => Some(content.as_str()),
+                    _ => None,
+                };
+
+                if let Some(value) = template_str {
                     match parse_template(value) {
                         Err(e) => {
                             errors.push(format!("{loc}: error[fmt]: {e}"));
@@ -408,7 +545,8 @@ fn check_format_calls(node: &Node, source_path: &str, errors: &mut Vec<String>) 
                                      argument(s) were supplied"
                                 ));
                             }
-                            // Validate each specifier syntactically
+                            // RES-3233: validate each argument against its format specifier
+                            let mut arg_index = 0;
                             for seg in &segments {
                                 if let FormatSegment::Placeholder(spec) = seg {
                                     if !spec.is_empty() {
@@ -422,6 +560,17 @@ fn check_format_calls(node: &Node, source_path: &str, errors: &mut Vec<String>) 
                                             errors.push(format!("{loc}: error[fmt]: {e}"));
                                         }
                                     }
+                                    // Check type compatibility between argument and specifier
+                                    if arg_index + 1 < arguments.len() {
+                                        let arg = &arguments[arg_index + 1];
+                                        let arg_kind = infer_arg_kind(arg);
+                                        if let Some(type_err) =
+                                            validate_argument_type(source_path, arg_kind, spec, arg)
+                                        {
+                                            errors.push(type_err);
+                                        }
+                                    }
+                                    arg_index += 1;
                                 }
                             }
                         }
@@ -865,5 +1014,131 @@ fn fmt(int x) -> int { return x; }
             "{err}"
         );
         crate::feature_attrs::reset();
+    }
+
+    // ── Runtime parity: argument type validation (RES-3233) ────────────────────
+
+    #[test]
+    fn check_rejects_hex_format_with_string_literal() {
+        let src = r#"
+fn main() {
+    format("{:x}", "hello");
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        let err = check(&prog, "test.rz").expect_err("expected type mismatch error");
+        assert!(
+            err.contains("requires integer argument, got string"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_float_format_with_integer_literal() {
+        let src = r#"
+fn main() {
+    format("{:.2f}", 42);
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        let err = check(&prog, "test.rz").expect_err("expected type mismatch error");
+        assert!(
+            err.contains("requires float argument, got integer"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_integer_format_with_boolean_literal() {
+        let src = r#"
+fn main() {
+    format("{:d}", true);
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        let err = check(&prog, "test.rz").expect_err("expected type mismatch error");
+        assert!(
+            err.contains("requires integer argument, got boolean"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_binary_format_with_string_literal() {
+        let src = r#"
+fn main() {
+    format("{:b}", "bits");
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        let err = check(&prog, "test.rz").expect_err("expected type mismatch error");
+        assert!(
+            err.contains("requires integer argument, got string"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_octal_format_with_float_literal() {
+        let src = r#"
+fn main() {
+    format("{:o}", 3.14);
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        let err = check(&prog, "test.rz").expect_err("expected type mismatch error");
+        assert!(
+            err.contains("requires integer argument, got float"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_accepts_integer_with_integer_format() {
+        let src = r#"
+fn main() {
+    format("{:x}", 42);
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        check(&prog, "test.rz").expect("integer literal with hex format should pass");
+    }
+
+    #[test]
+    fn check_accepts_float_with_float_format() {
+        let src = r#"
+fn main() {
+    format("{:.3f}", 2.71828);
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        check(&prog, "test.rz").expect("float literal with float format should pass");
+    }
+
+    #[test]
+    fn check_accepts_string_with_default_format() {
+        let src = r#"
+fn main() {
+    format("{}", "hello");
+}
+"#;
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+
+        check(&prog, "test.rz").expect("string literal with default format should pass");
     }
 }
