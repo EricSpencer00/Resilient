@@ -1,8 +1,3 @@
 {
-  "claims": {
-    "resilient/src/param_destructuring.rs": {
-      "branch": "res-3236-param-destructuring-validation",
-      "claimed_at": "2026-06-13T02:18:58Z"
-    }
-  }
+  "claims": {}
 }
