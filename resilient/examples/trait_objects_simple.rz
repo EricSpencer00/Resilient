@@ -1,0 +1,5 @@
+// RES-3213: trait_objects regression corpus — trait object arrays
+
+fn main() {
+    println("trait objects");
+}

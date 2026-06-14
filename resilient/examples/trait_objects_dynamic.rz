@@ -1,0 +1,20 @@
+// RES-3213: trait_objects regression corpus — dynamic dispatch
+
+trait Shape {
+    fn area(&self) -> f32;
+}
+
+struct Circle {
+    radius: f32,
+}
+
+impl Shape for Circle {
+    fn area(&self) -> f32 {
+        return 3.14 * self.radius * self.radius;
+    }
+}
+
+fn main() {
+    let c: Box<dyn Shape> = Box::new(Circle { radius: 5.0 });
+    println(c.area());
+}
