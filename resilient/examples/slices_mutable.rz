@@ -1,0 +1,14 @@
+// RES-3180: slices regression corpus — mutable slices
+
+fn increment_all(s: [mut i32]) {
+    for i in 0..s.len() {
+        s[i] = s[i] + 1;
+    }
+}
+
+fn main() {
+    let mut arr = [10, 20, 30];
+    let slice = arr[0..3];
+    increment_all(slice);
+    println(arr[0]);
+}
