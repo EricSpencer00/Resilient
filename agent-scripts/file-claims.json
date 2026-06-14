@@ -7,6 +7,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-3231-format-builtin-call-site-validation",
       "claimed_at": "2026-06-13T15:00:45Z"
+    },
+    "resilient/src/package_manager.rs": {
+      "branch": "res-3229-package-manager-regression-corpus",
+      "claimed_at": "2026-06-14T16:00:00Z"
     }
   }
 }
