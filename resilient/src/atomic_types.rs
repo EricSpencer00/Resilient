@@ -1368,8 +1368,45 @@ fn check_atomic_call_sites(
     Ok(())
 }
 
+fn check_atomic_duplicates(
+    attrs: &[(String, crate::feature_attrs::AttrRecord)],
+    program: &Node,
+    source_path: &str,
+) -> Result<(), String> {
+    let mut seen: HashMap<String, Span> = HashMap::new();
+    for (name, _rec) in attrs {
+        if let Some(first_span) = seen.get(name) {
+            let second_target = find_atomic_target(program, name.as_str());
+            let second_span = match second_target {
+                Some(AtomicTarget::StaticLet { span, .. } | AtomicTarget::Other { span, .. }) => {
+                    span
+                }
+                None => Span::default(),
+            };
+            return Err(format!(
+                "{}:{}:{}: error: duplicate atomic_types definition `{}`; previous definition at {}:{}:{}",
+                source_path,
+                second_span.start.line,
+                second_span.start.column,
+                name,
+                source_path,
+                first_span.start.line,
+                first_span.start.column
+            ));
+        }
+        let target = find_atomic_target(program, name.as_str());
+        if let Some(AtomicTarget::StaticLet { span, .. } | AtomicTarget::Other { span, .. }) =
+            target
+        {
+            seen.insert(name.clone(), span);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let attrs = collect_attrs();
+    check_atomic_duplicates(&attrs, program, source_path)?;
     let atomic_names: HashSet<String> = attrs.iter().map(|(name, _)| name.clone()).collect();
 
     // RES-2206: move each owned `String` straight into the registry
@@ -1452,5 +1489,88 @@ mod tests {
         declare("flag", 0);
         store("flag", 42);
         assert_eq!(load("flag"), Some(42));
+    }
+
+    // ── RES-3142: duplicate/conflict detection tests ───────────────────────
+
+    #[test]
+    fn check_rejects_duplicate_atomic_declarations() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+#[atomic]
+static let counter: i64 = 1;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("duplicate declarations should fail");
+        assert!(
+            err.contains("duplicate atomic_types definition"),
+            "expected duplicate error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_ok_multiple_distinct_atomics() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+#[atomic]
+static let flag: i64 = 1;
+
+#[atomic]
+static let status: i64 = 2;
+
+fn main() {}
+"#,
+        );
+        check(&prog, "<test>").expect("distinct atomic declarations should pass");
+    }
+
+    #[test]
+    fn check_rejects_duplicate_in_blocks() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn helper() {
+    #[atomic]
+    static let counter: i64 = 10;
+}
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("duplicate in block should fail");
+        assert!(
+            err.contains("duplicate atomic_types definition"),
+            "expected duplicate error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_reports_both_duplicate_locations() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+#[atomic]
+static let counter: i64 = 1;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("duplicate should fail");
+        assert!(
+            err.contains("previous definition"),
+            "error should reference both locations: {err}"
+        );
     }
 }

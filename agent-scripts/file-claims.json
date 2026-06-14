@@ -1,16 +1,16 @@
 {
   "claims": {
-    "resilient/src/format_builtin.rs": {
-      "branch": "res-3231-format-builtin-call-site-validation",
-      "claimed_at": "2026-06-13T15:00:45Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-3394-atomic-types-duplicate-detection",
+      "claimed_at": "2026-06-14T17:31:50Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-3231-format-builtin-call-site-validation",
-      "claimed_at": "2026-06-13T15:00:45Z"
+      "branch": "res-3394-atomic-types-duplicate-detection",
+      "claimed_at": "2026-06-14T17:31:50Z"
     },
-    "resilient/src/package_manager.rs": {
-      "branch": "res-3229-package-manager-regression-corpus",
-      "claimed_at": "2026-06-14T16:00:00Z"
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-3394-atomic-types-duplicate-detection",
+      "claimed_at": "2026-06-14T17:31:50Z"
     }
   }
 }
