@@ -1,0 +1,15 @@
+// RES-3176: generics regression corpus — parameterized types
+
+struct Container<T> {
+    value: T,
+}
+
+fn extract<T>(container: Container<T>) -> T {
+    return container.value;
+}
+
+fn main() {
+    let int_container = Container { value: 42 };
+    let result = extract(int_container);
+    println(result);
+}

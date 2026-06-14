@@ -1,0 +1,16 @@
+// RES-3176: generics regression corpus — multiple type parameters
+
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+fn swap<T, U>(pair: Pair<T, U>) -> Pair<U, T> {
+    return Pair { first: pair.second, second: pair.first };
+}
+
+fn main() {
+    let p = Pair { first: 42, second: "hello" };
+    let swapped = swap(p);
+    println(swapped.first);
+}
