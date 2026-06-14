@@ -1,0 +1,10 @@
+// RES-3220: unit_type regression corpus — implicit unit return
+
+fn implicit() {
+    let x = 5;
+}
+
+fn main() {
+    implicit();
+    println("done");
+}
