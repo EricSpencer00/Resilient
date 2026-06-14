@@ -1,0 +1,16 @@
+// RES-3165: option_some_none regression corpus — Option type
+
+fn find_even(n: i32) -> Option<i32> {
+    if n % 2 == 0 {
+        return Some(n);
+    }
+    return None;
+}
+
+fn main() {
+    let result = find_even(4);
+    match result {
+        Some(v) => println(v),
+        None => println("not found"),
+    }
+}

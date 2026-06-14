@@ -1,0 +1,11 @@
+// RES-3165: option_some_none regression corpus — Option unwrap
+
+fn get_value() -> Option<i32> {
+    return None;
+}
+
+fn main() {
+    let result = get_value();
+    let value = result.unwrap_or(42);
+    println(value);
+}
