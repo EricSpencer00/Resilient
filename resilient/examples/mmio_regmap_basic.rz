@@ -1,0 +1,23 @@
+// RES-3195: mmio_regmap regression corpus — memory-mapped I/O register maps
+
+// Register map declaration using attributes
+#[mmio(base = "0x40000000", size = "0x1000")]
+struct SystemRegisters {
+    control: u32,
+    status: u32,
+    interrupt: u32,
+    data: u32,
+}
+
+fn main() {
+    // Create register map at specified memory address
+    let regs = SystemRegisters {
+        control: 0,
+        status: 0,
+        interrupt: 0,
+        data: 0,
+    };
+
+    // Read/write to memory-mapped registers
+    println("MMIO regmap initialized");
+}

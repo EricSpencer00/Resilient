@@ -1,0 +1,22 @@
+// RES-3195: mmio_regmap — field offsets and access patterns
+
+#[mmio(base = "0x80000000")]
+struct PeripheralRegs {
+    // Registers with specific memory offsets
+    // Each field maps to a specific address offset from base
+    mode: u32,           // offset 0x00
+    enable: u32,         // offset 0x04
+    clock_ctrl: u32,     // offset 0x08
+    interrupt_mask: u32, // offset 0x0C
+}
+
+fn main() {
+    let peripheral = PeripheralRegs {
+        mode: 0x00,
+        enable: 0x01,
+        clock_ctrl: 0x02,
+        interrupt_mask: 0xFF,
+    };
+
+    println("Peripheral registers configured");
+}
