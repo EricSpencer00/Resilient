@@ -1,0 +1,16 @@
+// RES-3203: partial_eq regression corpus — PartialEq trait
+
+#[derive(PartialEq)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn main() {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 2 };
+    
+    if p1 == p2 {
+        println("equal");
+    }
+}

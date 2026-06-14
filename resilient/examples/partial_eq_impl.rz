@@ -1,0 +1,19 @@
+// RES-3203: partial_eq regression corpus — custom PartialEq
+
+struct Value {
+    v: i32,
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Value) -> bool {
+        return self.v == other.v;
+    }
+}
+
+fn main() {
+    let a = Value { v: 5 };
+    let b = Value { v: 5 };
+    if a == b {
+        println("same");
+    }
+}
