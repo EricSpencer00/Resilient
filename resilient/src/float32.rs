@@ -182,4 +182,33 @@ mod tests {
             "error should mention f32/f64: {errs}"
         );
     }
+
+    // ── Malformed-input regression corpus (RES-3169) ──────────────
+    #[test]
+    fn corpus_as_f32_precision_truncation() {
+        let pi = std::f64::consts::PI;
+        let result = builtin_as_f32(&[Value::Float(pi)]).unwrap();
+        let Value::Float(v) = result else {
+            panic!("expected Float");
+        };
+        // Verify precision was truncated to f32 limits
+        let expected = pi as f32 as f64;
+        assert!((v - expected).abs() < 1e-7, "f32 precision mismatch");
+    }
+
+    #[test]
+    fn corpus_as_f64_widens_f32() {
+        let f32_val = 2.5_f32;
+        let result = builtin_as_f64(&[Value::Float(f32_val as f64)]).unwrap();
+        assert!(matches!(result, Value::Float(v) if (v - f32_val as f64).abs() < 1e-7));
+    }
+
+    #[test]
+    fn corpus_f32_function_parameter() {
+        let src = "fn process(f32 value) -> f32 { return value; }\n";
+        let (prog, parse_errs) = parse(src);
+        assert!(parse_errs.is_empty(), "f32 parameter parsing should succeed");
+        let check_result = check(&prog, "test");
+        assert!(check_result.is_ok(), "f32 function should type-check");
+    }
 }
