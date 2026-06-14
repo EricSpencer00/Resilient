@@ -1,0 +1,9 @@
+// RES-3187: hash_maps regression corpus — HashMap iteration
+
+fn main() {
+    let mut map = HashMap::new();
+    map.insert("a", 1);
+    map.insert("b", 2);
+
+    println(map.len());
+}

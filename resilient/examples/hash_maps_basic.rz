@@ -1,0 +1,11 @@
+// RES-3187: hash_maps regression corpus — HashMap operations
+
+fn main() {
+    let mut map = HashMap::new();
+    map.insert("key1", 10);
+    map.insert("key2", 20);
+
+    if let Some(v) = map.get("key1") {
+        println(v);
+    }
+}
