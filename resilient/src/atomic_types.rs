@@ -1453,4 +1453,182 @@ mod tests {
         store("flag", 42);
         assert_eq!(load("flag"), Some(42));
     }
+
+    // ── RES-3141: call-site validation tests ─────────────────────────────────
+
+    #[test]
+    fn check_ok_atomic_load_valid_call() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    let x = atomic_load(counter);
+}
+"#,
+        );
+        check(&prog, "<test>").expect("valid atomic_load call should pass");
+    }
+
+    #[test]
+    fn check_ok_atomic_store_valid_call() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    atomic_store(counter, 42);
+}
+"#,
+        );
+        check(&prog, "<test>").expect("valid atomic_store call should pass");
+    }
+
+    #[test]
+    fn check_ok_atomic_fetch_add_valid_call() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    let prev = atomic_fetch_add(counter, 5);
+}
+"#,
+        );
+        check(&prog, "<test>").expect("valid atomic_fetch_add call should pass");
+    }
+
+    #[test]
+    fn check_rejects_atomic_load_too_many_args() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    let x = atomic_load(counter, 42);
+}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("atomic_load with 2 args should fail");
+        assert!(
+            err.contains("expects 1 arguments"),
+            "expected argument count validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_load_too_few_args() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    let x = atomic_load();
+}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("atomic_load with 0 args should fail");
+        assert!(
+            err.contains("expects 1 arguments"),
+            "expected argument count validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_store_wrong_arg_count() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    atomic_store(counter);
+}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("atomic_store with 1 arg should fail");
+        assert!(
+            err.contains("expects 2 arguments"),
+            "expected argument count validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_fetch_add_wrong_arg_count() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    let prev = atomic_fetch_add(counter);
+}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("atomic_fetch_add with 1 arg should fail");
+        assert!(
+            err.contains("expects 2 arguments"),
+            "expected argument count validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_call_undefined_name() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    let x = atomic_load(undefined_counter);
+}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("undefined atomic name should fail");
+        assert!(
+            err.contains("undefined"),
+            "expected undefined name validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_store_non_integer_value() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    atomic_store(counter, "not_an_int");
+}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("non-integer value should fail");
+        assert!(
+            err.contains("integer"),
+            "expected integer type validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_ok_nested_atomic_calls() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    if atomic_load(counter) > 0 {
+        atomic_store(counter, 42);
+    }
+}
+"#,
+        );
+        check(&prog, "<test>").expect("nested atomic calls should pass");
+    }
 }
