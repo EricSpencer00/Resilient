@@ -1453,4 +1453,106 @@ mod tests {
         store("flag", 42);
         assert_eq!(load("flag"), Some(42));
     }
+
+    // ── RES-3392: declaration validation tests ────────────────────────────────
+
+    #[test]
+    fn check_ok_with_valid_atomic_declaration() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+fn main() {
+    let x = counter;
+}
+"#,
+        );
+        check(&prog, "<test>").expect("valid atomic declaration should pass");
+    }
+
+    #[test]
+    fn check_ok_with_multiple_atomic_declarations() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 0;
+
+#[atomic]
+static let flag: i64 = 1;
+
+fn main() {
+    let x = counter;
+    let y = flag;
+}
+"#,
+        );
+        check(&prog, "<test>").expect("multiple valid atomic declarations should pass");
+    }
+
+    #[test]
+    fn check_rejects_atomic_with_arguments() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic(level=2)]
+static let counter: i64 = 0;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("#[atomic] with arguments should fail");
+        assert!(
+            err.contains("does not accept arguments"),
+            "expected argument rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_non_static_let() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+let counter: i64 = 0;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("#[atomic] on let should fail");
+        assert!(
+            err.contains("must be declared as `static let`"),
+            "expected static let requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_non_integer_init() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = "invalid";
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("non-integer initialization should fail");
+        assert!(
+            err.contains("must be initialized with an integer literal"),
+            "expected integer literal requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_atomic_on_non_static_let_function() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+fn some_function() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("atomic on function should fail");
+        assert!(
+            err.contains("must be declared as `static let`"),
+            "expected static let requirement, got: {err}"
+        );
+    }
 }

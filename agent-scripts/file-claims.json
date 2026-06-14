@@ -3,6 +3,10 @@
     "resilient/src/target_profiles.rs": {
       "branch": "res-3224-target-profiles-regression-corpus",
       "claimed_at": "2026-06-14T17:00:00Z"
+    },
+    "resilient/src/atomic_types.rs": {
+      "branch": "res-3392-atomic-types-declaration-validation",
+      "claimed_at": "2026-06-14T16:57:35Z"
     }
   }
 }
