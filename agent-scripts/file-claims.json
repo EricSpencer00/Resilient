@@ -9,8 +9,8 @@
       "claimed_at": "2026-06-13T15:00:45Z"
     },
     "resilient/src/package_manager.rs": {
-      "branch": "res-3225-package-manager-validation",
-      "claimed_at": "2026-06-14T14:30:31Z"
+      "branch": "res-3226-package-manager-call-site-validation",
+      "claimed_at": "2026-06-14T15:44:17Z"
     }
   }
 }
