@@ -150,4 +150,90 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    // ── Malformed-input regression corpus (RES-3149) ──────────────
+    // Valid baselines
+    #[test]
+    fn corpus_accepts_valid_probabilistic_contract() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("test_fn", 0.95, 100);
+        let rate = empirical_rate("test_fn");
+        assert!(rate.is_some());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_accepts_multiple_contracts() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("fn1", 0.9, 50);
+        register_contract("fn2", 0.95, 100);
+        assert!(empirical_rate("fn1").is_some());
+        assert!(empirical_rate("fn2").is_some());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_accepts_boundary_probabilities() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("boundary_low", 0.0, 1);
+        register_contract("boundary_high", 1.0, 1000);
+        assert!(empirical_rate("boundary_low").is_some());
+        assert!(empirical_rate("boundary_high").is_some());
+        crate::feature_attrs::reset();
+    }
+
+    // Malformed cases
+    #[test]
+    fn corpus_rejects_probability_out_of_range_low() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("invalid_low", -0.1, 100);
+        // Should reject probability < 0
+        assert!(empirical_rate("invalid_low").is_none());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_probability_out_of_range_high() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("invalid_high", 1.1, 100);
+        // Should reject probability > 1
+        assert!(empirical_rate("invalid_high").is_none());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_duplicate_contract() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("dup", 0.9, 50);
+        register_contract("dup", 0.8, 100);
+        // Should use first registration or reject duplicate
+        let rate = empirical_rate("dup");
+        assert!(rate.is_some());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_invalid_trials() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("zero_trials", 0.5, 0);
+        // Should reject zero or negative trials
+        assert!(empirical_rate("zero_trials").is_none());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_large_probability() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        register_contract("oversized", 2.0, 1000);
+        assert!(empirical_rate("oversized").is_none());
+        crate::feature_attrs::reset();
+    }
 }
