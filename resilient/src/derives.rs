@@ -277,4 +277,58 @@ mod tests {
         assert!(derives_trait("MyIter", "Iterator"));
         crate::feature_attrs::reset();
     }
+
+    // ── Malformed-input regression corpus (RES-3159) ──────────────
+    #[test]
+    fn corpus_single_derive() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Point",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Clone".into(),
+                line: 0,
+            },
+        );
+        assert!(check(&Node::Program(vec![]), "test").is_ok());
+        assert!(derives_trait("Point", "Clone"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_multiple_derives() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Vec3",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Clone, Copy, Default".into(),
+                line: 0,
+            },
+        );
+        assert!(check(&Node::Program(vec![]), "test").is_ok());
+        assert!(derives_trait("Vec3", "Clone"));
+        assert!(derives_trait("Vec3", "Copy"));
+        assert!(derives_trait("Vec3", "Default"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_duplicate_traits_accepted() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Dup",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Clone, Clone, Clone".into(),
+                line: 0,
+            },
+        );
+        assert!(check(&Node::Program(vec![]), "test").is_ok());
+        assert!(derives_trait("Dup", "Clone"));
+        crate::feature_attrs::reset();
+    }
 }
