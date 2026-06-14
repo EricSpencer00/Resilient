@@ -1,0 +1,15 @@
+// RES-3193: atomic_types regression corpus — atomic operations
+
+fn main() {
+    let counter: AtomicU32 = atomic_create(0);
+
+    // Atomic load
+    let value = atomic_load(counter);
+    println(value);
+
+    // Atomic store
+    atomic_store(counter, 42);
+
+    // Atomic increment
+    atomic_add(counter, 1);
+}

@@ -1,0 +1,16 @@
+// RES-3193: atomic_types regression corpus — compare-and-exchange operations
+
+fn main() {
+    let value: AtomicU32 = atomic_create(10);
+
+    // Compare-and-exchange: expected=10, new=20
+    let result = atomic_compare_exchange(value, 10, 20);
+    if result == 10 {
+        println("CAS succeeded");
+    } else {
+        println("CAS failed");
+    }
+
+    let final_value = atomic_load(value);
+    println(final_value);
+}
