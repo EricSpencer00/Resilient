@@ -1,0 +1,11 @@
+// RES-3182: arithmetic_ops regression corpus — arithmetic operations
+
+fn main() {
+    let a = 10;
+    let b = 3;
+
+    println(a + b);  // addition
+    println(a - b);  // subtraction
+    println(a * b);  // multiplication
+    println(a / b);  // division
+}
