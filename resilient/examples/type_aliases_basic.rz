@@ -1,0 +1,16 @@
+// RES-3191: type_aliases regression corpus — type aliases
+
+type UserId = u64;
+type Email = String;
+
+fn process_user(id: UserId, email: Email) -> UserId {
+    println(email);
+    return id;
+}
+
+fn main() {
+    let user_id: UserId = 123;
+    let email: Email = "user@example.com";
+    let result = process_user(user_id, email);
+    println(result);
+}

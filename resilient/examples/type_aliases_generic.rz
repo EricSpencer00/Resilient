@@ -1,0 +1,16 @@
+// RES-3191: type_aliases regression corpus — generic type aliases
+
+type Result<T> = Option<T>;
+
+fn safe_divide(a: i32, b: i32) -> Result<i32> {
+    if b == 0 {
+        return None;
+    }
+    return Some(a / b);
+}
+
+fn main() {
+    let r1 = safe_divide(10, 2);
+    let r2 = safe_divide(10, 0);
+    println(r1);
+}
