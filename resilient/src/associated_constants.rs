@@ -538,4 +538,78 @@ mod tests {
 
         crate::feature_attrs::reset();
     }
+
+    // ── Malformed-input regression corpus (RES-3139) ──────────────
+    // Valid baselines
+    #[test]
+    fn corpus_accepts_valid_assoc_const() {
+        record_assoc_const(
+            "Temperature",
+            "Bounded",
+            "MIN",
+            "-40",
+            100,
+        );
+        run_check("test.rz").expect("valid assoc_const should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_accepts_multiple_consts_same_type() {
+        record_assoc_const("Point", "Spatial", "ORIGIN_X", "0", 101);
+        record_assoc_const("Point", "Spatial", "ORIGIN_Y", "0", 102);
+        run_check("test.rz").expect("multiple consts on same type should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_accepts_same_const_different_types() {
+        record_assoc_const("Celsius", "Temperature", "MIN", "-273", 103);
+        record_assoc_const("Fahrenheit", "Temperature", "MIN", "-460", 104);
+        run_check("test.rz").expect("same const name on different types should pass");
+        crate::feature_attrs::reset();
+    }
+
+    // Malformed cases
+    #[test]
+    fn corpus_rejects_empty_type_name() {
+        record_assoc_const("", "Bounded", "MAX", "100", 105);
+        let err = run_check("test.rz").expect_err("empty type name should fail");
+        assert!(err.contains("empty type_name") || !err.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_empty_const_name() {
+        record_assoc_const("Bounded", "Trait", "", "42", 106);
+        let err = run_check("test.rz").expect_err("empty const_name should fail");
+        assert!(err.contains("empty") || !err.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_empty_value() {
+        record_assoc_const("MyType", "MyTrait", "VALUE", "", 107);
+        let err = run_check("test.rz").expect_err("empty value should fail");
+        assert!(err.contains("empty") || err.contains("value") || !err.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_duplicate_const() {
+        record_assoc_const("Type", "Trait", "CONST", "1", 108);
+        record_assoc_const("Type", "Trait", "CONST", "2", 109);
+        let err = run_check("test.rz").expect_err("duplicate const should fail");
+        assert!(err.contains("duplicate") || !err.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_rejects_conflicting_value() {
+        record_assoc_const("Point", "Coordinate", "X", "0", 110);
+        record_assoc_const("Point", "Coordinate", "X", "1", 111);
+        let err = run_check("test.rz").expect_err("conflicting value should fail");
+        assert!(err.contains("conflict") || err.contains("duplicate") || !err.is_empty());
+        crate::feature_attrs::reset();
+    }
 }
