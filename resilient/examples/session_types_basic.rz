@@ -1,0 +1,18 @@
+// RES-3199: session_types regression corpus — protocol session types
+
+// Define a session protocol using session type attributes
+#[session(protocol = "ClientServer")]
+trait ClientServer {
+    // Client sends request, server responds
+    send_request: fn(int) -> int,
+
+    // Server acknowledges receipt
+    acknowledge: fn(bool) -> (),
+
+    // Final response from server
+    response: fn(string) -> (),
+}
+
+fn main() {
+    println("Session type protocol defined");
+}

@@ -1,0 +1,20 @@
+// RES-3199: session_types — protocol state transitions
+
+#[session(protocol = "FileTransfer")]
+trait FileTransfer {
+    // Initiate connection
+    connect: fn(string) -> (),
+
+    // Send file metadata
+    send_metadata: fn(int) -> (),
+
+    // Transfer file content
+    send_chunk: fn(string) -> (),
+
+    // Finalize transfer
+    close: fn() -> (),
+}
+
+fn main() {
+    println("File transfer session protocol defined");
+}
