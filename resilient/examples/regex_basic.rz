@@ -1,0 +1,17 @@
+// RES-3188: regex_builtins regression corpus — regular expression operations
+
+fn main() {
+    let text = "The quick brown fox jumps over the lazy dog";
+
+    // Test if pattern matches
+    let has_fox = regex_match("fox", text);
+    println(to_string(has_fox));
+
+    // Find pattern in text
+    let pos = regex_find("brown", text);
+    println(to_string(pos));
+
+    // Replace pattern in text
+    let replaced = regex_replace("lazy", "active", text);
+    println(replaced);
+}

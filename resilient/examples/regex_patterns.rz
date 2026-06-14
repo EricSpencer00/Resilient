@@ -1,0 +1,19 @@
+// RES-3188: regex_builtins — pattern classes and special features
+
+fn main() {
+    // Match digits
+    let has_digits = regex_match("\\d+", "There are 42 items");
+    println(to_string(has_digits));
+
+    // Match word boundary
+    let has_word = regex_match("\\bword\\b", "This is a word in text");
+    println(to_string(has_word));
+
+    // Case-insensitive matching
+    let case_match = regex_match_ignore_case("HELLO", "hello world");
+    println(to_string(case_match));
+
+    // Extract all matches
+    let all_matches = regex_find_all("\\d", "1a2b3c");
+    println(to_string(all_matches));
+}
