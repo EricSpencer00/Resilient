@@ -1,0 +1,15 @@
+// RES-3197: channels regression corpus — multiple messages
+
+fn main() {
+    let (tx, rx) = channel();
+
+    // Send multiple messages
+    send(tx, 10);
+    send(tx, 20);
+    send(tx, 30);
+
+    // Receive in order
+    println(receive(rx));
+    println(receive(rx));
+    println(receive(rx));
+}

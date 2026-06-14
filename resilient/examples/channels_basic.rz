@@ -1,0 +1,12 @@
+// RES-3197: channels regression corpus — message passing
+
+fn main() {
+    let (tx, rx) = channel();
+
+    // Send a message
+    send(tx, 42);
+
+    // Receive the message
+    let value = receive(rx);
+    println(value);
+}
