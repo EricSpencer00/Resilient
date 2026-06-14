@@ -1259,4 +1259,168 @@ features = ["cortex_m", "no_std"]
         check(&prog, src_path.to_str().unwrap()).expect("reasonable target should validate");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── RES-3224: malformed-input regression corpus ──────────────────────────
+
+    #[test]
+    fn check_baseline_minimal_valid_target() {
+        let dir = std::env::temp_dir().join("__resilient_tp_minimal_valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        check(&prog, src_path.to_str().unwrap()).expect("minimal valid target should pass");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_baseline_multiple_valid_targets() {
+        let dir = std::env::temp_dir().join("__resilient_tp_multi_valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "s"
+stack_size = 4096
+[target.x86_64]
+opt_level = "3"
+stack_size = 65536
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        check(&prog, src_path.to_str().unwrap()).expect("multiple valid targets should pass");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_baseline_target_with_all_fields() {
+        let dir = std::env::temp_dir().join("__resilient_tp_all_fields");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.riscv32imac]
+opt_level = "2"
+stack_size = 16384
+features = ["riscv_ext_a", "riscv_ext_c"]
+linker = "riscv32-elf-gcc"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        check(&prog, src_path.to_str().unwrap()).expect("target with all fields should pass");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_empty_target_name() {
+        let dir = std::env::temp_dir().join("__resilient_tp_empty_triple");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.]
+opt_level = "0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err =
+            check(&prog, src_path.to_str().unwrap()).expect_err("empty target name should fail");
+        assert!(
+            err.contains("missing required field `triple`"),
+            "expected triple validation, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_invalid_opt_level_value() {
+        let dir = std::env::temp_dir().join("__resilient_tp_bad_opt_value");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "aggressive"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err = check(&prog, src_path.to_str().unwrap())
+            .expect_err("invalid opt_level value should fail");
+        assert!(
+            err.contains("opt_level") && err.contains("expected one of"),
+            "expected opt_level validation, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_invalid_stack_size_value() {
+        let dir = std::env::temp_dir().join("__resilient_tp_bad_stack_value");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "0"
+stack_size = -1024
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err =
+            check(&prog, src_path.to_str().unwrap()).expect_err("invalid stack_size should fail");
+        assert!(
+            err.contains("stack_size") && err.contains("positive integer"),
+            "expected stack_size validation, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_malformed_features_array() {
+        let dir = std::env::temp_dir().join("__resilient_tp_bad_features");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "0"
+features = [cortex_m, no_std]
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err =
+            check(&prog, src_path.to_str().unwrap()).expect_err("unquoted features should fail");
+        assert!(
+            err.contains("features") && err.contains("double-quoted"),
+            "expected features validation, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
