@@ -1,0 +1,1 @@
+error: `#[derive(BadTrait)]` on `Mixed` — unknown trait. Supported: ["Debug", "Clone", "Eq", "Hash", "PartialEq", "Default", "Copy"]

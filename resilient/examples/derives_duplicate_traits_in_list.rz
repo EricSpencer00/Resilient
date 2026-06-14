@@ -1,0 +1,13 @@
+// RES-3159: Derives regression — duplicate traits in derive list
+// Duplicate traits within the same #[derive(...)] are allowed (deduplication)
+
+#[derive(Debug, Clone, Debug)]
+struct WithDuplicates {
+    x: int,
+    y: int,
+}
+
+fn main() {
+    let w = WithDuplicates { x: 1, y: 2 };
+    println("WithDuplicates created successfully");
+}

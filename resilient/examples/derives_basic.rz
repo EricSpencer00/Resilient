@@ -1,0 +1,20 @@
+// RES-3159: Derives regression corpus — valid derives declarations
+// Demonstrates #[derive(...)] on structs with supported traits
+
+#[derive(Debug, Eq)]
+struct Point {
+    x: int,
+    y: int,
+}
+
+#[derive(Clone)]
+struct Name {
+    first: string,
+    last: string,
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    let n = Name { first: "Alice", last: "Smith" };
+    println("Point and Name created successfully");
+}

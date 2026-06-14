@@ -1,0 +1,16 @@
+// RES-3159: Derives regression — duplicate registration
+// The same struct cannot have two #[derive(...)] declarations
+
+#[derive(Debug)]
+struct Point {
+    x: int,
+}
+
+#[derive(Clone)]
+struct Point {
+    y: int,
+}
+
+fn main() {
+    let p = Point { y: 5 };
+}
