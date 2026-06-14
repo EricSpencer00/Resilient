@@ -1,0 +1,11 @@
+// RES-3209: macros — duplicate macro declarations (error case)
+
+#[macro(pattern = "SQUARE", expansion = "$1 * $1")]
+fn first() { }
+
+#[macro(pattern = "SQUARE", expansion = "$1 + $1")]
+fn second() { }
+
+fn main() {
+    println("Should not compile");
+}

@@ -1,0 +1,1 @@
+error: macro pattern cannot be empty
