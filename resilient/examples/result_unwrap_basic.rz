@@ -1,0 +1,16 @@
+// RES-3200: result_unwrap regression corpus — Result unwrap operations
+
+fn risky_parse(s: String) -> Result<i32, String> {
+    if s == "42" {
+        return Ok(42);
+    }
+    return Err("not a number");
+}
+
+fn main() {
+    let result = risky_parse("42");
+    match result {
+        Ok(v) => println(v),
+        Err(e) => println(e),
+    }
+}

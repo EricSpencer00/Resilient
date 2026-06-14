@@ -1,0 +1,10 @@
+// RES-3200: result_unwrap regression corpus — expect and unwrap_or
+
+fn get_number() -> Result<i32, String> {
+    return Err("oops");
+}
+
+fn main() {
+    let value = get_number().unwrap_or(0);
+    println(value);
+}
