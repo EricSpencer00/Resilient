@@ -1,0 +1,11 @@
+// RES-3189: http_client regression corpus — HTTP client operations
+
+fn main() {
+    // Make HTTP GET request
+    let response = http_get("https://api.example.com/data");
+    println(response);
+
+    // Make HTTP POST request with body
+    let post_response = http_post("https://api.example.com/create", "{\"key\": \"value\"}");
+    println(post_response);
+}

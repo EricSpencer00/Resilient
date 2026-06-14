@@ -1,0 +1,1 @@
+error: http_get: invalid URL format - missing protocol (expected 'http://' or 'https://')

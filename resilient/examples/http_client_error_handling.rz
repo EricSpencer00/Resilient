@@ -1,0 +1,7 @@
+// RES-3189: http_client regression corpus — error handling for invalid URLs
+
+fn main() {
+    // Missing protocol in URL
+    let response = http_get("api.example.com/data");
+    println(response);
+}
