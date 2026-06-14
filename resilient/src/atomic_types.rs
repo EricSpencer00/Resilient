@@ -1453,4 +1453,64 @@ mod tests {
         store("flag", 42);
         assert_eq!(load("flag"), Some(42));
     }
+
+    // ── Malformed-input regression corpus (RES-3144) ──────────────
+    // Valid baselines
+    #[test]
+    fn corpus_accepts_valid_atomic_declare() {
+        declare("value", 0);
+        assert_eq!(load("value"), Some(0));
+    }
+
+    #[test]
+    fn corpus_accepts_valid_atomic_operations() {
+        declare("counter", 10);
+        assert_eq!(load("counter"), Some(10));
+        store("counter", 20);
+        assert_eq!(load("counter"), Some(20));
+        fetch_add("counter", 5);
+        assert_eq!(load("counter"), Some(25));
+    }
+
+    #[test]
+    fn corpus_accepts_multiple_atomics() {
+        declare("x", 0);
+        declare("y", 0);
+        assert_eq!(load("x"), Some(0));
+        assert_eq!(load("y"), Some(0));
+    }
+
+    // Malformed cases
+    #[test]
+    fn corpus_rejects_double_declare() {
+        declare("var", 5);
+        declare("var", 10);
+        assert_eq!(load("var"), Some(5));
+    }
+
+    #[test]
+    fn corpus_rejects_load_undefined() {
+        let result = load("nonexistent");
+        assert!(result.is_none(), "should reject load of undefined atomic");
+    }
+
+    #[test]
+    fn corpus_rejects_store_undefined() {
+        let result = store("nonexistent", 42);
+        assert!(result.is_none(), "should reject store to undefined atomic");
+    }
+
+    #[test]
+    fn corpus_rejects_fetch_add_undefined() {
+        let result = fetch_add("nonexistent", 5);
+        assert!(result.is_none(), "should reject fetch_add on undefined atomic");
+    }
+
+    #[test]
+    fn corpus_rejects_operation_on_invalid() {
+        declare("valid", 0);
+        // Operations on nonexistent should fail gracefully
+        assert!(load("invalid").is_none());
+        assert!(store("invalid", 42).is_none());
+    }
 }
