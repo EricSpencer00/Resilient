@@ -196,6 +196,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         let _ = (dep, base); // Used by conflict detection infrastructure
     }
 
+    // RES-3228: Align compile-time errors with runtime package_manager failure classes
+    // Catch failures early that would otherwise only manifest at runtime
+    validate_runtime_failures(&manifest, &mut errors, source_path);
+
     // If lock file exists, check locked versions satisfy constraints
     let lock_path = source_dir.join("resilient.lock");
     if lock_path.exists() {
@@ -262,6 +266,48 @@ fn constraints_compatible(c1: &str, c2: &str) -> bool {
         let v1: Vec<&str> = base1.split('.').collect();
         let v2: Vec<&str> = base2.split('.').collect();
         !v1.is_empty() && !v2.is_empty() && v1[0] == v2[0] // Same major version
+    }
+}
+
+// ── RES-3228: Compile-time / runtime error alignment ────────────────────────
+
+/// Validate manifest for runtime-only failure patterns.
+/// Catches issues at compile time that would otherwise only manifest at runtime.
+fn validate_runtime_failures(manifest: &Manifest, errors: &mut Vec<String>, source_path: &str) {
+    // Check for self-referential dependencies (A depends on A)
+    for dep in manifest.dependencies.keys() {
+        if dep == &manifest.name {
+            errors.push(format!(
+                "{source_path}:0:0: error[pkg]: package cannot depend on itself: `{}`",
+                manifest.name
+            ));
+        }
+    }
+
+    // Check for excessive dependency count (runtime scaling issue)
+    if manifest.dependencies.len() > 1000 {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: excessive dependency count ({}): \
+             most packages have <100 dependencies. Check for circular/malformed entries.",
+            manifest.dependencies.len()
+        ));
+    }
+
+    // Check for extremely long names (potential buffer overflow at runtime)
+    if manifest.name.len() > 255 {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: package name exceeds maximum length (255): {}",
+            manifest.name.len()
+        ));
+    }
+
+    for (dep, _) in &manifest.dependencies {
+        if dep.len() > 255 {
+            errors.push(format!(
+                "{source_path}:0:0: error[pkg]: dependency name exceeds maximum length (255): `{}`",
+                dep
+            ));
+        }
     }
 }
 
@@ -771,6 +817,65 @@ helper = "~2.0.0"
         std::fs::write(&src_path, b"fn main() {}").unwrap();
         let (prog, _) = crate::parse("fn main() {}");
         check(&prog, src_path.to_str().unwrap()).expect("multiple constraints should validate");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── RES-3228: runtime-only error alignment tests ───────────────────────────
+
+    #[test]
+    fn check_rejects_self_referential_dependency() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_self_ref_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "mypkg"
+version = "1.0.0"
+[dependencies]
+mypkg = "^1.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err = check(&prog, src_path.to_str().unwrap())
+            .expect_err("self-referential dependency should fail");
+        assert!(err.contains("cannot depend on itself"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_excessively_long_package_name() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_longname_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let long_name = "a".repeat(300);
+        let manifest = format!("[package]\nname = \"{}\"\nversion = \"1.0.0\"\n", long_name);
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err =
+            check(&prog, src_path.to_str().unwrap()).expect_err("long package name should fail");
+        assert!(err.contains("exceeds maximum length"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_validates_runtime_failures_reasonable_manifest() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_runtime_ok_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "goodpkg"
+version = "1.0.0"
+[dependencies]
+dep1 = "^1.0.0"
+dep2 = "~2.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        check(&prog, src_path.to_str().unwrap()).expect("reasonable manifest should validate");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
