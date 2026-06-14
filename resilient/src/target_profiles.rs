@@ -405,6 +405,10 @@ pub(crate) fn check(program: &crate::Node, source_path: &str) -> Result<(), Stri
         ));
     }
 
+    // RES-3223: Align compile-time errors with runtime target_profiles failure classes
+    let profiles = parse_target_profiles(&manifest_content);
+    validate_runtime_failures(&profiles, &mut errors);
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -412,6 +416,68 @@ pub(crate) fn check(program: &crate::Node, source_path: &str) -> Result<(), Stri
             "
 ",
         ))
+    }
+}
+
+/// Validate runtime-only target_profiles failure classes at compile time.
+/// Catches issues that would only manifest at runtime (e.g., buffer overflows, scaling issues).
+fn validate_runtime_failures(
+    profiles: &std::collections::HashMap<String, TargetProfile>,
+    errors: &mut Vec<String>,
+) {
+    for (triple, profile) in profiles {
+        // Check for excessively long target triples (potential buffer overflow)
+        if triple.len() > 255 {
+            errors.push(diagnostic(
+                "<manifest>",
+                0,
+                0,
+                &format!(
+                    "invalid [target.{triple}] declaration: target triple exceeds maximum length (255): {len}",
+                    len = triple.len()
+                ),
+            ));
+        }
+
+        // Check for excessively long feature names
+        for feature in &profile.features {
+            if feature.len() > 255 {
+                errors.push(diagnostic(
+                    "<manifest>",
+                    0,
+                    0,
+                    &format!(
+                        "invalid [target.{triple}] declaration: feature name exceeds maximum length (255): `{feature}`"
+                    ),
+                ));
+            }
+        }
+
+        // Check for excessive feature count (scaling issue)
+        if profile.features.len() > 1000 {
+            errors.push(diagnostic(
+                "<manifest>",
+                0,
+                0,
+                &format!(
+                    "invalid [target.{triple}] declaration: excessive feature count ({}): most targets have <100 features",
+                    profile.features.len()
+                ),
+            ));
+        }
+
+        // Check for excessive cfg entries (scaling issue)
+        if profile.cfg.len() > 1000 {
+            errors.push(diagnostic(
+                "<manifest>",
+                0,
+                0,
+                &format!(
+                    "invalid [target.{triple}] declaration: excessive cfg entry count ({}): most targets have <100 cfg entries",
+                    profile.cfg.len()
+                ),
+            ));
+        }
     }
 }
 
@@ -477,10 +543,8 @@ fn validate_call_sites(node: &crate::Node, _source_path: &str) -> Result<(), Str
         crate::Node::LetStatement { value, .. } => {
             validate_call_sites(value, _source_path)?;
         }
-        crate::Node::ReturnStatement { value, .. } => {
-            if let Some(v) = value {
-                validate_call_sites(v, _source_path)?;
-            }
+        crate::Node::ReturnStatement { value: Some(v), .. } => {
+            validate_call_sites(v, _source_path)?;
         }
         _ => {}
     }
@@ -1126,6 +1190,73 @@ opt_level = "3"
             err.contains("duplicate `opt_level` field"),
             "expected duplicate field detection, got: {err}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── RES-3223: runtime-only error alignment tests ──────────────────────────
+
+    #[test]
+    fn check_rejects_excessively_long_target_triple() {
+        let dir = std::env::temp_dir().join("__resilient_tp_long_triple");
+        std::fs::create_dir_all(&dir).unwrap();
+        let long_triple = "a".repeat(300);
+        let manifest = format!(
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n[target.{}]\nopt_level = \"0\"\n",
+            long_triple
+        );
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err =
+            check(&prog, src_path.to_str().unwrap()).expect_err("long target triple should fail");
+        assert!(
+            err.contains("exceeds maximum length"),
+            "expected length check, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_excessively_long_feature_name() {
+        let dir = std::env::temp_dir().join("__resilient_tp_long_feature");
+        std::fs::create_dir_all(&dir).unwrap();
+        let long_feature = "f".repeat(300);
+        let manifest = format!(
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n[target.arm]\nfeatures = [\"{}\"]\n",
+            long_feature
+        );
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err =
+            check(&prog, src_path.to_str().unwrap()).expect_err("long feature name should fail");
+        assert!(
+            err.contains("feature name exceeds maximum length"),
+            "expected feature length check, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_validates_runtime_failures_reasonable_target() {
+        let dir = std::env::temp_dir().join("__resilient_tp_runtime_ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.thumbv7em-none-eabihf]
+opt_level = "s"
+stack_size = 8192
+features = ["cortex_m", "no_std"]
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        check(&prog, src_path.to_str().unwrap()).expect("reasonable target should validate");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
