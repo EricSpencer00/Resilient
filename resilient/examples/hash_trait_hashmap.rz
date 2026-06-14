@@ -1,0 +1,7 @@
+// RES-3205: hash_trait regression corpus — HashMap with custom key
+
+fn main() {
+    let mut map = HashMap::new();
+    map.insert("key", "value");
+    println("stored");
+}

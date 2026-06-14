@@ -1,0 +1,11 @@
+// RES-3205: hash_trait regression corpus — Hash trait
+
+#[derive(Hash)]
+struct Key {
+    id: i32,
+}
+
+fn main() {
+    let k = Key { id: 42 };
+    println("hashable");
+}
