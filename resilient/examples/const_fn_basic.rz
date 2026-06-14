@@ -1,0 +1,10 @@
+// RES-3192: const_fn regression corpus — compile-time function evaluation
+
+const fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn main() {
+    const result: i32 = add(10, 20);
+    println(result);
+}

@@ -1,0 +1,12 @@
+// RES-3192: const_fn regression corpus — compile-time array construction
+
+const fn make_array() -> [i32; 3] {
+    return [1, 2, 3];
+}
+
+fn main() {
+    const arr: [i32; 3] = make_array();
+    println(arr[0]);
+    println(arr[1]);
+    println(arr[2]);
+}
