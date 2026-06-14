@@ -1,0 +1,10 @@
+// RES-3178: string_operations regression corpus — string methods
+
+fn main() {
+    let s = "HELLO";
+    let lower = s.to_lowercase();
+    println(lower);
+
+    let upper = "world".to_uppercase();
+    println(upper);
+}
