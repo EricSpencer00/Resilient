@@ -1,0 +1,25 @@
+// RES-3162: impl_blocks regression corpus — impl blocks
+
+struct Calculator {
+    value: i32,
+}
+
+impl Calculator {
+    pub fn new(v: i32) -> Calculator {
+        return Calculator { value: v };
+    }
+
+    pub fn add(&mut self, n: i32) {
+        self.value = self.value + n;
+    }
+
+    pub fn get(&self) -> i32 {
+        return self.value;
+    }
+}
+
+fn main() {
+    let mut calc = Calculator::new(10);
+    calc.add(5);
+    println(calc.get());
+}
