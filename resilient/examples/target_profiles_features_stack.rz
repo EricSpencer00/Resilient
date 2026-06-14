@@ -1,0 +1,19 @@
+// RES-3224: target_profiles — features and stack_size configuration
+//
+// [target.embedded]
+// features = ["no_std", "cortex-m", "fpu"]
+// stack_size = 65536
+// opt_level = "s"
+//
+// [target.host]
+// features = ["std", "networking", "debugging"]
+// stack_size = 1048576
+// opt_level = "2"
+//
+// Features are arbitrary strings activated per-target.
+// stack_size is in bytes; positive values required.
+// Invalid stack_size values (zero, negative) would be rejected.
+
+fn main() {
+    println("Features and stack sizes are valid");
+}

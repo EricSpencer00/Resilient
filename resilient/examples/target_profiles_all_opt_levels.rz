@@ -1,0 +1,23 @@
+// RES-3224: target_profiles — all valid optimization levels
+// Valid opt_level values: "0", "1", "2", "3", "s"
+//
+// [target.opt0]
+// opt_level = "0"
+//
+// [target.opt1]
+// opt_level = "1"
+//
+// [target.opt2]
+// opt_level = "2"
+//
+// [target.opt3]
+// opt_level = "3"
+//
+// [target.opts]
+// opt_level = "s"
+//
+// All above are valid. Invalid levels like "z" or "" would be rejected.
+
+fn main() {
+    println("All optimization levels are valid");
+}

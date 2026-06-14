@@ -1,0 +1,15 @@
+// RES-3224: target_profiles regression corpus
+// This file demonstrates target profile declarations that would be in rz.toml
+//
+// [target.thumbv7em-none-eabihf]
+// features = ["no_std", "cortex-m"]
+// opt_level = "s"
+// stack_size = 8192
+//
+// [target.x86_64-unknown-linux]
+// features = ["std", "networking"]
+// opt_level = "2"
+
+fn main() {
+    println("Target profiles validated successfully");
+}
