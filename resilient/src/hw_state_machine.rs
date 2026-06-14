@@ -165,4 +165,62 @@ mod tests {
     fn initial_state_returns_none_for_unknown_peripheral() {
         assert!(initial_state("UnknownPeripheral99").is_none());
     }
+
+    // ── Malformed-input regression corpus (RES-3154) ──────────────
+    #[test]
+    fn corpus_simple_state_machine() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Light",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Off On", transitions = "Off:turn_on->On On:turn_off->Off""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        assert_eq!(initial_state("Light").unwrap(), "Off");
+        assert_eq!(transition("Light", "Off", "turn_on").unwrap(), "On");
+        assert_eq!(transition("Light", "On", "turn_off").unwrap(), "Off");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_three_state_machine() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Motor",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Stopped Running Fault", transitions = "Stopped:start->Running Running:stop->Stopped Running:error->Fault Fault:reset->Stopped""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        assert_eq!(initial_state("Motor").unwrap(), "Stopped");
+        assert_eq!(transition("Motor", "Stopped", "start").unwrap(), "Running");
+        assert_eq!(transition("Motor", "Running", "error").unwrap(), "Fault");
+        assert_eq!(transition("Motor", "Fault", "reset").unwrap(), "Stopped");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_invalid_transition_rejected() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Device",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Idle Active", transitions = "Idle:activate->Active""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        assert!(transition("Device", "Active", "activate").is_err());
+        assert!(transition("Device", "Idle", "invalid_op").is_err());
+        crate::feature_attrs::reset();
+    }
 }
