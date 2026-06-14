@@ -1,0 +1,20 @@
+// RES-3167: async_await regression corpus — concurrent async operations
+
+async fn task_1() -> String {
+    return "task1";
+}
+
+async fn task_2() -> String {
+    return "task2";
+}
+
+async fn main() {
+    let future1 = task_1();
+    let future2 = task_2();
+
+    let result1 = await future1;
+    let result2 = await future2;
+
+    println(result1);
+    println(result2);
+}

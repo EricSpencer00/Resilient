@@ -1,0 +1,10 @@
+// RES-3167: async_await regression corpus — async/await operations
+
+async fn fetch_data() -> String {
+    return "data";
+}
+
+async fn main() {
+    let result = await fetch_data();
+    println(result);
+}
