@@ -1,0 +1,8 @@
+// RES-3221: bool_type regression corpus — boolean operations
+
+fn main() {
+    let a = true && false;
+    let b = true || false;
+    
+    println(b);
+}
