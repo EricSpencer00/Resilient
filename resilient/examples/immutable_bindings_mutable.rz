@@ -1,0 +1,7 @@
+// RES-3217: immutable_bindings regression corpus — explicit mutability
+
+fn main() {
+    let mut y = 20;
+    y = y + 5;
+    println(y);
+}

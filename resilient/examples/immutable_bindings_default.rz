@@ -1,0 +1,6 @@
+// RES-3217: immutable_bindings regression corpus — immutable by default
+
+fn main() {
+    let x = 10;
+    println(x);
+}
