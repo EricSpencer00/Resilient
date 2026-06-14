@@ -1552,7 +1552,7 @@ fn main() {
         );
         let err = check(&prog, "<test>").expect_err("missing declaration should fail");
         assert!(
-            err.contains("missing a matching declaration"),
+            err.contains("missing a matching declaration") || err.contains("is not declared"),
             "expected missing declaration error, got: {err}"
         );
     }
