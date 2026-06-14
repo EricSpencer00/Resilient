@@ -1,0 +1,12 @@
+// RES-3184: comparison_ops regression corpus — comparison result usage
+
+fn compare(a: i32, b: i32) -> String {
+    if a >= b {
+        return "ge";
+    }
+    return "lt";
+}
+
+fn main() {
+    println(compare(10, 5));
+}

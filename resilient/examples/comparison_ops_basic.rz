@@ -1,0 +1,16 @@
+// RES-3184: comparison_ops regression corpus — comparison operations
+
+fn main() {
+    let a = 10;
+    let b = 5;
+
+    if a > b {
+        println("greater");
+    }
+    if a < b {
+        println("less");
+    }
+    if a == b {
+        println("equal");
+    }
+}
