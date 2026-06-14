@@ -1,0 +1,17 @@
+// RES-3166: default_trait regression corpus — Default with struct update
+
+struct Settings {
+    debug: bool,
+    level: i32,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        return Settings { debug: false, level: 1 };
+    }
+}
+
+fn main() {
+    let s = Settings { debug: true, ..Default::default() };
+    println(s.level);
+}

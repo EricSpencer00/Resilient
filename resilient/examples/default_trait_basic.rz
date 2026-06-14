@@ -1,0 +1,17 @@
+// RES-3166: default_trait regression corpus — Default trait
+
+struct Config {
+    timeout: i32,
+    retries: i32,
+}
+
+impl Default for Config {
+    fn default() -> Config {
+        return Config { timeout: 30, retries: 3 };
+    }
+}
+
+fn main() {
+    let cfg = Config::default();
+    println(cfg.timeout);
+}
