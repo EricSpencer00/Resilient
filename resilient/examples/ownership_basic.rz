@@ -1,0 +1,11 @@
+// RES-3172: ownership regression corpus — move semantics
+
+fn take_ownership(s: String) -> String {
+    return s;
+}
+
+fn main() {
+    let s1 = "hello";
+    let s2 = take_ownership(s1);
+    println(s2);
+}

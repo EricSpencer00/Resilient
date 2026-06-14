@@ -1,0 +1,15 @@
+// RES-3172: ownership regression corpus — drop behavior
+
+struct Resource {
+    id: i32,
+}
+
+fn process_resource(r: Resource) {
+    println(r.id);
+}
+
+fn main() {
+    let r = Resource { id: 42 };
+    process_resource(r);
+    // r is dropped here, cannot be used again
+}
