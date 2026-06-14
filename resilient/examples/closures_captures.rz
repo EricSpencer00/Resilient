@@ -1,0 +1,8 @@
+// RES-3163: closures regression corpus — closure captures
+
+fn main() {
+    let multiplier = 3;
+    let multiply = |x| { return x * multiplier; };
+    let result = multiply(4);
+    println(result);
+}
