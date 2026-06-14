@@ -1,0 +1,6 @@
+// RES-3212: boxing regression corpus — heap allocation
+
+fn main() {
+    let b = Box::new(100);
+    println(*b);
+}

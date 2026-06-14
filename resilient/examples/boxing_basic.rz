@@ -1,0 +1,11 @@
+// RES-3212: boxing regression corpus — Box type
+
+fn process_boxed(b: Box<i32>) -> i32 {
+    return *b * 2;
+}
+
+fn main() {
+    let boxed = Box::new(21);
+    let result = process_boxed(boxed);
+    println(result);
+}
