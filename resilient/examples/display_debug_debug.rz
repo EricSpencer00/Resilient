@@ -1,0 +1,11 @@
+// RES-3190: display_debug regression corpus — Debug trait
+
+#[derive(Debug)]
+struct Data {
+    value: i32,
+}
+
+fn main() {
+    let d = Data { value: 42 };
+    println(format!("{:?}", d));
+}

@@ -1,0 +1,17 @@
+// RES-3190: display_debug regression corpus — Display trait
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl Display for Point {
+    fn fmt(&self) -> String {
+        return concat("(", concat(self.x, ","));
+    }
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    println(p);
+}
