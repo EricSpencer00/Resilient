@@ -1453,4 +1453,133 @@ mod tests {
         store("flag", 42);
         assert_eq!(load("flag"), Some(42));
     }
+
+    // ── RES-3144: malformed-input regression corpus ────────────────────────
+
+    #[test]
+    fn reject_atomic_on_non_static_let() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+let counter: i64 = 0;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("atomic on let should fail");
+        assert!(
+            err.contains("must be declared as `static let`"),
+            "expected type error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_atomic_without_integer_init() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = "not_an_int";
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("non-integer init should fail");
+        assert!(
+            err.contains("must be initialized with an integer literal"),
+            "expected initialization error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_atomic_with_float_init() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let pi: i64 = 3.14;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("float init should fail");
+        assert!(
+            err.contains("must be initialized with an integer literal"),
+            "expected integer literal requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_atomic_with_expression_init() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = 5 + 3;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("expression init should fail");
+        assert!(
+            err.contains("must be initialized with an integer literal"),
+            "expected literal-only requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_atomic_with_arguments() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic(ordering = "SeqCst")]
+static let counter: i64 = 0;
+
+fn main() {}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("atomic with args should fail");
+        assert!(
+            err.contains("does not accept arguments"),
+            "expected argument rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_missing_atomic_declaration() {
+        let (prog, _) = crate::parse(
+            r#"
+fn main() {
+    let x = atomic_load(undefined);
+}
+"#,
+        );
+        let err = check(&prog, "<test>").expect_err("missing declaration should fail");
+        assert!(
+            err.contains("missing a matching declaration") || err.contains("is not declared"),
+            "expected missing declaration error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_negative_atomic_init() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let counter: i64 = -42;
+
+fn main() {}
+"#,
+        );
+        check(&prog, "<test>").expect("negative init should pass");
+    }
+
+    #[test]
+    fn accept_large_atomic_init() {
+        let (prog, _) = crate::parse(
+            r#"
+#[atomic]
+static let big: i64 = 9223372036854775807;
+
+fn main() {}
+"#,
+        );
+        check(&prog, "<test>").expect("max i64 should pass");
+    }
 }
