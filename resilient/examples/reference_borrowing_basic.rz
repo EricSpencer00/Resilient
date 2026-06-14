@@ -1,0 +1,12 @@
+// RES-3171: reference_borrowing regression corpus — borrowed references
+
+fn borrow_immutable(s: &String) -> i32 {
+    return s.len();
+}
+
+fn main() {
+    let s = "hello";
+    let len = borrow_immutable(&s);
+    println(len);
+    println(s);  // s still valid
+}

@@ -1,0 +1,11 @@
+// RES-3171: reference_borrowing regression corpus — mutable borrowing
+
+fn increment(n: &mut i32) {
+    *n = *n + 1;
+}
+
+fn main() {
+    let mut x = 42;
+    increment(&mut x);
+    println(x);
+}
