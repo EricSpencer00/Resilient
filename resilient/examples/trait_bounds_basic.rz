@@ -1,0 +1,24 @@
+// RES-3175: trait_bounds regression corpus — trait bounds
+
+trait Display {
+    fn display(&self) -> String;
+}
+
+struct Number {
+    value: i32,
+}
+
+impl Display for Number {
+    fn display(&self) -> String {
+        return "Number";
+    }
+}
+
+fn print_displayable<T: Display>(item: T) {
+    println(item.display());
+}
+
+fn main() {
+    let num = Number { value: 42 };
+    print_displayable(num);
+}

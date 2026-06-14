@@ -1,0 +1,36 @@
+// RES-3175: trait_bounds regression corpus — multiple trait bounds
+
+trait Cloneable {
+    fn clone(&self) -> Self;
+}
+
+trait Displayable {
+    fn to_string(&self) -> String;
+}
+
+struct Item {
+    name: String,
+}
+
+impl Cloneable for Item {
+    fn clone(&self) -> Item {
+        return Item { name: self.name };
+    }
+}
+
+impl Displayable for Item {
+    fn to_string(&self) -> String {
+        return self.name;
+    }
+}
+
+fn process<T: Cloneable + Displayable>(item: T) -> T {
+    let cloned = item.clone();
+    return cloned;
+}
+
+fn main() {
+    let item = Item { name: "test" };
+    let _ = process(item);
+    println("done");
+}
