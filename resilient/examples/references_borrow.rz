@@ -1,0 +1,11 @@
+// RES-3211: references regression corpus — reference types
+
+fn borrow_ref(r: &i32) -> i32 {
+    return *r + 1;
+}
+
+fn main() {
+    let x = 10;
+    let result = borrow_ref(&x);
+    println(result);
+}

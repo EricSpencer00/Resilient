@@ -1,0 +1,7 @@
+// RES-3211: references regression corpus — dereference operations
+
+fn main() {
+    let x = 42;
+    let r = &x;
+    println(*r);
+}
