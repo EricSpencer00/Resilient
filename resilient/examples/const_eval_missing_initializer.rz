@@ -1,0 +1,7 @@
+// RES-3214: const_eval_ext — missing initializer (error case)
+
+const NO_INIT;
+
+fn main() {
+    println("Should not compile");
+}

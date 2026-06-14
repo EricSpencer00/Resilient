@@ -1,0 +1,7 @@
+// RES-3214: const_eval_ext — annotated const without initializer (error case)
+
+const VALUE: int;
+
+fn main() {
+    println("Should not compile");
+}

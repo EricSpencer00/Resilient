@@ -1,0 +1,19 @@
+// RES-3214: const_eval_ext regression corpus — extended const evaluation
+
+const STR_CONCAT = "Hello, " + "World!";
+const STR_ORDER = "alpha" < "beta";
+const BITWISE_AND = 0xFF & 0x0F;
+const BITWISE_OR = 0b1010 | 0b0101;
+const BITWISE_XOR = 0xFF ^ 0xF0;
+const SHIFT_LEFT = 1 << 4;
+const SHIFT_RIGHT = 16 >> 2;
+const CONDITIONAL = if 10 > 5 { 100 } else { 50 };
+const BLOCK_EXPR = { 2 + 3 };
+const TUPLE_EXPR = (1, 2, 3);
+
+fn main() {
+    println(STR_CONCAT);
+    println(to_string(STR_ORDER));
+    println(to_string(BITWISE_AND));
+    println(to_string(CONDITIONAL));
+}
