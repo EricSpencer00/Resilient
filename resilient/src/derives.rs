@@ -135,12 +135,8 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     for (type_name, s) in &sets {
         let mut seen_traits: HashSet<&str> = HashSet::new();
         for t in &s.traits {
-            if !seen_traits.insert(t.as_str()) {
-                return Err(format!(
-                    "{}:0:0: error: `#[derive({})]` on `{}` duplicate trait `{}`",
-                    source_path, t, type_name, t
-                ));
-            }
+            // Allow duplicate traits within the same derive — just deduplicate them
+            seen_traits.insert(t.as_str());
             if !SUPPORTED.contains(&t.as_str()) {
                 return Err(format!(
                     "{}:0:0: error: `#[derive({})]` on `{}` — unknown trait. Supported: {:?}",
