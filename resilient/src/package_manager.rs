@@ -131,7 +131,14 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
         errors.push(format!(
             "{source_path}:0:0: error[pkg]: manifest is missing `name` field"
         ));
+    } else if !is_valid_identifier(&manifest.name) {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: package name `{}` is not a valid identifier \
+             — use only alphanumeric characters, underscores, and hyphens",
+            manifest.name
+        ));
     }
+
     if manifest.version.is_empty() {
         errors.push(format!(
             "{source_path}:0:0: error[pkg]: manifest is missing `version` field"
@@ -142,16 +149,45 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
              valid semver triple (MAJOR.MINOR.PATCH)",
             manifest.version
         ));
+    } else if has_leading_zeros(&manifest.version) {
+        errors.push(format!(
+            "{source_path}:0:0: error[pkg]: manifest `version` `{}` has leading zeros \
+             — invalid semver (use 1.0.0 not 01.00.00)",
+            manifest.version
+        ));
     }
 
     // Validate dependency constraint syntax
     for (dep, constraint) in &manifest.dependencies {
+        if !is_valid_identifier(dep) {
+            errors.push(format!(
+                "{source_path}:0:0: error[pkg]: dependency name `{dep}` is not a valid identifier \
+                 — use only alphanumeric characters, underscores, and hyphens"
+            ));
+            continue;
+        }
+
         let (_, base) = parse_constraint(constraint);
         if !is_valid_semver(&base) {
             errors.push(format!(
                 "{source_path}:0:0: error[pkg]: dependency `{dep}` has \
                  invalid constraint `{constraint}` — expected semver \
                  optionally prefixed with `^` or `~`"
+            ));
+        } else if has_leading_zeros(&base) {
+            errors.push(format!(
+                "{source_path}:0:0: error[pkg]: dependency `{dep}` constraint `{constraint}` \
+                 has leading zeros — invalid semver"
+            ));
+        }
+    }
+
+    // Detect duplicate dependencies
+    let mut seen_deps = std::collections::HashSet::new();
+    for dep in manifest.dependencies.keys() {
+        if !seen_deps.insert(dep) {
+            errors.push(format!(
+                "{source_path}:0:0: error[pkg]: duplicate dependency registration for `{dep}`"
             ));
         }
     }
@@ -194,6 +230,21 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
 fn is_valid_semver(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
     parts.len() == 3 && parts.iter().all(|p| p.parse::<u64>().is_ok())
+}
+
+fn has_leading_zeros(semver: &str) -> bool {
+    semver
+        .split('.')
+        .any(|part| part.len() > 1 && part.starts_with('0'))
+}
+
+fn is_valid_identifier(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        && !name.starts_with('-')
 }
 
 /// Parse a simple `resilient.lock` format:
@@ -359,5 +410,118 @@ utils = "latest"
         let result = check(&prog, src_path.to_str().unwrap());
         assert!(result.is_err(), "expected error for invalid constraint");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── RES-3225: malformed package_manager declarations tests ──────────────────
+
+    #[test]
+    fn check_errors_on_invalid_package_name() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_badname");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "my@app"
+version = "1.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(result.is_err(), "expected error for invalid package name");
+        let err = result.unwrap_err();
+        assert!(err.contains("is not a valid identifier"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_version_with_leading_zeros() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_leadingzeros");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "01.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(result.is_err(), "expected error for leading zeros");
+        let err = result.unwrap_err();
+        assert!(err.contains("leading zeros"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_invalid_dependency_name() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_baddepname");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+"utils@latest" = "1.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "expected error for invalid dependency name"
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("is not a valid identifier"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_on_dep_constraint_with_leading_zeros() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_depzeros");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+[dependencies]
+utils = "^01.0.0"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "expected error for leading zeros in constraint"
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("leading zeros"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_accepts_valid_identifiers() {
+        assert!(is_valid_identifier("myapp"));
+        assert!(is_valid_identifier("my_app"));
+        assert!(is_valid_identifier("my-app"));
+        assert!(is_valid_identifier("MyApp"));
+        assert!(is_valid_identifier("myapp123"));
+        assert!(!is_valid_identifier("-myapp"));
+        assert!(!is_valid_identifier("my@app"));
+        assert!(!is_valid_identifier(""));
+    }
+
+    #[test]
+    fn check_detects_leading_zeros() {
+        assert!(!has_leading_zeros("1.0.0"));
+        assert!(has_leading_zeros("01.0.0"));
+        assert!(has_leading_zeros("1.00.0"));
+        assert!(has_leading_zeros("1.0.01"));
+        assert!(!has_leading_zeros("0.0.0"));
     }
 }
