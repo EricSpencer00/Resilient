@@ -1,0 +1,17 @@
+// RES-3177: clone_copy regression corpus — Clone trait
+
+struct Data {
+    value: i32,
+}
+
+impl Clone for Data {
+    fn clone(&self) -> Data {
+        return Data { value: self.value };
+    }
+}
+
+fn main() {
+    let d1 = Data { value: 42 };
+    let d2 = d1.clone();
+    println(d2.value);
+}
