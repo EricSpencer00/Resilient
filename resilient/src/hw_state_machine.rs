@@ -165,4 +165,30 @@ mod tests {
     fn initial_state_returns_none_for_unknown_peripheral() {
         assert!(initial_state("UnknownPeripheral99").is_none());
     }
+
+    // ── Malformed-input regression corpus (RES-3154) ──────────────
+    #[test]
+    fn corpus_check_ok_with_valid_state() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f() {}";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_unknown_peripheral_returns_none() {
+        assert!(initial_state("unknown_device").is_none());
+    }
+
+    #[test]
+    fn corpus_multiple_peripherals() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn setup() {} fn loop_fn() {}";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }
