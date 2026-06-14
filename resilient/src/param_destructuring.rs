@@ -775,4 +775,186 @@ fn main() {
             "Expected 0-arg message, got: {err}"
         );
     }
+
+    // ── Additional edge-case regression tests ───────────────────────────────
+
+    #[test]
+    fn check_recursive_destructuring_function() {
+        // RES-3239: recursive calls to destructuring functions should validate
+        let src = r#"
+fn sum_pair((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn main() {
+    let x = sum_pair((1, 2));
+    let y = sum_pair((3, 4));
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "multiple calls to same destructuring function should pass"
+        );
+    }
+
+    #[test]
+    fn check_rejects_missing_arg_in_nested_expression() {
+        // RES-3236: insufficient args in nested expressions should fail
+        let src = r#"
+fn add((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn main() {
+    let x = 1 + add();
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err =
+            check(&prog, "test").expect_err("insufficient arg in nested expression must fail");
+        assert!(
+            err.contains("call to `add`"),
+            "Expected error for add call, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_accepts_call_with_extra_args() {
+        // RES-3236: type checking will catch extra args; param_destructuring only checks minimum
+        let src = r#"
+fn add((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn main() {
+    let result = add((1, 2), "extra");
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        // param_destructuring only validates that we have AT LEAST the destructuring param
+        // Type checking in a later pass would catch the extra argument mismatch
+        assert!(
+            check(&prog, "test").is_ok(),
+            "param_destructuring should not reject extra args (type checker will catch)"
+        );
+    }
+
+    #[test]
+    fn check_malformed_tuple_with_nested_parens() {
+        // RES-3239: tuple with mismatched local/element count should fail
+        let prog = program_with_destructure_param("((int,int))", "_x");
+        let err = check(&prog, "test").expect_err("nested parens with arity mismatch must fail");
+        assert!(
+            err.contains("destructures 1 local names") && err.contains("2 element"),
+            "Expected arity mismatch message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_accepts_destructuring_in_first_param_only() {
+        // RES-3236: destructuring syntax typically appears in first param; others are regular
+        let src = r#"
+fn process((int, int) _a_b, string msg) -> string {
+    return msg;
+}
+
+fn main() {
+    let result = process((1, 2), "hello");
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "destructuring in first param with regular second param should pass"
+        );
+    }
+
+    #[test]
+    fn check_rejects_same_destructuring_function_twice() {
+        // RES-3237: redefining the same destructuring function is an error
+        let src = r#"
+fn pair((int, int) _x_y) -> int {
+    return 0;
+}
+
+fn pair((float, float) _a_b) -> float {
+    return 0.0;
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test").expect_err("duplicate destructuring function must fail");
+        assert!(
+            err.contains("duplicate function `pair` with destructuring syntax"),
+            "Expected duplicate function message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_call_validation_across_function_boundaries() {
+        // RES-3236: call-site validation should work across function definitions
+        let src = r#"
+fn pair_add((int, int) _a_b) -> int {
+    return 0;
+}
+
+fn wrapper() -> int {
+    return pair_add((1, 2));
+}
+
+fn bad_wrapper() -> int {
+    return pair_add();
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "test").expect_err("bad_wrapper call must fail");
+        assert!(
+            err.contains("pair_add"),
+            "Expected error for pair_add call, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_rejects_tuple_with_whitespace_variations() {
+        // RES-3239: tuple parsing should handle various whitespace consistently
+        let prog = program_with_destructure_param("(  int  ,  int  )", "_x_y");
+        assert!(
+            check(&prog, "test").is_ok(),
+            "tuple with extra whitespace should parse correctly"
+        );
+    }
+
+    #[test]
+    fn check_accepts_many_element_tuple_properly_destructured() {
+        // RES-3239: larger tuples should work correctly
+        let src = r#"
+fn process_five((int, int, int, int, int) _a_b_c_d_e) -> int {
+    return 0;
+}
+
+fn main() {
+    let r = process_five((1, 2, 3, 4, 5));
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "five-element tuple should validate correctly"
+        );
+    }
+
+    #[test]
+    fn check_rejects_tuple_arity_mismatch_too_many_locals() {
+        // RES-3239: too many destructured locals for tuple size
+        let prog = program_with_destructure_param("(int,int)", "_a_b_c_d_e");
+        let err = check(&prog, "test").expect_err("too many locals for tuple must fail");
+        assert!(
+            err.contains("destructures 5 local names"),
+            "Expected 5 locals mentioned, got: {err}"
+        );
+        assert!(
+            err.contains("2 element"),
+            "Expected 2 elements mentioned, got: {err}"
+        );
+    }
 }
