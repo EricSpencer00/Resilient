@@ -1,0 +1,19 @@
+// RES-3169: float32 regression corpus — valid f32 usage
+
+fn main() {
+    // F32 type annotation
+    let x: f32 = 3.14;
+    println(x);
+
+    // Convert int to f32
+    let from_int: f32 = as_f32(42);
+    println(from_int);
+
+    // Convert f64 to f32 (truncation to f32 precision)
+    let from_float: f32 = as_f32(2.71828);
+    println(from_float);
+
+    // Widen f32 to f64
+    let wide: f64 = as_f64(from_float);
+    println(wide);
+}

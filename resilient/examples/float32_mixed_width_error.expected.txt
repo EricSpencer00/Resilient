@@ -1,0 +1,1 @@
+error: cannot mix f32 and f64 in arithmetic without explicit cast

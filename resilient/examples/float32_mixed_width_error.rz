@@ -1,0 +1,10 @@
+// RES-3169: float32 — mixing f32 and f64 in arithmetic is rejected
+
+fn main() {
+    let f32_val: f32 = 3.0;
+    let f64_val: f64 = 2.0;
+
+    // Cross-width arithmetic is not allowed
+    let mixed = f32_val + f64_val;
+    println(mixed);
+}

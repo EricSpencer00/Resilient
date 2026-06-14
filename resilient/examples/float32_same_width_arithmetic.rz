@@ -1,0 +1,13 @@
+// RES-3169: float32 — same-width arithmetic is allowed
+
+fn main() {
+    let a: f32 = 3.0;
+    let b: f32 = 2.0;
+
+    // Same-width arithmetic (both f32)
+    let sum = a + b;
+    let product = a * b;
+
+    println(sum);
+    println(product);
+}
