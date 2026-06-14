@@ -6630,9 +6630,10 @@ impl TypeChecker {
                 // RES-2645: incremental_verify evicts stale proof-cache
                 // entries for functions that no longer exist in the AST.
                 crate::incremental_verify::check(program, source_path)?;
-                // RES-1623: `property_tests::check` is a no-op stub
-                // (RES-1206); real `collect` runs from the
-                // `--run-property-tests` driver.
+                // RES-3215: validate `#[property_test(...)]` declaration metadata.
+                if !crate::feature_attrs::find_kind("property_test").is_empty() {
+                    crate::property_tests::check(program, source_path)?;
+                }
                 crate::mmio_regmap::check(program, source_path)?;
                 crate::power_contracts::check(program, source_path)?;
                 crate::stack_contracts::check(program, source_path)?;
