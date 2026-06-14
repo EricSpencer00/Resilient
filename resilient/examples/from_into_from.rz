@@ -1,0 +1,16 @@
+// RES-3201: from_into regression corpus — From and Into traits
+
+struct Temperature {
+    celsius: f32,
+}
+
+impl From<f32> for Temperature {
+    fn from(c: f32) -> Temperature {
+        return Temperature { celsius: c };
+    }
+}
+
+fn main() {
+    let t = Temperature::from(25.0);
+    println(t.celsius);
+}

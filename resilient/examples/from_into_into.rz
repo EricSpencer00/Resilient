@@ -1,0 +1,9 @@
+// RES-3201: from_into regression corpus — Into trait usage
+
+fn process<T: From<String>>(s: String) -> T {
+    return T::from(s);
+}
+
+fn main() {
+    println("converted");
+}
