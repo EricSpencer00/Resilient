@@ -1,0 +1,14 @@
+// RES-3206: partial_ord regression corpus — partial ordering
+
+fn compare(a: f32, b: f32) -> String {
+    if a < b {
+        return "less";
+    } else if a > b {
+        return "greater";
+    }
+    return "equal";
+}
+
+fn main() {
+    println(compare(3.14, 2.71));
+}

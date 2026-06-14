@@ -1,0 +1,15 @@
+// RES-3206: partial_ord regression corpus — PartialOrd trait
+
+#[derive(PartialOrd, PartialEq)]
+struct Value {
+    v: f32,
+}
+
+fn main() {
+    let a = Value { v: 1.0 };
+    let b = Value { v: 2.0 };
+    
+    if a < b {
+        println("less");
+    }
+}
