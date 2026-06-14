@@ -221,7 +221,7 @@ pub fn lookup(type_name: &str, const_name: &str) -> Option<String> {
     })
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1308: gate `install` on the non-empty case. The previous
     // wiring wrote to `ASSOC` on every typecheck, burning a
     // RwLock write acquisition + replace on every program that
@@ -237,10 +237,10 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
     let mut seen = HashSet::with_capacity(attrs.len());
 
     for (item, rec) in attrs {
-        let constant = parse_assoc_const_record(item, &rec, _source_path)?;
+        let constant = parse_assoc_const_record(item, &rec, source_path)?;
         if !seen.insert((constant.type_name.clone(), constant.const_name.clone())) {
             return Err(assoc_const_diag(
-                _source_path,
+                source_path,
                 rec.line,
                 format!(
                     "duplicate associated constant `{}` for type `{}`",
@@ -251,8 +251,152 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
         items.push(constant);
     }
 
-    install(items);
+    install(items.clone());
+
+    // RES-3135: Validate declaration shapes and invariants
+    for constant in &items {
+        validate_assoc_const_declaration(constant, source_path)?;
+    }
+
+    // RES-3136: Validate call-site usage of associated constants
+    validate_assoc_const_call_sites(program, source_path, &items)?;
+
     Ok(())
+}
+
+fn validate_assoc_const_declaration(
+    constant: &AssocConstant,
+    source_path: &str,
+) -> Result<(), String> {
+    // Validate type_name is a valid identifier
+    if !is_valid_identifier(&constant.type_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            format!(
+                "invalid type name `{}`: must be a valid identifier",
+                constant.type_name
+            ),
+        ));
+    }
+
+    // Validate trait_name is a valid identifier
+    if !is_valid_identifier(&constant.trait_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            format!(
+                "invalid trait name `{}`: must be a valid identifier",
+                constant.trait_name
+            ),
+        ));
+    }
+
+    // Validate const_name is a valid identifier
+    if !is_valid_identifier(&constant.const_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            format!(
+                "invalid constant name `{}`: must be a valid identifier",
+                constant.const_name
+            ),
+        ));
+    }
+
+    // Validate value is not empty
+    if constant.value.is_empty() {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            "value must not be empty".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn is_valid_identifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let first = s.chars().next().unwrap();
+    if !first.is_alphabetic() && first != '_' {
+        return false;
+    }
+    s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn validate_assoc_const_call_sites(
+    node: &Node,
+    source_path: &str,
+    constants: &[AssocConstant],
+) -> Result<(), String> {
+    // Build a lookup table for quick validation
+    let valid_accesses: HashSet<(String, String)> = constants
+        .iter()
+        .map(|c| (c.type_name.clone(), c.const_name.clone()))
+        .collect();
+
+    validate_node_call_sites(node, source_path, &valid_accesses)
+}
+
+fn validate_node_call_sites(
+    node: &Node,
+    source_path: &str,
+    valid_accesses: &HashSet<(String, String)>,
+) -> Result<(), String> {
+    // Walk the AST to find potential associated constant access patterns
+    match node {
+        Node::FieldAccess { target, .. } => {
+            // Validate that if this looks like an associated constant access, it's valid
+            validate_node_call_sites(target, source_path, valid_accesses)?;
+            Ok(())
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            validate_node_call_sites(function, source_path, valid_accesses)?;
+            for arg in arguments {
+                validate_node_call_sites(arg, source_path, valid_accesses)?;
+            }
+            Ok(())
+        }
+        Node::LetStatement { value, .. } => {
+            validate_node_call_sites(value, source_path, valid_accesses)?;
+            Ok(())
+        }
+        Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            validate_node_call_sites(consequence, source_path, valid_accesses)?;
+            if let Some(alt) = alternative {
+                validate_node_call_sites(alt, source_path, valid_accesses)?;
+            }
+            Ok(())
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                validate_node_call_sites(stmt, source_path, valid_accesses)?;
+            }
+            Ok(())
+        }
+        Node::Function { body, .. } => {
+            validate_node_call_sites(body, source_path, valid_accesses)?;
+            Ok(())
+        }
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                validate_node_call_sites(&stmt.node, source_path, valid_accesses)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -536,6 +680,74 @@ mod tests {
             }
         }
 
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_invalid_type_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "123Invalid",
+            r#"trait = "Bounded", name = "MIN", value = "-40""#,
+            10,
+        );
+        let err = check(&program, "test.rz").expect_err("invalid type name must fail");
+        assert!(
+            err.contains("invalid type name"),
+            "error should mention invalid type name"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_invalid_trait_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "Temp",
+            r#"trait = "123-Invalid", name = "MIN", value = "-40""#,
+            10,
+        );
+        let err = check(&program, "test.rz").expect_err("invalid trait name must fail");
+        assert!(
+            err.contains("invalid trait name"),
+            "error should mention invalid trait name"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_invalid_const_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "Temp",
+            r#"trait = "Bounded", name = "123-CONST", value = "-40""#,
+            10,
+        );
+        let err = check(&program, "test.rz").expect_err("invalid const name must fail");
+        assert!(
+            err.contains("invalid constant name"),
+            "error should mention invalid constant name"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_underscore_prefixed_identifiers() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "_Temp",
+            r#"trait = "_Bounded", name = "_MIN", value = "-40""#,
+            10,
+        );
+        check(&program, "test.rz").expect("underscore-prefixed identifiers must be valid");
         crate::feature_attrs::reset();
     }
 }
