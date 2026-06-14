@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn corpus_duplicate_traits_accepted() {
+    fn corpus_duplicate_traits_rejected() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         crate::feature_attrs::record(
@@ -324,11 +324,12 @@ mod tests {
             crate::feature_attrs::AttrRecord {
                 name: "derive".into(),
                 args: "Clone, Clone, Clone".into(),
-                line: 0,
+                line: 10,
             },
         );
-        assert!(check(&Node::Program(vec![]), "test").is_ok());
-        assert!(derives_trait("Dup", "Clone"));
+        let err =
+            check(&Node::Program(vec![]), "test").expect_err("duplicate traits must be rejected");
+        assert!(err.contains("duplicate trait `Clone`"));
         crate::feature_attrs::reset();
     }
 }
