@@ -1,0 +1,16 @@
+// RES-3185: logical_ops regression corpus — logical operations
+
+fn main() {
+    let a = true;
+    let b = false;
+
+    if a && b {
+        println("and");
+    }
+    if a || b {
+        println("or");
+    }
+    if !b {
+        println("not");
+    }
+}

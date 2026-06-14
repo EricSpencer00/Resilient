@@ -1,0 +1,11 @@
+// RES-3185: logical_ops regression corpus — boolean logic
+
+fn check_range(x: i32) -> bool {
+    return x > 0 && x < 100;
+}
+
+fn main() {
+    if check_range(50) {
+        println("in range");
+    }
+}
