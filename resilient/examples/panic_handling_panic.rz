@@ -1,0 +1,12 @@
+// RES-3202: panic_handling regression corpus — panic macro
+
+fn check_positive(x: i32) {
+    if x < 0 {
+        panic("negative value");
+    }
+    println(x);
+}
+
+fn main() {
+    check_positive(10);
+}

@@ -1,0 +1,7 @@
+// RES-3202: panic_handling regression corpus — assert macros
+
+fn main() {
+    let x = 5;
+    assert!(x > 0);
+    println("passed");
+}
