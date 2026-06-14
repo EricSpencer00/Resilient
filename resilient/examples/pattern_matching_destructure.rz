@@ -1,0 +1,21 @@
+// RES-3181: pattern_matching regression corpus — destructuring patterns
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn classify_point(p: Point) -> String {
+    match p {
+        Point { x: 0, y: 0 } => return "origin",
+        Point { x: 0, y } => return "on y-axis",
+        Point { x, y: 0 } => return "on x-axis",
+        Point { x, y } => return "general",
+    }
+}
+
+fn main() {
+    let p = Point { x: 0, y: 0 };
+    let class = classify_point(p);
+    println(class);
+}

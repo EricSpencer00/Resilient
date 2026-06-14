@@ -1,0 +1,21 @@
+// RES-3181: pattern_matching regression corpus — pattern matching
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn describe_color(c: Color) -> String {
+    match c {
+        Color::Red => return "red",
+        Color::Green => return "green",
+        Color::Blue => return "blue",
+    }
+}
+
+fn main() {
+    let color = Color::Red;
+    let desc = describe_color(color);
+    println(desc);
+}
