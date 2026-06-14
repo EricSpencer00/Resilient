@@ -1,0 +1,8 @@
+// RES-3186: bitwise_ops regression corpus — bit shifts
+
+fn main() {
+    let x = 4;  // 0100
+
+    println(x << 1);  // left shift: 1000
+    println(x >> 1);  // right shift: 0010
+}

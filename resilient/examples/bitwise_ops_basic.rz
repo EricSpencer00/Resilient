@@ -1,0 +1,10 @@
+// RES-3186: bitwise_ops regression corpus — bitwise operations
+
+fn main() {
+    let a = 5;  // 0101
+    let b = 3;  // 0011
+
+    println(a & b);  // AND: 0001
+    println(a | b);  // OR:  0111
+    println(a ^ b);  // XOR: 0110
+}
