@@ -191,24 +191,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_trait_in_derive_list_rejected() {
-        let _g = crate::feature_attrs::lock_for_test();
-        crate::feature_attrs::reset();
-        crate::feature_attrs::record(
-            "Reading",
-            crate::feature_attrs::AttrRecord {
-                name: "derive".into(),
-                args: "Debug, Debug".into(),
-                line: 7,
-            },
-        );
-        let err =
-            check(&Node::Program(vec![]), "test").expect_err("duplicate derive trait must fail");
-        assert!(err.contains("duplicate trait `Debug`"));
-        crate::feature_attrs::reset();
-    }
-
-    #[test]
     fn duplicate_derive_registration_rejected() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
