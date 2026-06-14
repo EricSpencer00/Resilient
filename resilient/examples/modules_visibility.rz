@@ -1,0 +1,16 @@
+// RES-3160: modules regression corpus — visibility rules
+
+mod private {
+    fn secret() -> String {
+        return "hidden";
+    }
+
+    pub fn public() -> String {
+        return "visible";
+    }
+}
+
+fn main() {
+    let result = private::public();
+    println(result);
+}
