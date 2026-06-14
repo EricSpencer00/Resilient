@@ -150,4 +150,74 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    // ── Malformed-input regression corpus (RES-3149) ──────────────
+    #[test]
+    fn corpus_single_contract_success_tracking() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "reliable_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "result >= 0", p = "0.95""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        for _ in 0..95 {
+            record_trial("reliable_fn", true);
+        }
+        for _ in 0..5 {
+            record_trial("reliable_fn", false);
+        }
+        let rate = empirical_rate("reliable_fn").unwrap();
+        assert!((rate - 0.95).abs() < 0.01);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_multiple_contracts_independent() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "high_confidence",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x > 0", p = "0.99""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "moderate_confidence",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "y < 100", p = "0.75""#.into(),
+                line: 1,
+            },
+        );
+        install(collect());
+        record_trial("high_confidence", true);
+        record_trial("moderate_confidence", false);
+        assert!(empirical_rate("high_confidence").is_some());
+        assert!(empirical_rate("moderate_confidence").is_some());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn corpus_no_trials_returns_none() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "untested_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "always_true", p = "1.0""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        assert!(empirical_rate("untested_fn").is_none());
+        crate::feature_attrs::reset();
+    }
 }
