@@ -1,0 +1,7 @@
+// RES-3234: format_builtin — unterminated placeholder
+// A { without matching } is a compile-time error
+
+fn main() {
+    let bad = format("Unterminated {");
+    println(bad);
+}

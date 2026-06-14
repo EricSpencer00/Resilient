@@ -1,0 +1,10 @@
+// RES-3234: format_builtin — escaped braces
+
+fn main() {
+    // {{ and }} escape to single braces
+    let escaped = format("Set {{value}}: {}", "42");
+    println(escaped);
+
+    let template = format("JSON: {{ \"key\": \"{}\" }}", "value");
+    println(template);
+}
