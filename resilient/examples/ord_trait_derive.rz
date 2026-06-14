@@ -1,0 +1,15 @@
+// RES-3204: ord_trait regression corpus — Ord trait
+
+#[derive(Ord, PartialOrd)]
+struct Priority {
+    level: i32,
+}
+
+fn main() {
+    let p1 = Priority { level: 1 };
+    let p2 = Priority { level: 2 };
+    
+    if p1 < p2 {
+        println("p1 lower");
+    }
+}

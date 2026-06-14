@@ -1,0 +1,9 @@
+// RES-3204: ord_trait regression corpus — ordering operations
+
+fn main() {
+    let a = 10;
+    let b = 20;
+    
+    let max = if a > b { a } else { b };
+    println(max);
+}
