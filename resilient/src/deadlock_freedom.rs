@@ -145,7 +145,7 @@ pub fn detect_cycles<'a>(graph: &'a ActorGraph) -> Vec<Vec<&'a str>> {
     cycles
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1291 / RES-1916: the typechecker gates this call behind
     // `markers.has_actor_decl`, so the program is guaranteed to
     // contain at least one `ActorDecl`. The previous `any_node`
@@ -157,13 +157,17 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         // record that the actor network was proven cycle-free at this
         // compilation.
         let actor_count = g.edges.len();
-        eprintln!("deadlock-free: actor network ({actor_count} actor(s)) verified cycle-free");
+        let msg = format!(
+            "note[deadlock-free]: actor network ({actor_count} actor(s)) verified cycle-free"
+        );
+        crate::typechecker::emit_check_diagnostic_plain(&msg, "note", source_path, "deadlock-free");
     } else {
         for c in &cycles {
-            eprintln!(
-                "warning: potential deadlock cycle in actor graph: {}",
+            let msg = format!(
+                "warning[deadlock-cycle]: potential deadlock cycle in actor graph: {}",
                 c.join(" -> ")
             );
+            crate::typechecker::emit_check_warning_plain(&msg, source_path, "deadlock-cycle");
         }
     }
     Ok(())
