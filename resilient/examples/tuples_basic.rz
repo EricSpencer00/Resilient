@@ -1,0 +1,6 @@
+// RES-3218: tuples regression corpus — tuple types
+
+fn main() {
+    let pair: (i32, String) = (42, "answer");
+    println(pair.0);
+}

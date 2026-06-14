@@ -1,0 +1,7 @@
+// RES-3218: tuples regression corpus — tuple destructuring
+
+fn main() {
+    let (x, y) = (10, 20);
+    println(x);
+    println(y);
+}
