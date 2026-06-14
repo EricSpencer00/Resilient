@@ -9,8 +9,8 @@
       "claimed_at": "2026-06-13T15:00:45Z"
     },
     "resilient/src/package_manager.rs": {
-      "branch": "res-3227-package-manager-duplicate-detection",
-      "claimed_at": "2026-06-14T15:50:01Z"
+      "branch": "res-3228-package-manager-error-alignment",
+      "claimed_at": "2026-06-14T15:55:08Z"
     }
   }
 }
