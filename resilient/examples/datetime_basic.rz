@@ -1,0 +1,15 @@
+// RES-3164: datetime_builtins regression corpus — basic datetime operations
+
+fn main() {
+    // Get current datetime (returns DateTime struct with year, month, day, hour, minute, second, nanos)
+    let now = datetime_now();
+
+    // Format datetime to string using strftime-style codes
+    // Supported: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
+    let formatted = datetime_format(now, "%Y-%m-%d %H:%M:%S");
+    println(formatted);
+
+    // Parse datetime from string
+    let parsed = datetime_parse("2026-06-14 12:30:45", "%Y-%m-%d %H:%M:%S");
+    println(to_string(parsed));
+}

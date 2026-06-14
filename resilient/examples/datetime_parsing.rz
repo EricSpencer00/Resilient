@@ -1,0 +1,14 @@
+// RES-3164: datetime_builtins — parsing and unix timestamp operations
+
+fn main() {
+    // Parse datetime from string
+    let dt = datetime_parse("2026-06-14 15:30:00", "%Y-%m-%d %H:%M:%S");
+
+    // Convert to unix timestamp (seconds since epoch)
+    let unix_secs = datetime_to_unix(dt);
+    println(to_string(unix_secs));
+
+    // Convert unix timestamp back to datetime
+    let reconstructed = datetime_from_unix(unix_secs);
+    println("Datetime reconstructed from unix timestamp");
+}
