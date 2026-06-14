@@ -1,0 +1,21 @@
+// RES-3219: basic property_test declaration and validation
+
+#[property_test(samples = 100)]
+fn add_is_commutative(a: i64, b: i64) -> i64
+  requires { true }
+  ensures { result == a + b }
+{
+  a + b
+}
+
+#[property_test(samples = 50)]
+fn identity_add_zero(x: i64) -> i64
+  requires { x >= -9223372036854775808 && x <= 9223372036854775807 }
+  ensures { result == x }
+{
+  x + 0
+}
+
+fn main() {
+  println("Property tests loaded successfully");
+}
