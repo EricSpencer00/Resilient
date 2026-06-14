@@ -1,0 +1,8 @@
+// RES-3168: iterators regression corpus — iterator methods
+
+fn main() {
+    let arr = [1, 2, 3];
+    
+    let sum = arr.iter().fold(0, |acc, x| { return acc + x; });
+    println(sum);
+}

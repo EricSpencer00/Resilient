@@ -1,0 +1,9 @@
+// RES-3168: iterators regression corpus — iterator operations
+
+fn main() {
+    let arr = [1, 2, 3, 4, 5];
+    
+    for item in arr {
+        println(item);
+    }
+}
