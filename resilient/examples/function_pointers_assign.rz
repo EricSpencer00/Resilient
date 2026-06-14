@@ -1,0 +1,10 @@
+// RES-3210: function_pointers regression corpus — function pointer arrays
+
+fn mul(a: i32, b: i32) -> i32 {
+    return a * b;
+}
+
+fn main() {
+    let f = mul;
+    println(f(4, 5));
+}

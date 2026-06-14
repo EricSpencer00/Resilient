@@ -1,0 +1,14 @@
+// RES-3210: function_pointers regression corpus — function pointer types
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn apply_op(op: fn(i32, i32) -> i32, x: i32, y: i32) -> i32 {
+    return op(x, y);
+}
+
+fn main() {
+    let result = apply_op(add, 5, 3);
+    println(result);
+}
