@@ -1,0 +1,11 @@
+// RES-3174: lifetime_parameters regression corpus — lifetime elision
+
+fn get_str(s: &String) -> &str {
+    return s;
+}
+
+fn main() {
+    let string = "test";
+    let result = get_str(&string);
+    println(result);
+}

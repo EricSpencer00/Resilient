@@ -1,0 +1,15 @@
+// RES-3174: lifetime_parameters regression corpus — lifetime annotations
+
+struct Wrapper<'a> {
+    data: &'a String,
+}
+
+fn create_wrapper<'a>(s: &'a String) -> Wrapper<'a> {
+    return Wrapper { data: s };
+}
+
+fn main() {
+    let s = "hello";
+    let wrapper = create_wrapper(&s);
+    println("wrapper created");
+}
