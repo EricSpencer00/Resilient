@@ -1,0 +1,8 @@
+// RES-3222: number_types regression corpus — integer and float operations
+
+fn main() {
+    let i: i32 = 42;
+    let f: f32 = 3.14;
+    
+    println(i);
+}

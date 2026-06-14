@@ -1,0 +1,6 @@
+// RES-3222: number_types regression corpus — numeric type conversions
+
+fn main() {
+    let x: i32 = 100;
+    println(x);
+}
