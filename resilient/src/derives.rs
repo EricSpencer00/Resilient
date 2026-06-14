@@ -277,4 +277,80 @@ mod tests {
         assert!(derives_trait("MyIter", "Iterator"));
         crate::feature_attrs::reset();
     }
+
+    // ── RES-3155: declaration validation tests ────────────────────────────
+
+    #[test]
+    fn valid_single_derive() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Point",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok());
+        assert!(derives_trait("Point", "Debug"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn valid_multiple_derives() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Data",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug, Eq, Hash".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok());
+        assert!(derives_trait("Data", "Debug"));
+        assert!(derives_trait("Data", "Eq"));
+        assert!(derives_trait("Data", "Hash"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn duplicate_derives_accepted() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Item",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug, Debug, Hash".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok(), "duplicate derives should be deduplicated");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn supported_traits_validated() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Struct",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Display, Clone, Default".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok());
+        assert!(derives_trait("Struct", "Display"));
+        assert!(derives_trait("Struct", "Clone"));
+        crate::feature_attrs::reset();
+    }
 }
