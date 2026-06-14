@@ -1,0 +1,18 @@
+// RES-3183: phantom_types regression corpus — units of measure
+
+#[phantom(units = "Meters")]
+struct Distance {
+    value: int,
+}
+
+#[phantom(units = "Seconds")]
+struct Duration {
+    value: int,
+}
+
+fn main() {
+    let distance = Distance { value: 100 };
+    let time = Duration { value: 5 };
+
+    println("Units of measure types created");
+}

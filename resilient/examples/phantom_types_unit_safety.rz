@@ -1,0 +1,27 @@
+// RES-3183: phantom_types — compile-time unit safety
+
+#[phantom(units = "Kilograms")]
+struct Mass {
+    value: int,
+}
+
+#[phantom(units = "Meters")]
+struct Length {
+    value: int,
+}
+
+fn add_mass(a: Mass, b: Mass) -> Mass {
+    Mass { value: a.value + b.value }
+}
+
+fn main() {
+    let m1 = Mass { value: 50 };
+    let m2 = Mass { value: 30 };
+
+    // This compiles: adding same units
+    let total_mass = add_mass(m1, m2);
+    println("Mass addition allowed");
+
+    // This would NOT compile: mixing Mass + Length (different units)
+    // The phantom type system prevents unit mismatches at compile time
+}
