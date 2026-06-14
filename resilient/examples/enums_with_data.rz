@@ -1,0 +1,18 @@
+// RES-3161: enums regression corpus — enums with data
+
+enum Result<T> {
+    Success(T),
+    Error(String),
+}
+
+fn process_result(r: Result<i32>) -> String {
+    match r {
+        Result::Success(v) => return "ok",
+        Result::Error(e) => return "error",
+    }
+}
+
+fn main() {
+    let r = Result::Success(42);
+    println(process_result(r));
+}

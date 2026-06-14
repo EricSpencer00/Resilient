@@ -1,0 +1,20 @@
+// RES-3161: enums regression corpus — enum definitions
+
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+fn check_status(s: Status) -> String {
+    match s {
+        Status::Active => return "active",
+        Status::Inactive => return "inactive",
+        Status::Pending => return "pending",
+    }
+}
+
+fn main() {
+    let status = Status::Active;
+    println(check_status(status));
+}
