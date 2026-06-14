@@ -166,7 +166,7 @@ fn is_catch_all_arm(p: &crate::Pattern, guard: &Option<Node>) -> bool {
     matches!(p, crate::Pattern::Wildcard | crate::Pattern::Identifier(_))
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1284 / RES-1916: the typechecker gates this call behind
     // `markers.call_idents.contains("Err")`, so the program is
     // guaranteed to contain at least one `Err(…)` call. The three
@@ -175,7 +175,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // the OR logic meant the fast-reject could never trigger.
     let warnings = analyze(program);
     for w in &warnings {
-        eprintln!("warning: coverage in `{}`: {}", w.function, w.message);
+        let msg = format!(
+            "warning[coverage]: coverage in `{}`: {}",
+            w.function, w.message
+        );
+        crate::typechecker::emit_check_warning_plain(&msg, source_path, "coverage");
     }
     Ok(())
 }

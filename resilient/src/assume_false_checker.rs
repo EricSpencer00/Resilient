@@ -46,9 +46,14 @@ impl<'a> AssumeChecker<'a> {
                 // Warn about statements after assume(false)
                 if i + 1 < statements.len() {
                     let next_stmt = &statements[i + 1];
-                    eprintln!(
-                        "{}:{}  warning: dead-code region following assume(false)",
-                        self.source_path, next_stmt.span.start
+                    let msg = format!(
+                        "{}:{}:{}: warning[assume-false]: dead-code region following assume(false)",
+                        self.source_path, next_stmt.span.start.line, next_stmt.span.start.column
+                    );
+                    crate::typechecker::emit_check_warning_plain(
+                        &msg,
+                        self.source_path,
+                        "assume-false",
                     );
                 }
             }
@@ -63,9 +68,14 @@ impl<'a> AssumeChecker<'a> {
             if self.is_assume_false(stmt) {
                 // Warn about statements after assume(false)
                 if i + 1 < stmts.len() {
-                    eprintln!(
-                        "{}:  warning: dead-code region following assume(false)",
+                    let msg = format!(
+                        "{}:0:0: warning[assume-false]: dead-code region following assume(false)",
                         self.source_path
+                    );
+                    crate::typechecker::emit_check_warning_plain(
+                        &msg,
+                        self.source_path,
+                        "assume-false",
                     );
                 }
             }
