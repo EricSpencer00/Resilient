@@ -1025,4 +1025,107 @@ opt_level = "s"
             .expect("manifest checks should still work with call-site validation");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── RES-3222: duplicate/conflict detection tests ──────────────────────────
+
+    #[test]
+    fn check_rejects_conflicting_opt_levels_in_duplicate_targets() {
+        let dir = std::env::temp_dir().join("__resilient_tp_conflict_optlevel");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "s"
+[target.arm]
+opt_level = "3"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err = check(&prog, src_path.to_str().unwrap())
+            .expect_err("duplicate target declarations should fail");
+        assert!(
+            err.contains("duplicate `[target.arm]` declaration"),
+            "expected duplicate detection, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_conflicting_stack_sizes_in_duplicate_targets() {
+        let dir = std::env::temp_dir().join("__resilient_tp_conflict_stack");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+stack_size = 4096
+[target.arm]
+stack_size = 8192
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err = check(&prog, src_path.to_str().unwrap())
+            .expect_err("duplicate target with conflicting stack_size should fail");
+        assert!(
+            err.contains("duplicate `[target.arm]` declaration"),
+            "expected duplicate detection, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_detects_multiple_distinct_targets_no_conflict() {
+        let dir = std::env::temp_dir().join("__resilient_tp_multi_distinct");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "s"
+[target.x86]
+opt_level = "3"
+[target.riscv]
+opt_level = "2"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        check(&prog, src_path.to_str().unwrap())
+            .expect("multiple distinct targets should not conflict");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_rejects_duplicate_field_in_same_target() {
+        let dir = std::env::temp_dir().join("__resilient_tp_dup_field_same");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "a"
+version = "1.0.0"
+[target.arm]
+opt_level = "s"
+opt_level = "3"
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+        let err = check(&prog, src_path.to_str().unwrap())
+            .expect_err("duplicate field in same target should fail");
+        assert!(
+            err.contains("duplicate `opt_level` field"),
+            "expected duplicate field detection, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
