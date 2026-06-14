@@ -1,0 +1,21 @@
+// RES-3219: property_tests regression corpus — valid property_test declarations
+
+#[property_test(samples = 100)]
+fn addition_is_commutative(a: int, b: int) -> int
+    requires { true }
+    ensures { result == a + b }
+{
+    a + b
+}
+
+#[property_test(samples = 50)]
+fn double_negation(x: int) -> int
+    requires { x > -1000 }
+    ensures { result == x }
+{
+    -(-x)
+}
+
+fn main() {
+    println("Property test declarations loaded successfully");
+}

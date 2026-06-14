@@ -1,0 +1,13 @@
+// RES-3219: property_tests — missing samples field (error case)
+
+#[property_test()]
+fn bad_test(x: int) -> int
+    requires { true }
+    ensures { result == x }
+{
+    x
+}
+
+fn main() {
+    println("Should not reach here");
+}

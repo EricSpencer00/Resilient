@@ -1,0 +1,11 @@
+// RES-3219: property_tests — missing requires/ensures clauses (error case)
+
+#[property_test(samples = 100)]
+fn no_contract(x: int) -> int
+{
+    x + 1
+}
+
+fn main() {
+    println("Should not reach here");
+}
