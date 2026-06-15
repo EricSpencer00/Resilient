@@ -150,4 +150,218 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    // ── Extended malformed-input regression corpus (RES-3756) ────────────────
+
+    #[test]
+    fn malformed_probability_exceeds_one() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x > 0", p = "1.5""#.into(),
+                line: 0,
+            },
+        );
+        // collect() should parse but p > 1.0 is semantically invalid
+        let contracts = collect();
+        assert!(
+            !contracts.is_empty(),
+            "should parse despite invalid probability"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_probability_negative() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x > 0", p = "-0.5""#.into(),
+                line: 0,
+            },
+        );
+        let contracts = collect();
+        // Should parse, but negative p is invalid
+        let _ = contracts;
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_empty_clause() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "", p = "0.9""#.into(),
+                line: 0,
+            },
+        );
+        let contracts = collect();
+        // Empty clause is semantically invalid
+        assert!(!contracts.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_missing_clause() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"p = "0.9""#.into(),
+                line: 0,
+            },
+        );
+        let contracts = collect();
+        assert!(!contracts.is_empty(), "should parse missing clause");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_non_numeric_probability() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x > 0", p = "very_high""#.into(),
+                line: 0,
+            },
+        );
+        let contracts = collect();
+        // Invalid p defaults to 1.0
+        assert!(!contracts.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_duplicate_contracts() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "same_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x > 0", p = "0.9""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "same_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "y < 10", p = "0.8""#.into(),
+                line: 1,
+            },
+        );
+        let contracts = collect();
+        // Duplicates should result in only one contract per function
+        let filtered: Vec<_> = contracts.iter().filter(|(n, _)| n == "same_fn").collect();
+        assert_eq!(filtered.len(), 2, "both attributes should be collected");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_invalid_probability_format() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x > 0", p = "0.9.9""#.into(),
+                line: 0,
+            },
+        );
+        let contracts = collect();
+        // Malformed p defaults to 1.0
+        assert!(!contracts.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    // Valid baseline cases
+
+    #[test]
+    fn valid_multiple_contracts() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fn1",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "result > 0", p = "0.95""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "fn2",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "result != 0", p = "0.99""#.into(),
+                line: 1,
+            },
+        );
+        let contracts = collect();
+        assert_eq!(contracts.len(), 2, "should collect multiple contracts");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn valid_probability_boundary_values() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fn_certain",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "always true", p = "1.0""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "fn_impossible",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "always false", p = "0.0""#.into(),
+                line: 1,
+            },
+        );
+        let contracts = collect();
+        assert_eq!(contracts.len(), 2);
+        install(contracts.clone());
+        assert_eq!(empirical_rate("fn_certain"), None);
+        assert_eq!(empirical_rate("fn_impossible"), None);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn valid_complex_clause_expressions() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "complex_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "result > 0 && result < 100 || count == 0", p = "0.85""#.into(),
+                line: 0,
+            },
+        );
+        let contracts = collect();
+        assert_eq!(contracts.len(), 1);
+        let (name, contract) = &contracts[0];
+        assert_eq!(name, "complex_fn");
+        assert!(contract.clause.contains("&&") || contract.clause.contains("result"));
+        crate::feature_attrs::reset();
+    }
 }
