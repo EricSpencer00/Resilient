@@ -308,4 +308,96 @@ println(to_string(a + b));
             "test.rz:7:2: error: invalid const declaration: type annotations require an initializer"
         );
     }
+
+    // ── Malformed-input regression corpus (RES-3214) ──────────────
+    #[test]
+    fn corpus_const_empty_program_valid() {
+        let prog = Node::Program(vec![]);
+        assert!(check(&prog, "test.rz").is_ok());
+    }
+
+    #[test]
+    fn corpus_const_valid_simple() {
+        let src = "const X = 42;\nprintln(to_string(X));\n";
+        let r = run_program(src);
+        assert!(r.ok, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_concat() {
+        let src = "const MSG = \"Hi\" + \" there\";\nprintln(MSG);\n";
+        let r = run_program(src);
+        assert!(r.ok, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_conditional() {
+        let src = "const X = if true { 10 } else { 20 };\nprintln(to_string(X));\n";
+        let r = run_program(src);
+        assert!(r.ok, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_malformed_circular() {
+        let src = "const X = X;\n";
+        let r = run_program(src);
+        assert!(
+            !r.ok && r.errors.iter().any(|e| e.contains("circular")),
+            "{:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn corpus_const_malformed_undefined() {
+        let src = "const X = UNDEF;\n";
+        let r = run_program(src);
+        assert!(
+            !r.ok
+                && r.errors
+                    .iter()
+                    .any(|e| e.contains("undefined") || e.contains("not found")),
+            "{:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn corpus_const_malformed_mixed_types() {
+        let src = "const R = 42 + \"str\";\n";
+        let r = run_program(src);
+        assert!(!r.ok, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_malformed_duplicate() {
+        let src = "const X = 1;\nconst X = 2;\n";
+        let r = run_program(src);
+        assert!(
+            !r.ok && r.errors.iter().any(|e| e.contains("already")),
+            "{:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn corpus_const_malformed_var_ref() {
+        let src = "let v = 10;\nconst X = v;\n";
+        let r = run_program(src);
+        assert!(!r.ok, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_bitwise() {
+        let src = "const M = 0xFF & 0x0F;\nprintln(to_string(M));\n";
+        let r = run_program(src);
+        assert!(r.ok, "{:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_tuple() {
+        let src = "const P = (1, 2);\nlet (a, b) = P;\nprintln(to_string(a + b));\n";
+        let r = run_program(src);
+        assert!(r.ok, "{:?}", r.errors);
+    }
 }
