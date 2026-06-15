@@ -9,8 +9,8 @@
       "claimed_at": "2026-06-13T15:00:45Z"
     },
     "resilient/src/typestate_types.rs": {
-      "branch": "res-3200-typestate-validation",
-      "claimed_at": "2026-06-15T02:09:15Z"
+      "branch": "res-3201-typestate-call-site-validation",
+      "claimed_at": "2026-06-15T07:04:27Z"
     }
   }
 }
