@@ -277,4 +277,161 @@ mod tests {
         assert!(derives_trait("MyIter", "Iterator"));
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn all_supported_traits_together() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Complete",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug, Eq, Hash, Default, Clone, Ord, PartialEq, PartialOrd, Display, Iterator, From, Into, Copy"
+                    .into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok(), "all supported traits should be accepted");
+        let complete = collect();
+        assert_eq!(complete[0].1.traits.len(), 13);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn empty_trait_list_is_valid() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Empty",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok(), "empty derive list should be valid");
+        let empty = collect();
+        assert_eq!(empty[0].1.traits.len(), 0);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn whitespace_trimming_in_trait_list() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Spaced",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "  Debug  ,  Eq  ,  Clone  ".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok(), "whitespace should be trimmed");
+        assert!(derives_trait("Spaced", "Debug"));
+        assert!(derives_trait("Spaced", "Eq"));
+        assert!(derives_trait("Spaced", "Clone"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn quoted_trait_names_handled() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Quoted",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: r#""Debug", "Eq", "Hash""#.into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok(), "quoted trait names should be handled");
+        assert!(derives_trait("Quoted", "Debug"));
+        assert!(derives_trait("Quoted", "Eq"));
+        assert!(derives_trait("Quoted", "Hash"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_types_with_different_derives() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Type1",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug, Clone".into(),
+                line: 1,
+            },
+        );
+        crate::feature_attrs::record(
+            "Type2",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Eq, Ord, Hash".into(),
+                line: 2,
+            },
+        );
+        crate::feature_attrs::record(
+            "Type3",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Default, Display".into(),
+                line: 3,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(
+            res.is_ok(),
+            "multiple types with different derives should work"
+        );
+        assert!(derives_trait("Type1", "Debug"));
+        assert!(!derives_trait("Type1", "Eq"));
+        assert!(derives_trait("Type2", "Ord"));
+        assert!(!derives_trait("Type2", "Clone"));
+        assert!(derives_trait("Type3", "Display"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn derive_state_isolation_between_compilations() {
+        let _g = crate::feature_attrs::lock_for_test();
+
+        // First compilation
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "First",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Debug".into(),
+                line: 0,
+            },
+        );
+        assert!(check(&Node::Program(vec![]), "test1").is_ok());
+        assert!(derives_trait("First", "Debug"));
+
+        // Second compilation (should not see First)
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Second",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Eq".into(),
+                line: 0,
+            },
+        );
+        assert!(check(&Node::Program(vec![]), "test2").is_ok());
+        assert!(derives_trait("Second", "Eq"));
+        assert!(
+            !derives_trait("First", "Debug"),
+            "First should be gone after reset"
+        );
+
+        crate::feature_attrs::reset();
+    }
 }
