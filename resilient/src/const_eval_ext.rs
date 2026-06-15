@@ -308,4 +308,138 @@ println(to_string(a + b));
             "test.rz:7:2: error: invalid const declaration: type annotations require an initializer"
         );
     }
+
+    // ── Extended malformed-input regression corpus (RES-3466) ────────────────
+
+    #[test]
+    fn malformed_whitespace_only_name() {
+        let program = program(const_stmt(
+            "   ",
+            Node::IntegerLiteral {
+                value: 42,
+                span: span(1, 7),
+            },
+            None,
+            1,
+            1,
+        ));
+
+        let err = check(&program, "test.rz").unwrap_err();
+        assert!(err.contains("missing name"), "got: {err:?}");
+    }
+
+    #[test]
+    fn malformed_empty_type_annotation() {
+        let program = program(const_stmt(
+            "VALUE",
+            Node::IntegerLiteral {
+                value: 10,
+                span: span(2, 15),
+            },
+            Some(""),
+            2,
+            1,
+        ));
+
+        let err = check(&program, "test.rz").unwrap_err();
+        assert!(err.contains("type annotations require an initializer"));
+    }
+
+    #[test]
+    fn malformed_undefined_const_reference() {
+        let err = run_expect_err("const X = UNDEFINED_CONST;");
+        assert!(
+            err.contains("undefined") || err.contains("not found"),
+            "expected undefined error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_const_with_invalid_expression() {
+        let err = run_expect_err("const X = (1 + );");
+        assert!(
+            err.contains("error") || err.contains("invalid"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_recursive_const_definition() {
+        let err = run_expect_err("const SELF = SELF + 1;");
+        assert!(
+            err.contains("circular") || err.contains("recursive"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_const_mutually_recursive() {
+        let err = run_expect_err(
+            "const A = B + 1;
+             const B = A + 2;",
+        );
+        assert!(
+            err.contains("circular") || err.contains("recursive"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_const_with_function_call() {
+        let err = run_expect_err("const X = println(42);");
+        assert!(
+            err.contains("not constant") || err.contains("impure"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_const_with_undefined_variable() {
+        let err = run_expect_err("const X = some_var + 1;");
+        assert!(
+            err.contains("undefined") || err.contains("not found"),
+            "got: {err:?}"
+        );
+    }
+
+    // Valid baseline cases
+
+    #[test]
+    fn valid_const_chaining_multiple_levels() {
+        let out = run(r#"
+const BASE = 10;
+const DOUBLED = BASE * 2;
+const QUADRUPLED = DOUBLED * 2;
+println(to_string(QUADRUPLED));
+"#);
+        assert!(out.contains("40"), "got: {out:?}");
+    }
+
+    #[test]
+    fn valid_const_with_various_types() {
+        let out = run(r#"
+const INT_VAL = 42;
+const STR_VAL = "const";
+const BOOL_VAL = true;
+const ADD_RESULT = INT_VAL + 8;
+println(to_string(ADD_RESULT));
+println(STR_VAL);
+println(to_string(BOOL_VAL));
+"#);
+        assert!(out.contains("50"), "got: {out:?}");
+        assert!(out.contains("const"), "got: {out:?}");
+        assert!(out.contains("true"), "got: {out:?}");
+    }
+
+    #[test]
+    fn valid_const_complex_conditional_expression() {
+        let out = run(r#"
+const X = 5;
+const Y = 3;
+const Z = 8;
+const RESULT = if X > Y && Y > 0 { X + Z } else { 0 };
+println(to_string(RESULT));
+"#);
+        assert!(out.contains("13"), "got: {out:?}");
+    }
 }
