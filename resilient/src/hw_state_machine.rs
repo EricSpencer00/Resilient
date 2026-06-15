@@ -165,4 +165,228 @@ mod tests {
     fn initial_state_returns_none_for_unknown_peripheral() {
         assert!(initial_state("UnknownPeripheral99").is_none());
     }
+
+    // ── Extended malformed-input regression corpus (RES-3754) ────────────────
+
+    #[test]
+    fn malformed_missing_states() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"transitions = "Reset:init->Configured""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        assert!(!specs.is_empty(), "should parse despite missing states");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_missing_transitions() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Reset Configured""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        assert!(!specs.is_empty(), "should parse without transitions");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_invalid_transition_syntax() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "A B", transitions = "invalid_syntax""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        // Should parse but transitions will be empty
+        assert!(!specs.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_undefined_target_state() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Reset", transitions = "Reset:init->UndefinedState""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        // Should parse - target validation is runtime
+        assert!(!specs.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_undefined_source_state() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "A B", transitions = "UnknownState:op->B""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        // Should parse - source state not validated at collect time
+        assert!(!specs.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_empty_states() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "", transitions = "A:op->B""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        // Empty states - should parse with empty state list
+        assert!(!specs.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_duplicate_state_definitions() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "DupStates",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args:
+                    r#"states = "Reset Configured Reset", transitions = "Reset:init->Configured""#
+                        .into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        // Duplicates in state list - should still parse
+        assert!(!specs.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_empty_method_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "A B", transitions = "A:->B""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        // Empty method name - parsing should handle gracefully
+        assert!(!specs.is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    // Valid baseline cases
+
+    #[test]
+    fn valid_multiple_peripherals() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "GPIO",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Input Output", transitions = "Input:set_output->Output""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "Timer",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Stopped Running", transitions = "Stopped:start->Running Running:stop->Stopped""#.into(),
+                line: 1,
+            },
+        );
+        let specs = collect();
+        assert_eq!(specs.len(), 2, "should collect multiple peripherals");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn valid_complex_transitions() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "UART",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Reset Initialized Transmitting Receiving", transitions = "Reset:init->Initialized Initialized:send->Transmitting Initialized:receive->Receiving Transmitting:done->Initialized Receiving:done->Initialized""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        assert_eq!(initial_state("UART"), Some("Reset".to_string()));
+        assert_eq!(transition("UART", "Reset", "init").unwrap(), "Initialized");
+        assert_eq!(
+            transition("UART", "Initialized", "send").unwrap(),
+            "Transmitting"
+        );
+        assert!(transition("UART", "Reset", "send").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn valid_state_reachability() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Device",
+            crate::feature_attrs::AttrRecord {
+                name: "peripheral".into(),
+                args: r#"states = "Off Booting Ready Sleeping", transitions = "Off:power_on->Booting Booting:ready->Ready Ready:sleep->Sleeping Sleeping:wake->Ready""#.into(),
+                line: 0,
+            },
+        );
+        let specs = collect();
+        install(specs);
+        assert_eq!(initial_state("Device"), Some("Off".to_string()));
+        let reachable = vec![
+            ("Off", "power_on", "Booting"),
+            ("Booting", "ready", "Ready"),
+            ("Ready", "sleep", "Sleeping"),
+            ("Sleeping", "wake", "Ready"),
+        ];
+        for (from, method, to) in reachable {
+            let result = transition("Device", from, method).unwrap();
+            assert_eq!(result, to);
+        }
+        crate::feature_attrs::reset();
+    }
 }
