@@ -308,4 +308,110 @@ println(to_string(a + b));
             "test.rz:7:2: error: invalid const declaration: type annotations require an initializer"
         );
     }
+
+    // ── Malformed-input regression corpus (RES-3214) ──────────────
+    // Const declaration validation test cases
+
+    #[test]
+    fn corpus_const_empty_program_valid() {
+        let prog = Node::Program(vec![]);
+        assert!(
+            check(&prog, "test.rz").is_ok(),
+            "empty program must be valid"
+        );
+    }
+
+    #[test]
+    fn corpus_const_valid_simple_integer() {
+        let src = "const ANSWER = 42;\nprintln(to_string(ANSWER));\n";
+        let r = run_program(src);
+        assert!(r.ok, "simple integer const must work: {:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_string_concat() {
+        let src = "const MSG = \"Hello\" + \" World\";\nprintln(MSG);\n";
+        let r = run_program(src);
+        assert!(r.ok, "string concat must work: {:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_multiple_consts() {
+        let src = "const X = 1;\nconst Y = 2;\nconst Z = X + Y;\nprintln(to_string(Z));\n";
+        let r = run_program(src);
+        assert!(r.ok, "multiple consts must work: {:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_malformed_circular_ref_rejected() {
+        let src = "const X = X;\n";
+        let r = run_program(src);
+        assert!(!r.ok, "circular const reference must fail");
+        assert!(
+            r.errors.iter().any(|e| e.contains("circular")),
+            "error must mention circular ref: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn corpus_const_malformed_undefined_ref_rejected() {
+        let src = "const X = UNDEFINED;\n";
+        let r = run_program(src);
+        assert!(!r.ok, "undefined const reference must fail");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("undefined") || e.contains("not found")),
+            "error must mention undefined: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn corpus_const_malformed_mixed_types_rejected() {
+        let src = "const RESULT = 42 + \"string\";\n";
+        let r = run_program(src);
+        assert!(!r.ok, "mixed-type const expression must fail");
+    }
+
+    #[test]
+    fn corpus_const_malformed_double_declaration() {
+        let src = "const X = 1;\nconst X = 2;\n";
+        let r = run_program(src);
+        assert!(!r.ok, "duplicate const name must fail");
+        assert!(
+            r.errors.iter().any(|e| e.contains("already")),
+            "error must mention duplicate: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn corpus_const_malformed_ref_to_variable() {
+        let src = "let var = 10;\nconst X = var;\n";
+        let r = run_program(src);
+        assert!(!r.ok, "const referencing non-const must fail");
+    }
+
+    #[test]
+    fn corpus_const_valid_conditional() {
+        let src = "const X = if true { 10 } else { 20 };\nprintln(to_string(X));\n";
+        let r = run_program(src);
+        assert!(r.ok, "const conditional must work: {:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_tuple() {
+        let src = "const PAIR = (1, 2);\nlet (a, b) = PAIR;\nprintln(to_string(a + b));\n";
+        let r = run_program(src);
+        assert!(r.ok, "const tuple must work: {:?}", r.errors);
+    }
+
+    #[test]
+    fn corpus_const_valid_bitwise_ops() {
+        let src = "const MASK = 0xFF & 0x0F;\nprintln(to_string(MASK));\n";
+        let r = run_program(src);
+        assert!(r.ok, "const bitwise ops must work: {:?}", r.errors);
+    }
 }
