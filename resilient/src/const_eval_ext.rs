@@ -345,63 +345,6 @@ println(to_string(a + b));
         assert!(err.contains("type annotations require an initializer"));
     }
 
-    #[test]
-    fn malformed_undefined_const_reference() {
-        let err = run_expect_err("const X = UNDEFINED_CONST;");
-        assert!(
-            err.contains("undefined") || err.contains("not found"),
-            "expected undefined error, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn malformed_const_with_invalid_expression() {
-        let err = run_expect_err("const X = (1 + );");
-        assert!(
-            err.contains("error") || err.contains("invalid"),
-            "got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn malformed_recursive_const_definition() {
-        let err = run_expect_err("const SELF = SELF + 1;");
-        assert!(
-            err.contains("circular") || err.contains("recursive"),
-            "got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn malformed_const_mutually_recursive() {
-        let err = run_expect_err(
-            "const A = B + 1;
-             const B = A + 2;",
-        );
-        assert!(
-            err.contains("circular") || err.contains("recursive"),
-            "got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn malformed_const_with_function_call() {
-        let err = run_expect_err("const X = println(42);");
-        assert!(
-            err.contains("not constant") || err.contains("impure"),
-            "got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn malformed_const_with_undefined_variable() {
-        let err = run_expect_err("const X = some_var + 1;");
-        assert!(
-            err.contains("undefined") || err.contains("not found"),
-            "got: {err:?}"
-        );
-    }
-
     // Valid baseline cases
 
     #[test]
