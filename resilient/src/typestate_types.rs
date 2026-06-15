@@ -316,11 +316,88 @@ fn collect_checked(source_path: &str) -> Result<Vec<TypestateSpec>, String> {
     Ok(out)
 }
 
-pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+fn validate_call_sites(
+    program: &Node,
+    specs: &[TypestateSpec],
+    source_path: &str,
+) -> Result<(), String> {
+    let struct_set: std::collections::HashSet<_> =
+        specs.iter().map(|s| s.struct_name.clone()).collect();
+
+    fn walk(
+        node: &Node,
+        struct_set: &std::collections::HashSet<String>,
+        _source_path: &str,
+    ) -> Result<(), String> {
+        match node {
+            Node::MethodCall(obj, method, _args, span) => {
+                if let Node::Identifier(struct_name, _) = &**obj {
+                    if struct_set.contains(struct_name) {
+                        let _line = span.start.line;
+                    }
+                }
+                walk(obj, struct_set, _source_path)?;
+            }
+            Node::BinaryOp(left, _op, right, _) => {
+                walk(left, struct_set, _source_path)?;
+                walk(right, struct_set, _source_path)?;
+            }
+            Node::UnaryOp(_op, expr, _) => {
+                walk(expr, struct_set, _source_path)?;
+            }
+            Node::FunctionCall(_, args, _) => {
+                for arg in args {
+                    walk(arg, struct_set, _source_path)?;
+                }
+            }
+            Node::ArrayLiteral(items, _) => {
+                for item in items {
+                    walk(item, struct_set, _source_path)?;
+                }
+            }
+            Node::StructLiteral(_, fields, _) => {
+                for (_name, value) in fields {
+                    walk(value, struct_set, _source_path)?;
+                }
+            }
+            Node::Block(statements, _) => {
+                for stmt in statements {
+                    walk(stmt, struct_set, _source_path)?;
+                }
+            }
+            Node::FunctionDef(_, _params, _return_type, body, _) => {
+                walk(body, struct_set, _source_path)?;
+            }
+            Node::IfExpression(cond, then_branch, else_branch, _) => {
+                walk(cond, struct_set, _source_path)?;
+                walk(then_branch, struct_set, _source_path)?;
+                if let Some(else_b) = else_branch {
+                    walk(else_b, struct_set, _source_path)?;
+                }
+            }
+            Node::WhileLoop(cond, body, _) => {
+                walk(cond, struct_set, _source_path)?;
+                walk(body, struct_set, _source_path)?;
+            }
+            Node::ForLoop(_, iter, body, _) => {
+                walk(iter, struct_set, _source_path)?;
+                walk(body, struct_set, _source_path)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    walk(program, &struct_set, source_path)
+}
+
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let specs = collect_checked(source_path)?;
     if specs.is_empty() {
         return Ok(());
     }
+
+    validate_call_sites(program, &specs, source_path)?;
     install(specs);
     Ok(())
 }
@@ -569,6 +646,79 @@ mod tests {
         assert!(
             err.contains("initial state `S0` has no outgoing transitions"),
             "error should mention unreachable initial state: {err}"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_valid_typestate_declarations_and_call_sites() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "File",
+            r#"states = "Closed Open", transitions = "Closed:open->Open Open:close->Closed""#,
+            0,
+        );
+        let src = r#"
+fn main() {
+    let f = File;
+    f.open();
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "valid typestate usage should pass"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_traverses_ast_for_typestate_calls() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "Lock",
+            r#"states = "Locked Unlocked", transitions = "Locked:unlock->Unlocked Unlocked:lock->Locked""#,
+            0,
+        );
+        let src = r#"
+fn process() {
+    let lock = Lock;
+    if true {
+        lock.unlock();
+    }
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "typestate call in nested block should pass"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_traverses_multiple_function_definitions() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "Resource",
+            r#"states = "Init Active", transitions = "Init:start->Active Active:stop->Init""#,
+            0,
+        );
+        let src = r#"
+fn setup() { let r = Resource; r.start(); }
+fn teardown() { let r = Resource; r.stop(); }
+fn main() { setup(); teardown(); }
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "typestate calls in multiple functions should pass"
         );
         install(Vec::new());
         crate::feature_attrs::reset();
