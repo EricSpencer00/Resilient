@@ -1196,4 +1196,23 @@ Err(e) => println("error: " + e),
         assert!(err.starts_with("<test>:1:"));
         assert!(err.contains("header `X-Test` must be string value, got number literal"));
     }
+
+    // ── Malformed-input regression corpus (RES-3179) ──────────────
+    #[test]
+    fn corpus_http_get_basic_call_typechecks() {
+        // Basic http_get calls should typecheck successfully
+        check_std_ok(r#"let resp = http_get("http://example.com");"#);
+    }
+
+    #[test]
+    fn corpus_http_post_with_body_typechecks() {
+        // http_post with body should typecheck
+        check_std_ok(r#"let resp = http_post("http://example.com", "body");"#);
+    }
+
+    #[test]
+    fn corpus_http_with_headers_and_timeout() {
+        // Complex call with headers and timeout should typecheck
+        check_std_ok(r#"let resp = http_get("http://example.com", {"X-Test" -> "value"}, 30);"#);
+    }
 }

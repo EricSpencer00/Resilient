@@ -73,6 +73,52 @@ fn parse_transitions(spec: &str) -> Result<HashMap<(String, String), String>, St
     Ok(out)
 }
 
+fn validate_transition_semantics(
+    item: &str,
+    source_path: &str,
+    line: usize,
+    states: &[String],
+    transitions: &HashMap<(String, String), String>,
+) -> Result<(), String> {
+    let state_set: std::collections::HashSet<_> = states.iter().cloned().collect();
+
+    for ((src_state, _method), dst_state) in transitions.iter() {
+        if !state_set.contains(src_state) {
+            return Err(diag(
+                source_path,
+                line,
+                format!(
+                    "typestate `{item}`: transition references undefined source state `{src_state}`"
+                ),
+            ));
+        }
+        if !state_set.contains(dst_state) {
+            return Err(diag(
+                source_path,
+                line,
+                format!(
+                    "typestate `{item}`: transition references undefined target state `{dst_state}`"
+                ),
+            ));
+        }
+    }
+
+    if !states.is_empty() {
+        let first_state = &states[0];
+        if !transitions.iter().any(|((src, _), _)| src == first_state) {
+            return Err(diag(
+                source_path,
+                line,
+                format!(
+                    "typestate `{item}`: initial state `{first_state}` has no outgoing transitions"
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_spec(
     source_path: &str,
     line: usize,
@@ -173,6 +219,8 @@ fn parse_spec(
             format!("typestate attribute on `{item}` missing `transitions`"),
         ));
     };
+
+    validate_transition_semantics(item, source_path, line, &states, &transitions)?;
 
     Ok(TypestateSpec {
         struct_name: item.to_string(),
@@ -464,6 +512,63 @@ mod tests {
         assert!(
             err.contains("requires quoted `transitions` string"),
             "{err}"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_undefined_source_state() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "Thing",
+            r#"states = "S0 S1", transitions = "S2:go->S1""#,
+            19,
+        );
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:19:0: error:"), "{err}");
+        assert!(
+            err.contains("undefined source state `S2`"),
+            "error should mention undefined source state: {err}"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_undefined_target_state() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "Thing",
+            r#"states = "S0 S1", transitions = "S0:go->S2""#,
+            20,
+        );
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:20:0: error:"), "{err}");
+        assert!(
+            err.contains("undefined target state `S2`"),
+            "error should mention undefined target state: {err}"
+        );
+        install(Vec::new());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_initial_state_without_transitions() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_typestate(
+            "Thing",
+            r#"states = "S0 S1", transitions = "S1:go->S0""#,
+            21,
+        );
+        let err = check(&crate::parse("fn main() {}\n").0, "test").expect_err("expected error");
+        assert!(err.contains("test:21:0: error:"), "{err}");
+        assert!(
+            err.contains("initial state `S0` has no outgoing transitions"),
+            "error should mention unreachable initial state: {err}"
         );
         install(Vec::new());
         crate::feature_attrs::reset();
