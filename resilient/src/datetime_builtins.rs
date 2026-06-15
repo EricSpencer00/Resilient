@@ -670,3 +670,63 @@ match dt {
         );
     }
 }
+
+// ── Extended malformed-input regression corpus (RES-3164) ────────────────
+
+#[test]
+fn check_malformed_format_invalid_specifier() {
+    let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Z\");\n";
+    let r = crate::run_program(src);
+    assert!(!r.ok, "invalid format specifier should fail");
+}
+
+#[test]
+fn check_malformed_parse_empty_format() {
+    let src = "let result = datetime_parse(\"2024-01-15\", \"\");\n";
+    let (prog, _) = crate::parse(src);
+    assert!(check(&prog, "test").is_ok(), "empty format validates");
+}
+
+#[test]
+fn check_malformed_multiple_format_errors() {
+    let src = r#"
+let dt1 = datetime_now();
+let dt2 = datetime_now();
+let s1 = datetime_format(dt1, "%Q");
+let s2 = datetime_format(dt2, "%@");
+"#;
+    let r = crate::run_program(src);
+    assert!(!r.ok, "multiple invalid specifiers should fail");
+}
+
+#[test]
+fn check_malformed_nested_datetime_calls() {
+    let src =
+        "let s = datetime_format(datetime_from_unix(datetime_to_unix(datetime_now())), \"%Y\");\n";
+    let (prog, _) = crate::parse(src);
+    assert!(check(&prog, "test").is_ok(), "nested calls validate");
+}
+
+#[test]
+fn check_datetime_all_format_placeholders() {
+    let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Y-%m-%d %H:%M:%S\");\nprintln(s);\n";
+    let r = crate::run_program(src);
+    assert!(r.ok, "all valid placeholders should work");
+}
+
+#[test]
+fn check_datetime_in_conditional_blocks() {
+    let src = r#"
+fn test() {
+    if true {
+        let dt = datetime_now();
+        println(dt);
+    }
+}
+"#;
+    let (prog, _) = crate::parse(src);
+    assert!(
+        check(&prog, "test").is_ok(),
+        "datetime in conditionals validates"
+    );
+}
