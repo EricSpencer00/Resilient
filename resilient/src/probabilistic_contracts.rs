@@ -150,4 +150,141 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn multiple_contracts_tracked_independently() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fn1",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x > 0", p = "0.95""#.into(),
+                line: 1,
+            },
+        );
+        crate::feature_attrs::record(
+            "fn2",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "x < 100", p = "0.80""#.into(),
+                line: 2,
+            },
+        );
+        install(collect());
+        record_trial("fn1", true);
+        record_trial("fn1", true);
+        record_trial("fn2", true);
+        record_trial("fn2", false);
+        let rate1 = empirical_rate("fn1").unwrap();
+        let rate2 = empirical_rate("fn2").unwrap();
+        assert!((rate1 - 1.0).abs() < 1e-6, "fn1 should be 100% success");
+        assert!((rate2 - 0.5).abs() < 1e-6, "fn2 should be 50% success");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn probability_value_parsing() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "high_confidence",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "result != 0", p = "0.99""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "low_confidence",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "result >= 0", p = "0.10""#.into(),
+                line: 1,
+            },
+        );
+        install(collect());
+        let high = collect();
+        assert_eq!(high.len(), 2);
+        assert!((high[0].1.probability - 0.99).abs() < 1e-6);
+        assert!((high[1].1.probability - 0.10).abs() < 1e-6);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn trial_accumulation_over_multiple_calls() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "flaky_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "success", p = "0.75""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+
+        // Simulate 100 trials: 75 successes, 25 failures
+        for _ in 0..75 {
+            record_trial("flaky_fn", true);
+        }
+        for _ in 0..25 {
+            record_trial("flaky_fn", false);
+        }
+
+        let rate = empirical_rate("flaky_fn").unwrap();
+        assert!(
+            (rate - 0.75).abs() < 1e-6,
+            "empirical rate should be 0.75 after 100 trials"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn collect_preserves_clause_and_probability() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let clause_text = "result > 0 && result < 100";
+        crate::feature_attrs::record(
+            "bounded_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: format!(r#"clause = "{}", p = "0.97""#, clause_text),
+                line: 5,
+            },
+        );
+
+        let contracts = collect();
+        assert_eq!(contracts.len(), 1);
+        assert_eq!(contracts[0].0, "bounded_fn");
+        assert_eq!(contracts[0].1.clause, clause_text);
+        assert!((contracts[0].1.probability - 0.97).abs() < 1e-6);
+        assert_eq!(contracts[0].1.trials, 0);
+        assert_eq!(contracts[0].1.successes, 0);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn zero_trials_returns_none_empirical_rate() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "never_called",
+            crate::feature_attrs::AttrRecord {
+                name: "probabilistic".into(),
+                args: r#"clause = "always true", p = "0.50""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+
+        // Don't call record_trial — leave trials at 0
+        let rate = empirical_rate("never_called");
+        assert!(
+            rate.is_none(),
+            "empirical_rate should return None when trials == 0"
+        );
+        crate::feature_attrs::reset();
+    }
 }
