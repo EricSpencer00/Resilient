@@ -316,8 +316,8 @@ println(to_string(a + b));
         let src = "const X = UNDEFINED_CONST;";
         let err = run_expect_err(src);
         assert!(
-            err.contains("undefined") || err.contains("not found"),
-            "expected undefined error, got: {err:?}"
+            err.contains("not a compile-time constant"),
+            "expected constant reference error, got: {err:?}"
         );
     }
 
@@ -326,8 +326,8 @@ println(to_string(a + b));
         let src = "const RESULT = \"string\" + 42;";
         let err = run_expect_err(src);
         assert!(
-            err.contains("type") || err.contains("incompatible"),
-            "expected type error, got: {err:?}"
+            err.contains("is not supported in a constant expression"),
+            "expected unsupported operation error, got: {err:?}"
         );
     }
 
@@ -336,8 +336,8 @@ println(to_string(a + b));
         let src = "let var = 5;\nconst X = var + 1;";
         let err = run_expect_err(src);
         assert!(
-            err.contains("not constant") || err.contains("invalid"),
-            "expected non-constant error, got: {err:?}"
+            err.contains("not a compile-time constant"),
+            "expected constant reference error, got: {err:?}"
         );
     }
 
@@ -346,8 +346,8 @@ println(to_string(a + b));
         let src = "const X = Y;\nconst Y = X;";
         let err = run_expect_err(src);
         assert!(
-            err.contains("circular") || err.contains("undefined"),
-            "expected circular/undefined error, got: {err:?}"
+            err.contains("not a compile-time constant"),
+            "expected constant reference error, got: {err:?}"
         );
     }
 
@@ -377,12 +377,12 @@ println(to_string(a + b));
 
     #[test]
     fn check_malformed_const_with_side_effects() {
-        // println in const initializer should fail
-        let src = "const X = { println(1); 5 };";
+        // Function calls in const initializer should fail
+        let src = "const X = input();";
         let err = run_expect_err(src);
         assert!(
-            err.contains("side") || err.contains("invalid"),
-            "expected side-effect error, got: {err:?}"
+            err.contains("is not a valid constant expression"),
+            "expected invalid constant expression error, got: {err:?}"
         );
     }
 }
