@@ -1,0 +1,2 @@
+Property tests loaded successfully
+Program executed successfully
