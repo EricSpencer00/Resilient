@@ -1,0 +1,9 @@
+// RES-3237: Valid call to destructuring function
+fn add((int x, int y) pair) -> int {
+    return x + y;
+}
+
+fn main() {
+    let result = add((5, 3));
+    println(to_string(result));
+}

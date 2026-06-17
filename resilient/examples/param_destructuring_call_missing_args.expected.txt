@@ -1,0 +1,1 @@
+error[param_destructuring]: call to `add` provides 0 argument(s), but function declares destructuring parameter at position 0 (requires at least 1)
