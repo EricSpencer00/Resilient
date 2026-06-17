@@ -1,0 +1,10 @@
+// RES-3237: Call to destructuring function with insufficient arguments
+fn add((int x, int y) pair) -> int {
+    return x + y;
+}
+
+fn main() {
+    // Error: add requires 1 argument (the tuple), but call provides 0
+    let result = add();
+    println(to_string(result));
+}
