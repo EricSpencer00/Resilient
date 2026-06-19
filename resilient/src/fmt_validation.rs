@@ -81,6 +81,106 @@ fn static_template(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
     }
 }
 
+fn spec_requires_integer(spec: &str) -> bool {
+    if spec.is_empty() {
+        return false;
+    }
+    let Some(rest) = spec.strip_prefix(':') else {
+        return false;
+    };
+    rest.ends_with('d') || rest == "x" || rest == "X" || rest == "b" || rest == "o"
+}
+
+fn spec_requires_float(spec: &str) -> bool {
+    if spec.is_empty() {
+        return false;
+    }
+    spec.contains('.') || spec == ":e" || spec == ":E"
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FormatArgumentKind {
+    Integer,
+    Float,
+    String,
+    Boolean,
+    Unknown,
+}
+
+fn infer_arg_kind(arg: &Node) -> FormatArgumentKind {
+    match arg {
+        Node::IntegerLiteral { .. } => FormatArgumentKind::Integer,
+        Node::FloatLiteral { .. } => FormatArgumentKind::Float,
+        Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
+        | Node::InterpolatedString { .. } => FormatArgumentKind::String,
+        Node::BooleanLiteral { .. } => FormatArgumentKind::Boolean,
+        Node::PrefixExpression {
+            operator: "+" | "-",
+            right,
+            ..
+        } if matches!(right.as_ref(), Node::IntegerLiteral { .. }) => FormatArgumentKind::Integer,
+        Node::PrefixExpression {
+            operator: "+" | "-",
+            right,
+            ..
+        } if matches!(right.as_ref(), Node::FloatLiteral { .. }) => FormatArgumentKind::Float,
+        Node::PrefixExpression { operator: "!", .. } => FormatArgumentKind::Boolean,
+        _ => FormatArgumentKind::Unknown,
+    }
+}
+
+fn span_of(node: &Node) -> crate::span::Span {
+    match node {
+        Node::Identifier { span, .. }
+        | Node::IntegerLiteral { span, .. }
+        | Node::FloatLiteral { span, .. }
+        | Node::StringLiteral { span, .. }
+        | Node::StringInternLiteral { span, .. }
+        | Node::InterpolatedString { span, .. }
+        | Node::BooleanLiteral { span, .. }
+        | Node::BytesLiteral { span, .. }
+        | Node::CharLiteral { span, .. }
+        | Node::PrefixExpression { span, .. }
+        | Node::CallExpression { span, .. } => *span,
+        _ => crate::span::Span::default(),
+    }
+}
+
+fn validate_placeholder_type(fn_name: &str, arg: &Node, spec: &str) -> Option<String> {
+    let arg_kind = infer_arg_kind(arg);
+    if arg_kind == FormatArgumentKind::Unknown {
+        return None;
+    }
+
+    let requires_int = spec_requires_integer(spec);
+    let requires_float = spec_requires_float(spec);
+    let span = span_of(arg);
+    let loc = format!("in `{}`:{}:{}", fn_name, span.start.line, span.start.column);
+
+    match (arg_kind, requires_int, requires_float) {
+        (FormatArgumentKind::String, true, _) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires integer argument, got string"
+        )),
+        (FormatArgumentKind::String, false, true) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires float argument, got string"
+        )),
+        (FormatArgumentKind::Boolean, true, _) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires integer argument, got boolean"
+        )),
+        (FormatArgumentKind::Boolean, false, true) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires float argument, got boolean"
+        )),
+        (FormatArgumentKind::Integer, false, true) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires float argument, got integer"
+        )),
+        (FormatArgumentKind::Float, true, false) => Some(format!(
+            "{loc}: error[fmt]: format specifier `{{{spec}}}` requires integer argument, got float"
+        )),
+        _ => None,
+    }
+}
+
 fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
     match node {
         Node::CallExpression {
@@ -98,6 +198,15 @@ fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
                                 errs.push(format!("in `{}`: {}", fn_name, e));
                             }
                             Ok(segs) => {
+                                let actual_args: &[Node] = if arguments.len() == 2 {
+                                    if let Node::ArrayLiteral { items, .. } = &arguments[1] {
+                                        items.as_slice()
+                                    } else {
+                                        &arguments[1..]
+                                    }
+                                } else {
+                                    &arguments[1..]
+                                };
                                 let need = segs
                                     .iter()
                                     .filter(|s| {
@@ -107,24 +216,25 @@ fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
                                         )
                                     })
                                     .count();
-                                // The runtime `format(template, args)` signature
-                                // accepts EITHER individual positional args or a
-                                // single array literal.  Check both conventions:
-                                //  - Array arg:  `format("t", [a, b])` → count array items
-                                //  - Individual: `format("t", a, b)`   → count extra args
-                                let got = if arguments.len() == 2 {
-                                    if let Node::ArrayLiteral { items, .. } = &arguments[1] {
-                                        items.len()
-                                    } else {
-                                        arguments.len() - 1
+                                for (arg_idx, seg) in segs.iter().enumerate() {
+                                    let crate::format_builtin::FormatSegment::Placeholder(spec) =
+                                        seg
+                                    else {
+                                        continue;
+                                    };
+                                    let Some(arg) = actual_args.get(arg_idx) else {
+                                        continue;
+                                    };
+                                    if let Some(type_err) =
+                                        validate_placeholder_type(fn_name, arg, spec)
+                                    {
+                                        errs.push(type_err);
                                     }
-                                } else {
-                                    arguments.len() - 1
-                                };
-                                if got != need {
+                                }
+                                if actual_args.len() != need {
                                     errs.push(format!(
                                         "in `{}`: format string has {} placeholder(s) but {} arg(s) were passed",
-                                        fn_name, need, got
+                                        fn_name, need, actual_args.len()
                                     ));
                                 }
                             }
@@ -181,6 +291,20 @@ mod tests {
         assert!(!analyze(&prog).is_empty());
     }
 
+    #[test]
+    fn spec_type_mismatch_errors() {
+        let src = r#"fn f() { format("{:d}", "text"); return 0; }"#;
+        let (prog, _) = parse(src);
+        let errs = analyze(&prog);
+        assert!(!errs.is_empty(), "expected a type mismatch error");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("requires integer argument, got string")),
+            "expected integer-spec type mismatch, got: {:?}",
+            errs
+        );
+    }
+
     /// RES-1101: an unterminated `{` placeholder surfaces as a
     /// compile-time error, not a silently-accepted call.
     #[test]
@@ -229,6 +353,20 @@ mod tests {
             errs[0].contains("2") && errs[0].contains("1"),
             "error must mention placeholder count and arg count: {}",
             errs[0]
+        );
+    }
+
+    #[test]
+    fn array_convention_type_mismatch_errors() {
+        let src = r#"fn f() { format("{:.2f}", [1]); return 0; }"#;
+        let (prog, _) = parse(src);
+        let errs = analyze(&prog);
+        assert!(!errs.is_empty(), "expected a type mismatch error");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("requires float argument, got integer")),
+            "expected float-spec type mismatch, got: {:?}",
+            errs
         );
     }
 
