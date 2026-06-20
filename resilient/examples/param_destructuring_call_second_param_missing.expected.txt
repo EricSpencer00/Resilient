@@ -1,0 +1,2 @@
+error[param_destructuring]: call to `process` provides 1 argument(s), but function declares destructuring parameter at position 1 (requires at least 2)
+note: `process` parameter 1 is a tuple destructure; lowering to `let (a, b) = param;` at call sites is not yet supported — use explicit binding in the function body
