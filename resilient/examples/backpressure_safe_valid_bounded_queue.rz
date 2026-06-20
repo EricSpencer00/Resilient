@@ -1,0 +1,9 @@
+// Valid: handler with BoundedQueue type has block_caller strategy
+fn process_handler(BoundedQueue queue, int msg) {
+    block_caller(queue);
+    return;
+}
+
+fn main() {
+    return;
+}

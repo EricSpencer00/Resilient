@@ -1,0 +1,1 @@
+warning: handler 'event_handler' takes a bounded mailbox but has no backpressure strategy (drop_oldest/drop_newest/block_caller/shed_load or an is_full() guard) — overflow behaviour is undefined

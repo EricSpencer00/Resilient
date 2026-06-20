@@ -1,0 +1,11 @@
+// Valid: handler with mailbox has is_full guard check
+fn event_handler(Mailbox mailbox, int event) {
+    if is_full(mailbox) {
+        return;
+    }
+    return;
+}
+
+fn main() {
+    return;
+}

@@ -1,0 +1,9 @@
+// Valid: handler with mailbox parameter has drop_oldest strategy
+fn event_handler(Mailbox mailbox, int event) {
+    drop_oldest(mailbox);
+    return;
+}
+
+fn main() {
+    return;
+}

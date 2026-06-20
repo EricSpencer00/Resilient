@@ -1,0 +1,8 @@
+// Valid: non-handler function with mailbox doesn't need strategy
+fn process_queue(Mailbox q) {
+    return;
+}
+
+fn main() {
+    return;
+}

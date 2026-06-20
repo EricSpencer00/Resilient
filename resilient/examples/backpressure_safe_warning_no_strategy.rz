@@ -1,0 +1,8 @@
+// Warning: handler has mailbox but no backpressure strategy
+fn event_handler(Mailbox mailbox, int event) {
+    return;
+}
+
+fn main() {
+    return;
+}
