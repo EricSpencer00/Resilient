@@ -272,4 +272,39 @@ println(v2);
         assert!(out.contains("true"), "got: {out:?}");
         assert!(out.contains("world"), "got: {out:?}");
     }
+
+    // ── Malformed-input regression corpus (RES-3174) ──────────────
+    #[test]
+    fn corpus_mutex_lock_with_non_mutex() {
+        let src = r#"
+let x = 42;
+let result = mutex_lock(x);
+println(to_string(result));
+"#;
+        let r = crate::run_program(src);
+        assert!(!r.ok, "mutex_lock with non-mutex should fail");
+        assert!(r.errors.iter().any(|e| e.contains("mutex")), "error should mention mutex");
+    }
+
+    #[test]
+    fn corpus_rwlock_write_with_invalid_arg() {
+        let src = r#"
+let s = "invalid";
+let result = rwlock_write(s);
+"#;
+        let r = crate::run_program(src);
+        assert!(!r.ok, "rwlock_write with string should fail");
+        assert!(r.errors.iter().any(|e| e.contains("rwlock")), "error should mention rwlock");
+    }
+
+    #[test]
+    fn corpus_mutex_try_lock_null_value() {
+        let src = r#"
+let not_mutex = false;
+let opt = mutex_try_lock(not_mutex);
+"#;
+        let r = crate::run_program(src);
+        assert!(!r.ok, "mutex_try_lock with non-mutex should fail");
+        assert!(r.errors.iter().any(|e| e.contains("mutex")), "error should mention mutex");
+    }
 }
