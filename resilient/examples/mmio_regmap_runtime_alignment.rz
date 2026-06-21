@@ -1,0 +1,10 @@
+// RES-3198: Ensure mmio_regmap compile-time errors match runtime behavior
+
+mmio_regmap DEV {
+    0x00: reg1,
+    0x01: reg2,  // bad: should be 4-byte aligned
+}
+
+fn main(int x) -> int {
+    return 0;
+}
