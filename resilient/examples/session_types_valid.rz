@@ -1,0 +1,19 @@
+// RES-3193: Valid session_types declarations
+
+session_types HTTP_SESSION {
+    init: connect,
+    connected: {send_request, recv_response},
+    recv_response: {process, disconnect},
+    process: {connected, done},
+    done: end,
+}
+
+session_types STATE_MACHINE {
+    idle: {start, error},
+    active: {pause, stop},
+    stopped: end,
+}
+
+fn main(int x) -> int {
+    return 0;
+}
