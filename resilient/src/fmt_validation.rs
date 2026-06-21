@@ -28,6 +28,56 @@ pub fn count_placeholders(template: &str) -> Option<usize> {
         })
 }
 
+/// RES-3233: Validate that a format specifier is compatible with its argument type.
+///
+/// Specifier types:
+/// - `d`, `0Nd` → int (decimal, zero-padded)
+/// - `x`, `X`, `b`, `o` → int (hex, binary, octal)
+/// - `f`, `.Nf`, `e`, `E` → float (decimal, scientific)
+/// - `` (empty) → any type
+fn validate_specifier_type(spec: &str, arg: &Node, fn_name: &str, arg_index: usize, errs: &mut Vec<String>) {
+    // Empty spec {} accepts any type
+    if spec.is_empty() {
+        return;
+    }
+
+    // Determine what type the specifier expects
+    let (expected_type, spec_name) = if spec.starts_with('.') && spec.ends_with('f') {
+        // .Nf format (float with N decimals)
+        ("float", spec)
+    } else if spec.ends_with('f') || spec.ends_with('e') || spec.ends_with('E') {
+        // f, e, E formats
+        ("float", spec)
+    } else if spec.ends_with('d') || spec.ends_with('x') || spec.ends_with('X')
+           || spec.ends_with('b') || spec.ends_with('o') {
+        // d, x, X, b, o formats (int)
+        ("int", spec)
+    } else {
+        // Unknown specifier - let runtime handle it
+        return;
+    };
+
+    // Determine argument type
+    let arg_type = match arg {
+        Node::IntLiteral { .. } | Node::Identifier { .. } => {
+            // Rough heuristic: identifiers and literals are treated as their apparent type
+            // A complete implementation would use the typechecker's type info
+            "int"
+        }
+        Node::FloatLiteral { .. } => "float",
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => "string",
+        _ => return, // Dynamic expressions — can't validate
+    };
+
+    // Check compatibility
+    if arg_type != expected_type {
+        errs.push(format!(
+            "in `{}`: argument {} has type `{}` but format specifier `{{:{}}}` expects `{}`",
+            fn_name, arg_index, arg_type, spec_name, expected_type
+        ));
+    }
+}
+
 pub fn analyze(program: &Node) -> Vec<String> {
     let mut errs = Vec::new();
     let Node::Program(stmts) = program else {
@@ -98,15 +148,19 @@ fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
                                 errs.push(format!("in `{}`: {}", fn_name, e));
                             }
                             Ok(segs) => {
-                                let need = segs
+                                // RES-3233: Extract placeholders for both count and type validation
+                                let placeholders: Vec<_> = segs
                                     .iter()
-                                    .filter(|s| {
-                                        matches!(
-                                            s,
-                                            crate::format_builtin::FormatSegment::Placeholder(_)
-                                        )
+                                    .filter_map(|s| {
+                                        if let crate::format_builtin::FormatSegment::Placeholder(spec) = s {
+                                            Some(spec.as_str())
+                                        } else {
+                                            None
+                                        }
                                     })
-                                    .count();
+                                    .collect();
+
+                                let need = placeholders.len();
                                 // The runtime `format(template, args)` signature
                                 // accepts EITHER individual positional args or a
                                 // single array literal.  Check both conventions:
@@ -126,6 +180,14 @@ fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
                                         "in `{}`: format string has {} placeholder(s) but {} arg(s) were passed",
                                         fn_name, need, got
                                     ));
+                                } else {
+                                    // RES-3233: Validate specifier types match argument types
+                                    for (i, spec) in placeholders.iter().enumerate() {
+                                        let arg_idx = i + 1; // skip template arg
+                                        if arg_idx < arguments.len() {
+                                            validate_specifier_type(spec, &arguments[arg_idx], fn_name, i, errs);
+                                        }
+                                    }
                                 }
                             }
                         }
