@@ -308,4 +308,81 @@ println(to_string(a + b));
             "test.rz:7:2: error: invalid const declaration: type annotations require an initializer"
         );
     }
+
+    // ── Extended malformed-input regression corpus (RES-3770) ────────────────
+
+    #[test]
+    fn check_malformed_undefined_const_reference() {
+        let src = "const X = UNDEFINED_CONST;";
+        let err = run_expect_err(src);
+        assert!(
+            err.contains("undefined") || err.contains("not found"),
+            "expected undefined error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_malformed_mixed_type_concat() {
+        let src = "const RESULT = \"string\" + 42;";
+        let err = run_expect_err(src);
+        assert!(
+            err.contains("type") || err.contains("incompatible"),
+            "expected type error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_malformed_variable_reference_in_const() {
+        let src = "let var = 5;\nconst X = var + 1;";
+        let err = run_expect_err(src);
+        assert!(
+            err.contains("not constant") || err.contains("invalid"),
+            "expected non-constant error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_malformed_circular_ref_indirect() {
+        let src = "const X = Y;\nconst Y = X;";
+        let err = run_expect_err(src);
+        assert!(
+            err.contains("circular") || err.contains("undefined"),
+            "expected circular/undefined error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_valid_const_with_comparison() {
+        // Valid: comparison is allowed in const expressions
+        let out = run("const CMP = 5 > 3;\nprintln(to_string(CMP));");
+        assert!(out.contains("true"), "got: {out:?}");
+    }
+
+    #[test]
+    fn check_valid_const_with_negation() {
+        // Valid case: unary operations work in const expressions
+        let out = run("const NEG = -5;\nprintln(to_string(NEG));");
+        assert!(out.contains("-5"), "got: {out:?}");
+    }
+
+    #[test]
+    fn check_malformed_const_division_by_zero() {
+        let src = "const X = 10;\nconst DIV = X / 0;";
+        let err = run_expect_err(src);
+        assert!(
+            err.contains("division") || err.contains("zero"),
+            "expected division error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_malformed_const_with_side_effects() {
+        // println in const initializer should fail
+        let src = "const X = { println(1); 5 };";
+        let err = run_expect_err(src);
+        assert!(
+            err.contains("side") || err.contains("invalid"),
+            "expected side-effect error, got: {err:?}"
+        );
+    }
 }
