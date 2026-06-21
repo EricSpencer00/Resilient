@@ -40,6 +40,7 @@ N=1
 UNBOUNDED=0
 PARALLEL=1
 DRY_RUN=0
+CHECKPOINT_INTERVAL=5
 AGENT_CMD="${AGENT_CMD:?set AGENT_CMD or RESILIENT_IMPROVEMENT_AGENT_CMD}"
 LOOP_PROMPT_FILE="${AGENT_LOOP_PROMPT_FILE:-}"
 
@@ -49,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --loop) UNBOUNDED=1; shift ;;
     --parallel) PARALLEL="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --checkpoint-interval) CHECKPOINT_INTERVAL="$2"; shift 2 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -160,6 +162,12 @@ COUNT=0
 while true; do
   if (( UNBOUNDED == 0 )) && (( COUNT >= N )); then break; fi
 
+  # In unbounded mode, checkpoint every CHECKPOINT_INTERVAL iterations to avoid context overload
+  if (( UNBOUNDED == 1 )) && (( COUNT > 0 )) && (( COUNT % CHECKPOINT_INTERVAL == 0 )); then
+    log "checkpointing after $COUNT tickets — resume with another ralph-loop invocation to continue"
+    break
+  fi
+
   if (( PARALLEL > 1 )); then
     PIDS=()
     BATCH=()
@@ -195,3 +203,7 @@ while true; do
 done
 
 log "orchestrator finished — dispatched $COUNT ticket(s)"
+if (( UNBOUNDED == 1 )) && (( COUNT % CHECKPOINT_INTERVAL == 0 )) && (( COUNT > 0 )); then
+  log "⚠️  context checkpoint reached. To continue the loop, run: ralph-loop"
+  exit 0
+fi
