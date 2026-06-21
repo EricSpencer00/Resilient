@@ -104,4 +104,170 @@ mod tests {
         assert!(STRATEGY_FNS.contains(&"drop_oldest"));
         assert!(FULLNESS_FNS.contains(&"mailbox_full"));
     }
+
+    // Regression corpus: valid handlers with mailbox and strategy
+    #[test]
+    fn handler_with_drop_oldest_strategy() {
+        let src = "fn my_handler(int mailbox) -> int { return drop_oldest(mailbox); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_drop_newest_strategy() {
+        let src = "fn my_handler(int mailbox) -> int { return drop_newest(mailbox); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_is_full_guard() {
+        let src = "fn is_full(int q) -> bool { return q > 10; }\n\
+                   fn my_handler(int mailbox) -> int { \
+                     if is_full(mailbox) { return 0; } \
+                     return mailbox; \
+                   }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_mailbox_full_guard() {
+        let src = "fn mailbox_full(int q) -> bool { return q > 10; }\n\
+                   fn my_handler(int mailbox) -> int { \
+                     if mailbox_full(mailbox) { return 0; } \
+                     return mailbox; \
+                   }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_block_caller_strategy() {
+        let src = "fn my_handler(int mailbox) -> int { return block_caller(mailbox); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_shed_load_strategy() {
+        let src = "fn my_handler(int mailbox) -> int { return shed_load(mailbox); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_park_caller_strategy() {
+        let src = "fn my_handler(int mailbox) -> int { return park_caller(mailbox); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_queue_full_guard() {
+        let src = "fn queue_full(int q) -> bool { return q > 10; }\n\
+                   fn my_handler(int mailbox) -> int { \
+                     if queue_full(mailbox) { return 0; } \
+                     return mailbox; \
+                   }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_at_capacity_guard() {
+        let src = "fn at_capacity(int q) -> bool { return q > 10; }\n\
+                   fn my_handler(int mailbox) -> int { \
+                     if at_capacity(mailbox) { return 0; } \
+                     return mailbox; \
+                   }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_queue_param_and_strategy() {
+        let src = "fn my_handler(int queue) -> int { return drop_oldest(queue); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn non_handler_with_mailbox_param() {
+        let src = "fn process(int mailbox) -> int { return mailbox; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_without_queue_param() {
+        let src = "fn my_handler(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_handlers_all_with_strategy() {
+        let src = "fn handler1(int mailbox) -> int { return drop_oldest(mailbox); }\n\
+                   fn handler2(int mailbox) -> int { return drop_newest(mailbox); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_multiple_strategy_calls() {
+        let src = "fn my_handler(int mailbox) -> int { \
+                     let x = drop_oldest(mailbox); \
+                     let y = is_full(mailbox); \
+                     return x; \
+                   }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_nested_strategy_call() {
+        let src = "fn drop_oldest(int q) -> int { return q - 1; }\n\
+                   fn my_handler(int mailbox) -> int { \
+                     return drop_oldest(drop_oldest(mailbox)); \
+                   }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_mailbox_but_no_strategy() {
+        // Note: this should print a warning to stderr, but the check itself returns Ok
+        let src = "fn my_handler(int mailbox) -> int { return mailbox + 1; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_queue_param_but_no_strategy() {
+        let src = "fn my_handler(int queue) -> int { return queue + 1; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn mixed_handlers_some_valid_some_invalid() {
+        let src = "fn handler1(int mailbox) -> int { return drop_oldest(mailbox); }\n\
+                   fn handler2(int mailbox) -> int { return mailbox + 1; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn handler_with_strategy_in_nested_scope() {
+        let src = "fn is_full(int q) -> bool { return q > 10; }\n\
+                   fn my_handler(int mailbox) -> int { \
+                     if mailbox > 0 { \
+                       if is_full(mailbox) { return 0; } \
+                     } \
+                     return mailbox; \
+                   }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }
