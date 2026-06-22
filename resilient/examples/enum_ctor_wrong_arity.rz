@@ -1,0 +1,9 @@
+// RES-3204: enum_ctors - validate constructor arity
+enum Result<T> {
+  Ok(T),
+  Err(String)
+}
+
+fn test() {
+  let x = Ok();  // ERROR: Ok expects 1 argument
+}
