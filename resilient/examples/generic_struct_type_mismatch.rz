@@ -1,0 +1,5 @@
+// RES-3203: generic_structs - validate type parameter usage
+struct Pair<T> {
+  first: T,
+  second: i32  // ERROR: should be T for consistency
+}
