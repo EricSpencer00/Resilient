@@ -506,4 +506,150 @@ mod tests {
             msg
         );
     }
+
+    // =========================================================================
+    // RES-3812: Regression corpus for tail_calls validation
+    // =========================================================================
+
+    #[test]
+    fn valid_tail_call_simple_recursion() {
+        let src = r#"
+            fn fib(int n, int a, int b) -> int {
+                if n <= 0 { a } else { fib(n - 1, b, a + b) }
+            }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "fib");
+        assert!(is_tail_call(&body, "fib"));
+    }
+
+    #[test]
+    fn valid_tail_call_multiple_branches() {
+        let src = r#"
+            fn min_max(int n, int m) -> int {
+                if n < m { min_max(m, n) } else { n }
+            }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "min_max");
+        assert!(is_tail_call(&body, "min_max"));
+    }
+
+    #[test]
+    fn valid_tail_call_with_accumulator() {
+        let src = r#"
+            fn sum(int n, int acc) -> int {
+                if n <= 0 { acc } else { sum(n - 1, acc + n) }
+            }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "sum");
+        assert!(is_tail_call(&body, "sum"));
+    }
+
+    #[test]
+    fn valid_must_tail_call_attribute_parses() {
+        let src = r#"
+            #[must_tail_call]
+            fn countdown(int n) -> int {
+                if n <= 0 { 0 } else { countdown(n - 1) }
+            }
+        "#;
+        let (_, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+    }
+
+    #[test]
+    fn malformed_tail_call_in_arithmetic_op() {
+        let src = r#"
+            fn f(int n) -> int {
+                if n <= 0 { 0 } else { f(n - 1) * 2 }
+            }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "f");
+        assert!(!is_tail_call(&body, "f"));
+    }
+
+    #[test]
+    fn malformed_tail_call_in_function_arg() {
+        let src = r#"
+            fn print_result(int x) -> int { x }
+            fn f(int n) -> int {
+                if n <= 0 { 0 } else { print_result(f(n - 1)) }
+            }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "f");
+        assert!(!is_tail_call(&body, "f"));
+    }
+
+    #[test]
+    fn malformed_must_tail_call_with_non_tail_calls() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+            #[must_tail_call]
+            fn bad_recursion(int n) -> int {
+                if n <= 0 { 0 } else { 1 + bad_recursion(n - 1) }
+            }
+        "#;
+        let prog = parse_program(src);
+        let result = check(&prog, "<test>");
+        crate::feature_attrs::reset();
+        assert!(result.is_err(), "should reject non-tail in must_tail_call");
+    }
+
+    #[test]
+    fn malformed_tail_call_as_binary_operand() {
+        let src = r#"
+            fn f(int n) -> int {
+                if n <= 0 { 1 } else { f(n - 1) + f(n - 2) }
+            }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "f");
+        assert!(!is_tail_call(&body, "f"));
+    }
+
+    #[test]
+    fn edge_case_single_call_function() {
+        let src = "fn loop_forever(int _x) -> int { loop_forever(1) }";
+        let prog = parse_program(src);
+        let body = body_of(&prog, "loop_forever");
+        assert!(is_tail_call(&body, "loop_forever"));
+    }
+
+    #[test]
+    fn edge_case_no_recursive_calls() {
+        let src = "fn add_one(int x) -> int { x + 1 }";
+        let prog = parse_program(src);
+        let body = body_of(&prog, "add_one");
+        assert!(!is_tail_call(&body, "add_one"));
+    }
+
+    #[test]
+    fn edge_case_call_to_different_function() {
+        let src = r#"
+            fn helper(int x) -> int { x }
+            fn caller(int n) -> int { helper(n) }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "caller");
+        assert!(!is_tail_call(&body, "caller"));
+    }
+
+    #[test]
+    fn edge_case_tail_call_nested_if() {
+        let src = r#"
+            fn f(int n) -> int {
+                if n < 0 { 0 }
+                else if n == 0 { 1 }
+                else { f(n - 1) }
+            }
+        "#;
+        let prog = parse_program(src);
+        let body = body_of(&prog, "f");
+        assert!(is_tail_call(&body, "f"));
+    }
 }
