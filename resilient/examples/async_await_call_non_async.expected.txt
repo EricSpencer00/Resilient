@@ -1,0 +1,1 @@
+error[E1102]: Attempting to call an async function. Did you mean to use `await`?

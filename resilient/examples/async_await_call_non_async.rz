@@ -1,0 +1,11 @@
+// RES-3766: async_await call-site validation regression corpus
+// Attempting to call an async function without await
+
+fn process() -> i32 {
+  let x = get_data();  // ERROR: expected await on async call
+  x + 1
+}
+
+fn async get_data() -> i32 {
+  42
+}
