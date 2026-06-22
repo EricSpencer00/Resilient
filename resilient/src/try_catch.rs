@@ -497,4 +497,160 @@ mod tests {
             }\n";
         check_src(src).expect("exhaustive multi-variant handler should typecheck");
     }
+
+    // =========================================================================
+    // RES-3813: Regression corpus for try_catch validation
+    // =========================================================================
+
+    #[test]
+    fn valid_try_catch_single_failure() {
+        let src = "\
+            fn fail_once(int x) fails Error { return x; }\n\
+            fn handle(int y) {\n\
+                try { fail_once(y); } catch Error { return; }\n\
+            }\n";
+        check_src(src).expect("single failure fully handled");
+    }
+
+    #[test]
+    fn valid_try_catch_multiple_variants() {
+        let src = "\
+            fn risky(int x) fails Timeout, Hardware, Network { return x; }\n\
+            fn handler(int y) {\n\
+                try { risky(y); }\n\
+                catch Timeout { return; }\n\
+                catch Hardware { return; }\n\
+                catch Network { return; }\n\
+            }\n";
+        check_src(src).expect("all variants caught");
+    }
+
+    #[test]
+    fn valid_try_catch_partial_with_propagation() {
+        let src = "\
+            fn risky(int x) fails Disk, Memory, Timeout { return x; }\n\
+            fn handler(int y) fails Timeout {\n\
+                try { risky(y); }\n\
+                catch Disk { return; }\n\
+                catch Memory { return; }\n\
+            }\n";
+        check_src(src).expect("partial handling with leftover propagation");
+    }
+
+    #[test]
+    fn valid_try_catch_empty_handler_body() {
+        let src = "\
+            fn fail_maybe(int x) fails Fail { return x; }\n\
+            fn silent_ignore(int y) {\n\
+                try { fail_maybe(y); } catch Fail { }\n\
+            }\n";
+        check_src(src).expect("empty handler body accepted");
+    }
+
+    #[test]
+    fn valid_try_catch_nested_calls() {
+        let src = "\
+            fn fail_a(int x) fails A { return x; }\n\
+            fn fail_b(int x) fails B { return x; }\n\
+            fn caller(int y) {\n\
+                try { fail_a(y); fail_b(y); } catch A { } catch B { }\n\
+            }\n";
+        check_src(src).expect("multiple calls in try body");
+    }
+
+    #[test]
+    fn malformed_try_catch_invalid_handler_name() {
+        let src = "\
+            fn safe(int x) fails KnownError { return x; }\n\
+            fn caller(int y) {\n\
+                try { safe(y); } catch UnknownError { return; }\n\
+            }\n";
+        let err = check_src(src).expect_err("catching non-emitted variant should fail");
+        assert!(err.contains("UnknownError") || err.contains("catch"));
+    }
+
+    #[test]
+    fn malformed_try_catch_unhandled_variant() {
+        let src = "\
+            fn fail_twice(int x) fails A, B { return x; }\n\
+            fn caller(int y) {\n\
+                try { fail_twice(y); } catch A { return; }\n\
+            }\n";
+        let err = check_src(src).expect_err("unhandled variant B should fail");
+        assert!(err.contains("B") || err.contains("unhandled"));
+    }
+
+    #[test]
+    fn malformed_try_catch_missing_caller_propagation() {
+        let src = "\
+            fn risky(int x) fails Disk, Memory { return x; }\n\
+            fn caller(int y) {\n\
+                try { risky(y); } catch Disk { }\n\
+            }\n";
+        let err = check_src(src).expect_err("leftover variant must be declared or caught");
+        assert!(err.contains("Memory") || err.contains("unhandled"));
+    }
+
+    #[test]
+    fn malformed_try_catch_missing_variant_name() {
+        let src = "\
+            fn fail_it(int x) fails Error { return x; }\n\
+            fn caller(int y) {\n\
+                try { fail_it(y); } catch { return; }\n\
+            }\n";
+        let (_, errs) = parse_program(src);
+        assert!(
+            !errs.is_empty(),
+            "parse error expected for missing variant name"
+        );
+    }
+
+    #[test]
+    fn malformed_try_catch_duplicate_handlers() {
+        let src = "\
+            fn risky(int x) fails Problem { return x; }\n\
+            fn caller(int y) {\n\
+                try { risky(y); } catch Problem { } catch Problem { }\n\
+            }\n";
+        let err = check_src(src).expect_err("duplicate catch for same variant");
+        assert!(err.contains("Problem") || err.contains("dead"));
+    }
+
+    #[test]
+    fn edge_case_try_with_no_failures() {
+        let src = "\
+            fn safe(int x) { return x; }\n\
+            fn caller(int y) {\n\
+                try { safe(y); } catch Nothing { return; }\n\
+            }\n";
+        let err = check_src(src).expect_err("catching non-existent variant");
+        assert!(err.contains("Nothing") || err.contains("catch"));
+    }
+
+    #[test]
+    fn edge_case_deeply_nested_try_catch() {
+        let src = "\
+            fn inner_fail(int x) fails Inner { return x; }\n\
+            fn outer_fail(int x) fails Outer { return x; }\n\
+            fn caller(int y) {\n\
+                try {\n\
+                    try { inner_fail(y); } catch Inner { }\n\
+                    outer_fail(y);\n\
+                } catch Outer { }\n\
+            }\n";
+        check_src(src).expect("nested try-catch");
+    }
+
+    #[test]
+    fn edge_case_try_catch_with_local_binding() {
+        let src = "\
+            fn risky(int x) fails Oops { return x; }\n\
+            fn caller(int y) {\n\
+                try {\n\
+                    int result = risky(y);\n\
+                    return;\n\
+                } catch Oops { return; }\n\
+            }\n";
+        check_src(src).expect("try with local bindings");
+    }
 }
