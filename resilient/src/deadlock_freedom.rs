@@ -265,4 +265,142 @@ mod tests {
             "DAG actor graph must not have cycles: {cycles:?}"
         );
     }
+
+    // RES-3818: Malformed-input regression corpus for deadlock_freedom validation
+    #[test]
+    fn malformed_send_unknown_target() {
+        // send to a non-existent actor should be ignored (walk_sends guards with actors.contains)
+        let src = r#"
+            actor A {
+                receive msg(x) -> void { send B; }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let g = build(&prog);
+        // B is not declared, so A's edges should be empty
+        assert_eq!(g.edges.get("A").map(|s| s.len()).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn malformed_send_without_target() {
+        // send() without argument
+        let src = r#"
+            actor A {
+                receive msg(x) -> void { send(); }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let g = build(&prog);
+        // No valid target extracted
+        assert_eq!(g.edges.get("A").map(|s| s.len()).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn malformed_send_literal_not_identifier() {
+        // send(123) instead of send(ActorName)
+        let src = r#"
+            actor A {
+                receive msg(x) -> void { send 42; }
+            }
+            actor B {
+                receive msg(y) -> void { }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let g = build(&prog);
+        // Literal target is not an identifier, so ignored
+        assert_eq!(g.edges.get("A").map(|s| s.len()).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn malformed_nested_sends_in_condition() {
+        // Multiple sends in branching; only valid targets count
+        let src = r#"
+            actor A {
+                receive msg(x) -> void {
+                    if x > 0 { send B; } else { send C; }
+                }
+            }
+            actor B {
+                receive msg(y) -> void { }
+            }
+            actor C {
+                receive msg(z) -> void { }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let g = build(&prog);
+        // Both B and C are valid targets
+        let sends = g.edges.get("A").map(|s| s.len()).unwrap_or(0);
+        assert_eq!(sends, 2);
+    }
+
+    #[test]
+    fn malformed_duplicate_edges() {
+        // Multiple sends to same target; set deduplicates
+        let src = r#"
+            actor A {
+                receive msg(x) -> void { send B; send B; send B; }
+            }
+            actor B {
+                receive msg(y) -> void { }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let g = build(&prog);
+        // Set should contain only one entry for B
+        assert_eq!(g.edges.get("A").map(|s| s.len()).unwrap_or(0), 1);
+    }
+
+    #[test]
+    fn malformed_complex_cycle_with_missing_node() {
+        // Cycle A → B → C → A but C→A references non-existent D
+        let edges = vec![("A", "B"), ("B", "C"), ("C", "A")];
+        let g = make_graph(&edges);
+        let cycles = detect_cycles(&g);
+        // Should still detect the A → B → C → A cycle
+        assert!(!cycles.is_empty());
+    }
+
+    #[test]
+    fn malformed_isolated_nodes() {
+        // Multiple disconnected components
+        let g = make_graph(&[("A", "B"), ("C", "D")]);
+        let cycles = detect_cycles(&g);
+        // No cycles within or between components
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn malformed_diamond_no_cycle() {
+        // A → B, A → C, B → D, C → D (merges without cycle)
+        let g = make_graph(&[("A", "B"), ("A", "C"), ("B", "D"), ("C", "D")]);
+        let cycles = detect_cycles(&g);
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn malformed_cycle_in_diamond() {
+        // A → B, A → C, B → D, C → D, D → A (creates cycle)
+        let g = make_graph(&[("A", "B"), ("A", "C"), ("B", "D"), ("C", "D"), ("D", "A")]);
+        let cycles = detect_cycles(&g);
+        assert!(!cycles.is_empty());
+    }
+
+    #[test]
+    fn malformed_long_cycle() {
+        // A → B → C → D → E → A (5-node cycle)
+        let g = make_graph(&[("A", "B"), ("B", "C"), ("C", "D"), ("D", "E"), ("E", "A")]);
+        let cycles = detect_cycles(&g);
+        assert!(!cycles.is_empty());
+    }
+
+    #[test]
+    fn malformed_multiple_disjoint_cycles() {
+        // A → B → A and C → D → C (two separate 2-cycles)
+        let g = make_graph(&[("A", "B"), ("B", "A"), ("C", "D"), ("D", "C")]);
+        let cycles = detect_cycles(&g);
+        // Should detect both cycles
+        assert_eq!(cycles.len(), 2);
+    }
 }
