@@ -240,4 +240,124 @@ mod tests {
         );
         assert_eq!(event_count(), 0, "after clear, event count must be 0");
     }
+
+    // RES-3819: Malformed-input regression corpus for event_journal validation
+    #[test]
+    fn malformed_tick_advance_negative() {
+        // tick_advance with negative argument should error
+        let result = builtin_tick_advance(&[Value::Int(-1)]);
+        assert!(result.is_err(), "tick_advance with negative n must error");
+    }
+
+    #[test]
+    fn malformed_tick_advance_overflow() {
+        // tick_advance with i64::MAX should saturate (not panic)
+        let result = builtin_tick_advance(&[Value::Int(i64::MAX)]);
+        assert!(result.is_ok(), "saturating addition must not panic");
+    }
+
+    #[test]
+    fn malformed_tick_advance_wrong_type() {
+        // tick_advance with String instead of Int
+        let result = builtin_tick_advance(&[Value::String("oops".into())]);
+        assert!(result.is_err(), "tick_advance type mismatch must error");
+    }
+
+    #[test]
+    fn malformed_record_event_wrong_arity() {
+        // record_event with 1 arg instead of 2
+        let result = builtin_record_event(&[Value::String("e1".into())]);
+        assert!(result.is_err(), "wrong arity must error");
+    }
+
+    #[test]
+    fn malformed_record_event_swapped_types() {
+        // record_event with (Int, String) instead of (String, Int)
+        let result = builtin_record_event(&[Value::Int(42), Value::String("name".into())]);
+        assert!(result.is_err(), "type order mismatch must error");
+    }
+
+    #[test]
+    fn malformed_record_event_all_strings() {
+        // record_event with (String, String)
+        let result = builtin_record_event(&[Value::String("n".into()), Value::String("p".into())]);
+        assert!(result.is_err(), "payload must be Int");
+    }
+
+    #[test]
+    fn journal_overflow_fifo() {
+        clear();
+        // Fill journal to MAX_EVENTS + 1; oldest should be dropped
+        for i in 0..=(MAX_EVENTS as i64) {
+            builtin_record_event(&[Value::String(format!("evt_{i}")), Value::Int(i)]).unwrap();
+        }
+        // Count should be capped at MAX_EVENTS
+        assert_eq!(event_count(), MAX_EVENTS as i64);
+    }
+
+    #[test]
+    fn replay_events_format() {
+        clear();
+        builtin_record_event(&[Value::String("login".into()), Value::Int(1)]).unwrap();
+        let replay = match builtin_replay_events(&[]).unwrap() {
+            Value::Array(lines) => lines,
+            _ => panic!("replay_events must return Array"),
+        };
+        assert_eq!(replay.len(), 1);
+        // Format: "<id> [<tick>] <name>=<payload>"
+        if let Value::String(s) = &replay[0] {
+            assert!(s.contains('['), "replay format must include tick");
+            assert!(s.contains('='), "replay format must include payload");
+        }
+    }
+
+    #[test]
+    fn replay_events_empty_array() {
+        clear();
+        let replay = match builtin_replay_events(&[]).unwrap() {
+            Value::Array(lines) => lines,
+            _ => panic!("replay_events must return Array"),
+        };
+        assert_eq!(replay.len(), 0, "empty journal produces empty array");
+    }
+
+    #[test]
+    fn tick_advances_on_record() {
+        clear();
+        let before = tick_now();
+        builtin_record_event(&[Value::String("e".into()), Value::Int(0)]).unwrap();
+        let after = tick_now();
+        assert_eq!(after, before + 1, "record_event must auto-advance tick");
+    }
+
+    #[test]
+    fn record_event_id_increments() {
+        clear();
+        let id1 = match builtin_record_event(&[Value::String("e1".into()), Value::Int(1)]).unwrap()
+        {
+            Value::Int(id) => id,
+            _ => panic!("record_event must return Int"),
+        };
+        let id2 = match builtin_record_event(&[Value::String("e2".into()), Value::Int(2)]).unwrap()
+        {
+            Value::Int(id) => id,
+            _ => panic!("record_event must return Int"),
+        };
+        assert_eq!(id2, id1 + 1, "event IDs must increment sequentially");
+    }
+
+    #[test]
+    fn malformed_builtin_calls_preserve_state() {
+        clear();
+        builtin_record_event(&[Value::String("e1".into()), Value::Int(1)]).unwrap();
+        let before = event_count();
+        // Failed call
+        let _ = builtin_record_event(&[Value::String("e2".into())]);
+        // State unchanged
+        assert_eq!(
+            event_count(),
+            before,
+            "failed record_event must not alter state"
+        );
+    }
 }
