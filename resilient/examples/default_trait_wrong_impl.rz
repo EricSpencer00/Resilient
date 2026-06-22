@@ -1,0 +1,12 @@
+// RES-3205: default_trait_methods - validate default method overrides
+trait Handler {
+  fn handle(x: i32) -> i32 {
+    x + 1
+  }
+}
+
+impl Handler for MyType {
+  fn handle(x: String) -> i32 {  // ERROR: signature mismatch
+    0
+  }
+}
