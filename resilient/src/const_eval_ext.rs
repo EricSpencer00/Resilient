@@ -14,8 +14,8 @@
 //! This module now also validates malformed const declarations so
 //! recovery placeholders do not leak into later phases.
 
-use crate::span::Span;
 use crate::Node;
+use crate::span::Span;
 
 fn diagnostic(source_path: &str, span: Span, message: &str) -> String {
     format!(
@@ -89,9 +89,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::check;
+    use crate::Node;
     use crate::run_program;
     use crate::span::{Pos, Span, Spanned};
-    use crate::Node;
 
     fn run(src: &str) -> String {
         let r = run_program(src);

@@ -283,7 +283,10 @@ println(to_string(result));
 "#;
         let r = crate::run_program(src);
         assert!(!r.ok, "mutex_lock with non-mutex should fail");
-        assert!(r.errors.iter().any(|e| e.contains("mutex")), "error should mention mutex");
+        assert!(
+            r.errors.iter().any(|e| e.contains("mutex")),
+            "error should mention mutex"
+        );
     }
 
     #[test]
@@ -294,7 +297,10 @@ let result = rwlock_write(s);
 "#;
         let r = crate::run_program(src);
         assert!(!r.ok, "rwlock_write with string should fail");
-        assert!(r.errors.iter().any(|e| e.contains("rwlock")), "error should mention rwlock");
+        assert!(
+            r.errors.iter().any(|e| e.contains("rwlock")),
+            "error should mention rwlock"
+        );
     }
 
     #[test]
@@ -305,6 +311,9 @@ let opt = mutex_try_lock(not_mutex);
 "#;
         let r = crate::run_program(src);
         assert!(!r.ok, "mutex_try_lock with non-mutex should fail");
-        assert!(r.errors.iter().any(|e| e.contains("mutex")), "error should mention mutex");
+        assert!(
+            r.errors.iter().any(|e| e.contains("mutex")),
+            "error should mention mutex"
+        );
     }
 }
