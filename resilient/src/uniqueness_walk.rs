@@ -504,3 +504,165 @@ mod tests {
         assert!(!is_ident(&node, "other"));
     }
 }
+
+// =========================================================================
+// RES-3815: Regression corpus for uniqueness_walk validation
+// =========================================================================
+
+#[cfg(test)]
+mod res_3815_corpus {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn valid_visit_simple_function() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        let mut count = 0;
+        visit(&prog, &mut |_| count += 1);
+        assert!(count > 0, "visit should traverse at least one node");
+    }
+
+    #[test]
+    fn valid_visit_multiple_statements() {
+        let src = "let a = 1;\nlet b = 2;\n";
+        let (prog, _) = parse(src);
+        let mut stmt_count = 0;
+        visit(&prog, &mut |n| {
+            if matches!(n, Node::LetStatement { .. }) {
+                stmt_count += 1;
+            }
+        });
+        assert_eq!(stmt_count, 2, "visit should find both let statements");
+    }
+
+    #[test]
+    fn valid_visit_block_statements() {
+        let src = "fn f(int x) -> int { let y = 1; let z = 2; return y; }\n";
+        let (prog, _) = parse(src);
+        let mut let_count = 0;
+        visit(&prog, &mut |n| {
+            if matches!(n, Node::LetStatement { .. }) {
+                let_count += 1;
+            }
+        });
+        assert!(let_count >= 2, "visit should find let statements in block");
+    }
+
+    #[test]
+    fn valid_any_node_finds_deep_match() {
+        let src = "fn f(int x) -> int {\n\
+                        return match x {\n\
+                            1 => 10,\n\
+                            _ => 20,\n\
+                        };\n\
+                    }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(&prog, |n| {
+            matches!(n, Node::IntegerLiteral { value: 10, .. })
+        });
+        assert!(found, "any_node must find integer in match arm");
+    }
+
+    #[test]
+    fn valid_any_node_finds_infix_in_if() {
+        let src = "fn f(int x, int y) -> int {\n\
+                        if x + y > 0 { return 1; }\n\
+                        return 0;\n\
+                    }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(&prog, |n| matches!(n, Node::InfixExpression { .. }));
+        assert!(found, "any_node must find infix in if condition");
+    }
+
+    #[test]
+    fn valid_for_each_function_collects_names() {
+        let src = "fn first(int x) -> int { return x; }\n\
+                   fn second(int y) -> int { return y; }\n\
+                   fn third(int z) -> int { return z; }\n";
+        let (prog, _) = parse(src);
+        let mut names = Vec::new();
+        for_each_function(&prog, |name, _, _| {
+            names.push(name.to_string());
+        });
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"first".to_string()));
+        assert!(names.contains(&"second".to_string()));
+        assert!(names.contains(&"third".to_string()));
+    }
+
+    #[test]
+    fn malformed_any_node_missing_identifier() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(
+            &prog,
+            |n| matches!(n, Node::Identifier { name, .. } if name == "nonexistent"),
+        );
+        assert!(!found, "any_node should not find missing identifier");
+    }
+
+    #[test]
+    fn malformed_for_each_function_empty_program() {
+        let (prog, _) = parse("");
+        let mut count = 0;
+        for_each_function(&prog, |_, _, _| count += 1);
+        assert_eq!(count, 0, "empty program has no functions");
+    }
+
+    #[test]
+    fn malformed_visit_wrong_node_type() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        let mut found = false;
+        visit(&prog, &mut |n| {
+            if matches!(n, Node::WhileStatement { .. }) {
+                found = true;
+            }
+        });
+        assert!(
+            !found,
+            "visit should not find WhileStatement in simple function"
+        );
+    }
+
+    #[test]
+    fn edge_case_nested_blocks() {
+        let src = "fn f(int x) -> int {\n\
+                        if x > 0 { if x > 10 { return 1; } return 2; }\n\
+                        return 0;\n\
+                    }\n";
+        let (prog, _) = parse(src);
+        let mut if_count = 0;
+        visit(&prog, &mut |n| {
+            if matches!(n, Node::IfStatement { .. }) {
+                if_count += 1;
+            }
+        });
+        assert_eq!(if_count, 2, "should find both nested if statements");
+    }
+
+    #[test]
+    fn edge_case_complex_expression_tree() {
+        let src = "fn f(int a, int b, int c) -> int {\n\
+                        return a + b * c - a / b;\n\
+                    }\n";
+        let (prog, _) = parse(src);
+        let mut infix_count = 0;
+        visit(&prog, &mut |n| {
+            if matches!(n, Node::InfixExpression { .. }) {
+                infix_count += 1;
+            }
+        });
+        assert!(infix_count >= 3, "should find multiple infix operations");
+    }
+
+    #[test]
+    fn edge_case_call_expression_visit() {
+        let src = "fn helper(int x) -> int { return x; }\n\
+                   fn main(int y) -> int { return helper(y); }\n";
+        let (prog, _) = parse(src);
+        let found = any_node(&prog, |n| matches!(n, Node::CallExpression { .. }));
+        assert!(found, "visit should find call expression");
+    }
+}
