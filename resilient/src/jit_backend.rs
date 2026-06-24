@@ -16,7 +16,6 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::ptr::NonNull;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -1006,6 +1005,8 @@ pub(crate) mod runtime_shims {
     //! RES-166a: C-ABI helpers the JIT calls for array ops.
     //! `pub(crate)` so tests in the parent module can round-trip
     //! through the shims without cranelift in the picture.
+
+    use std::ptr::NonNull;
 
     /// Heap-allocated backing store for a Resilient array inside
     /// JIT-compiled code. Opaque from Cranelift's POV; always
