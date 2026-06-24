@@ -1,0 +1,14 @@
+// RES-3234: format_builtin regression corpus — valid format examples
+
+fn main() {
+    let result = format("Hello, {}!", "World");
+    println(result);
+
+    let num = 42;
+    let formatted = format("Number: {}", to_string(num));
+    println(formatted);
+
+    let float_val = 3.14159;
+    let float_fmt = format("Pi: {:.2f}", to_string(float_val));
+    println(float_fmt);
+}

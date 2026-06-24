@@ -1,0 +1,14 @@
+// RES-3234: format_builtin — hex and binary formats
+
+fn main() {
+    let num = 255;
+    let hex = format("Hex: {:x}", to_string(num));
+    let hex_upper = format("Hex upper: {:X}", to_string(num));
+    let binary = format("Binary: {:b}", to_string(num));
+    let octal = format("Octal: {:o}", to_string(num));
+
+    println(hex);
+    println(hex_upper);
+    println(binary);
+    println(octal);
+}

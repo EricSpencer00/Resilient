@@ -1,0 +1,4 @@
+Hex: ff
+Hex upper: FF
+Binary: 11111111
+Octal: 377
