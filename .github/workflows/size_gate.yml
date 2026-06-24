@@ -23,6 +23,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 # Budget in KiB. Tighten in a follow-up once we have a stable
 # baseline per the ticket's Notes ("start at 64 KiB (generous)").
 env:
