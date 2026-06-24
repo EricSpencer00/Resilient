@@ -1,0 +1,1 @@
+error: function must declare at least one `requires` or `ensures` clause

@@ -1,0 +1,1 @@
+error: invalid #[property_test] declaration: missing required `samples` field

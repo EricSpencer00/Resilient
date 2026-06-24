@@ -1,0 +1,1 @@
+error: `samples` must be greater than zero

@@ -1,0 +1,13 @@
+// RES-3219: property_tests — invalid samples value (error case)
+
+#[property_test(samples = 0)]
+fn bad_samples(x: int) -> int
+    requires { true }
+    ensures { result == x }
+{
+    x
+}
+
+fn main() {
+    println("Should not reach here");
+}
