@@ -5,6 +5,8 @@ edition = "2024"
 description = "Cortex-M4F buildable demo wiring `resilient-runtime` with `embedded-alloc::LlffHeap` as the global allocator (RES-101)."
 authors = ["Eric Spencer"]
 
+[workspace]
+
 # Binary target: the default `src/main.rs` entry point.
 [[bin]]
 name = "resilient-runtime-cortex-m-demo"

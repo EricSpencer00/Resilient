@@ -702,10 +702,7 @@ mod tests {
         let transfer = chain.start();
         let head = transfer.head_ptr();
         assert!(!head.is_null());
-        // SAFETY: the chain (now inside `transfer`) is alive, so head
-        // points at a live descriptor. The test never aliases it
-        // mutably.
-        let head_desc = unsafe { &*head };
+        let head_desc = transfer.descriptor(0).unwrap();
         assert_eq!(head_desc.length, 16);
     }
 
@@ -791,22 +788,17 @@ mod tests {
             chain.append(d).unwrap();
         }
         let transfer = chain.start();
-        let head = transfer.head_ptr();
-
-        // Walk the chain, mimicking what the hardware does.
-        let mut node = head;
-        while !node.is_null() {
-            // SAFETY: each node in the chain is alive (owned by
-            // `transfer`) and the source/dest addresses cover the
-            // declared stack buffers.
+        for i in 0..transfer.descriptor_count() {
+            let n = transfer.descriptor(i).unwrap();
+            // SAFETY: each descriptor points into the declared stack
+            // buffers and the accessor guarantees the descriptor is
+            // still alive for the duration of this borrow.
             unsafe {
-                let n = &*node;
                 ptr::copy_nonoverlapping(
                     n.source as *const u8,
                     n.dest as *mut u8,
                     n.length as usize,
                 );
-                node = n.next;
             }
         }
 

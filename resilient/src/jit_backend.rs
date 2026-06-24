@@ -1006,6 +1006,8 @@ pub(crate) mod runtime_shims {
     //! `pub(crate)` so tests in the parent module can round-trip
     //! through the shims without cranelift in the picture.
 
+    use std::ptr::NonNull;
+
     /// Heap-allocated backing store for a Resilient array inside
     /// JIT-compiled code. Opaque from Cranelift's POV; always
     /// passed as `*mut ResArray`.
@@ -1045,9 +1047,10 @@ pub(crate) mod runtime_shims {
     /// and not yet freed.
     pub extern "C-unwind" fn res_array_get(arr: *mut ResArray, i: i64) -> i64 {
         assert!(!arr.is_null(), "res_array_get: null array pointer");
+        let arr = NonNull::new(arr).expect("res_array_get: null array pointer");
         // SAFETY: the JIT calling convention guarantees the
         // pointer's validity for the duration of this call.
-        let arr_ref = unsafe { &*arr };
+        let arr_ref = unsafe { arr.as_ref() };
         if i < 0 || (i as usize) >= arr_ref.items.len() {
             super::trigger_jit_abort(super::JitAbort::OutOfBounds {
                 index: i,
@@ -1063,8 +1066,9 @@ pub(crate) mod runtime_shims {
     /// Safety: same contract as `res_array_get`.
     pub extern "C-unwind" fn res_array_set(arr: *mut ResArray, i: i64, v: i64) {
         assert!(!arr.is_null(), "res_array_set: null array pointer");
+        let mut arr = NonNull::new(arr).expect("res_array_set: null array pointer");
         // SAFETY: same as `res_array_get`.
-        let arr_ref = unsafe { &mut *arr };
+        let arr_ref = unsafe { arr.as_mut() };
         if i < 0 || (i as usize) >= arr_ref.items.len() {
             super::trigger_jit_abort(super::JitAbort::OutOfBounds {
                 index: i,
@@ -1076,7 +1080,8 @@ pub(crate) mod runtime_shims {
 
     pub extern "C-unwind" fn res_array_len(arr: *mut ResArray) -> i64 {
         assert!(!arr.is_null(), "res_array_len: null array pointer");
-        let arr_ref = unsafe { &*arr };
+        let arr = NonNull::new(arr).expect("res_array_len: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
         arr_ref.items.len() as i64
     }
 
@@ -1085,7 +1090,8 @@ pub(crate) mod runtime_shims {
             !arr.is_null(),
             "res_array_get_unchecked: null array pointer"
         );
-        let arr_ref = unsafe { &*arr };
+        let arr = NonNull::new(arr).expect("res_array_get_unchecked: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
         arr_ref.items[i as usize]
     }
 
@@ -1094,13 +1100,15 @@ pub(crate) mod runtime_shims {
             !arr.is_null(),
             "res_array_set_unchecked: null array pointer"
         );
-        let arr_ref = unsafe { &mut *arr };
+        let mut arr = NonNull::new(arr).expect("res_array_set_unchecked: null array pointer");
+        let arr_ref = unsafe { arr.as_mut() };
         arr_ref.items[i as usize] = v;
     }
 
     pub extern "C-unwind" fn res_array_push_copy(arr: *mut ResArray, v: i64) -> i64 {
         assert!(!arr.is_null(), "res_array_push_copy: null array pointer");
-        let arr_ref = unsafe { &*arr };
+        let arr = NonNull::new(arr).expect("res_array_push_copy: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
         let mut items = arr_ref.items.clone();
         items.push(v);
         Box::into_raw(Box::new(ResArray { items })) as i64
@@ -1108,7 +1116,8 @@ pub(crate) mod runtime_shims {
 
     pub extern "C-unwind" fn res_array_pop_copy(arr: *mut ResArray) -> i64 {
         assert!(!arr.is_null(), "res_array_pop_copy: null array pointer");
-        let arr_ref = unsafe { &*arr };
+        let arr = NonNull::new(arr).expect("res_array_pop_copy: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
         if arr_ref.items.is_empty() {
             super::trigger_jit_abort(super::JitAbort::EmptyPop);
         }

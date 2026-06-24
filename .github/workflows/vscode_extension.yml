@@ -19,6 +19,9 @@ on:
       - "vscode-extension/**"
       - ".github/workflows/vscode_extension.yml"
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Type-check + compile
