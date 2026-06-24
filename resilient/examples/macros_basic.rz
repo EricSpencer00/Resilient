@@ -1,0 +1,16 @@
+// RES-3209: macros regression corpus — valid macro declarations
+
+#[macro(pattern = "ASSERT_EQ", expansion = "if ($1) == ($2) { println(\"OK\"); } else { println(\"FAILED\"); }")]
+fn dummy1() { }
+
+#[macro(pattern = "DOUBLE", expansion = "$1 + $1")]
+fn dummy2() { }
+
+fn main() {
+    let x = 5;
+    let y = 10;
+
+    // Macro expansion: ASSERT_EQ(x, y) expands to comparison
+    let result = DOUBLE(x);
+    println(result);
+}

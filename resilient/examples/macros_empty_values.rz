@@ -1,0 +1,8 @@
+// RES-3209: macros — empty pattern/expansion values (error case)
+
+#[macro(pattern = "", expansion = "$1")]
+fn bad_empty() { }
+
+fn main() {
+    println("Should not compile");
+}
