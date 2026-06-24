@@ -1,0 +1,1 @@
+error: `#[derive(InvalidTrait)]` on `Bad` — unknown trait. Supported: ["Debug", "Clone", "Eq", "Hash", "PartialEq", "Default", "Copy"]

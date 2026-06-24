@@ -1,0 +1,11 @@
+// RES-3159: Derives regression — unknown trait
+// #[derive(InvalidTrait)] should be rejected
+
+#[derive(InvalidTrait)]
+struct Bad {
+    x: int,
+}
+
+fn main() {
+    let b = Bad { x: 1 };
+}

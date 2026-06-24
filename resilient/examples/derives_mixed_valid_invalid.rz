@@ -1,0 +1,11 @@
+// RES-3159: Derives regression — mixed valid and invalid traits
+// When derive list contains both valid and invalid traits, reject
+
+#[derive(Debug, BadTrait, Clone)]
+struct Mixed {
+    value: int,
+}
+
+fn main() {
+    let m = Mixed { value: 42 };
+}
