@@ -17,7 +17,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
 #[derive(Debug, Clone)]
@@ -234,25 +234,183 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut items = Vec::with_capacity(attrs.len());
-    let mut seen = HashSet::with_capacity(attrs.len());
+    let mut seen: HashMap<(String, String), (AssocConstant, usize)> =
+        HashMap::with_capacity(attrs.len());
 
     for (item, rec) in attrs {
         let constant = parse_assoc_const_record(item, &rec, _source_path)?;
-        if !seen.insert((constant.type_name.clone(), constant.const_name.clone())) {
-            return Err(assoc_const_diag(
-                _source_path,
-                rec.line,
-                format!(
-                    "duplicate associated constant `{}` for type `{}`",
-                    constant.const_name, constant.type_name
-                ),
-            ));
+
+        // RES-3135: Validate declaration shapes
+        validate_assoc_const_declaration(&constant, _source_path)?;
+
+        // RES-3138: Validate against runtime failure modes
+        validate_runtime_parity(&constant, &rec, _source_path)?;
+
+        // RES-3137: Detect duplicates with location tracking
+        let key = (constant.type_name.clone(), constant.const_name.clone());
+        if let Some((_first_decl, first_line)) = seen.get(&key) {
+            let conflict_msg = format!(
+                "duplicate associated constant `{}` for type `{}`\n  \
+                 first declared at {_source_path}:{first_line}:0\n  \
+                 conflicting declaration at {_source_path}:{}:0",
+                constant.const_name, constant.type_name, rec.line
+            );
+            return Err(assoc_const_diag(_source_path, rec.line, conflict_msg));
         }
+
+        seen.insert(key, (constant.clone(), rec.line));
         items.push(constant);
     }
 
     install(items);
     Ok(())
+}
+
+fn validate_assoc_const_declaration(
+    constant: &AssocConstant,
+    source_path: &str,
+) -> Result<(), String> {
+    // Validate type_name is a valid identifier
+    if !is_valid_identifier(&constant.type_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            format!(
+                "invalid type name `{}`: must be a valid identifier",
+                constant.type_name
+            ),
+        ));
+    }
+
+    // Validate trait_name is a valid identifier
+    if !is_valid_identifier(&constant.trait_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            format!(
+                "invalid trait name `{}`: must be a valid identifier",
+                constant.trait_name
+            ),
+        ));
+    }
+
+    // Validate const_name is a valid identifier
+    if !is_valid_identifier(&constant.const_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            format!(
+                "invalid constant name `{}`: must be a valid identifier",
+                constant.const_name
+            ),
+        ));
+    }
+
+    // Validate value is not empty
+    if constant.value.is_empty() {
+        return Err(assoc_const_diag(
+            source_path,
+            0,
+            "value must not be empty".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_runtime_parity(
+    constant: &AssocConstant,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+) -> Result<(), String> {
+    // RES-3138: Check for patterns that would fail at runtime
+
+    // Check 1: Constant names that are reserved keywords
+    let reserved = [
+        "let", "fn", "if", "else", "return", "while", "for", "match", "trait", "impl", "struct",
+        "enum", "pub", "priv", "mod", "use", "const", "static", "mut", "type", "self", "Self",
+    ];
+    if reserved.contains(&constant.const_name.as_str()) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "associated constant `{}` uses a reserved keyword — registry lookup would fail at runtime",
+                constant.const_name
+            ),
+        ));
+    }
+
+    // Check 2: Type names with uncommon patterns (e.g., starting with lowercase)
+    if let Some(first) = constant.type_name.chars().next() {
+        if first.is_lowercase() {
+            return Err(assoc_const_diag(
+                source_path,
+                rec.line,
+                format!(
+                    "type name `{}` should start with uppercase letter — runtime registry may not find it",
+                    constant.type_name
+                ),
+            ));
+        }
+    }
+
+    // Check 3: Value patterns that suggest parsing issues (unmatched quotes, brackets)
+    let value = &constant.value;
+    let open_count =
+        value.matches('[').count() + value.matches('{').count() + value.matches('(').count();
+    let close_count =
+        value.matches(']').count() + value.matches('}').count() + value.matches(')').count();
+    if open_count != close_count {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "value `{}` has mismatched brackets/braces — would fail to parse at runtime",
+                value
+            ),
+        ));
+    }
+
+    // Check 4: Trait names with suspicious patterns
+    if constant.trait_name.ends_with('_') || constant.trait_name.starts_with('_') {
+        if !constant.trait_name.starts_with("__") {
+            // Warn about single leading/trailing underscores (unusual for trait names)
+            return Err(assoc_const_diag(
+                source_path,
+                rec.line,
+                format!(
+                    "trait name `{}` has unusual underscore pattern — may not be found in registry",
+                    constant.trait_name
+                ),
+            ));
+        }
+    }
+
+    // Check 5: Detect if values contain suspicious escape sequences
+    if value.contains("\\\\") || (value.contains("\\n") && !value.contains("newline")) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "value `{}` contains escape sequences that may not be handled correctly at runtime",
+                value
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn is_valid_identifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let first = s.chars().next().unwrap();
+    if !first.is_alphabetic() && first != '_' {
+        return false;
+    }
+    s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -450,9 +608,17 @@ mod tests {
         );
 
         let err = check(&program, "test.rz").expect_err("duplicate declaration must fail");
-        assert_eq!(
-            err,
-            "test.rz:13:0: error[assoc-const]: duplicate associated constant `MIN` for type `Temperature`"
+        assert!(
+            err.contains("duplicate associated constant `MIN` for type `Temperature`"),
+            "error should mention duplicate constant"
+        );
+        assert!(
+            err.contains("first declared at test.rz:12:0"),
+            "error should include first declaration location"
+        );
+        assert!(
+            err.contains("conflicting declaration at test.rz:13:0"),
+            "error should include conflicting declaration location"
         );
         crate::feature_attrs::reset();
     }
