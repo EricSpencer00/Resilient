@@ -234,20 +234,26 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut items = Vec::with_capacity(attrs.len());
-    let mut seen = HashSet::with_capacity(attrs.len());
+    let mut seen: HashMap<(String, String), (AssocConstant, usize)> =
+        HashMap::with_capacity(attrs.len());
 
     for (item, rec) in attrs {
         let constant = parse_assoc_const_record(item, &rec, _source_path)?;
-        if !seen.insert((constant.type_name.clone(), constant.const_name.clone())) {
-            return Err(assoc_const_diag(
-                _source_path,
-                rec.line,
-                format!(
-                    "duplicate associated constant `{}` for type `{}`",
-                    constant.const_name, constant.type_name
-                ),
-            ));
+
+        // RES-3137: Detect duplicate/conflicting registrations
+        let key = (constant.type_name.clone(), constant.const_name.clone());
+        if let Some((_first_decl, first_line)) = seen.get(&key) {
+            // Report conflict with both locations for determinism
+            let conflict_msg = format!(
+                "duplicate associated constant `{}` for type `{}`\n  \
+                 first declared at {_source_path}:{first_line}:0\n  \
+                 conflicting declaration at {_source_path}:{}:0",
+                constant.const_name, constant.type_name, rec.line
+            );
+            return Err(assoc_const_diag(_source_path, rec.line, conflict_msg));
         }
+
+        seen.insert(key, (constant.clone(), rec.line));
         items.push(constant);
     }
 
@@ -450,9 +456,17 @@ mod tests {
         );
 
         let err = check(&program, "test.rz").expect_err("duplicate declaration must fail");
-        assert_eq!(
-            err,
-            "test.rz:13:0: error[assoc-const]: duplicate associated constant `MIN` for type `Temperature`"
+        assert!(
+            err.contains("duplicate associated constant `MIN` for type `Temperature`"),
+            "error should mention duplicate constant"
+        );
+        assert!(
+            err.contains("first declared at test.rz:12:0"),
+            "error should include first declaration location"
+        );
+        assert!(
+            err.contains("conflicting declaration at test.rz:13:0"),
+            "error should include conflicting declaration location"
         );
         crate::feature_attrs::reset();
     }
