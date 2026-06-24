@@ -7700,7 +7700,15 @@ impl TypeChecker {
                 Ok(effective_rt)
             }
 
-            Node::LiveBlock { body, .. } => {
+            Node::LiveBlock {
+                body, invariants, ..
+            } => {
+                for invariant in invariants {
+                    let ty = self.check_node(invariant)?;
+                    if ty != Type::Bool && ty != Type::Any {
+                        return Err(format!("live block invariant must be Bool, got {}", ty));
+                    }
+                }
                 // Live blocks preserve the type of their body
                 self.check_node(body)
             }
@@ -13858,6 +13866,34 @@ mod scope_and_reachability_tests {
             }",
         )
         .expect("live { return X } should count as a terminating body");
+    }
+
+    #[test]
+    fn res3828_live_block_bool_invariant_passes() {
+        check(
+            "fn safe(int fuel) -> int { \
+                live invariant fuel >= 0 { \
+                    return fuel; \
+                } \
+            }",
+        )
+        .expect("boolean live invariant should typecheck");
+    }
+
+    #[test]
+    fn res3828_live_block_non_bool_invariant_is_rejected() {
+        let err = check(
+            "fn unsafe_live(int fuel) -> int { \
+                live invariant 1 { \
+                    return fuel; \
+                } \
+            }",
+        )
+        .expect_err("non-bool live invariant should be rejected");
+        assert!(
+            err.contains("live block invariant must be Bool"),
+            "expected live invariant Bool diagnostic, got: {err}"
+        );
     }
 
     // --- RES-1113: unreachable code after return -----------------------------
