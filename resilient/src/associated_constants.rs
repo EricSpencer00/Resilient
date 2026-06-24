@@ -538,4 +538,23 @@ mod tests {
 
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn malformed_input_regression_valid_underscore_identifiers() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "_MyType",
+            r#"trait = "_MyTrait", name = "_CONSTANT", value = "-40""#,
+            10,
+        );
+        check(&program, "test.rz").expect("underscore identifiers should be valid");
+        assert_eq!(
+            lookup("_MyType", "_CONSTANT"),
+            Some("-40".to_string()),
+            "should register with underscore identifiers"
+        );
+        crate::feature_attrs::reset();
+    }
 }
