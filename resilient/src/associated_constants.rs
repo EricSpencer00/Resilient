@@ -238,6 +238,10 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
 
     for (item, rec) in attrs {
         let constant = parse_assoc_const_record(item, &rec, _source_path)?;
+
+        // RES-3135: Validate declaration shapes and invariants
+        validate_assoc_const_declaration(&constant, &rec, _source_path)?;
+
         if !seen.insert((constant.type_name.clone(), constant.const_name.clone())) {
             return Err(assoc_const_diag(
                 _source_path,
@@ -253,6 +257,70 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
 
     install(items);
     Ok(())
+}
+
+fn validate_assoc_const_declaration(
+    constant: &AssocConstant,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+) -> Result<(), String> {
+    // Validate type_name is a valid identifier
+    if !is_valid_identifier(&constant.type_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "#[assoc_const] has invalid type name `{}`: must be a valid identifier",
+                constant.type_name
+            ),
+        ));
+    }
+
+    // Validate trait_name is a valid identifier
+    if !is_valid_identifier(&constant.trait_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "#[assoc_const] has invalid trait name `{}`: must be a valid identifier",
+                constant.trait_name
+            ),
+        ));
+    }
+
+    // Validate const_name is a valid identifier
+    if !is_valid_identifier(&constant.const_name) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "#[assoc_const] has invalid constant name `{}`: must be a valid identifier",
+                constant.const_name
+            ),
+        ));
+    }
+
+    // Validate value is not empty (already done in parsing, but reinforce here)
+    if constant.value.is_empty() {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            "#[assoc_const] value must not be empty".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn is_valid_identifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let first = s.chars().next().unwrap();
+    if !first.is_alphabetic() && first != '_' {
+        return false;
+    }
+    s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -536,6 +604,74 @@ mod tests {
             }
         }
 
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_invalid_type_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "123Invalid",
+            r#"trait = "Bounded", name = "MIN", value = "-40""#,
+            10,
+        );
+        let err = check(&program, "test.rz").expect_err("invalid type name must fail");
+        assert!(
+            err.contains("invalid type name"),
+            "error should mention invalid type name"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_invalid_trait_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "Temp",
+            r#"trait = "123-Invalid", name = "MIN", value = "-40""#,
+            10,
+        );
+        let err = check(&program, "test.rz").expect_err("invalid trait name must fail");
+        assert!(
+            err.contains("invalid trait name"),
+            "error should mention invalid trait name"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_invalid_const_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "Temp",
+            r#"trait = "Bounded", name = "123-CONST", value = "-40""#,
+            10,
+        );
+        let err = check(&program, "test.rz").expect_err("invalid const name must fail");
+        assert!(
+            err.contains("invalid constant name"),
+            "error should mention invalid constant name"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_underscore_prefixed_identifiers() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "_Temp",
+            r#"trait = "_Bounded", name = "_MIN", value = "-40""#,
+            10,
+        );
+        check(&program, "test.rz").expect("underscore-prefixed identifiers must be valid");
         crate::feature_attrs::reset();
     }
 }
