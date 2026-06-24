@@ -1,0 +1,14 @@
+// RES-3169: float32 — explicit casting enables mixed-width operations
+
+fn main() {
+    let f32_val: f32 = 3.0;
+    let f64_val: f64 = 2.0;
+
+    // Explicit cast to f64 before arithmetic
+    let mixed = as_f64(f32_val) + f64_val;
+    println(mixed);
+
+    // Explicit cast to f32 before arithmetic
+    let mixed2 = f32_val + as_f32(f64_val);
+    println(mixed2);
+}
