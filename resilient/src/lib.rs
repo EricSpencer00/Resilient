@@ -589,6 +589,7 @@ mod capabilities;
 // 50-feature missing-language-features pass — shared attribute registry
 // and 50 new feature modules. See feature_attrs.rs for the registry,
 // and the per-feature module docs for what each does.
+mod ai_generated;
 mod ai_threat_model;
 mod anti_regression;
 mod associated_constants;
@@ -4100,6 +4101,7 @@ impl Parser {
     /// cascade into unrelated parse errors just because of a typo.
     fn parse_attributed_item(&mut self) -> Node {
         debug_assert_eq!(self.current_token, Token::At);
+        let attr_line = self.current_line;
         self.next_token(); // skip '@'
 
         let attr_name = match &self.current_token {
@@ -4129,9 +4131,10 @@ impl Parser {
             // purity checker (via `pure: bool`) and the RES-389
             // effect-annotation checker (via `EffectSet::pure()`).
             "pure" => (true, EffectSet::pure()),
+            "ai_generated" => (false, EffectSet::io()),
             other => {
                 self.record_error(format!(
-                    "Unknown attribute `@{}`. Known: @pure, @repr(C)",
+                    "Unknown attribute `@{}`. Known: @pure, @repr(C), @ai_generated",
                     other
                 ));
                 // Fall through — treat as if no attribute was
@@ -4157,7 +4160,20 @@ impl Parser {
             });
         }
 
-        self.parse_function_with_pure_and_effects(pure_flag, effects)
+        let node = self.parse_function_with_pure_and_effects(pure_flag, effects);
+        if attr_name == "ai_generated"
+            && let Node::Function { name, .. } = &node
+        {
+            crate::feature_attrs::record(
+                name,
+                crate::feature_attrs::AttrRecord {
+                    name: "ai_generated".to_string(),
+                    args: String::new(),
+                    line: attr_line,
+                },
+            );
+        }
+        node
     }
 
     /// RES-317: parse `@repr(C)` immediately followed by a `struct`
