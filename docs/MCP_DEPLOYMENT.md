@@ -1,165 +1,138 @@
 # Resilient MCP Server - Deployment Decision
 
-## Decision: Railway.app (Starter) → VPS (Long-term)
+## Decision
 
-### Rationale
+Ship the Resilient MCP server as a containerized HTTP service, then deploy the
+same image to the cheapest reliable host that can run the native `rz` binary
+and Z3.
 
-**Railway** (immediate, 1-2 weeks):
-- ✅ Auto-deploy on git push (zero config)
-- ✅ Free tier: $5/mo (easy to test)
-- ✅ Zero infrastructure management
-- ✅ Integrated monitoring + logging
-- ❌ Vendor lock-in (but easy to migrate)
+Preferred order:
 
-**VPS** (after validation, weeks 3+):
-- ✅ Full control, cheaper long-term
-- ✅ Can self-host if needed
-- ✅ No vendor dependency
-- ✅ Multiple services on one box
-- ❌ Manual deployment, patching
+1. **Railway or Fly.io for staging**: fastest path from repo image to a public
+   endpoint with logs, restart policy, and HTTPS.
+2. **Cloudflare Containers if Cloudflare is desired**: viable for this native
+   Rust/Z3 workload because it runs the existing Linux container image.
+3. **VPS or sponsor-backed VM for long-running production**: best predictable
+   monthly cost once usage is real.
+4. **AWS free tier only for temporary experiments**: useful for a short trial,
+   but avoid depending on rotating free-tier accounts for a public endpoint.
 
-### Action Plan
+Do not target plain Cloudflare Workers for the compiler process. Workers are a
+good edge proxy, but the MCP service needs a native binary, process lifetime,
+and solver/runtime headroom that fit a container or VM much better.
 
-#### **Phase 1: Railway Setup (Week 1)**
+## Local HTTP Wrapper
 
-1. **Create Dockerfile**
-   ```dockerfile
-   FROM rust:1.75-alpine AS builder
-   WORKDIR /app
-   COPY . .
-   RUN cargo build --release --manifest-path resilient/Cargo.toml
-   
-   FROM alpine:latest
-   RUN apk add --no-cache curl ca-certificates libz3
-   COPY --from=builder /app/resilient/target/release/rz /usr/local/bin/
-   EXPOSE 8080
-   CMD ["rz", "--mcp-server", "--http-port", "8080"]
-   ```
+The compiler now exposes a hosted transport without adding a web framework:
 
-2. **Deploy**
-   ```bash
-   railway login
-   railway link EricSpencer00/Resilient
-   railway variable set Z3_BINARY=/usr/bin/z3
-   railway up
-   ```
+```sh
+rz mcp --http-port 8080
+```
 
-3. **Monitor**
-   - Dashboard: railway.app/projects/resilient
-   - Logs: real-time tail in UI
-   - Health: curl https://resilient-mcp.railway.app/health
+Equivalent flag form:
 
-#### **Phase 2: Validation (Week 2)**
-- [ ] Claude Code integration test
-- [ ] 24-hour uptime verification
-- [ ] Cost confirmation
-- [ ] API performance baseline
+```sh
+rz --mcp-http-port 8080
+```
 
-#### **Phase 3: VPS Migration (Weeks 3+)**
-- [ ] Provision Hetzner/DigitalOcean box ($5-10/mo)
-- [ ] Deploy via systemd + auto-restart
-- [ ] Migrate DNS to VPS
-- [ ] Archive Railway
+Health check:
 
-## MCP Tools to Expose
+```sh
+curl http://127.0.0.1:8080/health
+```
 
-### Tier 1 (MVP - Week 1)
+Tool call:
+
+```sh
+curl -s http://127.0.0.1:8080/mcp/call \
+  -H 'content-type: application/json' \
+  -d '{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}'
+```
+
+The HTTP wrapper accepts hosted aliases such as `rz_compile`, `rz_format`,
+and `rz_verify`, and maps them onto the existing MCP tools.
+
+## Container Command
+
+The existing Docker image has `rz` as its entrypoint:
+
+```sh
+docker run --rm -p 8080:8080 ghcr.io/ericspencer00/resilient:latest \
+  mcp --http-port 8080
+```
+
+For source builds:
+
+```sh
+docker build -t resilient-mcp .
+docker run --rm -p 8080:8080 resilient-mcp mcp --http-port 8080
+```
+
+## Platform Notes
+
+| Platform | Fit | Notes |
+| --- | --- | --- |
+| Railway | Good first deploy | Git/image deploys, logs, restart policy, simple HTTPS endpoint. |
+| Fly.io | Good first deploy | Similar container-first workflow; easier regional placement. |
+| Cloudflare Containers | Good Cloudflare path | Use the container product, not Workers-only, so `rz` and Z3 run as native Linux processes. |
+| AWS EC2/Lightsail | Fine but ops-heavy | Free credits are useful for staging; production needs billing, patching, and monitoring discipline. |
+| VPS/sponsor VM | Best long-term cost | Use systemd or a container runtime plus external uptime monitoring. |
+
+## HTTP API
+
+### `GET /health`
+
+Returns:
+
 ```json
 {
-  "tools": [
-    {
-      "name": "rz_compile",
-      "description": "Compile Resilient code and return diagnostics",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "code": { "type": "string" }
-        }
-      }
-    },
-    {
-      "name": "rz_format",
-      "description": "Format Resilient code",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "code": { "type": "string" }
-        }
-      }
-    }
-  ]
+  "status": "ok",
+  "service": "resilient-mcp",
+  "transport": "http",
+  "version": "<rz version>"
 }
 ```
 
-### Tier 2 (If time - Week 2)
+### `POST /mcp/call`
+
+Request:
+
 ```json
-{
-  "name": "rz_verify",
-  "description": "Verify contracts with Z3",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "code": { "type": "string" },
-      "verify_contracts": { "type": "boolean", "default": true }
-    }
-  }
-}
-```
-
-## HTTP API Specification
-
-```
-POST /mcp/call
-Content-Type: application/json
-
 {
   "tool": "rz_compile",
   "input": {
-    "code": "const X = 5; println(X);"
+    "source": "println(42)"
   }
-}
-
-←
-
-{
-  "status": "ok",
-  "stderr": "",
-  "stdout": "",
-  "diagnostics": []
 }
 ```
 
-## Costs
+Response:
 
-| Service | Monthly | Notes |
-|---------|---------|-------|
-| **Railway** | $5-20 | Free tier includes 500 compute hours; easy to scale |
-| **Hetzner VPS** | $5.99 | 2 vCPU, 4GB RAM; plenty for single MCP server |
-| **Domain** | $12/yr | resilient-mcp.dev or similar |
-| **Monitoring** | Free (built-in) | Railway provides; use Healthchecks.io if self-hosted |
+```json
+{
+  "status": "ok",
+  "tool": "rz_compile",
+  "mcp_tool": "resilient_compile",
+  "stdout": "...",
+  "stderr": "",
+  "diagnostics": [],
+  "raw_mcp": {}
+}
+```
 
-**Total**: $15-40/month (very reasonable for production service)
+## Production Checklist
 
-## Security
+- Put HTTPS and auth in front of the service before advertising a public URL.
+- Limit request bodies at the proxy; the server has a 10 MiB request cap.
+- Set provider-level request timeouts and restart policy.
+- Monitor `GET /health` from outside the provider.
+- Keep Z3 installed in the runtime image for verifier-backed tools.
+- Start with `rz_format`, `rz_compile`, and `rz_verify`; add auth/rate limits
+  before opening broader tool access.
 
-- [ ] API rate limiting: 100 req/min per IP
-- [ ] Input validation: max 10MB code per request
-- [ ] Timeout: 10s per compile
-- [ ] No secrets in logs
-- [ ] TLS only (https)
-- [ ] CORS: Claude Code origins only
+## First Deployment Target
 
-## Success Metrics
-
-- [ ] Endpoint responds in <2s (p95)
-- [ ] 99.5% uptime SLA
-- [ ] Zero authentication errors from Claude
-- [ ] <$20/mo cost
-- [ ] Rollback-able in <5 min
-
-## Next Steps
-
-1. **Today**: Create Dockerfile + test locally
-2. **Tomorrow**: Push to Railway
-3. **Week 1**: Validate with Claude Code
-4. **Week 2**: Plan VPS migration
+Use Railway or Fly.io if the goal is fastest public staging. Use Cloudflare
+Containers if the project specifically wants Cloudflare ownership and accepts
+the extra Worker/Durable Object routing layer. Ask for sponsorship, or move to
+a small VPS, once there is enough usage to justify a permanent endpoint.
