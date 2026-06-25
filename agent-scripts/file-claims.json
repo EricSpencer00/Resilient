@@ -12,10 +12,6 @@
       "branch": "RES-3780",
       "claimed_at": "2026-06-25T01:26:58Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
-    },
     "docs/language-reference.md": {
       "branch": "RES-3780",
       "claimed_at": "2026-06-25T01:26:58Z"
@@ -23,6 +19,30 @@
     "docs/LANGUAGE.md": {
       "branch": "RES-3780",
       "claimed_at": "2026-06-25T01:26:58Z"
+    },
+    "Dockerfile": {
+      "branch": "RES-3782",
+      "claimed_at": "2026-06-25T02:19:19Z"
+    },
+    "docs/MCP.md": {
+      "branch": "RES-3782",
+      "claimed_at": "2026-06-25T02:19:19Z"
+    },
+    "docs/MCP_DEPLOYMENT.md": {
+      "branch": "RES-3782",
+      "claimed_at": "2026-06-25T02:19:19Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "RES-3782",
+      "claimed_at": "2026-06-25T02:19:19Z"
+    },
+    "resilient/src/mcp_server.rs": {
+      "branch": "RES-3782",
+      "claimed_at": "2026-06-25T02:19:19Z"
+    },
+    "resilient/tests/mcp_http_cli_smoke.rs": {
+      "branch": "RES-3782",
+      "claimed_at": "2026-06-25T02:19:19Z"
     }
   }
 }
