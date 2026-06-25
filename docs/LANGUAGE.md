@@ -93,7 +93,7 @@ This table will be populated in follow-up PRs with all Resilient language featur
 
 | Feature | Tier | Backends | Notes |
 |---------|------|----------|-------|
-| (To be populated) | — | — | — |
+| `@ai_generated` function attribute | Experimental | Typechecker | Requires at least one `requires` or `ensures` clause on the annotated function. |
 
 ---
 

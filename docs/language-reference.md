@@ -211,7 +211,7 @@ Other          ?  _
 
 The composite token `#{` opens a set literal; the closing brace is an
 ordinary `}`. The attribute prefix `@` introduces function
-annotations (currently only `@pure`).
+annotations such as `@pure` and `@ai_generated`.
 
 ### Operator precedence and associativity
 
@@ -599,6 +599,11 @@ Contract         ::= "requires" Expression
                    | "invariant" Expression
 ImplDecl         ::= "impl" Identifier "{" { FnDecl } "}"
 ```
+
+`@ai_generated` marks a function whose body came from an AI tool. The
+function must declare at least one `requires` or `ensures` clause; a
+missing contract is a static type-check error. The marker does not call
+an external model and does not infer a contract for the user.
 
 ### `let` semantics
 

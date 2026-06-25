@@ -6573,6 +6573,7 @@ impl TypeChecker {
                     crate::vibe_debt::check(program, source_path)?;
                     crate::contract_inference::check(program, source_path)?;
                 }
+                crate::ai_generated::check(program, source_path)?;
                 // RES-2436 gate: behavioral_fingerprint only processes
                 // `Node::Function` nodes (fingerprint_program iterates
                 // top-level Functions). Programs with no functions have
