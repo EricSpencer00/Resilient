@@ -23,6 +23,18 @@
     "docs/LANGUAGE.md": {
       "branch": "RES-3780",
       "claimed_at": "2026-06-25T01:26:58Z"
+    },
+    "resilient/examples/llm_quantized_matmul.rz": {
+      "branch": "RES-3781",
+      "claimed_at": "2026-06-25T01:54:28Z"
+    },
+    "resilient/examples/llm_quantized_matmul.expected.txt": {
+      "branch": "RES-3781",
+      "claimed_at": "2026-06-25T01:54:28Z"
+    },
+    "resilient/tests/llm_quantized_ops_smoke.rs": {
+      "branch": "RES-3781",
+      "claimed_at": "2026-06-25T01:54:28Z"
     }
   }
 }
