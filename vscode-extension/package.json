@@ -112,7 +112,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package --out resilient-vscode.vsix"
+    "package": "vsce package --out resilient-vscode.vsix",
+    "vscode:publish": "vsce publish"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

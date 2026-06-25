@@ -23,6 +23,18 @@
     "docs/LANGUAGE.md": {
       "branch": "RES-3780",
       "claimed_at": "2026-06-25T01:26:58Z"
+    },
+    "docs/VSCODE_EXTENSION_RELEASE.md": {
+      "branch": "RES-3783",
+      "claimed_at": "2026-06-25T02:32:37Z"
+    },
+    "resilient/tests/vscode_release_sync_smoke.rs": {
+      "branch": "RES-3783",
+      "claimed_at": "2026-06-25T02:32:37Z"
+    },
+    "vscode-extension/package.json": {
+      "branch": "RES-3783",
+      "claimed_at": "2026-06-25T02:32:37Z"
     }
   }
 }
