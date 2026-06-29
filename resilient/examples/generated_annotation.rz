@@ -1,0 +1,33 @@
+// RES-3835: #[generated(...)] prompt-to-code provenance annotation.
+//
+// Functions written by AI tools carry a compile-time provenance record:
+//   - `intent`: what the prompt asked for (free text)
+//   - `prompt_hash`: a stable hash of the generation context (non-empty)
+//
+// The compiler verifies both fields are present and well-formed.
+// The hash is opaque — the compiler enforces presence, not content.
+
+#[generated(intent="compute fibonacci number iteratively", prompt_hash="sha256:4a7f9b2c")]
+fn fibonacci(int n) -> int {
+    if n <= 1 {
+        return n;
+    }
+    let mut a = 0;
+    let mut b = 1;
+    let mut i = 2;
+    while i <= n {
+        let tmp = a + b;
+        a = b;
+        b = tmp;
+        i = i + 1;
+    }
+    return b;
+}
+
+fn main() {
+    println("fibonacci(10) = " + fibonacci(10));
+    println("fibonacci(0) = " + fibonacci(0));
+    println("fibonacci(1) = " + fibonacci(1));
+}
+
+main();

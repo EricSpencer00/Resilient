@@ -1,3 +1,10 @@
+---
+title: Type System Roadmap
+parent: Language Reference
+nav_order: 9
+permalink: /type-system-roadmap
+---
+
 # Resilient Type System Roadmap
 
 ## Overview
@@ -459,4 +466,3 @@ Generic source → Specialization → Specialized code → Binary
 - **RES-3506**: Define the backend architecture contract
 - **LANGUAGE.md**: Feature tier classification framework
 - **MEMORY_MODEL.md**: Memory safety model
-

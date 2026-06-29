@@ -1,3 +1,10 @@
+---
+title: Tooling Quality Standards
+parent: Language Reference
+nav_order: 6
+permalink: /tooling-quality
+---
+
 # Resilient Tooling Quality Standards
 
 ## Overview
@@ -434,4 +441,3 @@ When a tool is Stable, users can expect:
 - **RES-3508:** Set a tooling quality bar for the language platform
 - **RES-3502:** Module and package system design
 - **STABILITY_POLICY.md:** Backward compatibility guarantees
-

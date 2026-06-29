@@ -1,3 +1,9 @@
+---
+title: Verifiable AI-Generated Code
+nav_order: 12
+permalink: /ai-generated-design
+---
+
 # Design: `@ai_generated` Attribute for Verifiable AI Code
 
 ## Motivation

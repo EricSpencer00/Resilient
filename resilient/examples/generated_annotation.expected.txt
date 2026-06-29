@@ -1,0 +1,4 @@
+fibonacci(10) = 55
+fibonacci(0) = 0
+fibonacci(1) = 1
+Program executed successfully

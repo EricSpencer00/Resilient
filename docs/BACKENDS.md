@@ -1,3 +1,10 @@
+---
+title: Backend Architecture
+parent: Language Reference
+nav_order: 5
+permalink: /backends
+---
+
 # Resilient Backend Architecture
 
 ## Overview
@@ -403,4 +410,3 @@ backends:
 - **RES-3502:** Design a real module and package system
 - **LANGUAGE.md:** Feature tier classification framework
 - **MEMORY_MODEL.md:** Memory safety model across tiers
-

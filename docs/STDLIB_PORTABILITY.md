@@ -1,3 +1,10 @@
+---
+title: Standard Library Portability
+parent: Language Reference
+nav_order: 7
+permalink: /stdlib-portability
+---
+
 # Resilient Standard Library Portability Model
 
 ## Overview
@@ -552,4 +559,3 @@ pub fn swap_with_logging<T>(a: &mut T, b: &mut T) {
 - **RES-3502:** Module and package system design
 - **MEMORY_MODEL.md:** Allocation tiers and constraints
 - **MODULE_SYSTEM.md:** Package feature flags
-

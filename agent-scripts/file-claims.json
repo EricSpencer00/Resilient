@@ -8,21 +8,13 @@
       "branch": "res-3231-format-builtin-call-site-validation",
       "claimed_at": "2026-06-13T15:00:45Z"
     },
-    "resilient/src/ai_generated.rs": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
-    },
     "resilient/src/lib.rs": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
+      "branch": "res-3835-generated-annotation",
+      "claimed_at": "2026-06-25T06:09:14Z"
     },
-    "docs/language-reference.md": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
-    },
-    "docs/LANGUAGE.md": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
+    "resilient/src/feature_attrs.rs": {
+      "branch": "res-3835-generated-annotation",
+      "claimed_at": "2026-06-25T06:09:14Z"
     }
   }
 }
