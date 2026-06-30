@@ -1,3 +1,9 @@
+---
+title: Verification Model
+nav_order: 10
+permalink: /verification-model
+---
+
 # Resilient Verification Surface Unification
 
 ## Overview
@@ -532,4 +538,3 @@ fn test_supervisor_recovery() { ... }
 - **RES-3509:** Unify the verification surface into one user-facing model
 - **RES-3504:** Memory model specification
 - **STABILITY_POLICY.md:** Feature tier guarantees
-

@@ -1,3 +1,10 @@
+---
+title: Module and Package System
+parent: Language Reference
+nav_order: 8
+permalink: /module-system
+---
+
 # Resilient Module and Package System
 
 ## Overview
@@ -642,4 +649,3 @@ pub mod aes {
 - **RES-3507:** Design a production-grade standard library portability model
 - **FAILURE_MODEL.md:** Error handling across packages
 - **MEMORY_MODEL.md:** Allocation tiers for no_std/alloc/std
-

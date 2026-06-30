@@ -1,3 +1,10 @@
+---
+title: Failure Model
+parent: Design Philosophy
+nav_order: 6
+permalink: /failure-model
+---
+
 # Resilient Failure Model
 
 ## Overview
@@ -506,4 +513,3 @@ fn test_division_by_zero() {
 - **RES-3504:** Specify and enforce the memory model
 - **MEMORY_MODEL.md:** Memory safety model
 - **TYPE_SYSTEM_ROADMAP.md:** Type system design
-

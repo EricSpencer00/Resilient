@@ -617,6 +617,7 @@ mod fmt_validation;
 mod format_builtin;
 mod full_modules;
 mod functional_hof;
+mod generated_annotation;
 mod ghost_types;
 mod graph_algorithms;
 mod http_client;

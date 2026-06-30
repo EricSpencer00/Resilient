@@ -351,6 +351,8 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "blame"
             | "version"
         | "ai_review_required"
+        // RES-3835: compile-time prompt-to-code provenance.
+        | "generated"
         | "lean_spec"
         | "format_builtin"
         // RES-2592: tail call optimization enforcement.

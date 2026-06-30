@@ -1,3 +1,9 @@
+---
+title: Stability Policy
+nav_order: 11
+permalink: /stability-policy
+---
+
 # Resilient Stability and Compatibility Policy
 
 ## Overview
@@ -538,4 +544,3 @@ If you believe something breaks the stability policy:
 - **RES-3501:** Stabilize language reference and feature-tier policy
 - **LANGUAGE.md:** Feature tier definitions
 - **MODULE_SYSTEM.md:** Package versioning
-
