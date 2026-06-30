@@ -1327,4 +1327,136 @@ fn main() {
         );
         crate::feature_attrs::reset();
     }
+
+    // ── Malformed-input regression corpus: RES-3234 ───────────────────────────
+    // Comprehensive test coverage for edge cases, malformed input, and valid baseline scenarios.
+
+    #[test]
+    fn regression_format_builtin_baseline_simple_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "Hello {}", args = 1"#, 5);
+
+        run_decl_check("test.rz").expect("simple template should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn regression_format_builtin_baseline_multiple_placeholders() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {} {}", args = 3"#, 6);
+
+        run_decl_check("test.rz").expect("multiple placeholders should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn regression_format_builtin_baseline_complex_specifiers() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt1", r#"template = "{:.2f}", args = 1"#, 7);
+        record_format_builtin("fmt2", r#"template = "{:05d}", args = 1"#, 8);
+        record_format_builtin("fmt3", r#"template = "{:x}", args = 1"#, 9);
+
+        run_decl_check("test.rz").expect("various format specifiers should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_zero_args_with_placeholder() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = 0"#, 10);
+
+        let err = run_decl_check("test.rz").expect_err("zero args but 1 placeholder should error");
+        assert!(
+            err.contains("expects 1 template placeholder(s) but declares 0"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_too_many_placeholders() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{} {} {} {}", args = 2"#, 11);
+
+        let err = run_decl_check("test.rz").expect_err("too many placeholders should error");
+        assert!(
+            err.contains("expects 4 template placeholder(s) but declares 2"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_negative_args_count() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = -1"#, 12);
+
+        let err = run_decl_check("test.rz").expect_err("negative args count should error");
+        assert!(err.contains("requires"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_excessive_args_count() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{}", args = 10000"#, 13);
+
+        let err = run_decl_check("test.rz").expect_err("excessive args count should error");
+        assert!(
+            err.contains("expects 1 template placeholder(s) but declares 10000"),
+            "{err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_empty_template() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "", args = 0"#, 14);
+
+        run_decl_check("test.rz").expect("empty template with zero args should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_unclosed_brace() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{", args = 1"#, 15);
+
+        let err = run_decl_check("test.rz").expect_err("unclosed brace should error");
+        assert!(err.contains("unterminated"), "{err}");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_scientific_notation_negative_exponent() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("fmt", r#"template = "{:e}", args = 1"#, 16);
+
+        run_decl_check("test.rz").expect("scientific notation should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_format_builtin_mixed_radix_specs() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        record_format_builtin("f1", r#"template = "{:b}", args = 1"#, 17);
+        record_format_builtin("f2", r#"template = "{:o}", args = 1"#, 18);
+        record_format_builtin("f3", r#"template = "{:x}", args = 1"#, 19);
+        record_format_builtin("f4", r#"template = "{:X}", args = 1"#, 20);
+
+        run_decl_check("test.rz").expect("mixed radix specs should pass");
+        crate::feature_attrs::reset();
+    }
 }
