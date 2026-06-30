@@ -361,6 +361,8 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "mutual_tail_call"
         // RES-3780: bounded-loop verification for @ai_generated functions.
         | "loop_bound"
+            // RES-3836: general-purpose state machine topology enforcement.
+            | "state_machine"
     )
 }
 

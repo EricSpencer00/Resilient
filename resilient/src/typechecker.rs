@@ -6788,6 +6788,8 @@ impl TypeChecker {
                 crate::string_interning::check_string_interning(program)?;
                 // RES-3835: validate #[generated(...)] provenance annotations.
                 crate::generated_annotation::check(program, source_path)?;
+                // RES-3836: general-purpose state machine topology enforcement.
+                crate::state_topology::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
