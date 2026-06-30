@@ -1,0 +1,1 @@
+error: mmio_regmap: register offset 0x01 must be aligned to word boundary
