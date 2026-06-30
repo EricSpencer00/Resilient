@@ -400,4 +400,136 @@ mod tests {
             "depth-limited chain must not reach 'b'"
         );
     }
+
+    // RES-3821: Malformed-input regression corpus for blame_attribution validation
+    #[test]
+    fn malformed_empty_program_no_edges() {
+        let (prog, _) = parse("");
+        let map = build(&prog);
+        assert!(map.edges.is_empty());
+    }
+
+    #[test]
+    fn malformed_recursive_self_call() {
+        // f() calls itself
+        let src = r#"fn f(int x) { if x > 0 { f(x-1); } }"#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        // f has itself as a caller
+        let callers = map.callers_of("f");
+        assert!(callers.iter().any(|(c, _)| c == "f"));
+    }
+
+    #[test]
+    fn malformed_mutual_recursion() {
+        // a → b → a (cycle)
+        let src = r#"
+            fn a(int x) { b(x); }
+            fn b(int x) { a(x); }
+        "#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        // Both should have each other as callers
+        assert!(map.callers_of("a").iter().any(|(c, _)| c == "b"));
+        assert!(map.callers_of("b").iter().any(|(c, _)| c == "a"));
+    }
+
+    #[test]
+    fn malformed_multiple_call_arguments() {
+        // f with 3 arguments
+        let src = r#"fn g(int x) { return x; } fn f(int n) { g(n); g(n); g(n); }"#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        let callers = map.callers_of("g");
+        // Each call to g should record argument index
+        assert!(!callers.is_empty());
+    }
+
+    #[test]
+    fn malformed_blame_chain_zero_depth() {
+        let src = r#"
+            fn caller(int x) { callee(x); }
+            fn callee(int y) { return y; }
+        "#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        // Depth 0 should return empty chain
+        let chain = map.blame_chain("callee", 0);
+        assert_eq!(chain.len(), 0);
+    }
+
+    #[test]
+    fn malformed_format_chain_empty_blame_map() {
+        let map = BlameMap::default();
+        let formatted = map.format_chain("unknown_func", 3);
+        // Should return just the callee name
+        assert_eq!(formatted, "unknown_func");
+    }
+
+    #[test]
+    fn malformed_nested_calls() {
+        // g(f(x))
+        let src = r#"
+            fn f(int x) { return x + 1; }
+            fn g(int y) { return y * 2; }
+            fn h(int n) { return g(f(n)); }
+        "#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        // Both f and g should be callers of h
+        let f_callers = map.callers_of("f");
+        let g_callers = map.callers_of("g");
+        assert!(f_callers.iter().any(|(c, _)| c == "h"));
+        assert!(g_callers.iter().any(|(c, _)| c == "h"));
+    }
+
+    #[test]
+    fn malformed_blame_chain_visited_dedup() {
+        let src = r#"
+            fn z(int x) { return x; }
+            fn loop_call(int n) { z(n); z(n); z(n); }
+        "#;
+        let (prog, _) = parse(src);
+        let map = build(&prog);
+        let chain = map.blame_chain("z", 5);
+        // Should have unique entries; loop_call should appear only once
+        let count = chain.iter().filter(|(c, _)| c == "loop_call").count();
+        assert_eq!(count, 1, "visited set must dedup loop_call");
+    }
+
+    #[test]
+    fn malformed_format_chain_reversal() {
+        // Verify format_chain reverses (root first)
+        let mut map = BlameMap::default();
+        // Manually construct: d → c → b → a
+        map.edges
+            .insert("a".to_string(), vec![("b".to_string(), 0)]);
+        map.edges
+            .insert("b".to_string(), vec![("c".to_string(), 0)]);
+        map.edges
+            .insert("c".to_string(), vec![("d".to_string(), 0)]);
+        let formatted = map.format_chain("a", 5);
+        // Should be "d → c → b → a" (deepest first)
+        assert!(formatted.contains("→"), "format should use arrow separator");
+        let parts: Vec<&str> = formatted.split(" → ").collect();
+        assert_eq!(parts[parts.len() - 1], "a", "callee should be last");
+    }
+
+    #[test]
+    fn malformed_blame_chain_bfs_order() {
+        // Multiple callers at same depth
+        let mut map = BlameMap::default();
+        map.edges.insert(
+            "target".to_string(),
+            vec![("caller1".to_string(), 0), ("caller2".to_string(), 0)],
+        );
+        map.edges
+            .insert("caller1".to_string(), vec![("root".to_string(), 0)]);
+        map.edges
+            .insert("caller2".to_string(), vec![("root".to_string(), 0)]);
+        let chain = map.blame_chain("target", 5);
+        // Both callers should appear
+        assert!(chain.iter().any(|(c, _)| c == "caller1"));
+        assert!(chain.iter().any(|(c, _)| c == "caller2"));
+    }
 }
