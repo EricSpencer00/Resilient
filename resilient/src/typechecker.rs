@@ -6785,6 +6785,8 @@ impl TypeChecker {
                 crate::http_client::check(program, source_path)?;
                 // RES-2612: string interning type checker pass.
                 crate::string_interning::check_string_interning(program)?;
+                // RES-3836: general-purpose state machine topology enforcement.
+                crate::state_topology::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

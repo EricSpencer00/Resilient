@@ -672,6 +672,7 @@ mod bench;
 mod float32;
 // RES-2604: Display trait — fmt(self) -> string for custom to_string formatting.
 mod display_trait;
+mod state_topology;
 mod struct_exhaustiveness;
 mod typestate_types;
 // RES-2578: never type `!` for diverging functions.
