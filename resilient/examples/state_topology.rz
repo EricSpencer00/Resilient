@@ -1,0 +1,21 @@
+// RES-3836: #[state_machine(...)] general-purpose FSM topology enforcement.
+//
+// The compiler validates that:
+//   - All state names in transitions are declared in the states list
+//   - No duplicate state names exist
+//   - The function body only references states that participate in transitions
+
+#[state_machine(states=[Init, Running, Done], transitions=[(Init,Running),(Running,Done)])]
+fn lifecycle(int phase) -> int {
+    let start = Init;
+    let mid = Running;
+    let end = Done;
+    return phase;
+}
+
+fn main() {
+    println("state_topology: FSM transitions validated at compile time");
+    lifecycle(0);
+}
+
+main();

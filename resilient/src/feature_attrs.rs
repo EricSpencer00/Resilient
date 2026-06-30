@@ -357,6 +357,8 @@ pub fn is_known_attribute(name: &str) -> bool {
         | "must_tail_call"
             // RES-2659: mutual tail call optimization.
             | "mutual_tail_call"
+            // RES-3836: general-purpose state machine topology enforcement.
+            | "state_machine"
     )
 }
 

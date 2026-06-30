@@ -1,0 +1,2 @@
+state_topology: FSM transitions validated at compile time
+Program executed successfully

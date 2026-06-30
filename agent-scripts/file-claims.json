@@ -9,20 +9,12 @@
       "claimed_at": "2026-06-13T15:00:45Z"
     },
     "resilient/src/ai_generated.rs": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
+      "branch": "res-3843-ai-generated-contract-quality",
+      "claimed_at": "2026-06-29T17:42:06Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
-    },
-    "docs/language-reference.md": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
-    },
-    "docs/LANGUAGE.md": {
-      "branch": "RES-3780",
-      "claimed_at": "2026-06-25T01:26:58Z"
+      "branch": "res-3836-state-topology",
+      "claimed_at": "2026-06-29T22:38:26Z"
     }
   }
 }
