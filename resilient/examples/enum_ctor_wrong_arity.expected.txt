@@ -1,0 +1,1 @@
+error: Wrong number of arguments to enum constructor
