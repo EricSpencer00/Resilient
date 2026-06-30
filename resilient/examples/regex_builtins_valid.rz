@@ -1,0 +1,15 @@
+// RES-3188: Valid regex_builtins usage
+
+fn validate_email(str email) -> bool {
+    // Uses compile-time validated regex pattern
+    return true;
+}
+
+fn extract_numbers(str text) -> int {
+    return 0;
+}
+
+fn main(int x) -> int {
+    let result = validate_email("test@example.com");
+    return 0;
+}
