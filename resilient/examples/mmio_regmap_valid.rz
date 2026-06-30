@@ -1,0 +1,16 @@
+// RES-3199: Valid mmio_regmap declarations
+
+mmio_regmap UART0 {
+    0x00: status,
+    0x04: data,
+    0x08: control,
+}
+
+mmio_regmap GPIO_PORT_A {
+    0x00: mode,
+    0x04: pin_value,
+}
+
+fn main(int x) -> int {
+    return 0;
+}
