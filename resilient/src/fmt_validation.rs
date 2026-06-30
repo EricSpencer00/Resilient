@@ -1,8 +1,8 @@
 //! Feature 51/50 — Compile-Time Format String Validation.
 //!
-//! Walks every `format(template, args...)` call site and validates
-//! that the template's placeholder count matches the supplied
-//! argument count. Emits an error for mismatches.
+//! Walks every `format(template, args...)` call site and validates:
+//! - The template's placeholder count matches the supplied argument count
+//! - Each argument's type is compatible with its format specifier (RES-3789)
 //!
 //! Builds on `crate::format_builtin::parse_template` so the
 //! validation engine and runtime parser stay in lock-step.
@@ -112,20 +112,65 @@ fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
                                 // single array literal.  Check both conventions:
                                 //  - Array arg:  `format("t", [a, b])` → count array items
                                 //  - Individual: `format("t", a, b)`   → count extra args
-                                let got = if arguments.len() == 2 {
+                                let (got, args_to_check) = if arguments.len() == 2 {
                                     if let Node::ArrayLiteral { items, .. } = &arguments[1] {
-                                        items.len()
+                                        (items.len(), items.clone())
                                     } else {
-                                        arguments.len() - 1
+                                        (arguments.len() - 1, arguments[1..].to_vec())
                                     }
                                 } else {
-                                    arguments.len() - 1
+                                    (arguments.len() - 1, arguments[1..].to_vec())
                                 };
                                 if got != need {
                                     errs.push(format!(
                                         "in `{}`: format string has {} placeholder(s) but {} arg(s) were passed",
                                         fn_name, need, got
                                     ));
+                                } else {
+                                    // RES-3789: validate each argument against its format specifier
+                                    let mut arg_idx = 0;
+                                    for seg in &segs {
+                                        if let crate::format_builtin::FormatSegment::Placeholder(
+                                            spec,
+                                        ) = seg
+                                        {
+                                            if arg_idx < args_to_check.len() {
+                                                let arg = &args_to_check[arg_idx];
+                                                let arg_kind =
+                                                    crate::format_builtin::infer_arg_kind(arg);
+                                                if arg_kind != crate::format_builtin::FormatArgumentKind::Unknown {
+                                                    let requires_int = crate::format_builtin::spec_requires_integer(spec);
+                                                    let requires_float = crate::format_builtin::spec_requires_float(spec);
+
+                                                    let type_err = match (arg_kind, requires_int, requires_float) {
+                                                        (crate::format_builtin::FormatArgumentKind::String, true, _) => {
+                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires integer argument, got string", fn_name, spec))
+                                                        }
+                                                        (crate::format_builtin::FormatArgumentKind::String, false, true) => {
+                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires float argument, got string", fn_name, spec))
+                                                        }
+                                                        (crate::format_builtin::FormatArgumentKind::Boolean, true, _) => {
+                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires integer argument, got boolean", fn_name, spec))
+                                                        }
+                                                        (crate::format_builtin::FormatArgumentKind::Boolean, false, true) => {
+                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires float argument, got boolean", fn_name, spec))
+                                                        }
+                                                        (crate::format_builtin::FormatArgumentKind::Integer, false, true) => {
+                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires float argument, got integer", fn_name, spec))
+                                                        }
+                                                        (crate::format_builtin::FormatArgumentKind::Float, true, false) => {
+                                                            Some(format!("in `{}`: format specifier `{{{}}}` requires integer argument, got float", fn_name, spec))
+                                                        }
+                                                        _ => None,
+                                                    };
+                                                    if let Some(err) = type_err {
+                                                        errs.push(err);
+                                                    }
+                                                }
+                                            }
+                                            arg_idx += 1;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -246,6 +291,107 @@ mod tests {
             "InterpolatedString template with too many array args should error; \
              errs: {:?}",
             errs
+        );
+    }
+
+    #[test]
+    fn format_specifier_type_mismatch_string_to_int_errors() {
+        // RES-3789: format("{:d}", "text") should error (string literal to :d specifier)
+        let src = r#"fn f() { format("{:d}", "text"); return 0; }"#;
+        let (prog, _) = parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            !errs.is_empty(),
+            "string literal to :d specifier should error"
+        );
+        assert!(
+            errs[0].contains(":d") && errs[0].contains("integer") && errs[0].contains("string"),
+            "error should mention :d specifier, integer requirement, and string type: {}",
+            errs[0]
+        );
+    }
+
+    #[test]
+    fn format_specifier_type_mismatch_int_to_float_errors() {
+        // RES-3789: format("{:.2f}", 1) should error (integer literal to float specifier)
+        let src = r#"fn f() { format("{:.2f}", 1); return 0; }"#;
+        let (prog, _) = parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            !errs.is_empty(),
+            "integer literal to :.2f specifier should error"
+        );
+        assert!(
+            errs[0].contains(".2f") && errs[0].contains("float") && errs[0].contains("integer"),
+            "error should mention .2f specifier, float requirement, and integer type: {}",
+            errs[0]
+        );
+    }
+
+    #[test]
+    fn format_specifier_valid_int_to_int_ok() {
+        // format("{:d}", 42) should pass (integer literal to :d specifier)
+        let src = r#"fn f() { format("{:d}", 42); return 0; }"#;
+        let (prog, _) = parse(src);
+        assert!(
+            analyze(&prog).is_empty(),
+            "integer literal to :d specifier should pass"
+        );
+    }
+
+    #[test]
+    fn format_specifier_valid_float_to_float_ok() {
+        // format("{:.2f}", 3.14) should pass (float literal to :.2f specifier)
+        let src = r#"fn f() { format("{:.2f}", 3.14); return 0; }"#;
+        let (prog, _) = parse(src);
+        assert!(
+            analyze(&prog).is_empty(),
+            "float literal to :.2f specifier should pass"
+        );
+    }
+
+    #[test]
+    fn format_specifier_string_to_default_ok() {
+        // format("{}", "text") should pass (no specifier)
+        let src = r#"fn f() { format("{}", "text"); return 0; }"#;
+        let (prog, _) = parse(src);
+        assert!(
+            analyze(&prog).is_empty(),
+            "string literal to default specifier should pass"
+        );
+    }
+
+    #[test]
+    fn format_specifier_type_mismatch_array_convention() {
+        // RES-3789: format("{:d}", ["text"]) should error (string literal in array to :d specifier)
+        let src = r#"fn f() { format("{:d}", ["text"]); return 0; }"#;
+        let (prog, _) = parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            !errs.is_empty(),
+            "string literal in array to :d specifier should error"
+        );
+        assert!(
+            errs[0].contains(":d") && errs[0].contains("integer") && errs[0].contains("string"),
+            "error should mention :d specifier and type mismatch: {}",
+            errs[0]
+        );
+    }
+
+    #[test]
+    fn format_specifier_bool_to_int_errors() {
+        // format("{:x}", true) should error (boolean literal to :x specifier)
+        let src = r#"fn f() { format("{:x}", true); return 0; }"#;
+        let (prog, _) = parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            !errs.is_empty(),
+            "boolean literal to :x specifier should error"
+        );
+        assert!(
+            errs[0].contains(":x") && errs[0].contains("integer") && errs[0].contains("boolean"),
+            "error should mention :x specifier and type mismatch: {}",
+            errs[0]
         );
     }
 }
