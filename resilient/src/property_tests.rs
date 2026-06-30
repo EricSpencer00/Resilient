@@ -815,4 +815,244 @@ fn main() { struct_target(1); }
         );
         crate::feature_attrs::reset();
     }
+
+    // ── Malformed-input regression corpus: RES-3219 ───────────────────────────
+    // Comprehensive test coverage for edge cases, malformed input, and valid baseline scenarios.
+
+    #[test]
+    fn regression_property_test_baseline_minimal_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "minimal",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 1".into(),
+                line: 5,
+            },
+        );
+
+        let src = "fn minimal(int x) requires x > 0 ensures result > 0 { return x; }";
+        let (prog, _) = crate::parse(src);
+        check(&prog, "<test>").expect("minimal property test should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn regression_property_test_baseline_large_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "large_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 100000".into(),
+                line: 6,
+            },
+        );
+
+        let src = "fn large_samples(int x) requires x >= 0 ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        check(&prog, "<test>").expect("large sample count should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn regression_property_test_baseline_multiple_contracts() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "multi_contract",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 50".into(),
+                line: 7,
+            },
+        );
+
+        let src = "fn multi_contract(int x, int y) requires x > 0 && y > 0 ensures result > 0 { return x + y; }";
+        let (prog, _) = crate::parse(src);
+        check(&prog, "<test>").expect("multiple preconditions should pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_zero_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "zero_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 0".into(),
+                line: 10,
+            },
+        );
+
+        let src = "fn zero_samples(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("zero samples should error");
+        assert!(
+            err.contains("must be greater than zero"),
+            "expected zero samples error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_negative_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "neg_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = -50".into(),
+                line: 11,
+            },
+        );
+
+        let src = "fn neg_samples(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("negative samples should error");
+        assert!(
+            err.contains("positive integer"),
+            "expected type error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_duplicate_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "dup_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 100, samples = 200".into(),
+                line: 12,
+            },
+        );
+
+        let src = "fn dup_samples(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("duplicate samples should error");
+        assert!(
+            err.contains("duplicate `samples` field"),
+            "expected duplicate error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_non_numeric_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "non_numeric",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = abc".into(),
+                line: 13,
+            },
+        );
+
+        let src = "fn non_numeric(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("non-numeric samples should error");
+        assert!(
+            err.contains("must be a positive integer"),
+            "expected type error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_missing_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "no_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "".into(),
+                line: 14,
+            },
+        );
+
+        let src = "fn no_samples(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("missing samples should error");
+        assert!(
+            err.contains("missing required `samples` field"),
+            "expected missing field error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_whitespace_in_samples() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "whitespace_samples",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples  =  250  ".into(),
+                line: 15,
+            },
+        );
+
+        let src = "fn whitespace_samples(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        check(&prog, "<test>").expect("whitespace around samples should be trimmed and pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_unknown_field() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "unknown_field",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples = 50, mode = strict".into(),
+                line: 16,
+            },
+        );
+
+        let src = "fn unknown_field(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("unknown field should error");
+        assert!(
+            err.contains("unknown field `mode`"),
+            "expected unknown field error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_property_test_malformed_entry_no_equals() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_entry",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "samples 100".into(),
+                line: 17,
+            },
+        );
+
+        let src = "fn bad_entry(int x) requires true ensures true { return x; }";
+        let (prog, _) = crate::parse(src);
+        let err = check(&prog, "<test>").expect_err("malformed entry should error");
+        assert!(
+            err.contains("malformed entry"),
+            "expected malformed entry error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
 }
