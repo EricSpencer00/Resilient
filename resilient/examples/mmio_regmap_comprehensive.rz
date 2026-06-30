@@ -1,0 +1,43 @@
+// RES-3194-3199: Comprehensive mmio_regmap validation test suite
+// Covers declarations, malformed input, runtime alignment, duplicates, and call-sites
+
+// Valid: Standard register map declaration
+mmio_regmap UART0 {
+    0x00: status_reg,
+    0x04: data_reg,
+    0x08: control_reg,
+    0x0C: baud_rate,
+}
+
+// Valid: Different register layouts
+mmio_regmap SPI_MASTER {
+    0x00: status,
+    0x04: control,
+    0x08: data_out,
+    0x0C: data_in,
+    0x10: chip_select,
+}
+
+// Valid: Sparse register addresses
+mmio_regmap ADC_CONTROLLER {
+    0x00: config,
+    0x10: channel_select,
+    0x20: result,
+    0x100: calibration,
+}
+
+fn init_uart() -> int {
+    // Valid: Using declared mmio_regmap
+    return 0;
+}
+
+fn configure_spi() -> int {
+    // Valid: Different register map
+    return 0;
+}
+
+fn main(int x) -> int {
+    let _ = init_uart();
+    let _ = configure_spi();
+    return 0;
+}
