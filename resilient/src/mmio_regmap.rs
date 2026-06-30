@@ -224,4 +224,250 @@ mod tests {
         );
         crate::feature_attrs::reset();
     }
+
+    // ── Extended malformed-input regression corpus (RES-3199) ────────────────
+
+    #[test]
+    fn malformed_missing_base_addr() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"size_bytes = "0x100""#.into(),
+                line: 0,
+            },
+        );
+        let maps = collect();
+        assert!(maps.is_empty(), "missing base should skip registration");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_missing_size_bytes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010800""#.into(),
+                line: 1,
+            },
+        );
+        let maps = collect();
+        assert!(
+            maps.is_empty(),
+            "missing size_bytes should skip registration"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_invalid_hex_base() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0xZZZZ", size_bytes = "0x100""#.into(),
+                line: 2,
+            },
+        );
+        let maps = collect();
+        assert!(maps.is_empty(), "invalid hex base should skip registration");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_invalid_hex_size() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010800", size_bytes = "0xGGGG""#.into(),
+                line: 3,
+            },
+        );
+        let maps = collect();
+        assert!(maps.is_empty(), "invalid hex size should skip registration");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_unquoted_hex_base() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = 0x40010800, size_bytes = "0x100""#.into(),
+                line: 4,
+            },
+        );
+        let maps = collect();
+        assert!(
+            maps.is_empty(),
+            "unquoted hex base should skip registration"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_base_zero() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "BadPeripheral",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x0", size_bytes = "0x100""#.into(),
+                line: 5,
+            },
+        );
+        let maps = collect();
+        assert!(
+            maps.is_empty(),
+            "base address of zero should skip registration"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn duplicate_regmap_same_values() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "UART",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010800", size_bytes = "0x100""#.into(),
+                line: 10,
+            },
+        );
+        crate::feature_attrs::record(
+            "UART",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010800", size_bytes = "0x100""#.into(),
+                line: 20,
+            },
+        );
+        let res = check(&crate::Node::Program(vec![]), "test.rz");
+        let err = res.expect_err("duplicate should fail");
+        assert!(
+            err.contains("duplicate mmio_regmap"),
+            "expected duplicate: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn overlapping_maps_adjacent_boundary() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "A",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x100", size_bytes = "0x100""#.into(),
+                line: 30,
+            },
+        );
+        crate::feature_attrs::record(
+            "B",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x1FF", size_bytes = "0x100""#.into(),
+                line: 31,
+            },
+        );
+        let res = check(&crate::Node::Program(vec![]), "test.rz");
+        let err = res.expect_err("overlapping boundary should fail");
+        assert!(
+            err.contains("overlap in address space"),
+            "overlap detection: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    // Valid baseline cases
+
+    #[test]
+    fn valid_simple_regmap() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "GPIO",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010800", size_bytes = "0x400""#.into(),
+                line: 0,
+            },
+        );
+        assert!(
+            check(&crate::Node::Program(vec![]), "test.rz").is_ok(),
+            "simple regmap should validate"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn valid_multiple_non_overlapping_regmaps() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "GPIO",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010000", size_bytes = "0x400""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "UART",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40020000", size_bytes = "0x400""#.into(),
+                line: 1,
+            },
+        );
+        crate::feature_attrs::record(
+            "Timer",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40030000", size_bytes = "0x400""#.into(),
+                line: 2,
+            },
+        );
+        assert!(
+            check(&crate::Node::Program(vec![]), "test.rz").is_ok(),
+            "non-overlapping regmaps should validate"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn valid_decimal_addresses() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Memory",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "1024", size_bytes = "2048""#.into(),
+                line: 0,
+            },
+        );
+        let maps = collect();
+        assert_eq!(maps.len(), 1);
+        assert_eq!(maps[0].base_addr, 1024);
+        assert_eq!(maps[0].size_bytes, 2048);
+        crate::feature_attrs::reset();
+    }
 }
