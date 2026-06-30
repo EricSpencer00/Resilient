@@ -1,0 +1,4 @@
+// RES-3202: associated_constants - validate const value type
+trait Config {
+  const MAX: i32 = "wrong_type";  // ERROR: String not i32
+}
