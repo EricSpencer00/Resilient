@@ -1,0 +1,18 @@
+// RES-3838: package existence verification — error-path demo.
+//
+// `hallucinated_pkg` is not a built-in package and is not declared in
+// any `resilient.toml` [dependencies] table. This is exactly the
+// failure mode this check exists to catch: an AI code generator
+// inventing a plausible-sounding package name.
+//
+// Expected behaviour: compilation fails before `main` ever runs, with
+// an actionable diagnostic naming the unknown package. The golden
+// sidecar `package_existence_error.expected.txt` pins that message.
+
+use hallucinated_pkg::Foo;
+
+fn main() {
+    println("unreachable");
+}
+
+main();
