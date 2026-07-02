@@ -153,6 +153,19 @@ fn expand_recursive(
                 continue;
             }
 
+            // RES-3838: a `pkg::module` path that isn't a std import and
+            // didn't resolve as a project dependency module, but also
+            // isn't shaped like a literal file path, is almost always a
+            // hallucinated package name rather than a real file. Reject
+            // it here with an actionable diagnostic instead of letting it
+            // fall through to the generic file-not-found error below.
+            if let Some((pkg_name, _module)) = path.split_once("::")
+                && !path.contains('/')
+                && !path.ends_with(".rz")
+            {
+                crate::package_existence::check_known_package(pkg_name, path, base_dir)?;
+            }
+
             let target = resolve_use_path(base_dir, path)?;
             let canon = canonicalize_or_self(&target);
 

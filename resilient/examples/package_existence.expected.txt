@@ -1,0 +1,2 @@
+std::math is a known package — import accepted
+Program executed successfully

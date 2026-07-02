@@ -1,0 +1,1 @@
+unknown package `hallucinated_pkg` in `use hallucinated_pkg::Foo` — package does not exist in the built-in registry or resilient.toml dependencies; add it to `[dependencies]` or fix the import

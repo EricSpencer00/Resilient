@@ -1,0 +1,12 @@
+// RES-3838: package existence verification at typecheck time.
+//
+// Standard library imports are always valid.
+// Unknown package names produce a compile-time error.
+
+use std::math;
+
+fn main() {
+    println("std::math is a known package — import accepted");
+}
+
+main();
