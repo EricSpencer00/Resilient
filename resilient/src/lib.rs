@@ -603,6 +603,10 @@ mod combinatorics;
 mod complex_numbers;
 mod const_fn;
 mod contract_inference;
+// RES-3779 Phase A: routes declared + inferred contract clauses
+// through the Z3 proving path, yielding pass/fail/unknown verdicts
+// with proof certificates.
+mod contract_verify;
 mod coverage_warnings;
 mod crash_only_cert;
 mod data_utils;
