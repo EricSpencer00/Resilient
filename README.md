@@ -83,6 +83,33 @@ reduce the evidence burden on the integrator. See the
 page for the concrete objective-by-objective mapping and the
 honest list of gaps.
 
+## Where Resilient stands — the capability matrix
+
+Most language comparisons are opinion dressed up as a scorecard. This one
+isn't. Every cell answers a single **factual, checkable** question — *where
+does this capability live for this language?* — on a four-tier ladder from
+`●` **Core** (guaranteed by the language definition) down to `·` **None**.
+Fifty languages, fifty capabilities, no star ratings.
+
+<div align="center">
+<a href="docs/compare/language-matrix.md">
+<img src="docs/compare/language-matrix.svg" alt="Resilient compared with 49 other languages across 50 capabilities" width="920">
+</a>
+</div>
+
+**How to read it:** darker = more native.
+`● Core` · `◐ Standard` (official opt-in tooling) ·
+`○ Ecosystem` (third-party only) · `· None`. Every rating is pinned to a
+written rule for that capability, so any cell is falsifiable —
+[see the methodology and the eight themed tables →](docs/compare/language-matrix.md).
+
+Across all 50 capabilities Resilient rates **39 Core / 3 Standard /
+3 Ecosystem / 5 None** — dense in verification, memory- and embedded-safety,
+fault handling, and AI-code provenance, and **honestly weakest on ecosystem
+maturity**: a single young implementation, a nascent registry, no qualified
+toolchain, and no field track record yet. Those gaps are facts about the
+language's age, not its design.
+
 ## Key Features
 
 ### Compile-Time String Interning
