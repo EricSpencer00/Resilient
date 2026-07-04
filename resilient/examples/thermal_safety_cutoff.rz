@@ -1,0 +1,113 @@
+// Flagship reference application: a thermal safety cutoff controller.
+//
+// This is the kind of component Resilient exists for — a small,
+// safety-critical control loop where a single missed bound can destroy
+// hardware or hurt someone. Think battery-management shutoff, motor
+// over-temperature protection, or a medical-device heater cutoff.
+//
+// Two Resilient guarantees do the load-bearing work:
+//
+//   1. CONTRACTS (requires / ensures) — with `--features z3` the
+//      compiler PROVES, at compile time, that the commanded duty cycle
+//      is always within [0, MAX_DUTY] and that at or above the cutoff
+//      temperature the duty is provably zero. These are not runtime
+//      asserts; Z3 discharges them and they cost nothing at runtime.
+//
+//   2. LIVE BLOCKS — real sensors glitch. A transient bad read must not
+//      crash the loop or, worse, be trusted. The `live` block re-reads
+//      on a failed plausibility check and only proceeds once the
+//      reading is sane, preserving the invariant across the retry.
+//
+// The safety property we care about: the heater is NEVER driven while
+// the measured temperature is at or above the cutoff limit. The
+// contracts below encode exactly that, so the proof — not a code
+// review — is what certifies it.
+
+// Tenths of a degree C, so we stay in integer arithmetic (no FPU
+// needed on the smallest targets). 800 = 80.0 C.
+static let CUTOFF_TEMP = 800;
+static let MAX_DUTY = 100;
+static let PLAUSIBLE_MIN = -400;   // -40.0 C
+static let PLAUSIBLE_MAX = 1250;   // 125.0 C
+
+static let bad_reads = 0;
+
+// A reading is trustworthy only inside the sensor's rated range.
+// Anything outside is a glitch (open circuit, EMI, ADC hiccup).
+fn is_plausible(int temp) -> bool {
+    return temp >= PLAUSIBLE_MIN && temp <= PLAUSIBLE_MAX;
+}
+
+// The core safety decision. The `ensures` clauses are the certificate:
+//   - the duty is always a valid PWM value, and
+//   - at or above the cutoff, the duty is provably zero.
+// Z3 checks both hold for EVERY input, not just the ones we test.
+// Bounds are inlined as literals here (not the `static let` names) so
+// the SMT translation stays fully concrete and Z3 discharges each
+// clause outright instead of treating the globals as opaque symbols.
+// 100 = MAX_DUTY, 800 = CUTOFF_TEMP.
+fn commanded_duty(int temp, int requested) -> int
+    requires requested >= 0
+    requires requested <= 100
+    ensures result >= 0
+    ensures result <= 100
+    ensures temp < 800 || result == 0
+{
+    if temp >= 800 {
+        return 0;
+    }
+    return requested;
+}
+
+// Simulated sensor: glitches on the first two reads, then settles.
+// live_retries() lets the model recover deterministically for the demo;
+// real firmware would just re-sample the ADC.
+fn read_temp_sensor(int nominal) -> int {
+    let attempt = live_retries();
+    if attempt < 2 {
+        bad_reads = bad_reads + 1;
+        return 9999;   // implausible glitch value
+    }
+    return nominal;
+}
+
+// Read through a live block so a glitch triggers a re-read instead of
+// poisoning the control decision. The invariant guarantees that once we
+// leave the block, `reading` is inside the plausible band.
+fn safe_read(int nominal) -> int {
+    live invariant true {
+        let reading = read_temp_sensor(nominal);
+        if !is_plausible(reading) {
+            assert(false, "implausible sensor reading — retrying");
+        }
+        return reading;
+    }
+}
+
+// One iteration of the control loop, returning the duty actually driven.
+fn control_step(int nominal, int requested) -> int {
+    let temp = safe_read(nominal);
+    let duty = commanded_duty(temp, requested);
+    println("temp=" + temp + " requested=" + requested + " -> duty=" + duty);
+    return duty;
+}
+
+fn main() {
+    println("=== Thermal Safety Cutoff Controller ===");
+
+    // Normal operation, well below cutoff: request is honored.
+    control_step(720, 100);
+
+    // Right at the cutoff limit: heater is provably shut off.
+    control_step(800, 100);
+
+    // Above the limit: still zero, regardless of what was requested.
+    control_step(910, 60);
+
+    // Recovered from two glitchy reads, then a cool, safe sample.
+    control_step(500, 80);
+
+    println("recovered sensor glitches: " + bad_reads);
+    println("cutoff safety property encoded as machine-checked contracts");
+}
+main();
