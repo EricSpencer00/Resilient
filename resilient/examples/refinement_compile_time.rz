@@ -1,0 +1,36 @@
+// RES-3839: Compile-time refinement type checking with Z3.
+//
+// This example demonstrates Z3-backed static verification of refinement type
+// obligations when the value is a simple parameter reference constrained by
+// a `requires` clause in the enclosing function.
+
+#[refinement(base = "int", where = "self > 0")]
+type PositiveInt = int;
+
+#[refinement(base = "int", where = "self >= 0")]
+type NonNegativeInt = int;
+
+// Function with a precondition constraining the parameter.
+// Z3 will prove that `x` satisfies the Positive refinement because
+// the requires clause guarantees x > 0.
+fn process_positive(int x) -> int
+    requires x > 0
+{
+    let y: PositiveInt = x;
+    return y;
+}
+
+// Another example: using non-negative refinement with >= constraint.
+fn count_items(int n) -> int
+    requires n >= 0
+{
+    let count: NonNegativeInt = n;
+    return count;
+}
+
+fn main() {
+    println(process_positive(5));
+    println(count_items(0));
+}
+
+main();

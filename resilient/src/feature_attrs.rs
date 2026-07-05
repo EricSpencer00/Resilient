@@ -359,6 +359,8 @@ pub fn is_known_attribute(name: &str) -> bool {
         | "must_tail_call"
             // RES-2659: mutual tail call optimization.
             | "mutual_tail_call"
+        // RES-3780: bounded-loop verification for @ai_generated functions.
+        | "loop_bound"
     )
 }
 
