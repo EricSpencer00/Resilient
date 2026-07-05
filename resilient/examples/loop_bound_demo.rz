@@ -1,0 +1,23 @@
+// RES-3780 Tier 2 demo: @ai_generated function with bounded while-loop.
+//
+// This example demonstrates the Tier 2 enforcement of RES-3780:
+// AI-generated functions that contain while-loops must declare a
+// #[loop_bound(N)] attribute specifying the maximum iteration count.
+
+#[loop_bound(100)]
+@ai_generated
+fn count_up(int n) -> int requires n >= 0 requires n <= 100 ensures result >= 0 {
+    let i = 0;
+    while (i < n) {
+        i = i + 1;
+    }
+    return i;
+}
+
+fn main() {
+    println(count_up(0));
+    println(count_up(5));
+    println(count_up(10));
+}
+
+main();
