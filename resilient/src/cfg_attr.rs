@@ -459,6 +459,7 @@ fn parse_feature_attribute(parser: &mut Parser, name: String) -> Option<crate::N
                 Token::Divide => args.push('/'),
                 Token::Arrow => args.push_str("->"),
                 Token::DoubleColon => args.push_str("::"),
+                Token::Where => args.push_str("where"),
                 _ => args.push(' '),
             }
             args.push(' ');

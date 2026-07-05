@@ -31837,6 +31837,9 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     let mut safety_critical = false;
     let mut emit_diagnostics_json = false;
     let mut verifier_timeout_ms: u32 = 5000;
+    // RES-3839: strict refinement type checking mode (z3-gated).
+    #[cfg(feature = "z3")]
+    let mut strict_refinements = false;
     // RES-354: theory selection (z3-gated; default Auto).
     #[cfg(feature = "z3")]
     let mut z3_theory: verifier_z3::Z3Theory = verifier_z3::Z3Theory::Auto;
@@ -31849,6 +31852,20 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
             emit_diagnostics_json = true;
         } else if a == "--safety-critical" {
             safety_critical = true;
+        } else if a == "--strict-refinements" {
+            // RES-3839: enable strict mode for refinement type checking.
+            #[cfg(feature = "z3")]
+            {
+                strict_refinements = true;
+            }
+            #[cfg(not(feature = "z3"))]
+            {
+                eprintln!(
+                    "{}",
+                    backend_limited_feature_message("--strict-refinements", "z3", None,)
+                );
+                return Some(2);
+            }
         } else if a == "--verifier-timeout-ms" {
             i += 1;
             if i >= args.len() {
@@ -32036,6 +32053,10 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
             return Some(1);
         }
     }
+
+    // RES-3839: set the strict refinements flag before typechecking.
+    #[cfg(feature = "z3")]
+    crate::refinement_types::set_strict_refinements(strict_refinements);
 
     // Type-check (Z3 verifier runs automatically when built with --features z3).
     let tc_base = typechecker::TypeChecker::new()
@@ -32447,12 +32468,14 @@ FLAGS:
     -q, --quiet                 Suppress success output
         --emit-diagnostics-json Emit parse/type diagnostics as JSON
         --safety-critical       Promote safety-critical lint failures
+        --strict-refinements    Unresolved refinement obligations become errors (RES-3839)
         --verifier-timeout-ms N Per-Z3-query timeout in milliseconds
         --z3-theory MODE        Backend-limited; requires --features z3
 
 EXAMPLES:
     rz check examples/hello.rz
     rz check --quiet examples/hello.rz
+    rz check --strict-refinements examples/refinement_compile_time.rz
 
 Run `rz --help` for global flags and other subcommands.
 "#;
