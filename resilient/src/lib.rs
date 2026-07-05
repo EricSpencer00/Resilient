@@ -30148,6 +30148,86 @@ const DEFAULT_BUILD_VERIFY_STABLE_PATH: &str = "run `rz --typecheck <file>` or `
 const DEFAULT_BUILD_Z3_THEORY_STABLE_PATH: &str =
     "omit --z3-theory; the default build still runs non-SMT type checks.";
 
+// RES-3840: Check vibe_debt score against a threshold and exit accordingly.
+// Returns exit code (0 if passed, 2 if failed). Emits JSON to stderr.
+fn check_vibe_gate(
+    filename: &str,
+    threshold: f64,
+    verifier_timeout_ms: u32,
+    warn_unverified: bool,
+) -> i32 {
+    // Read the source file
+    let contents = match fs::read_to_string(filename) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", filename, e);
+            return 2;
+        }
+    };
+
+    // Parse
+    let (program, parse_errs) = parse(&contents);
+    if !parse_errs.is_empty() {
+        for e in parse_errs {
+            eprintln!("Parser error: {}", e);
+        }
+        eprintln!("error: --vibe-gate requires a valid parsed program");
+        return 2;
+    }
+
+    // Resolve imports
+    let has_use = matches!(
+        &program,
+        Node::Program(stmts) if stmts.iter().any(|s| matches!(s.node, Node::Use { .. }))
+    );
+    let mut program = program;
+    if has_use {
+        let base_dir = Path::new(filename)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut loaded: HashSet<PathBuf> = HashSet::new();
+        if let Ok(canon) = fs::canonicalize(filename) {
+            loaded.insert(canon);
+        }
+        if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
+            eprintln!("{}:1:1: error: {}", Path::new(filename).display(), e);
+            return 2;
+        }
+    }
+
+    // Type-check
+    let tc_base = typechecker::TypeChecker::new()
+        .with_verifier_timeout_ms(verifier_timeout_ms)
+        .with_warn_unverified(warn_unverified);
+    #[cfg(feature = "z3")]
+    let mut tc = tc_base.with_z3_theory(verifier_z3::Z3Theory::Auto);
+    #[cfg(not(feature = "z3"))]
+    let mut tc = tc_base;
+    let path_str = Path::new(filename).to_string_lossy();
+    if let Err(e) = tc.check_program_with_source(&program, path_str.as_ref()) {
+        eprintln!("Typecheck error: {}", e);
+        return 2;
+    }
+
+    // Run autopilot analysis
+    let report = autopilot::run(&program);
+
+    // Compare vibe_debt against threshold
+    // report.program_debt_pct is in [0, 100], threshold is in [0, 1]
+    let vibe_debt_normalized = report.program_debt_pct / 100.0;
+    let passed = vibe_debt_normalized <= threshold;
+
+    // Emit JSON to stderr (compact, single line)
+    let json_output = format!(
+        r#"{{"vibe_debt": {:.2}, "threshold": {:.2}, "passed": {}}}"#,
+        vibe_debt_normalized, threshold, passed
+    );
+    eprintln!("{}", json_output);
+
+    if passed { 0 } else { 2 }
+}
+
 // Execute a Resilient source file
 #[allow(clippy::too_many_arguments)] // CLI glue fn — all args come from flags
 fn execute_file(
@@ -33115,6 +33195,10 @@ pub fn run_cli() {
     let mut watch_mode = false;
     let mut filename = "";
     let mut repl_help = false;
+    // RES-3840: `--vibe-gate <threshold>` gates compilation on vibe_debt score.
+    // Threshold is in [0.0, 1.0] range. Exits 0 if vibe_debt <= threshold,
+    // exits 2 if > threshold, emitting structured JSON to stderr.
+    let mut vibe_gate_threshold: Option<f64> = None;
 
     // Simple argument parsing
     if args.len() > 1 {
@@ -33509,6 +33593,41 @@ pub fn run_cli() {
                 // RES-228: re-run the file on every save (200 ms debounce).
                 // Silently ignored in CI (see `watch_mode::is_non_interactive`).
                 watch_mode = true;
+            } else if arg == "--vibe-gate" {
+                // RES-3840: `--vibe-gate <threshold>` gates on vibe_debt score.
+                // Threshold is in [0.0, 1.0]. Exits 0 if vibe_debt <= threshold,
+                // exits 2 if > threshold.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --vibe-gate requires a numeric threshold in [0.0, 1.0]");
+                    std::process::exit(2);
+                }
+                match args[i].parse::<f64>() {
+                    Ok(threshold) if (0.0..=1.0).contains(&threshold) => {
+                        vibe_gate_threshold = Some(threshold);
+                    }
+                    _ => {
+                        eprintln!(
+                            "error: --vibe-gate requires a numeric threshold in [0.0, 1.0], got {:?}",
+                            args[i]
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            } else if let Some(val) = arg.strip_prefix("--vibe-gate=") {
+                // RES-3840: support --vibe-gate=<threshold> form.
+                match val.parse::<f64>() {
+                    Ok(threshold) if (0.0..=1.0).contains(&threshold) => {
+                        vibe_gate_threshold = Some(threshold);
+                    }
+                    _ => {
+                        eprintln!(
+                            "error: --vibe-gate requires a numeric threshold in [0.0, 1.0], got {:?}",
+                            val
+                        );
+                        std::process::exit(2);
+                    }
+                }
             } else {
                 filename = arg;
             }
@@ -33857,6 +33976,15 @@ pub fn run_cli() {
         }
 
         if !filename.is_empty() {
+            // RES-3840: if --vibe-gate is set, run the vibe_debt check and exit
+            // before normal execution. The vibe_gate check determines the final
+            // exit code when present.
+            if let Some(threshold) = vibe_gate_threshold {
+                let exit_code =
+                    check_vibe_gate(filename, threshold, verifier_timeout_ms, warn_unverified);
+                std::process::exit(exit_code);
+            }
+
             // RES-211: install the dev-mode "abort on first fault"
             // flag on this thread's thread-local before `execute_file`
             // constructs the interpreter, so `eval_live_block` can

@@ -52,8 +52,7 @@ fn has_while_loop(node: &Node) -> bool {
             alternative,
             ..
         } => {
-            has_while_loop(consequence)
-                || alternative.as_ref().is_some_and(|ab| has_while_loop(ab))
+            has_while_loop(consequence) || alternative.as_ref().is_some_and(|ab| has_while_loop(ab))
         }
         Node::ForInStatement { body, .. } => has_while_loop(body),
         Node::ReturnStatement { value: Some(v), .. } => has_while_loop(v),
