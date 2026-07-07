@@ -238,7 +238,7 @@ mod tests {
                 from: i,
                 to: 100,
                 handler: format!("msg_{i}"),
-                tick: i as u64,
+                tick: i,
             });
         }
         let s = format_chain(100);
@@ -302,7 +302,7 @@ mod tests {
         });
         let snap1 = snapshot();
         // Snapshot is a clone, modifying it should not affect trace
-        let mut snap2 = snapshot();
+        let snap2 = snapshot();
         assert_eq!(snap1.len(), snap2.len());
         // Record another and take snapshot
         record(TraceEntry {
