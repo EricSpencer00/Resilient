@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn malformed_diff_new_function_not_regression() {
         // A new function (not in stored map) is not reported as regression
-        let mut m1 = HashMap::new();
+        let m1 = HashMap::new();
         let mut m2 = HashMap::new();
         let fp = Fingerprint {
             digest: 0x1234,
