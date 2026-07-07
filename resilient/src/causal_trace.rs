@@ -189,4 +189,161 @@ mod tests {
         assert_eq!(snapshot().len(), TRACE_CAPACITY);
         clear();
     }
+
+    // RES-3820: Malformed-input regression corpus for causal_trace validation
+    #[test]
+    fn malformed_format_chain_nonexistent_actor() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        record(TraceEntry {
+            from: 1,
+            to: 2,
+            handler: "msg".into(),
+            tick: 0,
+        });
+        // Query actor that has no messages
+        let s = format_chain(999);
+        assert!(
+            s.is_empty(),
+            "format_chain for non-existent actor should be empty"
+        );
+        clear();
+    }
+
+    #[test]
+    fn malformed_record_zero_actors() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        // Record entry with from=0, to=0 (self-message)
+        record(TraceEntry {
+            from: 0,
+            to: 0,
+            handler: "self_msg".into(),
+            tick: 0,
+        });
+        let snap = snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].from, 0);
+        assert_eq!(snap[0].to, 0);
+        clear();
+    }
+
+    #[test]
+    fn malformed_chain_preserves_order() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        // Record multiple messages to same actor in order
+        for i in 0..5 {
+            record(TraceEntry {
+                from: i,
+                to: 100,
+                handler: format!("msg_{i}"),
+                tick: i,
+            });
+        }
+        let s = format_chain(100);
+        // Chain is reversed (most recent first), so msg_4 should appear before msg_0
+        let pos_4 = s.find("msg_4").unwrap_or(0);
+        let pos_0 = s.find("msg_0").unwrap_or(0);
+        assert!(
+            pos_4 < pos_0,
+            "most recent message should appear first in chain"
+        );
+        clear();
+    }
+
+    #[test]
+    fn malformed_concurrent_records() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        // Multiple records with same tick
+        for i in 0..3 {
+            record(TraceEntry {
+                from: i,
+                to: 200,
+                handler: format!("concurrent_{i}"),
+                tick: 0, // Same tick
+            });
+        }
+        let snap = snapshot();
+        assert_eq!(snap.len(), 3);
+        assert!(snap.iter().all(|e| e.tick == 0));
+        clear();
+    }
+
+    #[test]
+    fn malformed_clear_empty_trace() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        // Clear on already-empty trace
+        clear();
+        assert_eq!(snapshot().len(), 0);
+    }
+
+    #[test]
+    fn malformed_format_chain_empty() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        // Empty trace, query any actor
+        let s = format_chain(42);
+        assert_eq!(s, "");
+        clear();
+    }
+
+    #[test]
+    fn malformed_snapshot_isolation() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        record(TraceEntry {
+            from: 1,
+            to: 2,
+            handler: "test".into(),
+            tick: 0,
+        });
+        let snap1 = snapshot();
+        // Snapshot is a clone, modifying it should not affect trace
+        let snap2 = snapshot();
+        assert_eq!(snap1.len(), snap2.len());
+        // Record another and take snapshot
+        record(TraceEntry {
+            from: 2,
+            to: 3,
+            handler: "test2".into(),
+            tick: 1,
+        });
+        let snap3 = snapshot();
+        assert_eq!(snap3.len(), 2);
+        clear();
+    }
+
+    #[test]
+    fn malformed_large_handler_names() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let long_name = "x".repeat(1000);
+        record(TraceEntry {
+            from: 1,
+            to: 2,
+            handler: long_name.clone(),
+            tick: 0,
+        });
+        let snap = snapshot();
+        assert_eq!(snap[0].handler, long_name);
+        clear();
+    }
+
+    #[test]
+    fn malformed_max_u64_ticks() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        record(TraceEntry {
+            from: 1,
+            to: 2,
+            handler: "overflow".into(),
+            tick: u64::MAX,
+        });
+        let snap = snapshot();
+        assert_eq!(snap[0].tick, u64::MAX);
+        clear();
+    }
 }
