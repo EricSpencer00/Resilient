@@ -53,10 +53,16 @@ impl BlameMap {
 
         // BFS queue: (fn_name, arg_idx_that_brought_us_here, depth)
         let mut queue: VecDeque<(String, usize, usize)> = VecDeque::with_capacity(n_cap);
-        if let Some(callers) = self.edges.get(callee) {
-            for (caller, idx) in callers {
-                if !visited.contains(caller) {
-                    queue.push_back((caller.clone(), *idx, 1));
+        // RES-3821: the seeded direct callers sit at depth 1, so a
+        // `max_depth` of 0 must yield an empty chain — otherwise depth 0
+        // would inconsistently include one hop while every deeper bound
+        // stops exactly at `max_depth`.
+        if max_depth >= 1 {
+            if let Some(callers) = self.edges.get(callee) {
+                for (caller, idx) in callers {
+                    if !visited.contains(caller) {
+                        queue.push_back((caller.clone(), *idx, 1));
+                    }
                 }
             }
         }
