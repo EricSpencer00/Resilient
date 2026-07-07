@@ -321,4 +321,180 @@ mod tests {
         parse_check(inline_src).expect("inline bound should pass");
         parse_check(where_src).expect("where clause bound should pass");
     }
+
+    // =========================================================================
+    // RES-3811: Regression corpus for where_clauses validation
+    // =========================================================================
+
+    #[test]
+    fn valid_where_clause_single_bound() {
+        // Simple valid where clause with single bound
+        let src = "trait Display { fn show(self) -> string; }\n\
+                   fn<T> render(T item) where T: Display { return item.show(); }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("valid where clause with single bound");
+    }
+
+    #[test]
+    fn valid_where_clause_multiple_bounds_plus() {
+        // Multiple trait bounds on single parameter
+        let src = "trait Copy { fn copy(self) -> int; }\n\
+                   trait Move { fn move_(self) -> int; }\n\
+                   fn<T> combine(T x) where T: Copy + Move { return x.copy(); }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("valid where clause with multiple bounds");
+    }
+
+    #[test]
+    fn valid_where_clause_multiple_params() {
+        // Multiple type parameters, each with bounds
+        let src = "trait A { fn a(self) -> int; }\n\
+                   trait B { fn b(self) -> int; }\n\
+                   fn<T, U> process(T x, U y) where T: A, U: B { return x.a(); }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("valid where clause with multiple parameters");
+    }
+
+    #[test]
+    fn valid_where_clause_complex_bounds() {
+        // Complex where clause with multiple bounds and parameters
+        let src = "trait Read { fn read(self) -> int; }\n\
+                   trait Write { fn write(self, int v) -> int; }\n\
+                   trait Seek { fn seek(self) -> int; }\n\
+                   fn<A, B, C> rw(A r, B w, C s) where A: Read, B: Write, C: Seek { return r.read(); }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("valid complex where clause");
+    }
+
+    #[test]
+    fn valid_where_clause_with_trailing_semicolon() {
+        // Where clause should work with function bodies ending in various ways
+        let src = "trait Show { fn show(self) -> int; }\n\
+                   fn<T> display(T item) where T: Show { return item.show(); }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("where clause with semicolon-terminated body");
+    }
+
+    #[test]
+    fn valid_where_clause_empty_function_body() {
+        // Where clause on function with minimal body
+        let src = "trait Tag { fn tag(self) -> int; }\n\
+                   fn<T> mark(T item) where T: Tag { return 0; }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("where clause with empty-like body");
+    }
+
+    #[test]
+    fn malformed_where_clause_missing_colon() {
+        // Where clause without required colon after type param
+        let src = "trait Display { fn show(self) -> string; }\n\
+                   fn<T> render(T item) where T Display { return item.show(); }\n\
+                   fn main(int _d) {} main();";
+        let (_, errs) = parse(src);
+        // Should parse with an error about missing `:` in where clause
+        assert!(
+            !errs.is_empty(),
+            "should detect missing colon in where clause"
+        );
+    }
+
+    #[test]
+    fn malformed_where_clause_missing_bound_name() {
+        // Where clause with colon but no trait name
+        let src = "trait Display { fn show(self) -> string; }\n\
+                   fn<T> render(T item) where T: { return item.show(); }\n\
+                   fn main(int _d) {} main();";
+        let (_, errs) = parse(src);
+        // Should parse with error about missing trait name
+        assert!(
+            !errs.is_empty(),
+            "should detect missing trait name after colon"
+        );
+    }
+
+    #[test]
+    fn malformed_where_clause_invalid_plus_placement() {
+        // Where clause with plus in wrong position
+        let src = "trait A { fn a(self) -> int; }\n\
+                   trait B { fn b(self) -> int; }\n\
+                   fn<T> process(T x) where T: + A B { return x.a(); }\n\
+                   fn main(int _d) {} main();";
+        let (_, errs) = parse(src);
+        // Should detect invalid token after trait bound
+        assert!(!errs.is_empty(), "should detect malformed plus placement");
+    }
+
+    #[test]
+    fn malformed_where_clause_missing_comma() {
+        // Multiple bounds without comma separator
+        let src = "trait A { fn a(self) -> int; }\n\
+                   trait B { fn b(self) -> int; }\n\
+                   fn<T, U> process(T x, U y) where T: A U: B { return x.a(); }\n\
+                   fn main(int _d) {} main();";
+        let (_, errs) = parse(src);
+        // Should detect end of where clause before second parameter
+        assert!(
+            !errs.is_empty(),
+            "should detect missing comma between where bounds"
+        );
+    }
+
+    #[test]
+    fn malformed_where_clause_orphaned_bound() {
+        // Where clause with bound but no type parameter name
+        let src = "trait Display { fn show(self) -> string; }\n\
+                   fn<T> render(T item) where : Display { return item.show(); }\n\
+                   fn main(int _d) {} main();";
+        let (_, errs) = parse(src);
+        // Should detect missing type parameter name
+        assert!(!errs.is_empty(), "should detect orphaned trait bound");
+    }
+
+    #[test]
+    fn malformed_where_clause_double_colon_incomplete() {
+        // Associated type projection with missing identifier
+        let src = "trait Display { fn show(self) -> string; }\n\
+                   fn<T> render(T item) where T:: Display { return item.show(); }\n\
+                   fn main(int _d) {} main();";
+        let (_, errs) = parse(src);
+        // Should detect incomplete associated type
+        assert!(!errs.is_empty(), "should handle incomplete associated type");
+    }
+
+    #[test]
+    fn edge_case_where_clause_single_param_single_bound() {
+        // Minimal valid where clause
+        let src = "trait T { fn t(self) -> int; }\n\
+                   fn<X> f(X x) where X: T { return 0; }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("minimal where clause");
+    }
+
+    #[test]
+    fn edge_case_where_clause_three_traits() {
+        // Where clause with three traits on one parameter
+        let src = "trait A { fn a(self) -> int; }\n\
+                   trait B { fn b(self) -> int; }\n\
+                   trait C { fn c(self) -> int; }\n\
+                   fn<T> all(T x) where T: A + B + C { return x.a(); }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("three trait bounds on one parameter");
+    }
+
+    #[test]
+    fn edge_case_where_clause_four_params() {
+        // Where clause constraining four type parameters
+        let src = "trait T { fn t(self) -> int; }\n\
+                   fn<A, B, C, D> quad(A a, B b, C c, D d) where A: T, B: T, C: T, D: T { return 0; }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("four type parameters in where clause");
+    }
+
+    #[test]
+    fn edge_case_no_where_clause() {
+        // Verify non-generic functions work without where clauses
+        let src = "fn add(int x, int y) -> int { return x + y; }\n\
+                   fn main(int _d) {} main();";
+        parse_check(src).expect("function without where clause");
+    }
 }
