@@ -547,11 +547,6 @@ mod tests {
             has_recovery: false,
             fails_variants: vec![],
         };
-        let fp2 = Fingerprint {
-            digest: 0x2222,
-            has_recovery: false,
-            fails_variants: vec![],
-        };
         m1.insert("c".to_string(), fp1.clone());
         m1.insert("a".to_string(), fp1.clone());
         m1.insert("b".to_string(), fp1.clone());
