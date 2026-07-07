@@ -100,7 +100,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let contracts = collect_contracts(program);
     let mut errors: Vec<String> = Vec::new();
 
-    for (fn_name, rec) in &attrs {
+    for (fn_name, _rec) in &attrs {
         let Some(info) = contracts.get(fn_name) else {
             continue;
         };
