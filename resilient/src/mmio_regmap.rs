@@ -26,7 +26,12 @@ static REGMAPS: LazyLock<RwLock<HashMap<String, MmioRegmap>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 fn parse_addr(s: &str) -> Option<u64> {
-    let s = s.trim().trim_matches('"');
+    let s = s.trim();
+    // RES-3199: the `#[mmio(...)]` surface requires quoted values
+    // (`base = "0x40010800"`). Reject bare/unquoted forms so a
+    // malformed attribute skips registration rather than silently
+    // parsing as a valid address.
+    let s = s.strip_prefix('"').and_then(|rest| rest.strip_suffix('"'))?;
     if let Some(rest) = s.strip_prefix("0x") {
         u64::from_str_radix(rest, 16).ok()
     } else {
