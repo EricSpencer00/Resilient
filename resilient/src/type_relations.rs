@@ -340,156 +340,156 @@ mod tests {
     }
 }
 
-    // =========================================================================
-    // RES-3814: Regression corpus for type_relations validation
-    // =========================================================================
+// =========================================================================
+// RES-3814: Regression corpus for type_relations validation
+// =========================================================================
 
-    #[test]
-    fn valid_pinned_int_int8() {
-        assert!(is_pinned_int(&Type::Int8));
-    }
+#[test]
+fn valid_pinned_int_int8() {
+    assert!(is_pinned_int(&Type::Int8));
+}
 
-    #[test]
-    fn valid_pinned_int_int16() {
-        assert!(is_pinned_int(&Type::Int16));
-    }
+#[test]
+fn valid_pinned_int_int16() {
+    assert!(is_pinned_int(&Type::Int16));
+}
 
-    #[test]
-    fn valid_pinned_int_int32() {
-        assert!(is_pinned_int(&Type::Int32));
-    }
+#[test]
+fn valid_pinned_int_int32() {
+    assert!(is_pinned_int(&Type::Int32));
+}
 
-    #[test]
-    fn valid_pinned_int_uint8() {
-        assert!(is_pinned_int(&Type::UInt8));
-    }
+#[test]
+fn valid_pinned_int_uint8() {
+    assert!(is_pinned_int(&Type::UInt8));
+}
 
-    #[test]
-    fn valid_pinned_int_uint16() {
-        assert!(is_pinned_int(&Type::UInt16));
-    }
+#[test]
+fn valid_pinned_int_uint16() {
+    assert!(is_pinned_int(&Type::UInt16));
+}
 
-    #[test]
-    fn valid_pinned_int_uint32() {
-        assert!(is_pinned_int(&Type::UInt32));
-    }
+#[test]
+fn valid_pinned_int_uint32() {
+    assert!(is_pinned_int(&Type::UInt32));
+}
 
-    #[test]
-    fn valid_pinned_int_uint64() {
-        assert!(is_pinned_int(&Type::UInt64));
-    }
+#[test]
+fn valid_pinned_int_uint64() {
+    assert!(is_pinned_int(&Type::UInt64));
+}
 
-    #[test]
-    fn malformed_pinned_int_float() {
-        assert!(!is_pinned_int(&Type::Float));
-    }
+#[test]
+fn malformed_pinned_int_float() {
+    assert!(!is_pinned_int(&Type::Float));
+}
 
-    #[test]
-    fn malformed_pinned_int_bool() {
-        assert!(!is_pinned_int(&Type::Bool));
-    }
+#[test]
+fn malformed_pinned_int_bool() {
+    assert!(!is_pinned_int(&Type::Bool));
+}
 
-    #[test]
-    fn malformed_pinned_int_string() {
-        assert!(!is_pinned_int(&Type::String));
-    }
+#[test]
+fn malformed_pinned_int_string() {
+    assert!(!is_pinned_int(&Type::String));
+}
 
-    #[test]
-    fn malformed_pinned_int_any() {
-        assert!(!is_pinned_int(&Type::Any));
-    }
+#[test]
+fn malformed_pinned_int_any() {
+    assert!(!is_pinned_int(&Type::Any));
+}
 
-    #[test]
-    fn valid_common_type_all_same() {
-        let got = infer_common_type(&[Type::Int, Type::Int, Type::Int]);
-        assert_eq!(got, Type::Int);
-    }
+#[test]
+fn valid_common_type_all_same() {
+    let got = infer_common_type(&[Type::Int, Type::Int, Type::Int]);
+    assert_eq!(got, Type::Int);
+}
 
-    #[test]
-    fn valid_common_type_mixed_with_any() {
-        let got = infer_common_type(&[Type::Any, Type::String, Type::Any, Type::String]);
-        assert_eq!(got, Type::String);
-    }
+#[test]
+fn valid_common_type_mixed_with_any() {
+    let got = infer_common_type(&[Type::Any, Type::String, Type::Any, Type::String]);
+    assert_eq!(got, Type::String);
+}
 
-    #[test]
-    fn valid_common_type_single_element() {
-        let got = infer_common_type(&[Type::Bool]);
-        assert_eq!(got, Type::Bool);
-    }
+#[test]
+fn valid_common_type_single_element() {
+    let got = infer_common_type(&[Type::Bool]);
+    assert_eq!(got, Type::Bool);
+}
 
-    #[test]
-    fn malformed_common_type_conflicting() {
-        let got = infer_common_type(&[Type::Int, Type::String, Type::Bool]);
-        assert_eq!(got, Type::Any);
-    }
+#[test]
+fn malformed_common_type_conflicting() {
+    let got = infer_common_type(&[Type::Int, Type::String, Type::Bool]);
+    assert_eq!(got, Type::Any);
+}
 
-    #[test]
-    fn malformed_common_type_empty_array() {
-        let got = infer_common_type(&[]);
-        assert_eq!(got, Type::Any);
-    }
+#[test]
+fn malformed_common_type_empty_array() {
+    let got = infer_common_type(&[]);
+    assert_eq!(got, Type::Any);
+}
 
-    #[test]
-    fn valid_substitute_type_params_basic() {
-        let ty = Type::Struct("T".to_string());
-        let out = substitute_type_params(&ty, &["T".into()]);
-        assert_eq!(out, Type::Any);
-    }
+#[test]
+fn valid_substitute_type_params_basic() {
+    let ty = Type::Struct("T".to_string());
+    let out = substitute_type_params(&ty, &["T".into()]);
+    assert_eq!(out, Type::Any);
+}
 
-    #[test]
-    fn valid_substitute_type_params_none() {
-        let ty = Type::Int;
-        let out = substitute_type_params(&ty, &["T".into()]);
-        assert_eq!(out, Type::Int);
-    }
+#[test]
+fn valid_substitute_type_params_none() {
+    let ty = Type::Int;
+    let out = substitute_type_params(&ty, &["T".into()]);
+    assert_eq!(out, Type::Int);
+}
 
-    #[test]
-    fn valid_substitute_bindings_basic() {
-        let ty = Type::Struct("T".to_string());
-        let mut bindings = HashMap::new();
-        bindings.insert("T", Type::Bool);
-        let out = substitute_with_bindings(&ty, &["T".into()], &bindings);
-        assert_eq!(out, Type::Bool);
-    }
+#[test]
+fn valid_substitute_bindings_basic() {
+    let ty = Type::Struct("T".to_string());
+    let mut bindings = HashMap::new();
+    bindings.insert("T", Type::Bool);
+    let out = substitute_with_bindings(&ty, &["T".into()], &bindings);
+    assert_eq!(out, Type::Bool);
+}
 
-    #[test]
-    fn malformed_substitute_unknown_binding() {
-        let ty = Type::Struct("T".to_string());
-        let bindings = HashMap::new();
-        let out = substitute_with_bindings(&ty, &["T".into()], &bindings);
-        assert_eq!(out, Type::Any);
-    }
+#[test]
+fn malformed_substitute_unknown_binding() {
+    let ty = Type::Struct("T".to_string());
+    let bindings = HashMap::new();
+    let out = substitute_with_bindings(&ty, &["T".into()], &bindings);
+    assert_eq!(out, Type::Any);
+}
 
-    #[test]
-    fn edge_case_nested_option_type() {
-        let ty = Type::Option(Box::new(Type::Option(Box::new(Type::Int))));
-        let out = substitute_type_params(&ty, &[]);
-        assert_eq!(out, ty);
-    }
+#[test]
+fn edge_case_nested_option_type() {
+    let ty = Type::Option(Box::new(Type::Option(Box::new(Type::Int))));
+    let out = substitute_type_params(&ty, &[]);
+    assert_eq!(out, ty);
+}
 
-    #[test]
-    fn edge_case_complex_tuple_substitution() {
-        let ty = Type::Tuple(vec![
-            Type::Struct("T".to_string()),
-            Type::Int,
-            Type::Struct("U".to_string()),
-        ]);
-        let out = substitute_type_params(&ty, &["T".into(), "U".into()]);
-        assert_eq!(out, Type::Tuple(vec![Type::Any, Type::Int, Type::Any]));
-    }
+#[test]
+fn edge_case_complex_tuple_substitution() {
+    let ty = Type::Tuple(vec![
+        Type::Struct("T".to_string()),
+        Type::Int,
+        Type::Struct("U".to_string()),
+    ]);
+    let out = substitute_type_params(&ty, &["T".into(), "U".into()]);
+    assert_eq!(out, Type::Tuple(vec![Type::Any, Type::Int, Type::Any]));
+}
 
-    #[test]
-    fn edge_case_function_type_substitution() {
-        let ty = Type::Function {
-            params: vec![Type::Struct("T".to_string()), Type::Int],
-            return_type: Box::new(Type::Struct("T".to_string())),
-        };
-        let out = substitute_type_params(&ty, &["T".into()]);
-        assert_eq!(
-            out,
-            Type::Function {
-                params: vec![Type::Any, Type::Int],
-                return_type: Box::new(Type::Any),
-            }
-        );
-    }
+#[test]
+fn edge_case_function_type_substitution() {
+    let ty = Type::Function {
+        params: vec![Type::Struct("T".to_string()), Type::Int],
+        return_type: Box::new(Type::Struct("T".to_string())),
+    };
+    let out = substitute_type_params(&ty, &["T".into()]);
+    assert_eq!(
+        out,
+        Type::Function {
+            params: vec![Type::Any, Type::Int],
+            return_type: Box::new(Type::Any),
+        }
+    );
+}
