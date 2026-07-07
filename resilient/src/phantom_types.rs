@@ -417,7 +417,7 @@ mod tests {
     fn phantom_malformed_special_chars_in_units() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        let program = Node::Program(vec![]);
+        let _program = Node::Program(vec![]);
         record_phantom_args("BadType", r#"units = "Meters/Seconds""#, 3);
         // Special chars are allowed; test that they parse
         let specs = collect();
