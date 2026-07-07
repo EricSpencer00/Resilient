@@ -413,4 +413,153 @@ mod tests {
         let regressions = diff_fingerprints(&fingerprint_program(&p1), &fingerprint_program(&p2));
         assert_eq!(regressions, vec!["f".to_string()]);
     }
+
+    // RES-3822: Malformed-input regression corpus for behavioral_fingerprint validation
+    #[test]
+    fn malformed_empty_program_no_fingerprints() {
+        let (prog, _) = parse("");
+        let fps = fingerprint_program(&prog);
+        assert!(fps.is_empty());
+    }
+
+    #[test]
+    fn malformed_parameter_type_change_breaks_fingerprint() {
+        let src1 = r#"fn f(int x) -> int { return x; }"#;
+        let src2 = r#"fn f(float x) -> int { return 0; }"#;
+        let (p1, _) = parse(src1);
+        let (p2, _) = parse(src2);
+        let f1 = fingerprint_program(&p1);
+        let f2 = fingerprint_program(&p2);
+        assert_ne!(
+            f1["f"].digest, f2["f"].digest,
+            "parameter type change must break fingerprint"
+        );
+    }
+
+    #[test]
+    fn malformed_multiple_functions_independent_fingerprints() {
+        let src = r#"
+            fn f(int x) -> int ensures result > 0 { return x + 1; }
+            fn g(int y) -> int ensures result > 0 { return y + 2; }
+        "#;
+        let (prog, _) = parse(src);
+        let fps = fingerprint_program(&prog);
+        assert_eq!(fps.len(), 2);
+        assert_ne!(fps["f"].digest, fps["g"].digest);
+    }
+
+    #[test]
+    fn malformed_requires_clause_change() {
+        let src1 = r#"fn f(int x) requires x > 0 { return x; }"#;
+        let src2 = r#"fn f(int x) requires x > 1 { return x; }"#;
+        let (p1, _) = parse(src1);
+        let (p2, _) = parse(src2);
+        let f1 = fingerprint_program(&p1);
+        let f2 = fingerprint_program(&p2);
+        assert_ne!(
+            f1["f"].digest, f2["f"].digest,
+            "requires clause change must break fingerprint"
+        );
+    }
+
+    #[test]
+    fn malformed_clause_order_preserved() {
+        // Requires clauses are sorted before hashing, so order doesn't matter
+        let src1 = r#"fn f(int x) requires x > 0 requires x < 10 { return x; }"#;
+        let src2 = r#"fn f(int x) requires x < 10 requires x > 0 { return x; }"#;
+        let (p1, _) = parse(src1);
+        let (p2, _) = parse(src2);
+        let f1 = fingerprint_program(&p1);
+        let f2 = fingerprint_program(&p2);
+        assert_eq!(
+            f1["f"].digest, f2["f"].digest,
+            "clause order must not affect fingerprint (sorted)"
+        );
+    }
+
+    #[test]
+    fn malformed_fails_variant_tracked() {
+        let src1 = r#"fn f(int x) fails OutOfRange { return x; }"#;
+        let src2 = r#"fn f(int x) { return x; }"#;
+        let (p1, _) = parse(src1);
+        let (p2, _) = parse(src2);
+        let f1 = fingerprint_program(&p1);
+        let f2 = fingerprint_program(&p2);
+        assert_ne!(f1["f"].digest, f2["f"].digest);
+    }
+
+    #[test]
+    fn malformed_recovers_to_affects_fingerprint() {
+        let src1 = r#"fn f(int x) { return x; }"#;
+        let src2 = r#"fn f(int x) recovers_to default { return x; }"#;
+        let (p1, _) = parse(src1);
+        let (p2, _) = parse(src2);
+        let f1 = fingerprint_program(&p1);
+        let f2 = fingerprint_program(&p2);
+        assert_ne!(f1["f"].digest, f2["f"].digest);
+    }
+
+    #[test]
+    fn malformed_parse_lock_handles_malformed_hex() {
+        let s = "f = 0xZZZZ\ng = 0xABCD\n";
+        let m = parse_fingerprint_lock(s);
+        assert!(!m.contains_key("f"), "bad hex should be skipped");
+        assert_eq!(m.get("g"), Some(&0xABCD_u64));
+    }
+
+    #[test]
+    fn malformed_parse_lock_empty_lines_and_comments() {
+        let s = "# This is a comment\n\nf = 0x1234\n# Another comment\ng = 0x5678\n\n";
+        let m = parse_fingerprint_lock(s);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get("f"), Some(&0x1234_u64));
+    }
+
+    #[test]
+    fn malformed_diff_empty_maps() {
+        let m1 = HashMap::new();
+        let m2 = HashMap::new();
+        let regressions = diff_fingerprints(&m1, &m2);
+        assert!(regressions.is_empty());
+    }
+
+    #[test]
+    fn malformed_diff_new_function_not_regression() {
+        // A new function (not in stored map) is not reported as regression
+        let m1 = HashMap::new();
+        let mut m2 = HashMap::new();
+        let fp = Fingerprint {
+            digest: 0x1234,
+            has_recovery: false,
+            fails_variants: vec![],
+        };
+        m2.insert("f".to_string(), fp);
+        let regressions = diff_fingerprints(&m1, &m2);
+        assert!(regressions.is_empty(), "new function should not be flagged");
+    }
+
+    #[test]
+    fn malformed_diff_multiple_regressions_sorted() {
+        let mut m1 = HashMap::new();
+        let mut m2 = HashMap::new();
+        let fp1 = Fingerprint {
+            digest: 0x1111,
+            has_recovery: false,
+            fails_variants: vec![],
+        };
+        m1.insert("c".to_string(), fp1.clone());
+        m1.insert("a".to_string(), fp1.clone());
+        m1.insert("b".to_string(), fp1.clone());
+        // Change all of them
+        let fp_changed = Fingerprint {
+            digest: 0x9999,
+            has_recovery: false,
+            fails_variants: vec![],
+        };
+        m2.insert("c".to_string(), fp_changed.clone());
+        m2.insert("a".to_string(), fp_changed.clone());
+        m2.insert("b".to_string(), fp_changed);
+        let regressions = diff_fingerprints(&m1, &m2);
+        assert_eq!(regressions, vec!["a", "b", "c"]);
+    }
 }
