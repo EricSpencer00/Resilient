@@ -1,4 +1,0 @@
-// RES-3201: atomic_types - reject unsupported types in Atomic<T>
-fn bad_atomic_str() {
-  let x: Atomic<String> = Atomic::new("");  // ERROR: String not supported in Atomic
-}

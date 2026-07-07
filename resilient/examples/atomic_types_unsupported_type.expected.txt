@@ -1,1 +1,0 @@
-error: Type String is not supported in atomic context

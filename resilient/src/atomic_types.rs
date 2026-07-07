@@ -1368,7 +1368,51 @@ fn check_atomic_call_sites(
     Ok(())
 }
 
+/// RES-3201: extract the inner type of an `Atomic<T>` type annotation.
+/// Returns `None` for any annotation that is not shaped `Atomic<...>`.
+fn atomic_inner_type(type_annot: &str) -> Option<&str> {
+    let rest = type_annot.trim().strip_prefix("Atomic")?.trim_start();
+    let inner = rest.strip_prefix('<')?.strip_suffix('>')?;
+    Some(inner.trim())
+}
+
+/// RES-3201: `Atomic<T>` only supports integer inner types (it lowers to
+/// an `AtomicI64` cell). A non-integer inner type such as `String` or
+/// `float` is a misuse that must be rejected at compile time rather than
+/// silently accepted. Walks let-binding type annotations, including
+/// those inside function bodies and nested blocks.
+fn check_atomic_annotations(node: &Node) -> Result<(), String> {
+    match node {
+        Node::Program(stmts) => {
+            for stmt in stmts {
+                check_atomic_annotations(&stmt.node)?;
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                check_atomic_annotations(stmt)?;
+            }
+        }
+        Node::Function { body, .. } => check_atomic_annotations(body)?,
+        Node::LetStatement {
+            type_annot: Some(annot),
+            ..
+        } => {
+            if let Some(inner) = atomic_inner_type(annot) {
+                if type_non_integer_kind(inner).is_some() {
+                    return Err(format!(
+                        "error: Type {inner} is not supported in atomic context"
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    check_atomic_annotations(program)?;
     let attrs = collect_attrs();
     let atomic_names: HashSet<String> = attrs.iter().map(|(name, _)| name.clone()).collect();
 
@@ -1452,5 +1496,34 @@ mod tests {
         declare("flag", 0);
         store("flag", 42);
         assert_eq!(load("flag"), Some(42));
+    }
+
+    #[test]
+    fn atomic_inner_type_extracts_wrapped() {
+        assert_eq!(atomic_inner_type("Atomic<String>"), Some("String"));
+        assert_eq!(atomic_inner_type("Atomic<i64>"), Some("i64"));
+        assert_eq!(atomic_inner_type("Atomic < String >"), Some("String"));
+        assert_eq!(atomic_inner_type("i64"), None);
+        assert_eq!(atomic_inner_type("Vec<String>"), None);
+    }
+
+    #[test]
+    fn atomic_annotation_rejects_string_inner() {
+        let src = "fn bad() { let x: Atomic<String> = 0; }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let err = check(&prog, "<test>").expect_err("Atomic<String> must be rejected");
+        assert_eq!(err, "error: Type String is not supported in atomic context");
+    }
+
+    #[test]
+    fn atomic_annotation_accepts_integer_inner() {
+        let src = "fn ok() { let x: Atomic<i64> = 0; }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert!(
+            check(&prog, "<test>").is_ok(),
+            "Atomic<i64> is a supported atomic inner type"
+        );
     }
 }
