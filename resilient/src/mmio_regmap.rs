@@ -31,7 +31,9 @@ fn parse_addr(s: &str) -> Option<u64> {
     // (`base = "0x40010800"`). Reject bare/unquoted forms so a
     // malformed attribute skips registration rather than silently
     // parsing as a valid address.
-    let s = s.strip_prefix('"').and_then(|rest| rest.strip_suffix('"'))?;
+    let s = s
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))?;
     if let Some(rest) = s.strip_prefix("0x") {
         u64::from_str_radix(rest, 16).ok()
     } else {
