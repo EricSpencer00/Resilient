@@ -82,7 +82,7 @@ fn collect_contracts(program: &Node) -> HashMap<String, ContractInfo> {
                         params: param_names,
                         requires: requires.clone(),
                         ensures: ensures.clone(),
-                        line: span.start.line as usize,
+                        line: span.start.line,
                     },
                 );
             }
