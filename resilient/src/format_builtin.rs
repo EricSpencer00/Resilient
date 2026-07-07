@@ -188,7 +188,7 @@ pub fn render_float(spec: &str, value: f64) -> Result<String, String> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FormatArgumentKind {
+pub enum FormatArgumentKind {
     Integer,
     Float,
     String,
@@ -210,7 +210,7 @@ impl FormatArgumentKind {
     }
 }
 
-fn infer_arg_kind(arg: &Node) -> FormatArgumentKind {
+pub fn infer_arg_kind(arg: &Node) -> FormatArgumentKind {
     match arg {
         Node::IntegerLiteral { .. } => FormatArgumentKind::Integer,
         Node::FloatLiteral { .. } => FormatArgumentKind::Float,
@@ -233,7 +233,7 @@ fn infer_arg_kind(arg: &Node) -> FormatArgumentKind {
     }
 }
 
-fn spec_requires_integer(spec: &str) -> bool {
+pub fn spec_requires_integer(spec: &str) -> bool {
     if spec.is_empty() {
         return false;
     }
@@ -243,7 +243,7 @@ fn spec_requires_integer(spec: &str) -> bool {
     rest.ends_with('d') || rest == "x" || rest == "X" || rest == "b" || rest == "o"
 }
 
-fn spec_requires_float(spec: &str) -> bool {
+pub fn spec_requires_float(spec: &str) -> bool {
     if spec.is_empty() {
         return false;
     }
