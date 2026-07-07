@@ -364,4 +364,163 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    // ── Extended malformed-input regression corpus (RES-3184) ────────────────
+
+    #[test]
+    fn phantom_malformed_missing_equals() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom_args("BadType", "units Meters", 0);
+        let err = check(&program, "test.rz").expect_err("missing equals should fail");
+        assert!(
+            err.contains("malformed argument"),
+            "missing equals should report malformed argument: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_malformed_whitespace_only_units() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom_args("BadType", r#"units = "   ""#, 1);
+        let err = check(&program, "test.rz").expect_err("whitespace-only units should fail");
+        assert!(
+            err.contains("unit name must not be empty"),
+            "whitespace-only should report empty: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_malformed_multiple_unknowns() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom_args(
+            "BadType",
+            r#"foo = "bar", units = "Meters", baz = "qux""#,
+            2,
+        );
+        let err = check(&program, "test.rz").expect_err("unknown args should fail");
+        assert!(
+            err.contains("unknown argument"),
+            "unknown args should report error: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_malformed_special_chars_in_units() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let _program = Node::Program(vec![]);
+        record_phantom_args("BadType", r#"units = "Meters/Seconds""#, 3);
+        // Special chars are allowed; test that they parse
+        let specs = collect();
+        assert!(!specs.is_empty(), "units with special chars should parse");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_malformed_unquoted_empty() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom_args("BadType", "units =", 4);
+        let err = check(&program, "test.rz").expect_err("unquoted empty should fail");
+        assert!(
+            err.contains("`units` value must be quoted"),
+            "unquoted empty should report quote error: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_malformed_mismatched_quotes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom_args("BadType", r#"units = "Meters'"#, 5);
+        let err = check(&program, "test.rz").expect_err("mismatched quotes should fail");
+        assert!(
+            err.contains("`units` value must be quoted"),
+            "mismatched quotes should report quote error: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_malformed_three_duplicates() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let program = Node::Program(vec![]);
+        crate::feature_attrs::reset();
+        record_phantom_args("Conflicted", r#"units = "A", units = "B", units = "C""#, 6);
+        let err = check(&program, "test.rz").expect_err("triple duplicate must fail");
+        assert!(
+            err.contains("duplicate `units` argument"),
+            "triple duplicate should report error: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    // Valid baseline regression cases
+
+    #[test]
+    fn phantom_valid_simple_meter() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom("Distance", "Meter");
+        assert!(
+            check(&program, "test.rz").is_ok(),
+            "simple phantom should validate"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_valid_multiple_types_same_unit() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom("Distance", "Length");
+        record_phantom("Width", "Length");
+        record_phantom("Height", "Length");
+        assert!(
+            check(&program, "test.rz").is_ok(),
+            "multiple types with same unit should validate"
+        );
+        let specs = collect();
+        assert_eq!(specs.len(), 3, "should collect 3 specs");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn phantom_valid_different_units() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = Node::Program(vec![]);
+        record_phantom("Velocity", "MetersPerSecond");
+        record_phantom("Acceleration", "MetersPerSecondSquared");
+        record_phantom("Time", "Second");
+        assert!(
+            check(&program, "test.rz").is_ok(),
+            "different units should validate"
+        );
+        let specs = collect();
+        install(specs);
+        assert!(
+            !compatible("Velocity", "Acceleration"),
+            "different units must not be compatible"
+        );
+        assert!(
+            compatible("Velocity", "Velocity"),
+            "same type must be compatible"
+        );
+        crate::feature_attrs::reset();
+    }
 }
