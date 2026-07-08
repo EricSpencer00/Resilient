@@ -317,15 +317,15 @@ mod tests {
         // Multiple sends in branching; only valid targets count
         let src = r#"
             actor A {
-                receive msg(x) -> void {
-                    if x > 0 { send B; } else { send C; }
+                receive msg(int x) {
+                    if x > 0 { send(B); } else { send(C); }
                 }
             }
             actor B {
-                receive msg(y) -> void { }
+                receive msg(int y) { }
             }
             actor C {
-                receive msg(z) -> void { }
+                receive msg(int z) { }
             }
         "#;
         let (prog, _) = parse(src);
@@ -340,10 +340,10 @@ mod tests {
         // Multiple sends to same target; set deduplicates
         let src = r#"
             actor A {
-                receive msg(x) -> void { send B; send B; send B; }
+                receive msg(int x) { send(B); send(B); send(B); }
             }
             actor B {
-                receive msg(y) -> void { }
+                receive msg(int y) { }
             }
         "#;
         let (prog, _) = parse(src);
