@@ -13,6 +13,9 @@ name: perf-gate
 
 on:
   pull_request:
+    # `ready_for_review` so the deferred benchmark runs when a draft is
+    # marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "resilient/src/**"
       - "resilient/Cargo.toml"
@@ -29,6 +32,12 @@ on:
       - "resilient/Cargo.lock"
       - "benchmarks/**"
 
+# Cancel superseded benchmark runs — `cargo bench` is expensive and a
+# rebased or re-pushed PR makes the in-flight run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Threshold percent: fail if any median is >THIS% slower than
   # baseline. Per-backend overrides because the JIT has higher
@@ -41,6 +50,10 @@ env:
 jobs:
   fib:
     name: fib(25) medians
+    # Defer the benchmark while the PR is a draft; it re-runs on
+    # `ready_for_review`. Not a required check, so a deferred draft run
+    # blocks nothing.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
