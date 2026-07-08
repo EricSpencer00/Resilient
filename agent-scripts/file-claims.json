@@ -4,17 +4,9 @@
       "branch": "res-3231-format-builtin-call-site-validation",
       "claimed_at": "2026-06-13T15:00:45Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-3838-package-existence",
-      "claimed_at": "2026-07-01T00:00:00Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-3838-package-existence",
-      "claimed_at": "2026-07-01T00:00:00Z"
-    },
-    "resilient/src/feature_attrs.rs": {
-      "branch": "res-3835-generated-annotation",
-      "claimed_at": "2026-06-25T06:09:14Z"
+    "resilient/src/no_panic_cert.rs": {
+      "branch": "res-3852-no-panic-method-forms",
+      "claimed_at": "2026-07-07T13:55:45Z"
     }
   }
 }

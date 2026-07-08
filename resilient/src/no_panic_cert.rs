@@ -4,8 +4,9 @@
 //! transitive callees never invoke a panic-inducing builtin or
 //! emit an `unwrap()` on a Result/Option without first checking it.
 //!
-//! Detection scans for these panic triggers:
-//! * Bare `unwrap()` calls
+//! Detection scans for these panic triggers, in both free-function
+//! (`unwrap(x)`) and method (`x.unwrap()`, `opt.expect("m")`) form:
+//! * `unwrap()` calls
 //! * `expect()` calls
 //! * `panic()` builtin
 //! * Division/modulo by an unchecked variable (paired with the
@@ -30,6 +31,13 @@ const PANIC_TRIGGERS: &[&str] = &[
 /// hand-rolled match covered only 7 node types; everything else
 /// (for-in, match, closures, infix expressions, struct literals, …)
 /// fell through to `_ => None`, silently missing hidden panic calls.
+///
+/// RES-3852: the free-function form (`unwrap(x)`) and the idiomatic
+/// method form (`x.unwrap()`, `opt.expect("msg")`) are both flagged.
+/// A method call parses as `CallExpression { function: FieldAccess {
+/// field, .. }, .. }`, so matching only the `Identifier` arm silently
+/// certified `result.unwrap()` panic-free — a soundness hole in a
+/// safety certification.
 pub fn body_panics(node: &Node) -> Option<String> {
     let mut found: Option<String> = None;
     crate::uniqueness_walk::visit(node, &mut |n| {
@@ -37,10 +45,14 @@ pub fn body_panics(node: &Node) -> Option<String> {
             return;
         }
         if let Node::CallExpression { function, .. } = n {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                if PANIC_TRIGGERS.contains(&name.as_str()) {
+            match function.as_ref() {
+                Node::Identifier { name, .. } if PANIC_TRIGGERS.contains(&name.as_str()) => {
                     found = Some(format!("call to `{name}`"));
                 }
+                Node::FieldAccess { field, .. } if PANIC_TRIGGERS.contains(&field.as_str()) => {
+                    found = Some(format!("call to `.{field}()`"));
+                }
+                _ => {}
             }
         }
     });
@@ -194,5 +206,47 @@ mod tests {
     fn clean_for_in_is_panic_free() {
         let body = extract_body(r#"fn f() { for i in [1, 2, 3] { let x = i + 1; } }"#);
         assert!(body_panics(&body).is_none());
+    }
+
+    #[test]
+    fn method_unwrap_violates_cert() {
+        let body = extract_body(r#"fn f(int x) { let y = x.unwrap(); return y; }"#);
+        let reason = body_panics(&body);
+        assert!(
+            reason.is_some(),
+            "method-form `x.unwrap()` must be flagged (RES-3852)"
+        );
+        assert!(
+            reason.unwrap().contains("unwrap"),
+            "diagnostic should name the offending method"
+        );
+    }
+
+    #[test]
+    fn method_expect_violates_cert() {
+        let body = extract_body(r#"fn f(int x) { let y = x.expect("boom"); return y; }"#);
+        assert!(
+            body_panics(&body).is_some(),
+            "method-form `.expect()` must be flagged (RES-3852)"
+        );
+    }
+
+    #[test]
+    fn method_panic_in_nested_expr_violates_cert() {
+        let body = extract_body(r#"fn f(int x) -> int { return x + config.value.unwrap(); }"#);
+        assert!(
+            body_panics(&body).is_some(),
+            "method-form `.unwrap()` nested in an infix operand must be flagged"
+        );
+    }
+
+    #[test]
+    fn clean_method_calls_are_panic_free() {
+        let body =
+            extract_body(r#"fn f() { let a = [1, 2]; let n = a.len(); let s = a.first(); }"#);
+        assert!(
+            body_panics(&body).is_none(),
+            "ordinary method calls (`len`, `first`) must not be flagged"
+        );
     }
 }
