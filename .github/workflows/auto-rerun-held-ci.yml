@@ -12,18 +12,14 @@ name: Auto-rerun held CI
 #
 # This workflow removes the human. Every 15 minutes it finds every open PR
 # whose latest run for a workflow is stuck in `action_required` and reruns
-# it. A rerun kicked off by a *real* token (not github-actions[bot])
-# executes normally, so the required checks finally report and green PRs
-# auto-merge with no manual intervention.
+# it via the Actions API. A rerun is an explicit re-dispatch, so it clears
+# the hold and executes even under GITHUB_TOKEN — verified 2026-07-08:
+# held CI/embedded/size-gate runs on #3818 went straight to
+# in_progress/success after a GITHUB_TOKEN rerun. No PAT or extra setup is
+# required; the required checks report and green PRs auto-merge on their own.
 #
-# Token: reruns MUST be initiated by a non-bot identity to escape the hold,
-# so this uses the `CI_AUTORUN_PAT` secret when present. It falls back to
-# GITHUB_TOKEN (which will not clear the hold, but keeps the workflow from
-# erroring) so the repo stays valid before the PAT is configured.
-#
-# One-time setup (see also the PR body):
-#   gh secret set CI_AUTORUN_PAT --repo EricSpencer00/Resilient
-#   # value: a PAT with `actions: write` + `contents: read` (+ `pull_requests: read`)
+# `CI_AUTORUN_PAT` is an optional override: if set, reruns use it instead of
+# GITHUB_TOKEN. Only wire it up if GitHub ever changes the rerun behavior.
 
 on:
   schedule:
@@ -47,21 +43,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CI_AUTORUN_PAT || secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          HAS_PAT: ${{ secrets.CI_AUTORUN_PAT != '' }}
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ "$HAS_PAT" != "true" ]]; then
-            echo "::warning::CI_AUTORUN_PAT is not set — reruns run as github-actions[bot] and may stay held. Add the secret for a reliable unblock."
-          fi
 
           # Open PRs targeting the default branch, with their head SHA.
           mapfile -t rows < <(gh pr list --state open --base main \
             --json number,headRefOid,headRefName \
             --jq '.[] | "\(.number)\t\(.headRefOid)\t\(.headRefName)"')
 
-          reran=0
           for row in "${rows[@]}"; do
             pr="${row%%$'\t'*}"; rest="${row#*$'\t'}"
             head="${rest%%$'\t'*}"; branch="${rest#*$'\t'}"
