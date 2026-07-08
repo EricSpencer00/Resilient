@@ -18,6 +18,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `ready_for_review` so the size gate deferred while the PR was a
+    # draft runs for real the moment it is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -33,22 +36,32 @@ env:
 
 jobs:
   changes:
-    name: detect docs-only change
+    name: detect skippable change
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.filter.outputs.docs_only }}
+      run_heavy: ${{ steps.filter.outputs.run_heavy }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detect docs-only pull request
+      - name: Decide whether the heavy gate should run
         id: filter
         shell: bash
         run: |
           set -euo pipefail
+          # Draft PRs and docs-only PRs defer the size gate. A draft
+          # re-runs it for real on `ready_for_review`; the job reports
+          # success (skipped steps) meanwhile, and auto-merge only fires
+          # once a PR is non-draft anyway.
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${{ github.event.pull_request.draft }}" == "true" ]]; then
+            echo "draft PR — heavy gate deferred until ready_for_review"
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -57,9 +70,9 @@ jobs:
           non_docs="$(git diff --name-only "$base" "$head" \
             | grep -Ev '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/)' || true)"
           if [[ -z "$non_docs" ]]; then
-            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
           else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
           fi
 
   size_gate:
@@ -69,19 +82,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docs-only fast path
-        if: needs.changes.outputs.docs_only == 'true'
-        run: echo "docs-only change; size gate not needed"
+      - name: Deferred gate fast path
+        if: needs.changes.outputs.run_heavy != 'true'
+        run: echo "docs-only or draft PR; size gate deferred until ready"
 
       - name: Install Rust toolchain
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           targets: thumbv7em-none-eabihf
 
       - name: Cache cargo
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -92,14 +105,14 @@ jobs:
           key: size-gate-${{ hashFiles('resilient-runtime-cortex-m-demo/Cargo.lock', 'resilient-runtime/Cargo.lock') }}
 
       - name: Install cargo-bloat
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         # The script installs it if missing, but caching the
         # install here short-circuits the cargo-install compile
         # (~30s) when the cargo-bin cache hits.
         run: command -v cargo-bloat || cargo install --locked cargo-bloat
 
       - name: check_size_budget.sh
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         env:
           SIZE_BUDGET_KIB: ${{ env.SIZE_BUDGET_KIB }}
         run: scripts/check_size_budget.sh

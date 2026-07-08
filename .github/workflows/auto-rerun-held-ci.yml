@@ -10,7 +10,7 @@ name: Auto-rerun held CI
 # report and the PR is stuck BLOCKED forever, needing a human to
 # `gh run rerun` each one by hand.
 #
-# This workflow removes the human. Every 15 minutes it finds every open PR
+# This workflow removes the human. Once an hour it finds every open PR
 # whose latest run for a workflow is stuck in `action_required` and reruns
 # it via the Actions API. A rerun is an explicit re-dispatch, so it clears
 # the hold and executes even under GITHUB_TOKEN — verified 2026-07-08:
@@ -23,7 +23,10 @@ name: Auto-rerun held CI
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Hourly. A held run only needs re-dispatching once; a tighter cadence
+    # just re-scans (and re-dispatches full CI across) every open PR more
+    # often, which is the opposite of what we want for Actions-minute cost.
+    - cron: "0 * * * *"
   workflow_dispatch: {}
 
 permissions:

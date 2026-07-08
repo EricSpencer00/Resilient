@@ -15,6 +15,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `ready_for_review` so the cross-compile gate deferred while the PR
+    # was a draft runs for real the moment it is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,22 +28,32 @@ permissions:
 
 jobs:
   changes:
-    name: detect docs-only change
+    name: detect skippable change
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.filter.outputs.docs_only }}
+      run_heavy: ${{ steps.filter.outputs.run_heavy }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detect docs-only pull request
+      - name: Decide whether the heavy gate should run
         id: filter
         shell: bash
         run: |
           set -euo pipefail
+          # Draft PRs and docs-only PRs defer the cross-compile gates.
+          # A draft re-runs them for real on `ready_for_review`; the jobs
+          # report success (skipped steps) meanwhile, and auto-merge only
+          # fires once a PR is non-draft anyway.
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${{ github.event.pull_request.draft }}" == "true" ]]; then
+            echo "draft PR — heavy gate deferred until ready_for_review"
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -49,9 +62,9 @@ jobs:
           non_docs="$(git diff --name-only "$base" "$head" \
             | grep -Ev '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/)' || true)"
           if [[ -z "$non_docs" ]]; then
-            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
           else
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
           fi
 
   cortex_m:
@@ -61,12 +74,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docs-only fast path
-        if: needs.changes.outputs.docs_only == 'true'
-        run: echo "docs-only change; Cortex-M demo cross-compile not needed"
+      - name: Deferred gate fast path
+        if: needs.changes.outputs.run_heavy != 'true'
+        run: echo "docs-only or draft PR; Cortex-M demo cross-compile not needed"
 
       - name: Install Rust toolchain
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -79,14 +92,14 @@ jobs:
       # automatically. Matches the caching strategy ci.yml's
       # `default_ci` / `z3_ci` / `feature_matrix` jobs already use.
       - name: Cache cargo
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: resilient-runtime-cortex-m-demo
           key: cortex-m
 
       - name: build_cortex_m_demo.sh
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         run: scripts/build_cortex_m_demo.sh
 
   riscv32:
@@ -96,12 +109,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docs-only fast path
-        if: needs.changes.outputs.docs_only == 'true'
-        run: echo "docs-only change; RISC-V cross-compile not needed"
+      - name: Deferred gate fast path
+        if: needs.changes.outputs.run_heavy != 'true'
+        run: echo "docs-only or draft PR; RISC-V cross-compile not needed"
 
       - name: Install Rust toolchain
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -112,14 +125,14 @@ jobs:
       # incremental compilation artifacts and uses a richer key than
       # raw `hashFiles('Cargo.lock')`.
       - name: Cache cargo
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: resilient-runtime
           key: riscv32
 
       - name: build_riscv32.sh
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         run: scripts/build_riscv32.sh
 
   cortex_m0:
@@ -129,12 +142,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docs-only fast path
-        if: needs.changes.outputs.docs_only == 'true'
-        run: echo "docs-only change; Cortex-M0 cross-compile not needed"
+      - name: Deferred gate fast path
+        if: needs.changes.outputs.run_heavy != 'true'
+        run: echo "docs-only or draft PR; Cortex-M0 cross-compile not needed"
 
       - name: Install Rust toolchain
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -145,12 +158,12 @@ jobs:
       # incremental compilation artifacts and uses a richer key than
       # raw `hashFiles('Cargo.lock')`.
       - name: Cache cargo
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: resilient-runtime
           key: cortex-m0
 
       - name: build_cortex_m0.sh
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.run_heavy == 'true'
         run: scripts/build_cortex_m0.sh
