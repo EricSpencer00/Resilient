@@ -1,0 +1,84 @@
+name: Auto-rerun held CI
+
+# Why this exists
+# ---------------
+# The repo's own automation (auto-merge / branch-update / integration sync)
+# force-pushes PR branches under the `github-actions[bot]` identity. GitHub
+# deliberately will NOT auto-run workflows for commits pushed by GITHUB_TOKEN
+# (recursion guard), so those runs are created with conclusion
+# `action_required` and never execute — the required status checks never
+# report and the PR is stuck BLOCKED forever, needing a human to
+# `gh run rerun` each one by hand.
+#
+# This workflow removes the human. Every 15 minutes it finds every open PR
+# whose latest run for a workflow is stuck in `action_required` and reruns
+# it. A rerun kicked off by a *real* token (not github-actions[bot])
+# executes normally, so the required checks finally report and green PRs
+# auto-merge with no manual intervention.
+#
+# Token: reruns MUST be initiated by a non-bot identity to escape the hold,
+# so this uses the `CI_AUTORUN_PAT` secret when present. It falls back to
+# GITHUB_TOKEN (which will not clear the hold, but keeps the workflow from
+# erroring) so the repo stays valid before the PAT is configured.
+#
+# One-time setup (see also the PR body):
+#   gh secret set CI_AUTORUN_PAT --repo EricSpencer00/Resilient
+#   # value: a PAT with `actions: write` + `contents: read` (+ `pull_requests: read`)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: auto-rerun-held-ci
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rerun action_required runs on open PRs
+        env:
+          GH_TOKEN: ${{ secrets.CI_AUTORUN_PAT || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HAS_PAT: ${{ secrets.CI_AUTORUN_PAT != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$HAS_PAT" != "true" ]]; then
+            echo "::warning::CI_AUTORUN_PAT is not set — reruns run as github-actions[bot] and may stay held. Add the secret for a reliable unblock."
+          fi
+
+          # Open PRs targeting the default branch, with their head SHA.
+          mapfile -t rows < <(gh pr list --state open --base main \
+            --json number,headRefOid,headRefName \
+            --jq '.[] | "\(.number)\t\(.headRefOid)\t\(.headRefName)"')
+
+          reran=0
+          for row in "${rows[@]}"; do
+            pr="${row%%$'\t'*}"; rest="${row#*$'\t'}"
+            head="${rest%%$'\t'*}"; branch="${rest#*$'\t'}"
+
+            # Latest run per workflow on this branch; rerun any that are held.
+            # `action_required` = created-but-never-executed (the bot hold).
+            gh run list --branch "$branch" --limit 40 \
+              --json databaseId,workflowName,status,conclusion,headSha \
+              --jq ".[] | select(.headSha == \"$head\" and .conclusion == \"action_required\") | \"\(.databaseId)\t\(.workflowName)\"" \
+              | sort -u -t$'\t' -k2,2 \
+              | while IFS=$'\t' read -r rid wf; do
+                  [[ -z "$rid" ]] && continue
+                  if gh run rerun "$rid" >/dev/null 2>&1; then
+                    echo "PR #$pr: reran '$wf' (run $rid) on ${head:0:8}"
+                  else
+                    echo "PR #$pr: could not rerun '$wf' (run $rid)"
+                  fi
+                done
+          done
+          echo "Sweep complete."
