@@ -110,6 +110,22 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     }
 
+    // RES-3860: a peripheral base address must be word-aligned. On the
+    // Cortex-M / RISC-V targets a volatile access through an unaligned
+    // MMIO base is undefined and HardFaults at runtime, so reject it at
+    // compile time rather than letting a typo like `0x40010801` slip
+    // through to the board.
+    for map in &maps {
+        if map.base_addr % 4 != 0 {
+            return Err(format!(
+                "{}: error: MMIO regmap `{}` base address {:#x} must be word-aligned (4-byte boundary)",
+                loc(source_path, map.line),
+                map.struct_name,
+                map.base_addr,
+            ));
+        }
+    }
+
     let mut seen: HashMap<&str, &MmioRegmap> = HashMap::new();
     for map in &maps {
         if let Some(prev) = seen.insert(map.struct_name.as_str(), map) {
@@ -390,7 +406,7 @@ mod tests {
             "B",
             crate::feature_attrs::AttrRecord {
                 name: "mmio".into(),
-                args: r#"base = "0x1FF", size_bytes = "0x100""#.into(),
+                args: r#"base = "0x1FC", size_bytes = "0x100""#.into(),
                 line: 31,
             },
         );
@@ -475,6 +491,50 @@ mod tests {
         assert_eq!(maps.len(), 1);
         assert_eq!(maps[0].base_addr, 1024);
         assert_eq!(maps[0].size_bytes, 2048);
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn malformed_unaligned_base_is_rejected() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "GPIOA",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010801", size_bytes = "0x400""#.into(),
+                line: 7,
+            },
+        );
+        let err = check(&crate::Node::Program(vec![]), "test.rz")
+            .expect_err("unaligned base must be rejected");
+        assert!(
+            err.contains("must be word-aligned"),
+            "expected word-alignment diagnostic, got: {err}"
+        );
+        assert!(
+            err.contains("0x40010801") && err.contains("GPIOA"),
+            "diagnostic must name the address and struct: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn word_aligned_base_passes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "GPIOA",
+            crate::feature_attrs::AttrRecord {
+                name: "mmio".into(),
+                args: r#"base = "0x40010800", size_bytes = "0x400""#.into(),
+                line: 7,
+            },
+        );
+        assert!(
+            check(&crate::Node::Program(vec![]), "test.rz").is_ok(),
+            "word-aligned base must pass the alignment check"
+        );
         crate::feature_attrs::reset();
     }
 }
