@@ -21,8 +21,11 @@ Welcome! Resilient is an open project for safety-critical embedded systems. Cont
 ### Required
 
 1. **Rust toolchain**: Install from [rustup.rs](https://rustup.rs/)
-   - The project requires Rust 1.70+
-   - Check: `rustc --version`
+   - All crates (`resilient/`, `resilient-runtime/`, `resilient-span/`)
+     use `edition = "2024"`, which requires **Rust 1.85+**. CI tracks
+     `stable` directly (`dtolnay/rust-toolchain@master` with
+     `toolchain: stable`), so keep your local toolchain current.
+   - Check: `rustc --version` and `rustup update stable`
 
 2. **Clone the repository**
    ```bash

@@ -13,28 +13,16 @@ formally-verifiable language for safety-critical embedded systems.
 - **Simplicity** — minimal syntax, no dummy-parameter hacks, clear
   diagnostics with file:line:col.
 
-## 2026-06 roadmap reset backlog map
+## Roadmap resets (historical)
 
-GitHub Issues remain the canonical queue. This section is only the
-roadmap-facing projection of the audited language-forwarding slice so an
-agent can see which open ticket owns which recently merged user-visible
-surface without reconstructing it from old PR history.
-
-| Queue item | Scope | Verification anchor | Audited merged surface / done note |
-|---|---|---|---|
-| **#3132** Parent: roadmap reset | Backlog navigation only. Child implementation lives in the tickets below. | `gh issue list --state open --label agent-ready` | Parent tracker for the 2026-06 language-forwarding audit. |
-| **#3128** Stable regression coverage backfill | Existing cross-cutting coverage inventory kept explicitly in the reset. | `cargo test --manifest-path resilient/Cargo.toml --test safety_critical_smoke --test repl_smoke --test examples_smoke -- --nocapture` | Covers stable-surface follow-through for recently merged CLI/help/docs work, including PRs #3092, #3093, #3064, #3073, #3118, and #3130. |
-| **#3129** Linked-issue closure hygiene | Existing workflow-hygiene item kept explicitly in the reset. | `gh issue view 3129` | Done note: PR #3130 landed explicit linked-issue close handling and failure warnings; keep this issue as the audit trail for that workflow fix. |
-| **#3133** Stability matrix | Stable vs experimental vs backend-limited wording across docs/help. | `cargo run --manifest-path resilient/Cargo.toml -- --help` | Builds on merged user-visible work already landed in PRs #3118, #3093, #3064, #3088, and the feature-gating/help updates in #3130. |
-| **#3134** Type-system frontier | Narrow frontier for anonymous structs, projection bounds, and variance-aware generics. | `cargo test --manifest-path resilient/Cargo.toml --test anonymous_structs_smoke -- --nocapture` | Canonical follow-on for merged surface in PRs #3123, #3125, and #3127. Those MVPs are done; remaining user-visible parity belongs here. |
-| **#3135** LSP/editor parity | Workspace-wide editor behavior across real on-disk projects. | `cargo test --manifest-path resilient/Cargo.toml --test lsp_smoke --test lsp_goto_def_smoke --test lsp_references_smoke --test lsp_code_action_smoke -- --nocapture` | Canonical follow-on for merged LSP surface in PRs #3114, #3119, #3120, #3121, and #3126. MVP slices landed; remaining parity belongs here. |
-| **#3136** Runtime/backend parity | Bench, spawn, channels, and target/backend gating. | `cargo test --manifest-path resilient/Cargo.toml --test bench_cli --test safety_critical_smoke -- --nocapture` | Canonical follow-on for merged runtime/backend surface in PRs #3124, #3110, #3102, #3112, #3113, and the std-only gating work in #3130. |
-| **#3137** Documentation/examples parity | Public docs, examples, and generated help stay aligned. | `cargo test --manifest-path resilient/Cargo.toml --test examples_smoke --test safety_critical_smoke -- --nocapture` | Canonical follow-on for merged docs/help/examples cleanup in PRs #3065, #3066, #3067, #3070, #3071, #3073, #3082, #3083, #3092, and #3118. |
-
-The reset rule for this slice is simple: every user-visible merged
-surface belongs either to one open ticket above or to the explicit done
-note recorded for #3129. Future roadmap resets should extend this table
-rather than starting a second backlog artifact elsewhere.
+The 2026-06 roadmap reset (#3132 and its six children #3128, #3129,
+#3133–#3137) audited every merged-but-untracked user-visible surface
+into agent-ready tickets. All seven issues are now **closed** — the
+reset fully landed. GitHub Issues remain the canonical live queue;
+see the [open issue list](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen)
+for current work. Future roadmap resets should follow the same
+pattern (audit merged surface → open a parent tracker with
+child tickets → close the loop) rather than reviving this table.
 
 ## Goalpost ladder
 
@@ -159,3 +147,20 @@ changelog entry below.
   (`eval_int_lit_id`, `eval_add_comm`, `eval_const_fold_sound`, `eval_neg_involutive`)
   plus a Rust emitter that exports per-function correctness theorems via
   `--emit-lean-spec=FN`. Foundation for tool qualification under DO-178C DAL-A.
+- 2026-05 through 2026-07 — **2026-06 roadmap reset closed** (#3132 and children
+  #3128/#3129/#3133–#3137, see the historical note above), plus a sustained
+  regression-corpus push across dozens of Tier 1/2/3 checks (deadlock_freedom,
+  atomic_types, phantom_types, session_types, type_relations, causal_trace,
+  blame_attribution, behavioral_fingerprint, event_journal, format_builtin,
+  mmio_regmap, param_destructuring, backpressure_safe, uniqueness_walk, and
+  more). LSP workspace-wide parity (references, rename, code actions, inlay
+  hints, cross-file go-to-definition) landed under #3135. Verification depth
+  grew beyond V1: Z3 compile-time refinement-type checks and bounded-loop
+  verification landed alongside the `--vibe-gate` CI exit code (#3839/#3780/#3840,
+  PR #3851), `#[generated(intent, prompt_hash)]` provenance annotations replaced
+  the coarser `@ai_generated` gate, `live` invariants gained typechecking
+  (RES-3828), unaligned MMIO base addresses are now a compile error (RES-3860),
+  and the `state_machine` attribute generalized to arbitrary transition graphs
+  (RES-3836). CI hardening: held `action_required` runs auto-rerun on a cron
+  (RES-3855), and heavy gates defer until a PR leaves draft to cut Actions-minute
+  spend (RES-3862).
