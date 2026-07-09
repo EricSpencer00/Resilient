@@ -684,7 +684,7 @@ pub fn dispatch_dap(args: &[String]) -> Option<i32> {
             // actual program path comes from the launch request.
             eprintln!(
                 "Starting DAP server for {}. Connect a DAP client to stdin/stdout.",
-                &args[i + 1]
+                args[i + 1]
             );
             run();
             return Some(0);
