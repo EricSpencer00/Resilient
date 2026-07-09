@@ -97,7 +97,7 @@ The core answer to "I vibe-coded this app, how do I know it doesn't break?"
 
 | Module | What it does |
 |--------|-------------|
-| `default_trait_methods` | Default method bodies in trait declarations |
+| `default_trait_methods` | Registry for default-bodied trait methods, populated via a companion `#[default_impl(trait="T", method="m")]` attribute — **not** inline method bodies inside the `trait { }` block itself. Actual in-declaration default bodies (`fn f(self) { ... }` inside a trait) remain unsupported; see SYNTAX.md's Traits > Limitations. |
 | `associated_constants` | `const MIN: int` / `const MAX: int` on traits and impls |
 | `derives` | `#[derive(Debug, Eq, Hash, Clone, Ord)]` struct auto-impls |
 | `const_fn` | `const fn` — full compile-time evaluator for int/bool expressions |
@@ -154,7 +154,14 @@ needed to bring each slice to production depth:
 - **Async/Await**: state-machine lowering + scheduler integration (PR #1076 has syntax scaffold)
 - **Full module system**: circular-import detection, re-export graph (partial in `full_modules`)
 - **Cranelift / LLVM codegen for new nodes** (all 50 features interpret-only today)
-- **Z3 integration for refinement types** (currently runtime-only predicate checks)
+- ~~Z3 integration for refinement types~~ — landed 2026-07 (RES-3839, PR #3851):
+  `--features z3` now discharges refinement obligations at compile time for
+  `let`-bindings whose RHS is a function parameter, proving them against the
+  enclosing function's `requires` clauses instead of only ever emitting a
+  runtime check. `Some(false)` is a hard compile error with a counterexample;
+  `Unknown` warns by default and hard-errors under `--strict-refinements`.
+  Non-parameter/non-literal RHS values still fall back to the runtime check —
+  broadening that coverage is the remaining follow-up.
 
 ---
 
