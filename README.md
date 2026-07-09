@@ -870,8 +870,9 @@ of the form `RES-NNN: summary` closes one ticket.
 - Built-ins: `println`, `print`, `len`, `abs`, `min`, `max`, `sqrt`,
   `pow`, `floor`, `ceil`
 - Clean `line:col:` error diagnostics
-- 50+ passing tests covering lexer, parser, typechecker, interpreter,
-  and example programs (golden file sidecars in `resilient/examples/`)
+- 7,000+ passing tests covering lexer, parser, typechecker, interpreter,
+  LSP, embedded cross-compile, and example programs (golden file
+  sidecars in `resilient/examples/`)
 - Zero panic paths in the parser or lexer — every error is recoverable
 
 ### Performance (RES-106)

@@ -29,12 +29,29 @@ Communicates over stdin/stdout using standard JSON-RPC LSP framing.
 
 - **Diagnostics** — `did_open` + `did_change` → full parse + typecheck
   → `publishDiagnostics` with `<uri>:<line>:<col>:` locations.
-- **Hover** (RES-181) — shows the type of any literal token under the
-  cursor (`int`, `float`, `string`, `bool`).
-- **Go-to-definition** (RES-182) — jumps to the top-level declaration
-  of the function or struct name under the cursor.
+- **Hover** (RES-181, RES-302) — literal tokens (`int`, `float`,
+  `string`, `bool`) get an exact type read from the lexer; identifiers
+  fall back to the inferred type from the cached AST.
+- **Go-to-definition** (RES-182, RES-3135) — jumps to the top-level
+  `fn` / `struct` / `type` alias under the cursor, including across
+  files reachable via the current document's `use "..."` graph. Local
+  bindings and parameters still return "no definition found."
+- **Find references** (RES-183) — collects every call site whose
+  callee matches the cursor's top-level function name (struct
+  literals with the same name are excluded via AST matching, not text).
+- **Rename** (RES-184, RES-2568b) — workspace-wide rename with
+  `prepareRename` support, so clients surface "cannot rename here"
+  before the user starts typing. Cross-file rename scans the on-disk
+  workspace, not just open buffers.
+- **Code actions** (RES-357) — quick-fix light bulb for the L0010
+  "add contract stubs" diagnostic.
 - **Completion** (RES-188) — builtins (alphabetical) followed by
-  top-level declarations in the current file.
+  top-level declarations in the current file. No scope-aware local
+  or parameter completion yet, and no post-dot field-completion
+  trigger (see "What's next").
+- **Inlay hints** (RES-3135 family) — inferred `let` types and
+  inferred function return types, both individually toggleable via
+  client `initializationOptions`.
 - **Semantic tokens** (RES-187) — structured token types for editors
   that support semantic highlighting.
 
@@ -67,8 +84,9 @@ the argument.
 
 ## What's next
 
-- Hover for identifiers (variables, parameters, function names).
-- Scope-aware local-variable completion.
-- Post-dot field completion for structs.
+- Go-to-definition and find-references for local bindings and
+  parameters (currently top-level declarations only — needs a
+  scope-aware resolver).
+- Scope-aware local-variable and parameter completion.
+- Post-dot field completion for structs (`p.` → field list).
 - Finer-grained parser error positions.
-- Multi-file workspace go-to-definition.
