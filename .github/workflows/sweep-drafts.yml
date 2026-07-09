@@ -1,0 +1,55 @@
+name: sweep-drafts
+
+# Autonomously drive abandoned draft PRs to a terminal state.
+#
+# Heavy CI is deferred on draft PRs (RES-3862) to save Actions minutes,
+# so a draft nobody promotes would sit forever with cheap skipped-green
+# checks. This sweep is the other half of that trade: on a schedule it
+# promotes idle drafts (triggering one real CI run), lets the ones that
+# still pass auto-merge, and closes the ones that cannot — so no draft is
+# left dead and nobody has to babysit the PR list. All logic + the full
+# policy lives in agent-scripts/sweep-drafts.sh.
+
+on:
+  schedule:
+    # Every 6 hours. The per-run promote cap in the script bounds how much
+    # CI a backlog can trigger, so a wider cadence would only slow cleanup.
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Apply changes (promote/close). false = dry-run report only."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: sweep-drafts
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sweep abandoned draft PRs
+        env:
+          # A PAT (if configured) lets the bot-driven ready transition
+          # trigger real CI immediately; otherwise the script's reruns +
+          # the hourly auto-rerun clear the GITHUB_TOKEN hold.
+          GH_TOKEN: ${{ secrets.CI_AUTORUN_PAT || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.apply }}" == "true" ]]; then
+            bash agent-scripts/sweep-drafts.sh --go
+          else
+            echo "dry-run (pass apply=true to a workflow_dispatch to mutate)"
+            bash agent-scripts/sweep-drafts.sh
+          fi
