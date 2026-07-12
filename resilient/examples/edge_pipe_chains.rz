@@ -1,0 +1,29 @@
+// RES-926: pipe operator chains with |>
+
+fn add_one(int x) -> int {
+    return x + 1;
+}
+
+fn double(int x) -> int {
+    return x * 2;
+}
+
+fn show(int x) -> int {
+    println(x);
+    return x;
+}
+
+fn main() {
+    // Single pipe
+    let result1 = 5 |> add_one;
+    println(result1);
+
+    // Chained pipes
+    let result2 = 5 |> add_one |> double |> show;
+
+    // Pipe with multiple args
+    let result3 = 10 |> add_one;
+    println(result3);
+}
+
+main();

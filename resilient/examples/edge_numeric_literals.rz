@@ -1,0 +1,30 @@
+// Hex, binary, and octal literals with underscore separators
+
+fn main() {
+    // Decimal
+    let dec = 1_000_000;
+    println(dec);
+
+    // Hexadecimal
+    let hex = 0xFF;
+    println(hex);  // 255
+
+    let hex_sep = 0xDEAD_BEEF;
+    println(hex_sep);
+
+    // Binary
+    let bin = 0b1010;
+    println(bin);  // 10
+
+    let bin_sep = 0b1111_0000;
+    println(bin_sep);  // 240
+
+    // Float with scientific notation
+    let sci = 1e3;
+    println(sci);  // 1000.0
+
+    let sci_neg = 2.5e-1;
+    println(sci_neg);  // 0.25
+}
+
+main();

@@ -1,0 +1,5 @@
+s1 and s2 are equal
+s1 and s3 are different
+hello
+hello world
+Program executed successfully

@@ -1,0 +1,33 @@
+// RES-912: Compound assignment operators
+
+fn main() {
+    let x = 10;
+    x += 5;
+    println(x);  // 15
+
+    x -= 3;
+    println(x);  // 12
+
+    x *= 2;
+    println(x);  // 24
+
+    x /= 4;
+    println(x);  // 6
+
+    x %= 5;
+    println(x);  // 1
+
+    let bits = 8;
+    bits &= 12;
+    println(bits);  // 8
+
+    let flags = 5;
+    flags |= 2;
+    println(flags);  // 7
+
+    let mask = 15;
+    mask ^= 3;
+    println(mask);  // 12
+}
+
+main();

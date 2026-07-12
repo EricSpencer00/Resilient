@@ -1,0 +1,21 @@
+// RES-160: Or-patterns with | in match arms
+
+fn main() {
+    let day = 5;
+
+    match day {
+        0 | 6 => println("weekend"),
+        1 | 2 | 3 | 4 | 5 => println("weekday"),
+        _ => println("invalid"),
+    }
+
+    let code = 10;
+    match code {
+        1 | 2 | 3 => println("category A"),
+        4 | 5 => println("category B"),
+        6 | 7 | 8 | 9 => println("category C"),
+        _ => println("unknown"),
+    }
+}
+
+main();

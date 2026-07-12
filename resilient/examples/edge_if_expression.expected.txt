@@ -1,0 +1,4 @@
+positive
+odd
+110
+Program executed successfully

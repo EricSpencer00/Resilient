@@ -1,0 +1,25 @@
+// Closure captures and functional programming
+
+fn main() {
+    let factor = 10;
+    let offset = 5;
+
+    // Closure that captures variables from outer scope
+    let multiply_and_add = fn(int x) -> int {
+        return x * factor + offset;
+    };
+
+    let arr = [1, 2, 3, 4];
+    let result = arr.map(multiply_and_add);
+    println(result);  // [15, 25, 35, 45]
+
+    // Nested closures
+    let multiplier = 2;
+    let transform = fn(int x) -> int {
+        return fn(int y) -> int {
+            return y * multiplier + x;
+        }(10);
+    };
+}
+
+main();

@@ -1,0 +1,3 @@
+medium
+B
+Program executed successfully

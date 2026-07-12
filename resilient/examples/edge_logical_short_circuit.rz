@@ -1,0 +1,29 @@
+// Logical operators with short-circuit evaluation
+
+fn main() {
+    let x = 5;
+    let y = 10;
+
+    // && short-circuit: second expr not evaluated if first is false
+    if x > 0 && y > 8 {
+        println("both true");
+    }
+
+    // || short-circuit: second expr not evaluated if first is true
+    if x < 0 || y > 5 {
+        println("at least one true");
+    }
+
+    // ! logical not
+    if !(x > 10) {
+        println("x is not greater than 10");
+    }
+
+    // Combined conditions
+    let cond = (x > 0 && y < 15) || x == 100;
+    if cond {
+        println("complex condition true");
+    }
+}
+
+main();
