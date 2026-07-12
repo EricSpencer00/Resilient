@@ -100,4 +100,60 @@ mod tests {
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn value_read_with_age_comparison_passes() {
+        let src = r#"
+            fn check_reading(GPS g) {
+                if g.reading_at > 1000 {
+                    int fresh = g.reading;
+                }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn value_read_without_age_check_passes_when_different_target() {
+        let src = r#"
+            fn check_reading(GPS g, GPS g2) {
+                if g.obs_at > 1000 {
+                    int val = g2.obs;
+                }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_age_fields_tracked() {
+        let src = r#"
+            fn multi_check(Sensor s) {
+                if s.temp_at > 100 {
+                    int t = s.temp;
+                }
+                if s.pressure_at > 50 {
+                    int p = s.pressure;
+                }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn relational_operators_all_work() {
+        let src = r#"
+            fn check_all(Sensor s) {
+                if s.taken > 100 { int v = s.val; }
+                if s.taken < 200 { int v2 = s.val; }
+                if s.taken >= 150 { int v3 = s.val; }
+                if s.taken <= 250 { int v4 = s.val; }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

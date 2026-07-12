@@ -427,4 +427,88 @@ mod tests {
         reset();
         assert_eq!(find_kind("ghost").len(), 0);
     }
+
+    #[test]
+    fn multiple_attributes_same_kind() {
+        let _g = lock_for_test();
+        reset();
+        record(
+            "fn_a",
+            AttrRecord {
+                name: "wcet".into(),
+                args: "cycles=100".into(),
+                line: 5,
+            },
+        );
+        record(
+            "fn_b",
+            AttrRecord {
+                name: "wcet".into(),
+                args: "cycles=200".into(),
+                line: 10,
+            },
+        );
+        let found = find_kind("wcet");
+        assert_eq!(found.len(), 2);
+        reset();
+    }
+
+    #[test]
+    fn multiple_attributes_different_kinds() {
+        let _g = lock_for_test();
+        reset();
+        record(
+            "f",
+            AttrRecord {
+                name: "wcet".into(),
+                args: "cycles=500".into(),
+                line: 1,
+            },
+        );
+        record(
+            "f",
+            AttrRecord {
+                name: "stack".into(),
+                args: "bytes=1024".into(),
+                line: 1,
+            },
+        );
+        assert_eq!(find_kind("wcet").len(), 1);
+        assert_eq!(find_kind("stack").len(), 1);
+        reset();
+    }
+
+    #[test]
+    fn unknown_attribute_check() {
+        assert!(!is_known_attribute("totally_unknown"));
+        assert!(!is_known_attribute("fake_attr"));
+        assert!(is_known_attribute("stable"));
+        assert!(is_known_attribute("async_fn"));
+    }
+
+    #[test]
+    fn snapshot_returns_empty_initially() {
+        let _g = lock_for_test();
+        reset();
+        let snap = snapshot();
+        assert!(snap.is_empty());
+        reset();
+    }
+
+    #[test]
+    fn snapshot_contains_recorded_items() {
+        let _g = lock_for_test();
+        reset();
+        record(
+            "test_fn",
+            AttrRecord {
+                name: "power".into(),
+                args: "uj=50".into(),
+                line: 20,
+            },
+        );
+        let snap = snapshot();
+        assert!(snap.contains_key("test_fn"));
+        reset();
+    }
 }

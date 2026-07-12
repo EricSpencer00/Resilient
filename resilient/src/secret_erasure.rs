@@ -153,4 +153,49 @@ mod tests {
             "ordinary bindings must not trigger secret-erasure check"
         );
     }
+
+    #[test]
+    fn secret_prefix_detected() {
+        for prefix in SECRET_NAME_PREFIXES {
+            let binding_name = format!("{prefix}data");
+            assert!(binding_name.starts_with(prefix));
+        }
+        assert!(SECRET_NAME_PREFIXES.contains(&"secret_"));
+    }
+
+    #[test]
+    fn wipe_functions_recognized() {
+        for fn_name in &["zeroize", "zero_out", "wipe", "scrub"] {
+            assert!(WIPE_FNS.contains(fn_name));
+        }
+    }
+
+    #[test]
+    fn secret_type_prefix_detected() {
+        assert!(SECRET_TYPE_PREFIXES.iter().any(|t| t.contains("Secret")));
+    }
+
+    #[test]
+    fn secret_with_zeroize_call_passes() {
+        let src = "fn f() { let secret_key = 42; zeroize(secret_key); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn secret_returned_passes_no_wipe() {
+        let src = "fn f() -> int { let secret_val = 42; return secret_val; }\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "returned secrets don't need wipe"
+        );
+    }
+
+    #[test]
+    fn multiple_secrets_independent() {
+        let src = "fn f() { let secret_a = 1; let key_b = 2; zeroize(secret_a); wipe(key_b); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

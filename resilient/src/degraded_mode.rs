@@ -123,4 +123,76 @@ mod tests {
         );
         assert!(RECOVERY_PREFIXES.iter().any(|p| p.contains("degraded_")));
     }
+
+    #[test]
+    fn critical_with_degraded_recovery() {
+        let src = r#"
+            fn check_and_handle() {
+                assert_critical_alive();
+                degraded_shutdown();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn abort_with_safe_mode_recovery() {
+        let src = r#"
+            fn emergency_stop() {
+                abort_now();
+                safe_mode_enabled();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn halt_with_recover_call() {
+        let src = r#"
+            fn power_fail() {
+                halt_execution();
+                recover_graceful();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_critical_recovery_pairs() {
+        let src = r#"
+            fn multi_check() {
+                assert_critical_phase1();
+                degraded_phase1();
+                assert_critical_phase2();
+                safe_mode_phase2();
+                abort_final();
+                recover_final();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn different_recovery_prefix_variants() {
+        let src = r#"
+            fn test_recover_variant() {
+                assert_critical_x();
+                recover_x_handler();
+            }
+            fn test_safe_mode() {
+                assert_critical_y();
+                safe_mode_y_handler();
+            }
+            fn test_degraded() {
+                assert_critical_z();
+                degraded_z_handler();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

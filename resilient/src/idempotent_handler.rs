@@ -83,4 +83,68 @@ mod tests {
         assert!(DEDUPE_FNS.contains(&"is_duplicate"));
         assert!(DEDUPE_FNS.contains(&"was_seen"));
     }
+
+    #[test]
+    fn idempotent_calling_is_duplicate_passes() {
+        let src = r#"
+            fn process_idempotent(int x) -> int { is_duplicate(x); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn idempotent_accessing_seen_field_passes() {
+        let src = r#"
+            fn process_idempotent(int x) -> int { let s = seen_keys; return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn idempotent_calling_was_seen_passes() {
+        let src = r#"
+            fn process_idempotent(int x) -> int { was_seen(x); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn idempotent_accessing_processed_field_passes() {
+        let src = r#"
+            fn handle_idempotent(int x) -> int { let p = processed_ids; return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn idempotent_with_no_dedupe_warns_but_passes() {
+        let src = r#"
+            fn process_idempotent(int x) -> int { return x + 1; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        // Should pass (warnings don't fail) but log to stderr
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn idempotent_calling_dedupe_variant_passes() {
+        let src = r#"
+            fn process_idempotent(int x) -> int { dedupe(x); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn idempotent_calling_is_processed_passes() {
+        let src = r#"
+            fn process_idempotent(int x) -> int { is_processed(x); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

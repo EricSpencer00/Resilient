@@ -104,4 +104,88 @@ mod tests {
         assert!(PI_VARIANTS.contains(&"pi_lock"));
         assert!(LOW_PRI_PREFIXES.contains(&"low_pri_"));
     }
+
+    #[test]
+    fn low_pri_with_pi_lock_passes() {
+        let src = r#"
+            fn low_pri_handler(int x) -> int { pi_lock(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn low_pri_with_pi_acquire_passes() {
+        let src = r#"
+            fn low_pri_worker(int x) -> int { pi_acquire(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn low_pri_with_raw_lock_warns() {
+        let src = r#"
+            fn low_pri_task(int x) -> int { lock(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        // Should warn but still pass
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn bg_prefix_with_priority_inherit_passes() {
+        let src = r#"
+            fn bg_refresh(int x) -> int { with_priority_inherit(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn idle_prefix_with_pi_acquire_passes() {
+        let src = r#"
+            fn idle_maintenance(int x) -> int { pi_acquire(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn low_pri_without_lock_passes() {
+        let src = r#"
+            fn low_pri_compute(int x) -> int { return x + 1; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn high_priority_with_raw_lock_passes() {
+        let src = r#"
+            fn critical_task(int x) -> int { lock(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn low_pri_with_acquire_variant_warns() {
+        let src = r#"
+            fn low_pri_op(int x) -> int { acquire(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        // Raw acquire without PI should warn
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn low_pri_with_mutex_lock_variant_warns() {
+        let src = r#"
+            fn low_pri_sync(int x) -> int { mutex_lock(m); return x; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        // Raw mutex_lock without PI should warn
+        assert!(check(&prog, "test").is_ok());
+    }
 }

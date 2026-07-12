@@ -94,4 +94,67 @@ mod tests {
         assert!(STOP_HANDLERS.contains(&"shutdown"));
         assert!(DRAIN_HANDLERS.contains(&"drain"));
     }
+
+    #[test]
+    fn actor_with_shutdown_and_drain_passes() {
+        let src = r#"
+            actor MyActor {
+                fn shutdown() { return; }
+                fn drain() { return; }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn actor_with_only_drain_passes() {
+        let src = r#"
+            actor MyActor {
+                fn receive(int msg) { return; }
+                fn drain() { return; }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_actors_mixed_handlers() {
+        let src = r#"
+            actor GoodActor {
+                fn shutdown() { return; }
+                fn drain() { return; }
+            }
+            actor AnotherGood {
+                fn terminate() { return; }
+                fn flush() { return; }
+            }
+            actor BadActor {
+                fn on_stop() { return; }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn actor_with_all_drain_variants_passes() {
+        let src = r#"
+            actor ActorA {
+                fn shutdown() { return; }
+                fn drain_mailbox() { return; }
+            }
+            actor ActorB {
+                fn terminate() { return; }
+                fn flush() { return; }
+            }
+            actor ActorC {
+                fn on_stop() { return; }
+                fn drain() { return; }
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

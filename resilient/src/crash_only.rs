@@ -89,4 +89,53 @@ mod tests {
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn multiple_crash_recover_pairs() {
+        let src = r#"
+            fn crash_database() { return; }
+            fn recover_database() { return; }
+            fn crash_connection() { return; }
+            fn recover_connection() { return; }
+            fn crash_cache() { return; }
+            fn recover_cache() { return; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn complex_suffixes_matched() {
+        let src = r#"
+            fn crash_state_machine_init() { return; }
+            fn recover_state_machine_init() { return; }
+            fn crash_2fa_verify() { return; }
+            fn recover_2fa_verify() { return; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn only_recover_without_crash_passes() {
+        let src = r#"
+            fn recover_fallback() { return; }
+            fn other_fn() { return; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn functions_with_similar_names_not_confused() {
+        let src = r#"
+            fn crashed() { return; }
+            fn crash() { return; }
+            fn recovery() { return; }
+            fn crash_disk() { return; }
+            fn recover_disk() { return; }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

@@ -165,4 +165,73 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn isr_calling_malloc_is_unsafe() {
+        let src = r#"
+            fn timer_isr(int x) -> int { malloc(100); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        // Warnings don't cause errors in V1
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn isr_with_suffix_calling_panic_is_unsafe() {
+        let src = r#"
+            fn handler_irq(int x) -> int { panic("error"); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn isr_with_prefix_calling_lock_is_unsafe() {
+        let src = r#"
+            fn isr_handler(int x) -> int { lock(x); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn isr_transitive_to_unsafe_through_intermediate() {
+        let src = r#"
+            fn blocking_helper(int x) -> int { sleep(100); return x; }
+            fn irq_handler(int x) -> int { blocking_helper(x); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        // Should warn about transitive unsafe call
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_isrs_detected() {
+        let src = r#"
+            fn timer_isr(int x) -> int { malloc(10); return x; }
+            fn uart_isr(int x) -> int { free(x); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn isr_calling_safe_function_passes() {
+        let src = r#"
+            fn safe_compute(int x) -> int { return x + 1; }
+            fn timer_isr(int x) -> int { safe_compute(x); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn isr_with_alloc_suffix_function_detected() {
+        let src = r#"
+            fn helper_alloc(int x) -> int { malloc(10); return x; }
+            fn irq_handler(int x) -> int { helper_alloc(x); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

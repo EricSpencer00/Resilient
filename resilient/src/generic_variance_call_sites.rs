@@ -70,4 +70,52 @@ mod tests {
             "expected variance diagnostic, got: {err}"
         );
     }
+
+    #[test]
+    fn covariant_multiple_arguments_accepts_consistent_widening() {
+        check_ok(
+            "trait Animal { fn tag(self) -> string; }\n\
+             trait Cat extends Animal { fn meow(self) -> string; }\n\
+             struct Dog { int id }\n\
+             impl Animal for Dog { fn tag(self) -> string { return \"dog\"; } }\n\
+             fn take_cats<T>(fn(T) -> void first, fn(T) -> void second) -> void { }\n\
+             fn take_cat(Cat c) -> void { }\n\
+             fn take_animal(Animal a) -> void { }\n\
+             take_cats(take_cat, take_animal);\n",
+        );
+    }
+
+    #[test]
+    fn invariant_parameter_rejects_mixed_narrowing() {
+        let err = check_err(
+            "trait Wide { }\n\
+             trait Narrow extends Wide { }\n\
+             struct Impl { int x }\n\
+             impl Wide for Impl { }\n\
+             impl Narrow for Impl { }\n\
+             fn both<T>(fn(T) -> T a, fn(T) -> T b) -> void { }\n\
+             fn f(Wide w) -> Wide { return w; }\n\
+             fn g(Narrow n) -> Narrow { return n; }\n\
+             both(f, g);\n",
+        );
+        assert!(
+            err.contains("variance") || err.contains("invariant"),
+            "expected variance error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_generic_calls_preserve_variance() {
+        check_ok(
+            "trait Animal { fn tag(self) -> string; }\n\
+             trait Cat extends Animal { fn meow(self) -> string; }\n\
+             struct Kitty { int id }\n\
+             impl Animal for Kitty { fn tag(self) -> string { return \"cat\"; } }\n\
+             impl Cat for Kitty { fn meow(self) -> string { return \"meow\"; } }\n\
+             fn outer<T>(fn(T) -> void inner) -> void { }\n\
+             fn take_cat(Cat c) -> void { }\n\
+             fn take_any(Animal a) -> void { outer(take_cat); }\n\
+             take_any(new Kitty { id: 1 });\n",
+        );
+    }
 }

@@ -266,4 +266,74 @@ mod tests {
             "after reset, remaining == limit"
         );
     }
+
+    #[test]
+    fn quota_quota_exactly_exhausted() {
+        set("boundary", 10);
+        assert!(charge("boundary", 10), "charge at exact limit must succeed");
+        assert_eq!(
+            remaining("boundary"),
+            0,
+            "after exact exhaustion, remaining == 0"
+        );
+        assert!(!charge("boundary", 1), "charge after exhaustion must fail");
+    }
+
+    #[test]
+    fn quota_lru_eviction_removes_lex_smallest() {
+        // Fill the store to MAX_QUOTAS and trigger eviction.
+        // The eviction removes the lex-smallest key.
+        for i in 0..MAX_QUOTAS {
+            let name = format!("quota_{:03}", i);
+            set(&name, 100);
+        }
+        // Now add one more — should evict "quota_000"
+        set("quota_zzz", 100);
+        let remaining_result =
+            builtin_quota_remaining(&[Value::String("quota_000".into())]).unwrap();
+        let remaining_val = match remaining_result {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        };
+        assert_eq!(remaining_val, -1, "lex-smallest quota should be evicted");
+        // Verify the new quota exists
+        let zzz_remaining = builtin_quota_remaining(&[Value::String("quota_zzz".into())]).unwrap();
+        assert!(
+            format!("{zzz_remaining:?}").contains("100"),
+            "new quota_zzz should exist with 100"
+        );
+    }
+
+    #[test]
+    fn quota_charge_saturating_add_no_overflow() {
+        set("sat_test", 100);
+        charge("sat_test", 100);
+        let charged = charge("sat_test", 1);
+        assert!(!charged, "charging beyond limit must fail");
+    }
+
+    #[test]
+    fn quota_used_tracks_charges() {
+        set("track_test", 1000);
+        charge("track_test", 100);
+        charge("track_test", 250);
+        let used = match builtin_quota_used(&[Value::String("track_test".into())]).unwrap() {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        };
+        assert_eq!(used, 350, "used count must accumulate charges");
+    }
+
+    #[test]
+    fn quota_name_collision_overwrites() {
+        set("collision", 50);
+        charge("collision", 30);
+        // Overwrite with new limit
+        set("collision", 100);
+        assert_eq!(
+            remaining("collision"),
+            100,
+            "new limit must replace old one"
+        );
+    }
 }
