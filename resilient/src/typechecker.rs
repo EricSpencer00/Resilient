@@ -903,6 +903,41 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
     }
 }
 
+/// RES-3880: inclusive `[min, max]` range of a pinned-width integer type and
+/// its human-readable form, or `None` for types that are not range-restricted.
+///
+/// `UInt64`'s true maximum (`u64::MAX`) exceeds `i64::MAX`, but the folded
+/// literal value is an `i64`, so any value that could overflow the upper bound
+/// is unrepresentable here — the only reachable violation is a negative
+/// literal, which the `0` lower bound rejects.
+fn pinned_int_range(t: &Type) -> Option<(i64, i64, &'static str)> {
+    Some(match t {
+        Type::Int8 => (-128, 127, "-128..=127"),
+        Type::Int16 => (-32768, 32767, "-32768..=32767"),
+        Type::Int32 => (-2_147_483_648, 2_147_483_647, "-2147483648..=2147483647"),
+        Type::UInt8 => (0, 255, "0..=255"),
+        Type::UInt16 => (0, 65535, "0..=65535"),
+        Type::UInt32 => (0, 4_294_967_295, "0..=4294967295"),
+        Type::UInt64 => (0, i64::MAX, "0..=18446744073709551615"),
+        _ => return None,
+    })
+}
+
+/// RES-3880: reject an integer literal that cannot fit its declared
+/// pinned-width type. Returns the core "value N overflows ..." message on
+/// failure; callers prepend site context (e.g. `let x: `). Non-pinned or
+/// non-literal targets pass unconditionally.
+fn check_literal_fits(declared: &Type, literal_val: i64) -> Result<(), String> {
+    if let Some((lo, hi, range_str)) = pinned_int_range(declared)
+        && !(lo..=hi).contains(&literal_val)
+    {
+        return Err(format!(
+            "literal {literal_val} overflows type {declared} (valid range: {range_str})"
+        ));
+    }
+    Ok(())
+}
+
 // Environment for storing type information
 //
 // RES-1372: `outer` is `Arc<TypeEnvironment>` (not `Box`) so cloning a
@@ -7888,34 +7923,12 @@ impl TypeChecker {
                             name, declared, value_type
                         ));
                     }
-                    // RES-411: reject integer literals that overflow the declared pinned-int type.
+                    // RES-411 / RES-3880: reject integer literals that overflow
+                    // the declared pinned-int type. Shared with call args,
+                    // returns, struct fields, and `const` via check_literal_fits.
                     if let Some(literal_val) = fold_const_i64(value, &self.const_bindings) {
-                        let range_ok = match &declared {
-                            Type::Int8 => (-128_i64..=127).contains(&literal_val),
-                            Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
-                            Type::Int32 => {
-                                (-2_147_483_648_i64..=2_147_483_647).contains(&literal_val)
-                            }
-                            Type::UInt8 => (0_i64..=255).contains(&literal_val),
-                            Type::UInt16 => (0_i64..=65535).contains(&literal_val),
-                            Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
-                            _ => true,
-                        };
-                        if !range_ok {
-                            let range_str = match &declared {
-                                Type::Int8 => "-128..=127",
-                                Type::Int16 => "-32768..=32767",
-                                Type::Int32 => "-2147483648..=2147483647",
-                                Type::UInt8 => "0..=255",
-                                Type::UInt16 => "0..=65535",
-                                Type::UInt32 => "0..=4294967295",
-                                _ => unreachable!(),
-                            };
-                            return Err(format!(
-                                "let {}: {} — value {} overflows the declared type (valid range: {})",
-                                name, declared, literal_val, range_str
-                            ));
-                        }
+                        check_literal_fits(&declared, literal_val)
+                            .map_err(|e| format!("let {name}: {e}"))?;
                     }
                     declared
                 } else {
@@ -8924,6 +8937,17 @@ impl TypeChecker {
                                 effective_struct_name, field_name, field_ty, val_ty
                             ));
                         }
+                        // RES-3880: an in-type literal must still fit the
+                        // pinned-width field type it initializes.
+                        if let Some((_, field_ty)) = declared.iter().find(|(n, _)| n == field_name)
+                            && let Some(literal_val) = fold_const_i64(e, &self.const_bindings)
+                        {
+                            check_literal_fits(field_ty, literal_val).map_err(|msg| {
+                                format!(
+                                    "struct `{effective_struct_name}` field `{field_name}`: {msg}"
+                                )
+                            })?;
+                        }
                     }
                     if generic_info.is_some() || name == crate::ANONYMOUS_STRUCT_NAME {
                         field_value_types.push((field_name.clone(), val_ty));
@@ -9563,35 +9587,11 @@ impl TypeChecker {
                             name, declared, value_type
                         ));
                     }
-                    // RES-416: apply the same pinned-int overflow check
-                    // to const declarations that LetStatement already has.
+                    // RES-416 / RES-3880: apply the same pinned-int overflow
+                    // check to const declarations that LetStatement already has.
                     if let Some(literal_val) = fold_const_i64(value, &self.const_bindings) {
-                        let range_ok = match &declared {
-                            Type::Int8 => (-128_i64..=127).contains(&literal_val),
-                            Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
-                            Type::Int32 => {
-                                (-2_147_483_648_i64..=2_147_483_647).contains(&literal_val)
-                            }
-                            Type::UInt8 => (0_i64..=255).contains(&literal_val),
-                            Type::UInt16 => (0_i64..=65535).contains(&literal_val),
-                            Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
-                            _ => true,
-                        };
-                        if !range_ok {
-                            let range_str = match &declared {
-                                Type::Int8 => "-128..=127",
-                                Type::Int16 => "-32768..=32767",
-                                Type::Int32 => "-2147483648..=2147483647",
-                                Type::UInt8 => "0..=255",
-                                Type::UInt16 => "0..=65535",
-                                Type::UInt32 => "0..=4294967295",
-                                _ => unreachable!(),
-                            };
-                            return Err(format!(
-                                "const {}: {} — value {} overflows the declared type (valid range: {})",
-                                name, declared, literal_val, range_str
-                            ));
-                        }
+                        check_literal_fits(&declared, literal_val)
+                            .map_err(|e| format!("const {name}: {e}"))?;
                     }
                     declared
                 } else {
@@ -9659,6 +9659,15 @@ impl TypeChecker {
                         "return type mismatch — declared {}, returning {}",
                         declared, ret_type
                     ));
+                }
+                // RES-3880: a literal that satisfies the Int↔pinned-width bridge
+                // must still fit the declared pinned-width return type.
+                if let Some(declared) = &self.current_fn_return_type
+                    && let Some(expr) = value
+                    && let Some(literal_val) = fold_const_i64(expr, &self.const_bindings)
+                {
+                    check_literal_fits(declared, literal_val)
+                        .map_err(|msg| format!("return value: {msg}"))?;
                 }
                 Ok(ret_type)
             }
@@ -10556,6 +10565,14 @@ impl TypeChecker {
                                     effective_param,
                                     arg_type
                                 ));
+                            }
+
+                            // RES-3880: a literal that satisfies the abstract
+                            // Int↔pinned-width bridge in `compatible()` must
+                            // still fit the pinned width it's being coerced to.
+                            if let Some(literal_val) = fold_const_i64(arg, &self.const_bindings) {
+                                check_literal_fits(effective_param, literal_val)
+                                    .map_err(|e| format!("argument {}: {e}", i + 1))?;
                             }
                         }
 
@@ -15471,6 +15488,74 @@ mod res411_pinned_int_overflow {
     fn unannotated_let_no_overflow_check() {
         // Without a type annotation there's no declared range to check.
         check_ok("fn f() -> void { let x = 300; }");
+    }
+
+    // RES-3880: UInt64 was missing from the range check, so negative literals
+    // (folded to a negative i64) slipped into an unsigned type.
+    #[test]
+    fn uint64_negative_literal_errors() {
+        let e = check_err("fn f() -> void { let x: UInt64 = -1; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(e.contains("UInt64"), "error must name the type; got: {e}");
+    }
+
+    #[test]
+    fn uint64_large_positive_ok() {
+        check_ok("fn f() -> void { let x: UInt64 = 9223372036854775807; }");
+    }
+
+    #[test]
+    fn const_uint64_negative_errors() {
+        let e = check_err("const N: UInt64 = -5;\nfn f() -> void { }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    // RES-3880: the range check now also fires at call arguments, returns,
+    // and struct fields — not just let/const.
+    #[test]
+    fn call_argument_overflow_errors() {
+        let e =
+            check_err("fn takes_byte(uint8 b) -> void { }\nfn f() -> void { takes_byte(999); }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(
+            e.contains("argument 1"),
+            "error must name the argument; got: {e}"
+        );
+    }
+
+    #[test]
+    fn call_argument_in_range_ok() {
+        check_ok("fn takes_byte(uint8 b) -> void { }\nfn f() -> void { takes_byte(200); }");
+    }
+
+    #[test]
+    fn return_value_overflow_errors() {
+        let e = check_err("fn g() -> uint8 { return 999; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(
+            e.contains("return value"),
+            "error must name the site; got: {e}"
+        );
+    }
+
+    #[test]
+    fn return_value_in_range_ok() {
+        check_ok("fn g() -> uint8 { return 200; }");
+    }
+
+    #[test]
+    fn struct_field_overflow_errors() {
+        let e = check_err("struct P { uint8 x }\nfn f() -> void { let _p = new P { x: 999 }; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(
+            e.contains("field `x`"),
+            "error must name the field; got: {e}"
+        );
+    }
+
+    #[test]
+    fn struct_field_in_range_ok() {
+        check_ok("struct P { uint8 x }\nfn f() -> void { let _p = new P { x: 200 }; }");
     }
 }
 
