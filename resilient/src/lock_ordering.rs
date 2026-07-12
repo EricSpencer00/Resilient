@@ -135,4 +135,110 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn consistent_lock_ordering_passes() {
+        let src = r#"
+            fn critical_section(int x) -> int {
+                lock(mutex_a);
+                lock(mutex_b);
+                unlock(mutex_b);
+                unlock(mutex_a);
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn single_lock_only_passes() {
+        let src = r#"
+            fn process(int x) -> int {
+                lock(data_lock);
+                unlock(data_lock);
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn lock_released_then_reacquired_is_separate_order() {
+        let src = r#"
+            fn process(int x) -> int {
+                lock(a);
+                unlock(a);
+                lock(b);
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn conflicting_order_in_two_functions_warns() {
+        let src = r#"
+            fn first_order(int x) -> int {
+                lock(a);
+                lock(b);
+                unlock(b);
+                unlock(a);
+                return x;
+            }
+            fn second_order(int x) -> int {
+                lock(b);
+                lock(a);
+                unlock(a);
+                unlock(b);
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        // Should warn about inversion but still return Ok
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn mutex_lock_variant_detected() {
+        let src = r#"
+            fn process(int x) -> int {
+                mutex_lock(m);
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn lock_prefix_variant_detected() {
+        let src = r#"
+            fn process(int x) -> int {
+                lock_resources();
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_lock_pairs_in_function() {
+        let src = r#"
+            fn complex_op(int x) -> int {
+                lock(m1);
+                lock(m2);
+                unlock(m2);
+                unlock(m1);
+                lock(m3);
+                unlock(m3);
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

@@ -122,4 +122,74 @@ mod tests {
         assert!(starts_block_statement(&Token::Let));
         assert!(starts_block_statement(&Token::If));
     }
+
+    #[test]
+    fn all_top_level_starters_recognized() {
+        assert!(starts_top_level_item(&Token::Function));
+        assert!(starts_top_level_item(&Token::Let));
+        assert!(starts_top_level_item(&Token::Static));
+        assert!(starts_top_level_item(&Token::Const));
+        assert!(starts_top_level_item(&Token::Struct));
+        assert!(starts_top_level_item(&Token::Impl));
+        assert!(starts_top_level_item(&Token::Type));
+        assert!(starts_top_level_item(&Token::Region));
+        assert!(starts_top_level_item(&Token::Actor));
+    }
+
+    #[test]
+    fn declaration_and_control_flow_starters() {
+        assert!(starts_top_level_item(&Token::Extern));
+        assert!(starts_top_level_item(&Token::Use));
+        assert!(starts_top_level_item(&Token::If));
+        assert!(starts_top_level_item(&Token::While));
+        assert!(starts_top_level_item(&Token::For));
+        assert!(starts_top_level_item(&Token::Return));
+    }
+
+    #[test]
+    fn assertion_and_special_starters() {
+        assert!(starts_top_level_item(&Token::Assert));
+        assert!(starts_top_level_item(&Token::Assume));
+        assert!(starts_top_level_item(&Token::StaticAssert));
+        assert!(starts_top_level_item(&Token::Live));
+        assert!(starts_top_level_item(&Token::Try));
+        assert!(starts_top_level_item(&Token::At));
+    }
+
+    #[test]
+    fn operators_not_top_level_starters() {
+        assert!(!starts_top_level_item(&Token::Plus));
+        assert!(!starts_top_level_item(&Token::Minus));
+        assert!(!starts_top_level_item(&Token::Multiply));
+        assert!(!starts_top_level_item(&Token::Divide));
+    }
+
+    #[test]
+    fn delimiters_not_top_level_starters() {
+        assert!(!starts_top_level_item(&Token::Semicolon));
+        assert!(!starts_top_level_item(&Token::Comma));
+        assert!(!starts_top_level_item(&Token::Colon));
+        assert!(!starts_top_level_item(&Token::RightBrace));
+        assert!(!starts_top_level_item(&Token::RightParen));
+    }
+
+    #[test]
+    fn invariant_only_in_block_scope() {
+        assert!(!starts_top_level_item(&Token::Invariant));
+        assert!(starts_block_statement(&Token::Invariant));
+    }
+
+    #[test]
+    fn all_top_level_valid_in_block() {
+        assert!(starts_block_statement(&Token::Function));
+        assert!(starts_block_statement(&Token::Struct));
+        assert!(starts_block_statement(&Token::Return));
+        assert!(starts_block_statement(&Token::While));
+    }
+
+    #[test]
+    fn eof_not_statement_starter() {
+        assert!(!starts_top_level_item(&Token::Eof));
+        assert!(!starts_block_statement(&Token::Eof));
+    }
 }

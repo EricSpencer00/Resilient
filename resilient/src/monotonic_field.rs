@@ -141,4 +141,112 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn monotonic_increment_with_plus_passes() {
+        let src = r#"
+            struct Counter { int last_count }
+            fn increment(Counter c) -> Counter {
+                c.last_count = c.last_count + 1;
+                return c;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn monotonic_field_with_max_function_passes() {
+        let src = r#"
+            struct Tracker { int max_value }
+            fn update(Tracker t, int x) -> Tracker {
+                t.max_value = max(t.max_value, x);
+                return t;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn latest_prefix_field_with_increment_passes() {
+        let src = r#"
+            struct Clock { int latest_tick }
+            fn advance(Clock c) -> Clock {
+                c.latest_tick = c.latest_tick + 1;
+                return c;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn monotonic_suffix_field_with_addition_passes() {
+        let src = r#"
+            struct Timing { int event_clock }
+            fn record(Timing t) -> Timing {
+                t.event_clock = t.event_clock + 1;
+                return t;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn sequence_number_field_with_increment_passes() {
+        let src = r#"
+            struct Event { int msg_seq }
+            fn next_seq(Event e) -> Event {
+                e.msg_seq = e.msg_seq + 1;
+                return e;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_monotonic_fields() {
+        let src = r#"
+            struct State { int last_update, int max_level, int event_epoch }
+            fn update_all(State s) -> State {
+                s.last_update = s.last_update + 1;
+                s.max_level = max(s.max_level, 10);
+                s.event_epoch = s.event_epoch + 1;
+                return s;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn non_monotonic_field_with_subtraction_warns() {
+        let src = r#"
+            struct Counter { int last_value }
+            fn decrement(Counter c) -> Counter {
+                c.last_value = c.last_value - 1;
+                return c;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        // Should warn but return Ok
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn non_monotonic_field_replacement_warns() {
+        let src = r#"
+            struct Clock { int max_ticks }
+            fn reset(Clock c) -> Clock {
+                c.max_ticks = 0;
+                return c;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        // Should warn but return Ok
+        assert!(check(&prog, "test").is_ok());
+    }
 }

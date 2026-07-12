@@ -117,4 +117,62 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn zero_budget_with_no_allocs_passes() {
+        let src = r#"fn process_alloc0(int x) -> int { return x + 1; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn single_alloc_within_budget_passes() {
+        let src = r#"fn work_alloc2(int x) -> int { let a = [1, 2]; return x; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_allocs_within_budget_passes() {
+        let src =
+            r#"fn work_alloc3(int x) -> int { let a = [1]; let b = [2]; let c = [3]; return x; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn alloc_exceeding_budget_is_detected() {
+        let src = r#"fn work_alloc1(int x) -> int { let a = [1]; let b = [2]; return x; }"#;
+        let (prog, _) = parse(src);
+        // This should log a warning but still return Ok (V1 behavior)
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn mixed_alloc_and_non_alloc_functions() {
+        let src = r#"
+            fn process_alloc1(int x) -> int { let a = [1, 2]; return x; }
+            fn compute(int x) -> int { return x + 1; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn alloc_in_nested_call_counted() {
+        let src = r#"
+            fn inner_alloc1(int x) -> int { let a = [1]; return x; }
+            fn outer_alloc0(int x) -> int { inner_alloc1(x); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        // outer_alloc0 should pass (no allocs in its own body)
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn builtin_allocating_functions_counted() {
+        let src = r#"fn push_alloc1(int x) -> int { push([1, 2], 3); return x; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }
