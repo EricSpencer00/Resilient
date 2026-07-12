@@ -88,6 +88,24 @@ has_label() {
     echo "$1" | python3 -c "import sys,json; print(any(l['name']==sys.argv[1] for l in json.load(sys.stdin)))" "$2"
 }
 
+# RES-3885: only promote PRs from a trusted author. Anyone can open a fork PR,
+# but promotion arms auto-merge, and required checks only prove the code
+# compiles/passes tests — not that it is safe. Gate promotion (and, in
+# agent-auto-merge.yml, the merge itself) on write-level authorship so an
+# outsider's PR waits for an explicit human hand instead of auto-landing.
+# `author_association` is OWNER/MEMBER/COLLABORATOR for anyone with write
+# access; CONTRIBUTOR/FIRST_TIME_CONTRIBUTOR/NONE for outsiders.
+is_trusted_author() {
+    # is_trusted_author <pr>  -> prints True/False
+    local assoc
+    assoc=$(gh api "repos/${GH_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}/pulls/$1" \
+        --jq .author_association 2>/dev/null || echo "")
+    case "$assoc" in
+        OWNER | MEMBER | COLLABORATOR) echo "True" ;;
+        *) echo "False" ;;
+    esac
+}
+
 ensure_labels() {
     gh label create "sweep-promoted" --color "1D76DB" \
         --description "Promoted from draft by sweep-drafts.sh; awaiting real CI" \
@@ -215,6 +233,9 @@ main() {
         labels=$(echo "$info" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["labels"]))')
         if [[ "$(has_label "$labels" "no-sweep")" == "True" ]]; then
             say "  #$pr — has no-sweep label, skipping"; continue
+        fi
+        if [[ "$(is_trusted_author "$pr")" != "True" ]]; then
+            say "  #$pr — untrusted author (outside collaborator), skipping — needs a human hand"; continue
         fi
         idle=$(hours_idle "$(echo "$info" | python3 -c 'import sys,json;print(json.load(sys.stdin)["updatedAt"])')")
         add=$(echo "$info" | python3 -c 'import sys,json;print(json.load(sys.stdin)["additions"])')
