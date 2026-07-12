@@ -188,7 +188,10 @@ impl Value {
     pub fn div(self, rhs: Value) -> Result<Value, RuntimeError> {
         match (self, rhs) {
             (Value::Int(_), Value::Int(0)) => Err(RuntimeError::DivideByZero),
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
+            // RES-3883: `wrapping_div` matches the wrap-on-overflow contract of
+            // add/sub/mul (and the VM's Wrap mode) and avoids the `i64::MIN / -1`
+            // overflow panic that bare `a / b` triggers in checked builds.
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_div(b))),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
             _ => Err(RuntimeError::TypeMismatch("div")),
         }
@@ -238,6 +241,16 @@ mod tests {
         assert_eq!(
             Value::Int(10).div(Value::Int(0)).unwrap_err(),
             RuntimeError::DivideByZero
+        );
+    }
+
+    #[test]
+    fn int_div_min_by_neg_one_wraps_without_panic() {
+        // RES-3883: i64::MIN / -1 overflows and would panic with bare `/`.
+        // Wrapping semantics (matching add/sub/mul and the VM) yield i64::MIN.
+        assert_eq!(
+            Value::Int(i64::MIN).div(Value::Int(-1)).unwrap(),
+            Value::Int(i64::MIN)
         );
     }
 

@@ -122,10 +122,13 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
     }
 
     /// `1.0` — the value `1 << D` raw. Returns `None` if `<N, D>`
-    /// is invalid.
+    /// is invalid or cannot represent `1.0` (including `D >= 64`,
+    /// e.g. `Fixed<0, 64>`, which has no integer bits).
     #[inline]
     pub fn one() -> Option<Self> {
-        Self::new(1i64 << D)
+        // RES-3883: `checked_shl` returns None for D >= 64 instead of
+        // panicking on the `1i64 << D` shift overflow.
+        Self::new(1i64.checked_shl(D)?)
     }
 
     /// Construct from an integer, scaling up by `2^D`. Returns
@@ -180,6 +183,12 @@ impl<const N: u32, const D: u32> Fixed<N, D> {
             return None;
         }
         if f.is_nan() {
+            return None;
+        }
+        // RES-3883: reject D >= 64 before the shift — `1u64 << 64`
+        // (reachable via Fixed<0, 64>) panics on shift overflow.
+        // Matches the D >= 64 guards in from_int / to_int / mul / div.
+        if D >= 64 {
             return None;
         }
         let scaled = f * (1u64 << D) as f64;
@@ -365,6 +374,27 @@ mod tests {
         // is i32::MAX + 1 — out of the 32-bit raw range.
         let r: Option<Fixed<16, 16>> = Fixed::from_int(32768);
         assert!(r.is_none());
+    }
+
+    // ---------- RES-3883: D >= 64 must return None, never panic ----------
+    // Fixed<0, 64> passes valid_width (total 64) but a `1 << 64` shift
+    // panics on overflow. one() and from_float must reject it cleanly.
+
+    #[test]
+    fn one_with_d_ge_64_returns_none_no_panic() {
+        assert!(Fixed::<0, 64>::one().is_none());
+    }
+
+    #[test]
+    fn from_float_with_d_ge_64_returns_none_no_panic() {
+        assert!(Fixed::<0, 64>::from_float(0.5).is_none());
+    }
+
+    #[test]
+    fn one_valid_config_still_ok() {
+        // Sanity: the guard doesn't disturb a normal D < 64 config.
+        let one = Fixed::<16, 16>::one().unwrap();
+        assert_eq!(one.raw(), 1i64 << 16);
     }
 
     // ---------- from_float / to_float ----------
