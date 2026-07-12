@@ -3921,11 +3921,14 @@ mod tests {
 
     #[test]
     fn res334b_load_index_on_string_returns_char() {
-        // RES-334b: `s[i]` on a string value returns the i-th character.
+        // RES-334b: `s[i]` on a string returns the i-th character.
+        // RES-3889: as a `Value::Char`, matching the tree-walker interpreter —
+        // previously the VM returned a single-char `Value::String`, which
+        // diverged from the interpreter for `s[i] == 'c'`.
         let v = compile_run(r#"let s = "hello"; return s[1];"#).unwrap();
         match v {
-            crate::Value::String(c) => assert_eq!(c, "e"),
-            other => panic!("expected String, got {:?}", other),
+            crate::Value::Char(c) => assert_eq!(c, 'e'),
+            other => panic!("expected Char, got {:?}", other),
         }
     }
 
@@ -5638,10 +5641,12 @@ mod tests {
 
     #[test]
     fn vm_load_index_negative_wraps_string() {
+        // RES-3889: negative string subscript wraps to the last char and
+        // yields a `Value::Char` (was `Value::String` before the fix).
         let result = compile_run(r#"let s = "hello"; s[-1]"#).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s, "o"),
-            other => panic!("expected String, got {:?}", other),
+            Value::Char(c) => assert_eq!(c, 'o'),
+            other => panic!("expected Char, got {:?}", other),
         }
     }
 
