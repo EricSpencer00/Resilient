@@ -445,6 +445,39 @@ If your PR is ready + green but not merging, the most likely cause is a
 missing `integration-synced` or `agent-vetted` label. Re-run
 `ready-or-bail.sh` to re-apply the gate labels.
 
+### Checks stuck in `action_required` (the bot-approval hold)
+
+If a PR's checks show **"This workflow requires approval from a maintainer"**
+(`action_required`, "N workflows awaiting approval"), the runs were triggered
+by `github-actions[bot]` — this happens when a PR is opened or promoted by a
+cloud agent or by another workflow using `GITHUB_TOKEN`. GitHub parks
+bot-triggered runs pending approval, and they never execute, so the required
+checks never go green and auto-merge never fires.
+
+**Clear it yourself — never leave this for the maintainer to click.** A
+ship-to-merge flow with a human "Approve and run" gate is not autonomous.
+
+```bash
+agent-scripts/clear-approval-holds.sh            # every held ready PR
+agent-scripts/clear-approval-holds.sh --pr 3871  # just one
+```
+
+The script closes and reopens the PR: the `reopened` event re-fires the
+workflows attributed to *your* `gh` token (a real user), and human-attributed
+runs are never held. Two dead ends it saves you from:
+
+- There is **no REST/CLI approve path** for non-fork bot runs.
+  `POST /actions/runs/{id}/approve` returns `403: not from a fork pull request`.
+- **`gh run rerun` does not clear it** — a rerun keeps the original bot actor,
+  so the run is immediately re-held. (This is the limit of
+  `auto-rerun-held-ci.yml`.)
+
+Run it under your local `gh auth`, not from inside a workflow (a workflow would
+re-attribute the reopened event to the bot and re-hold the runs). It only
+touches non-draft PRs, because closing a PR releases its file claims via
+`release-file-claims.yml` — safe once work is done, which is exactly when real
+held runs appear.
+
 ---
 
 ## What not to do
