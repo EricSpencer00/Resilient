@@ -1,0 +1,23 @@
+// RES-915: Range patterns in match arms
+
+fn main() {
+    let n = 7;
+
+    match n {
+        1..=5 => println("small"),
+        6..10 => println("medium"),
+        10..=100 => println("large"),
+        _ => println("other"),
+    }
+
+    let grade = 85;
+    match grade {
+        0..=50 => println("F"),
+        51..=70 => println("D/C"),
+        71..=85 => println("B"),
+        86..=100 => println("A"),
+        _ => println("invalid"),
+    }
+}
+
+main();

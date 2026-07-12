@@ -1,0 +1,3 @@
+small-positive
+odd
+Program executed successfully

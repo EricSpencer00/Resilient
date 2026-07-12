@@ -1,0 +1,13 @@
+// RES-914: while let pattern matching
+
+fn main() {
+    let values = [1, 2, 3];
+    let idx = 0;
+
+    while let Some(v) = if idx < len(values) { Some(values[idx]) } else { None } {
+        println("value: " + v);
+        idx = idx + 1;
+    }
+}
+
+main();

@@ -1,0 +1,7 @@
+0
+1
+2
+3
+4
+loop once
+Program executed successfully

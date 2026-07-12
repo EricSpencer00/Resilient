@@ -1,0 +1,5 @@
+both true
+at least one true
+x is not greater than 10
+complex condition true
+Program executed successfully

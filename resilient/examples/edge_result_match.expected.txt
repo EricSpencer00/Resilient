@@ -1,0 +1,3 @@
+parsed: 42
+error: parse_int: invalid integer "invalid": invalid digit found in string
+Program executed successfully

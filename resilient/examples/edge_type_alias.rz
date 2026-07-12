@@ -1,0 +1,29 @@
+// Type aliases with structural equality
+
+type Meters = int;
+type Kilograms = int;
+
+fn step(Meters m) -> Meters {
+    return m + 1;
+}
+
+fn weight(Kilograms k) -> Kilograms {
+    return k + 5;
+}
+
+fn main() {
+    let distance = 10;
+    let distance_out = step(distance);
+    println(distance_out);
+
+    let mass = 50;
+    let mass_out = weight(mass);
+    println(mass_out);
+
+    // Type aliases are structural, so Meters unifies with int
+    let raw_int = 42;
+    let stepped = step(raw_int);
+    println(stepped);
+}
+
+main();

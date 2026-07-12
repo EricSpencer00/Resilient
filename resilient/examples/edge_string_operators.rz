@@ -1,0 +1,26 @@
+// String operations and coercion
+
+fn main() {
+    // String concatenation with various types
+    let msg1 = "Count: " + 42;
+    println(msg1);  // "Count: 42"
+
+    let msg2 = "Ready: " + true;
+    println(msg2);  // "Ready: true"
+
+    let msg3 = "Pi: " + 3.14;
+    println(msg3);  // "Pi: 3.14"
+
+    // String repetition (RES-924)
+    let dashes = "-" * 5;
+    println(dashes);  // "-----"
+
+    let repeated = 3 * "ab";
+    println(repeated);  // "ababab"
+
+    // String methods (RES-920)
+    println("  hello  ".trim());  // "hello"
+    println("hello".repeat(3));  // "hellohellohello"
+}
+
+main();

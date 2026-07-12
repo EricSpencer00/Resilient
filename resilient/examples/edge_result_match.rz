@@ -1,0 +1,21 @@
+// Result type with Ok/Err pattern matching
+
+fn safe_divide(int a, int b) -> int {
+    return a / b;
+}
+
+fn main() {
+    let result1 = parse_int("42");
+    match result1 {
+        Ok(n) => println("parsed: " + n),
+        Err(e) => println("error: " + e),
+    }
+
+    let result2 = parse_int("invalid");
+    match result2 {
+        Ok(n) => println("parsed: " + n),
+        Err(e) => println("error: " + e),
+    }
+}
+
+main();
