@@ -292,4 +292,95 @@ mod tests {
         // producing visible test noise.
         assert!(s.write_str("").is_ok());
     }
+
+    // ---------- Error propagation and edge cases ----------
+
+    #[test]
+    fn print_first_write_fails_propagates() {
+        let _g = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sink: &'static mut FailSink = alloc::boxed::Box::leak(alloc::boxed::Box::new(FailSink));
+        set_sink(sink);
+        let err = print("first").unwrap_err();
+        assert_eq!(err, SinkErr::WriteFailed);
+        clear_sink();
+    }
+
+    #[test]
+    fn println_fails_on_first_message_write() {
+        let _g = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // FailSink fails on ANY write, including the message.
+        let sink: &'static mut FailSink = alloc::boxed::Box::leak(alloc::boxed::Box::new(FailSink));
+        set_sink(sink);
+        let err = println("msg").unwrap_err();
+        assert_eq!(err, SinkErr::WriteFailed);
+        clear_sink();
+    }
+
+    #[test]
+    fn println_message_succeeds_but_newline_fails() {
+        let _g = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SinkFailsOnNewline always fails on "\n".
+        struct FailOnNewline {
+            buf: Vec<u8>,
+        }
+        impl Sink for FailOnNewline {
+            fn write_str(&mut self, s: &str) -> Result<(), SinkErr> {
+                if s == "\n" {
+                    Err(SinkErr::WriteFailed)
+                } else {
+                    self.buf.extend_from_slice(s.as_bytes());
+                    Ok(())
+                }
+            }
+        }
+        let sink: &'static mut FailOnNewline =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(FailOnNewline { buf: Vec::new() }));
+        set_sink(sink);
+        let err = println("incomplete").unwrap_err();
+        assert_eq!(err, SinkErr::WriteFailed);
+        clear_sink();
+    }
+
+    #[test]
+    fn empty_string_write_succeeds() {
+        let _g = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sink = leak_buf_sink();
+        set_sink(sink);
+        assert!(print("").is_ok());
+        clear_sink();
+    }
+
+    #[test]
+    fn multiple_writes_accumulate() {
+        let _g = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sink = leak_buf_sink();
+        let sink_ptr: *mut BufSink = sink as *mut _;
+        set_sink(sink);
+        print("a").unwrap();
+        print("b").unwrap();
+        print("c").unwrap();
+        clear_sink();
+        let observed: String = unsafe {
+            let s = &*sink_ptr;
+            String::from_utf8(s.buf.clone()).unwrap()
+        };
+        assert_eq!(observed, "abc");
+    }
+
+    #[test]
+    fn println_multiple_lines_with_newlines() {
+        let _g = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sink = leak_buf_sink();
+        let sink_ptr: *mut BufSink = sink as *mut _;
+        set_sink(sink);
+        println("line-1").unwrap();
+        println("line-2").unwrap();
+        println("line-3").unwrap();
+        clear_sink();
+        let observed: String = unsafe {
+            let s = &*sink_ptr;
+            String::from_utf8(s.buf.clone()).unwrap()
+        };
+        assert_eq!(observed, "line-1\nline-2\nline-3\n");
+    }
 }

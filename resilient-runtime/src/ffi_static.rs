@@ -180,4 +180,88 @@ mod tests {
         let err = r.register("overflow", dummy, SIG).unwrap_err();
         assert_eq!(err, FfiError::RegistryFull);
     }
+
+    // ---------- Additional capacity and duplicate tests ----------
+
+    #[test]
+    fn len_starts_at_zero() {
+        let r = StaticRegistry::new();
+        assert_eq!(r.len(), 0);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn len_increments_on_register() {
+        let mut r = StaticRegistry::new();
+        r.register("a", dummy, SIG).unwrap();
+        assert_eq!(r.len(), 1);
+        assert!(!r.is_empty());
+        r.register("b", dummy, SIG).unwrap();
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_different_pointer_still_errors() {
+        unsafe extern "C" fn dummy2() {}
+        let mut r = StaticRegistry::new();
+        r.register("func", dummy, SIG).unwrap();
+        let err = r.register("func", dummy2, SIG).unwrap_err();
+        assert_eq!(err, FfiError::DuplicateSymbol);
+    }
+
+    #[test]
+    fn case_sensitive_lookup() {
+        let mut r = StaticRegistry::new();
+        r.register("MyFunc", dummy, SIG).unwrap();
+        assert!(r.lookup("MyFunc").is_some());
+        assert!(r.lookup("myfunc").is_none());
+        assert!(r.lookup("MYFUNC").is_none());
+    }
+
+    #[test]
+    fn multiple_sequential_registrations() {
+        let mut r = StaticRegistry::new();
+        r.register("a", dummy, SIG).unwrap();
+        r.register("b", dummy, SIG).unwrap();
+        r.register("c", dummy, SIG).unwrap();
+        assert_eq!(r.len(), 3);
+        assert!(r.lookup("a").is_some());
+        assert!(r.lookup("b").is_some());
+        assert!(r.lookup("c").is_some());
+        assert!(r.lookup("d").is_none());
+    }
+
+    #[test]
+    fn at_capacity_minus_one_still_has_room() {
+        let mut r = StaticRegistry::new();
+        for i in 0..(CAPACITY - 1) {
+            let name: &'static str = Box::leak(format!("f{}", i).into_boxed_str());
+            r.register(name, dummy, SIG).unwrap();
+        }
+        assert_eq!(r.len(), CAPACITY - 1);
+        let name: &'static str = Box::leak("final".to_string().into_boxed_str());
+        r.register(name, dummy, SIG).unwrap();
+        assert_eq!(r.len(), CAPACITY);
+    }
+
+    #[test]
+    fn lookup_after_fill() {
+        let mut r = StaticRegistry::new();
+        let names: Vec<&'static str> = (0..5)
+            .map(|i| Box::leak(format!("func{}", i).into_boxed_str()))
+            .collect();
+        for name in &names {
+            r.register(name, dummy, SIG).unwrap();
+        }
+        for name in &names {
+            assert!(r.lookup(name).is_some());
+        }
+    }
+
+    #[test]
+    fn default_registry_is_empty() {
+        let r = StaticRegistry::default();
+        assert_eq!(r.len(), 0);
+        assert!(r.is_empty());
+    }
 }

@@ -804,4 +804,74 @@ mod tests {
 
         assert_eq!(&dst[..], &[0xAAu8; 32][..]);
     }
+
+    // ---------- Chain edge cases ----------
+
+    #[test]
+    fn empty_chain_start_has_null_head() {
+        let chain: DmaChain<4> = DmaChain::new();
+        let transfer = chain.start();
+        assert!(transfer.head_ptr().is_null());
+        assert_eq!(transfer.descriptor_count(), 0);
+    }
+
+    #[test]
+    fn empty_chain_total_bytes_is_zero() {
+        let chain: DmaChain<4> = DmaChain::new();
+        let transfer = chain.start();
+        assert_eq!(transfer.total_bytes(), 0);
+    }
+
+    #[test]
+    fn single_descriptor_chain_next_is_null() {
+        let mut chain: DmaChain<1> = DmaChain::new();
+        let d = DmaDescriptor::new(src_addr(), dst_addr(), 8, DmaWidth::Word).unwrap();
+        chain.append(d).unwrap();
+        let transfer = chain.start();
+        let d = transfer.descriptor(0).unwrap();
+        assert!(d.next.is_null());
+    }
+
+    #[test]
+    fn large_chain_linking_all_descriptors() {
+        let mut chain: DmaChain<16> = DmaChain::new();
+        for i in 0..16 {
+            let d = DmaDescriptor::new(src_addr() + i * 4, dst_addr() + i * 4, 4, DmaWidth::Word)
+                .unwrap();
+            chain.append(d).unwrap();
+        }
+        let transfer = chain.start();
+        assert_eq!(transfer.descriptor_count(), 16);
+        // Walk via the safe index accessor only. `start` moved the
+        // arena, so stored `next` pointers reference the pre-move
+        // chain and must never be dereferenced or compared against
+        // post-move addresses — only the null/non-null tail sentinel
+        // is meaningful here.
+        assert!(!transfer.head_ptr().is_null());
+        for i in 0..16 {
+            let desc = transfer.descriptor(i).unwrap();
+            assert_eq!(desc.length, 4);
+            if i < 15 {
+                assert!(!desc.next.is_null());
+            } else {
+                assert!(desc.next.is_null());
+            }
+        }
+        assert!(transfer.descriptor(16).is_none());
+    }
+
+    #[test]
+    fn zero_length_is_always_rejected() {
+        for width in [DmaWidth::Byte, DmaWidth::HalfWord, DmaWidth::Word] {
+            let err = DmaDescriptor::new(src_addr(), dst_addr(), 0, width).unwrap_err();
+            assert_eq!(err, DmaError::ZeroLength);
+        }
+    }
+
+    #[test]
+    fn max_then_one_more_bytes_overflow() {
+        let err = DmaDescriptor::new(src_addr(), dst_addr(), DMA_MAX_LENGTH + 1, DmaWidth::Byte)
+            .unwrap_err();
+        assert!(matches!(err, DmaError::LengthTooLarge { .. }));
+    }
 }

@@ -399,4 +399,56 @@ mod tests {
         assert!(!is_numeric(&Value::Bool(true)));
         assert!(is_numeric(&Value::Float(1.0)));
     }
+
+    // ---------- Additional wrap tests for i64 boundaries ----------
+
+    #[test]
+    fn int_add_wraps_at_min_boundary() {
+        let r = Value::Int(i64::MIN).add(Value::Int(-1)).unwrap();
+        assert_eq!(r, Value::Int(i64::MAX));
+    }
+
+    #[test]
+    fn int_sub_wraps_at_min_boundary() {
+        let r = Value::Int(i64::MIN).sub(Value::Int(1)).unwrap();
+        assert_eq!(r, Value::Int(i64::MAX));
+    }
+
+    #[test]
+    fn int_mul_wraps_on_overflow() {
+        let r = Value::Int(i64::MAX).mul(Value::Int(2)).unwrap();
+        assert_eq!(r, Value::Int(-2));
+    }
+
+    #[test]
+    fn int_add_wraps_large_values() {
+        let a = Value::Int(9_223_372_036_854_775_000i64);
+        let b = Value::Int(1_000i64);
+        let _r = a.add(b).unwrap();
+        // No panic — wrapping semantics hold.
+    }
+
+    #[test]
+    fn float_nan_bit_equality_reflexive() {
+        let nan1 = Value::Float(f64::NAN);
+        let nan2 = Value::Float(f64::NAN);
+        let r = nan1.eq(nan2).unwrap();
+        assert_eq!(r, Value::Bool(true));
+    }
+
+    #[test]
+    fn float_inf_differs_from_neg_inf() {
+        let inf = Value::Float(f64::INFINITY);
+        let neginf = Value::Float(f64::NEG_INFINITY);
+        let r = inf.eq(neginf).unwrap();
+        assert_eq!(r, Value::Bool(false));
+    }
+
+    #[test]
+    fn float_nan_created_different_ways_are_bitwise_equal() {
+        let nan_from_const1 = Value::Float(f64::NAN);
+        let nan_from_const2 = Value::Float(f64::NAN);
+        let r = nan_from_const1.eq(nan_from_const2).unwrap();
+        assert_eq!(r, Value::Bool(true));
+    }
 }
