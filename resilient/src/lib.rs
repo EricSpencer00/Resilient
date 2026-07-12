@@ -21726,13 +21726,21 @@ fn builtin_as_uint64(args: &[Value]) -> RResult<Value> {
 /// Resilient programs should drop them in a chroot / container.
 fn builtin_file_read(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::String(path)] => match fs::read(path) {
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(contents) => Ok(Value::String(contents)),
-                Err(_) => Err(format!("file_read: {} is not valid UTF-8", path)),
-            },
-            Err(e) => Err(format!("file_read: {}: {}", path, e)),
-        },
+        [Value::String(path)] => {
+            // RES-3877: the wasm playground has no host filesystem;
+            // route through the in-memory VFS so file-I/O examples work.
+            #[cfg(not(target_arch = "wasm32"))]
+            let read = fs::read(path);
+            #[cfg(target_arch = "wasm32")]
+            let read = file_io::vfs_read(path);
+            match read {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(contents) => Ok(Value::String(contents)),
+                    Err(_) => Err(format!("file_read: {} is not valid UTF-8", path)),
+                },
+                Err(e) => Err(format!("file_read: {}: {}", path, e)),
+            }
+        }
         [other] => Err(format!(
             "file_read: expected String argument, got {}",
             other
@@ -21788,10 +21796,20 @@ fn builtin_env(args: &[Value]) -> RResult<Value> {
 /// posture as `file_read`.
 fn builtin_file_write(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::String(path), Value::String(contents)] => match fs::write(path, contents) {
-            Ok(()) => Ok(Value::Void),
-            Err(e) => Err(format!("file_write: {}: {}", path, e)),
-        },
+        [Value::String(path), Value::String(contents)] => {
+            // RES-3877: wasm playground writes land in the in-memory VFS.
+            #[cfg(not(target_arch = "wasm32"))]
+            let res = fs::write(path, contents);
+            #[cfg(target_arch = "wasm32")]
+            let res = {
+                file_io::vfs_write(path, contents.as_bytes());
+                Ok::<(), std::io::Error>(())
+            };
+            match res {
+                Ok(()) => Ok(Value::Void),
+                Err(e) => Err(format!("file_write: {}: {}", path, e)),
+            }
+        }
         [a, b] => Err(format!(
             "file_write: expected (String, String), got ({:?}, {:?})",
             a, b
