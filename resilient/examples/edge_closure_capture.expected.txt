@@ -1,0 +1,2 @@
+[15, 25, 35, 45]
+Program executed successfully

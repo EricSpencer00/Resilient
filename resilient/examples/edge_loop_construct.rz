@@ -1,0 +1,20 @@
+// RES-913: unconditional loop { } construct
+
+fn main() {
+    let i = 0;
+    loop {
+        if i >= 5 {
+            break;
+        }
+        println(i);
+        i = i + 1;
+    }
+
+    // Loop with immediate break
+    loop {
+        println("loop once");
+        break;
+    }
+}
+
+main();

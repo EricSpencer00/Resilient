@@ -1,0 +1,26 @@
+// RES-916: String slicing with various bounds
+
+fn main() {
+    let s = "hello";
+
+    // Half-open range
+    println(s[1..3]);  // "el"
+
+    // Inclusive range
+    println(s[1..=3]);  // "ell"
+
+    // Open upper bound
+    println(s[2..]);  // "llo"
+
+    // Open lower bound
+    println(s[..3]);  // "hel"
+
+    // Full string
+    println(s[..]);  // "hello"
+
+    // Negative indices
+    println(s[-1]);  // "o"
+    println(s[-3..]);  // "llo"
+}
+
+main();

@@ -1,0 +1,28 @@
+// RES-908: if let pattern matching sugar
+
+fn main() {
+    let maybe_value = Some(42);
+
+    // if let with Some
+    if let Some(x) = maybe_value {
+        println("found: " + x);
+    } else {
+        println("nothing");
+    }
+
+    // if let with Ok
+    let result = parse_int("123");
+    if let Ok(num) = result {
+        println("parsed: " + num);
+    } else {
+        println("parse failed");
+    }
+
+    // if let with None
+    let empty = None;
+    if let None = empty {
+        println("is none");
+    }
+}
+
+main();

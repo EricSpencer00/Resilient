@@ -1,0 +1,24 @@
+// RES-925: if as expression
+
+fn main() {
+    let n = 5;
+
+    // if in expression context
+    let label = if n > 0 {
+        "positive"
+    } else if n < 0 {
+        "negative"
+    } else {
+        "zero"
+    };
+    println(label);
+
+    // if in function call
+    println(if n % 2 == 0 { "even" } else { "odd" });
+
+    // if in arithmetic
+    let value = 10 + if n > 3 { 100 } else { 1 };
+    println(value);
+}
+
+main();

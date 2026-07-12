@@ -1,0 +1,31 @@
+// RES-155: Destructuring let for struct fields
+
+struct Point {
+    int x,
+    int y,
+}
+
+fn main() {
+    let p = new Point { x: 3, y: 4 };
+
+    // Full destructure
+    let Point { x, y } = p;
+    println(x);
+    println(y);
+
+    // Renaming
+    let Point { x: a, y: b } = new Point { x: 10, y: 20 };
+    println(a + b);
+
+    // With rest pattern
+    struct Triple {
+        int a,
+        int b,
+        int c,
+    }
+    let t = new Triple { a: 1, b: 2, c: 3 };
+    let Triple { a, .. } = t;
+    println(a);
+}
+
+main();

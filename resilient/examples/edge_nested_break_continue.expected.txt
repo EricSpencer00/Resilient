@@ -1,0 +1,6 @@
+i=0 j=0
+i=0 j=2
+i=1 j=0
+i=2 j=0
+i=2 j=2
+Program executed successfully

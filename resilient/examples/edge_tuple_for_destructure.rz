@@ -1,0 +1,14 @@
+// RES-933: Tuple destructuring in for binding
+
+fn main() {
+    let pairs = [(1, 10), (2, 20), (3, 30)];
+    let total = 0;
+
+    for (k, v) in pairs {
+        total = total + k * v;
+    }
+
+    println(total);  // 1*10 + 2*20 + 3*30 = 140
+}
+
+main();
