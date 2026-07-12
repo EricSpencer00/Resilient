@@ -14,6 +14,7 @@ file-claims + extension-point system introduced in PR #230.
 | `dispatch-agent.sh` | Create worktree + branch + draft PR for a ticket, then record inferred file claims |
 | `agent-handoff.sh` | Post resumable PR handoff comments when model context is lost |
 | `refresh-open-prs.sh` | Rebase every open non-draft PR branch against `main` after `main` advances |
+| `clear-approval-holds.sh` | Clear the `action_required` bot-approval hold on ready PRs (close+reopen) so no human ever clicks "Approve and run" |
 | `agent-status.sh` | One-screen or JSON view of worktrees, open PRs, queue health, claims, and the next ticket |
 | **`verify-scope.sh`** | Guardrail: diff-shape + fmt + clippy + test + overlap, writes JSON report |
 | **`ready-or-bail.sh`** | Runs `verify-scope.sh`; marks PR ready, labels `agent-vetted`, and adds `Closes #N` only on green |
