@@ -164,4 +164,60 @@ println(to_string(length_sq(v)));
 "#);
         assert!(out.contains("25"), "expected 25 (3^2+4^2), got: {out:?}");
     }
+
+    #[test]
+    fn is_tuple_struct_detects_positional_fields() {
+        let fields = vec![
+            ("auto".to_string(), "0".to_string()),
+            ("auto".to_string(), "1".to_string()),
+            ("auto".to_string(), "2".to_string()),
+        ];
+        assert!(
+            super::is_tuple_struct(&fields),
+            "consecutive 0,1,2 should be detected as tuple"
+        );
+    }
+
+    #[test]
+    fn is_tuple_struct_rejects_named_fields() {
+        let fields = vec![
+            ("auto".to_string(), "x".to_string()),
+            ("auto".to_string(), "y".to_string()),
+        ];
+        assert!(
+            !super::is_tuple_struct(&fields),
+            "named fields should not be tuple struct"
+        );
+    }
+
+    #[test]
+    fn is_tuple_struct_rejects_empty_fields() {
+        let fields = vec![];
+        assert!(
+            !super::is_tuple_struct(&fields),
+            "empty fields should not be tuple struct"
+        );
+    }
+
+    #[test]
+    fn is_tuple_struct_rejects_non_consecutive() {
+        let fields = vec![
+            ("auto".to_string(), "0".to_string()),
+            ("auto".to_string(), "2".to_string()),
+        ];
+        assert!(
+            !super::is_tuple_struct(&fields),
+            "non-consecutive indices should not be tuple struct"
+        );
+    }
+
+    #[test]
+    fn tuple_struct_four_elements() {
+        let out = run(r#"
+struct Quad(int, int, int, int);
+let q = Quad(1, 2, 3, 4);
+println(to_string(q.0 + q.1 + q.2 + q.3));
+"#);
+        assert!(out.contains("10"), "expected 10 (1+2+3+4), got: {out:?}");
+    }
 }

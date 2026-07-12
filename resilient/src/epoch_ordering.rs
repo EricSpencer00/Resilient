@@ -87,4 +87,72 @@ mod tests {
         assert_eq!(epoch_of("migrate_epoch42"), Some(42));
         assert_eq!(epoch_of("no_epoch"), None);
     }
+
+    #[test]
+    fn ordered_epoch_calls_pass() {
+        let src = r#"
+            fn process() {
+                migrate_epoch1();
+                migrate_epoch2();
+                migrate_epoch3();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn same_epoch_repeated() {
+        let src = r#"
+            fn duplicate_calls() {
+                do_epoch5();
+                do_epoch5();
+                do_epoch5();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn mixed_epoch_and_non_epoch_calls() {
+        let src = r#"
+            fn mixed_flow() {
+                setup_epoch1();
+                regular_task();
+                migrate_epoch2();
+                cleanup();
+                verify_epoch3();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn zero_epoch_value() {
+        let src = r#"
+            fn start_epochs() {
+                init_epoch0();
+                main_epoch0();
+                finalize_epoch1();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn large_epoch_numbers() {
+        let src = r#"
+            fn long_sequence() {
+                phase_epoch100();
+                phase_epoch200();
+                phase_epoch500();
+                phase_epoch999();
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

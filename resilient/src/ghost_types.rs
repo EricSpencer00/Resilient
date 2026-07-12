@@ -177,4 +177,115 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn transitive_ghost_call_through_runtime_is_error() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "spec_check",
+            crate::feature_attrs::AttrRecord {
+                name: "ghost".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn spec_check(int x) -> bool { return x > 0; }
+            fn helper(int x) -> bool { return spec_check(x); }
+            fn main(int x) -> void { helper(x); }
+        "#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err(), "transitive ghost call should error");
+        assert!(err.unwrap_err().contains("helper"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn ghost_calling_ghost_is_ok() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "spec_check",
+            crate::feature_attrs::AttrRecord {
+                name: "ghost".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "spec_helper",
+            crate::feature_attrs::AttrRecord {
+                name: "ghost".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn spec_helper(int x) -> int { return x + 1; }
+            fn spec_check(int x) -> bool { return spec_helper(x) > 0; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_ghost_calls_from_runtime_reports_first() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "spec1",
+            crate::feature_attrs::AttrRecord {
+                name: "ghost".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "spec2",
+            crate::feature_attrs::AttrRecord {
+                name: "ghost".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn spec1(int x) -> bool { return x > 0; }
+            fn spec2(int x) -> bool { return x < 100; }
+            fn runtime(int x) -> void { spec1(x); spec2(x); }
+        "#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err());
+        let msg = err.unwrap_err();
+        assert!(msg.contains("spec1") || msg.contains("spec2"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn ghost_call_in_if_block_is_error() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "spec_verify",
+            crate::feature_attrs::AttrRecord {
+                name: "ghost".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn spec_verify(int x) -> bool { return true; }
+            fn runtime(int x) -> int {
+                if x > 0 { spec_verify(x); }
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err(), "ghost call in if block should error");
+        crate::feature_attrs::reset();
+    }
 }

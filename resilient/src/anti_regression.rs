@@ -123,4 +123,77 @@ mod tests {
         assert!(check(&prog, "test").is_err());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn multiple_stable_functions_all_checked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+            fn f(int x) -> int ensures result > 0 { return x; }
+            fn g(int x) -> int { return x + 1; }
+        "#;
+        let (prog, _) = parse(src);
+        let fps = crate::behavioral_fingerprint::fingerprint_program(&prog);
+        let f_digest = fps["f"].digest;
+        let g_digest = fps["g"].digest;
+        crate::feature_attrs::record(
+            "f",
+            crate::feature_attrs::AttrRecord {
+                name: "stable".into(),
+                args: format!(r#"since = "1.0", behavior = "{f_digest}""#),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "g",
+            crate::feature_attrs::AttrRecord {
+                name: "stable".into(),
+                args: format!(r#"since = "2.0", behavior = "{g_digest}""#),
+                line: 0,
+            },
+        );
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn stable_without_behavior_arg_passes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"fn h(int x) -> int { return x * 2; }"#;
+        let (prog, _) = parse(src);
+        crate::feature_attrs::record(
+            "h",
+            crate::feature_attrs::AttrRecord {
+                name: "stable".into(),
+                args: r#"since = "1.5""#.into(),
+                line: 0,
+            },
+        );
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn error_message_contains_function_name_and_digests() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"fn important(int x) -> int { return x; }"#;
+        let (prog, _) = parse(src);
+        crate::feature_attrs::record(
+            "important",
+            crate::feature_attrs::AttrRecord {
+                name: "stable".into(),
+                args: r#"since = "1.0", behavior = "12345""#.into(),
+                line: 0,
+            },
+        );
+        let result = check(&prog, "myfile.res");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("important"));
+        assert!(err_msg.contains("myfile.res"));
+        assert!(err_msg.contains("12345"));
+        crate::feature_attrs::reset();
+    }
 }

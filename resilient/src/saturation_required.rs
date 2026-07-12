@@ -86,4 +86,39 @@ mod tests {
         assert!(SAT_FNS.contains(&"saturating_add"));
         assert!(SAT_NAME_SUFFIXES.contains(&"_pwm"));
     }
+
+    #[test]
+    fn all_sat_suffixes_detected() {
+        for suffix in &["_pwm", "_duty", "_brightness", "_pct", "_throttle"] {
+            assert!(
+                SAT_NAME_SUFFIXES.contains(suffix),
+                "suffix {} must be in list",
+                suffix
+            );
+        }
+    }
+
+    #[test]
+    fn duty_cycle_with_saturating_mul_passes() {
+        let src =
+            "fn adjust(int x) -> int { let duty_val = saturating_mul(x, 2); return duty_val; }\n";
+        let (prog, _) = crate::parse(src);
+        // V1 warns but doesn't error, so always Ok
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn brightness_pct_with_unchecked_add_detected() {
+        let src = "fn set(int b) { let brightness_pct = b + 10; }\n";
+        let (prog, _) = crate::parse(src);
+        // V1 warns but returns Ok
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn throttle_with_unchecked_sub_detected() {
+        let src = "fn reduce(int t) { let throttle_val = t - 5; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

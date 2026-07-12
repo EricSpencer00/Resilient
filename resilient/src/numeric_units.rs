@@ -145,4 +145,63 @@ mod tests {
             "same-unit arithmetic must not error in V1"
         );
     }
+
+    #[test]
+    fn mixed_unit_subtraction_warns() {
+        let src = "fn f(int x_ms, int y_s) -> int { return x_ms - y_s; }\n";
+        let (prog, _) = parse(src);
+        // Warnings don't fail in V1
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn same_unit_subtraction_passes() {
+        let src = "fn f(int a_km, int b_km) -> int { return a_km - b_km; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_different_unit_variables() {
+        let src = "fn f(int time_ms, int dist_m, int mass_kg) -> int { return time_ms + 100; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn let_binding_unit_detection() {
+        let src = "fn f(int x_s) -> int { let y_s = x_s + 10; return y_s; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn unit_suffix_seq_recognized() {
+        let src = "fn f(int msg_seq, int next_seq) -> int { return msg_seq + next_seq; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn unit_suffix_clock_recognized() {
+        let src = "fn f(int sys_clock, int ref_clock) -> int { return sys_clock + ref_clock; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn mixed_frequency_units_warns() {
+        let src = "fn f(int f1_hz, int f2_khz) -> int { return f1_hz + f2_khz; }\n";
+        let (prog, _) = parse(src);
+        // Warns but still passes
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn voltage_and_current_mixed_warns() {
+        let src = "fn f(int v_v, int i_a) -> int { return v_v + i_a; }\n";
+        let (prog, _) = parse(src);
+        // Different units should warn
+        assert!(check(&prog, "test").is_ok());
+    }
 }

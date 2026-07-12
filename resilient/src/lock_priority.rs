@@ -161,4 +161,159 @@ mod tests {
         assert!(collect().is_empty());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn low_priority_calling_high_is_ok() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "low",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "1".into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "high",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "5".into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn high(int x) { return x; }
+            fn low(int x) { return high(x); }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn equal_priority_is_ok() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "f1",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "3".into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "f2",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "3".into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn f1(int x) { return x; }
+            fn f2(int x) { return f1(x); }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn transitive_priority_inversion_detected() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "high",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "5".into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "mid",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "3".into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "low",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "1".into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn high(int x) { return mid(x); }
+            fn mid(int x) { return low(x); }
+            fn low(int x) { return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_functions_with_priorities_checked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "real_time",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "10".into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "background",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "1".into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn real_time(int x) { return x + 1; }
+            fn background(int x) { return x + 1; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn priority_inversion_error_includes_details() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "critical",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "8".into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "slow",
+            crate::feature_attrs::AttrRecord {
+                name: "lock_priority".into(),
+                args: "2".into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn critical(int x) { return slow(x); }
+            fn slow(int x) { return x; }
+        "#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test").unwrap_err();
+        assert!(err.contains("inversion") || err.contains("priority"));
+        crate::feature_attrs::reset();
+    }
 }

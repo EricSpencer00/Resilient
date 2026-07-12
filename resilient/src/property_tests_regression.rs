@@ -97,4 +97,74 @@ mod tests {
             assert_eq!(err, expected);
         }
     }
+
+    #[test]
+    fn minimum_samples_value_accepted() {
+        let result = check_with_property_test_attr("min_test", "samples = 1", 40);
+        assert!(result.is_ok(), "minimum samples value should be accepted");
+    }
+
+    #[test]
+    fn large_samples_value_accepted() {
+        let result = check_with_property_test_attr("large_test", "samples = 10000", 41);
+        assert!(result.is_ok(), "large samples value should be accepted");
+    }
+
+    #[test]
+    fn whitespace_variations_handled() {
+        for (name, args) in [
+            ("ws1", "samples=1"),
+            ("ws2", "samples = 1"),
+            ("ws3", "  samples  =  1  "),
+            ("ws4", "samples=  42  "),
+        ] {
+            let result = check_with_property_test_attr(name, args, 50);
+            assert!(
+                result.is_ok(),
+                "whitespace variation for {name} should be handled"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_samples_with_various_quotes() {
+        for (name, args) in [("q1", r#"samples = "5""#), ("q2", r#"samples="99""#)] {
+            let result = check_with_property_test_attr(name, args, 51);
+            assert!(result.is_ok(), "quoted samples for {name} should work");
+        }
+    }
+
+    #[test]
+    fn error_message_includes_item_name() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "bad_func",
+            crate::feature_attrs::AttrRecord {
+                name: "property_test".into(),
+                args: "".into(),
+                line: 60,
+            },
+        );
+        let src = "fn bad_func(int x) requires x > 0 ensures result > 0 { return x + 1; }";
+        let (prog, _) = crate::parse(src);
+        let err = crate::property_tests::check(&prog, "<test>").expect_err("expected error");
+        assert!(
+            err.contains("bad_func"),
+            "error message should include function name"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn negative_samples_rejected() {
+        let result = check_with_property_test_attr("neg_test", "samples = -5", 61);
+        assert!(result.is_err(), "negative samples should be rejected");
+    }
+
+    #[test]
+    fn multiple_whitespace_patterns() {
+        let result = check_with_property_test_attr("multi_ws", "  samples  =  42  ", 62);
+        assert!(result.is_ok(), "complex whitespace should be handled");
+    }
 }

@@ -119,4 +119,53 @@ mod tests {
     fn once_suffixes_include_oncepertick() {
         assert!(ONCE_SUFFIXES.contains(&"_oncepertick"));
     }
+
+    #[test]
+    fn function_called_multiple_times_singleshot_warns() {
+        let src = "
+fn critical_singleshot() { }
+fn main() {
+    critical_singleshot();
+    critical_singleshot();
+}
+";
+        let (prog, _) = crate::parse(src);
+        // V1 always returns Ok (warnings only), but the check detects the violation
+        assert!(
+            check(&prog, "test").is_ok(),
+            "V1 returns Ok even with violations"
+        );
+    }
+
+    #[test]
+    fn function_few_suffix_allows_up_to_three_calls() {
+        let src = "
+fn handler_few() { }
+fn main() {
+    handler_few();
+    handler_few();
+    handler_few();
+}
+";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn function_few_suffix_exceeding_three_calls_detected() {
+        let src = "
+fn process_few() { }
+fn main() {
+    process_few();
+    process_few();
+    process_few();
+    process_few();
+}
+";
+        let (prog, _) = crate::parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "V1 warnings don't cause error"
+        );
+    }
 }

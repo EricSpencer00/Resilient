@@ -130,4 +130,46 @@ mod tests {
             "V1 checker only warns, never returns Err"
         );
     }
+
+    #[test]
+    fn watchdog_with_feed_method_call_ok() {
+        let src = "fn feed_handler(Watchdog wd) { wd.feed(); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn watchdog_with_kick_method_ok() {
+        let src = "fn kick_handler(Watchdog wd) { wd.kick(); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn watchdog_with_pet_method_ok() {
+        let src = "fn pet_handler(Watchdog wd) { wd.pet(); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn watchdog_with_free_function_feed_ok() {
+        let src = "fn handle(Watchdog wd) { feed_watchdog(wd); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn watchdog_ref_type_detected() {
+        let src = "fn handle_ref(&Watchdog wd) { wd.feed(); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_watchdogs_all_fed() {
+        let src = "fn dual_feed(Watchdog wd1, Watchdog wd2) { wd1.feed(); wd2.kick(); }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

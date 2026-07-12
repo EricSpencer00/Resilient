@@ -176,4 +176,142 @@ mod tests {
         };
         assert!(estimate_uj(&node) >= 0.0, "estimate must be non-negative");
     }
+
+    #[test]
+    fn volatile_call_within_budget() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "read_reg",
+            crate::feature_attrs::AttrRecord {
+                name: "power".into(),
+                args: r#"uj = "1""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"fn read_reg(int x) { volatile_read(x); return 0; }"#;
+        let (prog, _) = parse(src);
+        // volatile is 0.05µJ, well within 1µJ budget
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn radio_call_exceeds_budget() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "transmit",
+            crate::feature_attrs::AttrRecord {
+                name: "power".into(),
+                args: r#"uj = "50""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"fn transmit(int x) { radio_send(x); return 0; }"#;
+        let (prog, _) = parse(src);
+        // radio is 100µJ, exceeds 50µJ budget
+        assert!(check(&prog, "test").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_statements_accumulate() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "work",
+            crate::feature_attrs::AttrRecord {
+                name: "power".into(),
+                args: r#"uj = "10""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn work(int x) {
+                let a = x + 1;
+                let b = a + 1;
+                let c = b + 1;
+                return 0;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn nested_function_calls_tracked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "outer",
+            crate::feature_attrs::AttrRecord {
+                name: "power".into(),
+                args: r#"uj = "5""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn inner(int x) { return x + 1; }
+            fn outer(int x) { return inner(x); }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn if_statement_worst_case_chosen() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "branch",
+            crate::feature_attrs::AttrRecord {
+                name: "power".into(),
+                args: r#"uj = "200""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn branch(int x) {
+                if x > 0 {
+                    radio_send(1);
+                } else {
+                    return 0;
+                }
+                return x;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        // radio_send is 100µJ, within 200µJ budget
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn while_loop_multiplied_by_100() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "loop_work",
+            crate::feature_attrs::AttrRecord {
+                name: "power".into(),
+                args: r#"uj = "1""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn loop_work(int x) {
+                while x > 0 {
+                    x = x - 1;
+                }
+                return 0;
+            }
+        "#;
+        let (prog, _) = parse(src);
+        // Loop multiplies by 100: 0.001 * 100 = 0.1µJ, still within 1µJ
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }

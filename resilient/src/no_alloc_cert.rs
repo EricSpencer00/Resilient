@@ -142,4 +142,148 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn no_alloc_with_pure_code_passes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "safe_add",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"fn safe_add(int x, int y) -> int { return x + y; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn no_alloc_with_array_literal_fails() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "make_array",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"fn make_array(int x) -> void { let a = [1, 2, 3]; }"#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("array literal"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn no_alloc_with_map_literal_fails() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "make_map",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"fn make_map(int x) -> void { let m = { "key": 1 }; }"#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn no_alloc_with_string_interpolation_fails() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "format_str",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"fn format_str(int x) -> void { let s = "value: {x}"; }"#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn no_alloc_with_push_builtin_fails() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "append",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"fn append(int x) -> void { push([1, 2], 3); }"#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("builtin"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_no_alloc_functions_checked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "add",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "mul",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn add(int x, int y) -> int { return x + y; }
+            fn mul(int x, int y) -> int { return x * y; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn no_alloc_with_format_builtin_fails() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fmt",
+            crate::feature_attrs::AttrRecord {
+                name: "no_alloc".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"fn fmt(int x) -> void { format("x={}", x); }"#;
+        let (prog, _) = parse(src);
+        let err = check(&prog, "test");
+        assert!(err.is_err());
+        crate::feature_attrs::reset();
+    }
 }

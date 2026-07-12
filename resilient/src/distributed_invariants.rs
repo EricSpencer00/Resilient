@@ -165,4 +165,96 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn invariant_with_declared_actors_passes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Balance",
+            crate::feature_attrs::AttrRecord {
+                name: "distributed_invariant".into(),
+                args: r#"actors = "A B", invariant = "total >= 0""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            actor A { }
+            actor B { }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_invariants_all_validated() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Inv1",
+            crate::feature_attrs::AttrRecord {
+                name: "distributed_invariant".into(),
+                args: r#"actors = "A B C", invariant = "x + y + z = total""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "Inv2",
+            crate::feature_attrs::AttrRecord {
+                name: "distributed_invariant".into(),
+                args: r#"actors = "D E", invariant = "d >= e""#.into(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            actor A { }
+            actor B { }
+            actor C { }
+            actor D { }
+            actor E { }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn invariant_with_single_actor() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "State",
+            crate::feature_attrs::AttrRecord {
+                name: "distributed_invariant".into(),
+                args: r#"actors = "X", invariant = "x > 0""#.into(),
+                line: 0,
+            },
+        );
+        let src = "actor X { }";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn for_actor_query() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Ledger",
+            crate::feature_attrs::AttrRecord {
+                name: "distributed_invariant".into(),
+                args: r#"actors = "Sender Receiver", invariant = "conserved""#.into(),
+                line: 0,
+            },
+        );
+        let src = "actor Sender { } actor Receiver { }";
+        let (prog, _) = crate::parse(src);
+        let _ = check(&prog, "test");
+        let inv_for_sender = for_actor("Sender");
+        assert_eq!(inv_for_sender.len(), 1);
+        assert_eq!(inv_for_sender[0].name, "Ledger");
+        crate::feature_attrs::reset();
+    }
 }

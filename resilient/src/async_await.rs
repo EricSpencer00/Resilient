@@ -166,4 +166,84 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn async_to_async_call_allowed() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "fetch",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "fetch_all",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn fetch(int x) -> int { return x; }
+            fn fetch_all(int y) -> int { return fetch(y); }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_async_calls_from_sync_fails() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "a",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "b",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn a(int x) -> int { return x; }
+            fn b(int x) -> int { return x + 1; }
+            fn sync_caller(int x) -> int { a(x); b(x); return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn nested_block_on_allowed() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "async_fn",
+            crate::feature_attrs::AttrRecord {
+                name: "async_fn".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn async_fn(int x) -> int { return x; }
+            fn sync_caller(int x) -> int { return block_on(block_on(async_fn(x))); }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }

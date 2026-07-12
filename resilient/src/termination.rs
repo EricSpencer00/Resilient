@@ -259,4 +259,23 @@ mod tests {
     // golden examples in `examples/termination_*.rz`. Unit-testing
     // it here would require constructing a full `Node::Program`
     // with span info, which the integration tests already do.
+
+    #[test]
+    fn has_termination_annotation_leading_spaces_trimmed() {
+        assert!(has_termination_annotation("   // @decreases n"));
+        assert!(has_termination_annotation("\t// @decreases x"));
+    }
+
+    #[test]
+    fn has_termination_annotation_complex_metric() {
+        assert!(has_termination_annotation("// @decreases (n, m)"));
+        assert!(has_termination_annotation("// @decreases length(x) - 1"));
+    }
+
+    #[test]
+    fn has_termination_annotation_may_diverge_with_comment_trailer() {
+        assert!(has_termination_annotation(
+            "// @may_diverge (event loop, no bounded completion)"
+        ));
+    }
 }

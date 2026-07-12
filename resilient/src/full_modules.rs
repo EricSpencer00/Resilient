@@ -168,4 +168,57 @@ mod tests {
         let g = ModuleGraph::default();
         assert!(detect_cycle(&g).is_none());
     }
+
+    #[test]
+    fn single_module_no_dependencies() {
+        let src = r#"module MyMod { }"#;
+        let (prog, _) = crate::parse(src);
+        let g = build(&prog);
+        assert!(detect_cycle(&g).is_none());
+    }
+
+    #[test]
+    fn multiple_modules_no_cycles() {
+        let src = r#"
+            module A { }
+            module B { }
+            module C { }
+        "#;
+        let (prog, _) = crate::parse(src);
+        let g = build(&prog);
+        assert!(detect_cycle(&g).is_none());
+    }
+
+    #[test]
+    fn linear_dependency_chain() {
+        let src = r#"
+            module A { }
+            use "b";
+            module B { }
+            use "c";
+            module C { }
+        "#;
+        let (prog, _) = crate::parse(src);
+        let g = build(&prog);
+        assert!(detect_cycle(&g).is_none());
+    }
+
+    #[test]
+    fn visibility_enum_all_variants() {
+        assert_eq!(Visibility::from_str("pub"), Visibility::Public);
+        assert_eq!(Visibility::from_str("pub(crate)"), Visibility::Crate);
+        assert_eq!(Visibility::from_str("private"), Visibility::Private);
+        assert_eq!(Visibility::from_str(""), Visibility::Private);
+        assert_eq!(Visibility::from_str("unknown"), Visibility::Private);
+    }
+
+    #[test]
+    fn check_passes_for_acyclic_graph() {
+        let src = r#"
+            module Server { }
+            module Client { }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test.rz").is_ok());
+    }
 }
