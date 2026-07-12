@@ -120,4 +120,58 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn io_call_with_literal_size_within_budget() {
+        let src = r#"
+            fn transmit_iobytes64() {
+                net_send(32);
+                radio_tx(20);
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn string_literal_length_counted() {
+        let src = r#"
+            fn send_iobytes256() {
+                serial_tx("hello world");
+                file_write_chunk("more data");
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_io_functions_sum_budgets() {
+        let src = r#"
+            fn mixed_io_iobytes128() {
+                net_send(50);
+                radio_tx(30);
+                serial_tx(40);
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn different_io_function_names() {
+        let src = r#"
+            fn all_io_variants_iobytes512() {
+                net_send(100);
+                radio_tx(100);
+                serial_tx(100);
+                file_write_chunk(100);
+                uart_write(50);
+                i2c_tx(30);
+                spi_tx(30);
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

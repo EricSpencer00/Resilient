@@ -129,4 +129,72 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn ok_return_passes() {
+        let src = r#"fn safe_fn() { return Ok(42); }"#;
+        let (prog, _) = parse(src);
+        if let Node::Program(stmts) = &prog {
+            for s in stmts {
+                if let Node::Function { name, .. } = &s.node {
+                    if name == "safe_fn" {
+                        assert!(is_crash_only_certified(&s.node));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn result_return_passes() {
+        let src = r#"fn fn_result() { return Result(1); }"#;
+        let (prog, _) = parse(src);
+        if let Node::Program(stmts) = &prog {
+            for s in stmts {
+                if let Node::Function { name, .. } = &s.node {
+                    if name == "fn_result" {
+                        assert!(is_crash_only_certified(&s.node));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_safe_returns() {
+        let src = r#"
+            fn multi_safe(int x) {
+                if x > 0 {
+                    return Ok(x);
+                } else {
+                    return Err(0);
+                }
+            }
+        "#;
+        let (prog, _) = parse(src);
+        if let Node::Program(stmts) = &prog {
+            for s in stmts {
+                if let Node::Function { name, .. } = &s.node {
+                    if name == "multi_safe" {
+                        assert!(is_crash_only_certified(&s.node));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn result_identifier_recognized() {
+        let src = r#"fn use_result() { return result; }"#;
+        let (prog, _) = parse(src);
+        if let Node::Program(stmts) = &prog {
+            for s in stmts {
+                if let Node::Function { name, .. } = &s.node {
+                    if name == "use_result" {
+                        assert!(is_crash_only_certified(&s.node));
+                    }
+                }
+            }
+        }
+    }
 }

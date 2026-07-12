@@ -160,4 +160,75 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn direct_blocking_call_counted() {
+        let src = r#"
+            fn immediate_bound1() {
+                wait();
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn blocking_suffix_function_counted() {
+        let src = r#"
+            fn io_blocking();
+            fn caller_bound2() {
+                io_blocking();
+                sleep();
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_budget_levels() {
+        let src = r#"
+            fn task_bound1() {
+                acquire();
+            }
+            fn task_bound2() {
+                lock();
+                recv();
+            }
+            fn task_bound4() {
+                sleep();
+                wait();
+                acquire();
+                lock();
+            }
+            fn task_bound8() {
+                sleep();
+                wait();
+                recv();
+                lock();
+                acquire();
+                block_on();
+                park();
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn all_blocking_primitives() {
+        let src = r#"
+            fn check_primitives_bound8() {
+                wait();
+                sleep();
+                recv();
+                lock();
+                acquire();
+                block_on();
+                park();
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

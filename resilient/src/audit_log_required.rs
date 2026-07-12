@@ -84,4 +84,53 @@ mod tests {
         assert!(AUDIT_FNS.contains(&"audit_log"));
         assert!(AUDIT_FNS.contains(&"journal"));
     }
+
+    #[test]
+    fn audited_field_assignment_with_logging_passes() {
+        let src = r#"
+            fn update_record(MyRecord r) {
+                r.audited_status = 1;
+                audit_log("status changed");
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn field_ending_with_audited_suffix() {
+        let src = r#"
+            fn update_account(Account a) {
+                a.balance_audited = 100;
+                journal("balance updated");
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_audited_writes_single_log_call() {
+        let src = r#"
+            fn multi_update(Record r) {
+                r.audited_field1 = 1;
+                r.audited_field2 = 2;
+                record_event("batch update");
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn different_audit_fn_variants() {
+        let src = r#"
+            fn a(Record r) {
+                r.audited_x = 1;
+                emit_audit("done");
+            }
+        "#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }
