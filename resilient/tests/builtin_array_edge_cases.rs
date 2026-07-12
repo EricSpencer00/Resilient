@@ -945,7 +945,7 @@ main();
 "#;
     let result = resilient::run_program(code);
     assert!(!result.ok, "Should have failed on empty array");
-    assert!(result.errors.len() > 0, "Expected errors");
+    assert!(!result.errors.is_empty(), "Expected errors");
 }
 
 #[test]
