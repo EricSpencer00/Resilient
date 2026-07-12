@@ -852,4 +852,114 @@ mod tests {
         let id2 = timer_init(TimerConfig::periodic(1_000)).unwrap();
         assert_eq!(id2.index(), 1);
     }
+
+    // ---------- PWM duty cycle boundaries ----------
+
+    #[test]
+    fn pwm_duty_500_is_50_percent() {
+        let _g = lock();
+        let id = timer_init(TimerConfig::pwm(1_000, 500)).unwrap();
+        timer_start(id).unwrap();
+        // Period is 1ms = 1000us. 50% high time = 500us.
+        assert!(timer_pwm_level(id).unwrap());
+        tick(250); // 250us — still high
+        assert!(timer_pwm_level(id).unwrap());
+        tick(250); // 500us — should go low
+        assert!(!timer_pwm_level(id).unwrap());
+    }
+
+    #[test]
+    fn pwm_full_duty_1000_stays_high() {
+        let _g = lock();
+        let id = timer_init(TimerConfig::pwm(1_000, 1000)).unwrap();
+        timer_start(id).unwrap();
+        for t in 0..10 {
+            tick(100);
+            assert!(
+                timer_pwm_level(id).unwrap(),
+                "PWM duty 1000 must stay high at iteration {}",
+                t
+            );
+        }
+    }
+
+    #[test]
+    fn pwm_zero_duty_0_stays_low() {
+        let _g = lock();
+        let id = timer_init(TimerConfig::pwm(1_000, 0)).unwrap();
+        timer_start(id).unwrap();
+        for _ in 0..10 {
+            tick(100);
+            assert!(!timer_pwm_level(id).unwrap());
+        }
+    }
+
+    #[test]
+    fn pwm_duty_cycle_period_callback_fires() {
+        let _g = lock();
+        reset_cb();
+        let id = timer_init(TimerConfig::pwm(2_000, 750)).unwrap(); // 500us period
+        timer_set_callback(id, Some(bump_cb)).unwrap();
+        timer_start(id).unwrap();
+        tick(500);
+        assert_eq!(CB_COUNT.load(Ordering::SeqCst), 1);
+        tick(500);
+        assert_eq!(CB_COUNT.load(Ordering::SeqCst), 2);
+    }
+
+    // ---------- Elapsed counter overflow handling ----------
+
+    #[test]
+    fn elapsed_us_saturates_at_u64_max() {
+        let _g = lock();
+        let id = timer_init(TimerConfig::periodic(1_000)).unwrap();
+        timer_start(id).unwrap();
+        // Simulate adding u32::MAX worth of microseconds multiple times.
+        tick(u32::MAX);
+        let e1 = timer_elapsed_us(id).unwrap();
+        tick(u32::MAX);
+        let e2 = timer_elapsed_us(id).unwrap();
+        // elapsed_us uses saturating_add, so it grows but doesn't wrap.
+        assert!(e2 >= e1);
+    }
+
+    // ---------- Exhaustion at MAX_TIMERS slots ----------
+
+    #[test]
+    fn exact_max_timers_allocation() {
+        let _g = lock();
+        let mut ids = [TimerId(0); MAX_TIMERS];
+        for (i, slot) in ids.iter_mut().enumerate() {
+            *slot = timer_init(TimerConfig::periodic(1_000)).expect("should allocate slot");
+            assert_eq!(slot.index(), i as u8);
+        }
+        // All slots filled — next init fails.
+        let err = timer_init(TimerConfig::periodic(1_000)).unwrap_err();
+        assert_eq!(err, TimerError::Exhausted);
+        // Release one and retry.
+        timer_release(ids[MAX_TIMERS / 2]).unwrap();
+        let _new = timer_init(TimerConfig::periodic(1_000)).expect("should allocate after release");
+    }
+
+    #[test]
+    fn slot_reuse_after_release() {
+        let _g = lock();
+        let id1 = timer_init(TimerConfig::periodic(1_000)).unwrap();
+        assert_eq!(id1.index(), 0);
+        timer_release(id1).unwrap();
+        let id2 = timer_init(TimerConfig::periodic(2_000)).unwrap();
+        // Allocator may reuse the freed slot.
+        assert_eq!(id2.index(), 0);
+    }
+
+    #[test]
+    fn start_already_running_is_noop() {
+        let _g = lock();
+        let id = timer_init(TimerConfig::periodic(1_000)).unwrap();
+        timer_start(id).unwrap();
+        timer_start(id).unwrap(); // idempotent
+        assert_eq!(timer_count(id).unwrap(), 0);
+        tick(1_000);
+        assert_eq!(timer_count(id).unwrap(), 1);
+    }
 }

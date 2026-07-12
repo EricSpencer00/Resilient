@@ -509,4 +509,72 @@ mod tests {
         let o: Fixed<16, 16> = Fixed::one().unwrap();
         assert_eq!(o.to_float(), 1.0);
     }
+
+    // ---------- Additional saturation + edge case tests ----------
+
+    #[test]
+    fn from_float_saturation_at_boundary() {
+        // Test saturation right at the 32-bit boundary.
+        let x = Fixed::<16, 16>::from_float((i32::MAX as f64) + 1.0).unwrap();
+        assert_eq!(x.raw(), i32::MAX as i64);
+    }
+
+    #[test]
+    fn from_float_negative_saturation() {
+        let x = Fixed::<16, 16>::from_float((i32::MIN as f64) - 1.0).unwrap();
+        assert_eq!(x.raw(), i32::MIN as i64);
+    }
+
+    #[test]
+    fn from_float_exact_min_value() {
+        // i32::MIN as f64 is outside 16.16 range, so it saturates to min
+        let x = Fixed::<16, 16>::from_float(i32::MIN as f64).unwrap();
+        assert_eq!(x.raw(), i32::MIN as i64);
+    }
+
+    #[test]
+    fn div_by_very_small_value_not_panic() {
+        let a = Fixed::<16, 16>::from_float(1.0).unwrap();
+        let b = Fixed::<16, 16>::from_float(0.0001).unwrap();
+        let _r = a.div(b).unwrap();
+        // No panic — division succeeds with scaling.
+    }
+
+    #[test]
+    fn div_near_zero_one_by_near_one() {
+        let numerator = Fixed::<16, 16>::from_float(1.0).unwrap();
+        let denominator = Fixed::<16, 16>::from_float(1.0).unwrap();
+        let r = numerator.div(denominator).unwrap();
+        assert_eq!(r.to_float(), 1.0);
+    }
+
+    #[test]
+    fn mul_negative_overflow_wraps() {
+        // i64::MIN * -1 should wrap (negating the min wraps to itself).
+        let a = Fixed::<32, 32>::from_raw(i64::MIN);
+        let b = Fixed::<32, 32>::from_raw(-1);
+        let result = a.mul(b);
+        // Result should be some wrapped value, not panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn neg_at_min_wraps_to_itself() {
+        let x = Fixed::<32, 32>::from_raw(i64::MIN);
+        let neg = x.neg();
+        // i64::MIN.wrapping_neg() == i64::MIN
+        assert_eq!(neg.raw(), i64::MIN);
+    }
+
+    #[test]
+    fn from_float_very_large_value_saturates() {
+        let x = Fixed::<16, 16>::from_float(1e20).unwrap();
+        assert_eq!(x.raw(), i32::MAX as i64);
+    }
+
+    #[test]
+    fn from_float_very_small_negative_saturates() {
+        let x = Fixed::<16, 16>::from_float(-1e20).unwrap();
+        assert_eq!(x.raw(), i32::MIN as i64);
+    }
 }

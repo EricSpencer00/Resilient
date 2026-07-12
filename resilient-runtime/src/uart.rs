@@ -845,4 +845,131 @@ mod tests {
         let _cfg2 = cfg; // not a move
         let _cfg3 = cfg; // still usable
     }
+
+    // ---------- Framing combinations ----------
+
+    #[test]
+    fn all_parity_modes_round_trip() {
+        for parity in [Parity::None, Parity::Even, Parity::Odd] {
+            let cfg = UartConfig::new(115_200).parity(parity);
+            assert_eq!(cfg.parity, parity);
+        }
+    }
+
+    #[test]
+    fn all_data_bits_round_trip() {
+        for bits in [DataBits::Seven, DataBits::Eight, DataBits::Nine] {
+            let cfg = UartConfig::new(115_200).data_bits(bits);
+            assert_eq!(cfg.data_bits, bits);
+        }
+    }
+
+    #[test]
+    fn all_stop_bits_round_trip() {
+        for stops in [StopBits::One, StopBits::Two] {
+            let cfg = UartConfig::new(115_200).stop_bits(stops);
+            assert_eq!(cfg.stop_bits, stops);
+        }
+    }
+
+    #[test]
+    fn framing_combo_7e2() {
+        let cfg = UartConfig::new(9600)
+            .data_bits(DataBits::Seven)
+            .parity(Parity::Even)
+            .stop_bits(StopBits::Two);
+        assert_eq!(cfg.data_bits, DataBits::Seven);
+        assert_eq!(cfg.parity, Parity::Even);
+        assert_eq!(cfg.stop_bits, StopBits::Two);
+    }
+
+    #[test]
+    fn framing_combo_9n1() {
+        let cfg = UartConfig::new(115_200)
+            .data_bits(DataBits::Nine)
+            .parity(Parity::None)
+            .stop_bits(StopBits::One);
+        assert_eq!(cfg.data_bits, DataBits::Nine);
+        assert_eq!(cfg.parity, Parity::None);
+        assert_eq!(cfg.stop_bits, StopBits::One);
+    }
+
+    // ---------- Baud rate edge cases ----------
+
+    #[test]
+    fn baud_zero_rejected_at_init() {
+        let mut mock = MockUart::new();
+        let err = uart_init(&mut mock, UartConfig::new(0)).unwrap_err();
+        assert_eq!(err, UartError::InvalidConfig);
+    }
+
+    #[test]
+    fn common_baud_rates_accepted() {
+        for baud in [9600, 19200, 38400, 57600, 115_200, 230_400] {
+            let mut m = MockUart::new();
+            let result = uart_init(&mut m, UartConfig::new(baud));
+            assert!(result.is_ok(), "baud {} should be accepted", baud);
+        }
+    }
+
+    // ---------- Partial I/O tests ----------
+
+    #[test]
+    fn write_partial_success_on_pressure() {
+        let mut mock = MockUart::new();
+        mock.tx_pressure_cycles = 1; // Fail once, then succeed.
+        let mut handle = uart_init(&mut mock, UartConfig::new(115_200)).unwrap();
+        let n = handle.write(b"AB").unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(handle.bytes_written(), 2);
+    }
+
+    #[test]
+    fn read_partial_buffer_multiple_bytes() {
+        let mut mock = MockUart::new();
+        mock.feed_rx(b"Hello");
+        let mut handle = uart_init(&mut mock, UartConfig::new(115_200)).unwrap();
+        let mut buf = [0u8; 5];
+        handle.read(&mut buf).unwrap();
+        assert_eq!(&buf, b"Hello");
+    }
+
+    #[test]
+    fn available_empty_at_start() {
+        let mut mock = MockUart::new();
+        let handle = uart_init(&mut mock, UartConfig::new(115_200)).unwrap();
+        assert_eq!(handle.available(), 0);
+    }
+
+    #[test]
+    fn bytes_counters_independent() {
+        let mut mock = MockUart::new();
+        mock.feed_rx(b"input");
+        let mut handle = uart_init(&mut mock, UartConfig::new(115_200)).unwrap();
+        handle.write(b"out").unwrap();
+        let mut buf = [0u8; 5];
+        handle.read(&mut buf).unwrap();
+        assert_eq!(handle.bytes_written(), 3);
+        assert_eq!(handle.bytes_read(), 5);
+    }
+
+    #[test]
+    fn hardware_error_on_write_first_byte() {
+        let mut mock = MockUart::new();
+        mock.force_hardware_error_on_next_write = true;
+        let mut handle = uart_init(&mut mock, UartConfig::new(115_200)).unwrap();
+        let err = handle.write(b"test").unwrap_err();
+        assert_eq!(err, UartError::Hardware);
+    }
+
+    #[test]
+    fn hardware_error_mid_read() {
+        let mut mock = MockUart::new();
+        mock.feed_rx(b"ab");
+        mock.force_hardware_error_on_next_read = true;
+        let mut handle = uart_init(&mut mock, UartConfig::new(115_200)).unwrap();
+        let mut buf = [0u8; 4];
+        let err = handle.read(&mut buf).unwrap_err();
+        assert_eq!(err, UartError::Hardware);
+    }
 }

@@ -102,4 +102,92 @@ mod tests {
         assert_eq!(HITS.load(AOrd::Relaxed), 1);
         clear_live_telemetry();
     }
+
+    // ---------- Hook swap sequencing ----------
+
+    #[test]
+    fn has_backend_starts_false() {
+        let _g = LIVE_TELEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_live_telemetry();
+        assert!(!has_live_telemetry_backend());
+    }
+
+    #[test]
+    fn has_backend_true_after_set() {
+        let _g = LIVE_TELEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_live_telemetry();
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let backend: &'static mut CountingBackend =
+            Box::leak(Box::new(CountingBackend { hits: &HITS }));
+        set_live_telemetry(backend);
+        assert!(has_live_telemetry_backend());
+        clear_live_telemetry();
+    }
+
+    #[test]
+    fn has_backend_false_after_clear() {
+        let _g = LIVE_TELEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_live_telemetry();
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        let backend: &'static mut CountingBackend =
+            Box::leak(Box::new(CountingBackend { hits: &HITS }));
+        set_live_telemetry(backend);
+        assert!(has_live_telemetry_backend());
+        clear_live_telemetry();
+        assert!(!has_live_telemetry_backend());
+    }
+
+    #[test]
+    fn backend_swap_replaces_target() {
+        let _g = LIVE_TELEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_live_telemetry();
+        static HITS1: AtomicUsize = AtomicUsize::new(0);
+        static HITS2: AtomicUsize = AtomicUsize::new(0);
+        HITS1.store(0, AOrd::Relaxed);
+        HITS2.store(0, AOrd::Relaxed);
+        let backend1: &'static mut CountingBackend =
+            Box::leak(Box::new(CountingBackend { hits: &HITS1 }));
+        let backend2: &'static mut CountingBackend =
+            Box::leak(Box::new(CountingBackend { hits: &HITS2 }));
+        // Install first backend
+        set_live_telemetry(backend1);
+        emit_live_retry("demo.rz:3", 1, "fail", 99);
+        assert_eq!(HITS1.load(AOrd::Relaxed), 1);
+        // Replace with second backend
+        set_live_telemetry(backend2);
+        emit_live_retry("demo.rz:3", 1, "fail", 99);
+        // First backend saw 1, second backend saw 1.
+        assert_eq!(HITS1.load(AOrd::Relaxed), 1);
+        assert_eq!(HITS2.load(AOrd::Relaxed), 1);
+        clear_live_telemetry();
+    }
+
+    #[test]
+    fn multiple_emit_calls_accumulate() {
+        let _g = LIVE_TELEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_live_telemetry();
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        HITS.store(0, AOrd::Relaxed);
+        let backend: &'static mut CountingBackend =
+            Box::leak(Box::new(CountingBackend { hits: &HITS }));
+        set_live_telemetry(backend);
+        for i in 0..5 {
+            emit_live_retry("demo.rz:3", 1, "fail", 99 + i);
+        }
+        assert_eq!(HITS.load(AOrd::Relaxed), 5);
+        clear_live_telemetry();
+    }
+
+    #[test]
+    fn clear_then_emit_is_noop() {
+        let _g = LIVE_TELEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        HITS.store(0, AOrd::Relaxed);
+        let backend: &'static mut CountingBackend =
+            Box::leak(Box::new(CountingBackend { hits: &HITS }));
+        set_live_telemetry(backend);
+        clear_live_telemetry();
+        emit_live_retry("demo.rz:3", 1, "fail", 99);
+        assert_eq!(HITS.load(AOrd::Relaxed), 0);
+    }
 }
