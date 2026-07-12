@@ -258,4 +258,59 @@ mod tests {
         let result = with_critical_section(|| 42u32);
         assert_eq!(result, 42);
     }
+
+    // ---------- Nested critical sections ----------
+
+    #[test]
+    fn triple_nested_critical_sections() {
+        {
+            let _cs1 = CriticalSection::enter();
+            {
+                let _cs2 = CriticalSection::enter();
+                {
+                    let _cs3 = CriticalSection::enter();
+                    // All three active
+                }
+                // cs3 dropped
+            }
+            // cs2 dropped
+        }
+        // cs1 dropped — all restored
+    }
+
+    #[test]
+    fn nested_with_critical_section_closure() {
+        let result =
+            with_critical_section(|| with_critical_section(|| with_critical_section(|| 123)));
+        assert_eq!(result, 123);
+    }
+
+    #[test]
+    fn mixed_nested_styles() {
+        {
+            let _cs1 = CriticalSection::enter();
+            let inner = with_critical_section(|| {
+                CriticalSection::enter() // enter another inside
+            });
+            drop(inner);
+        }
+    }
+
+    #[test]
+    fn priority_constants_ordered() {
+        assert_eq!(Priority::HIGHEST.level(), 0);
+        assert_eq!(Priority::HIGH.level(), 4);
+        assert_eq!(Priority::NORMAL.level(), 8);
+        assert_eq!(Priority::LOW.level(), 12);
+        assert_eq!(Priority::LOWEST.level(), 15);
+    }
+
+    #[test]
+    fn priority_new_boundary_values() {
+        assert_eq!(Priority::new(0).unwrap().level(), 0);
+        assert_eq!(Priority::new(7).unwrap().level(), 7);
+        assert_eq!(Priority::new(15).unwrap().level(), 15);
+        assert!(Priority::new(16).is_none());
+        assert!(Priority::new(254).is_none());
+    }
 }

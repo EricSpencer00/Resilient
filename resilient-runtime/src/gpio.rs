@@ -821,4 +821,78 @@ mod tests {
         assert_eq!(Stm32f4::mode_input(), 0b00);
         assert_eq!(Stm32f4::mode_output(), 0b01);
     }
+
+    // ---------- Pin boundary tests ----------
+
+    #[test]
+    fn pin_zero_output_valid() {
+        mock_reset();
+        let pin = gpio_output::<MockGpio>(Port::A, 0).expect("pin 0 should be valid");
+        pin.set_high();
+        let bsrr = read_mock_reg(Port::A, MockGpio::bsrr_offset());
+        assert_eq!(bsrr, 1 << 0, "pin 0 set_high should set BSRR bit 0");
+    }
+
+    #[test]
+    fn pin_zero_input_valid() {
+        mock_reset();
+        let pin = gpio_input::<MockGpio>(Port::B, 0).expect("pin 0 input should be valid");
+        mock_set_input_level(Port::B, 0, true);
+        assert!(pin.read());
+    }
+
+    #[test]
+    fn pin_fifteen_output_valid() {
+        mock_reset();
+        let pin = gpio_output::<MockGpio>(Port::C, 15).expect("pin 15 should be valid");
+        pin.set_high();
+        let bsrr = read_mock_reg(Port::C, MockGpio::bsrr_offset());
+        assert_eq!(bsrr, 1 << 15, "pin 15 set_high should set BSRR bit 15");
+    }
+
+    #[test]
+    fn pin_fifteen_input_valid() {
+        mock_reset();
+        let pin = gpio_input::<MockGpio>(Port::D, 15).expect("pin 15 input should be valid");
+        mock_set_input_level(Port::D, 15, true);
+        assert!(pin.read());
+    }
+
+    #[test]
+    fn pin_16_rejected() {
+        mock_reset();
+        assert!(gpio_output::<MockGpio>(Port::A, 16).is_err());
+        assert!(gpio_input::<MockGpio>(Port::A, 16).is_err());
+    }
+
+    // ---------- Typestate round-trip transitions ----------
+
+    #[test]
+    fn typestate_round_trip_out_in_out() {
+        mock_reset();
+        let out1 = gpio_output::<MockGpio>(Port::E, 7).expect("valid pin");
+        out1.set_high();
+        let inp = out1.into_input();
+        mock_set_input_level(Port::E, 7, false);
+        assert!(!inp.read());
+        let out2 = inp.into_output();
+        out2.set_high();
+        let bsrr = read_mock_reg(Port::E, MockGpio::bsrr_offset());
+        assert!(bsrr & (1 << 7) != 0);
+    }
+
+    #[test]
+    fn typestate_round_trip_in_out_in() {
+        mock_reset();
+        let inp1 = gpio_input::<MockGpio>(Port::F, 3).expect("valid pin");
+        mock_set_input_level(Port::F, 3, true);
+        assert!(inp1.read());
+        let out = inp1.into_output();
+        out.set_low();
+        let bsrr = read_mock_reg(Port::F, MockGpio::bsrr_offset());
+        assert_eq!(bsrr >> 16 & (1 << 3), 1 << 3);
+        let inp2 = out.into_input();
+        mock_set_input_level(Port::F, 3, false);
+        assert!(!inp2.read());
+    }
 }

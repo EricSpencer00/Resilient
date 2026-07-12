@@ -804,4 +804,68 @@ mod tests {
 
         assert_eq!(&dst[..], &[0xAAu8; 32][..]);
     }
+
+    // ---------- Chain edge cases ----------
+
+    #[test]
+    fn empty_chain_start_has_null_head() {
+        let chain: DmaChain<4> = DmaChain::new();
+        let transfer = chain.start();
+        assert!(transfer.head_ptr().is_null());
+        assert_eq!(transfer.descriptor_count(), 0);
+    }
+
+    #[test]
+    fn empty_chain_total_bytes_is_zero() {
+        let chain: DmaChain<4> = DmaChain::new();
+        let transfer = chain.start();
+        assert_eq!(transfer.total_bytes(), 0);
+    }
+
+    #[test]
+    fn single_descriptor_chain_next_is_null() {
+        let mut chain: DmaChain<1> = DmaChain::new();
+        let d = DmaDescriptor::new(src_addr(), dst_addr(), 8, DmaWidth::Word).unwrap();
+        chain.append(d).unwrap();
+        let transfer = chain.start();
+        let d = transfer.descriptor(0).unwrap();
+        assert!(d.next.is_null());
+    }
+
+    #[test]
+    fn large_chain_linking_all_descriptors() {
+        let mut chain: DmaChain<16> = DmaChain::new();
+        for i in 0..16 {
+            let d = DmaDescriptor::new(src_addr() + i * 4, dst_addr() + i * 4, 4, DmaWidth::Word)
+                .unwrap();
+            chain.append(d).unwrap();
+        }
+        let transfer = chain.start();
+        // Walk the chain via next pointers.
+        let mut current = transfer.head_ptr();
+        let mut count = 0;
+        while !current.is_null() {
+            // SAFETY: descriptor pointer is always valid for the
+            // transfer's lifetime.
+            let desc = unsafe { &*current };
+            count += 1;
+            current = desc.next;
+        }
+        assert_eq!(count, 16);
+    }
+
+    #[test]
+    fn zero_length_is_always_rejected() {
+        for width in [DmaWidth::Byte, DmaWidth::HalfWord, DmaWidth::Word] {
+            let err = DmaDescriptor::new(src_addr(), dst_addr(), 0, width).unwrap_err();
+            assert_eq!(err, DmaError::ZeroLength);
+        }
+    }
+
+    #[test]
+    fn max_then_one_more_bytes_overflow() {
+        let err = DmaDescriptor::new(src_addr(), dst_addr(), DMA_MAX_LENGTH + 1, DmaWidth::Byte)
+            .unwrap_err();
+        assert!(matches!(err, DmaError::LengthTooLarge { .. }));
+    }
 }
