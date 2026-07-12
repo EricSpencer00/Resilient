@@ -7857,12 +7857,21 @@ impl TypeChecker {
                 let mut block_err: Option<String> = None;
                 for stmt in statements {
                     if !reachable {
-                        let kind = match stmt {
-                            Node::ReturnStatement { .. } => "return",
-                            Node::Break { .. } => "break",
-                            Node::Continue { .. } => "continue",
-                            _ => "statement",
+                        let (kind, sp) = match stmt {
+                            Node::ReturnStatement { span, .. } => ("return", *span),
+                            Node::Break { span, .. } => ("break", *span),
+                            Node::Continue { span, .. } => ("continue", *span),
+                            Node::LetStatement { span, .. } => ("statement", *span),
+                            other => ("statement", clause_span(other)),
                         };
+                        // RES-3887: point the diagnostic at the unreachable
+                        // statement. Without this, current_span still holds the
+                        // preceding terminator's span (set by its check_node),
+                        // so the Program-level map_err reports the terminator's
+                        // line instead of the dead code's.
+                        if sp.start.line > 0 {
+                            self.current_span = sp;
+                        }
                         block_err = Some(format!(
                             "unreachable code: {} after an earlier return/break/continue",
                             kind
@@ -13962,6 +13971,27 @@ mod scope_and_reachability_tests {
             }",
         )
         .expect("conditional return must not flag subsequent code");
+    }
+
+    #[test]
+    fn res3887_unreachable_diagnostic_points_at_dead_code_not_terminator() {
+        // Real newlines so the two returns are on distinct lines. The
+        // diagnostic must point at line 3 (the dead code), not line 2
+        // (the live return whose span check_node last recorded).
+        let err = check("fn f() -> int {\n    return 1;\n    return 2;\n}")
+            .expect_err("unreachable return should be rejected");
+        assert!(
+            err.contains("unreachable code"),
+            "expected unreachable-code diagnostic, got: {err}"
+        );
+        assert!(
+            err.contains(":3:"),
+            "diagnostic must point at line 3 (the dead code), got: {err}"
+        );
+        assert!(
+            !err.contains(":2:"),
+            "diagnostic must NOT point at line 2 (the live return), got: {err}"
+        );
     }
 }
 
