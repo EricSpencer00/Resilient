@@ -610,9 +610,13 @@ fn lexer_binary_literal_empty() {
 #[test]
 fn lexer_float_double_dot() {
     let (out, code) = check_src("let x = 1.2.3;\nprintln(x);\n");
-    // Parser might parse 1.2 as valid float, then `.3` fails
-    // Just verify no crash
-    assert!(code.is_some(), "should not hang; got: {:?}", code);
+    // Characterization: the lexer reports the bad float literal as a
+    // diagnostic but `check` still exits 0.
+    assert_eq!(code, Some(0), "double-dot float exit; got:\n{out}");
+    assert!(
+        out.contains("float literal `1.2.3` is not a valid IEEE 754 value"),
+        "expected diagnostic; got:\n{out}"
+    );
 }
 
 #[test]
