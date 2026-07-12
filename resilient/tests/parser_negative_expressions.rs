@@ -411,8 +411,8 @@ fn struct_literal_missing_name() {
 #[test]
 fn struct_literal_missing_brace() {
     let (out, code) = check_src("let x = new Point (1, 2);\nprintln(x);\n");
-    // Tuple struct constructor — should be OK
-    // (or parse error if not supported)
+    // Tuple-struct constructor syntax parses cleanly.
+    assert_eq!(code, Some(0), "tuple-struct ctor should parse; got:\n{out}");
 }
 
 #[test]
@@ -551,17 +551,16 @@ fn lexer_double_hash() {
 #[test]
 fn lexer_unterminated_block_comment() {
     let (out, code) = check_src("let x = 5; /* unclosed");
-    // Resilient may handle unclosed comments various ways
-    // Just verify no crash
-    assert!(code.is_some(), "should not hang; got: {:?}", code);
+    // Characterization: the lexer treats an unterminated block
+    // comment as running to EOF and accepts the program.
+    assert_eq!(code, Some(0), "lenient EOF comment; got:\n{out}");
 }
 
 #[test]
 fn lexer_block_comment_nested_unclosed() {
     let (out, code) = check_src("let x = 5; /* outer /* nested\nprintln(x);\n");
-    // Resilient may or may not support nested comments
-    // Just verify no crash
-    assert!(code.is_some(), "should not hang; got: {:?}", code);
+    // Characterization: nested unterminated comment also runs to EOF.
+    assert_eq!(code, Some(0), "lenient nested comment; got:\n{out}");
 }
 
 // ============================================================================
@@ -571,11 +570,8 @@ fn lexer_block_comment_nested_unclosed() {
 #[test]
 fn lexer_bad_escape_sequence_unknown() {
     let (out, code) = check_src("let x = \"hello\\q\";\nprintln(x);\n");
-    // Resilient may be lenient with unknown escapes — accept both success and failure
-    if code == Some(0) {
-        return;
-    }
-    assert_eq!(code, Some(1), "must fail; got:\n{out}");
+    // Characterization: the lexer is lenient with unknown escapes.
+    assert_eq!(code, Some(0), "lenient unknown escape; got:\n{out}");
 }
 
 #[test]
@@ -588,9 +584,9 @@ fn lexer_bad_escape_incomplete() {
 #[test]
 fn lexer_unterminated_string() {
     let (out, code) = check_src("let x = \"unclosed");
-    // Resilient might accept unclosed strings or error cleanly
-    // Just verify no crash
-    assert!(code.is_some(), "should not hang; got: {:?}", code);
+    // Characterization: an unterminated string runs to EOF and the
+    // program is accepted.
+    assert_eq!(code, Some(0), "lenient EOF string; got:\n{out}");
 }
 
 // ============================================================================
@@ -600,17 +596,15 @@ fn lexer_unterminated_string() {
 #[test]
 fn lexer_hex_literal_empty() {
     let (out, code) = check_src("let x = 0x;\nprintln(x);\n");
-    // Parser might interpret 0x; as 0 (valid) then ; (invalid)
-    // Just verify it doesn't crash
-    assert!(code.is_some(), "should not hang; got: {:?}", code);
+    // Characterization: `0x` with no digits is currently accepted.
+    assert_eq!(code, Some(0), "lenient empty hex literal; got:\n{out}");
 }
 
 #[test]
 fn lexer_binary_literal_empty() {
     let (out, code) = check_src("let x = 0b;\nprintln(x);\n");
-    // Parser might interpret 0b; as 0 (valid) then ; (invalid)
-    // Just verify it doesn't crash
-    assert!(code.is_some(), "should not hang; got: {:?}", code);
+    // Characterization: `0b` with no digits is currently accepted.
+    assert_eq!(code, Some(0), "lenient empty binary literal; got:\n{out}");
 }
 
 #[test]
@@ -668,9 +662,8 @@ fn range_inclusive_unclosed() {
 #[test]
 fn range_double_dot_in_expression_context() {
     let (out, code) = check_src("let x = 1..2 + 3;\nprintln(x);\n");
-    // This should parse as (1..2) + 3, but let's verify it doesn't crash
-    // The result depends on how the interpreter handles range + int
-    // For now just verify it parses (code should be 0 or 1 with a meaningful error)
+    // Parses as a range whose upper bound is `2 + 3`; typechecks.
+    assert_eq!(code, Some(0), "range with expr bound; got:\n{out}");
 }
 
 // ============================================================================
@@ -690,8 +683,12 @@ fn lambda_missing_pipe() {
 #[test]
 fn lambda_unclosed() {
     let (out, code) = check_src("let f = |x| x + 1;\nprintln(f);\n");
-    // This might be valid depending on parsing; check if it errors
-    // or if the semicolon terminates the lambda
+    // Pipe-delimited lambda syntax is not supported in a let binding.
+    assert_eq!(code, Some(1), "pipe lambda must fail; got:\n{out}");
+    assert!(
+        out.contains("Expected expression after `=`") && out.contains("1:9"),
+        "expected diagnostic; got:\n{out}"
+    );
 }
 
 // ============================================================================
@@ -791,7 +788,7 @@ fn unexpected_eof_in_expression() {
 fn missing_semicolon_expr_context() {
     // This is more of a statement-level error
     let (out, code) = check_src("let x = 5\nlet y = 10;\nprintln(y);\n");
-    // Resilient may be lenient with newline-based semicolon inference
-    // Just verify no crash
-    assert!(code.is_some(), "should not hang; got: {:?}", code);
+    // Characterization: newline terminates the statement; no
+    // semicolon required.
+    assert_eq!(code, Some(0), "newline-terminated let; got:\n{out}");
 }
