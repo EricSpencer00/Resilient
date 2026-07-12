@@ -141,6 +141,10 @@ const SHARED_EXAMPLES: &[&str] = &[
     "shebang_demo.rz",
     "actor_eventually_drain.rz",
     "vm_stdlib_math.rz",
+    // RES-3889: string subscript `s[i]` must yield a `Char` (not a
+    // single-char string) on both backends so `s[i] == 'c'` and
+    // `"x" + s[i]` agree.
+    "string_subscript_char.rz",
 ];
 
 #[test]

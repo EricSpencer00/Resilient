@@ -1289,7 +1289,12 @@ fn run_inner(
                                 .chars()
                                 .nth(resolved as usize)
                                 .expect("index already bounds-checked");
-                            stack.push(Value::String(ch.to_string()));
+                            // RES-3889: yield `Value::Char` (not a single-char
+                            // `Value::String`) to match the tree-walker
+                            // interpreter (RES-2709). Without this, `s[i] == 'c'`
+                            // and char-literal `match` arms silently diverge
+                            // between the interpreter and the `--vm` backend.
+                            stack.push(Value::Char(ch));
                         }
                         _ => return Err(VmError::TypeMismatch("LoadIndex (non-indexable target)")),
                     }
@@ -1572,7 +1577,13 @@ fn constant_as_str<'a>(
 }
 
 fn vm_can_stringify(v: &Value) -> bool {
-    matches!(v, Value::Int(_) | Value::Float(_) | Value::Bool(_))
+    // RES-3889: `Value::Char` participates in `string + char` concatenation,
+    // mirroring the interpreter's `can_stringify_for_concat`. String subscript
+    // now yields a `Char`, so `"prefix" + s[i]` must stringify it.
+    matches!(
+        v,
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Char(_)
+    )
 }
 
 fn vm_stringify(v: &Value) -> String {
@@ -1581,6 +1592,8 @@ fn vm_stringify(v: &Value) -> String {
         Value::Float(f) => f.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::String(s) => s.clone(),
+        // RES-3889: bare character, matching the interpreter's `Display`.
+        Value::Char(c) => c.to_string(),
         _ => unreachable!(),
     }
 }
@@ -1590,6 +1603,8 @@ fn vm_push_stringified(buf: &mut String, v: &Value) {
         Value::Int(i) => buf.push_str(&i.to_string()),
         Value::Float(f) => buf.push_str(&f.to_string()),
         Value::Bool(b) => buf.push_str(&b.to_string()),
+        // RES-3889: append the bare character, matching the interpreter.
+        Value::Char(c) => buf.push(*c),
         _ => unreachable!(),
     }
 }
@@ -2587,7 +2602,9 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                 .chars()
                 .nth(resolved as usize)
                 .expect("index already bounds-checked");
-            state.stack.push(Value::String(ch.to_string()));
+            // RES-3889: yield `Value::Char` to match the interpreter — see the
+            // match-loop `Op::LoadIndex` arm for the parity rationale.
+            state.stack.push(Value::Char(ch));
         }
         _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
     }
@@ -5974,6 +5991,53 @@ mod tests {
     #[test]
     fn res2534_negative_array_store_both_dispatch() {
         let src = "let a = [10, 20, 30]; a[-1] = 99; a[2]";
+        assert_both_eq(src);
+    }
+
+    // ── RES-3889: string subscript yields Char (interpreter parity) ─────
+
+    #[test]
+    fn res3889_string_subscript_is_char() {
+        // `s[i]` must produce a `Value::Char`, matching the tree-walker
+        // interpreter (RES-2709) — NOT a single-char `Value::String`.
+        let src = r#"let s = "hello"; s[1]"#;
+        match compile_run(src).unwrap() {
+            Value::Char(c) => assert_eq!(c, 'e'),
+            other => panic!("expected Char('e'), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn res3889_string_subscript_char_equals_char_literal() {
+        // The observable symptom: `s[i] == 'c'` was false under --vm
+        // because the subscript returned a String while the literal was
+        // a Char. It must now be true on both dispatch engines.
+        let src = r#"let s = "hello"; s[1] == 'e'"#;
+        let (m, d) = run_both(src);
+        assert_eq!(value_repr(&m.unwrap()), "Bool(true)");
+        assert_eq!(value_repr(&d.unwrap()), "Bool(true)");
+    }
+
+    #[test]
+    fn res3889_string_subscript_negative_index_is_char() {
+        let src = r#"let s = "hello"; s[-1] == 'o'"#;
+        assert_both_eq(src);
+        assert_eq!(value_repr(&run_both(src).0.unwrap()), "Bool(true)");
+    }
+
+    #[test]
+    fn res3889_string_plus_char_subscript_concat() {
+        // `"x" + s[i]` must stringify the Char rather than hitting the
+        // former `unreachable!()` in `vm_push_stringified`.
+        let src = r#"let s = "hello"; "first=" + s[0]"#;
+        assert_string(compile_run(src), "first=h");
+        assert_both_eq(src);
+    }
+
+    #[test]
+    fn res3889_char_subscript_plus_string_concat() {
+        let src = r#"let s = "hello"; s[0] + "!""#;
+        assert_string(compile_run(src), "h!");
         assert_both_eq(src);
     }
 
