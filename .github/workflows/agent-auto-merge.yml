@@ -76,6 +76,17 @@ jobs:
             if [[ -z "$synced" ]]; then echo "  not integration-synced — skip"; continue; fi
             if [[ -z "$vetted" ]]; then echo "  not agent-vetted — skip"; continue; fi
 
+            # RES-3885: defense-in-depth authorship gate. The labels above are
+            # applied by write-access tooling, but never auto-merge a PR whose
+            # author lacks write access — required checks prove the code builds
+            # and tests pass, not that it is safe. Outsider (fork) PRs must wait
+            # for an explicit human hand rather than auto-landing on main.
+            assoc=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.author_association' 2>/dev/null || echo "")
+            case "$assoc" in
+              OWNER|MEMBER|COLLABORATOR) : ;;
+              *) echo "  author_association=$assoc (not a collaborator) — skip"; continue ;;
+            esac
+
             # Exclude checks that aren't in branch protection's
             # required-status-checks list. Two known non-blocking checks
             # report FAILURE on most PRs and were previously trapping
