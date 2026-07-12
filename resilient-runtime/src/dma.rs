@@ -841,17 +841,20 @@ mod tests {
             chain.append(d).unwrap();
         }
         let transfer = chain.start();
-        // Walk the chain via next pointers.
-        let mut current = transfer.head_ptr();
-        let mut count = 0;
-        while !current.is_null() {
-            // SAFETY: descriptor pointer is always valid for the
-            // transfer's lifetime.
-            let desc = unsafe { &*current };
-            count += 1;
-            current = desc.next;
+        assert_eq!(transfer.descriptor_count(), 16);
+        // Walk the chain via the safe accessor, comparing (not
+        // dereferencing) each next pointer against its successor.
+        assert_eq!(
+            transfer.head_ptr(),
+            transfer.descriptor(0).unwrap() as *const DmaDescriptor
+        );
+        for i in 0..16 {
+            let desc = transfer.descriptor(i).unwrap();
+            match transfer.descriptor(i + 1) {
+                Some(next) => assert_eq!(desc.next, next as *const DmaDescriptor),
+                None => assert!(desc.next.is_null()),
+            }
         }
-        assert_eq!(count, 16);
     }
 
     #[test]
