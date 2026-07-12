@@ -9,7 +9,6 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation)]
 
 use crate::{Node, Value};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 type RResult<T> = Result<T, String>;
 
@@ -138,9 +137,10 @@ pub(crate) fn builtin_datetime_now(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("datetime_now: system clock error: {e}"))?;
+    // RES-3879: host-clock abstraction — real wall clock natively, a
+    // non-panicking fixed-base clock on wasm32 (where `SystemTime::now()`
+    // traps). Already saturating, so there is no clock-error path.
+    let dur = crate::host_clock::wall_clock_since_epoch();
     let epoch_secs = dur.as_secs() as i64;
     let nanos = dur.subsec_nanos() as i64;
     let (year, month, day, hour, minute, second) = unix_to_datetime(epoch_secs);

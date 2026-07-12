@@ -382,6 +382,11 @@ mod tuples;
 // thread-local handle registry live here; `lib.rs` just registers
 // them in the BUILTINS table.
 mod file_io;
+// RES-3879: host clock abstraction — real monotonic/wall clocks
+// natively, non-panicking software substitutes on wasm32 (where the
+// std time APIs trap). Keeps time-using builtins from crashing the
+// web playground.
+mod host_clock;
 // RES-324: `mod name { ... }` inline namespace blocks. All namespace
 // logic (eval and static check) lives in this module; the only core-
 // file changes are Token::Mod, Node::ModuleDecl, and the dispatch lines.
@@ -14956,9 +14961,8 @@ fn builtin_clock_ms(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
-    let ms = std::time::Instant::now().duration_since(*epoch).as_millis();
-    // `as_millis` returns u128; clamp to i64::MAX on overflow so
+    let ms = host_clock::monotonic_nanos() / 1_000_000;
+    // `monotonic_nanos` returns u128; clamp to i64::MAX on overflow so
     // long-running processes don't wrap or panic.
     let clamped: i64 = if ms > i64::MAX as u128 {
         i64::MAX
@@ -14985,9 +14989,8 @@ fn builtin_clock_now(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
-    let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
-    // `as_nanos` returns u128; clamp to i64::MAX on overflow so
+    let ns = host_clock::monotonic_nanos();
+    // `monotonic_nanos` returns u128; clamp to i64::MAX on overflow so
     // long-running processes don't wrap or panic.
     let clamped: i64 = if ns > i64::MAX as u128 {
         i64::MAX
@@ -15006,8 +15009,7 @@ fn builtin_clock_now(args: &[Value]) -> RResult<Value> {
 fn builtin_clock_elapsed(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(start)] => {
-            let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
-            let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
+            let ns = host_clock::monotonic_nanos();
             let now_ns: i64 = if ns > i64::MAX as u128 {
                 i64::MAX
             } else {
@@ -23150,7 +23152,9 @@ fn live_sleep_ms(ms: u64) {
         }
     });
     if !hooked {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
+        // RES-3879: native sleeps for real; wasm is a no-op (thread::sleep
+        // panics on wasm32-unknown-unknown and would block the browser).
+        host_clock::sleep_ms(ms);
     }
 }
 

@@ -20,12 +20,12 @@
 //! `SystemTime::duration_since(UNIX_EPOCH)` saturating).
 
 use crate::{RResult, Value};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+/// RES-3879: route through the host-clock abstraction so the web
+/// playground (wasm32, where `SystemTime::now()` panics) gets a
+/// non-panicking fixed-base wall clock instead of a hard trap.
 fn now_unix() -> std::time::Duration {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(std::time::Duration::ZERO)
+    crate::host_clock::wall_clock_since_epoch()
 }
 
 fn clamp_to_i64(n: u128) -> i64 {
