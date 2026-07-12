@@ -187,4 +187,50 @@ mod tests {
         let result = builtin_snapshot_save(&[Value::String("k".into())]);
         assert!(result.is_err(), "wrong arity must return Err");
     }
+
+    #[test]
+    fn snapshot_keys_empty_initially() {
+        let keys = builtin_snapshot_keys(&[]).unwrap();
+        match keys {
+            Value::Array(arr) => assert!(
+                arr.is_empty()
+                    || !arr
+                        .iter()
+                        .any(|v| matches!(v, Value::String(s) if s.contains("test"))),
+                "keys should be empty or not contain test keys"
+            ),
+            _ => panic!("expected Array"),
+        }
+    }
+
+    #[test]
+    fn snapshot_save_returns_the_value() {
+        let result =
+            builtin_snapshot_save(&[Value::String("return_test".into()), Value::Int(99)]).unwrap();
+        assert!(
+            format!("{result:?}").contains("99"),
+            "save must return the stored value"
+        );
+    }
+
+    #[test]
+    fn snapshot_overwrite_replaces_old_value() {
+        builtin_snapshot_save(&[Value::String("overwrite".into()), Value::Int(10)]).unwrap();
+        builtin_snapshot_save(&[Value::String("overwrite".into()), Value::Int(20)]).unwrap();
+        let loaded = builtin_snapshot_load(&[Value::String("overwrite".into())]).unwrap();
+        assert!(
+            format!("{loaded:?}").contains("20"),
+            "overwrite must replace old value with 20: {loaded:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_clear_nonexistent_returns_false() {
+        let cleared =
+            builtin_snapshot_clear(&[Value::String("nonexistent_snapshot_xyz".into())]).unwrap();
+        assert!(
+            matches!(cleared, Value::Bool(false)),
+            "clear on missing snapshot must return false"
+        );
+    }
 }

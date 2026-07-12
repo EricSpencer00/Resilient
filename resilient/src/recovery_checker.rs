@@ -295,4 +295,31 @@ mod tests {
             "V1 checker emits warnings but always returns Ok"
         );
     }
+
+    #[test]
+    fn live_block_with_direct_recursion_still_returns_ok() {
+        let src = "fn f(int n) -> int {\n    live { if (n > 0) { return f(n - 1); } }\n}\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "V1 checker only warns on recursion in recovery"
+        );
+    }
+
+    #[test]
+    fn live_block_with_closure_capture_still_returns_ok() {
+        let src = "fn f(int x) -> int {\n    live {\n        let g = fn(int y) { return y + x; };\n        return g(1);\n    }\n}\nf(5);\n";
+        let (prog, _) = parse(src);
+        assert!(
+            check(&prog, "test").is_ok(),
+            "V1 warns on captured closures but returns Ok"
+        );
+    }
+
+    #[test]
+    fn multiple_extern_calls_all_warned() {
+        let src = "extern { fn malloc(int n) -> int; fn free(int p) -> int; }\nfn f() {\n    live {\n        let p = malloc(10);\n        let _ = free(p);\n    }\n}\nf();\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

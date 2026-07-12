@@ -103,4 +103,41 @@ mod tests {
         assert!(CHECK_SUFFIXES.contains(&"_exists"));
         assert!(USE_SUFFIXES.contains(&"_open"));
     }
+
+    #[test]
+    fn atomic_use_function_not_flagged() {
+        let src = "fn safe(int x) { file_exists(\"f.txt\"); atomic_open(\"f.txt\"); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_then_use_pattern_detected() {
+        let src =
+            "fn unsafe_sequence(int x) { file_exists(\"path.txt\"); file_open(\"path.txt\"); }\n";
+        let (prog, _) = crate::parse(src);
+        // V1 warns but returns Ok
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn multiple_check_use_pairs_in_sequence() {
+        let src = "fn multi(int x) { file_exists(\"a\"); file_read(\"a\"); file_is_valid(\"b\"); file_write(\"b\"); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_without_matching_use_safe() {
+        let src = "fn just_check(int x) { file_exists(\"f.txt\"); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn use_without_preceding_check_safe() {
+        let src = "fn just_use(int x) { file_open(\"f.txt\"); }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

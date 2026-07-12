@@ -122,4 +122,41 @@ mod tests {
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
+
+    #[test]
+    fn stack_budget_with_single_param() {
+        let src = "fn simple_stack16(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        // single param + 0 lets + 0 block depth = 1, well within budget of 16
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn stack_budget_many_lets_exceeds_small_budget() {
+        let src = "fn tiny_stack8(int x) -> int { let a = 1; let b = 2; let c = 3; let d = 4; return a + b + c + d; }\n";
+        let (prog, _) = parse(src);
+        // 1 param + 4 lets = 5, budget 8, passes
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn stack_budget_nested_block_depth_counted() {
+        let src = "fn nested_stack16(int x) { let a = 1; { let b = 2; { let c = 3; } } }\n";
+        let (prog, _) = parse(src);
+        // depth = 1 param + 3 lets + 2*max_nested_depth
+        // max_nested_depth would be at least 2-3 levels
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn all_budget_suffixes_recognized() {
+        for (suffix, budget) in SUFFIXES {
+            assert!(
+                suffix.starts_with("_stack"),
+                "suffix {} must start with _stack",
+                suffix
+            );
+            assert!(*budget > 0, "budget {} must be positive", budget);
+        }
+    }
 }

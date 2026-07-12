@@ -217,4 +217,46 @@ mod tests {
             assert_eq!(e.len(), 1, "expected error for `{}`, got: {:?}", name, e);
         }
     }
+
+    #[test]
+    fn multiple_unsafe_violations_reported() {
+        let e = errs(
+            "let x = volatile_read_u32(0);\n\
+             let y = volatile_write_u8(0, 1);",
+        );
+        assert_eq!(e.len(), 2, "expected two errors, got: {:?}", e);
+    }
+
+    #[test]
+    fn volatile_call_in_condition_gated() {
+        let e = errs("if (volatile_read_u32(0) > 0) { }");
+        assert_eq!(e.len(), 1, "volatile in condition must be unsafe");
+    }
+
+    #[test]
+    fn volatile_call_nested_in_expression_gated() {
+        let e = errs("let z = 1 + volatile_read_u16(100);");
+        assert_eq!(e.len(), 1, "volatile in subexpression must be unsafe");
+    }
+
+    #[test]
+    fn normal_function_call_not_gated() {
+        let e = errs("let x = some_function(0);");
+        assert!(
+            e.is_empty(),
+            "normal function calls should not trigger the check"
+        );
+    }
+
+    #[test]
+    fn unsafe_in_nested_conditional_protects() {
+        let e = errs(
+            "fn main() {\n\
+             unsafe {\n\
+                 if true { volatile_read_u8(0); }\n\
+             }\n\
+         }",
+        );
+        assert!(e.is_empty(), "nested calls in unsafe should be protected");
+    }
 }

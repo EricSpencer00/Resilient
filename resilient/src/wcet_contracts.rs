@@ -174,4 +174,24 @@ mod tests {
         assert!(check(&prog, "test").is_ok());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn no_wcet_specs_skips_check() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"fn no_contract(int x) { let a = 1; let b = 2; }"#;
+        let (prog, _) = parse(src);
+        // No WCET specs registered, should pass
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn estimate_wcet_function_returns_nonzero() {
+        // Just verify estimate_wcet works and returns a value
+        let src = "{ let a = 1; }";
+        let (prog, _) = parse(src);
+        let cost = estimate_wcet(&prog);
+        assert!(cost > 0, "estimate_wcet should return positive cost");
+    }
 }

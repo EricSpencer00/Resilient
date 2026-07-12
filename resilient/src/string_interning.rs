@@ -359,3 +359,89 @@ fn check_node(node: &crate::Node) -> Result<(), String> {
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intern_deduplicates_identical_strings() {
+        reset_interning_pool();
+        let id1 = intern_string("hello".to_string());
+        let id2 = intern_string("hello".to_string());
+        assert_eq!(id1, id2, "identical strings must get same ID");
+    }
+
+    #[test]
+    fn intern_different_strings_get_different_ids() {
+        reset_interning_pool();
+        let id1 = intern_string("hello".to_string());
+        let id2 = intern_string("world".to_string());
+        assert_ne!(id1, id2, "different strings must get different IDs");
+    }
+
+    #[test]
+    fn get_interned_string_retrieves_stored_content() {
+        reset_interning_pool();
+        let id = intern_string("test_content".to_string());
+        let retrieved = get_interned_string(id);
+        assert_eq!(retrieved, Some("test_content".to_string()));
+    }
+
+    #[test]
+    fn get_interned_string_nonexistent_returns_none() {
+        reset_interning_pool();
+        let retrieved = get_interned_string(99999);
+        assert_eq!(retrieved, None, "nonexistent ID must return None");
+    }
+
+    #[test]
+    fn strings_equal_same_id_returns_true() {
+        reset_interning_pool();
+        let id = intern_string("equal_test".to_string());
+        assert!(strings_equal(id, id), "same ID must compare equal");
+    }
+
+    #[test]
+    fn strings_equal_different_ids_returns_false() {
+        reset_interning_pool();
+        let id1 = intern_string("str1".to_string());
+        let id2 = intern_string("str2".to_string());
+        assert!(
+            !strings_equal(id1, id2),
+            "different IDs must not compare equal"
+        );
+    }
+
+    #[test]
+    fn reset_clears_pool_and_ids_restart_at_zero() {
+        reset_interning_pool();
+        let id1_before = intern_string("first".to_string());
+        reset_interning_pool();
+        let id1_after = intern_string("first".to_string());
+        assert_eq!(
+            id1_before, id1_after,
+            "ID should restart at same value after reset"
+        );
+    }
+
+    #[test]
+    fn is_interned_returns_true_for_valid_id() {
+        reset_interning_pool();
+        let id = intern_string("valid".to_string());
+        assert!(is_interned(id), "valid ID must be recognized");
+    }
+
+    #[test]
+    fn all_interned_strings_collects_all_entries() {
+        reset_interning_pool();
+        let _id1 = intern_string("alpha".to_string());
+        let _id2 = intern_string("beta".to_string());
+        let _id3 = intern_string("gamma".to_string());
+        let all = all_interned_strings();
+        assert_eq!(all.len(), 3, "should have all 3 interned strings");
+        assert!(all.iter().any(|(_, s)| s == "alpha"));
+        assert!(all.iter().any(|(_, s)| s == "beta"));
+        assert!(all.iter().any(|(_, s)| s == "gamma"));
+    }
+}

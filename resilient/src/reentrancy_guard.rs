@@ -150,4 +150,38 @@ mod tests {
             "non-recursive nonreentrant function must not error in V1"
         );
     }
+
+    #[test]
+    fn nonreentrant_prefix_name_detected() {
+        let is_nr = is_nonreentrant("nonreentrant_dispatch");
+        assert!(is_nr, "nonreentrant_ prefix must be detected");
+    }
+
+    #[test]
+    fn exclusive_prefix_detected() {
+        let is_nr = is_nonreentrant("exclusive_zone");
+        assert!(is_nr, "exclusive_ prefix must be detected");
+    }
+
+    #[test]
+    fn critical_suffix_detected() {
+        let is_nr = is_nonreentrant("my_critical");
+        assert!(is_nr, "_critical suffix must be detected");
+    }
+
+    #[test]
+    fn atomic_suffix_detected() {
+        let is_nr = is_nonreentrant("update_atomic");
+        assert!(is_nr, "_atomic suffix must be detected");
+    }
+
+    #[test]
+    fn mutual_recursion_both_critical() {
+        let src = "
+fn f_critical() { g_critical(); }
+fn g_critical() { f_critical(); }
+";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok(), "V1 warns but doesn't error");
+    }
 }
