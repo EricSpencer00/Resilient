@@ -96,6 +96,14 @@ PINNED = [
     "factorial.rz",                 # classic recursion
 ]
 
+# RES-3877: examples that depend on host-filesystem semantics the
+# playground's in-memory VFS cannot model (directory listing, stat,
+# path existence). read / write / streaming examples DO run in the
+# playground via the wasm VFS, so only the metadata demo is excluded.
+EXCLUDED = {
+    "file_meta.rz",  # file_exists/file_stat/file_is_dir/dir_list(".") need a real FS
+}
+
 def load(name):
     path = os.path.join(examples_dir, name)
     try:
@@ -112,6 +120,8 @@ seen = set()
 
 # Pinned first — preserve the declared order, skip missing files silently.
 for name in PINNED:
+    if name in EXCLUDED:
+        continue
     entry = load(name)
     if entry:
         items.append(entry)
@@ -121,7 +131,7 @@ for name in PINNED:
 for name in sorted(os.listdir(examples_dir)):
     if not name.endswith(".rz"):
         continue
-    if name in seen:
+    if name in seen or name in EXCLUDED:
         continue
     entry = load(name)
     if entry:

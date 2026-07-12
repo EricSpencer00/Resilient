@@ -18,13 +18,32 @@
 //! Std-only — every builtin here pulls in `std::fs`. The
 //! `resilient-runtime` sibling crate has no builtins table at all and
 //! stays no_std-clean.
+//!
+//! RES-3877: on `wasm32` (the web playground) there is no host
+//! filesystem — `std::fs` calls return `Unsupported` at runtime, so
+//! the file-I/O examples fail. There, `Backend` is an in-memory VFS
+//! (`wasm_vfs::WasmFile`, a `Cursor<Vec<u8>>` over a thread-local
+//! path→bytes store) so the same builtins demonstrate the language
+//! semantics without a real filesystem. The read / write / seek /
+//! close handlers below are backend-agnostic: they only touch the
+//! `Read + Write + Seek` surface, so a single implementation drives
+//! both. Only `file_open` — which constructs the backing handle —
+//! forks per target.
 
 use crate::{RResult, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicI64, Ordering};
+
+/// Handle backend. Native builds hold a real OS file; the wasm
+/// playground holds an in-memory VFS handle (RES-3877).
+#[cfg(not(target_arch = "wasm32"))]
+type Backend = File;
+#[cfg(target_arch = "wasm32")]
+type Backend = wasm_vfs::WasmFile;
 
 /// Process-global handle id counter. Each `file_open` mints the next
 /// id; ids never recycle within a process so a stale handle can't
@@ -32,12 +51,13 @@ use std::sync::atomic::{AtomicI64, Ordering};
 static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
 
 thread_local! {
-    static REGISTRY: RefCell<HashMap<i64, File>> = RefCell::new(HashMap::new());
+    static REGISTRY: RefCell<HashMap<i64, Backend>> = RefCell::new(HashMap::new());
 }
 
 /// `file_open(path: String, mode: String) -> Result<File, String>`.
 /// Modes: `"r"` (read-only), `"w"` (write-only, truncate), `"rw"`
 /// (read+write, create if missing, do not truncate).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn builtin_file_open(args: &[Value]) -> RResult<Value> {
     let (path, mode) = match args {
         [Value::String(p), Value::String(m)] => (p, m),
@@ -85,6 +105,47 @@ pub(crate) fn builtin_file_open(args: &[Value]) -> RResult<Value> {
         Err(e) => Ok(Value::Result {
             ok: false,
             payload: Box::new(Value::String(format!("file_open: {}: {}", path, e))),
+        }),
+    }
+}
+
+/// RES-3877: wasm playground `file_open` — backed by the in-memory
+/// VFS. Same mode contract as the native handler; misses on `"r"`
+/// surface as `Err`, mirroring "no such file" on a real filesystem.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn builtin_file_open(args: &[Value]) -> RResult<Value> {
+    let (path, mode) = match args {
+        [Value::String(p), Value::String(m)] => (p, m),
+        _ => {
+            return Err(format!(
+                "file_open: expected (String path, String mode), got {} arg(s)",
+                args.len()
+            ));
+        }
+    };
+    match mode.as_str() {
+        "r" | "w" | "rw" => match wasm_vfs::open(path, mode) {
+            Ok(file) => {
+                let id = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+                REGISTRY.with(|r| {
+                    r.borrow_mut().insert(id, file);
+                });
+                Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(handle_value(id)),
+                })
+            }
+            Err(e) => Ok(Value::Result {
+                ok: false,
+                payload: Box::new(Value::String(format!("file_open: {}: {}", path, e))),
+            }),
+        },
+        other => Ok(Value::Result {
+            ok: false,
+            payload: Box::new(Value::String(format!(
+                "file_open: unknown mode `{}` (expected r / w / rw)",
+                other
+            ))),
         }),
     }
 }
@@ -276,6 +337,174 @@ fn handle_id_from_fields(fields: &[(String, Value)]) -> Result<i64, String> {
         }
     }
     Err("file handle struct is missing `id: Int` field".to_string())
+}
+
+/// RES-3877: in-memory virtual filesystem backing the file-I/O
+/// builtins on `wasm32` (and exercised natively under `cfg(test)`).
+/// A thread-local path→bytes store stands in for the host filesystem;
+/// `WasmFile` is a seekable cursor over a handle's working copy that
+/// mirrors back to the store on every write.
+#[cfg(any(target_arch = "wasm32", test))]
+mod wasm_vfs {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+
+    thread_local! {
+        static STORE: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+    }
+
+    pub(super) fn store_write(path: &str, bytes: &[u8]) {
+        STORE.with(|s| {
+            s.borrow_mut().insert(path.to_string(), bytes.to_vec());
+        });
+    }
+
+    pub(super) fn store_read(path: &str) -> io::Result<Vec<u8>> {
+        STORE.with(|s| {
+            s.borrow()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such file"))
+        })
+    }
+
+    /// Seekable in-memory file handle. Writes overwrite at the cursor
+    /// and immediately mirror the full buffer back to the store so a
+    /// later `file_read` / re-open observes them.
+    pub(super) struct WasmFile {
+        path: String,
+        cursor: Cursor<Vec<u8>>,
+        writable: bool,
+    }
+
+    /// Open `path` in `mode` against the store. `"r"` requires the
+    /// file to exist; `"w"` truncates (creating an empty file); `"rw"`
+    /// opens the existing bytes (or empty) without truncating.
+    pub(super) fn open(path: &str, mode: &str) -> io::Result<WasmFile> {
+        let (initial, writable) = match mode {
+            "r" => (store_read(path)?, false),
+            "w" => {
+                store_write(path, &[]);
+                (Vec::new(), true)
+            }
+            "rw" => (store_read(path).unwrap_or_default(), true),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown mode `{}`", other),
+                ));
+            }
+        };
+        Ok(WasmFile {
+            path: path.to_string(),
+            cursor: Cursor::new(initial),
+            writable,
+        })
+    }
+
+    impl Read for WasmFile {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.cursor.read(buf)
+        }
+    }
+
+    impl Seek for WasmFile {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.cursor.seek(pos)
+        }
+    }
+
+    impl Write for WasmFile {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if !self.writable {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "file not opened for writing",
+                ));
+            }
+            let n = self.cursor.write(buf)?;
+            store_write(&self.path, self.cursor.get_ref());
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            store_write(&self.path, self.cursor.get_ref());
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn write_then_read_round_trips() {
+            store_write("/vfs/a.txt", b"hello");
+            assert_eq!(store_read("/vfs/a.txt").unwrap(), b"hello");
+        }
+
+        #[test]
+        fn read_missing_is_not_found() {
+            let err = store_read("/vfs/does-not-exist").unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        }
+
+        #[test]
+        fn open_r_requires_existing_file() {
+            assert!(open("/vfs/missing-r", "r").is_err());
+        }
+
+        #[test]
+        fn open_w_truncates_and_writes_flush_to_store() {
+            store_write("/vfs/w.txt", b"stale contents");
+            let mut f = open("/vfs/w.txt", "w").unwrap();
+            assert_eq!(store_read("/vfs/w.txt").unwrap(), b"");
+            f.write_all(b"fresh").unwrap();
+            assert_eq!(store_read("/vfs/w.txt").unwrap(), b"fresh");
+        }
+
+        #[test]
+        fn open_r_rejects_writes() {
+            store_write("/vfs/ro.txt", b"abc");
+            let mut f = open("/vfs/ro.txt", "r").unwrap();
+            let err = f.write(b"x").unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        }
+
+        #[test]
+        fn seek_then_read_repositions_cursor() {
+            store_write("/vfs/seek.txt", b"abcdefgh");
+            let mut f = open("/vfs/seek.txt", "r").unwrap();
+            f.seek(SeekFrom::Start(3)).unwrap();
+            let mut buf = [0u8; 3];
+            f.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"def");
+        }
+
+        #[test]
+        fn rw_preserves_existing_bytes() {
+            store_write("/vfs/rw.txt", b"keep");
+            let mut f = open("/vfs/rw.txt", "rw").unwrap();
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).unwrap();
+            assert_eq!(buf, b"keep");
+        }
+    }
+}
+
+/// RES-3877: playground-facing VFS accessors used by the simple
+/// `file_read` / `file_write` builtins in `lib.rs`. They share the
+/// same store as the streaming handlers so `file_write` followed by
+/// `file_open` / `file_read` round-trips inside the sandbox.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn vfs_write(path: &str, contents: &[u8]) {
+    wasm_vfs::store_write(path, contents);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn vfs_read(path: &str) -> std::io::Result<Vec<u8>> {
+    wasm_vfs::store_read(path)
 }
 
 #[cfg(test)]
