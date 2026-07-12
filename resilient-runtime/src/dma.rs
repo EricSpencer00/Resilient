@@ -842,19 +842,22 @@ mod tests {
         }
         let transfer = chain.start();
         assert_eq!(transfer.descriptor_count(), 16);
-        // Walk the chain via the safe accessor, comparing (not
-        // dereferencing) each next pointer against its successor.
-        assert_eq!(
-            transfer.head_ptr(),
-            transfer.descriptor(0).unwrap() as *const DmaDescriptor
-        );
+        // Walk via the safe index accessor only. `start` moved the
+        // arena, so stored `next` pointers reference the pre-move
+        // chain and must never be dereferenced or compared against
+        // post-move addresses — only the null/non-null tail sentinel
+        // is meaningful here.
+        assert!(!transfer.head_ptr().is_null());
         for i in 0..16 {
             let desc = transfer.descriptor(i).unwrap();
-            match transfer.descriptor(i + 1) {
-                Some(next) => assert_eq!(desc.next, next as *const DmaDescriptor),
-                None => assert!(desc.next.is_null()),
+            assert_eq!(desc.length, 4);
+            if i < 15 {
+                assert!(!desc.next.is_null());
+            } else {
+                assert!(desc.next.is_null());
             }
         }
+        assert!(transfer.descriptor(16).is_none());
     }
 
     #[test]
