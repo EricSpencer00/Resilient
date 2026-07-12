@@ -309,7 +309,7 @@ fn check_emit_diagnostics_json_parse_error_produces_diagnostic() {
         "diagnostics should be a JSON array; got: {stdout}"
     );
     assert!(
-        arr.as_array().unwrap().len() > 0,
+        !arr.as_array().unwrap().is_empty(),
         "parse error should produce at least one diagnostic"
     );
 
@@ -1006,7 +1006,7 @@ fn all_exit_codes_are_standard() {
             .arg(subcmd)
             .arg(file)
             .output()
-            .expect(&format!("spawn {subcmd}"));
+            .unwrap_or_else(|_| panic!("spawn {subcmd}"));
         let code = output.status.code().expect("should have exit code");
         assert!(
             code == 0 || code == 1 || code == 2,
@@ -1035,24 +1035,4 @@ fn conflicting_typecheck_flags_are_handled() {
         "conflicting flags should not panic"
     );
     let _ = fs::remove_file(&src);
-}
-
-// ============================================================================
-// Cleanup helper (optional, for test isolation)
-// ============================================================================
-
-fn cleanup_temp_files() {
-    // Best-effort cleanup of temp files.
-    let temp_dir = std::env::temp_dir();
-    if let Ok(entries) = fs::read_dir(&temp_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name() {
-                let s = name.to_string_lossy();
-                if s.starts_with("res_cliedge") {
-                    let _ = fs::remove_file(&path);
-                }
-            }
-        }
-    }
 }
