@@ -78,4 +78,4 @@ jobs:
           workspaces: resilient
 
       - name: cargo test (ai_threats_smoke)
-        run: cargo test --locked --test ai_threats_smoke --verbose
+        run: cargo test --locked --test it ai_threats_smoke --verbose
