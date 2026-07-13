@@ -39,6 +39,14 @@
     ".github/workflows/agent-auto-merge.yml": {
       "branch": "res-3913-autoclose-linked-issues",
       "claimed_at": "2026-07-13T22:07:55Z"
+    },
+    "resilient/examples/llm_quantized_matmul.rz": {
+      "branch": "res-3781-llm-quantized-ops-v2",
+      "claimed_at": "2026-07-13T22:31:20Z"
+    },
+    "resilient/tests/llm_quantized_ops_smoke.rs": {
+      "branch": "res-3781-llm-quantized-ops-v2",
+      "claimed_at": "2026-07-13T22:31:20Z"
     }
   }
 }

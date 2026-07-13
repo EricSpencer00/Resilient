@@ -1,0 +1,2 @@
+[42, -1, -22, -9]
+Program executed successfully

@@ -1,0 +1,39 @@
+fn q8_dot3(array lhs, array rhs, int row, int col, int rhs_cols) -> int
+    requires len(lhs) == 6
+    requires len(rhs) == 6
+    requires row >= 0
+    requires row < 2
+    requires col >= 0
+    requires col < rhs_cols
+    requires rhs_cols == 2
+{
+    let acc = 0;
+    let k = 0;
+    while k < 3 {
+        let a = lhs[row * 3 + k];
+        let b = rhs[k * rhs_cols + col];
+        acc = acc + a * b;
+        k = k + 1;
+    }
+    return acc;
+}
+
+fn q8_matmul_2x2(array activations, array weights) -> array
+    requires len(activations) == 6
+    requires len(weights) == 6
+{
+    return [
+        q8_dot3(activations, weights, 0, 0, 2),
+        q8_dot3(activations, weights, 0, 1, 2),
+        q8_dot3(activations, weights, 1, 0, 2),
+        q8_dot3(activations, weights, 1, 1, 2),
+    ];
+}
+
+fn main() {
+    let activations = [3, -2, 5, 1, 0, -4];
+    let weights = [2, -1, -3, 4, 6, 2];
+    println(q8_matmul_2x2(activations, weights));
+}
+
+main();
