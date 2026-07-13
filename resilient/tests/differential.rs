@@ -368,3 +368,48 @@ fn interpreter_and_vm_agree_on_non_bool_logical_operands() {
         failures.join("")
     );
 }
+
+/// RES-3896: `Array + Array` must behave identically on both backends. The
+/// tree walker special-cases array concatenation in `eval_infix_expression`;
+/// before the fix the VM's `Op::Add` had no arm for two arrays and raised a
+/// type mismatch, so identical source produced different stdout *and* exit
+/// code. Lock the class here so it can't silently return.
+#[test]
+fn interpreter_and_vm_agree_on_array_concatenation() {
+    let programs = [
+        (
+            "int_arrays",
+            "fn main() { let a = [1, 2]; let b = [3, 4]; println(a + b); } main();",
+        ),
+        (
+            "string_arrays",
+            "fn main() { let a = [\"x\", \"y\"]; let b = [\"z\"]; println(a + b); } main();",
+        ),
+        (
+            "empty_left",
+            "fn main() { let a: [int32] = []; let b = [1, 2]; println(a + b); } main();",
+        ),
+        (
+            "empty_right",
+            "fn main() { let a = [1, 2]; let b: [int32] = []; println(a + b); } main();",
+        ),
+        (
+            "array_plus_int_still_errors",
+            "fn main() { let a = [1, 2]; println(a + 5); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} array-concatenation case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}

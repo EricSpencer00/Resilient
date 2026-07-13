@@ -550,6 +550,10 @@ fn run_inner(
                     (Value::String(s1), Value::String(s2)) => {
                         stack.push(Value::String(s1 + &s2));
                     }
+                    (Value::Array(mut l), Value::Array(r)) => {
+                        l.extend(r);
+                        stack.push(Value::Array(l));
+                    }
                     (Value::String(mut s), ref rhs) if vm_can_stringify(rhs) => {
                         vm_push_stringified(&mut s, rhs);
                         stack.push(Value::String(s));
@@ -2050,6 +2054,10 @@ fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         }
         (Value::String(s1), Value::String(s2)) => {
             state.stack.push(Value::String(s1 + &s2));
+        }
+        (Value::Array(mut l), Value::Array(r)) => {
+            l.extend(r);
+            state.stack.push(Value::Array(l));
         }
         (Value::String(mut s), ref rhs) if vm_can_stringify(rhs) => {
             vm_push_stringified(&mut s, rhs);
@@ -4667,6 +4675,45 @@ mod tests {
         assert_both_eq("let n = 3; while n { n = n - 1; } n;");
         assert_both_eq("!5;");
         assert_both_eq("!0;");
+    }
+
+    // ============================================================
+    // RES-3896: `Array + Array` concatenates on the VM, matching the
+    // interpreter. Before this fix `Op::Add` had no arm for two arrays
+    // in either dispatch engine, so `[1,2] + [3,4]` raised
+    // `VmError::TypeMismatch("Add")` on the VM while the interpreter's
+    // `eval_infix_expression` already special-cased it and returned the
+    // concatenated array.
+    // ============================================================
+
+    #[test]
+    fn res3896_array_plus_array_concatenates() {
+        let (m, d) = run_both("[1, 2] + [3, 4];");
+        let m = m.unwrap();
+        let d = d.unwrap();
+        assert_eq!(value_repr(&m), value_repr(&d));
+        match m {
+            Value::Array(v) => assert_eq!(v.len(), 4, "expected 4-element concatenated array"),
+            other => panic!("expected Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn res3896_empty_array_plus_array_is_identity() {
+        assert_both_eq("let a: [int32] = []; let b = [1, 2]; a + b;");
+        assert_both_eq("let a = [1, 2]; let b: [int32] = []; a + b;");
+    }
+
+    #[test]
+    fn res3896_array_plus_non_array_is_still_type_mismatch() {
+        assert_both_type_mismatch("[1, 2] + 5;");
+        assert_both_type_mismatch("5 + [1, 2];");
+    }
+
+    #[test]
+    fn res3896_array_concat_agrees_across_dispatch_engines() {
+        assert_both_eq("[1, 2] + [3, 4];");
+        assert_both_eq("let a = [\"x\", \"y\"]; let b = [\"z\"]; a + b;");
     }
 
     #[test]
