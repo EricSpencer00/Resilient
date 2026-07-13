@@ -1,281 +1,99 @@
 ---
-title: Verifiable AI-Generated Code
+title: Verify Contracts, Not Provenance
 nav_order: 12
 permalink: /ai-generated-design
 ---
 
-# Design: `@ai_generated` Attribute for Verifiable AI Code
+# Design: Contract Verification and the `@ai_generated` Provenance Alias
 
-## Motivation
-When AI (Claude, ChatGPT, etc.) generates code, we need mechanisms to:
-1. **Mark** code as AI-generated (explicit, auditable)
-2. **Require** contracts for correctness proof
-3. **Verify** without external tools or tokens
-4. **Certify** the verification result
+> **History.** This page originally designed `@ai_generated` as a
+> verification gate: tagged functions were forced to carry contracts
+> and bounded loops. RES-3854 reversed that framing — **correctness is
+> not a property of authorship** — and RES-3857/RES-3858 re-landed the
+> verification machinery on a provenance-agnostic policy. This page
+> documents the current model.
 
-## Attribute Definition
+## Why provenance was the wrong axis
 
-```resilient
-// Requires contracts; optional docs string
-@ai_generated("prompt used to generate this", language: "claude-3.5-sonnet")
-@contract(all(x: int) => result >= x)
-fn ai_generated_ceil(x: int) -> int {
-  return x;  // Compiler verifies: result >= x
-}
+The original RES-3780 design hung real guarantees (non-vacuous
+contracts, Z3-proved loop bounds) off a `@ai_generated` marker. That
+coupling was backwards:
 
-// If contracts are missing: COMPILER ERROR
-@ai_generated
-fn incomplete_ai_code() -> int {
-  return 42;  // ✗ error: @ai_generated requires @contract annotations
-}
-```
+1. **Correctness is not a property of authorship.** A hand-written
+   safety-critical function deserves the exact same contract-vacuity
+   and loop-bound proofs as one emitted by a model.
+2. **The marker is trivially omittable.** A guarantee you can opt out
+   of by deleting one line is a documentation convention, not a
+   guarantee.
+3. **It bifurcated the verifier.** Verification that only fires under a
+   provenance flag invites drift between the "AI" path and the normal
+   path.
+4. **Provenance ≠ trust.** Tagged code you didn't verify is no safer;
+   verified code is safe no matter who wrote it.
 
-## Semantics
+## The current model
 
-### 1. **Attribute Declaration** (in lib.rs)
-Add to `<EXTENSION_KEYWORDS>`:
-```rust
-"ai_generated" => Token::AttrAiGenerated,
-```
+### `@require_contracts` — the policy directive (RES-3854)
 
-Add to Node enum:
-```rust
-Node::FunctionDef {
-  name: String,
-  params: Vec<Param>,
-  return_type: Option<Type>,
-  body: Box<Node>,
-  attributes: Vec<Attribute>,  // ← includes @ai_generated
-  // ...
-}
-
-enum Attribute {
-  Contract(ContractSpec),
-  AiGenerated { 
-    prompt: Option<String>,
-    language: Option<String>,  // "claude-3.5-sonnet", "gpt-4", etc.
-  },
-  // ...
-}
-```
-
-### 2. **Validation Logic** (in typechecker.rs)
-
-**Rule**: If `@ai_generated` is present on a function:
-- [ ] Function MUST have at least one `@contract` annotation
-- [ ] Each contract must be satisfiable (Z3 check during compile)
-- [ ] Compiler emits proof certificate (if Z3 succeeds)
-- [ ] If contracts are missing → **COMPILER_ERROR**, not warning
-
-```rust
-// In typechecker.rs check_function_attributes()
-if let Some(attr) = find_attribute(&attributes, "ai_generated") {
-  if !has_contracts(attributes) {
-    return Err(diagnostic(
-      source_path, span,
-      "function with @ai_generated requires @contract annotations"
-    ));
-  }
-  
-  // Verify contracts with Z3
-  for contract in get_contracts(&attributes) {
-    match verify_contract(contract, function_body) {
-      Ok(proof) => emit_certificate(proof),
-      Err(Unknown) => warn!("contract could not be proven"),
-      Err(Unsat) => return Err(diagnostic(..., "contract is false")),
-    }
-  }
-}
-```
-
-### 3. **Contract Formats** (Required for @ai_generated)
-
-Functions with `@ai_generated` must use contracts. Valid formats:
+A module-level directive enrols **every** function in the file into
+contract verification (`resilient/src/contract_policy.rs`):
 
 ```resilient
-// Pre-condition + post-condition
-@contract(all(x: int) => result > 0)  // post-condition
-@contract(x > 0 => ...)                // pre-condition
-fn sqrt(x: int) -> int { ... }
+@require_contracts
 
-// Multiple contracts
-@contract(x >= 0)  // input precondition
-@contract(result >= 0)  // output postcondition
-@contract(result * result <= x)  // invariant
-fn isqrt(x: int) -> int { ... }
-
-// Loop bounds (for termination)
-@contract(loop_bound: 100)
-fn iterate(x: int) -> int {
-  for i in 0..x { }  // bounded by contract
+fn clamp_positive(int x) requires x < 1000 ensures result >= 0 {
+    if x < 0 { return 0; }
+    return x;
 }
 ```
 
-### 4. **Metadata Attributes** (Optional)
+Under the bare directive, every *declared* clause must be non-vacuous:
 
-```resilient
-@ai_generated(
-  prompt: "Generate a safe state machine validator for GPIO pins",
-  language: "claude-3.5-sonnet",
-  timestamp: 2026-06-15T20:00:00Z,
-  model_version: "claude-3.5-sonnet-20250615",
-  reasoning: "Used extended thinking for 15s"
-)
-@contract(...)
-fn validate_pin_state(pin: u8) -> bool { ... }
-```
+- each `requires` must reference at least one parameter
+  (`requires true` is a compile error);
+- each `ensures` must reference `result`.
 
-## Compiler Behavior
+### `@require_contracts(strict)` — mandatory contracts
 
-### Error Examples
+The strict variant additionally mandates contract *presence*: every
+named function (except `main`) must declare at least one `ensures`
+clause, and at least one `requires` clause when it has parameters.
+Safety-critical modules flip this on, and nobody can opt a function
+out by simply not writing a contract.
 
-```resilient
-❌ Missing contracts
-@ai_generated
-fn bad_code() -> int {
-  return 42;
-}
-error: function with @ai_generated requires @contract annotations
-  → use @contract(result >= 0) or similar
+### Tier 2 — bounded loops (RES-3857)
 
-❌ Unproven contract
-@ai_generated
-@contract(result > 1_000_000)  // too strong for "return 42"
-fn weak_proof() -> int {
-  return 42;
-}
-error: contract cannot be proven by Z3
-  result > 1_000_000 is false for: result = 42
+Any enrolled function containing a `while` loop must carry
+`#[loop_bound(N)]`; with `--features z3` the compiler proves (or
+refutes) the bound for monotonic-counter loops
+(`resilient/src/loop_bound.rs`).
 
-✓ Valid
-@ai_generated
-@contract(result >= 0)
-fn good_code() -> int {
-  return 42;
-}
-✓ contract verified; proof certificate emitted
-```
+### Tier 3 — proof certificates (RES-3859)
 
-### Proof Certificate Emission
+`rz <file> --emit-contract-certificate <FILE>` writes a deterministic
+JSON audit artifact attesting the per-clause verdict (`pass` with a
+replayable SMT-LIB2 dump, `fail` with a counterexample, or `unknown`).
+The certificate attests the **proof**; provenance appears only as an
+informational field.
 
-When a contract is proven:
-```json
-{
-  "function": "good_code",
-  "source_file": "example.rz",
-  "line": 42,
-  "contracts": [
-    {
-      "assertion": "result >= 0",
-      "proven": true,
-      "z3_time_ms": 12,
-      "proof_hash": "sha256:abc123..."
-    }
-  ],
-  "timestamp": "2026-06-15T20:05:30Z",
-  "compiler": "rz v0.2.2"
-}
-```
+### `@ai_generated` — pure provenance metadata (RES-3858)
 
-## Feature Gate (RES-3501)
+`@ai_generated` still parses, and is recorded as an audit-trail
+provenance alias of the `#[generated(intent=..., prompt_hash=...)]`
+annotation (RES-3835). It grants **no** verification behaviour:
+adding or removing it changes nothing about what the compiler checks
+or proves. It surfaces in:
 
-Gate `@ai_generated` behind feature tier:
+- proof certificates (`"provenance": ["ai_generated"]`), and
+- any tooling reading the `feature_attrs` registry.
 
-```markdown
-# LANGUAGE.md
+For a richer audit trail (intent text, prompt hash), prefer
+`#[generated(...)]`.
 
-## @ai_generated Attribute
-- **Status**: Experimental (v0.2.2+)
-- **Stability**: Unstable; may change
-- **Requirement**: Functions with @ai_generated MUST have @contract annotations
-- **Use case**: Marking code generated by AI tools; enables offline verification
-```
+## Migration
 
-Add to compiler:
-```rust
-if is_experimental_feature("ai_generated") && has_attribute(attributes, "ai_generated") {
-  warn!("@ai_generated is experimental and may change");
-}
-```
-
-## Integration Points
-
-1. **LSP Hover**: Show contract status when hovering over @ai_generated function
-2. **LSP Diagnostics**: Emit actionable errors for missing contracts
-3. **MCP Tool** (RES-3782): `rz_audit_ai_generated(code) → violations`
-4. **Proof Certificates**: Output to JSON for external auditing
-
-## Example Workflow
-
-```bash
-# 1. Claude generates code with contracts
-$ cat generated.rz
-@ai_generated
-@contract(all(x: int) => result == x + 1)
-fn increment(x: int) -> int {
-  return x + 1;
-}
-
-# 2. Compiler checks + verifies
-$ rz check generated.rz
-✓ contracts verified; proof: sha256:abc123def456
-
-# 3. Emit certificate (optional)
-$ rz verify --emit-certs generated.rz > certs.json
-
-# 4. User audits (human + tools)
-$ cat certs.json
-{
-  "proofs": [
-    {
-      "function": "increment",
-      "contract": "all(x: int) => result == x + 1",
-      "z3_proven": true,
-      ...
-    }
-  ]
-}
-
-# 5. Ship (user removes @ai_generated after review)
-# or keep it for continuous verification
-```
-
-## Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| **Contracts required** | AI code must be explicitly verified; catches mistakes early |
-| **Z3-based proof** | Local, offline; no token cost; reproducible |
-| **Metadata optional** | Helps trace code origin; not required for verification |
-| **Proof certificates** | Auditable; portable; enables external tools to verify |
-| **Feature-gated** | Allows breaking changes without breaking stable code |
-| **No fuzzing gate** | @ai_generated is orthogonal to @fuzz; can use both |
-
-## Limitations & Future Work
-
-**Current scope**:
-- [ ] Single-function verification (not across files)
-- [ ] Z3 only (not TLA+, bounded model checking, etc.)
-- [ ] No automatic contract inference (user must write contracts)
-
-**Future** (RES-3780 Phase 2):
-- [ ] Cross-function contract inference (data flow analysis)
-- [ ] Automatic loop bound detection
-- [ ] TLA+ integration for state machine verification
-- [ ] Fuzzer-guided contract weakening
-
-## Acceptance Criteria (Implementation)
-
-- [ ] `@ai_generated` attribute defined in parser
-- [ ] Validation: requires @contract annotations
-- [ ] Z3 integration: emit proof status
-- [ ] Error messages: guide user to add contracts
-- [ ] Proof certificates: JSON output
-- [ ] LSP support: show contract status in hover
-- [ ] Documentation: LANGUAGE.md + example walkthrough
-- [ ] Tests: 10+ cases (valid, missing contracts, unproven, etc.)
-
-## Related Issues
-- RES-3501: Stability policy (feature tier)
-- RES-071: Proof certificates
-- RES-3782: MCP audit tool
+| Before (provenance-gated) | Now (policy-gated) |
+|---|---|
+| `@ai_generated` forces contracts on one function | `@require_contracts(strict)` forces contracts on the whole module |
+| `@ai_generated` + `while` forces `#[loop_bound]` | `@require_contracts` + `while` forces `#[loop_bound]` on every function |
+| Delete the tag to skip checks | No per-function opt-out exists |

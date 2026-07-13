@@ -600,10 +600,12 @@ Contract         ::= "requires" Expression
 ImplDecl         ::= "impl" Identifier "{" { FnDecl } "}"
 ```
 
-`@ai_generated` marks a function whose body came from an AI tool. The
-function must declare at least one `requires` or `ensures` clause; a
-missing contract is a static type-check error. The marker does not call
-an external model and does not infer a contract for the user.
+`@ai_generated` marks a function whose body came from an AI tool. It
+is pure provenance metadata (an alias of `#[generated]`, RES-3858): it
+grants no verification behaviour and removing it changes no diagnostic.
+Contract enforcement comes from the module-level `@require_contracts`
+directive (see the contract-policy design page), which applies to every
+function in the file regardless of authorship.
 
 ### `let` semantics
 
