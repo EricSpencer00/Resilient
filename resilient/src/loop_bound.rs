@@ -1,13 +1,20 @@
-//! RES-3780 Tier 2: Bounded-loop verification for `@ai_generated` functions.
+//! RES-3780 Tier 2: Bounded-loop verification for enrolled functions.
 //!
-//! AI-generated functions that contain while-loops must declare a `#[loop_bound(N)]`
+//! Enrolled functions that contain while-loops must declare a `#[loop_bound(N)]`
 //! attribute to specify the maximum iteration count. When the `z3` feature is enabled,
 //! the compiler attempts to statically verify that simple monotonic-counter loops
 //! respect their declared bounds using SMT.
 //!
-//! **Enforcement rule**: Any function marked `@ai_generated` that contains a
-//! `while`-loop (recursively) MUST carry a `#[loop_bound(N)]` attribute where N
-//! is a positive integer. Missing bounds are a hard compile error.
+//! **Enforcement rule**: Any *enrolled* function that contains a `while`-loop
+//! (recursively) MUST carry a `#[loop_bound(N)]` attribute where N is a
+//! positive integer. Missing bounds are a hard compile error.
+//!
+//! RES-3857: enrolment is provenance-agnostic — it comes from
+//! [`crate::contract_policy::is_enrolled`], i.e. the module-level
+//! `@require_contracts` directive or (for back-compat) the
+//! `@ai_generated` tag. A hand-written loop in a `@require_contracts`
+//! module is held to exactly the same bound-proof standard as an
+//! AI-generated one.
 //!
 //! **Verification** (z3-feature only): For loops matching the simple monotonic-counter
 //! shape (counter incremented by a constant per iteration with a constant or parameter
@@ -68,57 +75,57 @@ fn has_while_loop(node: &Node) -> bool {
 
 fn diagnostic(source_path: &str, line: usize, fn_name: &str, message: &str) -> String {
     format!(
-        "{source_path}:{line}:0: error[loop_bound]: invalid @ai_generated declaration `{fn_name}`: {message}"
+        "{source_path}:{line}:0: error[loop_bound]: function `{fn_name}` enrolled in contract verification: {message}"
     )
 }
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
-    // First pass: collect both @ai_generated and #[loop_bound] attributes
-    let ai_generated_attrs = crate::feature_attrs::find_kind("ai_generated");
-    if ai_generated_attrs.is_empty() {
+    // RES-3857: enrolment is provenance-agnostic. Fast-reject when
+    // nothing in the file can be enrolled — no `@require_contracts`
+    // directive and no `@ai_generated` tags.
+    if !crate::contract_policy::module_requires_contracts()
+        && crate::feature_attrs::find_kind("ai_generated").is_empty()
+    {
         return Ok(());
     }
 
     let bounds = collect();
 
-    // Build a map of @ai_generated function names and their line numbers
-    let mut ai_generated_funcs = HashMap::new();
+    // Prefer the attribute's own source line for tagged functions so
+    // the diagnostic points at the annotation; module-enrolled
+    // functions fall back to the fn declaration line.
+    let attr_lines: HashMap<String, usize> = crate::feature_attrs::find_kind("ai_generated")
+        .into_iter()
+        .map(|(item, rec)| (item, rec.line))
+        .collect();
+
     if let Node::Program(stmts) = program {
         for stmt in stmts {
-            if let Node::Function { name, .. } = &stmt.node {
-                for (fn_name, rec) in &ai_generated_attrs {
-                    if fn_name == name {
-                        ai_generated_funcs.insert(name.clone(), rec.line);
-                        break;
-                    }
+            if let Node::Function {
+                name, body, span, ..
+            } = &stmt.node
+            {
+                if !crate::contract_policy::is_enrolled(name) {
+                    continue;
                 }
-            }
-        }
-    }
+                // Check if this function contains while-loops
+                if has_while_loop(body) {
+                    let line = attr_lines.get(name).copied().unwrap_or(span.start.line);
+                    // It has a while-loop, so it must have a #[loop_bound]
+                    if !bounds.contains_key(name) {
+                        return Err(diagnostic(
+                            source_path,
+                            line,
+                            name,
+                            "contains a while-loop and requires #[loop_bound(N)] (RES-3780 Tier 2)",
+                        ));
+                    }
 
-    // Now check each @ai_generated function
-    if let Node::Program(stmts) = program {
-        for stmt in stmts {
-            if let Node::Function { name, body, .. } = &stmt.node {
-                if let Some(&line) = ai_generated_funcs.get(name) {
-                    // Check if this function contains while-loops
-                    if has_while_loop(body) {
-                        // It has a while-loop, so it must have a #[loop_bound]
-                        if !bounds.contains_key(name) {
-                            return Err(diagnostic(
-                                source_path,
-                                line,
-                                name,
-                                "contains a while-loop and requires #[loop_bound(N)] (RES-3780 Tier 2)",
-                            ));
-                        }
-
-                        // If z3 feature is enabled, verify the bound
-                        #[cfg(feature = "z3")]
-                        {
-                            if let Some(spec) = bounds.get(name) {
-                                verify_loop_bounds(program, name, spec.bound, source_path)?;
-                            }
+                    // If z3 feature is enabled, verify the bound
+                    #[cfg(feature = "z3")]
+                    {
+                        if let Some(spec) = bounds.get(name) {
+                            verify_loop_bounds(program, name, spec.bound, source_path)?;
                         }
                     }
                 }
@@ -472,6 +479,93 @@ mod tests {
             "function without loop should pass: {:?}",
             result
         );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn require_contracts_module_enrols_untagged_loop_function() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            crate::contract_policy::MODULE_KEY,
+            crate::feature_attrs::AttrRecord {
+                name: "require_contracts".into(),
+                args: String::new(),
+                line: 1,
+            },
+        );
+        let src = "fn hand_written(int n) requires n >= 0 {
+            int i = 0;
+            while i < n {
+                i = i + 1;
+            }
+            return i;
+        }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+
+        let err = check(&prog, "<test>")
+            .expect_err("untagged while-loop under @require_contracts must need a bound");
+        assert!(
+            err.contains("error[loop_bound]")
+                && err.contains("`hand_written`")
+                && err.contains("requires #[loop_bound(N)]"),
+            "expected loop_bound missing error, got: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn require_contracts_module_accepts_bounded_untagged_loop() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            crate::contract_policy::MODULE_KEY,
+            crate::feature_attrs::AttrRecord {
+                name: "require_contracts".into(),
+                args: String::new(),
+                line: 1,
+            },
+        );
+        crate::feature_attrs::record(
+            "hand_written",
+            crate::feature_attrs::AttrRecord {
+                name: "loop_bound".into(),
+                args: "10".into(),
+                line: 1,
+            },
+        );
+        let src = "fn hand_written(int n) requires n >= 0 {
+            int i = 0;
+            while i < n {
+                i = i + 1;
+            }
+            return i;
+        }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+
+        #[cfg(not(feature = "z3"))]
+        assert!(check(&prog, "<test>").is_ok());
+        #[cfg(feature = "z3")]
+        let _ = check(&prog, "<test>");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn untagged_loop_without_directive_is_unenrolled() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn hand_written(int n) {
+            int i = 0;
+            while i < n {
+                i = i + 1;
+            }
+            return i;
+        }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert!(check(&prog, "<test>").is_ok());
         crate::feature_attrs::reset();
     }
 
