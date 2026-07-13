@@ -55,14 +55,59 @@ fn is_vacuous(node: &Node) -> bool {
 }
 
 /// Collected contract info for one function.
-struct ContractInfo {
-    params: Vec<String>,
-    requires: Vec<Node>,
-    ensures: Vec<Node>,
-    line: usize,
+///
+/// RES-3854: shared with [`crate::contract_policy`], which applies the
+/// same clause-vacuity rules to functions enrolled by the module-level
+/// `@require_contracts` directive rather than the `@ai_generated` tag.
+pub(crate) struct ContractInfo {
+    pub(crate) params: Vec<String>,
+    pub(crate) requires: Vec<Node>,
+    pub(crate) ensures: Vec<Node>,
+    pub(crate) line: usize,
 }
 
-fn collect_contracts(program: &Node) -> HashMap<String, ContractInfo> {
+/// RES-3854: clause-vacuity rules 2 and 3, shared between the
+/// `@ai_generated` pass and `contract_policy`. Returns bare messages
+/// (no source position / error-code prefix); each caller wraps them in
+/// its own diagnostic format. Only *declared* clauses are judged —
+/// presence of `requires`/`ensures` is each caller's own policy.
+pub(crate) fn contract_clause_errors(info: &ContractInfo) -> Vec<String> {
+    let mut errors = Vec::new();
+    for clause in &info.requires {
+        if is_vacuous(clause) {
+            errors.push(
+                "`requires true` is a vacuous precondition — write a real constraint \
+                 on the function's parameters (e.g. `requires n >= 0`)"
+                    .to_string(),
+            );
+        } else if !info.params.is_empty() && !info.params.iter().any(|p| expr_references(clause, p))
+        {
+            errors.push(
+                "`requires` clause does not reference any function parameter — \
+                 preconditions must constrain the input domain"
+                    .to_string(),
+            );
+        }
+    }
+    for clause in &info.ensures {
+        if is_vacuous(clause) {
+            errors.push(
+                "`ensures true` is a vacuous postcondition — write a real constraint \
+                 on `result` (e.g. `ensures result >= 0`)"
+                    .to_string(),
+            );
+        } else if !expr_references(clause, "result") {
+            errors.push(
+                "`ensures` clause does not reference `result` — postconditions must \
+                 constrain the return value (e.g. `ensures result >= 0`)"
+                    .to_string(),
+            );
+        }
+    }
+    errors
+}
+
+pub(crate) fn collect_contracts(program: &Node) -> HashMap<String, ContractInfo> {
     let mut map = HashMap::new();
     if let Node::Program(stmts) = program {
         for stmt in stmts {
@@ -116,29 +161,6 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 "`@ai_generated` function must declare at least one `requires` clause \
                  constraining its inputs — add `requires <param_condition>`",
             ));
-        } else {
-            // Rule 2: every `requires` clause must reference a parameter (not vacuous).
-            for clause in &info.requires {
-                if is_vacuous(clause) {
-                    errors.push(diagnostic(
-                        source_path,
-                        line,
-                        fn_name,
-                        "`requires true` is a vacuous precondition — write a real constraint \
-                         on the function's parameters (e.g. `requires n >= 0`)",
-                    ));
-                } else if !info.params.is_empty()
-                    && !info.params.iter().any(|p| expr_references(clause, p))
-                {
-                    errors.push(diagnostic(
-                        source_path,
-                        line,
-                        fn_name,
-                        "`requires` clause does not reference any function parameter — \
-                         preconditions must constrain the input domain",
-                    ));
-                }
-            }
         }
 
         // Rule 1b: must have at least one `ensures` clause.
@@ -150,27 +172,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 "`@ai_generated` function must declare at least one `ensures` clause \
                  constraining its output — add `ensures result <condition>`",
             ));
-        } else {
-            // Rule 3: every `ensures` clause must reference `result`.
-            for clause in &info.ensures {
-                if is_vacuous(clause) {
-                    errors.push(diagnostic(
-                        source_path,
-                        line,
-                        fn_name,
-                        "`ensures true` is a vacuous postcondition — write a real constraint \
-                         on `result` (e.g. `ensures result >= 0`)",
-                    ));
-                } else if !expr_references(clause, "result") {
-                    errors.push(diagnostic(
-                        source_path,
-                        line,
-                        fn_name,
-                        "`ensures` clause does not reference `result` — postconditions must \
-                         constrain the return value (e.g. `ensures result >= 0`)",
-                    ));
-                }
-            }
+        }
+
+        // Rules 2 & 3: declared clauses must be non-vacuous (shared with
+        // contract_policy — see contract_clause_errors).
+        for msg in contract_clause_errors(info) {
+            errors.push(diagnostic(source_path, line, fn_name, &msg));
         }
     }
 
