@@ -32,6 +32,13 @@ libfuzzer-sys = "0.4"
 # scratch .rs files.
 tempfile = "3"
 
+# RES-3779: `contracts` target parses `--emit-contract-certificate`
+# output to assert it's well-formed JSON with in-schema verdicts.
+# Not a new dependency to the workspace's graph — `resilient/Cargo.toml`
+# already pulls in `serde_json = "1"` unconditionally (cache + LSP),
+# so this reuses an already-vetted, already-pinned crate.
+serde_json = "1"
+
 [[bin]]
 name = "parse"
 path = "fuzz_targets/parse.rs"
@@ -42,6 +49,18 @@ bench = false
 [[bin]]
 name = "lex"
 path = "fuzz_targets/lex.rs"
+test = false
+doc = false
+bench = false
+
+# RES-3779: contract-certificate fuzz target. Routes fuzzed source
+# through `rz --emit-contract-certificate` (RES-3859) and asserts
+# both "no crash" and "any emitted certificate is schema-valid".
+# No feature gate needed — certificate emission works without z3
+# (verdicts degrade to "unknown").
+[[bin]]
+name = "contracts"
+path = "fuzz_targets/contracts.rs"
 test = false
 doc = false
 bench = false

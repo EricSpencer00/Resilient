@@ -8,9 +8,11 @@
 # today).
 #
 # Matrix: `parse` target landed with RES-201; `lex` target added
-# by RES-111. Both shell out to the built `rz` binary
-# with feature-independent invocations (`-t` for parse,
-# `--dump-tokens` for lex).
+# by RES-111; `contracts` target added by RES-3779. All three shell
+# out to the built `rz` binary with feature-independent invocations
+# (`-t` for parse, `--dump-tokens` for lex,
+# `--emit-contract-certificate` for contracts — works on a stock,
+# non-z3 build; verdicts degrade honestly to "unknown").
 
 name: fuzz
 
@@ -35,6 +37,7 @@ jobs:
         target:
           - parse
           - lex
+          - contracts
     steps:
       - uses: actions/checkout@v4
 

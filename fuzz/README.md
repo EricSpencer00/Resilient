@@ -11,6 +11,7 @@ libFuzzer.
 | `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `rz -t`. Fails on panic.                          |
 | `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `rz --dump-tokens`. Fails on panic.                |
 | `jit`   | RES-310  | The Cranelift JIT lowering path: random bytes → UTF-8 filter → `rz --jit`. Fails on panic.  |
+| `contracts` | RES-3779 (#3779) | The contract-certificate pipeline: random bytes → UTF-8 filter → `rz --emit-contract-certificate`. Fails on panic, or on a written certificate that isn't well-formed JSON with an in-schema `"verdict"`. |
 
 Additional targets slot in by adding a file under
 `fuzz_targets/` and a `[[bin]]` entry in `fuzz/Cargo.toml`; the
@@ -55,6 +56,15 @@ RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
 # subprocess panic (SIGABRT) but otherwise passes.
 RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
   cargo +nightly fuzz run lex --manifest-path fuzz/Cargo.toml -- \
+    -max_total_time=30 \
+    -timeout=1
+
+# Or the contracts target (RES-3779). Works on a stock (non-z3)
+# build — verdicts just degrade to "unknown". Fails on a subprocess
+# panic, OR on a written certificate whose JSON is malformed or
+# whose "verdict" field is outside {pass, fail, unknown}.
+RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
+  cargo +nightly fuzz run contracts --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=1
 
