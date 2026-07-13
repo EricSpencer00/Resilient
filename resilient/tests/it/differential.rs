@@ -498,3 +498,55 @@ fn interpreter_and_vm_agree_on_typed_identity_folds() {
         failures.join("")
     );
 }
+
+/// RES-3904: the compiler emits `Op::CallMethod` for every `x.y(...)`
+/// dot-call uniformly (no static type info at that point), but the
+/// VM's `CallMethod` handler only had an arm for `Struct`/`EnumVariant`
+/// receivers — every dot-call method on a built-in `String`, `Array`,
+/// `Map`, or `Set` crashed the VM with a type-mismatch, while the
+/// interpreter (which has its own short-name → builtin mapping)
+/// handled them fine. Lock representative methods from each container
+/// type so this class can't silently return.
+#[test]
+fn interpreter_and_vm_agree_on_container_method_calls() {
+    let programs = [
+        (
+            "string_to_upper",
+            "fn main() { let s = \"hello\"; println(s.to_upper()); } main();",
+        ),
+        (
+            "string_repeat",
+            "fn main() { let s = \"ab\"; println(s.repeat(3)); } main();",
+        ),
+        (
+            "string_trim",
+            "fn main() { let s = \"  hi  \"; println(s.trim()); } main();",
+        ),
+        (
+            "array_len",
+            "fn main() { let a = [1, 2, 3]; println(a.len()); } main();",
+        ),
+        (
+            "array_collect",
+            "fn main() { let a = [1, 2, 3]; println(a.collect()); } main();",
+        ),
+        (
+            "unrecognized_method_still_errors",
+            "fn main() { let s = \"ab\"; println(s.not_a_real_method()); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} container-method case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}

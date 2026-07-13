@@ -12040,6 +12040,77 @@ fn builtin_intern(args: &[Value]) -> RResult<Value> {
     }
 }
 
+/// RES-3904: shared short-name → full-builtin-name mapping for the
+/// dot-call method sugar on built-in `String`/`Array`/`Map`/`Set`
+/// values (`s.to_upper()`, `a.push(x)`, `m.get(k)`, ...). Both the
+/// tree-walking interpreter (below) and the VM's `Op::CallMethod`
+/// handler (`vm.rs`) call this so the two backends can never drift on
+/// which method names are supported — a fix applied to one and not
+/// the other is exactly the silent-divergence class RES-3889/3891/
+/// 3894/3896/3902 exist to catch.
+///
+/// Returns `None` when `field` isn't a recognized method for
+/// `receiver`'s type (the caller falls through to its own error path).
+/// `Array::collect` is deliberately excluded — it's an identity
+/// (`Ok(receiver.clone())`), not a builtin call, and each caller
+/// handles it before reaching this function.
+pub(crate) fn builtin_method_full_name(receiver: &Value, field: &str) -> Option<&'static str> {
+    match receiver {
+        Value::String(_) => Some(match field {
+            "len" => "len",
+            "trim" => "trim",
+            "to_upper" => "to_upper",
+            "to_lower" => "to_lower",
+            "contains" => "contains",
+            "starts_with" => "starts_with",
+            "ends_with" => "ends_with",
+            "split" => "split",
+            "repeat" => "repeat",
+            "replace" => "replace",
+            "chars" => "string_chars",
+            "reverse" => "string_reverse",
+            "strip_prefix" => "string_strip_prefix",
+            "strip_suffix" => "string_strip_suffix",
+            "lines" => "string_lines",
+            _ => return None,
+        }),
+        Value::Array(_) => Some(match field {
+            "len" => "len",
+            "push" => "push",
+            "pop" => "pop",
+            "slice" => "slice",
+            "sort" => "sort",
+            "sort_desc" => "sort_desc",
+            "reverse" => "reverse",
+            "join" => "join",
+            "flatten" => "flatten",
+            "dedup" => "dedup",
+            "has" => "has",
+            _ => return None,
+        }),
+        Value::Map(_) => Some(match field {
+            "len" => "map_len",
+            "get" => "map_get",
+            "insert" => "map_insert",
+            "remove" => "map_remove",
+            "keys" => "map_keys",
+            "values" => "map_values",
+            "has" => "map_contains_key",
+            "get_or" => "map_get_or",
+            _ => return None,
+        }),
+        Value::Set(_) => Some(match field {
+            "len" => "set_len",
+            "has" => "set_has",
+            "insert" => "set_insert",
+            "remove" => "set_remove",
+            "items" => "set_items",
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
 /// RES-920: lookup-and-apply a builtin by name. Used by the
 /// method-call dispatch (`s.len()`, `arr.push(x)`) to share semantics
 /// with the prefix form. Returns `None` only when the name is not in
@@ -24877,120 +24948,33 @@ impl Interpreter {
                             _ => unreachable!(),
                         }
                     }
-                    // RES-920 / RES-2738: method-call sugar on built-in String.
-                    // Uses an explicit short-name → full-builtin-name map so
-                    // `reverse` can route to `string_reverse` without conflicting
-                    // with the Array `reverse` alias that points to `array_reverse`.
-                    if let Value::String(_) = &target_val {
-                        let full_name: &str = match field.as_str() {
-                            "len" => "len",
-                            "trim" => "trim",
-                            "to_upper" => "to_upper",
-                            "to_lower" => "to_lower",
-                            "contains" => "contains",
-                            "starts_with" => "starts_with",
-                            "ends_with" => "ends_with",
-                            "split" => "split",
-                            "repeat" => "repeat",
-                            // RES-2738: additional string methods.
-                            "replace" => "replace",
-                            "chars" => "string_chars",
-                            "reverse" => "string_reverse",
-                            "strip_prefix" => "string_strip_prefix",
-                            "strip_suffix" => "string_strip_suffix",
-                            "lines" => "string_lines",
-                            _ => "",
-                        };
-                        if !full_name.is_empty() {
-                            let extra_args = self.eval_expressions(arguments)?;
-                            let mut args = Vec::with_capacity(extra_args.len() + 1);
-                            args.push(target_val);
-                            args.extend(extra_args);
-                            return apply_builtin_by_name(full_name, &args).ok_or_else(|| {
-                                format!("Builtin method `{}` is not registered", field)
-                            })?;
+                    // RES-920 / RES-2738 / RES-2734 / RES-2736 / RES-3904:
+                    // method-call sugar on built-in String/Array/Map/Set —
+                    // `collect` on Array is an identity, handled first;
+                    // everything else routes through the shared
+                    // `builtin_method_full_name` map (also used by the
+                    // VM's `Op::CallMethod` handler, so the two backends
+                    // can't drift on which methods are supported).
+                    if let Value::Array(_) = &target_val
+                        && field == "collect"
+                    {
+                        let extra_args = self.eval_expressions(arguments)?;
+                        if !extra_args.is_empty() {
+                            return Err(format!(
+                                "collect: expected 0 arguments, got {}",
+                                extra_args.len()
+                            ));
                         }
+                        return Ok(target_val.clone());
                     }
-                    // RES-920 / RES-2734: method-call sugar on built-in Array.
-                    // All short names correspond to BUILTINS entries exactly.
-                    if let Value::Array(_) = &target_val {
-                        if field == "collect" {
-                            let extra_args = self.eval_expressions(arguments)?;
-                            if !extra_args.is_empty() {
-                                return Err(format!(
-                                    "collect: expected 0 arguments, got {}",
-                                    extra_args.len()
-                                ));
-                            }
-                            return Ok(target_val.clone());
-                        }
-                        let allowed: &[&str] = &[
-                            "len",
-                            "push",
-                            "pop",
-                            "slice",
-                            "sort",
-                            "sort_desc",
-                            "reverse",
-                            "join",
-                            "flatten",
-                            "dedup",
-                            "has",
-                        ];
-                        if allowed.contains(&field.as_str()) {
-                            let extra_args = self.eval_expressions(arguments)?;
-                            let mut args = Vec::with_capacity(extra_args.len() + 1);
-                            args.push(target_val);
-                            args.extend(extra_args);
-                            return apply_builtin_by_name(field, &args).ok_or_else(|| {
-                                format!("Builtin method `{}` is not registered", field)
-                            })?;
-                        }
-                    }
-                    // RES-2736: method-call sugar on built-in Map and Set.
-                    // Maps the short dot-call name to the underlying
-                    // `map_*`/`set_*` global builtin, then forwards with the
-                    // target prepended as the first argument.
-                    if let Value::Map(_) = &target_val {
-                        let full_name = match field.as_str() {
-                            "len" => "map_len",
-                            "get" => "map_get",
-                            "insert" => "map_insert",
-                            "remove" => "map_remove",
-                            "keys" => "map_keys",
-                            "values" => "map_values",
-                            "has" => "map_contains_key",
-                            "get_or" => "map_get_or",
-                            _ => "",
-                        };
-                        if !full_name.is_empty() {
-                            let extra_args = self.eval_expressions(arguments)?;
-                            let mut args = Vec::with_capacity(extra_args.len() + 1);
-                            args.push(target_val);
-                            args.extend(extra_args);
-                            return apply_builtin_by_name(full_name, &args).ok_or_else(|| {
-                                format!("Builtin method `{}` is not registered", field)
-                            })?;
-                        }
-                    }
-                    if let Value::Set(_) = &target_val {
-                        let full_name = match field.as_str() {
-                            "len" => "set_len",
-                            "has" => "set_has",
-                            "insert" => "set_insert",
-                            "remove" => "set_remove",
-                            "items" => "set_items",
-                            _ => "",
-                        };
-                        if !full_name.is_empty() {
-                            let extra_args = self.eval_expressions(arguments)?;
-                            let mut args = Vec::with_capacity(extra_args.len() + 1);
-                            args.push(target_val);
-                            args.extend(extra_args);
-                            return apply_builtin_by_name(full_name, &args).ok_or_else(|| {
-                                format!("Builtin method `{}` is not registered", field)
-                            })?;
-                        }
+                    if let Some(full_name) = builtin_method_full_name(&target_val, field.as_str()) {
+                        let extra_args = self.eval_expressions(arguments)?;
+                        let mut args = Vec::with_capacity(extra_args.len() + 1);
+                        args.push(target_val);
+                        args.extend(extra_args);
+                        return apply_builtin_by_name(full_name, &args).ok_or_else(|| {
+                            format!("Builtin method `{}` is not registered", field)
+                        })?;
                     }
                     // RES-353: StringBuilder method dispatch — intercept before
                     // the generic impl-block lookup so these builtins can write
