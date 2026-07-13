@@ -1,0 +1,16 @@
+// RES-3889 demo: string subscript `s[i]` yields a `Char`, so char-literal
+// comparisons and `string + char` concatenation behave identically under the
+// tree-walker interpreter and the `--vm` bytecode backend.
+fn main() {
+    let s = "hello";
+    println(s[1]);                 // e
+    if s[1] == 'e' {              // Char == char-literal
+        println("matched");        // matched
+    } else {
+        println("no match");
+    }
+    println("first=" + s[0]);      // first=h  (string + Char concat)
+    println(s[-1]);                // o        (negative index → last)
+}
+
+main();
