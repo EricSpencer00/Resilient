@@ -1,10 +1,18 @@
-# RES-204: build the VS Code extension + upload the .vsix as a
-# release artifact on tag push. Publishing to the Marketplace is
-# out of scope — this job just produces the installable bundle.
+# RES-204 / RES-3783: build, package, and publish the VS Code extension.
 #
-# On every push + PR: compile-only, to catch TypeScript breakage
-# early. On a tag push (`v*`): additionally package via `vsce`
-# and upload the artifact.
+# Three jobs, each gating the next:
+#   1. `build`   — on every push + PR: type-check + compile only, to
+#                  catch TypeScript breakage early. No artifact.
+#   2. `package` — on a tag push (`v*`) only: package via `vsce` and
+#                  upload the .vsix as a release artifact.
+#   3. `publish` — on a tag push (`v*`) only, after `package` succeeds:
+#                  publish the packaged extension to the VS Code
+#                  Marketplace via `vsce publish`, authenticated with
+#                  the `VSCE_PAT` repository secret.
+#
+# See docs/VSCODE_EXTENSION_RELEASE.md for the release runbook,
+# including the current Marketplace-version divergence and how to
+# reconcile it.
 
 name: vscode-extension
 
