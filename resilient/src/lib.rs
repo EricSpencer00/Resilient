@@ -594,7 +594,6 @@ mod capabilities;
 // 50-feature missing-language-features pass — shared attribute registry
 // and 50 new feature modules. See feature_attrs.rs for the registry,
 // and the per-feature module docs for what each does.
-mod ai_generated;
 mod ai_threat_model;
 mod anti_regression;
 mod associated_constants;
@@ -4234,6 +4233,11 @@ impl Parser {
         }
 
         let node = self.parse_function_with_pure_and_effects(pure_flag, effects);
+        // RES-3858: `@ai_generated` is a pure provenance alias of the
+        // `#[generated]` annotation — recorded for audit trails and
+        // proof-certificate metadata only. It grants no verification
+        // behaviour; enrolment comes from `@require_contracts`
+        // (contract_policy).
         if attr_name == "ai_generated"
             && let Node::Function { name, .. } = &node
         {
