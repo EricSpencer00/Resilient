@@ -1007,6 +1007,33 @@ fn compile_try_catch(
 
 /// Shared assert-lowering logic used by both `compile_stmt` and
 /// RES-2540: bind unit enum variants as locals so `Color::Green` resolves.
+/// RES-3916: if `name` is a `Type::Variant` reference to a **zero-arg**
+/// enum variant recorded in `ENUM_INDEX`, intern its `Value::EnumVariant`
+/// constant and return the pool index. Returns `Ok(None)` when `name`
+/// isn't a qualified zero-arg variant, so the caller can fall through to
+/// its normal unknown-identifier path. Mirrors the tuple/named
+/// constructor lookups in the `CallExpression` / `StructLiteral` arms.
+fn zero_arg_enum_variant_const(name: &str, chunk: &mut Chunk) -> Result<Option<u16>, CompileError> {
+    let Some((type_name, variant_name)) = crate::split_qualified(name) else {
+        return Ok(None);
+    };
+    let is_unit = ENUM_INDEX.with(|ei| {
+        ei.borrow()
+            .get(type_name)
+            .and_then(|vs| vs.iter().find(|v| v.name == variant_name))
+            .is_some_and(|v| matches!(v.payload, crate::EnumPayload::None))
+    });
+    if !is_unit {
+        return Ok(None);
+    }
+    let val = Value::EnumVariant {
+        type_name: type_name.to_string(),
+        variant: variant_name.to_string(),
+        payload: crate::EnumValuePayload::None,
+    };
+    Ok(Some(chunk.add_constant(val)?))
+}
+
 fn emit_unit_enum_variants(
     enum_name: &str,
     variants: &[crate::EnumVariant],
@@ -2427,6 +2454,15 @@ fn compile_expr(
                     },
                     line,
                 );
+            } else if let Some(const_idx) = zero_arg_enum_variant_const(name, chunk)? {
+                // RES-3916: bare zero-arg enum-variant reference like `E::A`
+                // in expression position. `emit_unit_enum_variants` only
+                // registers these as locals in the *declaring* scope, so a
+                // reference from another function body missed them and hit
+                // `UnknownIdentifier`. Resolve against the scope-independent
+                // `ENUM_INDEX` (same registry the `E::A(x)` constructor path
+                // uses) and emit the variant constant directly.
+                chunk.emit(Op::Const(const_idx), line);
             } else {
                 return Err(CompileError::UnknownIdentifier(name.clone()));
             }
@@ -5024,6 +5060,47 @@ mod tests {
         assert_eq!(prog.main.code.first(), Some(&Op::Const(0)));
         assert!(matches!(prog.main.code.last(), Some(Op::Return)));
         assert!(prog.functions.is_empty());
+    }
+
+    #[test]
+    fn res3916_bare_zero_arg_enum_variant_ref_compiles_across_fn_boundary() {
+        // Before RES-3916 this raised `UnknownIdentifier("E::A")`: the
+        // variant was only registered as a local in the enum's declaring
+        // (top-level) scope, invisible to `main`'s separate locals map.
+        let p = parse_one("enum E { A, B }\nfn main() -> int { let x = E::A; return 0; }\nmain();");
+        let prog = compile(&p).expect("bare zero-arg enum variant ref must compile");
+        // The `main` function's chunk must contain a Const referencing the
+        // `E::A` EnumVariant value.
+        let main_fn = prog
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main fn present");
+        let has_variant_const = main_fn.chunk.constants.iter().any(|c| {
+            matches!(
+                c,
+                Value::EnumVariant { type_name, variant, .. }
+                    if type_name == "E" && variant == "A"
+            )
+        });
+        assert!(
+            has_variant_const,
+            "main chunk should intern the E::A variant constant: {:?}",
+            main_fn.chunk.constants
+        );
+    }
+
+    #[test]
+    fn res3916_unknown_qualified_name_still_errors() {
+        // A `::`-qualified name that isn't a known zero-arg variant must
+        // still raise UnknownIdentifier — the fix must not swallow real
+        // resolution failures.
+        let p = parse_one("fn main() -> int { let x = NotAnEnum::Nope; return 0; }\nmain();");
+        let err = compile(&p).expect_err("unknown qualified name must still error");
+        assert!(
+            matches!(err, CompileError::UnknownIdentifier(ref n) if n == "NotAnEnum::Nope"),
+            "expected UnknownIdentifier, got {err:?}"
+        );
     }
 
     #[test]

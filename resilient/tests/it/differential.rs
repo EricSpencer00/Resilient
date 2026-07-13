@@ -550,3 +550,55 @@ fn interpreter_and_vm_agree_on_container_method_calls() {
         failures.join("")
     );
 }
+
+/// RES-3916: bare zero-arg enum-variant references (`E::A` in expression
+/// position), enum `==` / `!=` equality (including tuple/named payloads),
+/// and payload-less `match` must behave identically on both backends.
+/// Before the fix the VM's bytecode compiler raised `unknown identifier:
+/// E::A` for bare references (they were only registered as locals in the
+/// enum's *declaring* scope), and `vm_values_eq` had no `EnumVariant` arm
+/// so equal variants compared unequal. (Payload-extracting `match` and
+/// constructor-as-function-value remain tracked under RES-3915.)
+#[test]
+fn interpreter_and_vm_agree_on_enum_variant_refs_and_equality() {
+    let programs = [
+        (
+            "bare_ref_eq",
+            "fn main() { let x = E::A; if x == E::A { println(\"a\"); } else { println(\"notA\"); } } enum E { A, B } main();",
+        ),
+        (
+            "bare_ref_neq",
+            "enum E { A, B } fn main() { let x = E::A; if x != E::B { println(\"diff\"); } else { println(\"same\"); } } main();",
+        ),
+        (
+            "bare_ref_reassign",
+            "enum Color { Red, Green, Blue } fn main() { let mut c = Color::Red; c = Color::Green; if c == Color::Green { println(\"green\"); } } main();",
+        ),
+        (
+            "no_payload_match",
+            "enum E { A, B } fn main() { let x = E::B; match x { E::A => println(\"a\"), E::B => println(\"b\") } } main();",
+        ),
+        (
+            "payload_equality",
+            "enum E { P(int32, int32) } fn main() { let a = E::P(1, 2); let b = E::P(1, 2); if a == b { println(\"eq\"); } else { println(\"ne\"); } } main();",
+        ),
+        (
+            "payload_inequality",
+            "enum E { P(int32) } fn main() { let a = E::P(1); let b = E::P(2); if a == b { println(\"eq\"); } else { println(\"ne\"); } } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} enum-variant case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}

@@ -1695,6 +1695,45 @@ fn vm_values_eq(a: &Value, b: &Value) -> bool {
                     .iter()
                     .all(|(k, lv)| rm.get(k).is_some_and(|rv| vm_values_eq(lv, rv)))
         }
+        // RES-3916: enum-variant equality — same type, same variant, same
+        // payload — mirroring the interpreter's `values_strict_eq`
+        // EnumVariant arm. Without this, two equal variants (e.g. bare
+        // `E::A == E::A`, now reachable on the VM) fell through to
+        // `_ => false` and compared unequal.
+        (
+            Value::EnumVariant {
+                type_name: ltn,
+                variant: lv,
+                payload: lp,
+            },
+            Value::EnumVariant {
+                type_name: rtn,
+                variant: rv,
+                payload: rp,
+            },
+        ) => ltn == rtn && lv == rv && vm_enum_payload_eq(lp, rp),
+        _ => false,
+    }
+}
+
+/// RES-3916: structural equality for enum-variant payloads, mirroring the
+/// interpreter's `enum_payload_strict_eq`. Nested values recurse through
+/// `vm_values_eq` so the two backends agree on compound payloads.
+fn vm_enum_payload_eq(l: &crate::EnumValuePayload, r: &crate::EnumValuePayload) -> bool {
+    use crate::EnumValuePayload::{Named, None as PNone, Tuple};
+    match (l, r) {
+        (PNone, PNone) => true,
+        (Tuple(lv), Tuple(rv)) => {
+            lv.len() == rv.len() && lv.iter().zip(rv.iter()).all(|(a, b)| vm_values_eq(a, b))
+        }
+        (Named(lf), Named(rf)) => {
+            lf.len() == rf.len()
+                && lf.iter().all(|(name, lval)| {
+                    rf.iter()
+                        .find(|(rn, _)| rn == name)
+                        .is_some_and(|(_, rval)| vm_values_eq(lval, rval))
+                })
+        }
         _ => false,
     }
 }
