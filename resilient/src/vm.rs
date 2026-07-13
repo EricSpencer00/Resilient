@@ -849,12 +849,12 @@ fn run_inner(
             Op::Eq => {
                 let b = stack.pop().ok_or(VmError::EmptyStack)?;
                 let a = stack.pop().ok_or(VmError::EmptyStack)?;
-                stack.push(Value::Bool(vm_values_eq(&a, &b)));
+                stack.push(Value::Bool(vm_values_eq_checked(&a, &b)?));
             }
             Op::Neq => {
                 let b = stack.pop().ok_or(VmError::EmptyStack)?;
                 let a = stack.pop().ok_or(VmError::EmptyStack)?;
-                stack.push(Value::Bool(!vm_values_eq(&a, &b)));
+                stack.push(Value::Bool(!vm_values_eq_checked(&a, &b)?));
             }
             Op::Lt => {
                 let b = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1634,6 +1634,22 @@ fn vm_values_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// RES-3891: top-level `==` / `!=` must reject operands of different kinds the
+/// same way the tree-walking interpreter does — with a runtime type mismatch —
+/// rather than silently reporting them unequal via `vm_values_eq`'s `_ => false`
+/// catch-all. This mirrors the interpreter's split between `eval_infix` (which
+/// errors at the outermost comparison) and `values_strict_eq` (which stays total
+/// for elements *nested inside* compound values). Only the outermost comparison
+/// is checked here; `vm_values_eq` is unchanged, so structural equality inside
+/// arrays, structs, and maps remains total on both backends.
+fn vm_values_eq_checked(a: &Value, b: &Value) -> Result<bool, VmError> {
+    if std::mem::discriminant(a) == std::mem::discriminant(b) {
+        Ok(vm_values_eq(a, b))
+    } else {
+        Err(VmError::TypeMismatch("=="))
+    }
+}
+
 fn pop_two_ints(stack: &mut Vec<Value>, op_name: &'static str) -> Result<(i64, i64), VmError> {
     let b = stack.pop().ok_or(VmError::EmptyStack)?;
     let a = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -2314,7 +2330,7 @@ fn h_inc_local(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 fn h_eq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    state.stack.push(Value::Bool(vm_values_eq(&a, &b)));
+    state.stack.push(Value::Bool(vm_values_eq_checked(&a, &b)?));
     Ok(Step::Continue)
 }
 
@@ -2322,7 +2338,9 @@ fn h_eq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
 fn h_neq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let b = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let a = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    state.stack.push(Value::Bool(!vm_values_eq(&a, &b)));
+    state
+        .stack
+        .push(Value::Bool(!vm_values_eq_checked(&a, &b)?));
     Ok(Step::Continue)
 }
 
@@ -4461,6 +4479,78 @@ mod tests {
         assert!(d.to_string().contains("line "));
     }
 
+    // ============================================================
+    // RES-3891: cross-type `==` / `!=` is a runtime type mismatch on
+    // the VM, matching the tree-walking interpreter (which raises
+    // "Type mismatch" from `eval_infix`). Before this fix the VM's
+    // `vm_values_eq` catch-all reported every cross-kind pair as
+    // unequal, so identical source diverged between backends.
+    // ============================================================
+
+    fn assert_both_type_mismatch(src: &str) {
+        let (program, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&program).unwrap();
+        let m = run_with(&prog, OverflowMode::Wrap, Dispatch::Match).unwrap_err();
+        let d = run_with(&prog, OverflowMode::Wrap, Dispatch::Direct).unwrap_err();
+        assert_eq!(m.kind(), d.kind(), "dispatch engines disagree on {src:?}");
+        assert!(
+            matches!(m.kind(), VmError::TypeMismatch(_)),
+            "expected TypeMismatch for {src:?}, got {:?}",
+            m.kind()
+        );
+    }
+
+    #[test]
+    fn res3891_char_eq_int_is_type_mismatch() {
+        assert_both_type_mismatch("let s = \"ab\"; s[0] == 5;");
+    }
+
+    #[test]
+    fn res3891_char_neq_int_is_type_mismatch() {
+        assert_both_type_mismatch("let s = \"ab\"; s[0] != 5;");
+    }
+
+    #[test]
+    fn res3891_int_eq_string_is_type_mismatch() {
+        assert_both_type_mismatch("1 == \"x\";");
+    }
+
+    #[test]
+    fn res3891_int_eq_bool_is_type_mismatch() {
+        assert_both_type_mismatch("1 == true;");
+    }
+
+    #[test]
+    fn res3891_int_eq_float_is_type_mismatch() {
+        assert_both_type_mismatch("1 == 1.0;");
+    }
+
+    #[test]
+    fn res3891_same_type_equality_still_agrees() {
+        // The fix must not disturb legal comparisons: same-kind scalars
+        // and structural compound equality behave identically on both
+        // dispatch engines and both truth values.
+        assert_both_eq("1 == 1;");
+        assert_both_eq("1 == 2;");
+        assert_both_eq("\"a\" == \"a\";");
+        assert_both_eq("\"a\" != \"b\";");
+        assert_both_eq("true == true;");
+        assert_both_eq("let s = \"ab\"; s[0] == s[0];");
+        assert_both_eq("let a = [1, 2]; let b = [1, 2]; a == b;");
+        assert_both_eq("let a = [1, 2]; let b = [1, 3]; a == b;");
+    }
+
+    #[test]
+    fn res3891_nested_cross_type_stays_total() {
+        // Cross-type *elements nested inside* compounds must stay total
+        // (compare unequal, not error) — only the outermost comparison is
+        // checked. Arrays of differing element kinds are unequal, not a
+        // type mismatch.
+        let src = "let a = [1, 2]; let b = [1, \"x\"]; a == b;";
+        let (m, d) = run_both(src);
+        assert_eq!(value_repr(&m.unwrap()), value_repr(&d.unwrap()));
+    }
+
     #[test]
     fn res329_direct_struct_ops_match() {
         let src = "struct Point { int x, int y, } \
@@ -5453,15 +5543,21 @@ mod tests {
     }
 
     #[test]
-    fn vm_eq_mismatched_types_is_false() {
+    fn vm_eq_mismatched_types_is_type_mismatch() {
+        // RES-3891: cross-kind `==` is a runtime type mismatch, matching the
+        // tree-walking interpreter (`eval_infix` → "Type mismatch"). This test
+        // previously asserted the divergent VM behavior — a silent `false` —
+        // which is the exact soundness gap RES-3891 closes.
         let prog = const_program(
             &[Value::Int(1), Value::String("1".into())],
             &[Op::Const(0), Op::Const(1), Op::Eq, Op::Return],
         );
-        match run(&prog).unwrap() {
-            Value::Bool(b) => assert!(!b, "Int vs String should be false, not error"),
-            other => panic!("expected Bool, got {:?}", other),
-        }
+        let err = run(&prog).unwrap_err();
+        assert!(
+            matches!(err.kind(), VmError::TypeMismatch(_)),
+            "Int vs String `==` should be a type mismatch, got {:?}",
+            err.kind()
+        );
     }
 
     #[test]
