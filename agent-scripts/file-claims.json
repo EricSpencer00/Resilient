@@ -4,24 +4,16 @@
       "branch": "res-3897-auto-merge-issues-write",
       "claimed_at": "2026-07-13T18:04:04Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-3854-contract-policy",
-      "claimed_at": "2026-07-13T18:30:50Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-3854-contract-policy",
-      "claimed_at": "2026-07-13T18:30:50Z"
-    },
-    "resilient/src/ai_generated.rs": {
-      "branch": "res-3854-contract-policy",
-      "claimed_at": "2026-07-13T18:30:50Z"
-    },
     "resilient/src/loop_bound.rs": {
       "branch": "res-3857-ungate-loop-bound",
       "claimed_at": "2026-07-13T18:39:21Z"
     "resilient/src/contract_policy.rs": {
       "branch": "res-3854-strict-mode",
       "claimed_at": "2026-07-13T18:43:19Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-3859-contract-certificates",
+      "claimed_at": "2026-07-13T18:49:53Z"
     }
   }
 }
