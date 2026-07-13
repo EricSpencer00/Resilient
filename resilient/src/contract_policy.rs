@@ -17,11 +17,12 @@
 //! source of truth shared by downstream verification passes (RES-3857
 //! drives Tier 2 loop-bound verification from it).
 //!
-//! ## Division of labour with `ai_generated.rs`
+//! ## Provenance grants no powers (RES-3858)
 //!
-//! Functions tagged `@ai_generated` are skipped here: that pass owns
-//! them and additionally enforces clause *presence* (both `requires`
-//! and `ensures` must exist). Under the bare `@require_contracts`
+//! The `@ai_generated` tag is a pure provenance alias of the
+//! `#[generated]` annotation: it records audit metadata and nothing
+//! else. Adding or removing it changes no diagnostic — enrolment comes
+//! only from this module's `@require_contracts` policy. Under the bare
 //! directive, functions with no contract clauses at all are accepted.
 //!
 //! ## Strict policy — `@require_contracts(strict)`
@@ -32,8 +33,6 @@
 //! This is the "safety-critical crate" posture from #3854: nobody can
 //! opt a function out of verification by simply not writing a
 //! contract.
-
-use std::collections::HashSet;
 
 use crate::Node;
 
@@ -59,18 +58,116 @@ pub(crate) fn strict_mode() -> bool {
 }
 
 /// RES-3854 enrolment predicate: is `fn_name` subject to contract
-/// verification? True under the module-level `@require_contracts`
-/// directive (every function is enrolled) or when the function carries
-/// the `@ai_generated` provenance tag. Downstream verification passes
-/// (Tier 2 loop bounds, proof certificates) share this single source
-/// of truth instead of re-deriving enrolment from provenance.
+/// verification? True only under the module-level `@require_contracts`
+/// directive — provenance tags (`@ai_generated`, `#[generated]`) grant
+/// no verification behaviour (RES-3858). Downstream verification
+/// passes (Tier 2 loop bounds, proof certificates) share this single
+/// source of truth.
 pub(crate) fn is_enrolled(fn_name: &str) -> bool {
-    if module_requires_contracts() {
-        return true;
+    let _ = fn_name;
+    module_requires_contracts()
+}
+
+/// Returns true if the expression tree contains an `Identifier` with the given name.
+fn expr_references(node: &Node, name: &str) -> bool {
+    match node {
+        Node::Identifier { name: n, .. } => n == name,
+        Node::InfixExpression { left, right, .. } => {
+            expr_references(left, name) || expr_references(right, name)
+        }
+        Node::PrefixExpression { right, .. } => expr_references(right, name),
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => expr_references(function, name) || arguments.iter().any(|a| expr_references(a, name)),
+        Node::IndexExpression { target, index, .. } => {
+            expr_references(target, name) || expr_references(index, name)
+        }
+        Node::FieldAccess { target, .. } => expr_references(target, name),
+        _ => false,
     }
-    crate::feature_attrs::find_kind("ai_generated")
-        .iter()
-        .any(|(item, _)| item == fn_name)
+}
+
+/// Returns true if the expression is a trivial vacuous literal (`true`).
+fn is_vacuous(node: &Node) -> bool {
+    matches!(node, Node::BooleanLiteral { value: true, .. })
+}
+
+/// Collected contract info for one function.
+pub(crate) struct ContractInfo {
+    pub(crate) params: Vec<String>,
+    pub(crate) requires: Vec<Node>,
+    pub(crate) ensures: Vec<Node>,
+    pub(crate) line: usize,
+}
+
+pub(crate) fn collect_contracts(program: &Node) -> std::collections::HashMap<String, ContractInfo> {
+    let mut map = std::collections::HashMap::new();
+    if let Node::Program(stmts) = program {
+        for stmt in stmts {
+            if let Node::Function {
+                name,
+                parameters,
+                requires,
+                ensures,
+                span,
+                ..
+            } = &stmt.node
+            {
+                let param_names: Vec<String> = parameters.iter().map(|(_, n)| n.clone()).collect();
+                map.insert(
+                    name.clone(),
+                    ContractInfo {
+                        params: param_names,
+                        requires: requires.clone(),
+                        ensures: ensures.clone(),
+                        line: span.start.line,
+                    },
+                );
+            }
+        }
+    }
+    map
+}
+
+/// Tier 1 clause-vacuity rules 2 and 3. Returns bare messages (no
+/// source position / error-code prefix). Only *declared* clauses are
+/// judged — presence is the strict policy's job.
+pub(crate) fn contract_clause_errors(info: &ContractInfo) -> Vec<String> {
+    let mut errors = Vec::new();
+    for clause in &info.requires {
+        if is_vacuous(clause) {
+            errors.push(
+                "`requires true` is a vacuous precondition — write a real constraint \
+                 on the function's parameters (e.g. `requires n >= 0`)"
+                    .to_string(),
+            );
+        } else if !info.params.is_empty() && !info.params.iter().any(|p| expr_references(clause, p))
+        {
+            errors.push(
+                "`requires` clause does not reference any function parameter — \
+                 preconditions must constrain the input domain"
+                    .to_string(),
+            );
+        }
+    }
+    for clause in &info.ensures {
+        if is_vacuous(clause) {
+            errors.push(
+                "`ensures true` is a vacuous postcondition — write a real constraint \
+                 on `result` (e.g. `ensures result >= 0`)"
+                    .to_string(),
+            );
+        } else if !expr_references(clause, "result") {
+            errors.push(
+                "`ensures` clause does not reference `result` — postconditions must \
+                 constrain the return value (e.g. `ensures result >= 0`)"
+                    .to_string(),
+            );
+        }
+    }
+    errors
 }
 
 fn diagnostic(source_path: &str, line: usize, fn_name: &str, message: &str) -> String {
@@ -83,12 +180,7 @@ fn diagnostic(source_path: &str, line: usize, fn_name: &str, message: &str) -> S
 /// contract-carrying function. Called from `typechecker.rs`
 /// `<EXTENSION_PASSES>`.
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
-    let ai_tagged: HashSet<String> = crate::feature_attrs::find_kind("ai_generated")
-        .into_iter()
-        .map(|(item, _)| item)
-        .collect();
-
-    let contracts = crate::ai_generated::collect_contracts(program);
+    let contracts = collect_contracts(program);
     let strict = strict_mode();
     let mut errors: Vec<String> = Vec::new();
 
@@ -99,10 +191,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             let Node::Function { name, .. } = &stmt.node else {
                 continue;
             };
-            if !is_enrolled(name) || ai_tagged.contains(name) {
-                // Untagged functions outside a `@require_contracts`
-                // module keep today's lax behaviour; `@ai_generated`
-                // functions are owned by that stricter pass.
+            if !is_enrolled(name) {
+                // Functions outside a `@require_contracts` module keep
+                // today's lax behaviour — provenance tags don't enrol
+                // (RES-3858).
                 continue;
             }
             let Some(info) = contracts.get(name) else {
@@ -135,7 +227,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             }
             // Bare `@require_contracts` judges declared clauses only;
             // iterating zero clauses is naturally a no-op.
-            for msg in crate::ai_generated::contract_clause_errors(info) {
+            for msg in contract_clause_errors(info) {
                 errors.push(diagnostic(source_path, info.line, name, &msg));
             }
         }
@@ -194,7 +286,8 @@ mod tests {
     }
 
     #[test]
-    fn enrolment_via_ai_generated_tag_is_per_function() {
+    fn ai_generated_tag_does_not_enrol() {
+        // RES-3858: provenance grants no verification powers.
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         crate::feature_attrs::record(
@@ -205,7 +298,7 @@ mod tests {
                 line: 1,
             },
         );
-        assert!(is_enrolled("tagged"));
+        assert!(!is_enrolled("tagged"));
         assert!(!is_enrolled("untagged"));
         crate::feature_attrs::reset();
     }
@@ -254,19 +347,36 @@ mod tests {
     }
 
     #[test]
-    fn ai_generated_functions_are_delegated_to_that_pass() {
-        let _g = crate::feature_attrs::lock_for_test();
-        crate::feature_attrs::reset();
-        let src = "@require_contracts\n@ai_generated\nfn f(int x) requires true ensures result >= 0 { return x; }";
-        let (prog, errs) = crate::parse(src);
-        assert!(errs.is_empty(), "parse errors: {errs:?}");
-        // contract_policy skips the tagged function...
-        assert!(check(&prog, "<test>").is_ok());
-        // ...because ai_generated::check owns it and still rejects it.
-        let err = crate::ai_generated::check(&prog, "<test>")
-            .expect_err("ai_generated pass still rejects vacuous clause");
-        assert!(err.contains("error[ai_generated]"), "unexpected: {err}");
-        crate::feature_attrs::reset();
+    fn removing_ai_generated_changes_no_diagnostic() {
+        // RES-3858 acceptance: the tag is pure metadata — the check
+        // result is identical with and without it, both under the
+        // directive and without it.
+        let run = |src: &str| {
+            let _g = crate::feature_attrs::lock_for_test();
+            crate::feature_attrs::reset();
+            let (prog, errs) = crate::parse(src);
+            assert!(errs.is_empty(), "parse errors: {errs:?}");
+            let result = check(&prog, "<test>");
+            crate::feature_attrs::reset();
+            result
+        };
+        let body = "fn f(int x) requires true ensures result >= 0 { return x; }";
+
+        // Under the directive: both forms rejected with the same error.
+        let tagged = run(&format!("@require_contracts\n@ai_generated\n{body}"));
+        let untagged = run(&format!("@require_contracts\n{body}"));
+        let tagged_err = tagged.expect_err("vacuous clause rejected");
+        let untagged_err = untagged.expect_err("vacuous clause rejected");
+        // Only the source line differs (the tag occupies a line).
+        assert_eq!(
+            tagged_err.replace(":3:", ":N:").replace(":2:", ":N:"),
+            untagged_err.replace(":3:", ":N:").replace(":2:", ":N:"),
+        );
+
+        // Without the directive: both forms pass — the tag alone
+        // triggers nothing.
+        assert!(run(&format!("@ai_generated\n{body}")).is_ok());
+        assert!(run(body).is_ok());
     }
 
     #[test]

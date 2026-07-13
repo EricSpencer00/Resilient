@@ -9,12 +9,10 @@
 //! (recursively) MUST carry a `#[loop_bound(N)]` attribute where N is a
 //! positive integer. Missing bounds are a hard compile error.
 //!
-//! RES-3857: enrolment is provenance-agnostic — it comes from
+//! RES-3857/RES-3858: enrolment is provenance-agnostic — it comes from
 //! [`crate::contract_policy::is_enrolled`], i.e. the module-level
-//! `@require_contracts` directive or (for back-compat) the
-//! `@ai_generated` tag. A hand-written loop in a `@require_contracts`
-//! module is held to exactly the same bound-proof standard as an
-//! AI-generated one.
+//! `@require_contracts` directive. Provenance tags (`@ai_generated`,
+//! `#[generated]`) are pure metadata and trigger nothing here.
 //!
 //! **Verification** (z3-feature only): For loops matching the simple monotonic-counter
 //! shape (counter incremented by a constant per iteration with a constant or parameter
@@ -80,24 +78,13 @@ fn diagnostic(source_path: &str, line: usize, fn_name: &str, message: &str) -> S
 }
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
-    // RES-3857: enrolment is provenance-agnostic. Fast-reject when
-    // nothing in the file can be enrolled — no `@require_contracts`
-    // directive and no `@ai_generated` tags.
-    if !crate::contract_policy::module_requires_contracts()
-        && crate::feature_attrs::find_kind("ai_generated").is_empty()
-    {
+    // RES-3857/RES-3858: enrolment comes only from the module-level
+    // `@require_contracts` policy — fast-reject files without it.
+    if !crate::contract_policy::module_requires_contracts() {
         return Ok(());
     }
 
     let bounds = collect();
-
-    // Prefer the attribute's own source line for tagged functions so
-    // the diagnostic points at the annotation; module-enrolled
-    // functions fall back to the fn declaration line.
-    let attr_lines: HashMap<String, usize> = crate::feature_attrs::find_kind("ai_generated")
-        .into_iter()
-        .map(|(item, rec)| (item, rec.line))
-        .collect();
 
     if let Node::Program(stmts) = program {
         for stmt in stmts {
@@ -110,7 +97,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 }
                 // Check if this function contains while-loops
                 if has_while_loop(body) {
-                    let line = attr_lines.get(name).copied().unwrap_or(span.start.line);
+                    let line = span.start.line;
                     // It has a while-loop, so it must have a #[loop_bound]
                     if !bounds.contains_key(name) {
                         return Err(diagnostic(
@@ -386,13 +373,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_loop_bound_on_ai_generated_with_while_loop() {
+    fn missing_loop_bound_on_enrolled_fn_with_while_loop() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         crate::feature_attrs::record(
-            "ai_gen_with_loop",
+            crate::contract_policy::MODULE_KEY,
             crate::feature_attrs::AttrRecord {
-                name: "ai_generated".into(),
+                name: "require_contracts".into(),
                 args: "".into(),
                 line: 1,
             },
@@ -416,13 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn loop_bound_present_on_ai_generated_with_while_loop() {
+    fn loop_bound_present_on_enrolled_fn_with_while_loop() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         crate::feature_attrs::record(
-            "ai_gen_with_loop",
+            crate::contract_policy::MODULE_KEY,
             crate::feature_attrs::AttrRecord {
-                name: "ai_generated".into(),
+                name: "require_contracts".into(),
                 args: "".into(),
                 line: 1,
             },
@@ -456,13 +443,13 @@ mod tests {
     }
 
     #[test]
-    fn ai_generated_without_loop_passes() {
+    fn enrolled_fn_without_loop_passes() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         crate::feature_attrs::record(
-            "simple_fn",
+            crate::contract_policy::MODULE_KEY,
             crate::feature_attrs::AttrRecord {
-                name: "ai_generated".into(),
+                name: "require_contracts".into(),
                 args: "".into(),
                 line: 1,
             },
@@ -549,6 +536,34 @@ mod tests {
         assert!(check(&prog, "<test>").is_ok());
         #[cfg(feature = "z3")]
         let _ = check(&prog, "<test>");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn ai_generated_tag_alone_triggers_nothing() {
+        // RES-3858: the tag is pure provenance — without the
+        // `@require_contracts` directive an unbounded tagged loop
+        // compiles exactly like an untagged one.
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "tagged_loop",
+            crate::feature_attrs::AttrRecord {
+                name: "ai_generated".into(),
+                args: "".into(),
+                line: 1,
+            },
+        );
+        let src = "fn tagged_loop(int n) requires n >= 0 {
+            int i = 0;
+            while i < n {
+                i = i + 1;
+            }
+            return i;
+        }";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert!(check(&prog, "<test>").is_ok());
         crate::feature_attrs::reset();
     }
 
@@ -643,9 +658,9 @@ mod tests {
 
         // Register the function as @ai_generated with a loop_bound
         crate::feature_attrs::record(
-            "bounded_count",
+            crate::contract_policy::MODULE_KEY,
             crate::feature_attrs::AttrRecord {
-                name: "ai_generated".into(),
+                name: "require_contracts".into(),
                 args: "".into(),
                 line: 1,
             },
@@ -691,9 +706,9 @@ mod tests {
 
         // Register the function with a loop_bound that's TOO SMALL.
         crate::feature_attrs::record(
-            "unbounded_count",
+            crate::contract_policy::MODULE_KEY,
             crate::feature_attrs::AttrRecord {
-                name: "ai_generated".into(),
+                name: "require_contracts".into(),
                 args: "".into(),
                 line: 1,
             },
@@ -740,9 +755,9 @@ mod tests {
         crate::feature_attrs::reset();
 
         crate::feature_attrs::record(
-            "complex_loop",
+            crate::contract_policy::MODULE_KEY,
             crate::feature_attrs::AttrRecord {
-                name: "ai_generated".into(),
+                name: "require_contracts".into(),
                 args: "".into(),
                 line: 1,
             },
