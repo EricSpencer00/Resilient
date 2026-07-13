@@ -1,8 +1,30 @@
-// RES-3780 Tier 2 demo: @ai_generated function with bounded while-loop.
+// RES-3780 / RES-3858: `@require_contracts(strict)` is what actually
+// enrols a function into contract verification. `@ai_generated` is a
+// pure provenance marker (RES-3858) and grants no enforcement power on
+// its own -- adding or removing it changes nothing the compiler checks.
+// (An earlier version of this example implied the opposite; see
+// docs/AI_GENERATED_DESIGN.md for the full history.)
 //
-// This example demonstrates the Tier 2 enforcement of RES-3780:
-// AI-generated functions that contain while-loops must declare a
-// #[loop_bound(N)] attribute specifying the maximum iteration count.
+// This example shows the CURRENT model: the module-level directive
+// below enrols `count_up`, which mandates non-vacuous `requires` /
+// `ensures` clauses (Tier 1, RES-3854) and a `#[loop_bound(N)]` on its
+// while-loop (Tier 2, RES-3857). `@ai_generated` stays attached only to
+// record that this function was AI-authored, for the audit trail --
+// it shows up as `"provenance": ["ai_generated"]` in
+// `--emit-contract-certificate` output, but drives none of the checks
+// below.
+//
+// Try deleting the `#[loop_bound(100)]` line and re-running with
+// `rz --typecheck-strict examples/loop_bound_demo.rz`: the compiler
+// hard-rejects `count_up` with `error[loop_bound]` because it is
+// enrolled (via `@require_contracts`) and contains a while-loop.
+// Without `--typecheck-strict` the same violation is only a warning
+// and execution proceeds -- which is what this file's default
+// (non-strict) golden output reflects.
+//
+// See docs/HOWTO_PROVABLY_CORRECT_AI_CODE.md for the full walkthrough.
+
+@require_contracts(strict)
 
 #[loop_bound(100)]
 @ai_generated
