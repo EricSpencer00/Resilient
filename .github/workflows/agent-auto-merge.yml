@@ -66,6 +66,36 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # RES-3913: GitHub suppresses BOTH the implicit "Closes #N"
+          # resolution AND downstream workflow triggers (e.g.
+          # release-file-claims.yml, which runs the explicit `gh issue
+          # close`) for any merge performed by GITHUB_TOKEN — the
+          # documented anti-recursion rule. So a bot-auto-merged PR never
+          # closes its linked issues by either path, and the tracker fills
+          # with done-but-open recycling traps. This workflow runs on real
+          # events (not GITHUB_TOKEN), so it CAN close them; do it
+          # explicitly. Idempotent and never fatal to the job.
+          close_linked_issues() {
+            local pr="$1"
+            local refs
+            refs=$(gh pr view "$pr" --json closingIssuesReferences \
+              --jq '.closingIssuesReferences[].number' 2>/dev/null || true)
+            local issue istate
+            for issue in $refs; do
+              istate=$(gh issue view "$issue" --json state \
+                --jq '.state' 2>/dev/null || echo "")
+              if [[ "$istate" == "OPEN" ]]; then
+                echo "  RES-3913: closing linked issue #$issue"
+                gh issue close "$issue" --reason completed \
+                  --comment "Resolved by auto-merged PR #${pr}." 2>&1 \
+                  | tail -1 || echo "  close of #$issue failed (non-fatal)"
+              else
+                echo "  linked issue #$issue is ${istate:-unknown} — skip"
+              fi
+            done
+          }
+
           for pr in ${{ steps.find.outputs.prs }}; do
             echo "=== PR #$pr ==="
             info=$(gh pr view "$pr" --json isDraft,baseRefName,labels,statusCheckRollup,state)
@@ -76,6 +106,19 @@ jobs:
             synced=$(echo "$info" | jq -r '[.labels[].name] | index("integration-synced") // empty')
             vetted=$(echo "$info" | jq -r '[.labels[].name] | index("agent-vetted") // empty')
 
+            # RES-3913 backstop: if a later event surfaces a PR that has
+            # already merged (e.g. a check_suite completing after the
+            # merge landed), close its linked issues here. The post-merge
+            # poll below is the primary path; this covers merges that
+            # completed server-side between runs. Gated on the agent
+            # labels so we never touch issues for unrelated merged PRs.
+            if [[ "$state" == "MERGED" ]]; then
+              if [[ -n "$synced" && -n "$vetted" ]]; then
+                echo "  already merged — closing linked issues (RES-3913 backstop)"
+                close_linked_issues "$pr"
+              fi
+              continue
+            fi
             if [[ "$state" != "OPEN" ]]; then echo "  state=$state — skip"; continue; fi
             if [[ "$is_draft" == "true" ]]; then echo "  draft — skip"; continue; fi
             if [[ "$base" != "main" ]]; then echo "  base=$base (not main) — skip"; continue; fi
@@ -137,5 +180,27 @@ jobs:
             fi
 
             echo "  all green + synced — enabling auto-merge"
-            gh pr merge "$pr" --squash --auto --delete-branch 2>&1 | tail -3 || echo "  merge enable failed"
+            if gh pr merge "$pr" --squash --auto --delete-branch 2>&1 | tail -3; then
+              # RES-3913: `--auto` may complete server-side moments later.
+              # Poll briefly for the merge to land, then close the linked
+              # issues from this workflow (a GITHUB_TOKEN merge won't fire
+              # the release-file-claims close path). Bounded to ~3 min; if
+              # the merge hasn't landed by then the backstop above catches
+              # it on a subsequent event.
+              merged=""
+              for _ in $(seq 1 18); do
+                st=$(gh pr view "$pr" --json state --jq '.state' 2>/dev/null || echo "")
+                if [[ "$st" == "MERGED" ]]; then merged=1; break; fi
+                if [[ "$st" != "OPEN" ]]; then break; fi
+                sleep 10
+              done
+              if [[ -n "$merged" ]]; then
+                echo "  merged — closing linked issues"
+                close_linked_issues "$pr"
+              else
+                echo "  not merged within poll window — backstop will retry"
+              fi
+            else
+              echo "  merge enable failed"
+            fi
           done

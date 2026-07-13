@@ -1,9 +1,5 @@
 {
   "claims": {
-    ".github/workflows/agent-auto-merge.yml": {
-      "branch": "res-3897-auto-merge-issues-write",
-      "claimed_at": "2026-07-13T18:04:04Z"
-    },
     "resilient/src/loop_bound.rs": {
       "branch": "res-3857-ungate-loop-bound",
       "claimed_at": "2026-07-13T18:39:21Z"
@@ -39,6 +35,10 @@
     "resilient/tests/it/differential.rs": {
       "branch": "res-3920-vm-block-match-arm",
       "claimed_at": "2026-07-13T21:41:26Z"
+    },
+    ".github/workflows/agent-auto-merge.yml": {
+      "branch": "res-3913-autoclose-linked-issues",
+      "claimed_at": "2026-07-13T22:07:55Z"
     }
   }
 }
