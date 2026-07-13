@@ -608,6 +608,9 @@ mod combinatorics;
 mod complex_numbers;
 mod const_fn;
 mod contract_inference;
+// RES-3854: provenance-agnostic contract policy — the module-level
+// `@require_contracts` directive and the shared enrolment predicate.
+mod contract_policy;
 mod loop_bound;
 // RES-3779 Phase A: routes declared + inferred contract clauses
 // through the Z3 proving path, yielding pass/fail/unknown verdicts
@@ -4139,6 +4142,26 @@ impl Parser {
             return self.parse_repr_attribute();
         }
 
+        // RES-3854: `@require_contracts` is a *module-level* policy
+        // directive, not a per-item annotation — it enrols every
+        // function in the file into contract verification (see
+        // `contract_policy.rs`). Record it and hand the token stream
+        // back to the ordinary statement parser.
+        if attr_name == "require_contracts" {
+            crate::feature_attrs::record(
+                crate::contract_policy::MODULE_KEY,
+                crate::feature_attrs::AttrRecord {
+                    name: "require_contracts".to_string(),
+                    args: String::new(),
+                    line: attr_line,
+                },
+            );
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+        }
+
         let (pure_flag, effects) = match attr_name.as_str() {
             // `@pure` lights up both the legacy RES-191 strict
             // purity checker (via `pure: bool`) and the RES-389
@@ -4147,7 +4170,7 @@ impl Parser {
             "ai_generated" => (false, EffectSet::io()),
             other => {
                 self.record_error(format!(
-                    "Unknown attribute `@{}`. Known: @pure, @repr(C), @ai_generated",
+                    "Unknown attribute `@{}`. Known: @pure, @repr(C), @ai_generated, @require_contracts",
                     other
                 ));
                 // Fall through — treat as if no attribute was

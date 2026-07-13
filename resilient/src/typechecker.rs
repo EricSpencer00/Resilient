@@ -6609,6 +6609,9 @@ impl TypeChecker {
                     crate::contract_inference::check(program, source_path)?;
                 }
                 crate::ai_generated::check(program, source_path)?;
+                // RES-3854: provenance-agnostic Tier 1 contract checks
+                // for functions enrolled via `@require_contracts`.
+                crate::contract_policy::check(program, source_path)?;
                 crate::loop_bound::check(program, source_path)?;
                 // RES-2436 gate: behavioral_fingerprint only processes
                 // `Node::Function` nodes (fingerprint_program iterates

@@ -1,0 +1,22 @@
+// RES-3854: `@require_contracts` — provenance-agnostic contract policy.
+//
+// The module-level directive enrols every function in the file into the
+// Tier 1 non-vacuous-contract checks, regardless of who (or what) wrote
+// the code. A vacuous clause such as `requires true` — or an `ensures`
+// that never mentions `result` — is a compile error anywhere in this
+// file, with no `@ai_generated` tag required.
+@require_contracts
+
+fn clamp_positive(int x) requires x < 1000 ensures result >= 0 {
+    if x < 0 {
+        return 0;
+    }
+    return x;
+}
+
+fn main() {
+    println(clamp_positive(7));
+    println(clamp_positive(0 - 5));
+}
+
+main();
