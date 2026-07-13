@@ -70,6 +70,8 @@ RUN apt-get update \
 
 COPY --from=builder /src/resilient/target/release/rz /usr/local/bin/rz
 
+EXPOSE 8080
+
 # Default to a non-root user — Docker best practice; also
 # prevents accidental writes to host-mounted volumes as root.
 RUN useradd --create-home --shell /bin/bash --uid 1001 resilient
