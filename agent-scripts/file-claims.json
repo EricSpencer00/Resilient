@@ -47,6 +47,7 @@
     "resilient/tests/llm_quantized_ops_smoke.rs": {
       "branch": "res-3781-llm-quantized-ops-v2",
       "claimed_at": "2026-07-13T22:31:20Z"
+    },
     ".github/workflows/vscode_extension.yml": {
       "branch": "res-3783-vscode-autopublish",
       "claimed_at": "2026-07-13T22:32:41Z"
