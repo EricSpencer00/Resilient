@@ -929,7 +929,11 @@ fn fmt(int x) -> int { return x; }
         let err = checker
             .check_program_with_source(&prog, "test.rz")
             .expect_err("expected typechecker to reject malformed declaration");
-        assert!(err.contains("test.rz:0:0: error[fmt]"), "{err}");
+        // RES-3394: the `#[format_builtin(...)]` attribute sits on line 2
+        // of `src` (line 1 is the leading newline). It now reports that
+        // real line; before RES-3394 every `#[...]` attribute was recorded
+        // with a hardcoded `line: 0`, so this asserted the buggy `:0:0`.
+        assert!(err.contains("test.rz:2:0: error[fmt]"), "{err}");
         assert!(
             err.contains("expects 2 template placeholder(s) but declares 1 arg(s)"),
             "{err}"

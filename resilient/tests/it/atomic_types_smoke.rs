@@ -108,6 +108,33 @@ fn atomic_non_integer_initializer_is_rejected() {
     );
 }
 
+#[test]
+fn res3394_duplicate_atomic_registration_is_rejected_end_to_end() {
+    // Two `#[atomic] static let counter` declarations (with different
+    // initializers): before RES-3394 this passed `check` silently, with
+    // the second initializer discarded. It must now fail with a
+    // deterministic diagnostic citing both source lines.
+    let (path, stdout, stderr, code) = check_source(
+        "duplicate",
+        "#[atomic]\nstatic let counter = 0;\n#[atomic]\nstatic let counter = 5;\nfn main(int _d) { return 0; }\nmain(0);\n",
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "duplicate #[atomic] registration must fail; stdout={stdout} stderr={stderr}"
+    );
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("duplicate #[atomic] registration for `counter`"),
+        "diagnostic must name the duplicate; got:\n{combined}"
+    );
+    assert!(
+        combined.contains("first registered at line 1") && combined.contains("duplicate at line 3"),
+        "diagnostic must cite both declarations' real lines; got:\n{combined}"
+    );
+    let _ = path;
+}
+
 fn assert_file_line_col(output: &str, path: &std::path::Path, line: usize) {
     let prefix = format!("{}:{}:", path.display(), line);
     let has_line_col = output.lines().any(|line| {

@@ -1414,6 +1414,31 @@ fn check_atomic_annotations(node: &Node) -> Result<(), String> {
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     check_atomic_annotations(program)?;
     let attrs = collect_attrs();
+
+    // RES-3394: reject duplicate `#[atomic]` registrations for the same
+    // name. `feature_attrs::find_kind` preserves every application in
+    // insertion order, but `find_atomic_target` only ever resolves the
+    // FIRST matching declaration — so a second `#[atomic] static let`
+    // with the same name (possibly a different initializer) was
+    // silently ignored, leaving later stages reading whichever cell
+    // registered first. Report the first detected pair with both
+    // source lines so the diagnostic is deterministic and actionable.
+    let mut first_seen: HashMap<&str, usize> = HashMap::new();
+    for (name, rec) in &attrs {
+        match first_seen.get(name.as_str()) {
+            Some(first_line) => {
+                return Err(format!(
+                    "{}:{}:1: error: duplicate #[atomic] registration for `{}`: \
+                     first registered at line {}, duplicate at line {}",
+                    source_path, rec.line, name, first_line, rec.line
+                ));
+            }
+            None => {
+                first_seen.insert(name.as_str(), rec.line);
+            }
+        }
+    }
+
     let atomic_names: HashSet<String> = attrs.iter().map(|(name, _)| name.clone()).collect();
 
     // RES-2206: move each owned `String` straight into the registry
@@ -1525,5 +1550,73 @@ mod tests {
             check(&prog, "<test>").is_ok(),
             "Atomic<i64> is a supported atomic inner type"
         );
+    }
+
+    // ── RES-3394: duplicate #[atomic] registration detection ──────────
+
+    #[test]
+    fn res3394_duplicate_atomic_name_is_rejected_with_both_lines() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "#[atomic]\nstatic let counter = 0;\n#[atomic]\nstatic let counter = 5;\n";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let err = check(&prog, "<test>").expect_err("duplicate #[atomic] name must be rejected");
+        assert!(
+            err.contains("duplicate #[atomic] registration for `counter`"),
+            "unexpected diagnostic: {err}"
+        );
+        assert!(
+            err.contains("first registered at line 1") && err.contains("duplicate at line 3"),
+            "diagnostic must cite both declarations' lines: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn res3394_doubled_atomic_attribute_on_one_declaration_is_rejected() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "#[atomic]\n#[atomic]\nstatic let counter = 0;\n";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let err = check(&prog, "<test>")
+            .expect_err("doubled #[atomic] on one declaration must be rejected");
+        assert!(
+            err.contains("duplicate #[atomic] registration for `counter`"),
+            "unexpected diagnostic: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn res3394_distinct_atomic_names_still_pass() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "#[atomic]\nstatic let a = 0;\n#[atomic]\nstatic let b = 1;\n";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        assert!(
+            check(&prog, "<test>").is_ok(),
+            "distinct atomic names are legal"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn res3394_first_detected_pair_is_reported_deterministically() {
+        // Three registrations of the same name: the diagnostic must
+        // cite the FIRST pair (lines 1 and 3), not the later repeat.
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "#[atomic]\nstatic let c = 0;\n#[atomic]\nstatic let c = 1;\n#[atomic]\nstatic let c = 2;\n";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let err = check(&prog, "<test>").expect_err("duplicates must be rejected");
+        assert!(
+            err.contains("first registered at line 1") && err.contains("duplicate at line 3"),
+            "must report the first detected pair: {err}"
+        );
+        crate::feature_attrs::reset();
     }
 }

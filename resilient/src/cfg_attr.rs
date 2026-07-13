@@ -326,6 +326,16 @@ use crate::{Parser, Token};
 /// `parse_attributed_item` recovery behaviour for `@pure` typos.
 pub fn parse_cfg_attribute(parser: &mut Parser) -> Option<crate::Node> {
     debug_assert_eq!(parser.current_token, Token::HashLeftBracket);
+    // RES-3394: capture the attribute's source line at the `#[` token,
+    // before any `next_token` advances the parser. Feature attributes
+    // are recorded against the *following* item, by which point
+    // `current_line` has moved on — so the line must be snapshotted here
+    // and threaded through. Previously every `#[...]` feature attribute
+    // was recorded with a hardcoded `line: 0`, which made every
+    // feature-module diagnostic that cites `rec.line` (e.g.
+    // `associated_constants`, and now `atomic_types` duplicate
+    // detection) report line 0 instead of the real location.
+    let attr_line = parser.current_line;
     parser.next_token(); // consume `#[`
 
     // Expect identifier `cfg`. Anything else is a parse error; recover by
@@ -349,7 +359,7 @@ pub fn parse_cfg_attribute(parser: &mut Parser) -> Option<crate::Node> {
     // walks the attribute body opaquely and stops at the matching `]`.
     if attr_name != "cfg" {
         if crate::feature_attrs::is_known_attribute(&attr_name) {
-            return parse_feature_attribute(parser, attr_name);
+            return parse_feature_attribute(parser, attr_name, attr_line);
         }
         parser.record_error(format!(
             "unknown attribute `#[{}]`. Known: `#[cfg(...)]`",
@@ -413,7 +423,11 @@ pub fn parse_cfg_attribute(parser: &mut Parser) -> Option<crate::Node> {
 /// module re-parses the args string according to its own surface
 /// syntax in its later check pass, so we just capture the raw text
 /// here and let semantic errors surface in those passes.
-fn parse_feature_attribute(parser: &mut Parser, name: String) -> Option<crate::Node> {
+fn parse_feature_attribute(
+    parser: &mut Parser,
+    name: String,
+    attr_line: usize,
+) -> Option<crate::Node> {
     parser.next_token(); // skip the attribute identifier
 
     let mut args = String::new();
@@ -494,7 +508,7 @@ fn parse_feature_attribute(parser: &mut Parser, name: String) -> Option<crate::N
             crate::feature_attrs::AttrRecord {
                 name,
                 args: args.trim().to_string(),
-                line: 0,
+                line: attr_line,
             },
         );
     }

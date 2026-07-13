@@ -7,6 +7,7 @@
     "resilient/src/loop_bound.rs": {
       "branch": "res-3857-ungate-loop-bound",
       "claimed_at": "2026-07-13T18:39:21Z"
+    },
     "resilient/src/contract_policy.rs": {
       "branch": "res-3854-strict-mode",
       "claimed_at": "2026-07-13T18:43:19Z"
@@ -14,6 +15,22 @@
     "resilient/src/lib.rs": {
       "branch": "res-3859-contract-certificates",
       "claimed_at": "2026-07-13T18:49:53Z"
+    },
+    "resilient/src/atomic_types.rs": {
+      "branch": "res-3394-atomic-duplicate-registrations",
+      "claimed_at": "2026-07-13T19:16:06Z"
+    },
+    "resilient/tests/it/atomic_types_smoke.rs": {
+      "branch": "res-3394-atomic-duplicate-registrations",
+      "claimed_at": "2026-07-13T19:16:06Z"
+    },
+    "resilient/src/cfg_attr.rs": {
+      "branch": "res-3394-atomic-duplicate-registrations",
+      "claimed_at": "2026-07-13T19:37:59Z"
+    },
+    "resilient/src/format_builtin.rs": {
+      "branch": "res-3394-atomic-duplicate-registrations",
+      "claimed_at": "2026-07-13T19:37:59Z"
     }
   }
 }
