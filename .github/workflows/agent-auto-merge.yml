@@ -32,6 +32,12 @@ permissions:
   contents: write
   pull-requests: write
   checks: read
+  # RES-3897: without this, GitHub's automatic "Closes #N" issue
+  # closure on merge silently no-ops (the merge itself only needs
+  # contents/pull-requests, so it succeeds either way) — every issue
+  # closed by a PR this workflow merges stays open forever, and only
+  # gets a `cross-referenced` timeline event instead of `closed`.
+  issues: write
 
 jobs:
   evaluate:

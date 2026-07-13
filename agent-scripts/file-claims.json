@@ -11,6 +11,10 @@
     "resilient/tests/it/differential.rs": {
       "branch": "res-3904-vm-container-methods",
       "claimed_at": "2026-07-13T16:53:19Z"
+    },
+    ".github/workflows/agent-auto-merge.yml": {
+      "branch": "res-3897-auto-merge-issues-write",
+      "claimed_at": "2026-07-13T18:04:04Z"
     }
   }
 }
