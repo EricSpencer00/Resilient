@@ -32,13 +32,13 @@
       "branch": "res-3394-atomic-duplicate-registrations",
       "claimed_at": "2026-07-13T19:37:59Z"
     },
-    "resilient/src/vm.rs": {
-      "branch": "res-3918-vm-enum-payload-match",
-      "claimed_at": "2026-07-13T21:02:26Z"
+    "resilient/src/compiler.rs": {
+      "branch": "res-3920-vm-block-match-arm",
+      "claimed_at": "2026-07-13T21:41:26Z"
     },
     "resilient/tests/it/differential.rs": {
-      "branch": "res-3918-vm-enum-payload-match",
-      "claimed_at": "2026-07-13T21:02:26Z"
+      "branch": "res-3920-vm-block-match-arm",
+      "claimed_at": "2026-07-13T21:41:26Z"
     }
   }
 }

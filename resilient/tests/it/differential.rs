@@ -645,3 +645,49 @@ fn interpreter_and_vm_agree_on_enum_payload_match() {
         failures.join("")
     );
 }
+
+/// RES-3920: block-bodied `match` arms (`5 => { let y = x + 1; println(y); }`)
+/// and block values in expression position must behave identically on both
+/// backends. `compile_expr` had no `Node::Block` arm, so a block match-arm
+/// body fell through to `Unsupported("Block")` under `--vm` while the
+/// interpreter ran it (blocks in `if`/`else` already worked via a separate
+/// control-flow path).
+#[test]
+fn interpreter_and_vm_agree_on_block_match_arms() {
+    let programs = [
+        (
+            "block_stmt_arm",
+            "fn main() { let x = 5; match x { 5 => { let y = x + 1; println(y); }, _ => println(\"no\") } } main();",
+        ),
+        (
+            "block_value_arm",
+            "fn main() { let x = 2; let r = match x { 1 => { 10 }, 2 => { let a = 20; a + 5 }, _ => 0 }; println(r); } main();",
+        ),
+        (
+            "block_multi_stmt_arm",
+            "fn main() { let x = 1; match x { 1 => { println(\"a\"); println(\"b\"); println(\"c\"); }, _ => println(\"no\") } } main();",
+        ),
+        (
+            "enum_payload_block_arm",
+            "enum E { A(int32), B } fn main() { let e = E::A(5); match e { E::A(v) => { let d = v * 2; println(d); }, E::B => println(\"b\") } } main();",
+        ),
+        (
+            "empty_block_arm",
+            "fn main() { let x = 1; match x { 1 => { }, _ => println(\"no\") } println(\"after\"); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} block-match-arm case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}

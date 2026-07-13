@@ -3635,6 +3635,25 @@ fn compile_expr(
             chunk.patch_jump(jmp_end, end_pc)?;
             Ok(())
         }
+        // RES-3920: a block in expression position — most commonly a
+        // block-bodied `match` arm (`5 => { let y = x + 1; println(y); }`)
+        // or `if`/`else` branch value. Delegates to the vetted
+        // `compile_block_as_expr` (leading statements + last-expr value,
+        // empty → Void), the same lowering `if` already uses. Previously
+        // this fell through to `Unsupported("Block")`, so any block-bodied
+        // match arm failed to compile under `--vm` while the interpreter
+        // ran it.
+        Node::Block { .. } => compile_block_as_expr(
+            node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
