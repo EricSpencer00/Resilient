@@ -34,6 +34,7 @@ mod check_warning_json;
 mod cli_integration_edge_cases;
 mod cli_toggle_source_lib_split_smoke;
 mod cluster_invariant_smoke;
+mod contract_certificate_e2e_smoke;
 mod core_touchpoint_source_lib_split_smoke;
 mod debug_help_smoke;
 mod derive_partial_ord_runtime;

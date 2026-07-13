@@ -93,8 +93,8 @@ This table will be populated in follow-up PRs with all Resilient language featur
 
 | Feature | Tier | Backends | Notes |
 |---------|------|----------|-------|
-| `@require_contracts` module directive | Experimental | Typechecker | Enrols every function in the file into non-vacuous-contract and loop-bound verification; `(strict)` additionally mandates contract presence (RES-3854). |
-| `@ai_generated` function attribute | Experimental | Typechecker | Pure provenance alias of `#[generated]` (RES-3858); records audit metadata, grants no verification behaviour. |
+| `@require_contracts` module directive | Experimental | Typechecker | Enrols every function in the file into non-vacuous-contract and loop-bound verification; `(strict)` additionally mandates contract presence (RES-3854). See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
+| `@ai_generated` function attribute | Experimental | Typechecker | Pure provenance alias of `#[generated]` (RES-3858); records audit metadata, grants no verification behaviour. See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
 
 ---
 
