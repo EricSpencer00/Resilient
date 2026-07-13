@@ -9,24 +9,38 @@
 //! Rules shipped in this revision:
 //!
 //! 1. `Const(k==0); Add`                    → drop both (identity)
-//! 2. `LoadLocal x; Const(k==1); Add; StoreLocal x`
-//!    → `IncLocal(x)`
+//!    (only when preceding value is provably `Int`/`Float` — see RES-3902)
+//! 2. (REMOVED — RES-3902: `LoadLocal x; Const(1); Add; StoreLocal x` →
+//!    `IncLocal(x)` assumed `x` was numeric with no way to prove it;
+//!    a `String` local hit the same class of bug as rules 6/7-15 below
+//!    and there is no static-type channel into this pass to fix it)
 //! 3. `Jump(0)`                             → drop (fall-through)
 //! 4. `Not; JumpIfFalse(off)`               → `JumpIfTrue(off)`
-//! 5. `Const(k==1); Mul`                    → drop both (×1 identity)
+//! 5. `Const(k==1); Mul`                    → drop both (×1 identity;
+//!    holds for `String` too — `s.repeat(1) == s` — so no type guard needed)
 //! 6. `Const(k==0); Mul`                    → drop both + push Const(0)
-//!    (only when preceding op is a pure load: LoadLocal or Const)
+//!    (only when preceding op is `Const` of a provably `Int`/`Float`
+//!    value — see RES-3902; `String * 0` is `""`, not the int `0`)
 //! 7. `Const(k==0); Bor`                    → drop both (x | 0 == x)
+//!    (only when preceding value is provably `Int` — see RES-3902)
 //! 8. `Const(k==0); Bxor`                   → drop both (x ^ 0 == x)
+//!    (only when preceding value is provably `Int` — see RES-3902)
 //! 9. `Const(k==0); Shl`                    → drop both (x << 0 == x)
+//!    (only when preceding value is provably `Int` — see RES-3902)
 //! 10. `Const(k==0); Shr`                   → drop both (x >> 0 == x)
+//!     (only when preceding value is provably `Int` — see RES-3902)
 //! 11. `Const(k==-1); Band`                 → drop both (x & -1 == x)
+//!     (only when preceding value is provably `Int` — see RES-3902)
 //! 12. `<pure-load>; Const(k==0); Band`     → drop pure load + push Const(0)
-//!     (x & 0 == 0 for any x)
+//!     (only when preceding op is `Const` of a provably `Int` value —
+//!     see RES-3902; bitwise ops on non-`Int` are a runtime type error)
 //! 13. `<pure-load>; Const(k==-1); Bor`    → drop pure load + push Const(-1)
-//!     (x | -1 == -1 for any x — -1 is the absorbing element for Bor)
+//!     (only when preceding op is `Const` of a provably `Int` value —
+//!     see RES-3902)
 //! 14. `Const(k==0); Sub`                   → drop both (x - 0 == x, identity)
+//!     (only when preceding value is provably `Int`/`Float` — see RES-3902)
 //! 15. `Const(k==1); Div`                   → drop both (x / 1 == x, identity)
+//!     (only when preceding value is provably `Int`/`Float` — see RES-3902)
 //! 16. `Not; Not`                            → drop both (!!b == b, idempotent)
 //! 17. (REMOVED — RES-2498: unsound under Saturate/Trap overflow modes)
 //! 18. `Not; JumpIfTrue(off)`               → `JumpIfFalse(off)` (mirror of Rule 4)
@@ -35,6 +49,29 @@
 //! 21. `Const(false); JumpIfFalse(off)`     → `Jump(off)` (branch always taken)
 //! 22. `Const(true); JumpIfFalse(off)`      → drop both (branch never taken)
 //! 23. `Const(false); JumpIfTrue(off)`      → drop both (branch never taken)
+//!
+//! ## RES-3902: type-blind identity folds were unsound
+//!
+//! Rules 1, 2, 6, 7–13, 14, 15 all assumed an arithmetic/bitwise
+//! identity (`x+0==x`, `x*0==0`, `x&0==0`, `x-0==x`, `x/1==x`, ...)
+//! holds for *any* operand type. That's true for `Int`/`Float`, but:
+//! - `+` and `*` also legally accept `String` operands, for which the
+//!   "identity" is a different, non-identity value (concatenation /
+//!   repetition), so the fold silently produced the WRONG value.
+//! - The bitwise ops and `-`/`/` never accept `String` — a `String`
+//!   operand there is a runtime type-mismatch error on the unoptimized
+//!   path, but the fold silently dropped the check and let the program
+//!   "succeed" with the operand unchanged instead of erroring.
+//!
+//! Both are soundness bugs: an optimized (`--vm`) program could differ
+//! in observable behavior from the same program run unoptimized or
+//! through the tree-walking interpreter. Every rule above now requires
+//! the operand fed into the fold to be *provably* `Int` (bitwise ops)
+//! or `Int`/`Float` (`+`/`*`/`-`/`/`) via [`preceding_is_provably_int`]
+//! / [`preceding_is_provably_numeric`] — provable only for a `Const`
+//! pool entry of the right `Value` variant, since `LoadLocal` carries
+//! no static type in this pass. Rule 2 could not be salvaged this way
+//! (its whole shape *is* an unproven `LoadLocal`) and was removed.
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -60,6 +97,38 @@
 
 use crate::Value;
 use crate::bytecode::{Chunk, Op};
+
+/// RES-3902: true when `op` is a `Const(k)` whose pooled value is
+/// `Int` or `Float` — the only two operand types for which `+`, `-`,
+/// `*`, `/` identity/absorbing-element folds (`x+0==x`, `x*0==0`, ...)
+/// actually hold. `Value::String` is also a legal `+`/`*` operand
+/// (concatenation/stringification, repetition) but the identity does
+/// NOT hold for it (`"ab"+0` is `"ab0"`, not `"ab"`; `"ab"*0` is `""`,
+/// not the int `0`) — folding those cases silently produces the wrong
+/// value. `LoadLocal` (and anything else) carries no static type here,
+/// so callers must treat it as "unknown, not provably safe."
+fn preceding_is_provably_numeric(chunk: &Chunk, new_code: &[Op]) -> bool {
+    matches!(
+        new_code.last(),
+        Some(Op::Const(k)) if matches!(
+            chunk.constants.get(*k as usize),
+            Some(Value::Int(_)) | Some(Value::Float(_))
+        )
+    )
+}
+
+/// RES-3902: like [`preceding_is_provably_numeric`] but restricted to
+/// `Int` — for the bitwise ops (`&`, `|`, `^`, `<<`, `>>`), which
+/// (unlike `+`/`*`) never accept `Float` or `String` at all; any such
+/// operand is a runtime type-mismatch error. Dropping the op on an
+/// unproven operand would silently suppress that error instead of
+/// letting it fire.
+fn preceding_is_provably_int(chunk: &Chunk, new_code: &[Op]) -> bool {
+    matches!(
+        new_code.last(),
+        Some(Op::Const(k)) if matches!(chunk.constants.get(*k as usize), Some(Value::Int(_)))
+    )
+}
 
 /// Errors that the peephole optimizer can return.
 #[derive(Debug)]
@@ -126,21 +195,12 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
 
         // Rule 1 — drop `Const(k==0); Add`. Skip if `Add` is a
         // jump target (a jump into the middle of the pattern).
-        if rule_add_zero_identity(chunk, i, &targets) {
+        if rule_add_zero_identity(chunk, i, &targets, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
         }
-        // Rule 2 — fold `LoadLocal x; Const(k==1); Add; StoreLocal x`
-        // → `IncLocal(x)`.
-        if let Some(idx) = rule_inc_local(chunk, i, &targets) {
-            new_code.push(Op::IncLocal(idx));
-            new_line_info.push(chunk.line_info[i]);
-            new_to_old.push(i);
-            optimized_any = true;
-            i += 4;
-            continue;
-        }
+        // Rule 2 — REMOVED (RES-3902). See module doc comment.
         // Rule 3 — drop `Jump(0)` (fall-through).
         if rule_dead_jump(chunk, i) {
             optimized_any = true;
@@ -182,32 +242,32 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             continue;
         }
         // Rule 7 — drop `Const(0); Bor` (x | 0 == x, identity).
-        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bor) {
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bor, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
         }
         // Rule 8 — drop `Const(0); Bxor` (x ^ 0 == x, identity).
-        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bxor) {
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Bxor, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
         }
         // Rule 9 — drop `Const(0); Shl` (x << 0 == x, identity).
-        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shl) {
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shl, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
         }
         // Rule 10 — drop `Const(0); Shr` (x >> 0 == x, identity).
-        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shr) {
+        if rule_bitwise_zero_identity(chunk, i, &targets, Op::Shr, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
         }
         // Rule 11 — drop `Const(-1); Band` (x & -1 == x, -1 has all
         // bits set so AND is identity).
-        if rule_band_neg_one_identity(chunk, i, &targets) {
+        if rule_band_neg_one_identity(chunk, i, &targets, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
@@ -245,13 +305,13 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             continue;
         }
         // Rule 14 — drop `Const(k==0); Sub` (x - 0 == x, identity).
-        if rule_sub_zero_identity(chunk, i, &targets) {
+        if rule_sub_zero_identity(chunk, i, &targets, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
         }
         // Rule 15 — drop `Const(k==1); Div` (x / 1 == x, identity).
-        if rule_div_one_identity(chunk, i, &targets) {
+        if rule_div_one_identity(chunk, i, &targets, &new_code) {
             optimized_any = true;
             i += 2;
             continue;
@@ -432,7 +492,12 @@ fn is_jump_op(op: Op) -> bool {
 
 /// Rule 1: drop `Const(k); Add` when constants[k] is Int(0).
 /// Skips if PC i+1 is a jump target.
-pub(crate) fn rule_add_zero_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+pub(crate) fn rule_add_zero_identity(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    new_code: &[Op],
+) -> bool {
     if i + 1 >= chunk.code.len() {
         return false;
     }
@@ -450,40 +515,11 @@ pub(crate) fn rule_add_zero_identity(chunk: &Chunk, i: usize, targets: &[bool]) 
     if *targets.get(i + 1).unwrap_or(&false) {
         return false;
     }
-    true
-}
-
-/// Rule 2: fold `LoadLocal x; Const(k==1); Add; StoreLocal x` →
-/// `IncLocal(x)`. Returns `Some(x)` on a match.
-pub(crate) fn rule_inc_local(chunk: &Chunk, i: usize, targets: &[bool]) -> Option<u16> {
-    if i + 3 >= chunk.code.len() {
-        return None;
-    }
-    let Op::LoadLocal(x1) = chunk.code[i] else {
-        return None;
-    };
-    let Op::Const(k) = chunk.code[i + 1] else {
-        return None;
-    };
-    if !matches!(chunk.code[i + 2], Op::Add) {
-        return None;
-    }
-    let Op::StoreLocal(x2) = chunk.code[i + 3] else {
-        return None;
-    };
-    if x1 != x2 {
-        return None;
-    }
-    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(1))) {
-        return None;
-    }
-    // Skip if any interior op is a jump target.
-    for j in (i + 1)..=(i + 3) {
-        if *targets.get(j).unwrap_or(&false) {
-            return None;
-        }
-    }
-    Some(x1)
+    // RES-3902: `+` also accepts `String` operands (concatenation /
+    // stringification), for which `x + 0` is NOT `x` — it's `x`
+    // with `"0"` appended. Only fold when the preceding value is
+    // provably `Int`/`Float`.
+    preceding_is_provably_numeric(chunk, new_code)
 }
 
 /// Rule 3: drop `Jump(0)` — falls through to the next instruction
@@ -531,13 +567,15 @@ pub(crate) fn rule_mul_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -
     true
 }
 
-/// Rule 6: fold `<pure-load>; Const(k==0); Mul` → `Const(0)`.
+/// Rule 6: fold `Const(k_numeric); Const(k==0); Mul` → `Const(0)`.
 ///
-/// A "pure load" is any op that pushes exactly one value onto the stack
-/// without side-effects: `LoadLocal(_)` or `Const(_)`. If the op at
-/// `i-1` in the already-emitted new_code (i.e., `new_code.last()`) is
-/// such a load, AND the window `Const(0); Mul` is at `[i, i+1]`, we
-/// can replace all three ops with a single `Const(0)`.
+/// RES-3902: `*` also accepts `String * Int` (repetition, RES-924),
+/// for which `x * 0` is `""`, not the int `0` — so this can only fire
+/// when the preceding value is *provably* `Int`/`Float`, which we can
+/// only know for a `Const` pool entry of the right `Value` variant.
+/// `LoadLocal` carries no static type in this pass and is no longer
+/// accepted (previously assumed safe for "any pure load" — the bug
+/// this rule now fixes).
 ///
 /// Skips if `Mul` (at `i+1`) is a jump target.
 pub(crate) fn rule_mul_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code: &[Op]) -> bool {
@@ -556,13 +594,19 @@ pub(crate) fn rule_mul_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code:
     if *targets.get(i + 1).unwrap_or(&false) {
         return false;
     }
-    // The preceding emitted op must be a pure (side-effect-free) load.
-    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+    preceding_is_provably_numeric(chunk, new_code)
 }
 
 /// Rules 7–10: drop `Const(k==0); <op>` when `op` is a bitwise op
 /// whose right-operand-is-zero case is an identity: `x | 0 == x`,
 /// `x ^ 0 == x`, `x << 0 == x`, `x >> 0 == x`.
+///
+/// RES-3902: dropping the op also drops the runtime type check it
+/// would have performed — bitwise ops never accept non-`Int`
+/// operands, so `x` must be *provably* `Int` (a `Const` pool entry of
+/// that variant) or the fold would silently suppress a type-mismatch
+/// error instead of letting it fire. `LoadLocal` carries no static
+/// type here and is no longer accepted.
 ///
 /// Skips if `op` is a jump target.
 pub(crate) fn rule_bitwise_zero_identity(
@@ -570,6 +614,7 @@ pub(crate) fn rule_bitwise_zero_identity(
     i: usize,
     targets: &[bool],
     op: Op,
+    new_code: &[Op],
 ) -> bool {
     if i + 1 >= chunk.code.len() {
         return false;
@@ -583,14 +628,25 @@ pub(crate) fn rule_bitwise_zero_identity(
     if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
         return false;
     }
-    !*targets.get(i + 1).unwrap_or(&false)
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    preceding_is_provably_int(chunk, new_code)
 }
 
 /// Rule 11: drop `Const(k==-1); Band` — AND with all-ones is identity
 /// (`x & -1 == x` in two's-complement i64).
 ///
+/// RES-3902: same reasoning as rules 7–10 — `x` must be provably
+/// `Int` or the fold would suppress a type-mismatch error.
+///
 /// Skips if `Band` is a jump target.
-pub(crate) fn rule_band_neg_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+pub(crate) fn rule_band_neg_one_identity(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    new_code: &[Op],
+) -> bool {
     if i + 1 >= chunk.code.len() {
         return false;
     }
@@ -603,11 +659,16 @@ pub(crate) fn rule_band_neg_one_identity(chunk: &Chunk, i: usize, targets: &[boo
     if !matches!(chunk.constants.get(k as usize), Some(Value::Int(-1))) {
         return false;
     }
-    !*targets.get(i + 1).unwrap_or(&false)
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    preceding_is_provably_int(chunk, new_code)
 }
 
-/// Rule 12: fold `<pure-load>; Const(k==0); Band` → `Const(0)`.
-/// `x & 0 == 0` for any x; mirrors `rule_mul_zero`.
+/// Rule 12: fold `Const(k_int); Const(k==0); Band` → `Const(0)`.
+/// `x & 0 == 0` for `Int` x; mirrors `rule_mul_zero`. RES-3902: only
+/// fires when `x` is provably `Int` (a non-`Int` operand is a runtime
+/// type error the fold must not suppress).
 ///
 /// Skips if `Band` is a jump target.
 pub(crate) fn rule_band_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code: &[Op]) -> bool {
@@ -626,7 +687,7 @@ pub(crate) fn rule_band_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code
     if *targets.get(i + 1).unwrap_or(&false) {
         return false;
     }
-    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+    preceding_is_provably_int(chunk, new_code)
 }
 
 /// Rule 13: fold `<pure-load>; Const(k==-1); Bor` → `Const(-1)`.
@@ -650,12 +711,20 @@ pub(crate) fn rule_bor_neg_one(chunk: &Chunk, i: usize, targets: &[bool], new_co
     if *targets.get(i + 1).unwrap_or(&false) {
         return false;
     }
-    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+    preceding_is_provably_int(chunk, new_code)
 }
 
 /// Rule 14: drop `Const(k==0); Sub` — subtracting zero is a no-op.
-/// `x - 0 == x` for all integer `x`.  Skips if `Sub` is a jump target.
-pub(crate) fn rule_sub_zero_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+/// `x - 0 == x` for `Int`/`Float` `x`.  RES-3902: `-` is not overloaded
+/// for `String` (unlike `+`/`*`), so `x` must be provably `Int`/`Float`
+/// or the fold would suppress a runtime type-mismatch error.
+/// Skips if `Sub` is a jump target.
+pub(crate) fn rule_sub_zero_identity(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    new_code: &[Op],
+) -> bool {
     if i + 1 >= chunk.code.len() {
         return false;
     }
@@ -668,13 +737,24 @@ pub(crate) fn rule_sub_zero_identity(chunk: &Chunk, i: usize, targets: &[bool]) 
     if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
         return false;
     }
-    !*targets.get(i + 1).unwrap_or(&false)
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    preceding_is_provably_numeric(chunk, new_code)
 }
 
 /// Rule 15: drop `Const(k==1); Div` — dividing by one is a no-op.
-/// `x / 1 == x` for all integer `x`.  Skips if `Div` is a jump target.
+/// `x / 1 == x` for `Int`/`Float` `x`.  RES-3902: `/` is not overloaded
+/// for `String`, so `x` must be provably `Int`/`Float` or the fold
+/// would suppress a runtime type-mismatch error.
+/// Skips if `Div` is a jump target.
 /// NOTE: does NOT fire for `-1` — that negates rather than preserving.
-pub(crate) fn rule_div_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+pub(crate) fn rule_div_one_identity(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    new_code: &[Op],
+) -> bool {
     if i + 1 >= chunk.code.len() {
         return false;
     }
@@ -687,7 +767,10 @@ pub(crate) fn rule_div_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -
     if !matches!(chunk.constants.get(k as usize), Some(Value::Int(1))) {
         return false;
     }
-    !*targets.get(i + 1).unwrap_or(&false)
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    preceding_is_provably_numeric(chunk, new_code)
 }
 
 /// Rule 16: drop `Not; Not` — double boolean negation is identity.
@@ -860,14 +943,20 @@ mod tests {
 
     #[test]
     fn rule1_fires_on_const_zero_plus_add() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Add], vec![Value::Int(0)], &[1, 1]);
-        assert!(rule_add_zero_identity(&chunk, 0, &[false; 3]));
+        let chunk = mk_chunk(
+            &[Op::Const(1), Op::Add],
+            vec![Value::Int(42), Value::Int(0)],
+            &[1, 1],
+        );
+        // Preceding load: Const(0) → Int(42), provably numeric.
+        let new_code = vec![Op::Const(0)];
+        assert!(rule_add_zero_identity(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
     fn rule1_skips_when_const_is_nonzero() {
         let chunk = mk_chunk(&[Op::Const(0), Op::Add], vec![Value::Int(5)], &[1, 1]);
-        assert!(!rule_add_zero_identity(&chunk, 0, &[false; 3]));
+        assert!(!rule_add_zero_identity(&chunk, 0, &[false; 3], &[]));
     }
 
     #[test]
@@ -875,75 +964,65 @@ mod tests {
         let chunk = mk_chunk(&[Op::Const(0), Op::Add], vec![Value::Int(0)], &[1, 1]);
         let mut targets = vec![false; 3];
         targets[1] = true;
-        assert!(!rule_add_zero_identity(&chunk, 0, &targets));
+        assert!(!rule_add_zero_identity(&chunk, 0, &targets, &[]));
     }
 
     #[test]
-    fn rule1_drops_identity_in_full_pass() {
-        // LoadLocal(0) + Const(0) + Add + StoreLocal(0) is the
-        // pathological shape the rule targets. After the pass:
-        // LoadLocal(0) + StoreLocal(0).
+    fn rule1_skips_when_preceding_is_not_provably_numeric() {
+        // RES-3902: `LoadLocal` carries no static type, so `x + 0` must
+        // not fold when `x` came from one — `x` could be a `String`,
+        // for which `x + 0` is `x` with `"0"` appended, not `x`.
+        let chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Add],
+            vec![Value::Int(0)],
+            &[1, 1, 1],
+        );
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(!rule_add_zero_identity(&chunk, 1, &[false; 4], &new_code));
+    }
+
+    #[test]
+    fn rule1_drops_identity_in_full_pass_when_preceding_is_numeric_const() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::StoreLocal(0)],
+            vec![Value::Int(42), Value::Int(0)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::Const(0), Op::StoreLocal(0)]);
+    }
+
+    #[test]
+    fn rule1_does_not_fold_in_full_pass_when_preceding_is_load_local() {
+        // RES-3902 regression: `LoadLocal(0) + 0` must NOT fold to
+        // `LoadLocal(0)` — the local could hold a `String`, for which
+        // `s + 0` legitimately differs from `s`. Before the fix this
+        // pathological shape (`LoadLocal; Const(0); Add; StoreLocal`)
+        // folded unconditionally, matching the confirmed `"ab" + 0`
+        // divergence (interpreter: `"ab0"`, unoptimized VM: `"ab0"`,
+        // peephole-optimized VM: `"ab"` — silently wrong).
         let mut chunk = mk_chunk(
             &[Op::LoadLocal(0), Op::Const(0), Op::Add, Op::StoreLocal(0)],
             vec![Value::Int(0)],
             &[1, 1, 1, 1],
         );
         optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::StoreLocal(0)]);
-        assert_eq!(chunk.line_info, vec![1, 1]);
-    }
-
-    // ---------- Rule 2: IncLocal fold ----------
-
-    #[test]
-    fn rule2_fires_on_inc_idiom() {
-        let chunk = mk_chunk(
-            &[Op::LoadLocal(3), Op::Const(0), Op::Add, Op::StoreLocal(3)],
-            vec![Value::Int(1)],
-            &[1, 1, 1, 1],
+        assert_eq!(
+            chunk.code,
+            vec![Op::LoadLocal(0), Op::Const(0), Op::Add, Op::StoreLocal(0)]
         );
-        assert_eq!(rule_inc_local(&chunk, 0, &[false; 5]), Some(3));
     }
 
-    #[test]
-    fn rule2_skips_mismatched_locals() {
-        let chunk = mk_chunk(
-            &[Op::LoadLocal(3), Op::Const(0), Op::Add, Op::StoreLocal(4)],
-            vec![Value::Int(1)],
-            &[1, 1, 1, 1],
-        );
-        assert_eq!(rule_inc_local(&chunk, 0, &[false; 5]), None);
-    }
-
-    #[test]
-    fn rule2_skips_non_one_constant() {
-        let chunk = mk_chunk(
-            &[Op::LoadLocal(3), Op::Const(0), Op::Add, Op::StoreLocal(3)],
-            vec![Value::Int(5)],
-            &[1, 1, 1, 1],
-        );
-        assert_eq!(rule_inc_local(&chunk, 0, &[false; 5]), None);
-    }
-
-    #[test]
-    fn rule2_folds_in_full_pass() {
-        let mut chunk = mk_chunk(
-            &[
-                Op::LoadLocal(2),
-                Op::Const(0),
-                Op::Add,
-                Op::StoreLocal(2),
-                Op::Return,
-            ],
-            vec![Value::Int(1)],
-            &[7, 7, 7, 7, 8],
-        );
-        optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code, vec![Op::IncLocal(2), Op::Return]);
-        // Line info: first inst of the fold's line, then the
-        // Return's unchanged line.
-        assert_eq!(chunk.line_info, vec![7, 8]);
-    }
+    // ---------- Rule 2: REMOVED (RES-3902) ----------
+    // `rule_inc_local` folded `LoadLocal x; Const(1); Add; StoreLocal x`
+    // to `IncLocal(x)` assuming `x` was numeric, with no way to prove
+    // it in this pass — a `String` local (`s = s + 1`) hit the exact
+    // silent-wrong-behavior class this ticket fixes elsewhere. Its four
+    // tests (`rule2_fires_on_inc_idiom`, `rule2_skips_mismatched_locals`,
+    // `rule2_skips_non_one_constant`, `rule2_folds_in_full_pass`) tested
+    // the now-removed function directly and are gone with it; the
+    // *legal* numeric case they covered is exercised end-to-end instead
+    // by `differential.rs`'s `interpreter_and_vm_agree_on_typed_identity_folds`.
 
     // ---------- Rule 3: Jump(0) drop ----------
 
@@ -1031,15 +1110,16 @@ mod tests {
     #[test]
     fn jumps_relink_across_dropped_instructions() {
         // Build a chunk where a forward JumpIfFalse skips over a
-        // `Const(0); Add` that the peephole will fold away. The
-        // jump's target must still land on the right instruction
-        // after the fold.
+        // `Not; Not` that the peephole will fold away (Rule 16 — always
+        // safe, no operand-type ambiguity, unlike RES-3902's numeric
+        // identity rules). The jump's target must still land on the
+        // right instruction after the fold.
         //
         // Layout (old PCs):
         //   0: LoadLocal(0)
         //   1: JumpIfFalse(+2)        → target = 4 (Return)
-        //   2: Const(0)               ← dropped by Rule 1
-        //   3: Add                    ← dropped by Rule 1
+        //   2: Not                    ← dropped by Rule 16
+        //   3: Not                    ← dropped by Rule 16
         //   4: Return
         //
         // After optimize:
@@ -1050,11 +1130,11 @@ mod tests {
             &[
                 Op::LoadLocal(0),
                 Op::JumpIfFalse(2),
-                Op::Const(0),
-                Op::Add,
+                Op::Not,
+                Op::Not,
                 Op::Return,
             ],
-            vec![Value::Int(0)],
+            vec![],
             &[1, 1, 1, 1, 2],
         );
         optimize(&mut chunk).unwrap();
@@ -1135,23 +1215,24 @@ mod tests {
         assert_eq!(chunk.line_info, vec![1, 2]);
     }
 
-    // ---------- Rule 6: Const(0); Mul → Const(0) (pure preceding load) ----------
+    // ---------- Rule 6: Const(0); Mul → Const(0) (provably numeric preceding const) ----------
 
     #[test]
-    fn rule6_fires_when_preceding_emit_is_load_local() {
+    fn rule6_skips_when_preceding_emit_is_load_local() {
+        // RES-3902 regression: `LoadLocal` carries no static type, so
+        // the rule must NOT fire — the local could hold a `String`,
+        // for which `s * 0` is `""`, not the int `0`.
         let chunk = mk_chunk(
             &[Op::LoadLocal(0), Op::Const(0), Op::Mul],
             vec![Value::Int(0)],
             &[1, 1, 1],
         );
-        // Simulate that we have already emitted LoadLocal(0).
         let emitted = vec![Op::LoadLocal(0)];
-        // The pattern window starts at i=1 (Const(0); Mul).
-        assert!(rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
+        assert!(!rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
     }
 
     #[test]
-    fn rule6_fires_when_preceding_emit_is_const() {
+    fn rule6_fires_when_preceding_emit_is_numeric_const() {
         // constants[0]=Int(42), constants[1]=Int(0)
         // code: [Const(0), Const(1), Mul]  — so at i=1 we have Const(1) → Int(0)
         let chunk = mk_chunk(
@@ -1161,6 +1242,19 @@ mod tests {
         );
         let emitted = vec![Op::Const(0)];
         assert!(rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
+    }
+
+    #[test]
+    fn rule6_skips_when_preceding_emit_is_string_const() {
+        // RES-3902: the exact confirmed bug — `"ab" * 0` must yield
+        // `""`, not the int `0`. constants[0]="ab", constants[1]=Int(0).
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Mul],
+            vec![Value::String("ab".to_string()), Value::Int(0)],
+            &[1, 1, 1],
+        );
+        let emitted = vec![Op::Const(0)];
+        assert!(!rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
     }
 
     #[test]
@@ -1191,29 +1285,33 @@ mod tests {
     #[test]
     fn rule6_skips_when_mul_is_jump_target() {
         let chunk = mk_chunk(
-            &[Op::LoadLocal(0), Op::Const(0), Op::Mul],
-            vec![Value::Int(0)],
+            &[Op::Const(1), Op::Const(0), Op::Mul],
+            vec![Value::Int(42), Value::Int(0)],
             &[1, 1, 1],
         );
-        let emitted = vec![Op::LoadLocal(0)];
+        let emitted = vec![Op::Const(0)];
         let mut targets = vec![false; 4];
         targets[2] = true; // Mul at pc=2 is a jump target
         assert!(!rule_mul_zero(&chunk, 1, &targets, &emitted));
     }
 
     #[test]
-    fn rule6_folds_load_mul_zero_in_full_pass() {
-        // LoadLocal(0) * 0 → Const(0)
-        // chunk: [LoadLocal(0), Const(0), Mul, Return]
-        // constants: [Int(0)]
+    fn rule6_does_not_fold_in_full_pass_when_preceding_is_load_local() {
+        // RES-3902 regression: before the fix, `LoadLocal(0) * 0`
+        // folded unconditionally to `Const(0)` in a full pass — wrong
+        // if the local holds a `String` (matches the confirmed
+        // `"ab" * 0` divergence: interpreter/unoptimized VM give `""`,
+        // the peephole-optimized VM silently gave the int `0`).
         let mut chunk = mk_chunk(
             &[Op::LoadLocal(0), Op::Const(0), Op::Mul, Op::Return],
             vec![Value::Int(0)],
             &[1, 1, 1, 2],
         );
         optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code, vec![Op::Const(0), Op::Return]);
-        assert_eq!(chunk.line_info.len(), chunk.code.len());
+        assert_eq!(
+            chunk.code,
+            vec![Op::LoadLocal(0), Op::Const(0), Op::Mul, Op::Return]
+        );
     }
 
     #[test]
@@ -1243,84 +1341,213 @@ mod tests {
     // ---------- Rules 7-10: bitwise zero identity (|, ^, <<, >>) ----------
 
     #[test]
-    fn rule7_bor_zero_identity_fires() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
-        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bor));
+    fn rule7_bor_zero_identity_fires_with_provably_int_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_bitwise_zero_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            Op::Bor,
+            &new_code
+        ));
     }
 
     #[test]
-    fn rule7_bor_zero_identity_drops_both_ops() {
+    fn rule7_bor_zero_identity_skips_with_load_local_preceding() {
+        // RES-3902 regression: `LoadLocal` carries no static type. `s | 0`
+        // for a `String` `s` is a runtime type error the fold must not
+        // suppress by silently returning `s` unchanged.
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(!rule_bitwise_zero_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            Op::Bor,
+            &new_code
+        ));
+    }
+
+    #[test]
+    fn rule7_bor_zero_identity_drops_both_ops_with_int_preceding() {
         let mut chunk = mk_chunk(
-            &[Op::Const(0), Op::Bor, Op::Return],
-            vec![Value::Int(0)],
-            &[1, 1, 1],
+            &[Op::Const(0), Op::Const(1), Op::Bor, Op::Return],
+            vec![Value::Int(5), Value::Int(0)],
+            &[1, 1, 1, 1],
         );
         optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code.len(), 1);
-        assert!(matches!(chunk.code[0], Op::Return));
+        assert_eq!(chunk.code.len(), 2);
+        assert!(matches!(chunk.code[0], Op::Const(_)));
+        assert!(matches!(chunk.code[1], Op::Return));
     }
 
     #[test]
-    fn rule8_bxor_zero_identity_fires() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Bxor], vec![Value::Int(0)], &[1, 1]);
-        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bxor));
+    fn rule7_bor_zero_identity_does_not_fold_with_load_local_in_full_pass() {
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Bor, Op::Return],
+            vec![Value::Int(0)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code,
+            vec![Op::LoadLocal(0), Op::Const(0), Op::Bor, Op::Return]
+        );
     }
 
     #[test]
-    fn rule9_shl_zero_identity_fires() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Shl], vec![Value::Int(0)], &[1, 1]);
-        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Shl));
+    fn rule8_bxor_zero_identity_fires_with_provably_int_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Bxor],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_bitwise_zero_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            Op::Bxor,
+            &new_code
+        ));
     }
 
     #[test]
-    fn rule10_shr_zero_identity_fires() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Shr], vec![Value::Int(0)], &[1, 1]);
-        assert!(rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Shr));
+    fn rule9_shl_zero_identity_fires_with_provably_int_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Shl],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_bitwise_zero_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            Op::Shl,
+            &new_code
+        ));
+    }
+
+    #[test]
+    fn rule10_shr_zero_identity_fires_with_provably_int_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Shr],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_bitwise_zero_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            Op::Shr,
+            &new_code
+        ));
     }
 
     #[test]
     fn rule_bitwise_zero_identity_skips_nonzero_const() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(1)], &[1, 1]);
-        assert!(!rule_bitwise_zero_identity(&chunk, 0, &[false; 3], Op::Bor));
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor],
+            vec![Value::Int(1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(!rule_bitwise_zero_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            Op::Bor,
+            &new_code
+        ));
     }
 
     #[test]
     fn rule_bitwise_zero_identity_skips_when_op_is_jump_target() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
         let targets = [false, true, false];
-        assert!(!rule_bitwise_zero_identity(&chunk, 0, &targets, Op::Bor));
+        assert!(!rule_bitwise_zero_identity(
+            &chunk,
+            0,
+            &targets,
+            Op::Bor,
+            &new_code
+        ));
     }
 
     // ---------- Rule 11: Band with -1 (all-ones identity) ----------
 
     #[test]
-    fn rule11_band_neg_one_identity_fires() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(-1)], &[1, 1]);
-        assert!(rule_band_neg_one_identity(&chunk, 0, &[false; 3]));
+    fn rule11_band_neg_one_identity_fires_with_provably_int_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Band],
+            vec![Value::Int(-1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_band_neg_one_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            &new_code
+        ));
     }
 
     #[test]
-    fn rule11_band_neg_one_drops_both_ops() {
+    fn rule11_band_neg_one_skips_with_load_local_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(-1)], &[1, 1]);
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(!rule_band_neg_one_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            &new_code
+        ));
+    }
+
+    #[test]
+    fn rule11_band_neg_one_drops_both_ops_with_int_preceding() {
         let mut chunk = mk_chunk(
-            &[Op::Const(0), Op::Band, Op::Return],
-            vec![Value::Int(-1)],
-            &[1, 1, 1],
+            &[Op::Const(0), Op::Const(1), Op::Band, Op::Return],
+            vec![Value::Int(5), Value::Int(-1)],
+            &[1, 1, 1, 1],
         );
         optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code.len(), 1);
-        assert!(matches!(chunk.code[0], Op::Return));
+        assert_eq!(chunk.code.len(), 2);
+        assert!(matches!(chunk.code[1], Op::Return));
     }
 
     #[test]
     fn rule11_band_neg_one_skips_when_const_is_zero() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
-        assert!(!rule_band_neg_one_identity(&chunk, 0, &[false; 3]));
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Band],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(!rule_band_neg_one_identity(
+            &chunk,
+            0,
+            &[false; 3],
+            &new_code
+        ));
     }
 
     // ---------- Rule 12: Band with 0 → 0 ----------
 
     #[test]
-    fn rule12_band_zero_folds_with_preceding_load() {
+    fn rule12_band_zero_folds_with_preceding_int_const() {
         let mut chunk = mk_chunk(
             &[Op::Const(0), Op::Const(1), Op::Band, Op::Return],
             vec![Value::Int(42), Value::Int(0)],
@@ -1335,10 +1562,24 @@ mod tests {
     }
 
     #[test]
-    fn rule12_band_zero_predicate_fires_with_pure_preceding() {
+    fn rule12_band_zero_predicate_fires_with_provably_int_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Band],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_band_zero(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule12_band_zero_predicate_skips_with_load_local_preceding() {
+        // RES-3902: this was the exact confirmed bug — `s & 0` for a
+        // `String` `s` must stay a runtime type error, not silently
+        // become the int `0`.
         let chunk = mk_chunk(&[Op::Const(0), Op::Band], vec![Value::Int(0)], &[1, 1]);
         let new_code = vec![Op::LoadLocal(0)];
-        assert!(rule_band_zero(&chunk, 0, &[false; 3], &new_code));
+        assert!(!rule_band_zero(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
@@ -1349,25 +1590,53 @@ mod tests {
         assert!(!rule_band_zero(&chunk, 0, &[false; 3], &new_code));
     }
 
-    // ---------- Rule 13: <pure-load>; Const(-1); Bor → Const(-1) ----------
+    #[test]
+    fn rule12_band_zero_does_not_fold_with_load_local_in_full_pass() {
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Band, Op::Return],
+            vec![Value::Int(0)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code,
+            vec![Op::LoadLocal(0), Op::Const(0), Op::Band, Op::Return]
+        );
+    }
+
+    // ---------- Rule 13: <provably-int-const>; Const(-1); Bor → Const(-1) ----------
 
     #[test]
-    fn rule13_bor_neg_one_predicate_fires_with_pure_preceding() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(-1)], &[1, 1]);
-        let new_code = vec![Op::LoadLocal(0)];
+    fn rule13_bor_neg_one_predicate_fires_with_provably_int_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor],
+            vec![Value::Int(-1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
         assert!(rule_bor_neg_one(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
-    fn rule13_bor_neg_one_predicate_skips_non_neg_one() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(0)], &[1, 1]);
+    fn rule13_bor_neg_one_predicate_skips_with_load_local_preceding() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(-1)], &[1, 1]);
         let new_code = vec![Op::LoadLocal(0)];
         assert!(!rule_bor_neg_one(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
-    fn rule13_bor_neg_one_folds_in_full_pass() {
-        // LoadLocal(0) pushes x; Const(-1); Bor → Const(-1).
+    fn rule13_bor_neg_one_predicate_skips_non_neg_one() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(!rule_bor_neg_one(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule13_bor_neg_one_folds_in_full_pass_with_int_preceding() {
         let mut chunk = mk_chunk(
             &[Op::Const(0), Op::Const(1), Op::Bor, Op::Return],
             vec![Value::Int(42), Value::Int(-1)],
@@ -1383,8 +1652,12 @@ mod tests {
 
     #[test]
     fn rule13_bor_neg_one_predicate_skips_when_bor_is_jump_target() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Bor], vec![Value::Int(-1)], &[1, 1]);
-        let new_code = vec![Op::LoadLocal(0)];
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Bor],
+            vec![Value::Int(-1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
         let mut targets = vec![false; 3];
         targets[1] = true;
         assert!(!rule_bor_neg_one(&chunk, 0, &targets, &new_code));
@@ -1393,65 +1666,119 @@ mod tests {
     // ---------- Rule 14: Const(0); Sub → identity ----------
 
     #[test]
-    fn rule14_sub_zero_identity_fires() {
+    fn rule14_sub_zero_identity_fires_with_provably_numeric_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Sub],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_sub_zero_identity(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule14_sub_zero_identity_skips_with_load_local_preceding() {
+        // RES-3902 regression: confirmed `"ab" - 0` divergence — `-`
+        // isn't overloaded for `String`, so this must stay a type error.
         let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(0)], &[1, 1]);
-        assert!(rule_sub_zero_identity(&chunk, 0, &[false; 3]));
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(!rule_sub_zero_identity(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
     fn rule14_sub_zero_identity_skips_nonzero() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(1)], &[1, 1]);
-        assert!(!rule_sub_zero_identity(&chunk, 0, &[false; 3]));
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Sub],
+            vec![Value::Int(1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(!rule_sub_zero_identity(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
     fn rule14_sub_zero_identity_skips_when_sub_is_jump_target() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(0)], &[1, 1]);
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Sub],
+            vec![Value::Int(0), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
         let targets = [false, true, false];
-        assert!(!rule_sub_zero_identity(&chunk, 0, &targets));
+        assert!(!rule_sub_zero_identity(&chunk, 0, &targets, &new_code));
     }
 
     #[test]
-    fn rule14_sub_zero_drops_both_in_full_pass() {
+    fn rule14_sub_zero_does_not_drop_with_load_local_in_full_pass() {
         let mut chunk = mk_chunk(
             &[Op::LoadLocal(0), Op::Const(0), Op::Sub, Op::Return],
             vec![Value::Int(0)],
             &[1, 1, 1, 2],
         );
         optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+        assert_eq!(
+            chunk.code,
+            vec![Op::LoadLocal(0), Op::Const(0), Op::Sub, Op::Return]
+        );
     }
 
     // ---------- Rule 15: Const(1); Div → identity ----------
 
     #[test]
-    fn rule15_div_one_identity_fires() {
+    fn rule15_div_one_identity_fires_with_provably_numeric_preceding() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Div],
+            vec![Value::Int(1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(rule_div_one_identity(&chunk, 0, &[false; 3], &new_code));
+    }
+
+    #[test]
+    fn rule15_div_one_identity_skips_with_load_local_preceding() {
+        // RES-3902 regression: confirmed `"ab" / 1` divergence — `/`
+        // isn't overloaded for `String`, so this must stay a type error.
         let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(1)], &[1, 1]);
-        assert!(rule_div_one_identity(&chunk, 0, &[false; 3]));
+        let new_code = vec![Op::LoadLocal(0)];
+        assert!(!rule_div_one_identity(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
     fn rule15_div_one_identity_skips_neg_one() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(-1)], &[1, 1]);
-        assert!(!rule_div_one_identity(&chunk, 0, &[false; 3]));
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Div],
+            vec![Value::Int(-1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
+        assert!(!rule_div_one_identity(&chunk, 0, &[false; 3], &new_code));
     }
 
     #[test]
     fn rule15_div_one_identity_skips_when_div_is_jump_target() {
-        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(1)], &[1, 1]);
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Div],
+            vec![Value::Int(1), Value::Int(5)],
+            &[1, 1],
+        );
+        let new_code = vec![Op::Const(1)];
         let targets = [false, true, false];
-        assert!(!rule_div_one_identity(&chunk, 0, &targets));
+        assert!(!rule_div_one_identity(&chunk, 0, &targets, &new_code));
     }
 
     #[test]
-    fn rule15_div_one_drops_both_in_full_pass() {
+    fn rule15_div_one_does_not_drop_with_load_local_in_full_pass() {
         let mut chunk = mk_chunk(
             &[Op::LoadLocal(0), Op::Const(0), Op::Div, Op::Return],
             vec![Value::Int(1)],
             &[1, 1, 1, 2],
         );
         optimize(&mut chunk).unwrap();
-        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+        assert_eq!(
+            chunk.code,
+            vec![Op::LoadLocal(0), Op::Const(0), Op::Div, Op::Return]
+        );
     }
 
     // ---------- Rule 16: Not; Not → identity ----------

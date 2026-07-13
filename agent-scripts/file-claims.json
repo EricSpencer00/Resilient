@@ -1,12 +1,12 @@
 {
   "claims": {
-    "resilient/src/vm.rs": {
-      "branch": "res-3896-vm-array-concat",
-      "claimed_at": "2026-07-13T05:00:26Z"
+    "resilient/src/peephole.rs": {
+      "branch": "res-3902-peephole-type-safety",
+      "claimed_at": "2026-07-13T15:27:00Z"
     },
     "resilient/tests/differential.rs": {
-      "branch": "res-3896-vm-array-concat",
-      "claimed_at": "2026-07-13T05:00:26Z"
+      "branch": "res-3902-peephole-type-safety",
+      "claimed_at": "2026-07-13T15:27:00Z"
     }
   }
 }
