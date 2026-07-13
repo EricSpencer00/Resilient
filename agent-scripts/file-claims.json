@@ -19,6 +19,9 @@
     "resilient/src/loop_bound.rs": {
       "branch": "res-3857-ungate-loop-bound",
       "claimed_at": "2026-07-13T18:39:21Z"
+    "resilient/src/contract_policy.rs": {
+      "branch": "res-3854-strict-mode",
+      "claimed_at": "2026-07-13T18:43:19Z"
     }
   }
 }

@@ -4148,11 +4148,45 @@ impl Parser {
         // `contract_policy.rs`). Record it and hand the token stream
         // back to the ordinary statement parser.
         if attr_name == "require_contracts" {
+            // Optional policy argument: `@require_contracts(strict)`
+            // mandates non-vacuous contracts on every named function
+            // (see contract_policy::strict_mode). Unknown arguments
+            // are rejected here so a typo can't silently weaken the
+            // policy.
+            let mut args = String::new();
+            if self.current_token == Token::LeftParen {
+                self.next_token(); // skip `(`
+                if let Token::Identifier(arg) = &self.current_token {
+                    args = arg.clone();
+                    self.next_token(); // skip argument
+                } else {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "expected policy argument after `@require_contracts(`, found {}",
+                        tok
+                    ));
+                }
+                if self.current_token == Token::RightParen {
+                    self.next_token(); // skip `)`
+                } else {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "expected `)` to close `@require_contracts(...)`, found {}",
+                        tok
+                    ));
+                }
+                if !args.is_empty() && args != "strict" {
+                    self.record_error(format!(
+                        "unknown @require_contracts policy `{}` — known: strict",
+                        args
+                    ));
+                }
+            }
             crate::feature_attrs::record(
                 crate::contract_policy::MODULE_KEY,
                 crate::feature_attrs::AttrRecord {
                     name: "require_contracts".to_string(),
-                    args: String::new(),
+                    args,
                     line: attr_line,
                 },
             );
