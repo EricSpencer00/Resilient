@@ -1455,26 +1455,8 @@ fn run_inner(
                 // found value without ever using ownership.
                 let field = constant_as_str(chunk, name_const, "GetField (field name)")?;
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
-                let Value::Struct {
-                    name: sname,
-                    fields,
-                } = v
-                else {
-                    return Err(VmError::TypeMismatch("GetField (non-struct target)"));
-                };
-                let found = fields
-                    .iter()
-                    .find(|(k, _)| k.as_str() == field)
-                    .map(|(_, v)| v.clone());
-                match found {
-                    Some(val) => stack.push(val),
-                    None => {
-                        return Err(VmError::UnknownField {
-                            struct_name: sname,
-                            field: field.to_string(),
-                        });
-                    }
-                }
+                let val = vm_get_field_value(v, field)?;
+                stack.push(val);
             }
             Op::SetField { name_const } => {
                 // RES-1433: borrow field name from the constant pool —
@@ -2898,26 +2880,58 @@ fn h_get_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let chunk = state.current_chunk();
     let field = constant_as_str(chunk, name_const, "GetField (field name)")?;
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let Value::Struct {
-        name: sname,
-        fields,
-    } = v
-    else {
-        return Err(VmError::TypeMismatch("GetField (non-struct target)"));
-    };
-    let found = fields
-        .iter()
-        .find(|(k, _)| k.as_str() == field)
-        .map(|(_, v)| v.clone());
-    match found {
-        Some(val) => {
-            state.stack.push(val);
-            Ok(Step::Continue)
+    let val = vm_get_field_value(v, field)?;
+    state.stack.push(val);
+    Ok(Step::Continue)
+}
+
+/// RES-3918: shared `GetField` resolution for both dispatch engines.
+/// Reads a field from a `Struct` (by name) or an `EnumVariant` payload —
+/// the latter reached when `match` lowers payload binding to `GetField`
+/// against the scrutinee (`Named` field name for named payloads, the
+/// stringified tuple index `"0"`/`"1"` for tuple payloads). Before this,
+/// the handler only matched `Value::Struct`, so every payload-extracting
+/// enum match crashed with `GetField (non-struct target)`.
+fn vm_get_field_value(v: Value, field: &str) -> Result<Value, VmError> {
+    match v {
+        Value::Struct { name, fields } => fields
+            .iter()
+            .find(|(k, _)| k.as_str() == field)
+            .map(|(_, fv)| fv.clone())
+            .ok_or(VmError::UnknownField {
+                struct_name: name,
+                field: field.to_string(),
+            }),
+        Value::EnumVariant {
+            type_name,
+            variant,
+            payload,
+        } => {
+            let qualified = || format!("{type_name}::{variant}");
+            match payload {
+                crate::EnumValuePayload::Named(fields) => fields
+                    .iter()
+                    .find(|(k, _)| k.as_str() == field)
+                    .map(|(_, fv)| fv.clone())
+                    .ok_or_else(|| VmError::UnknownField {
+                        struct_name: qualified(),
+                        field: field.to_string(),
+                    }),
+                crate::EnumValuePayload::Tuple(vals) => field
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| vals.get(i).cloned())
+                    .ok_or_else(|| VmError::UnknownField {
+                        struct_name: qualified(),
+                        field: field.to_string(),
+                    }),
+                crate::EnumValuePayload::None => Err(VmError::UnknownField {
+                    struct_name: qualified(),
+                    field: field.to_string(),
+                }),
+            }
         }
-        None => Err(VmError::UnknownField {
-            struct_name: sname,
-            field: field.to_string(),
-        }),
+        _ => Err(VmError::TypeMismatch("GetField (non-struct target)")),
     }
 }
 
@@ -4854,6 +4868,54 @@ mod tests {
         assert_both_eq("let s = \"ab\"; s.repeat(3);");
         assert_both_eq("let a = [1, 2]; a.len();");
         assert_both_eq("let a = [1, 2, 3]; a.collect();");
+    }
+
+    #[test]
+    fn res3918_get_field_reads_enum_tuple_payload() {
+        let variant = Value::EnumVariant {
+            type_name: "E".into(),
+            variant: "P".into(),
+            payload: crate::EnumValuePayload::Tuple(vec![Value::Int(10), Value::Int(20)]),
+        };
+        // `match` lowers tuple binding to `GetField{"0"}` / `GetField{"1"}`.
+        assert!(matches!(
+            vm_get_field_value(variant.clone(), "0"),
+            Ok(Value::Int(10))
+        ));
+        assert!(matches!(
+            vm_get_field_value(variant.clone(), "1"),
+            Ok(Value::Int(20))
+        ));
+        // Out-of-range index is an UnknownField error, not a panic.
+        assert!(matches!(
+            vm_get_field_value(variant, "2"),
+            Err(VmError::UnknownField { .. })
+        ));
+    }
+
+    #[test]
+    fn res3918_get_field_reads_enum_named_payload() {
+        let variant = Value::EnumVariant {
+            type_name: "Shape".into(),
+            variant: "Circle".into(),
+            payload: crate::EnumValuePayload::Named(vec![("r".into(), Value::Int(7))]),
+        };
+        assert!(matches!(
+            vm_get_field_value(variant.clone(), "r"),
+            Ok(Value::Int(7))
+        ));
+        assert!(matches!(
+            vm_get_field_value(variant, "missing"),
+            Err(VmError::UnknownField { .. })
+        ));
+    }
+
+    #[test]
+    fn res3918_get_field_on_non_struct_non_enum_is_type_mismatch() {
+        assert!(matches!(
+            vm_get_field_value(Value::Int(5), "0"),
+            Err(VmError::TypeMismatch("GetField (non-struct target)"))
+        ));
     }
 
     #[test]

@@ -602,3 +602,46 @@ fn interpreter_and_vm_agree_on_enum_variant_refs_and_equality() {
         failures.join("")
     );
 }
+
+/// RES-3918: payload-extracting enum `match` must behave identically on
+/// both backends. `match` lowers variant payload binding to `GetField`
+/// against the scrutinee (tuple index `"0"`/`"1"` for tuple payloads);
+/// before the fix the VM's `GetField` only handled `Value::Struct`, so
+/// every payload-binding arm crashed with `GetField (non-struct target)`.
+/// (Named-field payload *construction* and block-bodied match arms are
+/// separate limitations tracked elsewhere; not exercised here.)
+#[test]
+fn interpreter_and_vm_agree_on_enum_payload_match() {
+    let programs = [
+        (
+            "single_tuple_payload",
+            "enum E { A(int32) } fn main() { let x = E::A(5); match x { E::A(v) => println(v) } } main();",
+        ),
+        (
+            "two_field_tuple_payload",
+            "enum Shape { Circle(int32), Rect(int32, int32) } fn main() { let s = Shape::Rect(3, 4); match s { Shape::Circle(r) => println(r), Shape::Rect(w, h) => println(w * h) } } main();",
+        ),
+        (
+            "mixed_arity_variants",
+            "enum E { A, B(int32), C(int32, int32) } fn main() { let vals = [E::A, E::B(5), E::C(2, 3)]; let mut i = 0; while i < 3 { match vals[i] { E::A => println(\"a\"), E::B(x) => println(x), E::C(x, y) => println(x + y) } i = i + 1; } } main();",
+        ),
+        (
+            "payload_bound_then_used",
+            "enum E { P(int32, int32) } fn f(e: E) -> int32 { match e { E::P(a, b) => return a * b } return 0; } fn main() { println(f(E::P(6, 7))); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} enum-payload-match case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
