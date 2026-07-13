@@ -31,6 +31,22 @@ in your MCP client's config:
 }
 ```
 
+For hosted integrations that cannot spawn a local stdio process, run the
+HTTP wrapper:
+
+```sh
+rz mcp --http-port 8080
+curl http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:8080/mcp/call \
+  -H 'content-type: application/json' \
+  -d '{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}'
+```
+
+The wrapper exposes `GET /health` and `POST /mcp/call`. Tool names may use
+the hosted aliases from RES-3782 (`rz_compile`, `rz_format`, `rz_verify`,
+and related `rz_*` names) or the native MCP names (`resilient_compile`,
+`resilient_format`, `resilient_verify`, ...).
+
 ---
 
 ## Tools

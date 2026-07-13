@@ -59,7 +59,9 @@
 //!
 //! Notification messages (no `id` field) receive no response.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -112,6 +114,194 @@ pub fn run() {
             let _ = write_response(&mut out, &resp);
         }
     }
+}
+
+pub fn run_http(bind_addr: &str) -> io::Result<()> {
+    let listener = TcpListener::bind(bind_addr)?;
+    eprintln!("MCP HTTP listening on http://{}", listener.local_addr()?);
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                if let Err(e) = handle_http_stream(&mut stream) {
+                    eprintln!("warning: MCP HTTP request failed: {e}");
+                }
+            }
+            Err(e) => eprintln!("warning: MCP HTTP accept failed: {e}"),
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_http_stream(stream: &mut TcpStream) -> io::Result<()> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut buf = [0_u8; 8192];
+    let mut request = Vec::new();
+
+    loop {
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        request.extend_from_slice(&buf[..n]);
+        if http_request_complete(&request) || request.len() > 10 * 1024 * 1024 {
+            break;
+        }
+    }
+
+    let request = String::from_utf8_lossy(&request);
+    let response = http_response_for_request(&request);
+    stream.write_all(response.as_bytes())
+}
+
+fn http_request_complete(request: &[u8]) -> bool {
+    let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_len = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+
+    request.len() >= header_end + 4 + content_len
+}
+
+fn http_response_for_request(request: &str) -> String {
+    let Some((headers, body)) = request.split_once("\r\n\r\n") else {
+        return http_json(
+            400,
+            json!({ "status": "error", "error": "malformed HTTP request" }),
+        );
+    };
+    let mut lines = headers.lines();
+    let Some(request_line) = lines.next() else {
+        return http_json(
+            400,
+            json!({ "status": "error", "error": "missing request line" }),
+        );
+    };
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+
+    match (method, path) {
+        ("GET", "/health") => http_json(
+            200,
+            json!({
+                "status": "ok",
+                "service": "resilient-mcp",
+                "transport": "http",
+                "version": env!("CARGO_PKG_VERSION")
+            }),
+        ),
+        ("POST", "/mcp/call") => http_mcp_call(body),
+        _ => http_json(
+            404,
+            json!({
+                "status": "error",
+                "error": format!("unsupported route: {method} {path}")
+            }),
+        ),
+    }
+}
+
+fn http_mcp_call(body: &str) -> String {
+    let req: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return http_json(
+                400,
+                json!({ "status": "error", "error": format!("invalid JSON body: {e}") }),
+            );
+        }
+    };
+    let Some(tool) = req
+        .get("tool")
+        .or_else(|| req.get("name"))
+        .and_then(|v| v.as_str())
+    else {
+        return http_json(
+            400,
+            json!({ "status": "error", "error": "missing tool name" }),
+        );
+    };
+    let mcp_tool = http_tool_alias(tool);
+    let args = req
+        .get("input")
+        .or_else(|| req.get("arguments"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let params = json!({ "name": mcp_tool, "arguments": args });
+    let response = dispatch("tools/call", &json!(1), Some(&params), false)
+        .unwrap_or_else(|| error(&json!(1), -32603, "empty MCP response".to_string()));
+
+    if let Some(err) = response.get("error") {
+        return http_json(
+            400,
+            json!({
+                "status": "error",
+                "tool": tool,
+                "mcp_tool": mcp_tool,
+                "error": err
+            }),
+        );
+    }
+
+    let result = &response["result"];
+    let is_error = result["isError"].as_bool().unwrap_or(false);
+    let output = result["content"]
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| item["text"].as_str())
+        .unwrap_or("");
+
+    http_json(
+        200,
+        json!({
+            "status": if is_error { "error" } else { "ok" },
+            "tool": tool,
+            "mcp_tool": mcp_tool,
+            "stdout": if is_error { "" } else { output },
+            "stderr": if is_error { output } else { "" },
+            "diagnostics": [],
+            "raw_mcp": result
+        }),
+    )
+}
+
+fn http_tool_alias(tool: &str) -> &str {
+    match tool {
+        "rz_compile" => "resilient_compile",
+        "rz_format" => "resilient_format",
+        "rz_verify" => "resilient_verify",
+        "rz_parse" => "resilient_parse",
+        "rz_typecheck" => "resilient_typecheck",
+        "rz_run" => "resilient_run",
+        "rz_lint" => "resilient_lint",
+        "rz_check" => "resilient_check",
+        other => other,
+    }
+}
+
+fn http_json(status: u16, body: Value) -> String {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        _ => "Internal Server Error",
+    };
+    let body = body.to_string();
+    format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -2706,6 +2896,72 @@ mod tests {
         assert!(resp.is_some());
         let resp = resp.unwrap();
         assert!(resp["result"]["resources"].is_array());
+    }
+
+    #[test]
+    fn http_health_reports_ready_json() {
+        let resp = http_response_for_request("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
+        assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
+        assert!(resp.contains("\"transport\":\"http\""), "got: {resp}");
+    }
+
+    #[test]
+    fn http_mcp_call_wraps_existing_tools() {
+        let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
+        let req = format!(
+            "POST /mcp/call HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let resp = http_response_for_request(&req);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
+        assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
+        assert!(resp.contains("fn f(int x) -> int"), "got: {resp}");
+    }
+
+    fn round_trip(addr: std::net::SocketAddr, request: &str) -> String {
+        let mut client = TcpStream::connect(addr).expect("connect to test listener");
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set client read timeout");
+        client
+            .write_all(request.as_bytes())
+            .expect("write request to test listener");
+        let mut response = String::new();
+        client
+            .read_to_string(&mut response)
+            .expect("read response from test listener");
+        response
+    }
+
+    #[test]
+    fn http_server_serves_health_and_call_over_real_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("read local addr");
+
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let mut stream = listener.accept().expect("accept test connection").0;
+                handle_http_stream(&mut stream).expect("serve test connection");
+            }
+        });
+
+        let health = round_trip(addr, "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(health.starts_with("HTTP/1.1 200 OK"), "got: {health}");
+        assert!(health.contains("\"status\":\"ok\""), "got: {health}");
+
+        let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
+        let call_req = format!(
+            "POST /mcp/call HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let call = round_trip(addr, &call_req);
+        assert!(call.starts_with("HTTP/1.1 200 OK"), "got: {call}");
+        assert!(call.contains("fn f(int x) -> int"), "got: {call}");
+
+        server.join().expect("join test server thread");
     }
 
     // ── resources/list ────────────────────────────────────────────────────────

@@ -32476,6 +32476,10 @@ COMMON FLAGS:
                                  Exposes compiler tools (parse/typecheck/run/
                                  lint/format/verify) to AI assistants via the
                                  Model Context Protocol (2024-11-05)
+        --mcp-http-port ADDR     Run the MCP HTTP wrapper for hosted tools.
+                                 `8080` binds 0.0.0.0:8080; full host:port
+                                 values are accepted. Equivalent:
+                                 rz mcp --http-port 8080
         --dap                    Run the DAP (Debug Adapter Protocol) server
                                  on stdio for interactive debugging
         --no-cache               Disable the incremental compilation cache
@@ -32506,6 +32510,7 @@ SUBCOMMANDS:
                         self-hosting parity corpus (RES-2992)
     stack-usage <file>   Print per-function worst-case stack usage (RES-2627)
     debug <file>         Start the DAP debug server for a file
+    mcp [--http-port N]  Start the MCP server on stdio or HTTP
     pkg <verb>           Package manager operations (RES-205)
     fmt <file>           Canonical source formatter
     lint <file>          Run the starter lints
@@ -32542,6 +32547,14 @@ For bare REPL startup, run plain `rz`.
 
 fn print_help() {
     print!("{}", GLOBAL_HELP_TEXT);
+}
+
+fn normalize_mcp_http_addr(raw: &str) -> String {
+    if raw.contains(':') {
+        raw.to_string()
+    } else {
+        format!("0.0.0.0:{raw}")
+    }
 }
 
 fn print_repl_help() {
@@ -33234,6 +33247,7 @@ pub fn run_cli() {
     let mut use_jit = false;
     let mut lsp_mode = false;
     let mut mcp_mode = false;
+    let mut mcp_http_addr: Option<String> = None;
     let mut dap_mode = false;
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
@@ -33449,11 +33463,21 @@ pub fn run_cli() {
                 // functional when built with `--features lsp`; the
                 // non-feature path prints a helpful message and exits.
                 lsp_mode = true;
-            } else if arg == "--mcp" {
-                // MCP server: expose compiler tools over Model Context
-                // Protocol (NDJSON JSON-RPC 2.0 on stdio). Always
-                // available on native builds; not available on wasm32.
+            } else if arg == "--mcp" || (i == 1 && arg == "mcp" && !Path::new(arg).exists()) {
                 mcp_mode = true;
+            } else if arg == "--mcp-http-port" || (mcp_mode && arg == "--http-port") {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: {arg} requires a port or host:port argument");
+                    std::process::exit(2);
+                }
+                mcp_mode = true;
+                mcp_http_addr = Some(normalize_mcp_http_addr(&args[i]));
+            } else if let Some(addr) = arg.strip_prefix("--mcp-http-port=") {
+                mcp_mode = true;
+                mcp_http_addr = Some(normalize_mcp_http_addr(addr));
+            } else if mcp_mode && let Some(addr) = arg.strip_prefix("--http-port=") {
+                mcp_http_addr = Some(normalize_mcp_http_addr(addr));
             } else if arg == "--dap" {
                 // DAP server: Debug Adapter Protocol over stdio for
                 // interactive debugging. Always available on native
@@ -34206,7 +34230,14 @@ pub fn run_cli() {
     if mcp_mode {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            mcp_server::run();
+            if let Some(addr) = mcp_http_addr.as_deref() {
+                if let Err(e) = mcp_server::run_http(addr) {
+                    eprintln!("MCP HTTP server failed: {e}");
+                    std::process::exit(1);
+                }
+            } else {
+                mcp_server::run();
+            }
             return;
         }
         #[cfg(target_arch = "wasm32")]
