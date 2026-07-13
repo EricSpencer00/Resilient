@@ -15,6 +15,10 @@
     "resilient/src/ai_generated.rs": {
       "branch": "res-3854-contract-policy",
       "claimed_at": "2026-07-13T18:30:50Z"
+    },
+    "resilient/src/loop_bound.rs": {
+      "branch": "res-3857-ungate-loop-bound",
+      "claimed_at": "2026-07-13T18:39:21Z"
     }
   }
 }
