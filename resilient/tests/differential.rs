@@ -315,3 +315,56 @@ fn interpreter_and_vm_agree_on_cross_type_equality() {
         failures.join("")
     );
 }
+
+/// RES-3894: `&&` / `||` with a non-bool operand must behave identically on
+/// both backends. The tree walker raises a runtime type mismatch; before the
+/// fix the VM coerced the operand via the truthiness rule and kept running,
+/// so identical source produced different stdout *and* exit code. Lock the
+/// class here so it can't silently return.
+#[test]
+fn interpreter_and_vm_agree_on_non_bool_logical_operands() {
+    let programs = [
+        (
+            "and_int_left",
+            "fn main() { if 5 && true { println(\"y\"); } else { println(\"n\"); } } main();",
+        ),
+        (
+            "and_int_right",
+            "fn main() { if true && 5 { println(\"y\"); } else { println(\"n\"); } } main();",
+        ),
+        (
+            "and_zero_left",
+            "fn main() { if 0 && true { println(\"y\"); } else { println(\"n\"); } } main();",
+        ),
+        (
+            "and_string_left",
+            "fn main() { if \"a\" && true { println(\"y\"); } else { println(\"n\"); } } main();",
+        ),
+        (
+            "or_int_left",
+            "fn main() { if 5 || false { println(\"y\"); } else { println(\"n\"); } } main();",
+        ),
+        (
+            "or_int_right",
+            "fn main() { if false || 5 { println(\"y\"); } else { println(\"n\"); } } main();",
+        ),
+        (
+            "or_zero_left",
+            "fn main() { if 0 || false { println(\"y\"); } else { println(\"n\"); } } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} logical-operand case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}

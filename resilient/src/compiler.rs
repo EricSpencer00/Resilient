@@ -2483,6 +2483,12 @@ fn compile_expr(
                 next_fn_idx,
                 line,
             )?;
+            // RES-3894: reject a non-bool left operand before the short-circuit
+            // jump, matching the interpreter (`Logical '&&' requires bool
+            // operands`). A left operand that *is* `false` short-circuits below
+            // and the right operand is never asserted — same as the interpreter,
+            // which only evaluates the right operand when the left is `true`.
+            chunk.emit(Op::AssertBool, line);
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             compile_expr(
                 right,
@@ -2495,6 +2501,7 @@ fn compile_expr(
                 next_fn_idx,
                 line,
             )?;
+            chunk.emit(Op::AssertBool, line);
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // false branch
             let false_target = chunk.code.len();
@@ -2523,6 +2530,10 @@ fn compile_expr(
                 next_fn_idx,
                 line,
             )?;
+            // RES-3894: reject a non-bool left operand before it is coerced by
+            // `Not`, matching the interpreter. A `true` left operand short-
+            // circuits below and the right operand is never asserted.
+            chunk.emit(Op::AssertBool, line);
             // Negate lhs so JumpIfFalse skips to "true" when lhs is truthy.
             chunk.emit(Op::Not, line);
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
@@ -2538,6 +2549,7 @@ fn compile_expr(
                 next_fn_idx,
                 line,
             )?;
+            chunk.emit(Op::AssertBool, line);
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // true branch
             let true_target = chunk.code.len();

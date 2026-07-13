@@ -244,6 +244,13 @@ pub enum Op {
     /// a preceding `Const` instruction; the JumpIfTrue before it skips
     /// the fail sequence entirely when the condition holds.
     AssertFail,
+    /// RES-3894: pop TOS and require it to be a `Value::Bool`, pushing it back
+    /// unchanged. Returns `VmError::TypeMismatch` otherwise. Emitted by the
+    /// bytecode compiler for each operand of `&&` / `||` so the VM rejects
+    /// non-bool logical operands exactly like the tree-walking interpreter,
+    /// instead of silently coercing them via the truthiness rule that
+    /// `JumpIfFalse` / `Not` use for `if` / `while` / unary `!` conditions.
+    AssertBool,
     /// RES-401: pop `len` values off the operand stack (rightmost first,
     /// same convention as `MakeArray`) and wrap them in a
     /// `Value::Tuple(Vec<Value>)`. Emitted for `(a, b, c)` tuple literals.

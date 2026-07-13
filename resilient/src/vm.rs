@@ -1531,6 +1531,13 @@ fn run_inner(
                 };
                 return Err(VmError::AssertionFailed(msg));
             }
+            Op::AssertBool => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                if !matches!(v, Value::Bool(_)) {
+                    return Err(VmError::TypeMismatch("&& / || operand"));
+                }
+                stack.push(v);
+            }
         }
     }
 }
@@ -1813,6 +1820,7 @@ fn op_to_index(op: Op) -> usize {
         Op::CallMethod { .. } => OP_KIND_CALL_METHOD,
         Op::EnterTry(_) => OP_KIND_ENTER_TRY,
         Op::ExitTry => OP_KIND_EXIT_TRY,
+        Op::AssertBool => OP_KIND_ASSERT_BOOL,
     }
 }
 
@@ -1836,7 +1844,8 @@ const OP_KIND_STORE_UPVALUE: usize = 47;
 const OP_KIND_CALL_METHOD: usize = 48;
 const OP_KIND_ENTER_TRY: usize = 49;
 const OP_KIND_EXIT_TRY: usize = 50;
-const HANDLER_TABLE_LEN: usize = 51;
+const OP_KIND_ASSERT_BOOL: usize = 51;
+const HANDLER_TABLE_LEN: usize = 52;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1893,6 +1902,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_CALL_METHOD] = h_call_method;
     table[OP_KIND_ENTER_TRY] = h_enter_try;
     table[OP_KIND_EXIT_TRY] = h_exit_try;
+    table[OP_KIND_ASSERT_BOOL] = h_assert_bool;
     table
 };
 
@@ -2907,6 +2917,15 @@ fn h_assert_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         other => format!("assertion failed: {}", other),
     };
     Err(VmError::AssertionFailed(msg))
+}
+
+fn h_assert_bool(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    if !matches!(v, Value::Bool(_)) {
+        return Err(VmError::TypeMismatch("&& / || operand"));
+    }
+    state.stack.push(v);
+    Ok(Step::Continue)
 }
 
 #[inline(never)]
@@ -4571,6 +4590,85 @@ mod tests {
         assert_eq!(value_repr(&m.unwrap()), value_repr(&d.unwrap()));
     }
 
+    // ============================================================
+    // RES-3894: `&&` / `||` require bool operands on the VM, matching
+    // the interpreter (`Logical '&&' requires bool operands`). Before
+    // this fix the VM desugared them through the truthiness-coercing
+    // `JumpIfFalse` / `Not`, so `5 && true` silently ran instead of
+    // erroring. An `Op::AssertBool` after each evaluated operand closes
+    // the gap without touching `if` / `while` / `!` coercion.
+    // ============================================================
+
+    #[test]
+    fn res3894_and_non_bool_left_is_type_mismatch() {
+        assert_both_type_mismatch("5 && true;");
+    }
+
+    #[test]
+    fn res3894_and_non_bool_right_is_type_mismatch() {
+        assert_both_type_mismatch("true && 5;");
+    }
+
+    #[test]
+    fn res3894_and_zero_left_is_type_mismatch() {
+        // 0 is falsy under coercion but not a bool — must still error, not
+        // short-circuit to false.
+        assert_both_type_mismatch("0 && true;");
+    }
+
+    #[test]
+    fn res3894_and_string_left_is_type_mismatch() {
+        assert_both_type_mismatch("\"a\" && true;");
+    }
+
+    #[test]
+    fn res3894_or_non_bool_left_is_type_mismatch() {
+        assert_both_type_mismatch("5 || false;");
+    }
+
+    #[test]
+    fn res3894_or_non_bool_right_is_type_mismatch() {
+        assert_both_type_mismatch("false || 5;");
+    }
+
+    #[test]
+    fn res3894_or_zero_left_is_type_mismatch() {
+        assert_both_type_mismatch("0 || false;");
+    }
+
+    #[test]
+    fn res3894_bool_operands_still_agree() {
+        // Legal all-bool logical expressions are unaffected on both dispatch
+        // engines and both truth values.
+        assert_both_eq("true && false;");
+        assert_both_eq("true && true;");
+        assert_both_eq("false || true;");
+        assert_both_eq("false || false;");
+        assert_both_eq("(3 < 5) && (2 > 1);");
+        assert_both_eq("let a = true; let b = false; a && b || true;");
+    }
+
+    #[test]
+    fn res3894_short_circuit_skips_asserting_dead_operand() {
+        // `&&` must not evaluate (or assert) the right operand when the left
+        // is `false`; `||` must not when the left is `true`. A non-bool /
+        // trapping right operand in the dead branch stays untouched.
+        assert_both_eq("false && (1 / 0 > 0);");
+        assert_both_eq("true || (1 / 0 > 0);");
+    }
+
+    #[test]
+    fn res3894_non_bool_if_while_not_still_coerce() {
+        // The fix is scoped to `&&` / `||`. `if` / `while` / unary `!` keep
+        // their existing truthiness coercion, which already agrees across
+        // backends — guard against an over-broad regression.
+        assert_both_eq("if 5 { 1; } else { 0; }");
+        assert_both_eq("if 0 { 1; } else { 0; }");
+        assert_both_eq("let n = 3; while n { n = n - 1; } n;");
+        assert_both_eq("!5;");
+        assert_both_eq("!0;");
+    }
+
     #[test]
     fn res329_direct_struct_ops_match() {
         let src = "struct Point { int x, int y, } \
@@ -4741,6 +4839,7 @@ mod tests {
                 upvalue_idx: 0,
                 local_slot: 0,
             },
+            Op::AssertBool,
         ];
         for op in samples {
             let idx = op_to_index(*op);
