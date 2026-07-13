@@ -616,6 +616,9 @@ mod loop_bound;
 // through the Z3 proving path, yielding pass/fail/unknown verdicts
 // with proof certificates.
 mod contract_verify;
+// RES-3859 (#3854 Tier 3): `--emit-contract-certificate` — portable
+// JSON audit artifact attesting per-clause Z3 verdicts.
+mod contract_certificate;
 mod coverage_warnings;
 mod crash_only_cert;
 mod data_utils;
@@ -30302,6 +30305,10 @@ fn execute_file(
     explain_effects: bool,
     emit_cert_dir: Option<&Path>,
     sign_cert_key: Option<&Path>,
+    // RES-3859: `--emit-contract-certificate <FILE>` — per-clause
+    // contract-verdict JSON audit artifact. Unlike --emit-certificate
+    // this works on every build (non-z3 verdicts are `unknown`).
+    emit_contract_cert: Option<&Path>,
     use_vm: bool,
     use_jit: bool,
     verifier_timeout_ms: u32,
@@ -30639,6 +30646,25 @@ fn execute_file(
         }
         #[cfg(not(feature = "z3"))]
         let _ = (emit_cert_dir, sign_cert_key);
+    }
+
+    // RES-3859: write the contract-certificate JSON audit artifact.
+    // Independent of `want_typecheck` — the document is built straight
+    // from the parsed program's contract surface, and it degrades
+    // honestly to `unknown` verdicts on non-z3 builds.
+    if let Some(path) = emit_contract_cert {
+        let json = contract_certificate::emit(&program, filename);
+        std::fs::write(path, &json).map_err(|e| {
+            format!(
+                "--emit-contract-certificate: failed to write {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        println!(
+            "\x1B[36mWrote contract certificate to {}\x1B[0m",
+            path.display()
+        );
     }
 
     if use_jit {
@@ -32415,6 +32441,12 @@ COMMON FLAGS:
                                  for every user function
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation
                                  (backend-limited; requires --features z3)
+        --emit-contract-certificate FILE
+                                 Write a JSON audit artifact attesting the
+                                 per-clause contract verdicts (pass with a
+                                 replayable SMT-LIB2 dump / fail with
+                                 counterexample / unknown). Works on every
+                                 build; verdicts need --features z3 (RES-3859)
         --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)
         --safety-critical        Promote vacuous proof-discharge constructs
                                  such as `assume(false)` to hard errors
@@ -33189,6 +33221,7 @@ pub fn run_cli() {
     let mut ai_threats_mode = false;
     let mut emit_lean_spec_fn: Option<String> = None;
     let mut emit_cert_dir: Option<PathBuf> = None;
+    let mut emit_contract_cert: Option<PathBuf> = None;
     // RES-194: Ed25519 signing key — when present, the driver
     // writes `cert.sig` alongside the `.smt2` files.
     let mut sign_cert_key: Option<PathBuf> = None;
@@ -33377,6 +33410,17 @@ pub fn run_cli() {
                 emit_cert_dir = Some(PathBuf::from(&args[i]));
             } else if let Some(dir) = arg.strip_prefix("--emit-certificate=") {
                 emit_cert_dir = Some(PathBuf::from(dir));
+            } else if arg == "--emit-contract-certificate" {
+                // RES-3859: --emit-contract-certificate <FILE> — write
+                // the per-clause contract-verdict JSON audit artifact.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --emit-contract-certificate requires a file argument");
+                    std::process::exit(2);
+                }
+                emit_contract_cert = Some(PathBuf::from(&args[i]));
+            } else if let Some(p) = arg.strip_prefix("--emit-contract-certificate=") {
+                emit_contract_cert = Some(PathBuf::from(p));
             } else if arg == "--sign-cert" {
                 // RES-194: --sign-cert <path-to-ed25519-priv-pem>.
                 // Only meaningful when paired with --emit-certificate.
@@ -33994,6 +34038,7 @@ pub fn run_cli() {
             let live_log_owned = emit_live_log.clone();
             let cert_dir_owned = emit_cert_dir.clone();
             let sign_key_owned = sign_cert_key.clone();
+            let contract_cert_owned = emit_contract_cert.clone();
             #[cfg(feature = "z3")]
             let z3_theory_snap = z3_theory;
             watch_mode::run_watch(file_path, || {
@@ -34005,6 +34050,7 @@ pub fn run_cli() {
                     explain_effects,
                     cert_dir_owned.as_deref(),
                     sign_key_owned.as_deref(),
+                    contract_cert_owned.as_deref(),
                     use_vm,
                     use_jit,
                     verifier_timeout_ms,
@@ -34066,6 +34112,7 @@ pub fn run_cli() {
                 explain_effects,
                 emit_cert_dir.as_deref(),
                 sign_cert_key.as_deref(),
+                emit_contract_cert.as_deref(),
                 use_vm,
                 use_jit,
                 verifier_timeout_ms,
