@@ -1,12 +1,16 @@
 {
   "claims": {
-    "resilient/src/peephole.rs": {
-      "branch": "res-3902-peephole-type-safety",
-      "claimed_at": "2026-07-13T15:27:00Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-3904-vm-container-methods",
+      "claimed_at": "2026-07-13T16:53:19Z"
     },
-    "resilient/tests/differential.rs": {
-      "branch": "res-3902-peephole-type-safety",
-      "claimed_at": "2026-07-13T15:27:00Z"
+    "resilient/src/vm.rs": {
+      "branch": "res-3904-vm-container-methods",
+      "claimed_at": "2026-07-13T16:53:19Z"
+    },
+    "resilient/tests/it/differential.rs": {
+      "branch": "res-3904-vm-container-methods",
+      "claimed_at": "2026-07-13T16:53:19Z"
     }
   }
 }

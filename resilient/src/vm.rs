@@ -1039,13 +1039,18 @@ fn run_inner(
                 let args: Vec<Value> = stack.drain(split..).collect();
                 let receiver = stack.pop().ok_or(VmError::EmptyStack)?;
                 let struct_name = match &receiver {
-                    Value::Struct { name, .. } => name.clone(),
-                    Value::EnumVariant { type_name, .. } => type_name.clone(),
-                    _ => {
-                        return Err(VmError::TypeMismatch(
-                            "CallMethod: receiver is not a struct or enum",
-                        ));
-                    }
+                    Value::Struct { name, .. } => Some(name.clone()),
+                    Value::EnumVariant { type_name, .. } => Some(type_name.clone()),
+                    _ => None,
+                };
+                let Some(struct_name) = struct_name else {
+                    // RES-3904: not a struct/enum — fall back to the
+                    // built-in container method sugar (String/Array/
+                    // Map/Set), which the compiler emits `CallMethod`
+                    // for identically since it has no static type info.
+                    let result = vm_call_builtin_method(receiver, &method, args)?;
+                    stack.push(result);
+                    continue;
                 };
                 let mangled = format!("{}${}", struct_name, method);
                 let fn_idx = program
@@ -1618,6 +1623,40 @@ fn vm_push_stringified(buf: &mut String, v: &Value) {
         Value::Char(c) => buf.push(*c),
         _ => unreachable!(),
     }
+}
+
+/// RES-3904: `Op::CallMethod` fallback for built-in container
+/// receivers (`String`/`Array`/`Map`/`Set`). The compiler emits
+/// `CallMethod` for *every* `x.y(...)` dot-call uniformly (it has no
+/// static type info at that point), so `s.to_upper()` reaches the same
+/// opcode as a struct method call. Looks up the full builtin name via
+/// the same `builtin_method_full_name` table the interpreter uses
+/// (`lib.rs`), then dispatches through `lookup_builtin` — the exact
+/// mechanism `Op::CallBuiltin` already uses. `Array::collect()` is an
+/// identity, not a builtin call, and is handled before the shared
+/// lookup, mirroring the interpreter.
+fn vm_call_builtin_method(
+    receiver: Value,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Value, VmError> {
+    if let Value::Array(_) = &receiver
+        && method == "collect"
+    {
+        if !args.is_empty() {
+            return Err(VmError::TypeMismatch("collect: expected 0 arguments"));
+        }
+        return Ok(receiver);
+    }
+    let full_name = crate::builtin_method_full_name(&receiver, method).ok_or(
+        VmError::TypeMismatch("CallMethod: receiver is not a struct or enum"),
+    )?;
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(receiver);
+    call_args.extend(args);
+    let func = crate::lookup_builtin(full_name)
+        .ok_or(VmError::TypeMismatch("CallMethod: builtin not registered"))?;
+    func(&call_args).map_err(VmError::BuiltinCallFailed)
 }
 
 fn vm_values_eq(a: &Value, b: &Value) -> bool {
@@ -3092,13 +3131,18 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let args: Vec<Value> = state.stack.drain(split..).collect();
     let receiver = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let struct_name = match &receiver {
-        Value::Struct { name, .. } => name.clone(),
-        Value::EnumVariant { type_name, .. } => type_name.clone(),
-        _ => {
-            return Err(VmError::TypeMismatch(
-                "CallMethod: receiver is not a struct",
-            ));
-        }
+        Value::Struct { name, .. } => Some(name.clone()),
+        Value::EnumVariant { type_name, .. } => Some(type_name.clone()),
+        _ => None,
+    };
+    let Some(struct_name) = struct_name else {
+        // RES-3904: not a struct/enum — fall back to the built-in
+        // container method sugar (String/Array/Map/Set), which the
+        // compiler emits `CallMethod` for identically since it has no
+        // static type info.
+        let result = vm_call_builtin_method(receiver, &method, args)?;
+        state.stack.push(result);
+        return Ok(Step::Continue);
     };
     let mangled = format!("{}${}", struct_name, method);
     let fn_idx = state
@@ -4714,6 +4758,63 @@ mod tests {
     fn res3896_array_concat_agrees_across_dispatch_engines() {
         assert_both_eq("[1, 2] + [3, 4];");
         assert_both_eq("let a = [\"x\", \"y\"]; let b = [\"z\"]; a + b;");
+    }
+
+    // ============================================================
+    // RES-3904: `Op::CallMethod` on a built-in container receiver
+    // (String/Array/Map/Set) must dispatch through the same builtin
+    // the interpreter uses, matching it, instead of raising
+    // `TypeMismatch("CallMethod: receiver is not a struct or enum")`.
+    // Before this fix EVERY dot-call method on these types crashed
+    // the VM — the opcode only had an arm for `Value::Struct`/
+    // `Value::EnumVariant` receivers.
+    // ============================================================
+
+    #[test]
+    fn res3904_string_method_call_dispatches_to_builtin() {
+        let (program, _) = crate::parse("let s = \"hello\"; s.to_upper();");
+        let prog = crate::compiler::compile(&program).unwrap();
+        let result = run_with(&prog, OverflowMode::Wrap, Dispatch::Match).unwrap();
+        assert_eq!(
+            value_repr(&result),
+            value_repr(&Value::String("HELLO".to_string()))
+        );
+    }
+
+    #[test]
+    fn res3904_array_method_call_dispatches_to_builtin() {
+        let (program, _) = crate::parse("let a = [1, 2]; a.len();");
+        let prog = crate::compiler::compile(&program).unwrap();
+        let result = run_with(&prog, OverflowMode::Wrap, Dispatch::Match).unwrap();
+        assert_eq!(value_repr(&result), value_repr(&Value::Int(2)));
+    }
+
+    #[test]
+    fn res3904_array_collect_is_identity_not_a_builtin_call() {
+        let (program, _) = crate::parse("let a = [1, 2, 3]; a.collect();");
+        let prog = crate::compiler::compile(&program).unwrap();
+        let result = run_with(&prog, OverflowMode::Wrap, Dispatch::Match).unwrap();
+        assert_eq!(
+            value_repr(&result),
+            value_repr(&Value::Array(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3)
+            ]))
+        );
+    }
+
+    #[test]
+    fn res3904_unrecognized_method_on_container_is_type_mismatch() {
+        assert_both_type_mismatch("let s = \"ab\"; s.not_a_real_method();");
+    }
+
+    #[test]
+    fn res3904_container_method_calls_agree_across_dispatch_engines() {
+        assert_both_eq("let s = \"hello\"; s.to_upper();");
+        assert_both_eq("let s = \"ab\"; s.repeat(3);");
+        assert_both_eq("let a = [1, 2]; a.len();");
+        assert_both_eq("let a = [1, 2, 3]; a.collect();");
     }
 
     #[test]
