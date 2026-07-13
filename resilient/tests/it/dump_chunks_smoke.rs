@@ -122,10 +122,15 @@ fn dump_chunks_format_columns_match_spec() {
 }
 
 #[test]
-fn dump_chunks_reflects_peephole_inc_local_fold() {
-    // Ticket Note: "reflect the optimized bytecode — that's the
-    // version that runs." A while-loop counter is the canonical
-    // shape the RES-172 peephole folds into `IncLocal`.
+fn dump_chunks_reflects_removal_of_unsound_inc_local_fold() {
+    // RES-3902: the RES-172 peephole rule that folded
+    // `LoadLocal x; Const(1); Add; StoreLocal x` into `IncLocal(x)`
+    // assumed `x` was always numeric, with no way to prove it in the
+    // peephole pass — a `String` local (`s = s + 1`) hit the same
+    // silent-wrong-behavior class RES-3902 fixes elsewhere (`x`
+    // could be a `String`, for which `+` means stringify-and-concat,
+    // not increment). The rule was removed; the disassembly must show
+    // the raw four-op sequence, not a folded `IncLocal`.
     let src = "\
         fn count_up() {\n\
             let i = 0;\n\
@@ -145,12 +150,14 @@ fn dump_chunks_reflects_peephole_inc_local_fold() {
     let _ = std::fs::remove_file(&path);
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    // The fold replaces LoadLocal + Const + Add + StoreLocal with
-    // a single IncLocal. Verify the compiled output shows the
-    // fold, not the raw four-op sequence.
     assert!(
-        stdout.contains("IncLocal 0"),
-        "expected IncLocal fold in disassembly:\n{}",
+        !stdout.contains("IncLocal"),
+        "IncLocal fold was removed (RES-3902) — should never appear in disassembly:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Add"),
+        "expected the un-folded Add in disassembly:\n{}",
         stdout
     );
 }

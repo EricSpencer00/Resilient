@@ -1976,8 +1976,10 @@ fn compile_control_flow_in_fn(
 /// expressions only; statement position is rejected by the
 /// parser before compile is reached.
 ///
-/// Lowered shape (peephole later folds the `idx + 1` tail into a
-/// single `IncLocal`):
+/// Lowered shape (prior to RES-3902, peephole folded the `idx + 1`
+/// tail into a single `IncLocal`; that fold was removed as unsound —
+/// see `peephole.rs` — so `Op::IncLocal` is no longer emitted, though
+/// the VM/disassembler still support it defensively):
 ///
 /// ```text
 ///   <iterable>
@@ -2139,7 +2141,7 @@ fn compile_for_in(
     }
     let inner = loop_stack.pop().unwrap();
 
-    // 7. idx = idx + 1 (peephole folds this to IncLocal).
+    // 7. idx = idx + 1 (no longer peephole-folded to IncLocal — RES-3902).
     // This is the `continue` target for this loop — record the PC before
     // emitting the increment so `continue` skips to here.
     let continue_target = chunk.code.len();

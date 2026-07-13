@@ -413,3 +413,88 @@ fn interpreter_and_vm_agree_on_array_concatenation() {
         failures.join("")
     );
 }
+
+/// RES-3902: the VM's peephole optimizer had a family of type-blind
+/// numeric/bitwise identity folds (`x+0==x`, `x*0==0`, `x&0==0`,
+/// `x-0==x`, `x/1==x`, ...) that assumed the operand feeding the fold
+/// was always `Int`/`Float`. `+` and `*` also legally accept `String`
+/// operands (concatenation/stringification, repetition — RES-924), for
+/// which the assumed "identity" is a different, non-identity value; the
+/// bitwise ops and `-`/`/` never accept `String` at all, so folding
+/// away the op also folded away the runtime type-mismatch error it
+/// would have raised. Both are silent-divergence bugs: `--vm` gives a
+/// different (or no) error than the interpreter for identical source.
+/// Lock the whole class here so it can't silently return.
+#[test]
+fn interpreter_and_vm_agree_on_typed_identity_folds() {
+    let programs = [
+        // `+` and `*` accept String — the peephole assumed the wrong
+        // "identity" value instead of raising/suppressing an error.
+        (
+            "string_plus_zero",
+            "fn main() { let s = \"ab\"; println(s + 0); } main();",
+        ),
+        (
+            "string_times_zero",
+            "fn main() { let s = \"ab\"; println(s * 0); } main();",
+        ),
+        // `-`, `/`, and the bitwise ops never accept String — the
+        // peephole silently suppressed the type-mismatch error.
+        (
+            "string_minus_zero",
+            "fn main() { let s = \"ab\"; println(s - 0); } main();",
+        ),
+        (
+            "string_div_one",
+            "fn main() { let s = \"ab\"; println(s / 1); } main();",
+        ),
+        (
+            "string_band_zero",
+            "fn main() { let s = \"ab\"; println(s & 0); } main();",
+        ),
+        (
+            "string_bor_zero",
+            "fn main() { let s = \"ab\"; println(s | 0); } main();",
+        ),
+        (
+            "string_bxor_zero",
+            "fn main() { let s = \"ab\"; println(s ^ 0); } main();",
+        ),
+        (
+            "string_shl_zero",
+            "fn main() { let s = \"ab\"; println(s << 0); } main();",
+        ),
+        (
+            "string_shr_zero",
+            "fn main() { let s = \"ab\"; println(s >> 0); } main();",
+        ),
+        // The legitimate numeric cases must still agree (and still
+        // benefit from the fold where it's provably safe).
+        (
+            "int_plus_zero",
+            "fn main() { let x = 5; println(x + 0); } main();",
+        ),
+        (
+            "int_times_zero",
+            "fn main() { let x = 5; println(x * 0); } main();",
+        ),
+        (
+            "int_increment_loop",
+            "fn main() { let mut x = 0; let mut i = 0; while i < 5 { x = x + 1; i = i + 1; } println(x); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} typed-identity-fold case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
