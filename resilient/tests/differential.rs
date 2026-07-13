@@ -243,3 +243,75 @@ fn compare_outputs_accepts_identical_runs() {
     };
     assert!(compare_outputs("a", &a, "b", &b).is_ok());
 }
+
+/// Run inline `src` on one backend by staging it in a unique temp file.
+/// Mirrors [`run_interpreter`] / [`run_vm`] but lets a test pin a tiny
+/// program without adding an `examples/*.rz` sidecar.
+fn run_src(src: &str, tag: &str, vm: bool) -> Run {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "rz_differential_{tag}_{}_{n}.rz",
+        std::process::id()
+    ));
+    std::fs::write(&path, src).expect("write temp source");
+    let mut cmd = Command::new(bin());
+    if vm {
+        cmd.arg("--vm");
+    }
+    let output = cmd.arg(&path).output().expect("failed to spawn rz");
+    let _ = std::fs::remove_file(&path);
+    Run {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        code: output.status.code(),
+    }
+}
+
+/// RES-3891: cross-kind `==` / `!=` must behave identically on both
+/// backends. The tree walker raises a runtime type mismatch; before the
+/// fix the VM silently reported the operands unequal (`false`) and kept
+/// running, so identical source produced different stdout *and* a
+/// different exit code. Lock the class here so it can't silently return.
+#[test]
+fn interpreter_and_vm_agree_on_cross_type_equality() {
+    // Each program compares operands of different kinds. Both backends
+    // must agree on stdout and exit code (a type-mismatch error → the
+    // `if`/`else` branch never prints and the process exits non-zero).
+    let programs = [
+        (
+            "char_eq_int",
+            "fn main() { let s = \"ab\"; let c = s[0]; if c == 5 { println(\"eq\"); } else { println(\"ne\"); } } main();",
+        ),
+        (
+            "char_neq_int",
+            "fn main() { let s = \"ab\"; let c = s[0]; if c != 5 { println(\"ne\"); } else { println(\"eq\"); } } main();",
+        ),
+        (
+            "int_eq_string",
+            "fn main() { let x = 1; let y = \"1\"; if x == y { println(\"eq\"); } else { println(\"ne\"); } } main();",
+        ),
+        (
+            "int_eq_bool",
+            "fn main() { let x = 1; let y = true; if x == y { println(\"eq\"); } else { println(\"ne\"); } } main();",
+        ),
+        (
+            "int_eq_float",
+            "fn main() { let x = 1; let y = 1.0; if x == y { println(\"eq\"); } else { println(\"ne\"); } } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} cross-type comparison(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
