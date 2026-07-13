@@ -203,3 +203,4 @@ mod verify_cert_smoke;
 mod vibe_gate;
 mod vscode_readme_roadmap_copy_smoke;
 mod vscode_readme_rz_defaults_smoke;
+mod vscode_release_sync_smoke;
