@@ -274,8 +274,8 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "tuple_struct.rz",
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
-    // <other> catch-all), plus `unsafe { }` blocks whose statements the VM
-    // silently drops.
+    // <other> catch-all), plus the capability-gated volatile-MMIO block
+    // (see `unsafe_block_smoke.rz`) whose statements the VM silently drops.
     "array_contains.rz",
     "array_sorted_invariant.rz",
     "bench_simple.rz",
