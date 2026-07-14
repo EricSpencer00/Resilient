@@ -127,6 +127,38 @@
     "resilient/tests/it/differential.rs": {
       "branch": "res-4024-vm-unsafe-block",
       "claimed_at": "2026-07-14T06:30:47Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-4032-fmt-check",
+      "claimed_at": "2026-07-14T06:43:13Z"
+    },
+    "resilient/src/formatter.rs": {
+      "branch": "res-4032-fmt-check",
+      "claimed_at": "2026-07-14T06:43:13Z"
+    },
+    "docs/tooling.md": {
+      "branch": "res-4032-fmt-check",
+      "claimed_at": "2026-07-14T06:43:13Z"
+    },
+    "resilient/tests/it/main.rs": {
+      "branch": "res-4032-fmt-check",
+      "claimed_at": "2026-07-14T06:43:13Z"
+    },
+    "resilient/src/tuples.rs": {
+      "branch": "res-4032-fmt-check",
+      "claimed_at": "2026-07-14T06:53:25Z"
+    },
+    "resilient-runtime/Cargo.toml": {
+      "branch": "res-3987-runtime-vm-skeleton",
+      "claimed_at": "2026-07-14T06:31:43Z"
+    },
+    "resilient-runtime/src/lib.rs": {
+      "branch": "res-3987-runtime-vm-skeleton",
+      "claimed_at": "2026-07-14T06:31:43Z"
+    },
+    "resilient-runtime/src/vm.rs": {
+      "branch": "res-3987-runtime-bytecode-serde",
+      "claimed_at": "2026-07-14T07:16:29Z"
     }
   }
 }

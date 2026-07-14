@@ -287,6 +287,46 @@ and the parser discards comments. Comments are not preserved today.
 Run `fmt` only on code you're willing to re-attach comments to by
 hand; comment-preserving formatting is not available yet.
 
+### `rz fmt --check <file>...` (CI / pre-commit mode)
+
+Checks whether one or more files are already canonically formatted
+without writing anything, mirroring `cargo fmt --check` / `rustfmt
+--check`:
+
+```bash
+rz fmt --check src/main.rz                  # single file
+rz fmt --check resilient/examples/*.rz      # a whole set
+```
+
+- Formats each file in memory and compares it to the on-disk source.
+- Prints nothing on success and never writes; exits `0` only when
+  every file is already formatted.
+- A file that would be reformatted (or that fails to parse) gets a
+  one-line diagnostic on stderr (`<path>: would reformat`), and the
+  process exits `1`.
+- `--check` cannot be combined with `--in-place` (usage error, exit
+  `2`).
+
+Typical uses:
+
+```bash
+# CI gate
+rz fmt --check $(git ls-files '*.rz')
+
+# pre-commit hook
+rz fmt --check $(git diff --cached --name-only -- '*.rz') || {
+    echo "Run 'rz fmt --in-place' on the files above before committing."
+    exit 1
+}
+```
+
+The formatter's idempotence (`fmt(fmt(x)) == fmt(x)`) and
+performance budget (10K LOC in under a second) are exercised as
+acceptance tests against the full `resilient/examples/` corpus — see
+`docs/TOOLING_QUALITY.md` for the standards and
+`resilient/src/formatter.rs`'s
+`fmt_idempotent_and_within_perf_budget_across_example_corpus` test.
+
 ## Package tooling
 
 ### `rz pkg init <name>`
