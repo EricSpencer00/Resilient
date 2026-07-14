@@ -44,22 +44,6 @@
       "branch": "res-3783-vscode-autopublish",
       "claimed_at": "2026-07-13T22:32:41Z"
     },
-    "fuzz/Cargo.toml": {
-      "branch": "res-3779-3780-completion",
-      "claimed_at": "2026-07-13T22:35:15Z"
-    },
-    ".github/workflows/fuzz.yml": {
-      "branch": "res-3779-3780-completion",
-      "claimed_at": "2026-07-13T22:35:15Z"
-    },
-    "fuzz/README.md": {
-      "branch": "res-3779-3780-completion",
-      "claimed_at": "2026-07-13T22:35:15Z"
-    },
-    "fuzz/fuzz_targets/contracts.rs": {
-      "branch": "res-3779-3780-completion",
-      "claimed_at": "2026-07-13T22:35:15Z"
-    },
     ".github/workflows/release-file-claims.yml": {
       "branch": "res-3901-release-file-claims-push",
       "claimed_at": "2026-07-14T01:28:40Z"
@@ -119,6 +103,14 @@
     "docs/EMBEDDED_PIPELINE.md": {
       "branch": "res-3987-embedded-pipeline-design",
       "claimed_at": "2026-07-14T02:49:00Z"
+    },
+    ".github/workflows/fuzz.yml": {
+      "branch": "res-fe4-fuzz-perf-ci",
+      "claimed_at": "2026-07-14T02:55:50Z"
+    },
+    ".github/workflows/perf_gate.yml": {
+      "branch": "res-fe4-fuzz-perf-ci",
+      "claimed_at": "2026-07-14T02:55:50Z"
     }
   }
 }

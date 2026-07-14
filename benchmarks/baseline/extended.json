@@ -1,0 +1,10 @@
+{
+  "sum_interp_median_ms": 41.575,
+  "vm_counter_loop_median_ms": 99.257,
+  "jit_leaf_heavy_median_ms": 11.898,
+  "jit_tail_rec_median_ms": 5.234,
+  "contracts_with_median_ms": 101.908,
+  "contracts_without_median_ms": 102.109,
+  "system": "Darwin arm64",
+  "date": "2026-07-14T02:54:44Z"
+}

@@ -4,10 +4,23 @@
 # the deltas. Exceeding the threshold (default 15%, override via
 # `PERF_THRESHOLD_PCT`) fails the workflow.
 #
+# RES-3933 (F-E4): the gate no longer measures fib(25) alone. The
+# same job now also runs `benchmarks/extended/run.sh`, which covers
+# the sum/vm/jit/contracts benchmark dirs (see that script's header
+# for exactly which rows and why lex/compile_time are deliberately
+# excluded as too slow for CI) and compares against
+# `benchmarks/baseline/extended.json` via
+# `benchmarks/extended/compare.sh`. Both comparisons reuse the same
+# release + `--features jit` binaries the fib step already builds,
+# so this adds ~seconds of wall time, not another full compile.
+#
 # Per the ticket Notes, the gate is a VISIBLE WARNING, not a
 # required check — branch-protection can opt in separately. The
 # workflow's `fail-fast: false` on its single job keeps PRs
-# mergeable while the signal is noisy (hosted-runner variance).
+# mergeable while the signal is noisy (hosted-runner variance). The
+# extended comparison is advisory for the same reason and by the
+# same mechanism (a dedicated final step turns a regression into a
+# failed — but non-required — check).
 
 name: perf-gate
 
@@ -49,7 +62,7 @@ env:
 
 jobs:
   fib:
-    name: fib(25) medians
+    name: perf-gate benchmarks
     # Defer the benchmark while the PR is a draft; it re-runs on
     # `ready_for_review`. Not a required check, so a deferred draft run
     # blocks nothing.
@@ -79,35 +92,58 @@ jobs:
 
       - name: Run fib benchmark
         run: |
-          ./benchmarks/fib/run.sh > /tmp/fresh.json 2>/dev/null
-          echo "Fresh results:"
-          cat /tmp/fresh.json
+          ./benchmarks/fib/run.sh > /tmp/fresh-fib.json 2>/dev/null
+          echo "Fresh fib results:"
+          cat /tmp/fresh-fib.json
 
-      - name: Compare vs baseline
-        id: compare
+      # RES-3933 (F-E4): reuses the release + `--features jit`
+      # binaries the fib step above just built (both live under
+      # resilient/target, which this job already builds and caches),
+      # so this step's own cost is just the benchmark runs themselves
+      # — see benchmarks/extended/run.sh for the time-budget math.
+      - name: Run extended benchmarks
         run: |
-          set +e
-          ./scripts/compare_perf.sh benchmarks/baseline/fib.json /tmp/fresh.json > /tmp/compare.md
-          rc=$?
-          # Echo the markdown table so the workflow log shows it too.
-          cat /tmp/compare.md
-          # Stash for the PR-comment step.
+          ./benchmarks/extended/run.sh > /tmp/fresh-extended.json 2>/dev/null
+          echo "Fresh extended results:"
+          cat /tmp/fresh-extended.json
+
+      - name: Compare fib vs baseline
+        id: compare_fib
+        continue-on-error: true
+        run: |
+          ./scripts/compare_perf.sh benchmarks/baseline/fib.json /tmp/fresh-fib.json | tee /tmp/compare-fib.md
+
+      - name: Compare extended vs baseline
+        id: compare_extended
+        continue-on-error: true
+        run: |
+          ./benchmarks/extended/compare.sh benchmarks/baseline/extended.json /tmp/fresh-extended.json | tee /tmp/compare-extended.md
+
+      - name: Build PR comment body
+        id: comment
+        if: always()
+        run: |
           {
               echo 'body<<EOT'
               echo "### fib(25) perf-gate"
               echo
-              cat /tmp/compare.md
+              cat /tmp/compare-fib.md
               echo
               echo "Baseline: \`benchmarks/baseline/fib.json\` — to update, run \`scripts/update_perf_baseline.sh\` locally + review the deltas."
+              echo
+              echo "### extended benchmarks perf-gate"
+              echo
+              cat /tmp/compare-extended.md
+              echo
+              echo "Baseline: \`benchmarks/baseline/extended.json\` — regenerate with \`benchmarks/extended/run.sh\` and review the deltas before committing."
               echo "EOT"
           } >> "$GITHUB_OUTPUT"
-          exit $rc
 
       - name: Post / update PR comment
         if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         env:
-          COMMENT_BODY: ${{ steps.compare.outputs.body }}
+          COMMENT_BODY: ${{ steps.comment.outputs.body }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -132,3 +168,12 @@ jobs:
                 owner, repo, issue_number, body,
               });
             }
+
+      # Advisory, not required: this failure surfaces as a red check
+      # on the PR (visible signal) but perf-gate is not in the
+      # required-status-checks set, so it never blocks auto-merge.
+      - name: Fail if any benchmark regressed
+        if: steps.compare_fib.outcome == 'failure' || steps.compare_extended.outcome == 'failure'
+        run: |
+          echo "One or more perf-gate comparisons exceeded their threshold — see the job log / PR comment above." >&2
+          exit 1
