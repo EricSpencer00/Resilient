@@ -8,10 +8,6 @@
       "branch": "res-3854-strict-mode",
       "claimed_at": "2026-07-13T18:43:19Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-3859-contract-certificates",
-      "claimed_at": "2026-07-13T18:49:53Z"
-    },
     "resilient/src/atomic_types.rs": {
       "branch": "res-3394-atomic-duplicate-registrations",
       "claimed_at": "2026-07-13T19:16:06Z"
@@ -116,25 +112,13 @@
       "branch": "res-4002-lsp-default-binary",
       "claimed_at": "2026-07-14T03:21:36Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3997-vm-discard-stmt-value",
-      "claimed_at": "2026-07-14T03:47:49Z"
-    },
     "resilient/src/vm.rs": {
-      "branch": "res-3997-vm-discard-stmt-value",
-      "claimed_at": "2026-07-14T03:47:49Z"
+      "branch": "res-3998-vm-container-equality",
+      "claimed_at": "2026-07-14T03:56:56Z"
     },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-3997-vm-discard-stmt-value",
-      "claimed_at": "2026-07-14T03:47:49Z"
-    },
-    "resilient/src/disasm.rs": {
-      "branch": "res-3997-vm-discard-stmt-value",
-      "claimed_at": "2026-07-14T03:47:49Z"
-    },
-    "resilient/tests/it/differential.rs": {
-      "branch": "res-3997-vm-discard-stmt-value",
-      "claimed_at": "2026-07-14T03:47:49Z"
+    "resilient/src/compiler.rs": {
+      "branch": "res-3998-vm-container-equality",
+      "claimed_at": "2026-07-14T03:56:56Z"
     }
   }
 }
