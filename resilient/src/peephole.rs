@@ -446,6 +446,12 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         }
     }
 
+    // RES-3995: remap live_handler `body_start_pc` the same way — see
+    // the matching fix in `dce.rs`'s `remove_unreachable`.
+    for entry in &mut chunk.live_handlers {
+        entry.body_start_pc = old_to_new[entry.body_start_pc];
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
     Ok(())

@@ -143,6 +143,10 @@
     "resilient/src/disasm.rs": {
       "branch": "res-3995-vm-live-block",
       "claimed_at": "2026-07-14T09:40:19Z"
+    },
+    "resilient/src/peephole.rs": {
+      "branch": "res-3995-vm-live-block",
+      "claimed_at": "2026-07-14T09:42:55Z"
     }
   }
 }
