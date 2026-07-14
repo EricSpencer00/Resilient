@@ -104,7 +104,6 @@ deprecation cycle before any breaking change, even pre-1.0:
 - **String/byte literal escape syntax** (`\n`, `\t`, `\\`, `\"`, `\xNN`,
   `\u{NNNN}`)
 - **`unsafe` blocks** — required wrapper for volatile MMIO intrinsics; the `unsafe { ... }` syntax and the compile-time gate (calling `volatile_read_*`/`volatile_write_*` outside `unsafe` is an error) are stable.
-- **`#[interrupt(name = "…")]` attribute** — registers a zero-parameter unit function as an ISR; lowers to `__resilient_isr_<NAME>` extern symbol; backed by the `resilient-runtime-cortex-m-demo` weak-alias vector table. Stable for Cortex-M4F and RV32IMAC targets.
 - **Region annotation syntax** — `region NAME;` declarations, `&[NAME] T` shared-reference parameters, `&mut[NAME] T` exclusive-mutable-reference parameters, and the compile-time borrow check that rejects two `&mut[A]` params with the same label in the same function. Stable; the syntactic alias-rejection rule and diagnostic format are part of the stable surface.
 - **Region-polymorphic function syntax** — `fn f<R, S>(…)` with region type parameters in angle brackets; call-site substitution and aliasing check (two callee region params resolving to the same mutable region is a compile-time error). Stable for the V1 single-label inference model.
 
@@ -142,6 +141,21 @@ with no warning cycle:
   are subject to change; new features land as RES-183/184/190 progress.
 
 If you build on any of the above, expect to rev your code on most releases.
+
+### Planned (not yet implemented)
+
+Documented in SYNTAX.md and the guides as the intended design, but **not
+yet built** — the compiler does not accept them today. Do not depend on
+them; the syntax and semantics may change before they land.
+
+- **`#[interrupt(name = "…")]` attribute** — intended to register a
+  zero-parameter unit function as an ISR, lowering to a
+  `__resilient_isr_<NAME>` extern symbol resolved by a runtime weak-alias
+  vector table. Not implemented: the parser currently rejects `#[interrupt]`
+  (only `#[cfg(...)]` is recognized), and no ISR lowering or vector table
+  exists. Landing it needs a native embedded codegen path that can emit
+  linkable ISR symbols — the current on-device backend is a bytecode VM,
+  which has no such path. Tracked by RES-4025.
 
 ---
 

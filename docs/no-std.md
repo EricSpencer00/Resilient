@@ -172,7 +172,14 @@ goalpost G18 for status.
 
 ## Hello, GPIO — Volatile MMIO and Interrupt Handlers
 
-Volatile MMIO lets you write Resilient code that reads from and writes to memory-mapped hardware registers on a microcontroller. The compiler enforces that all volatile access is wrapped in `unsafe` blocks, and the `#[interrupt]` attribute lets you define interrupt service routines that the runtime's vector table links automatically.
+Volatile MMIO lets you write Resilient code that reads from and writes to memory-mapped hardware registers on a microcontroller. The compiler enforces that all volatile access is wrapped in `unsafe` blocks — this is implemented and stable today.
+
+> **`#[interrupt]` is planned, not yet implemented (RES-4025).** The attribute
+> shown below is the intended design for defining interrupt service routines;
+> the compiler does not accept it yet (the parser rejects `#[interrupt]`, and
+> no ISR lowering or vector table exists). See the "Planned (not yet
+> implemented)" section of [STABILITY.md](../STABILITY.md). The `#[interrupt]`
+> line in the example below will not compile until the feature lands.
 
 ```resilient
 const GPIOA_ODR: Int = 0x4001_0C14;  # GPIO output data register
@@ -186,6 +193,7 @@ unsafe fn write_led_off() {
     volatile_write_u32(GPIOA_ODR, 0);
 }
 
+# Planned syntax — does not compile yet (RES-4025):
 #[interrupt(name = "SysTick")]
 fn tick_handler() {
     unsafe { write_led_off(); }
@@ -201,4 +209,4 @@ Build with:
 cargo build --release --target thumbv7em-none-eabihf --manifest-path resilient-runtime-cortex-m-demo/Cargo.toml
 ```
 
-The compiler lowers `#[interrupt(name = "SysTick")]` to an external symbol `__resilient_isr_SysTick` marked `extern "C"` and `no_mangle`. The `resilient-runtime-cortex-m-demo` crate provides a vector table with weak aliases that resolve to this symbol, so your interrupt handler is automatically registered without manual symbol manipulation.
+Once implemented (RES-4025), the compiler will lower `#[interrupt(name = "SysTick")]` to an external symbol `__resilient_isr_SysTick` marked `extern "C"` and `no_mangle`, and the `resilient-runtime-cortex-m-demo` crate will provide a vector table with weak aliases that resolve to this symbol, so the interrupt handler is registered without manual symbol manipulation.
