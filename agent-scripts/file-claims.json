@@ -151,6 +151,10 @@
     "resilient/src/bytecode.rs": {
       "branch": "res-4041-vm-postconditions",
       "claimed_at": "2026-07-14T11:01:38Z"
+    },
+    "docs/ROADMAP_PHASE2.md": {
+      "branch": "res-3933-phase2-roadmap",
+      "claimed_at": "2026-07-14T13:45:53Z"
     }
   }
 }
