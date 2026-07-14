@@ -31253,9 +31253,107 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
                 }
             }
         }
+        Some("remove") => {
+            // RES-4007: `pkg remove <name>`
+            if args.get(3).map(|s| s.as_str()) == Some("help") && args.len() == 4 {
+                print_pkg_remove_help();
+                return Some(0);
+            }
+            let mut name: Option<String> = None;
+            let mut i = 3;
+            while i < args.len() {
+                let a = &args[i];
+                if a == "--help" || a == "-h" {
+                    print_pkg_remove_help();
+                    return Some(0);
+                } else if a.starts_with("--") {
+                    eprintln!("Error: unknown flag `{}` to `pkg remove`", a);
+                    return Some(2);
+                } else if name.is_none() {
+                    name = Some(a.clone());
+                } else {
+                    eprintln!("Error: unexpected extra argument `{}` to `pkg remove`", a);
+                    return Some(2);
+                }
+                i += 1;
+            }
+            let Some(name) = name else {
+                eprintln!(
+                    "Error: `rz pkg remove` requires a dependency name.\n\
+                     Usage: rz pkg remove <name>"
+                );
+                return Some(2);
+            };
+            match pkg_deps::remove_dependency(&name) {
+                Ok(()) => Some(0),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    Some(1)
+                }
+            }
+        }
+        Some("search") => {
+            // RES-4007: `pkg search <query>`
+            if args.get(3).map(|s| s.as_str()) == Some("help") && args.len() == 4 {
+                print_pkg_search_help();
+                return Some(0);
+            }
+            let mut query: Option<String> = None;
+            let mut i = 3;
+            while i < args.len() {
+                let a = &args[i];
+                if a == "--help" || a == "-h" {
+                    print_pkg_search_help();
+                    return Some(0);
+                } else if a.starts_with("--") {
+                    eprintln!("Error: unknown flag `{}` to `pkg search`", a);
+                    return Some(2);
+                } else if query.is_none() {
+                    query = Some(a.clone());
+                } else {
+                    eprintln!("Error: unexpected extra argument `{}` to `pkg search`", a);
+                    return Some(2);
+                }
+                i += 1;
+            }
+            let Some(query) = query else {
+                eprintln!(
+                    "Error: `rz pkg search` requires a query.\n\
+                     Usage: rz pkg search <query>"
+                );
+                return Some(2);
+            };
+            match pkg_deps::search_dependencies(&query) {
+                Ok(matches) => {
+                    if matches.is_empty() {
+                        println!("No local matches for `{}`.", query);
+                    } else {
+                        println!("Local matches for `{}`:", query);
+                        for m in &matches {
+                            println!(
+                                "  {}{} — {}",
+                                m.name,
+                                if m.locked { " (locked)" } else { "" },
+                                m.source
+                            );
+                        }
+                    }
+                    println!(
+                        "\nNote: no remote registry index exists yet — this searches \
+                         only the local resilient.toml/resilient.lock (remote registry \
+                         search is tracked as future work)."
+                    );
+                    Some(0)
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    Some(1)
+                }
+            }
+        }
         Some(other) => {
             eprintln!(
-                "Error: unknown pkg subcommand `{}`. Known: init, publish, add. \
+                "Error: unknown pkg subcommand `{}`. Known: init, publish, add, remove, search. \
                  Run `rz pkg help` or `rz pkg --help` for usage.",
                 other
             );
@@ -31285,6 +31383,8 @@ fn print_pkg_help() {
              init     Scaffold a new project (resilient.toml + src/main.rz + .gitignore)\n    \
              publish  (RES-342) Package the current project for upload to a registry\n    \
              add      Add a dependency to resilient.toml\n    \
+             remove   (RES-4007) Remove a dependency from resilient.toml\n    \
+             search   (RES-4007) Search locally-resolvable dependencies\n    \
              help     Show this message\n\
          \n\
          Run `rz pkg <subcommand> --help` or `rz pkg <subcommand> help`\n\
@@ -31307,6 +31407,8 @@ fn print_pkg_help_to_stderr() {
              init     Scaffold a new project (resilient.toml + src/main.rz + .gitignore)\n    \
              publish  Package the current project for upload to a registry\n    \
              add      Add a dependency to resilient.toml\n    \
+             remove   Remove a dependency from resilient.toml\n    \
+             search   Search locally-resolvable dependencies\n    \
              help     Show this message\n\
          \n\
          Error: `rz pkg` requires a subcommand."
@@ -31376,6 +31478,43 @@ fn print_pkg_add_help() {
          \n\
          Validates the dependency resolves, appends to [dependencies] in\n\
          resilient.toml, and writes resilient.lock."
+    );
+}
+
+/// RES-4007: `resilient pkg remove --help`.
+fn print_pkg_remove_help() {
+    println!(
+        "rz pkg remove — remove a dependency from resilient.toml\n\
+         \n\
+         USAGE:\n    \
+             rz pkg remove <name>\n\
+         \n\
+         ARGS:\n    \
+             <name>     Dependency name as declared in [dependencies]\n\
+         \n\
+         Errors if `<name>` is not declared. On success, drops the\n\
+         entry from [dependencies] in resilient.toml and rewrites\n\
+         resilient.lock to match the remaining dependencies."
+    );
+}
+
+/// RES-4007: `resilient pkg search --help`.
+fn print_pkg_search_help() {
+    println!(
+        "rz pkg search — search locally-resolvable dependencies\n\
+         \n\
+         USAGE:\n    \
+             rz pkg search <query>\n\
+         \n\
+         ARGS:\n    \
+             <query>    Substring to match against dependency names\n\
+                        (case-insensitive)\n\
+         \n\
+         There is no remote registry index yet, so this searches only\n\
+         what's already resolvable: the [dependencies] declared in the\n\
+         nearest resilient.toml, cross-referenced against\n\
+         resilient.lock to report whether each match is locked.\n\
+         Remote registry search is tracked as future work."
     );
 }
 

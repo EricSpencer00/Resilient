@@ -318,6 +318,29 @@ rz pkg add mylib path:../libs/mylib
 rz pkg add netutil git:https://github.com/user/netutil --rev abc123
 ```
 
+### `rz pkg remove <name>`
+
+Drops a dependency from `[dependencies]` in `resilient.toml` and
+rewrites `resilient.lock` to match the remaining dependencies. Errors
+cleanly if `<name>` isn't declared:
+
+```bash
+rz pkg remove mylib
+```
+
+### `rz pkg search <query>`
+
+Searches dependencies that are already resolvable locally — the
+`[dependencies]` in the nearest `resilient.toml`, cross-referenced
+against `resilient.lock` to report whether each match is locked.
+There is no remote registry index yet, so results are limited to what
+the current project already declares; the command always prints a
+note that remote registry search is future work:
+
+```bash
+rz pkg search lib
+```
+
 ### `rz pkg publish --dry-run`
 
 Packages the current project and prints the upload summary without

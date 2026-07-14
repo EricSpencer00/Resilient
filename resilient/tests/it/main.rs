@@ -146,6 +146,8 @@ mod pkg_help_copy_smoke;
 mod pkg_init_help_smoke;
 mod pkg_init_smoke;
 mod pkg_publish_help_smoke;
+mod pkg_remove_smoke;
+mod pkg_search_smoke;
 mod pkg_unknown_help_hint_smoke;
 mod playground_acceptance_rows_smoke;
 mod playground_banner_copy_smoke;
