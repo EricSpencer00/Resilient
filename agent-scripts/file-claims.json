@@ -147,6 +147,18 @@
     "resilient/src/disasm.rs": {
       "branch": "res-4045-vm-soundness-bugs",
       "claimed_at": "2026-07-14T10:07:38Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-4012-unify-exhaustiveness",
+      "claimed_at": "2026-07-14T10:39:37Z"
+    },
+    "resilient/src/enum_exhaustiveness.rs": {
+      "branch": "res-4012-unify-exhaustiveness",
+      "claimed_at": "2026-07-14T10:39:37Z"
+    },
+    "resilient/src/struct_exhaustiveness.rs": {
+      "branch": "res-4012-unify-exhaustiveness",
+      "claimed_at": "2026-07-14T10:39:37Z"
     }
   }
 }
