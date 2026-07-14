@@ -1840,6 +1840,207 @@ pub fn prove_auto(
     }
 }
 
+// ============================================================
+// RES-4014 (C-E3): overflow-safe BV64 theory prover
+// ============================================================
+//
+// `prove_with_axioms_and_timeout` (and every entry point built on top
+// of `translate_int`/`translate_bool`) models `+`/`-`/`*` as unbounded
+// LIA. That's unsound for overflow-safety obligations: e.g. given
+// axioms `x >= 0` and `y >= 0`, the goal `x + y >= 0` is a LIA
+// tautology (the sum of two non-negative *mathematical* integers is
+// always non-negative) but Resilient's default `int` (`Type::Int` =
+// `Int64`) evaluates `+` with `OverflowMode::Wrap` at runtime
+// (`vm.rs::wrapping_add`) — two large non-negative `i64`s can sum to
+// a negative wrapped result, so the "proven" claim is actually false
+// for some in-domain runtime inputs.
+//
+// `prove_overflow_safe` closes that gap by translating both the goal
+// and the caller-supplied axioms through `translate_bool_bv_width`
+// with `width = 64`, matching Resilient's default integer width
+// exactly. Z3's `bvadd`/`bvsub`/`bvmul` are two's-complement modulo
+// 2^64 — the same wraparound rule `OverflowMode::Wrap` uses — so a
+// tautology proved under this theory holds for the *actual* runtime
+// arithmetic, not just the idealized unbounded version.
+//
+// Scope (RES-4014 / C-E3): this is a new, additive entry point. It
+// does not change the behavior of `prove`, `prove_with_certificate`,
+// `prove_with_axioms_and_timeout`, `prove_auto`, or any existing
+// caller — every currently-green proof obligation keeps using
+// unbounded LIA (or BV32 for bitwise ops) exactly as before. Wiring
+// this into the `requires`/`ensures` static-verification call sites
+// in `typechecker.rs` (so ordinary contract clauses get overflow-safe
+// treatment by default) is out of scope here — those call sites live
+// outside this module's ownership — and is tracked as a follow-up
+// (`Refs #3933 · C-E3`). SMT-LIB2 certificate generation is also not
+// yet implemented for this path (mirroring the existing BV32
+// prover); the return shape omits the certificate slot entirely.
+//
+/// Prove `goal` under `axioms` (typically a function's `requires`
+/// clauses) using width-respecting 64-bit two's-complement arithmetic
+/// instead of unbounded LIA, so integer overflow on `+`/`-`/`*` is
+/// modeled soundly. Returns `(verdict, counterexample, timed_out)`:
+///
+/// - `Some(true)`: `goal` holds for every assignment satisfying
+///   `axioms`, *including* wraparound — a strictly stronger guarantee
+///   than the LIA tautology check.
+/// - `Some(false)`: `axioms ∧ goal` is unsatisfiable (the goal can
+///   never hold given the axioms).
+/// - `None`: undecided (or the goal/every axiom failed to translate —
+///   e.g. floats, unsupported nodes) — the runtime check still fires.
+///
+/// Axioms that fail to translate are silently dropped (fail-open,
+/// same policy as `prove_with_axioms_and_timeout`): dropping a
+/// hypothesis can only weaken the assumption set, never manufacture
+/// an unsound `Some(true)`.
+///
+/// RES-4014: not yet called from `typechecker.rs` (out of scope for
+/// this ticket — see the module-level comment above); exercised by
+/// this module's tests, which prove the modeling is sound.
+#[allow(dead_code)]
+pub fn prove_overflow_safe(
+    goal: &Node,
+    axioms: &[Node],
+    bindings: &HashMap<String, i64>,
+    timeout_ms: u32,
+) -> (Option<bool>, Option<String>, bool) {
+    Z3_CTX.with(|ctx| prove_overflow_safe_in(ctx, goal, axioms, bindings, timeout_ms))
+}
+
+const OVERFLOW_SAFE_WIDTH: u32 = 64;
+
+fn prove_overflow_safe_in(
+    ctx: &z3::Context,
+    goal: &Node,
+    axioms: &[Node],
+    bindings: &HashMap<String, i64>,
+    timeout_ms: u32,
+) -> (Option<bool>, Option<String>, bool) {
+    let formula = match translate_bool_bv_width(ctx, goal, bindings, OVERFLOW_SAFE_WIDTH) {
+        Some(f) => f,
+        None => return (None, None, false),
+    };
+    let user_axioms: Vec<Bool<'_>> = axioms
+        .iter()
+        .filter_map(|ax| translate_bool_bv_width(ctx, ax, bindings, OVERFLOW_SAFE_WIDTH))
+        .collect();
+
+    let timeout_params = if timeout_ms > 0 {
+        let mut p = z3::Params::new(ctx);
+        p.set_u32("timeout", timeout_ms);
+        Some(p)
+    } else {
+        None
+    };
+    let apply_timeout = |solver: &z3::Solver<'_>| {
+        if let Some(ref p) = timeout_params {
+            solver.set_params(p);
+        }
+    };
+
+    let solver = z3::Solver::new(ctx);
+    apply_timeout(&solver);
+    for axiom in &user_axioms {
+        solver.assert(axiom);
+    }
+
+    // Tautology check: axioms ∧ ¬goal unsatisfiable ⇒ axioms ⊨ goal.
+    let negated = formula.not();
+    solver.push();
+    solver.assert(&negated);
+    let check = solver.check();
+    let tautology = matches!(check, z3::SatResult::Unsat);
+    let timed_out = matches!(check, z3::SatResult::Unknown);
+
+    let counterexample = if matches!(check, z3::SatResult::Sat) {
+        extract_counterexample_bv_width(ctx, &solver, goal, axioms, bindings, OVERFLOW_SAFE_WIDTH)
+    } else {
+        None
+    };
+    solver.pop(1);
+
+    if tautology {
+        return (Some(true), None, false);
+    }
+
+    // Contradiction check: axioms ∧ goal unsatisfiable ⇒ goal can
+    // never hold given the axioms (only meaningful when the axioms
+    // themselves are satisfiable — an unsatisfiable axiom set makes
+    // this vacuously true, matching `prove_with_axioms_and_timeout`'s
+    // existing behavior for the LIA path).
+    solver.push();
+    solver.assert(&formula);
+    let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
+    solver.pop(1);
+
+    if contradiction {
+        return (Some(false), counterexample, false);
+    }
+
+    (None, counterexample, timed_out)
+}
+
+/// RES-4014: like `extract_counterexample_bv`, but width-parameterized
+/// and sourced from both `goal` and `axioms` (the overflow-safe prover
+/// has free variables spread across both).
+fn extract_counterexample_bv_width(
+    ctx: &z3::Context,
+    solver: &z3::Solver<'_>,
+    goal: &Node,
+    axioms: &[Node],
+    bindings: &HashMap<String, i64>,
+    width: u32,
+) -> Option<String> {
+    let model = solver.get_model()?;
+    let mut idents: BTreeSet<&str> = BTreeSet::new();
+    collect_bv_identifiers(goal, &mut idents);
+    for ax in axioms {
+        collect_bv_identifiers(ax, &mut idents);
+    }
+
+    use std::fmt::Write;
+    let mut out = String::with_capacity(64);
+    for name in &idents {
+        if bindings.contains_key(*name) {
+            continue;
+        }
+        let var = BV::new_const(ctx, *name, width);
+        // RES-4014: `BV::as_i64` only succeeds when the raw bit
+        // pattern fits in a *signed* 64-bit value — for `width == 64`
+        // that fails whenever the top bit is set (roughly half of
+        // all values), silently dropping the counterexample for that
+        // identifier. Go through `as_u64` (the raw bit pattern always
+        // fits in 64 bits since `width <= 64` here) and sign-extend
+        // manually so every width — including 64 — displays correctly.
+        if let Some(v) = model.eval(&var, false)
+            && let Some(bits) = v.as_u64()
+        {
+            let signed = sign_extend(bits, width);
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            let _ = write!(&mut out, "{} = {}", name, signed);
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// RES-4014: interpret the low `width` bits of `bits` as a two's-
+/// complement signed integer. `width` must be in `1..=64`.
+fn sign_extend(bits: u64, width: u32) -> i64 {
+    if width >= 64 {
+        return bits as i64;
+    }
+    let mask = (1u64 << width) - 1;
+    let masked = bits & mask;
+    let sign_bit = 1u64 << (width - 1);
+    if masked & sign_bit != 0 {
+        (masked as i64) - (1i64 << width)
+    } else {
+        masked as i64
+    }
+}
+
 /// RES-393 D1: attempt to prove that two function parameters cannot alias
 /// given the function's `requires` preconditions.
 ///
@@ -1941,11 +2142,28 @@ fn translate_bool_bv<'c>(
     node: &Node,
     bindings: &HashMap<String, i64>,
 ) -> Option<Bool<'c>> {
+    translate_bool_bv_width(ctx, node, bindings, 32)
+}
+
+/// RES-4014 (C-E3): width-parameterized variant of `translate_bool_bv`.
+/// `width` is the bit-vector width used for every integer literal,
+/// identifier, and arithmetic sub-expression — 32 reproduces the
+/// original RES-354 BV32 bitwise-op path byte-for-byte; 64 matches
+/// Resilient's default `int` (= `Int64`) machine width and is used by
+/// the overflow-safe prover below.
+fn translate_bool_bv_width<'c>(
+    ctx: &'c z3::Context,
+    node: &Node,
+    bindings: &HashMap<String, i64>,
+    width: u32,
+) -> Option<Bool<'c>> {
     match node {
         Node::BooleanLiteral { value: b, .. } => Some(Bool::from_bool(ctx, *b)),
         Node::PrefixExpression {
             operator, right, ..
-        } if *operator == "!" => translate_bool_bv(ctx, right, bindings).map(|b| b.not()),
+        } if *operator == "!" => {
+            translate_bool_bv_width(ctx, right, bindings, width).map(|b| b.not())
+        }
         Node::InfixExpression {
             left,
             operator,
@@ -1953,18 +2171,18 @@ fn translate_bool_bv<'c>(
             ..
         } => match *operator {
             "&&" => {
-                let l = translate_bool_bv(ctx, left, bindings)?;
-                let r = translate_bool_bv(ctx, right, bindings)?;
+                let l = translate_bool_bv_width(ctx, left, bindings, width)?;
+                let r = translate_bool_bv_width(ctx, right, bindings, width)?;
                 Some(Bool::and(ctx, &[&l, &r]))
             }
             "||" => {
-                let l = translate_bool_bv(ctx, left, bindings)?;
-                let r = translate_bool_bv(ctx, right, bindings)?;
+                let l = translate_bool_bv_width(ctx, left, bindings, width)?;
+                let r = translate_bool_bv_width(ctx, right, bindings, width)?;
                 Some(Bool::or(ctx, &[&l, &r]))
             }
             "==" | "!=" | "<" | ">" | "<=" | ">=" => {
-                let l = translate_bv(ctx, left, bindings)?;
-                let r = translate_bv(ctx, right, bindings)?;
+                let l = translate_bv_width(ctx, left, bindings, width)?;
+                let r = translate_bv_width(ctx, right, bindings, width)?;
                 let cmp = match *operator {
                     "==" => l._eq(&r),
                     "!=" => l._eq(&r).not(),
@@ -1982,29 +2200,39 @@ fn translate_bool_bv<'c>(
     }
 }
 
-/// Translate an AST integer expression to a Z3 BV<32> value.
-fn translate_bv<'c>(
+/// RES-4014 (C-E3): width-parameterized variant of `translate_bv`. See
+/// `translate_bool_bv_width` for the rationale.
+///
+/// `+`/`-`/`*` map directly to `bvadd`/`bvsub`/`bvmul`, which are
+/// two's-complement modulo-2^width operations in Z3 — exactly the
+/// wraparound semantics `OverflowMode::Wrap` uses at runtime
+/// (`vm.rs`). Unlike the unbounded `translate_int` (LIA) path, a
+/// BV-width formula can only be proved a tautology if it holds for
+/// *every* wraparound, so overflow is soundly modeled rather than
+/// assumed away.
+fn translate_bv_width<'c>(
     ctx: &'c z3::Context,
     node: &Node,
     bindings: &HashMap<String, i64>,
+    width: u32,
 ) -> Option<BV<'c>> {
     match node {
-        Node::IntegerLiteral { value: v, .. } => Some(BV::from_i64(ctx, *v, 32)),
+        Node::IntegerLiteral { value: v, .. } => Some(BV::from_i64(ctx, *v, width)),
         Node::Identifier { name, .. } => match bindings.get(name) {
-            Some(v) => Some(BV::from_i64(ctx, *v, 32)),
-            None => Some(BV::new_const(ctx, name.as_str(), 32)),
+            Some(v) => Some(BV::from_i64(ctx, *v, width)),
+            None => Some(BV::new_const(ctx, name.as_str(), width)),
         },
         Node::PrefixExpression {
             operator, right, ..
-        } if *operator == "-" => translate_bv(ctx, right, bindings).map(|v| v.bvneg()),
+        } if *operator == "-" => translate_bv_width(ctx, right, bindings, width).map(|v| v.bvneg()),
         Node::InfixExpression {
             left,
             operator,
             right,
             ..
         } => {
-            let l = translate_bv(ctx, left, bindings)?;
-            let r = translate_bv(ctx, right, bindings)?;
+            let l = translate_bv_width(ctx, left, bindings, width)?;
+            let r = translate_bv_width(ctx, right, bindings, width)?;
             Some(match *operator {
                 "+" => l.bvadd(&r),
                 "-" => l.bvsub(&r),
@@ -3673,6 +3901,168 @@ mod tests {
         let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
         let (verdict, _cert, _cx, _t) = prove_auto(&expr, &no_b, Z3Theory::Bv, 0);
         assert_eq!(verdict, Some(true), "Bv theory should prove x + 0 == x");
+    }
+
+    // -----------------------------------------------------------
+    // RES-4014 (C-E3): overflow-safe BV64 theory tests
+    //
+    // THE regression: an `ensures`-style goal that is a LIA tautology
+    // (true under unbounded mathematical integers) but is NOT a
+    // tautology once `+` wraps at the actual 64-bit machine width —
+    // proving the default LIA path is unsound for overflow, and that
+    // `prove_overflow_safe` correctly rejects it while still proving
+    // the bounded/guarded version that genuinely cannot overflow.
+    // -----------------------------------------------------------
+
+    #[test]
+    fn lia_path_unsoundly_proves_overflow_prone_sum_nonneg() {
+        // `requires x >= 0, requires y >= 0 |- x + y >= 0` is a LIA
+        // tautology: the sum of two non-negative mathematical
+        // integers is always non-negative. This is exactly the
+        // unsoundness RES-4014 fixes elsewhere — documented here so a
+        // future change to the LIA path's semantics doesn't silently
+        // invalidate the "before" half of the regression.
+        let no_b = HashMap::new();
+        let x_nonneg = infix(ident("x"), ">=", int(0));
+        let y_nonneg = infix(ident("y"), ">=", int(0));
+        let goal = infix(infix(ident("x"), "+", ident("y")), ">=", int(0));
+        let axioms = [x_nonneg, y_nonneg];
+        let (verdict, _cert, _cx, _t) = prove_with_axioms_and_timeout(&goal, &no_b, &axioms, 0);
+        assert_eq!(
+            verdict,
+            Some(true),
+            "unbounded LIA proves x>=0 && y>=0 => x+y>=0 (mathematically true, \
+             but unsound for wrapping i64 arithmetic — that's the bug)"
+        );
+    }
+
+    #[test]
+    fn overflow_safe_rejects_naive_sum_nonneg_that_can_wrap_negative() {
+        // Same axioms/goal as above, but proved under BV64 wraparound
+        // semantics. Two non-negative i64s can sum past i64::MAX and
+        // wrap around to a negative value (e.g. two values just over
+        // 2^62), so the goal is NOT a tautology under the width-
+        // respecting theory — `prove_overflow_safe` must NOT return
+        // `Some(true)`. This is THE regression proving overflow is
+        // now modeled.
+        let no_b = HashMap::new();
+        let x_nonneg = infix(ident("x"), ">=", int(0));
+        let y_nonneg = infix(ident("y"), ">=", int(0));
+        let goal = infix(infix(ident("x"), "+", ident("y")), ">=", int(0));
+        let axioms = [x_nonneg, y_nonneg];
+        let (verdict, _cx, _timed_out) = prove_overflow_safe(&goal, &axioms, &no_b, 0);
+        assert_ne!(
+            verdict,
+            Some(true),
+            "overflow-safe BV64 prover must not prove x>=0 && y>=0 => x+y>=0 — \
+             wraparound can make x+y negative"
+        );
+    }
+
+    #[test]
+    fn overflow_safe_proves_guarded_sum_nonneg_when_bounded_out_of_overflow_range() {
+        // Bound both operands well within range so `x + y` cannot
+        // possibly overflow i64 — the guarded version of the same
+        // shape genuinely does hold under wraparound semantics too,
+        // and `prove_overflow_safe` must still prove it (no false
+        // negatives — the fix must not blanket-reject every overflow-
+        // adjacent goal).
+        let no_b = HashMap::new();
+        let bound = 1_000_000_000i64; // well under i64::MAX / 2
+        let x_bounded = infix(
+            infix(ident("x"), ">=", int(0)),
+            "&&",
+            infix(ident("x"), "<=", int(bound)),
+        );
+        let y_bounded = infix(
+            infix(ident("y"), ">=", int(0)),
+            "&&",
+            infix(ident("y"), "<=", int(bound)),
+        );
+        let goal = infix(infix(ident("x"), "+", ident("y")), ">=", int(0));
+        let axioms = [x_bounded, y_bounded];
+        let (verdict, _cx, _timed_out) = prove_overflow_safe(&goal, &axioms, &no_b, 0);
+        assert_eq!(
+            verdict,
+            Some(true),
+            "bounded, non-overflowing x + y >= 0 should still verify under BV64"
+        );
+    }
+
+    #[test]
+    fn overflow_safe_proves_simple_bv64_tautologies() {
+        // `x + 0 == x` — a basic arithmetic identity that holds
+        // regardless of theory. Confirms the new BV64 path isn't
+        // universally broken/over-conservative.
+        let no_b = HashMap::new();
+        let goal = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
+        let (verdict, _cx, _t) = prove_overflow_safe(&goal, &[], &no_b, 0);
+        assert_eq!(verdict, Some(true), "x + 0 == x should hold under BV64");
+    }
+
+    #[test]
+    fn overflow_safe_detects_subtraction_underflow() {
+        // `requires x >= 0 |- x - 1 >= -1` is a LIA tautology, but
+        // more importantly: `requires x == 0 |- x - 1 >= 0` should be
+        // provably FALSE under BV64 (0 - 1 wraps to -1, which is not
+        // >= 0) — confirming `-` also gets width-respecting modeling,
+        // not just `+`.
+        let no_b = HashMap::new();
+        let x_is_zero = infix(ident("x"), "==", int(0));
+        let goal = infix(infix(ident("x"), "-", int(1)), ">=", int(0));
+        let (verdict, _cx, _t) = prove_overflow_safe(&goal, &[x_is_zero], &no_b, 0);
+        assert_eq!(
+            verdict,
+            Some(false),
+            "x == 0 |- x - 1 >= 0 must be false under BV64 (0 - 1 wraps to -1)"
+        );
+    }
+
+    #[test]
+    fn overflow_safe_detects_multiplication_overflow() {
+        // Two operands individually well within `i64` range whose
+        // *product* overflows and wraps — the naive LIA-style claim
+        // `x >= 1 && y >= 1 => x * y >= 1` is not tautological once
+        // multiplication wraps mod 2^64.
+        let no_b = HashMap::new();
+        // 3_000_000_000 * 3_000_000_000 ≈ 9e18, close to i64::MAX
+        // (~9.22e18) but the exact product (9e18) still overflows
+        // when combined with the `>= 1` obligation across the full
+        // range Z3 explores for `x, y >= 3_000_000_000`.
+        let big = 3_000_000_000i64;
+        let x_ge = infix(ident("x"), ">=", int(big));
+        let y_ge = infix(ident("y"), ">=", int(big));
+        let goal = infix(infix(ident("x"), "*", ident("y")), ">=", int(1));
+        let axioms = [x_ge, y_ge];
+        let (verdict, _cx, _t) = prove_overflow_safe(&goal, &axioms, &no_b, 0);
+        assert_ne!(
+            verdict,
+            Some(true),
+            "x,y >= 3e9 => x*y >= 1 must not be provable under BV64 — the \
+             product overflows and can wrap to a value < 1"
+        );
+    }
+
+    #[test]
+    fn overflow_safe_axiom_translation_failure_is_fail_open() {
+        // An axiom that can't translate to BV64 (float literal) is
+        // silently dropped rather than causing an error — matching
+        // the fail-open policy of `prove_with_axioms_and_timeout`.
+        // Dropping the untranslatable axiom only weakens the
+        // hypothesis set, so the goal below (a plain tautology that
+        // doesn't need the bogus axiom) must still prove.
+        let no_b = HashMap::new();
+        let untranslatable = Node::FloatLiteral {
+            value: 1.5,
+            span: crate::span::Span::default(),
+        };
+        let goal = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
+        let (verdict, _cx, _t) = prove_overflow_safe(&goal, &[untranslatable], &no_b, 0);
+        assert_eq!(
+            verdict,
+            Some(true),
+            "untranslatable axiom must be dropped, not block an otherwise-provable goal"
+        );
     }
 
     // -----------------------------------------------------------
