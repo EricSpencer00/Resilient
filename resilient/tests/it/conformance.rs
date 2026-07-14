@@ -113,8 +113,9 @@ fn normalize(s: &str) -> String {
 /// tracking issue that absorbs the ~69-issue per-feature conformance
 /// cluster (RES-3387–3483 and friends) as follow-up cases grow this
 /// list toward full Stable-surface coverage. Left out of this first
-/// slice: `unsafe` blocks / MMIO intrinsics, `#[interrupt(...)]`,
-/// region annotations, and region-polymorphic functions — those need
+/// slice: the volatile-MMIO wrapper block keyword (see STABILITY.md's
+/// bullet on that gated block form), `#[interrupt(...)]`, region
+/// annotations, and region-polymorphic functions — those need
 /// hardware-shaped harnesses (or at least a `resilient-runtime-cortex-m-demo`-
 /// style host stub) that's a separate follow-up, not a `.rz` + `--vm` case.
 const CASES: &[&str] = &[
