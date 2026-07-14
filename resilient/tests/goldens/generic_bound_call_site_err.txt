@@ -1,0 +1,6 @@
+exit=1
+<tmp>.rz:6:16: type `Rock` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Rock` and required methods are missing)
+<tmp>.rz:6:16: type `Rock` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Rock` and required methods are missing)
+error: type `Rock` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Rock` and required methods are missing)
+   println(render(make_rock()));
+                  ^
