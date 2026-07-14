@@ -86,7 +86,15 @@ fn is_catch_all(pattern: &crate::Pattern) -> bool {
 /// non-enum pattern, or any other pattern shape. The caller bails
 /// conservatively (no exhaustiveness claim) in that case, exactly as it
 /// did before `Or` patterns were unpacked.
-fn collect_variant_leaves<'p>(
+///
+/// RES-4012: `pub(crate)` so `typechecker.rs`'s inline `Node::Match`
+/// exhaustiveness gate (in `check_node`) can reuse this exact
+/// Or-flattening logic for its own enum-covered-set computation instead
+/// of maintaining a second, divergent implementation — that duplication
+/// is what let the or-pattern false-negative fixed here (RES-3934) keep
+/// rejecting exhaustive matches end-to-end even after this module was
+/// fixed.
+pub(crate) fn collect_variant_leaves<'p>(
     pattern: &'p crate::Pattern,
     out: &mut Vec<(&'p str, &'p str)>,
 ) -> bool {
