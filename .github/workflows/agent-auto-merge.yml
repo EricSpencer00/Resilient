@@ -142,9 +142,12 @@ jobs:
             # otherwise-green PRs at the auto-merge gate:
             #
             #   - `diff-shape guardrail` — reports spurious FAILURE for
-            #     append-only overlaps on `main.rs`/`file-claims.json`
-            #     during multi-agent sweeps. The append-only resolver
-            #     handles these at merge time.
+            #     append-only overlaps on `main.rs`/`typechecker.rs`/
+            #     `lexer_logos.rs` during multi-agent sweeps. The
+            #     append-only resolver handles these at merge time.
+            #     (RES-3976: `file-claims.json` no longer appears here —
+            #     claims live on the dedicated `agent-claims` ref and are
+            #     never committed onto a feature branch.)
             #   - `fib(25) medians` — the tree-walker perf benchmark
             #     is statistically noisy at 10 samples; a single flaky
             #     run flips it FAILURE while every required functional

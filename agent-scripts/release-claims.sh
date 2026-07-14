@@ -2,47 +2,94 @@
 # release-claims.sh — release all file claims for a branch (call on PR close)
 #
 # Usage:
-#   .claude/scripts/release-claims.sh <branch> [<pr_number>]
+#   agent-scripts/release-claims.sh <branch> [<pr_number>]
 #
 # Wire this up as a GitHub Actions step on PR close, or call manually.
+#
+# RES-3976: claims live on the dedicated `agent-claims` ref (see
+# claims-ref.sh), not in a file committed on `main`. Releasing no longer
+# means opening a "chore: release file claims" PR against `main` (that PR
+# was itself the thing that staled every other open PR's copy of
+# file-claims.json) — it's a direct CAS push to the claims ref, same as
+# claim-files.sh.
 
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CLAIMS_FILE="$REPO_ROOT/agent-scripts/file-claims.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/claims-ref.sh"
+
 BRANCH="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 PR_NUMBER="${2:-}"
 
-if [ ! -f "$CLAIMS_FILE" ]; then
-  echo "No claims file found — nothing to release."
-  exit 0
+cd "$REPO_ROOT"
+
+# RES-1260: sweep stale claims (branch no longer on the remote) in the same
+# push as the specific-branch release, so a merge always leaves the ref
+# self-healed even if a prior sweep run was skipped or failed.
+REMOTE_BRANCHES_FILE="$(mktemp)"
+trap 'rm -f "$REMOTE_BRANCHES_FILE"' EXIT
+if git ls-remote --heads "$(claims_remote_name)" 2>/dev/null \
+  | awk '{print $2}' | sed 's|^refs/heads/||' \
+  > "$REMOTE_BRANCHES_FILE"; then
+  SWEEP_OK=1
+else
+  SWEEP_OK=0
 fi
 
-REPO_SLUG="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
-python3 - "$CLAIMS_FILE" "$BRANCH" <<'PYEOF'
+edit_release() {
+  local claims_file="$1"
+  python3 - "$claims_file" "$BRANCH" "$REMOTE_BRANCHES_FILE" "$SWEEP_OK" <<'PYEOF'
 import sys, json
 
-claims_file, branch = sys.argv[1], sys.argv[2]
+claims_file, branch, remote_file, sweep_ok = sys.argv[1:5]
 
 with open(claims_file) as f:
     data = json.load(f)
 
 claims = data.get("claims", {})
-released = [f for f, v in claims.items() if v["branch"] == branch]
-
+released = [f for f, v in claims.items() if v.get("branch") == branch]
 for f in released:
     del claims[f]
+
+# RES-1260: self-healing sweep — drop any remaining claim whose branch no
+# longer exists on the remote at all (covers claims from earlier merges
+# that a failed workflow run left behind).
+swept = []
+if sweep_ok == "1":
+    with open(remote_file) as f:
+        live = {line.strip() for line in f if line.strip()}
+    swept = [
+        path for path, claim in list(claims.items())
+        if claim.get("branch") not in live
+    ]
+    for path in swept:
+        del claims[path]
 
 with open(claims_file, "w") as f:
     json.dump(data, f, indent=2)
 
+summary_lines = []
 if released:
-    print(f"Released {len(released)} claim(s) for {branch}:")
+    summary_lines.append(f"Released {len(released)} claim(s) for {branch}:")
     for f in released:
-        print(f"  {f}")
+        summary_lines.append(f"  {f}")
 else:
-    print(f"No claims found for {branch}.")
+    summary_lines.append(f"No claims found for {branch}.")
+if swept:
+    summary_lines.append(f"Swept {len(swept)} additional stale claim(s):")
+    for f in swept:
+        summary_lines.append(f"  {f}")
+
+with open(claims_file + ".summary", "w") as f:
+    f.write("\n".join(summary_lines) + "\n")
 PYEOF
+}
+
+claims_apply_with_retry edit_release "release: ${BRANCH} (PR #${PR_NUMBER:-unknown})"
+
+REPO_SLUG="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 
 if [ -z "$PR_NUMBER" ]; then
   PR_NUMBER="$(gh pr list --state merged --head "$BRANCH" --json number --jq '.[0].number // ""' 2>/dev/null || true)"

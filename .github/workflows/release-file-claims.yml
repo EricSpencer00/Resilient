@@ -1,5 +1,22 @@
 name: Release file claims on PR close
 
+# RES-3976: claims used to live in agent-scripts/file-claims.json committed
+# on `main`, so releasing a branch's claims meant opening a
+# "chore: release file claims" PR against `main` and auto-merging it. That
+# PR was itself the root cause of the serialization tarpit this fix
+# addresses: every one of those merges rewrote file-claims.json on `main`,
+# which staled every OTHER open PR that still carried a (now-removed)
+# commit touching the same file — `MERGE: DIRTY` even with every required
+# check green, needing a manual union-merge resolve + a full CI re-run
+# before the queue could move again.
+#
+# Claims now live on a dedicated `agent-claims` branch (see
+# agent-scripts/claims-ref.sh) that no feature branch ever commits to,
+# rebases onto, or merges from, and that `main`'s branch protection does
+# not cover. `release-claims.sh` releases the closing branch's claims *and*
+# sweeps any other claim whose branch no longer exists on the remote, in a
+# single compare-and-swap push straight to that ref — no PR, no auto-merge
+# dance, and nothing lands on `main` at all.
 on:
   pull_request:
     types: [closed]
@@ -12,13 +29,17 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      # Check out `main` (not the closed PR's merge ref) so the scripts we
+      # run are always the canonical, current version regardless of what
+      # the closing branch itself carried. Full history is no longer
+      # needed — release-claims.sh only fetches the agent-claims ref
+      # directly, it never diffs against this checkout's own history.
       - uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Release claims for closed branch
+      - name: Release claims for closed branch (+ stale sweep)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -31,108 +52,3 @@ jobs:
           if [ "$MERGED" != "true" ]; then
             gh pr comment "$PR_NUMBER" --body "This PR was closed without merge. The branch claims were released and the ticket returned to the queue." >/dev/null || true
           fi
-
-      # RES-1260: self-healing sweep. Stale claims from earlier merged
-      # PRs can re-enter `file-claims.json` if a subsequent PR's rebase
-      # of the same file accidentally re-adds them (the append-only
-      # JSON merge resolves by union, so removed entries come back).
-      # During this session we observed claims for branches deleted
-      # weeks ago still sitting in the file, blocking new agents from
-      # claiming the same path. Walk the current claim set, ask GitHub
-      # if each branch still exists on the remote, and drop the ones
-      # that don't. Runs after the specific-branch release so the
-      # "newly merged branch goes first" path stays primary.
-      - name: Sweep stale claims (branches no longer on remote)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          CLAIMS=agent-scripts/file-claims.json
-          [ -f "$CLAIMS" ] || { echo "no claims file — skip"; exit 0; }
-          python3 - <<'PYEOF'
-          import json, os, subprocess, sys
-          path = "agent-scripts/file-claims.json"
-          with open(path) as f:
-              data = json.load(f)
-          claims = data.get("claims", {})
-          remove = []
-          for file, info in claims.items():
-              branch = info.get("branch", "")
-              if not branch:
-                  continue
-              r = subprocess.run(
-                  ["gh", "api", "-H", "Accept: application/vnd.github+json",
-                   f"repos/{os.environ['GITHUB_REPOSITORY']}/branches/{branch}"],
-                  capture_output=True, text=True,
-              )
-              if r.returncode != 0:
-                  # 404 → branch gone → stale claim
-                  if "Not Found" in (r.stderr + r.stdout) or "Branch not found" in (r.stderr + r.stdout):
-                      remove.append(file)
-                      print(f"  sweeping stale claim: {file} ({branch})")
-          for f in remove:
-              del claims[f]
-          if remove:
-              with open(path, "w") as f:
-                  json.dump(data, f, indent=2)
-                  f.write("\n")
-              print(f"Swept {len(remove)} stale claim(s).")
-          else:
-              print("No stale claims found.")
-          PYEOF
-
-      # RES-3901: `main` is protected and requires 7 status checks on
-      # every ref update (build/test/clippy, z3, board hygiene, three
-      # embedded cross targets, .text budget). A raw
-      # `git push origin HEAD:refs/heads/main` can never satisfy that —
-      # GitHub rejects it outright with GH006 regardless of which token
-      # performs the push, because a direct push has no PR/checks
-      # attached to it. That left every file claim permanently stuck
-      # since this workflow was added (confirmed: no push-restrictions
-      # allowlist and no admin-bypass token exist for this repo —
-      # `repos/.../branches/main/protection/restrictions` returns 404
-      # "Push restrictions not enabled", and GITHUB_TOKEN is not an
-      # admin so `enforce_admins: false` doesn't help it either).
-      #
-      # `agent-auto-merge.yml` already proves the mechanism that DOES
-      # work for GITHUB_TOKEN to land changes on protected `main`: open a
-      # normal PR and call `gh pr merge --squash --auto` (GitHub's native
-      # auto-merge), which waits for the required checks to go green and
-      # then squash-merges through the front door. Mirror that here
-      # instead of pushing directly.
-      - name: Open claims-release PR and enable auto-merge
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SRC_BRANCH: ${{ github.event.pull_request.head.ref }}
-          SRC_PR: ${{ github.event.pull_request.number }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if git diff --quiet agent-scripts/file-claims.json; then
-            echo "No claims to release."
-            exit 0
-          fi
-
-          RELEASE_BRANCH="chore/release-claims-${SRC_PR}-${RUN_ID}"
-
-          git checkout -b "$RELEASE_BRANCH"
-          git add agent-scripts/file-claims.json
-          git commit -m "chore: release file claims (+ sweep stale) for ${SRC_BRANCH}"
-          git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
-
-          gh pr create \
-            --base main \
-            --head "$RELEASE_BRANCH" \
-            --title "chore: release file claims for ${SRC_BRANCH}" \
-            --body "Releases file claims held by \`${SRC_BRANCH}\` (PR #${SRC_PR}), plus the stale-claim sweep. Automated by \`release-file-claims.yml\` (RES-3901) — opened as a PR instead of pushing to \`main\` directly because branch protection rejects direct pushes; this goes through the same \`gh pr merge --squash --auto\` path \`agent-auto-merge.yml\` uses to land agent PRs."
-
-          # Native GitHub auto-merge: waits for the 7 required checks to
-          # report SUCCESS, then squash-merges. This is orthogonal to
-          # agent-auto-merge.yml's custom integration-synced/agent-vetted
-          # gate, which only applies to agent feature PRs — this claims
-          # PR relies solely on GitHub's built-in auto-merge feature
-          # (confirmed enabled: `allow_auto_merge: true` on the repo).
-          gh pr merge "$RELEASE_BRANCH" --squash --auto --delete-branch

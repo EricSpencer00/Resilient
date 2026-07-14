@@ -78,6 +78,12 @@ done
 
 # Rule 1a: agent PRs must contain real work. The initial claim commit and
 # file-claims registry changes are orchestration metadata, not an improvement.
+#
+# RES-3976: claims now live on the dedicated `agent-claims` ref and are
+# never committed onto a feature branch, so `agent-scripts/file-claims.json`
+# should no longer appear in this diff at all. The exclusion stays as a
+# defensive no-op in case an out-of-date `claim-files.sh` (cached locally by
+# an agent that hasn't re-synced tooling) still commits it.
 SUBSTANTIVE_FILES=()
 for f in "${MODIFIED_FILES[@]}" "${ADDED_FILES[@]}" "${DELETED_FILES[@]}"; do
   case "$f" in
@@ -281,14 +287,18 @@ fi
 
 # --- 3. Overlap with other open PRs -------------------------------------------
 # Overlaps on the append-only extension allowlist (lib.rs, typechecker.rs,
-# lexer_logos.rs, file-claims.json) are auto-resolved by sync-integration.sh
-# and are NEVER blocking. Only non-allowlist overlaps fail the guardrail.
+# lexer_logos.rs) are auto-resolved by sync-integration.sh and are NEVER
+# blocking. Only non-allowlist overlaps fail the guardrail.
+#
+# RES-3976: agent-scripts/file-claims.json used to be listed here too — it
+# no longer needs an overlap exemption because claims live on the dedicated
+# `agent-claims` ref and are never committed onto a feature branch, so this
+# path can't appear in any open PR's file list anymore.
 EXTENSION_ALLOWLIST=(
   "resilient/src/lib.rs"
   "resilient/src/main.rs"
   "resilient/src/typechecker.rs"
   "resilient/src/lexer_logos.rs"
-  "agent-scripts/file-claims.json"
 )
 
 if [ -x "$REPO_ROOT/agent-scripts/check-overlaps.sh" ]; then
