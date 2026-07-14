@@ -95,6 +95,14 @@
     "docs/MODULE_SYSTEM.md": {
       "branch": "res-3510-stability-failure-module-design",
       "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-3914-vm-mutable-upvalues",
+      "claimed_at": "2026-07-14T01:39:50Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3914-vm-mutable-upvalues",
+      "claimed_at": "2026-07-14T01:39:50Z"
     }
   }
 }

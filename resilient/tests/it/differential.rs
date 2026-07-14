@@ -744,3 +744,101 @@ fn interpreter_and_vm_agree_on_enum_constructor_values() {
         failures.join("")
     );
 }
+
+/// RES-3914: `--vm` mishandled closures that capture a `mut`/reassigned
+/// local by upvalue. The VM captured upvalues *by value* (a `LoadLocal`
+/// snapshot at `MakeClosure` time) instead of by a shared mutable cell,
+/// and relied on a write-back-on-return hack (`source_slots` +
+/// `closure_home`) to fake mutation visibility for the narrow case
+/// where the closure is called immediately from the same frame that
+/// created it. That broke in two ways:
+///
+/// - **Crash on a returned counter-maker**: once the creating frame
+///   returns, the write-back on the *next* call writes the stale
+///   upvalue snapshot into whatever slot now occupies the old
+///   `source_slot` offset in the *new* caller frame — observed here as
+///   clobbering the very local holding the closure, so the second call
+///   errors `CallClosure: expected Closure` instead of returning `2`.
+/// - **Wrong value on interleaved mutation through two closures
+///   sharing one captured variable**: each closure captured its own
+///   independent snapshot, so a mutation made through one closure was
+///   invisible to the other (and to the defining scope) instead of
+///   compounding on a shared cell.
+///
+/// The interpreter's `Environment` is `Rc<RefCell<EnvFrame>>` — closures
+/// share bindings by construction — so it is the oracle here. The fix
+/// boxes every captured-by-mutable-upvalue local into a `Value::Cell`
+/// (RES-328's existing shared-cell store) the first time any closure
+/// captures it, and every read/write — from the closure, from a
+/// *second* closure capturing the same variable, and from the defining
+/// scope itself — routes through `Cell.get()`/`Cell.set()` from then on.
+#[test]
+fn interpreter_and_vm_agree_on_mutable_upvalue_closures() {
+    let programs = [
+        // Counter-maker: the closure keeps counting after its creating
+        // frame (`make_counter`) has returned. Two independent
+        // instances (`c1`, `c2`) must not share a cell — each call to
+        // `make_counter()` boxes a fresh `count`.
+        (
+            "returned_counter_survives_frame_pop",
+            "fn make_counter() { let count = 0; let inc = fn() { count = count + 1; return count; }; return inc; } \
+             fn main() { \
+                 let c1 = make_counter(); \
+                 let c2 = make_counter(); \
+                 println(c1()); \
+                 println(c1()); \
+                 println(c2()); \
+                 println(c1()); \
+                 println(type_of(c1)); \
+             } main();",
+        ),
+        // Two closures declared inside a named (non-main) function
+        // share one captured mutable variable; calls are interleaved
+        // with a plain read of the variable from the defining scope.
+        // Every access must observe the same cell.
+        (
+            "two_closures_share_one_cell_in_fn",
+            "fn run() { \
+                 let shared = 0; \
+                 let bump = fn(int n) { shared = shared + n; return shared; }; \
+                 let scale = fn(int n) { shared = shared * n; return shared; }; \
+                 println(bump(5)); \
+                 println(scale(2)); \
+                 println(shared); \
+                 println(bump(1)); \
+                 println(shared); \
+             } run();",
+        ),
+        // Nested closures: the innermost closure mutates a variable
+        // captured two scopes up (main -> outer -> inner), and the
+        // mutation must be visible after `outer()` returns.
+        (
+            "nested_closure_mutates_grandparent_scope",
+            "fn main() { \
+                 let base = 100; \
+                 let outer_fn = fn() { \
+                     let offset = 5; \
+                     let inner = fn() { base = base + offset; }; \
+                     inner(); \
+                     inner(); \
+                 }; \
+                 outer_fn(); \
+                 println(base); \
+             } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} mutable-upvalue-closure case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}

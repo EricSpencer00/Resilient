@@ -74,6 +74,25 @@ impl LoopState {
 /// signature in the compiler.
 const GLOBAL_FLAG: u16 = 0x8000;
 
+/// RES-3914: flag bit marking a slot as "boxed" — its runtime value is
+/// a `Value::Cell` handle (RES-328's shared-cell store) rather than a
+/// raw value. Set the first time *any* nested closure captures the
+/// name by mutable upvalue; every capture and every direct access
+/// after that point routes through `Cell.get()` / `Cell.set()` so the
+/// defining scope and every capturing closure observe the same
+/// mutations, instead of each closure snapshotting an independent copy
+/// (the root cause of RES-3914's crash-on-return and
+/// wrong-value-on-interleaved-mutation bugs). Distinct bit from
+/// `GLOBAL_FLAG` — globals never get boxed, since `LoadGlobal`/
+/// `StoreGlobal` already address one shared slot directly.
+const BOXED_FLAG: u16 = 0x4000;
+
+/// RES-3914: mask off both `GLOBAL_FLAG` and `BOXED_FLAG`, leaving the
+/// raw frame-relative (or main-frame) slot index.
+fn raw_slot(slot: u16) -> u16 {
+    slot & !(GLOBAL_FLAG | BOXED_FLAG)
+}
+
 /// Emit a load instruction for a slot that may be local or global.
 fn local_load_op(slot: u16) -> Op {
     if slot & GLOBAL_FLAG != 0 {
@@ -90,6 +109,27 @@ fn local_store_op(slot: u16) -> Op {
     } else {
         Op::StoreLocal(slot)
     }
+}
+
+/// RES-3914: emit a read of `slot`, transparently unwrapping a boxed
+/// (`BOXED_FLAG`) slot through `Cell.get()`. Used everywhere a plain
+/// `local_load_op` would otherwise be emitted for an identifier that
+/// might have been captured-by-mutable-upvalue.
+fn emit_identifier_load(chunk: &mut Chunk, slot: u16, line: u32) -> Result<(), CompileError> {
+    if slot & BOXED_FLAG != 0 {
+        chunk.emit(Op::LoadLocal(raw_slot(slot)), line);
+        let method_const = chunk.add_string_constant("get")?;
+        chunk.emit(
+            Op::CallMethod {
+                method_const,
+                arity: 0,
+            },
+            line,
+        );
+    } else {
+        chunk.emit(local_load_op(slot), line);
+    }
+    Ok(())
 }
 
 /// RES-2532: pre-scan top-level statements to collect global variable
@@ -513,6 +553,74 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     Ok(prog)
 }
 
+/// RES-3914: compile `name = value;`, shared by `compile_stmt` (main
+/// chunk) and `compile_stmt_in_fn` (function bodies). If `name`'s slot
+/// is boxed (captured by mutable upvalue — see `BOXED_FLAG`), the
+/// write routes through `Cell.set()` so every closure sharing the
+/// capture — and the defining scope itself — observes the mutation.
+/// `Cell.set()` returns `Value::Void`, which is discarded into a
+/// scratch local so the assignment stays stack-neutral, matching the
+/// plain `StoreLocal`/`StoreGlobal` path.
+#[allow(clippy::too_many_arguments)]
+fn compile_assignment(
+    name: &str,
+    value: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    let idx = *locals
+        .get(name)
+        .ok_or_else(|| CompileError::UnknownIdentifier(name.to_string()))?;
+    if idx & BOXED_FLAG != 0 {
+        chunk.emit(Op::LoadLocal(raw_slot(idx)), line);
+        compile_expr(
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        let method_const = chunk.add_string_constant("set")?;
+        chunk.emit(
+            Op::CallMethod {
+                method_const,
+                arity: 1,
+            },
+            line,
+        );
+        if *next_local == u16::MAX {
+            return Err(CompileError::TooManyLocals);
+        }
+        let scratch = *next_local;
+        *next_local += 1;
+        chunk.emit(Op::StoreLocal(scratch), line);
+    } else {
+        compile_expr(
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        chunk.emit(local_store_op(idx), line);
+    }
+    Ok(())
+}
+
 /// Compile a top-level (main-chunk) statement. Bare expression
 /// statements leak their value onto the operand stack, which `Return`
 /// picks up as the program result — useful for the RES-076 smoke
@@ -634,26 +742,18 @@ fn compile_stmt(
             line,
             loop_stack,
         ),
-        Node::Assignment { name, value, .. } => {
-            // RES-083: re-bind an existing local. Compile the RHS,
-            // StoreLocal to the known slot. Unknown name is an error.
-            compile_expr(
-                value,
-                chunk,
-                locals,
-                next_local,
-                fn_index,
-                ffi_index,
-                fns,
-                next_fn_idx,
-                line,
-            )?;
-            let idx = *locals
-                .get(name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
-            chunk.emit(Op::StoreLocal(idx), line);
-            Ok(())
-        }
+        Node::Assignment { name, value, .. } => compile_assignment(
+            name,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         // RES-171a/RES-171c: `a[i] = v` and `a[i0][i1]...[iN] = v`.
         // Depth-1 lowering: LoadLocal(a), <i>, <v>, StoreIndex, StoreLocal(a).
         // Depth-N lowering: temp-local staging through compile_index_assignment.
@@ -1606,24 +1706,18 @@ fn compile_stmt_in_fn(
             line,
             loop_stack,
         ),
-        Node::Assignment { name, value, .. } => {
-            compile_expr(
-                value,
-                chunk,
-                locals,
-                next_local,
-                fn_index,
-                ffi_index,
-                fns,
-                next_fn_idx,
-                line,
-            )?;
-            let idx = *locals
-                .get(name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
-            chunk.emit(local_store_op(idx), line);
-            Ok(())
-        }
+        Node::Assignment { name, value, .. } => compile_assignment(
+            name,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         // RES-171a/RES-171c: `a[i] = v` and `a[i0][i1]...[iN] = v`.
         // Shares the compile_index_assignment helper with compile_stmt.
         Node::IndexAssignment {
@@ -2434,7 +2528,7 @@ fn compile_index_assignment(
 fn compile_expr(
     node: &Node,
     chunk: &mut Chunk,
-    locals: &HashMap<String, u16>,
+    locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
@@ -2484,7 +2578,7 @@ fn compile_expr(
         }
         Node::Identifier { name, .. } => {
             if let Some(&idx) = locals.get(name) {
-                chunk.emit(local_load_op(idx), line);
+                emit_identifier_load(chunk, idx, line)?;
             } else if crate::lookup_builtin(name).is_some() {
                 let name_const = chunk.add_string_constant(name)?;
                 chunk.emit(
@@ -3307,6 +3401,38 @@ fn compile_expr(
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             collect_free_vars(body, &param_names, locals, &mut captured, &mut seen);
 
+            // RES-3914: box every non-global captured name *before*
+            // building the closure's own local map, so the captured
+            // upvalue is a shared `Value::Cell` handle instead of a
+            // value snapshot. If `name` was already boxed (an earlier
+            // closure literal in this same enclosing scope captured it
+            // first — `captured`'s `outer_slot` already carries
+            // `BOXED_FLAG`, read straight out of `locals`), reuse the
+            // existing cell rather than double-boxing it. Globals are
+            // skipped: `LoadGlobal`/`StoreGlobal` already address one
+            // shared slot directly, so boxing would only add overhead.
+            for (outer_slot, name) in &mut captured {
+                if *outer_slot & GLOBAL_FLAG != 0 {
+                    continue;
+                }
+                if *outer_slot & BOXED_FLAG == 0 {
+                    let real = *outer_slot;
+                    chunk.emit(Op::LoadLocal(real), line);
+                    let cell_name_const = chunk.add_string_constant("cell")?;
+                    chunk.emit(
+                        Op::CallBuiltin {
+                            name_const: cell_name_const,
+                            arity: 1,
+                        },
+                        line,
+                    );
+                    chunk.emit(Op::StoreLocal(real), line);
+                    let boxed_slot = real | BOXED_FLAG;
+                    locals.insert(name.clone(), boxed_slot);
+                    *outer_slot = boxed_slot;
+                }
+            }
+
             // Build the closure's local map: params at 0..arity, then upvalues
             // accessible via LoadUpvalue. The body chunk uses LoadUpvalue(i) for
             // captured names, resolved by the inner compilation below.
@@ -3338,8 +3464,20 @@ fn compile_expr(
             // LoadLocal(slot) ops to LoadUpvalue(upvalue_index). The upvalue
             // indices are 0-based and correspond to the capture order.
             let upvalue_base = fn_next_local; // first "upvalue" local slot
-            for (i, (_, name)) in captured.iter().enumerate() {
-                fn_locals.insert(name.clone(), upvalue_base + i as u16);
+            for (i, (outer_slot, name)) in captured.iter().enumerate() {
+                let slot = upvalue_base + i as u16;
+                // RES-3914: propagate boxed-ness so reads/writes of the
+                // captured name *within this closure's own body* also
+                // route through Cell.get()/Cell.set() — the entry-copy
+                // below (LoadUpvalue; StoreLocal) copies in the Cell
+                // handle itself, so the pseudo-local slot holds a Cell
+                // just like the outer scope's slot does.
+                let slot = if *outer_slot & BOXED_FLAG != 0 {
+                    slot | BOXED_FLAG
+                } else {
+                    slot
+                };
+                fn_locals.insert(name.clone(), slot);
             }
             // RES-2504: advance fn_next_local past the upvalue pseudo-slots
             // so that body `let` bindings don't collide with them.
@@ -3404,8 +3542,11 @@ fn compile_expr(
             // also increment next_fn_idx, fn_idx may not equal fns.len() by
             // the time we reach here. Use a placeholder-then-overwrite strategy:
             // extend fns to at least fn_idx+1 with placeholders.
-            let source_slots: Box<[u16]> =
-                captured.iter().map(|(s, _)| *s).collect::<Vec<_>>().into();
+            let source_slots: Box<[u16]> = captured
+                .iter()
+                .map(|(s, _)| raw_slot(*s))
+                .collect::<Vec<_>>()
+                .into();
             while fns.len() <= fn_idx as usize {
                 fns.push(Function {
                     name: "<closure_placeholder>".into(),
@@ -3425,9 +3566,20 @@ fn compile_expr(
                 fails: Box::default(),
             };
 
-            // Emit: push each captured value onto the stack, then MakeClosure.
+            // Emit: push each captured value onto the stack, then
+            // MakeClosure. Non-global captures were boxed above, so
+            // this always loads the shared `Value::Cell` handle
+            // (never a value snapshot). RES-3914: global captures use
+            // `LoadGlobal` (they were tagged `GLOBAL_FLAG` by
+            // `collect_free_vars` reading the pre-seeded globals in
+            // `locals`) instead of the previous unmasked `LoadLocal`,
+            // which read an out-of-range slot.
             for (outer_slot, _) in &captured {
-                chunk.emit(Op::LoadLocal(*outer_slot), line);
+                if *outer_slot & GLOBAL_FLAG != 0 {
+                    chunk.emit(Op::LoadGlobal(raw_slot(*outer_slot)), line);
+                } else {
+                    chunk.emit(Op::LoadLocal(raw_slot(*outer_slot)), line);
+                }
             }
             chunk.emit(
                 Op::MakeClosure {
@@ -3715,7 +3867,7 @@ fn compile_expr(
 fn compile_block_as_expr(
     node: &Node,
     chunk: &mut Chunk,
-    locals: &HashMap<String, u16>,
+    locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
@@ -3753,7 +3905,7 @@ fn compile_block_as_expr(
                 Node::ExpressionStatement { expr, .. } => compile_expr(
                     expr,
                     chunk,
-                    &block_locals,
+                    &mut block_locals,
                     next_local,
                     fn_index,
                     ffi_index,
@@ -3764,7 +3916,7 @@ fn compile_block_as_expr(
                 _ => compile_expr(
                     last_node,
                     chunk,
-                    &block_locals,
+                    &mut block_locals,
                     next_local,
                     fn_index,
                     ffi_index,
@@ -4018,7 +4170,7 @@ fn compile_match_expr(
     scrutinee: &Node,
     arms: &[(crate::Pattern, Option<Node>, Node)],
     chunk: &mut Chunk,
-    locals: &HashMap<String, u16>,
+    locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
     ffi_index: &HashMap<String, u16>,
@@ -4076,7 +4228,7 @@ fn compile_match_expr(
             compile_expr(
                 guard_expr,
                 chunk,
-                &arm_locals,
+                &mut arm_locals,
                 next_local,
                 fn_index,
                 ffi_index,
@@ -4091,7 +4243,7 @@ fn compile_match_expr(
         compile_expr(
             body,
             chunk,
-            &arm_locals,
+            &mut arm_locals,
             next_local,
             fn_index,
             ffi_index,
