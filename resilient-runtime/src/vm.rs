@@ -63,6 +63,11 @@
 //! (`get`/`get_mut` with an explicit `Result`-mapped `None` arm are
 //! used throughout instead of `[]`).
 
+// RES-3987 (D-E1): the `.rzbc` wire format — a compact, zero-heap,
+// zero-panic serialization of an [`Instr`] stream that a thin
+// on-device loader reconstructs. See [`serde`] for the byte layout.
+pub mod serde;
+
 /// A VM operand value, limited to the no_std-clean scalar subset
 /// audited in `docs/EMBEDDED_PIPELINE.md` section 1: `Int(i64)`,
 /// `Bool(bool)`, `Float(f64)`. No `String`, no collections, no
