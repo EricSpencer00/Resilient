@@ -57,46 +57,62 @@ max(1, 5);         // ok: satisfies requires and ensures
 
 ---
 
-### Backend 2: Z3 SMT Solver (Experimental → Stable in v0.5)
+### Backend 2: Z3 SMT Solver (Opt-in Cargo feature)
 
-**Purpose:** Formal verification of contracts and assertions using automated theorem proving.
+**Purpose:** Formal verification of `#[requires]` / `#[ensures]` contracts using automated theorem proving.
 
 **What it does:**
-- Converts Resilient code to SMT-LIB2 constraints
-- Sends constraints to Z3 solver
-- Z3 proves or refutes the assertion
-- Returns proof or counterexample
+- There is no `#[verify]` attribute — Z3 is not requested per function.
+  Every `#[requires]` / `#[ensures]` contract is folded by a hand-rolled
+  constant solver first (`resilient/src/verifier_z3.rs`, RES-060..065);
+  when folding returns `Unknown`, the compiler escalates to Z3
+  automatically, but only in binaries built with `--features z3`
+  (`resilient/Cargo.toml:48`: `z3 = ["dep:z3", "dep:ed25519-dalek", "dep:rand_core"]`).
+- Without `--features z3` the same contract sites still typecheck against
+  the hand-rolled folder alone; the Z3 escalation path is compiled out
+  (`resilient/src/lib.rs:29482`, `#[cfg(not(feature = "z3"))]`).
+- Contract verdicts can be exported as certificates and signed with
+  `rz build --emit-certificate <dir> [--sign-cert <keyfile>]`
+  (`resilient/src/lib.rs:29941` `emit_certificates`,
+  `resilient/src/lib.rs:30329`), then checked out-of-line with
+  `rz verify-cert <dir> [--pubkey <path>]` or `rz verify-all <dir> [--z3]`
+  (`resilient/src/lib.rs:31406` `dispatch_verify_cert_subcommand`,
+  `resilient/src/lib.rs:31537` `dispatch_verify_all_subcommand` — both
+  `#[cfg(feature = "z3")]`).
 
 **Example:**
 
 ```rust
-#[verify]  // Request Z3 verification
-fn safe_add(int x, int y) -> int {
-    return x + y;
+// No attribute needed — Z3 (when the binary is built with it) backs
+// every contract below once the hand-rolled folder can't decide it.
+#[requires(x >= 0)]
+#[requires(y >= 0)]
+#[ensures(return >= x and return >= y)]
+fn max(int x, int y) -> int {
+    if x > y { return x; }
+    return y;
 }
 ```
 
-**Z3 output:** "Verified: for all x, y in [INT_MIN, INT_MAX], x + y does not overflow"
-
 **When to use:**
-- Critical arithmetic (safety-critical systems)
-- Complex predicates with many branches
-- When you need a proof of correctness
+- Build with `--features z3` for critical arithmetic (safety-critical systems)
+- Complex predicates with many branches that the hand-rolled folder can't decide
+- When you need a signed certificate artifact for an external verification step
 
 **Limitations:**
 - Works best for decidable logic (arithmetic, bit operations)
 - May timeout on very complex formulas
 - Floating-point support incomplete
+- Only present in `--features z3` builds; default builds skip Z3 entirely
+  and rely on the hand-rolled folder plus runtime checks
 
 **Integration:**
 
-```rust
-#[cfg(feature = "z3")]
-#[verify]
-fn critical_computation(int x, int y) -> int {
-    // Z3 verifies this in -O build
-    return x * y / (x + 1);
-}
+```bash
+# Build with Z3 verification and emit signed contract certificates
+cargo build --manifest-path resilient/Cargo.toml --features z3
+rz build --emit-certificate ./certs --sign-cert ./signing.key program.rz
+rz verify-cert ./certs --pubkey ./signing.pub
 ```
 
 ---
@@ -164,23 +180,35 @@ process(sensor_reading);  // Guaranteed valid after recover
 
 ---
 
-### Backend 5: TLA+ Model Checking (Experimental)
+### Backend 5: TLA+ Model Checking (External spec, CLI-driven)
 
 **Purpose:** Verify distributed systems and concurrent algorithms.
 
 **What it does:**
-- Translates Resilient code to TLA+
-- TLC model checker explores all possible interleavings
-- Finds deadlocks, race conditions, safety violations
+- There is no `#[model_check]` attribute and no `tla` Cargo feature —
+  `grep -rn 'feature = "tla"' resilient/Cargo.toml` finds nothing, and
+  the `tla` feature does not appear in `[features]`
+  (`resilient/Cargo.toml:39-99`).
+- TLA+ verification is external-spec, not in-language: you write a
+  standalone `.tla` specification and check it with
+  `rz tla check <file.tla>`, which shells out to TLC
+  (`java -jar tla2tools.jar`) and translates its output into Resilient's
+  diagnostic format
+  (`resilient/src/tla_bridge.rs:1-20`, `resilient/src/lib.rs:33092`
+  `tla_bridge::is_tla_check_help_request`,
+  `resilient/src/lib.rs:33106` `tla_bridge::dispatch_tla_subcommand`).
+- The bridge is compiled into every non-wasm build unconditionally —
+  it is `#[cfg(not(target_arch = "wasm32"))]`, not feature-gated
+  (`resilient/src/lib.rs:154`). Without a `tla2tools.jar` on `PATH`,
+  `--tlc-jar`, or `RESILIENT_TLC_JAR`, the command prints a clear
+  "not available" message and exits non-zero — it never panics.
 
 **Example:**
 
-```rust
-#[model_check]
-fn test_two_phase_commit() {
-    // TLA+ verifies that all interleavings
-    // lead to consistent state
-}
+```bash
+rz tla check MySpec.tla
+# or, with an explicit tla2tools.jar:
+rz tla check --tlc-jar ./tla2tools.jar MySpec.tla
 ```
 
 **When to use:**
@@ -188,29 +216,52 @@ fn test_two_phase_commit() {
 - Multi-actor systems
 - Distributed algorithms
 
-**Guarantee:** If TLA+ verification succeeds, no interleavings violate the invariant.
+**Guarantee:** If `rz tla check` reports no violations, TLC found no
+interleaving of the modeled spec that violates the invariant. The
+Resilient source is not translated to TLA+ automatically — you author
+the `.tla` model yourself.
 
-**Status:** Experimental (v0.4+), requires `#[cfg(feature = "tla")]`
+**Status:** Shipped (CLI subcommand, `resilient/src/tla_bridge.rs`, 545
+lines including tests); requires Java + `tla2tools.jar` at runtime, not
+a Cargo feature.
 
 ---
 
-### Backend 6: Stateright Simulation Testing (Experimental → Backend-Limited in v0.6)
+### Backend 6: Stateright Simulation Testing (Opt-in Cargo feature, CLI-driven)
 
-**Purpose:** Test concurrent systems with exhaustive state exploration.
+**Purpose:** Test concurrent Resilient `actor` definitions with exhaustive state exploration.
 
 **What it does:**
-- Simulates all possible thread interleavings
-- Detects race conditions, deadlocks, livelocks
-- Property-based testing for actor systems
+- There is no `#[stateright_test]` attribute. The `stateright` Cargo
+  feature is real (`resilient/Cargo.toml:99`: `stateright = ["dep:stateright"]`,
+  `dep:stateright` pinned to `0.31.0`), but it gates a CLI subcommand,
+  not a function-level annotation.
+- `rz stateright check <file.rz>` parses the file's `actor { ... }`
+  definitions and exhaustively explores interleavings of their
+  `receive` handlers looking for `always:` invariant violations
+  (`resilient/src/stateright_bridge.rs:98`
+  `dispatch_stateright_subcommand`, `resilient/src/stateright_bridge.rs:227`
+  `check_source`).
+- The bridge is only compiled for non-wasm targets built with
+  `--features stateright`
+  (`resilient/src/lib.rs:151`:
+  `#[cfg(all(not(target_arch = "wasm32"), feature = "stateright"))]`).
 
 **Example:**
 
 ```rust
-#[stateright_test]
-fn test_mutex_fairness() {
-    // Explore all interleavings of lock/unlock
-    // Verify no thread starves
+// bounded.rz
+actor Q {
+    state: int = 0;
+    always: state <= 2;
+    receive push() requires state < 2 { self.state = self.state + 1; }
+    receive pop() requires state > 0 { self.state = self.state - 1; }
 }
+```
+
+```bash
+cargo build --manifest-path resilient/Cargo.toml --features stateright
+rz stateright check bounded.rz
 ```
 
 **When to use:**
@@ -218,38 +269,48 @@ fn test_mutex_fairness() {
 - Lock-based concurrency
 - Message-passing systems
 
-**Guarantee:** All tested properties hold in all possible interleavings.
+**Guarantee:** All `always:` invariants hold across every explored
+interleaving of the actor's `receive` handlers.
 
-**Status:** Experimental (v0.4+), requires `#[cfg(feature = "stateright")]`
+**Status:** Shipped behind `--features stateright`
+(`resilient/src/stateright_bridge.rs`, 666 lines including tests); no
+in-language attribute exists or is planned.
 
 ---
 
-### Backend 7: Lean Interactive Proof (Future)
+### Backend 7: Lean (External tool via MCP bridge only)
 
 **Purpose:** Machine-assisted formal proofs for complex theorems.
 
 **What it does:**
-- Exports Resilient code to Lean
-- Developers write Lean proofs interactively
-- Lean verifier certifies the proof
-- Proof is embedded in binary
+- There is no `#[prove_in_lean]` attribute, no `lean` Cargo feature, and
+  no Resilient-to-Lean code export. `grep -rn '"lean"' resilient/src`
+  finds exactly one hit: an MCP external-tool adapter that shells out to
+  a standalone `lean` binary against a hand-written `.lean` file
+  (`resilient/src/mcp_tool_registry.rs:274` `lean4_adapter`,
+  `binary_name: "lean".to_string()`, discoverable via the
+  `RESILIENT_LEAN_BIN` environment variable).
+- This adapter is part of the MCP tool-bridge registry
+  (`resilient/src/mcp_tool_registry.rs`), which lets an MCP client ask
+  Resilient's tooling to run Lean 4 proof checking on an existing
+  `.lean` file — it does not generate Lean from Resilient source, embed
+  a proof in the compiled binary, or gate any part of the compiler.
 
-**Example (future):**
+**Example:**
 
 ```rust
-#[prove_in_lean]
-fn matrix_inversion_preserves_eigenvalues() {
-    // Developers write Lean proof here
-    // Lean verifies mathematical correctness
-}
+// MCP tool-registry request shape (not Resilient source syntax):
+// { "tool": "lean4_check", "file": "proof.lean", "theorem": "eigen_preserved" }
 ```
 
 **When to use:**
-- Mathematical correctness proofs
-- Cryptographic algorithm verification
-- Formal specifications of complex systems
+- Mathematical correctness proofs, authored directly in Lean, that you
+  want an MCP-connected agent/editor to check via the bridge
 
-**Status:** Future (v0.7+), requires Lean integration
+**Status:** MCP external-tool adapter only
+(`resilient/src/mcp_tool_registry.rs`); no in-language attribute, no
+Cargo feature, no code export, and no proof embedding exist or are
+implemented.
 
 ---
 
@@ -269,11 +330,13 @@ fn sensor_filter(int x) -> int {
     return x;  // Simplified for example
 }
 
-// 2. Request Z3 verification for critical path
-#[cfg(feature = "z3")]
-#[verify]
+// 2. Build with --features z3 so the same contract below is
+//    escalated to Z3 automatically when the hand-rolled folder
+//    can't decide it — no attribute needed.
+#[requires(a > 0)]
+#[ensures(return >= a)]
 fn critical_computation(int a, int b) -> int {
-    return a * b;  // Z3 verifies no overflow
+    return a * b;  // Z3 verifies no overflow, given --features z3
 }
 
 // 3. Test with runtime assertions (debug)
@@ -300,25 +363,23 @@ cargo build --release
 
 **Workflow:**
 
-```rust
-#[model_check]  // Use TLA+ verification
-fn consensus_algorithm() {
-    // Verify all interleavings
-    // Detect deadlocks, race conditions
-    // Prove safety (all outputs agree)
-}
+```bash
+# 1. Author a standalone TLA+ spec of the protocol, then check it
+rz tla check consensus.tla
 
-#[stateright_test]  // Simulation testing
-fn test_three_phase_commit() {
-    // Explore state space
-    // Verify no inconsistencies
-}
+# 2. Model the protocol's actors directly in Resilient and let
+#    Stateright explore their interleavings (requires --features stateright)
+rz stateright check three_phase_commit.rz
 ```
 
 **Guarantees:**
-- All interleavings verified
-- Safety properties proven
-- No deadlocks or livelocks
+- `rz tla check`: no interleaving of the *modeled* `.tla` spec violates
+  the invariant (bounded by TLC's state space)
+- `rz stateright check`: no interleaving of the actors' `receive`
+  handlers violates an `always:` invariant
+- Neither tool derives its model from your Resilient source
+  automatically — TLA+ specs are hand-authored; Stateright checks the
+  actor definitions you already wrote
 
 ---
 
@@ -355,27 +416,30 @@ cargo build --release
 
 ## Feature Flags for Verification
 
-### Enable/Disable Verification Backends
+### Actual `[features]` in `resilient/Cargo.toml`
+
+There is no `contracts`, `tla`, `lean`, or `full_verification` feature.
+Contract checking (`#[requires]` / `#[ensures]`) is core language
+semantics, not feature-gated. TLA+ (`rz tla check`) is compiled into
+every non-wasm build unconditionally. The only verification-relevant
+opt-in Cargo features are `z3` and `stateright`
+(`resilient/Cargo.toml:39-99`):
 
 ```toml
 [features]
-default = ["contracts"]
-contracts = []           # Runtime contract checking
-z3 = []                  # Z3 SMT solver verification
-tla = []                 # TLA+ model checking
-stateright = []          # Stateright simulation
-lean = []                # Lean proof assistant
-full_verification = ["z3", "tla", "stateright", "lean"]
+default = []
+z3 = ["dep:z3", "dep:ed25519-dalek", "dep:rand_core"]
+stateright = ["dep:stateright"]
 ```
 
 **Usage:**
 
 ```bash
-# Development: enable all verification
-cargo test --features full_verification
+# Development: enable Z3 escalation + Stateright actor model checking
+cargo test --manifest-path resilient/Cargo.toml --features z3,stateright
 
-# Release: only contracts, no Z3 overhead
-cargo build --release --no-default-features --features contracts
+# Default: contracts + runtime assertions + rz tla check, no Z3 overhead
+cargo build --manifest-path resilient/Cargo.toml --release
 ```
 
 ---
@@ -386,14 +450,13 @@ cargo build --release --no-default-features --features contracts
 
 What percentage of code paths are verified?
 
-```rust
-#[measure_coverage]
-fn test_critical_path() {
-    // Rust code
-}
-
-// Report: 95% of branches covered by Z3 / TLA+ / Stateright
-```
+There is no `#[measure_coverage]` attribute or automated coverage report
+across backends — `grep -rn measure_coverage resilient/src` finds
+nothing. Today this is a manual accounting exercise: count functions
+with `#[requires]`/`#[ensures]`, count how many are in a `--features z3`
+build (so folding can escalate to Z3), and separately track which
+`.tla` specs and `actor` definitions have `rz tla check` /
+`rz stateright check` passing in CI.
 
 ### Metric 2: Proof Effort
 
@@ -401,11 +464,11 @@ How much human effort was required for formal proof?
 
 | Backend | Effort | Proof Time |
 |---------|--------|-----------|
-| Contracts | Minimal (metadata) | 0 (compile) |
-| Z3 | Low (assertions) | < 10s |
-| TLA+ | Medium (model) | < 60s |
-| Stateright | Low-Medium (annotations) | < 30s |
-| Lean | High (interactive) | Hours/days |
+| Contracts | Minimal (`#[requires]`/`#[ensures]` metadata) | 0 (compile) |
+| Z3 | Low (write contracts; `--features z3` does the rest) | < 10s |
+| TLA+ | Medium (author a standalone `.tla` model by hand) | < 60s |
+| Stateright | Low-Medium (write `actor { ... always: ... }` defs) | < 30s |
+| Lean | High (write the `.lean` proof yourself; MCP bridge only checks it) | Hours/days |
 
 ### Metric 3: Assurance Level
 
@@ -414,10 +477,10 @@ What does the proof guarantee?
 | Backend | Guarantee | Limitations |
 |---------|-----------|-----------|
 | Contracts | Preconditions met at call | Doesn't verify implementation |
-| Z3 | Arithmetic correct | Timeout possible, incomplete logic |
-| TLA+ | Safety property holds | Bounded state space |
-| Stateright | All interleavings tested | Doesn't prove unbounded systems |
-| Lean | Mathematically proven | Manual proof required |
+| Z3 | Arithmetic correct (`--features z3` builds only) | Timeout possible, incomplete logic |
+| TLA+ | Safety property holds for the *modeled* `.tla` spec | Bounded state space; model is hand-authored, not derived from source |
+| Stateright | All interleavings of the actor's `receive` handlers tested (`--features stateright`) | Doesn't prove unbounded systems |
+| Lean | Mathematically proven, if the `.lean` proof was written and passes | Manual proof required; not connected to Resilient source at all — MCP bridge only shells out to `lean` on an existing `.lean` file |
 
 ---
 
@@ -427,10 +490,12 @@ What does the proof guarantee?
 
 ```rust
 // Compiler automatically:
-// 1. Checks contracts at compile time
-// 2. Calls Z3 if #[verify] is present
-// 3. Fails build if verification fails
-// 4. Embeds proof in binary (if successful)
+// 1. Checks #[requires] / #[ensures] contracts at compile time
+// 2. Folds them with the hand-rolled solver; escalates to Z3 only
+//    if the binary was built with --features z3 (no attribute needed)
+// 3. Fails build if a contract is statically violated
+// 4. Optionally emits signed contract certificates via
+//    `rz build --emit-certificate <dir> [--sign-cert <keyfile>]`
 ```
 
 ### Test Framework Integration
@@ -438,9 +503,11 @@ What does the proof guarantee?
 ```rust
 #[test]
 fn test_with_verification() {
-    // Test runs with runtime assertion checking
-    // Z3 proofs are precomputed (from build)
-    // Stateright explores interleavings
+    // Test runs with runtime assertion checking of contracts.
+    // Z3-backed contract verdicts (--features z3) were computed at
+    // compile time, not re-run per test.
+    // Stateright interleaving exploration is a separate CLI step
+    // (`rz stateright check`), not part of #[test].
 }
 ```
 
@@ -448,9 +515,9 @@ fn test_with_verification() {
 
 ```rust
 // Release build:
-// - Contracts become no-ops (inlined assertions that compile away)
-// - Z3 proofs embedded as documentation
-// - Runtime overhead: < 1%
+// - Z3 (--features z3) verdicts are computed at compile time only —
+//   there is no runtime Z3 call, and no "proof embedded as
+//   documentation" artifact is generated
 ```
 
 ---
@@ -465,19 +532,22 @@ fn test_with_verification() {
 
 ### v0.4: Z3 Verification
 
-- [x] Z3 integration (experimental)
-- [ ] Automatic constraint generation
+- [x] Z3 escalation for `#[requires]`/`#[ensures]` contracts (`--features z3`)
+- [x] `rz verify-cert` / `rz verify-all` certificate verification CLI
+- [ ] Automatic constraint generation beyond current fold + Z3 escalation
 - [ ] Proof caching
 
 ### v0.5: Verification Stabilization
 
-- [ ] Z3 contracts (Stable tier)
-- [ ] TLA+ model checking (Backend-Limited)
-- [ ] Stateright simulation (Experimental)
+- [x] `rz tla check` — external `.tla` spec checking via TLC (shipped, not feature-gated)
+- [x] `rz stateright check` — actor interleaving exploration (`--features stateright`)
+- [ ] Z3 contracts promoted to Stable tier (see STABILITY.md)
 
 ### v0.6+: Advanced Verification
 
-- [ ] Lean integration (Future)
+- [ ] Deeper MCP-bridged Lean workflow (today: `lean4_check` MCP tool
+      shells out to an external `lean` binary on a hand-written
+      `.lean` file — no Resilient-to-Lean export exists)
 - [ ] Interactive proof mode
 - [ ] Proof sharing / reuse
 - [ ] Formal specification language
@@ -498,37 +568,45 @@ fn square(int x) -> int { ... }
 fn square(int x) -> int { ... }
 ```
 
-### 2. Z3 for Critical Paths
+### 2. Build with `--features z3` for Critical Paths
 
 ```rust
-// Good: verify critical arithmetic
-#[verify]
+// Good: strong contracts on critical arithmetic, built with --features z3
+// so the compiler escalates to Z3 whenever the hand-rolled folder can't decide
+#[requires(a > 0 && b > 0)]
+#[ensures(return >= a && return >= b)]
 fn safety_critical_math(int a, int b) -> int { ... }
 
-// Avoid: verify everything (slows build)
-#[verify]
+// Avoid: no contracts at all on critical paths — there's nothing for
+// either the folder or Z3 to check
 fn trivial_helper(int x) -> int { x + 1 }
 ```
 
-### 3. Stateright for Concurrency
+### 3. Model Actor Systems for Stateright
 
 ```rust
-// Good: test actor systems
-#[stateright_test]
-fn test_supervisor_recovery() { ... }
+// Good: model the system as actor { ... always: ... } and run
+// `rz stateright check` with --features stateright
+actor Supervisor {
+    state: int = 0;
+    always: state >= 0;
+    receive recover() requires state >= 0 { self.state = 0; }
+}
 
-// Avoid: relying only on contracts for concurrency
+// Avoid: relying only on contracts for concurrency — contracts check
+// single-call preconditions, not cross-actor interleavings
 ```
 
 ### 4. Separate Verification Concerns
 
 ```rust
-// Good: one verification per backend
-#[test] fn test_logic() { ... }              // Runtime
-#[verify] fn prove_math() { ... }             // Z3
-#[stateright_test] fn verify_concurrency() {} // Stateright
+// Good: one verification surface per backend
+#[test] fn test_logic() { ... }  // Runtime assertion checking
+// `rz build --features z3` backs the contracts above at compile time
+// `rz stateright check` explores actor interleavings separately
 
-// Avoid: mixing all in one test
+// Avoid: expecting a single #[test] to cover contracts, Z3, and
+// Stateright simultaneously — each is a distinct build/CLI step
 ```
 
 ---
@@ -537,4 +615,4 @@ fn test_supervisor_recovery() { ... }
 
 - **RES-3509:** Unify the verification surface into one user-facing model
 - **RES-3504:** Memory model specification
-- **STABILITY_POLICY.md:** Feature tier guarantees
+- **STABILITY.md:** Feature tier guarantees

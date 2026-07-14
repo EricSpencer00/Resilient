@@ -67,6 +67,14 @@
     "fuzz/fuzz_targets/contracts.rs": {
       "branch": "res-3779-3780-completion",
       "claimed_at": "2026-07-13T22:35:15Z"
+    },
+    "docs/VERIFICATION_MODEL.md": {
+      "branch": "res-x4-verification-tooling-doc-truth",
+      "claimed_at": "2026-07-14T01:17:50Z"
+    },
+    "docs/TOOLING_QUALITY.md": {
+      "branch": "res-x4-verification-tooling-doc-truth",
+      "claimed_at": "2026-07-14T01:17:50Z"
     }
   }
 }
