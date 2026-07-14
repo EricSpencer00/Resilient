@@ -71,6 +71,18 @@
     ".github/workflows/release-file-claims.yml": {
       "branch": "res-3901-release-file-claims-push",
       "claimed_at": "2026-07-14T01:28:40Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "worktree-agent-aa6127502abde5fd9",
+      "claimed_at": "2026-07-14T01:23:27Z"
+    },
+    "resilient/src/unify.rs": {
+      "branch": "worktree-agent-aa6127502abde5fd9",
+      "claimed_at": "2026-07-14T01:23:27Z"
+    },
+    "resilient/src/infer.rs": {
+      "branch": "worktree-agent-aa6127502abde5fd9",
+      "claimed_at": "2026-07-14T01:23:27Z"
     }
   }
 }
