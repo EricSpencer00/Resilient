@@ -225,7 +225,7 @@ $ rz my_module.rz --emit-contract-certificate cert.json
       "clauses": [
         { "clause": "n >= 0", "kind": "requires", "verdict": "unknown" },
         { "clause": "n <= 100", "kind": "requires", "verdict": "unknown" },
-        { "clause": "result >= 0", "kind": "ensures", "verdict": "unknown" }
+        { "clause": "result >= 0", "kind": "ensures", "basis": "clause-only", "verdict": "unknown" }
       ]
     }
   ]
@@ -241,6 +241,43 @@ Each clause's `"verdict"` is one of:
   a build without `--features z3`. The runtime check still guards the
   clause at execution time; this is not "unverified and unguarded," it
   is "not statically proved."
+
+### What an `ensures` proof actually attests — the `"basis"` field
+
+An `ensures` clause carries a `"basis"` field recording **against what**
+the verdict was established. This is the difference between "the
+postcondition is *self-consistent*" and "the function *actually
+computes* a value the postcondition admits":
+
+- `"basis": "implementation"` — the verifier substituted the function
+  body's return expression for `result` before proving, so the
+  obligation is grounded in what the code returns. A `"pass"` here means
+  the returned value provably satisfies the clause for every admitted
+  input; a `"fail"` means there is a concrete input (in the
+  `"counterexample"`) that satisfies the preconditions yet returns a
+  value the clause forbids. This is the guarantee that makes the
+  certificate meaningful: a wrong `max` that returns `x`
+
+  ```
+  fn max(int x, int y) -> int ensures result >= x && result >= y { return x; }
+  ```
+
+  is **refuted** (`x >= x && x >= y` fails for `y > x`), while the
+  correct `if x >= y { return x; } else { return y; }` **passes** — the
+  two no longer verify identically.
+
+- `"basis": "clause-only"` — the body is outside the substituted subset
+  (only single `return E;` and single `if/else`-of-returns over pure
+  arithmetic/boolean expressions are modelled today), so `result` was
+  left as a free variable. A `"pass"` here attests only that the clause
+  is a tautology / consistent with the preconditions — **not** that the
+  body returns a conforming value. Treat `clause-only` passes as
+  "well-formed postcondition," not "verified implementation," and lean
+  on the retained runtime check.
+
+Bodies with loops, local `let` bindings, or function calls in the
+return position fall back to `clause-only`; extending the substituted
+subset to richer control flow is tracked as follow-up work.
 
 Unlike `--emit-certificate <DIR>` (the older RES-071 SMT-LIB2 manifest
 + signature format, see [`CERTIFICATES.md`](CERTIFICATES.md)),

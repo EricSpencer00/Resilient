@@ -50,6 +50,28 @@ The path this page describes is the realistic one:
 The rest of this page maps concrete features to concrete objectives
 in each standard, and flags the gaps.
 
+### What an `ensures` certificate attests
+
+A postcondition proof is only as strong as what it is proven *against*.
+Resilient discharges an `ensures` clause against the **function body**:
+the body's return expression is substituted for `result`, so a passing
+verdict means the value the function actually computes provably
+satisfies the clause for every admitted input, and a failing verdict
+carries a concrete counterexample — an input that meets the
+preconditions yet returns a forbidden value. Straight-line
+(`return E;`) and single `if/else`-of-returns bodies over pure
+arithmetic/boolean expressions are proven this way; the per-clause
+`"basis"` field in the contract certificate reads `"implementation"`.
+
+Bodies outside that subset (loops, local bindings, calls in the return
+position) fall back to a **clause-only** proof, where `result` is a free
+variable: a pass then attests that the postcondition is *self-consistent
+with the preconditions*, **not** that the implementation honours it. The
+certificate labels these `"basis": "clause-only"`, and the retained
+runtime check — not the static proof — is what guards them. Do not read
+a `clause-only` pass as a verified implementation when assembling
+verification evidence.
+
 ---
 
 ## DO-178C (Airborne Software)

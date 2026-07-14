@@ -58,6 +58,14 @@ fn write_clause(out: &mut String, v: &ClauseVerdict) {
     out.push_str("      {\n");
     let _ = writeln!(out, "        \"clause\": \"{}\",", json_escape(&v.clause));
     let _ = writeln!(out, "        \"kind\": \"{}\",", kind_label(v.kind));
+    // RES-3969: `basis` records whether an `ensures` verdict was
+    // proven against the substituted function body (`implementation`)
+    // or the free-variable clause text (`clause-only`). Emitted only
+    // for `ensures`-family clauses — it is meaningless for `requires`
+    // and consistency checks, which never substitute `result`.
+    if matches!(v.kind, ClauseKind::Ensures | ClauseKind::InferredEnsures) {
+        let _ = writeln!(out, "        \"basis\": \"{}\",", v.basis.label());
+    }
     match &v.verdict {
         Verdict::Pass { certificate } => {
             if let Some(cert) = certificate {
