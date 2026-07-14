@@ -1582,6 +1582,12 @@ fn run_inner(
                 }
                 stack.push(v);
             }
+            // RES-3997: discard TOS — emitted after every expression-
+            // statement whose value is unused so it doesn't leak into
+            // whatever the next expression pops off the shared stack.
+            Op::Pop => {
+                stack.pop().ok_or(VmError::EmptyStack)?;
+            }
         }
     }
 }
@@ -1963,6 +1969,7 @@ fn op_to_index(op: Op) -> usize {
         Op::EnterTry(_) => OP_KIND_ENTER_TRY,
         Op::ExitTry => OP_KIND_EXIT_TRY,
         Op::AssertBool => OP_KIND_ASSERT_BOOL,
+        Op::Pop => OP_KIND_POP,
     }
 }
 
@@ -1987,7 +1994,8 @@ const OP_KIND_CALL_METHOD: usize = 48;
 const OP_KIND_ENTER_TRY: usize = 49;
 const OP_KIND_EXIT_TRY: usize = 50;
 const OP_KIND_ASSERT_BOOL: usize = 51;
-const HANDLER_TABLE_LEN: usize = 52;
+const OP_KIND_POP: usize = 52;
+const HANDLER_TABLE_LEN: usize = 53;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2045,6 +2053,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_ENTER_TRY] = h_enter_try;
     table[OP_KIND_EXIT_TRY] = h_exit_try;
     table[OP_KIND_ASSERT_BOOL] = h_assert_bool;
+    table[OP_KIND_POP] = h_pop;
     table
 };
 
@@ -3095,6 +3104,13 @@ fn h_assert_bool(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     Ok(Step::Continue)
 }
 
+/// RES-3997: discard TOS. See `Op::Pop` doc comment in `bytecode.rs`.
+#[inline(never)]
+fn h_pop(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    state.stack.pop().ok_or(VmError::EmptyStack)?;
+    Ok(Step::Continue)
+}
+
 #[inline(never)]
 fn h_make_tuple(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::MakeTuple { len } = op else {
@@ -3571,14 +3587,35 @@ mod tests {
 
     // ---------- RES-083 tests ----------
 
+    // RES-3997 test change: these `if`/comparison/logical probes below
+    // used to write `if COND { 1; } else { 2; }` as a bare top-level
+    // statement and rely on `compile_run` returning `1`/`2` — which only
+    // worked because the *bug* this ticket fixes (a discarded
+    // statement-expression's value not being popped off the VM stack)
+    // let the branch body's `1;`/`2;` leak all the way up to the
+    // program's implicit result. That was never a real language
+    // feature (a bare `if {...} else {...}` statement has no value —
+    // only `if`-in-*expression*-position does, e.g. `let r = if b {1}
+    // else {2};`), so once the leak is fixed these correctly compile to
+    // `Void` instead of the branch's discarded literal. Rewritten to use
+    // the actual if-expression idiom (`let r = if COND {A} else {B}; r`)
+    // so the trailing bare `r` — not the leak — carries the value,
+    // while still exercising the exact same comparison/logical-op
+    // machinery the tests are named for.
     #[test]
     fn if_true_picks_consequence() {
-        assert_int(compile_run("if true { 1; } else { 2; }").unwrap(), 1);
+        assert_int(
+            compile_run("let r = if true { 1 } else { 2 }; r").unwrap(),
+            1,
+        );
     }
 
     #[test]
     fn if_false_picks_alternative() {
-        assert_int(compile_run("if false { 1; } else { 2; }").unwrap(), 2);
+        assert_int(
+            compile_run("let r = if false { 1 } else { 2 }; r").unwrap(),
+            2,
+        );
     }
 
     #[test]
@@ -3606,12 +3643,24 @@ mod tests {
     #[test]
     fn comparison_ops_produce_bool() {
         // Use `if` to inspect the comparison result — we don't have
-        // a public Bool probe, but `if 3 < 5 { 1; } else { 0; }` tells
-        // us 1 iff Lt evaluated to true.
-        assert_int(compile_run("if 3 < 5 { 1; } else { 0; }").unwrap(), 1);
-        assert_int(compile_run("if 5 < 3 { 1; } else { 0; }").unwrap(), 0);
-        assert_int(compile_run("if 5 == 5 { 1; } else { 0; }").unwrap(), 1);
-        assert_int(compile_run("if 5 != 5 { 1; } else { 0; }").unwrap(), 0);
+        // a public Bool probe, but `let r = if 3 < 5 {1} else {0}; r`
+        // tells us 1 iff Lt evaluated to true.
+        assert_int(
+            compile_run("let r = if 3 < 5 { 1 } else { 0 }; r").unwrap(),
+            1,
+        );
+        assert_int(
+            compile_run("let r = if 5 < 3 { 1 } else { 0 }; r").unwrap(),
+            0,
+        );
+        assert_int(
+            compile_run("let r = if 5 == 5 { 1 } else { 0 }; r").unwrap(),
+            1,
+        );
+        assert_int(
+            compile_run("let r = if 5 != 5 { 1 } else { 0 }; r").unwrap(),
+            0,
+        );
     }
 
     #[test]
@@ -3621,15 +3670,15 @@ mod tests {
         // but we can at least confirm the result shape matches for
         // both paths.
         assert_int(
-            compile_run("if true && true { 1; } else { 0; }").unwrap(),
+            compile_run("let r = if true && true { 1 } else { 0 }; r").unwrap(),
             1,
         );
         assert_int(
-            compile_run("if true && false { 1; } else { 0; }").unwrap(),
+            compile_run("let r = if true && false { 1 } else { 0 }; r").unwrap(),
             0,
         );
         assert_int(
-            compile_run("if false && true { 1; } else { 0; }").unwrap(),
+            compile_run("let r = if false && true { 1 } else { 0 }; r").unwrap(),
             0,
         );
     }
@@ -3637,23 +3686,29 @@ mod tests {
     #[test]
     fn logical_or_short_circuits() {
         assert_int(
-            compile_run("if true || false { 1; } else { 0; }").unwrap(),
+            compile_run("let r = if true || false { 1 } else { 0 }; r").unwrap(),
             1,
         );
         assert_int(
-            compile_run("if false || true { 1; } else { 0; }").unwrap(),
+            compile_run("let r = if false || true { 1 } else { 0 }; r").unwrap(),
             1,
         );
         assert_int(
-            compile_run("if false || false { 1; } else { 0; }").unwrap(),
+            compile_run("let r = if false || false { 1 } else { 0 }; r").unwrap(),
             0,
         );
     }
 
     #[test]
     fn not_negates_boolean() {
-        assert_int(compile_run("if !false { 1; } else { 0; }").unwrap(), 1);
-        assert_int(compile_run("if !true { 1; } else { 0; }").unwrap(), 0);
+        assert_int(
+            compile_run("let r = if !false { 1 } else { 0 }; r").unwrap(),
+            1,
+        );
+        assert_int(
+            compile_run("let r = if !true { 1 } else { 0 }; r").unwrap(),
+            0,
+        );
     }
 
     #[test]
@@ -5156,6 +5211,7 @@ mod tests {
                 local_slot: 0,
             },
             Op::AssertBool,
+            Op::Pop,
         ];
         for op in samples {
             let idx = op_to_index(*op);

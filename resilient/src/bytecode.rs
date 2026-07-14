@@ -288,6 +288,15 @@ pub enum Op {
     /// RES-2544: exit a try-catch block (normal completion of try body).
     /// Pops the topmost try-handler frame from the handler stack.
     ExitTry,
+    /// RES-3997: pop TOS and discard it. Emitted after any
+    /// expression-statement whose value is not bound (`let`), returned,
+    /// or consumed as an operand — e.g. `lock(mutex_a);` as a bare
+    /// statement. Without this, a call's return value (or any other
+    /// expression's result) is left sitting on the shared operand
+    /// stack and silently leaks into whatever the next expression
+    /// pops, producing a deterministically-wrong (but not erroring)
+    /// value instead of a clean divergence.
+    Pop,
 }
 
 /// RES-2544: one catch arm in a try-catch handler table.

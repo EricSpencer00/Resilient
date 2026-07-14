@@ -404,21 +404,17 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             Node::Block { stmts: b, .. } => b.as_slice(),
             single => std::slice::from_ref(single),
         };
-        for stmt in inner {
-            let line = node_line(stmt).unwrap_or(fn_line);
-            compile_stmt_in_fn(
-                stmt,
-                &mut chunk,
-                &mut locals,
-                &mut next_local,
-                &fn_index,
-                &ffi_index,
-                functions,
-                next_fn_idx,
-                line,
-                &mut Vec::new(),
-            )?;
-        }
+        compile_fn_body_stmts(
+            inner,
+            &mut chunk,
+            &mut locals,
+            &mut next_local,
+            &fn_index,
+            &ffi_index,
+            functions,
+            next_fn_idx,
+            fn_line,
+        )?;
         chunk.emit(Op::ReturnFromCall, 0);
         let own_fn_idx = top_idx as u16;
         rewrite_tail_calls(&mut chunk, own_fn_idx);
@@ -493,38 +489,46 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     // to 16 fits the common case in one allocation.
     let mut main_locals: HashMap<String, u16> = HashMap::with_capacity(16);
     let mut main_next_local: u16 = 0;
-    for spanned in stmts {
-        // Skip fn/extern decls — handled in earlier passes.
-        // RES-391: `region <Name>;` is compile-time metadata only;
-        // it emits no code in either the tree-walker or the VM.
-        // RES-335: `struct <Name> { ... }` decls are likewise
-        // compile-time metadata — the `StructLiteral` opcode carries
-        // the type name directly and does not consult a decl table.
-        if matches!(
-            spanned.node,
-            Node::Function { .. }
-                | Node::Extern { .. }
-                | Node::RegionDecl { .. }
-                | Node::StructDecl { .. }
-                | Node::ImplBlock { .. }
-                | Node::NewtypeDecl { .. }
-        ) {
-            continue;
-        }
-        let line = spanned.span.start.line as u32;
-        compile_stmt(
-            &spanned.node,
-            &mut main,
-            &mut main_locals,
-            &mut main_next_local,
-            &fn_index,
-            &ffi_index,
-            &mut functions,
-            &mut next_fn_idx,
-            line,
-            &mut Vec::new(),
-        )?;
-    }
+    // Skip fn/extern decls — handled in earlier passes.
+    // RES-391: `region <Name>;` is compile-time metadata only;
+    // it emits no code in either the tree-walker or the VM.
+    // RES-335: `struct <Name> { ... }` decls are likewise
+    // compile-time metadata — the `StructLiteral` opcode carries
+    // the type name directly and does not consult a decl table.
+    //
+    // RES-3997: collect the surviving statements first (rather than
+    // compiling in the same loop) so `compile_top_level_stmts` can split
+    // off the trailing one — a bare top-level expression-statement with
+    // nothing after it is the program's implicit result value (what
+    // `vm::run` returns, and what `--vm`'s CLI driver prints when
+    // non-Void), exactly mirroring how a function body's trailing bare
+    // expression is its implicit return value. Every *other* statement
+    // is compiled normally and has its value popped if unused.
+    let top_level_stmts: Vec<(&Node, u32)> = stmts
+        .iter()
+        .filter(|spanned| {
+            !matches!(
+                spanned.node,
+                Node::Function { .. }
+                    | Node::Extern { .. }
+                    | Node::RegionDecl { .. }
+                    | Node::StructDecl { .. }
+                    | Node::ImplBlock { .. }
+                    | Node::NewtypeDecl { .. }
+            )
+        })
+        .map(|spanned| (&spanned.node, spanned.span.start.line as u32))
+        .collect();
+    compile_top_level_stmts(
+        &top_level_stmts,
+        &mut main,
+        &mut main_locals,
+        &mut main_next_local,
+        &fn_index,
+        &ffi_index,
+        &mut functions,
+        &mut next_fn_idx,
+    )?;
     main.emit(Op::Return, 0);
     // RES-298: constant fold the main chunk before peephole runs.
     crate::const_fold::optimize_if_enabled(&mut main)
@@ -716,17 +720,24 @@ fn compile_stmt(
             chunk.emit(Op::Return, line);
             Ok(())
         }
-        Node::ExpressionStatement { expr: inner, .. } => compile_expr(
-            inner,
-            chunk,
-            locals,
-            next_local,
-            fn_index,
-            ffi_index,
-            fns,
-            next_fn_idx,
-            line,
-        ),
+        // RES-3997: same discard-and-pop treatment as the in-fn path
+        // below — a top-level bare `expr;` statement must not leak its
+        // value onto the shared operand stack either.
+        Node::ExpressionStatement { expr: inner, .. } => {
+            compile_expr(
+                inner,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(Op::Pop, line);
+            Ok(())
+        }
         Node::IfStatement { .. }
         | Node::WhileStatement { .. }
         | Node::ForInStatement { .. }
@@ -1537,21 +1548,17 @@ fn compile_nested_fn(
         Node::Block { stmts: b, .. } => b.as_slice(),
         single => std::slice::from_ref(single),
     };
-    for stmt in inner {
-        let stmt_line = node_line(stmt).unwrap_or(line);
-        compile_stmt_in_fn(
-            stmt,
-            &mut chunk,
-            &mut locals,
-            &mut next_local,
-            &inner_fn_index,
-            ffi_index,
-            fns,
-            next_fn_idx,
-            stmt_line,
-            &mut Vec::new(),
-        )?;
-    }
+    compile_fn_body_stmts(
+        inner,
+        &mut chunk,
+        &mut locals,
+        &mut next_local,
+        &inner_fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
     chunk.emit(Op::ReturnFromCall, 0);
     rewrite_tail_calls(&mut chunk, fn_idx);
     crate::const_fold::optimize_if_enabled(&mut chunk)
@@ -1680,17 +1687,26 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
-        Node::ExpressionStatement { expr: inner, .. } => compile_expr(
-            inner,
-            chunk,
-            locals,
-            next_local,
-            fn_index,
-            ffi_index,
-            fns,
-            next_fn_idx,
-            line,
-        ),
+        // RES-3997: a bare `expr;` statement discards its value — the
+        // expression is compiled normally (leaving exactly one value on
+        // the operand stack, per `compile_expr`'s invariant) and that
+        // value is immediately popped so it doesn't leak into whatever
+        // the next statement/expression evaluates.
+        Node::ExpressionStatement { expr: inner, .. } => {
+            compile_expr(
+                inner,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(Op::Pop, line);
+            Ok(())
+        }
         Node::IfStatement { .. }
         | Node::WhileStatement { .. }
         | Node::ForInStatement { .. }
@@ -3498,21 +3514,17 @@ fn compile_expr(
                 Node::Block { stmts: b, .. } => b.as_slice(),
                 single => std::slice::from_ref(single),
             };
-            for stmt in inner_stmts {
-                let stmt_line = node_line(stmt).unwrap_or(line);
-                compile_stmt_in_fn(
-                    stmt,
-                    &mut fn_chunk,
-                    &mut fn_locals,
-                    &mut fn_next_local,
-                    fn_index,
-                    ffi_index,
-                    fns,
-                    next_fn_idx,
-                    stmt_line,
-                    &mut Vec::new(),
-                )?;
-            }
+            compile_fn_body_stmts(
+                inner_stmts,
+                &mut fn_chunk,
+                &mut fn_locals,
+                &mut fn_next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
             fn_chunk.emit(Op::ReturnFromCall, 0);
 
             // RES-2536: rewrite StoreLocal ops that target upvalue
@@ -3936,6 +3948,150 @@ fn compile_block_as_expr(
             fns,
             next_fn_idx,
             line,
+        ),
+    }
+}
+
+/// RES-3997: analog of [`compile_fn_body_stmts`] for the top-level `main`
+/// chunk's statement list (see `compile`'s "Pass 3"). `compile_stmt` /
+/// `compile_control_flow` differ from `compile_stmt_in_fn` /
+/// `compile_control_flow_in_fn` (top-level globals vs. function-local
+/// locals), so this mirrors the same "pop everything except a trailing
+/// bare expression" split against the top-level statement compiler
+/// rather than sharing one generic helper across both. A bare trailing
+/// top-level expression-statement (no `let`/`return`/assignment) is the
+/// program's implicit result value — `vm::run` returns it, and the
+/// `--vm` CLI driver prints it when non-`Void` — exactly mirroring how a
+/// function body's trailing bare expression is its implicit return
+/// value.
+#[allow(clippy::too_many_arguments)]
+fn compile_top_level_stmts(
+    stmts: &[(&Node, u32)],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+) -> Result<(), CompileError> {
+    if stmts.is_empty() {
+        return Ok(());
+    }
+    let (leading, last) = stmts.split_at(stmts.len() - 1);
+    for (node, line) in leading {
+        compile_stmt(
+            node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            *line,
+            &mut Vec::new(),
+        )?;
+    }
+    let (last_node, last_line) = last[0];
+    match last_node {
+        Node::ExpressionStatement { expr, .. } => compile_expr(
+            expr,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            last_line,
+        ),
+        _ => compile_stmt(
+            last_node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            last_line,
+            &mut Vec::new(),
+        ),
+    }
+}
+
+/// RES-3997: compile a function body's top-level statement list, followed
+/// unconditionally by `Op::ReturnFromCall` at every call site of this
+/// helper — mirrors `compile_block_as_expr`'s leading/last split so the
+/// existing "a trailing bare expression with no `return` keyword is the
+/// function's implicit return value" convention survives the discard-pop
+/// fix (see `compile_stmt_in_fn`'s `Node::ExpressionStatement` arm): every
+/// statement is compiled normally (and popped if unused) *except* a
+/// trailing `Node::ExpressionStatement`, whose value is left on the stack
+/// instead of popped so the caller's `Op::ReturnFromCall` returns it.
+/// Without this split, popping *every* discarded expression-statement
+/// (correct for RES-3997's actual bug — a call used as a mid-body
+/// statement) would also swallow the value of `fn f() -> int { x * y }`
+/// style bodies, since those relied on the very same (buggy) unpopped
+/// leak to carry their implicit return value to the trailing
+/// `ReturnFromCall`.
+#[allow(clippy::too_many_arguments)]
+fn compile_fn_body_stmts(
+    stmts: &[Node],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    if stmts.is_empty() {
+        return Ok(());
+    }
+    let (leading, last) = stmts.split_at(stmts.len() - 1);
+    for stmt in leading {
+        let stmt_line = node_line(stmt).unwrap_or(line);
+        compile_stmt_in_fn(
+            stmt,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            stmt_line,
+            &mut Vec::new(),
+        )?;
+    }
+    let last_node = &last[0];
+    let last_line = node_line(last_node).unwrap_or(line);
+    match last_node {
+        Node::ExpressionStatement { expr, .. } => compile_expr(
+            expr,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            last_line,
+        ),
+        _ => compile_stmt_in_fn(
+            last_node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            last_line,
+            &mut Vec::new(),
         ),
     }
 }

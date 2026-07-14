@@ -331,18 +331,16 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "assume_literal_false.rz",
     "assume_violated.rz",
     "recovers_to_fail.rz",
-    // RES-3997: VM silently computes a *different* value (not an error) — a bare
-    // statement-expression call's return value isn't popped off the VM's eval
-    // stack and leaks into the next arithmetic op. Deterministic across runs
-    // (not fault-injection nondeterminism); see `lock_ordering.rz` for the
-    // isolated repro.
-    "audit_log_required.rz",
-    "bounded_blocking.rz",
-    "degraded_mode.rz",
-    "lock_ordering.rz",
-    "priority_inheritance.rz",
+    // RES-4005: VM bytecode compiler leaks an inner-block `let` shadowing
+    // binding into the outer scope — `compile_control_flow_in_fn`'s
+    // `Node::Block` arm shares the same `locals` map with the enclosing
+    // scope instead of cloning it (unlike `compile_block_as_expr`), so a
+    // shadowing `let x = ...` inside an `if`/`while`/`for` body permanently
+    // overwrites the outer `x` binding for the rest of compilation.
+    // Previously miscategorized under RES-3997 (a distinct stack-leak bug,
+    // now fixed) — this is what's left once that fix exposed the real,
+    // separate root cause.
     "res1111_block_scope.rz",
-    "secret_erasure.rz",
     // RES-3998: VM equality (`==`) silently evaluates to `false` for equal Option /
     // Result / Set values (no error — the if/else just takes the wrong
     // branch), so the expected output line is silently missing.
@@ -1181,5 +1179,106 @@ fn interpreter_and_vm_agree_on_mutable_upvalue_closures() {
         "{} mutable-upvalue-closure case(s) diverged between backends:{}",
         failures.len(),
         failures.join("")
+    );
+}
+
+/// RES-3997 regression: a call used as a bare statement (`f(x);` —
+/// return value neither bound, returned, nor consumed as an operand)
+/// must not leak its return value onto the VM's shared operand stack.
+/// Before the fix, the bytecode compiler's statement-lowering paths
+/// (`compile_stmt` / `compile_stmt_in_fn` in `compiler.rs`) compiled the
+/// inner expression but never emitted a matching `Op::Pop`, so the
+/// discarded value stayed on the stack and silently corrupted whatever
+/// arithmetic ran next — a deterministic wrong-value bug with no error
+/// and no exit-code signal. See `examples/lock_ordering.rz` for the
+/// original isolated repro (a `deposit` function that calls
+/// `lock`/`unlock` as discarded statements around its real `return`).
+#[test]
+fn interpreter_and_vm_agree_on_discarded_statement_expression_values() {
+    let programs = [
+        // Minimal shape: two discarded calls before a `let`, two more
+        // after, then a `return` — mirrors `lock_ordering.rz::deposit`
+        // exactly (this was the pre-fix repro: `--vm` printed `11`
+        // instead of `10`, i.e. `total` plus the last discarded call's
+        // return value).
+        (
+            "discarded_calls_around_arithmetic_do_not_leak",
+            "fn lock(int m) -> int { return m; } \
+             fn unlock(int m) -> int { return m; } \
+             fn deposit(int mutex_a, int mutex_b, int amount) -> int { \
+                 lock(mutex_a); \
+                 lock(mutex_b); \
+                 let total = amount * 2; \
+                 unlock(mutex_b); \
+                 unlock(mutex_a); \
+                 return total; \
+             } \
+             fn main() { println(deposit(1, 2, 5)); } \
+             main();",
+        ),
+        // A single discarded call at top level (outside any function),
+        // immediately followed by an unrelated arithmetic expression —
+        // covers `compile_stmt`'s top-level path, not just
+        // `compile_stmt_in_fn`.
+        (
+            "top_level_discarded_call_does_not_leak",
+            "fn noisy() -> int { return 7; } \
+             noisy(); \
+             println(1 + 1);",
+        ),
+        // Discarded non-call expressions (a bare identifier reference,
+        // a bare arithmetic expression) must be popped too — the bug
+        // was general to any unused expression-statement, not just
+        // calls.
+        (
+            "discarded_non_call_expression_does_not_leak",
+            "fn main() { \
+                 let a = 42; \
+                 a; \
+                 1 + 1; \
+                 let b = 3; \
+                 println(b); \
+             } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} discarded-statement-expression case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+    // Pin the exact previously-wrong value too, not just backend parity —
+    // a regression that broke *both* backends identically would still
+    // pass the parity check above.
+    let vm = run_src(
+        "fn lock(int m) -> int { return m; } \
+         fn unlock(int m) -> int { return m; } \
+         fn deposit(int mutex_a, int mutex_b, int amount) -> int { \
+             lock(mutex_a); \
+             lock(mutex_b); \
+             let total = amount * 2; \
+             unlock(mutex_b); \
+             unlock(mutex_a); \
+             return total; \
+         } \
+         fn main() { println(deposit(1, 2, 5)); } \
+         main();",
+        "deposit_pinned_value",
+        true,
+    );
+    assert_eq!(
+        vm.stdout.lines().next(),
+        Some("10"),
+        "--vm must print 10 (amount * 2), not a value contaminated by a \
+         discarded statement-expression's leaked return value: {:?}",
+        vm.stdout
     );
 }
