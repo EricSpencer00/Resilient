@@ -89,12 +89,45 @@ The following are NOT breaking changes (minor version bump is sufficient):
 
 ## Current Feature Classification
 
-This table will be populated in follow-up PRs with all Resilient language features and their tier classifications.
+This table is evidence-based: a row is marked **Stable** only if `STABILITY.md`
+enumerates it under "Stable (deprecation cycle required before removal)" **or**
+it is wired into the typechecker's mandatory extension-pass pipeline
+(`resilient/src/typechecker.rs`) and backed by a non-trivial regression-example
+corpus (`resilient/examples/`). Anything with parser scaffolding but no
+enforcement is marked **Experimental** with an explicit "unenforced" note —
+never Stable. File/line references below were verified against
+`resilient/src/typechecker.rs` and `resilient/src/lib.rs` at the time of
+writing and will drift as the source moves; treat them as pointers, not pins.
 
-| Feature | Tier | Backends | Notes |
+| Feature | Tier | Evidence | Notes |
 |---------|------|----------|-------|
-| `@require_contracts` module directive | Experimental | Typechecker | Enrols every function in the file into non-vacuous-contract and loop-bound verification; `(strict)` additionally mandates contract presence (RES-3854). See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
-| `@ai_generated` function attribute | Experimental | Typechecker | Pure provenance alias of `#[generated]` (RES-3858); records audit metadata, grants no verification behaviour. See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
+| Core syntax (`let`, `fn`, `if`/`else`, `while`, `match`, `return`) | Stable | `STABILITY.md` § Stable | Deprecation cycle required before removal. |
+| Primitive types (`Int`, `Float`, `Bool`, `String`, `Bytes`) | Stable | `STABILITY.md` § Stable | — |
+| Arithmetic/comparison operators (`+ - * / % == != < <= > >=`) | Stable | `STABILITY.md` § Stable | — |
+| Function declaration/call syntax | Stable | `STABILITY.md` § Stable | — |
+| String/byte literal escapes (`\n`, `\t`, `\xNN`, `\u{NNNN}`) | Stable | `STABILITY.md` § Stable | — |
+| `unsafe` blocks (volatile MMIO gate) | Stable | `STABILITY.md` § Stable | Required wrapper for `volatile_read_*`/`volatile_write_*`. |
+| `#[interrupt(name = "…")]` attribute | Stable | `STABILITY.md` § Stable | Stable for Cortex-M4F and RV32IMAC targets. |
+| Region annotation syntax (`region NAME;`, `&[NAME] T`, `&mut[NAME] T`) | Stable | `STABILITY.md` § Stable | Compile-time same-function alias rejection. |
+| Region-polymorphic functions (`fn f<R, S>(…)`) | Stable | `STABILITY.md` § Stable | V1 single-label inference model; call-site aliasing check. |
+| Generics (type params + trait bounds, monomorphization) | Stable (evidence-based; not yet in `STABILITY.md`) | `generics.rs`, `generic_structs.rs`, `generic_enums.rs`, `generic_variance_call_sites.rs`; dispatched from `typechecker.rs` (`crate::generics::check`, `crate::generic_enums::check`, `crate::generic_structs::check`); 20 example files under `resilient/examples/generic_*` | Implemented and mandatory-pass-wired, but **`STABILITY.md`'s "Stable" list does not currently name generics** — this is a documentation gap, tracked as part of `RES-3510` (reconcile `STABILITY.md`/`docs/STABILITY_POLICY.md`), not evidence the feature is unstable. |
+| Sum types / enums (`enum`, tuple + named payload patterns) | Stable (evidence-based; not yet in `STABILITY.md`) | `sum_types.rs` (`parse_enum_decl`, payload-pattern parsing wired from `lib.rs`); 14 example files under `resilient/examples/enum_*` | Same `STABILITY.md` documentation gap as generics. |
+| Exhaustiveness checking (`match` on enums/structs) | Stable (evidence-based; not yet in `STABILITY.md`) | `enum_exhaustiveness.rs`, `struct_exhaustiveness.rs`, dispatched from `typechecker.rs`; `match_struct_exhaustive`/`match_struct_nonexhaustive`/`enum_payload_exhaust_missing` examples | Same `STABILITY.md` documentation gap. |
+| Nominal-look traits (`trait`/`impl Trait for T`, structural enforcement) | Stable (evidence-based; not yet in `STABILITY.md`) | `traits.rs`, dispatched from `typechecker.rs` (`crate::traits::check`); 14 example files under `resilient/examples/trait_*` | Dispatch is via the existing `<TypeName>$<method>` mangling — there is no vtable (see Trait objects, below). |
+| Default trait method bodies | Stable (evidence-based; not yet in `STABILITY.md`) | `default_trait_methods.rs`, `mod default_trait_methods` in `lib.rs` | `traits.rs`'s own module doc still lists this as "out of scope" — that comment is **stale**; the feature shipped in a later file. |
+| Blanket impls (`impl<T: Bound> Trait for T`) | Stable (evidence-based; not yet in `STABILITY.md`) | `blanket_impl.rs`, dispatched from `typechecker.rs` (`crate::blanket_impl::check`, gated on `markers.has_blanket_impl`) | Same stale-comment caveat as default trait methods. |
+| `@require_contracts` module directive | Experimental | `STABILITY.md` does not list it; RES-3854 | Enrols every function in the file into non-vacuous-contract and loop-bound verification; `(strict)` additionally mandates contract presence. See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
+| `@ai_generated` function attribute | Experimental | RES-3858 | Pure provenance alias of `#[generated]`; records audit metadata, grants no verification behaviour. See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
+| `live` blocks (retry/backoff/timeout) | Experimental | `STABILITY.md` § Experimental | Keyword spellings and telemetry counter names may change without notice (RES-138..142). |
+| Effect system (`-e->` effect arrow, `: effect` bound) | Experimental — parsed, **not enforced** | `STABILITY.md` § Experimental; parser support in `lib.rs` (`parse_optional_return_type`, `parse_optional_type_params`, RES-193/RES-775) | The parser records the effect var in a sibling map, but effect-polymorphism unification against a higher-order parameter's actual effects is **not implemented** — the parser comment states it waits on "the prereq chain (HM walker, generics)". Do not treat effect annotations as checked today. |
+| Associated types (`type Name = ConcreteType;` in `impl` blocks) | Experimental — parsed, **not enforced** | `traits.rs` (`AssociatedTypeDecl`), parsing in `lib.rs` (RES-783); zero references to associated types in `typechecker.rs` | `traits.rs`'s own module doc says "Status: In scope for phase 2. Not yet implemented." The `resilient/examples/trait_associated_types_design.rz` example is explicitly labelled "NOT YET IMPLEMENTED — design reference" and asserts no output. Parses; is not typechecked (no projection/`T::AssocType` validation exists). |
+| Trait objects (`dyn Trait`, vtable dispatch) | Unimplemented / descoped for now | `traits.rs` module doc: "Out of scope here: VTable / `dyn Trait`, monomorphisation, supertraits" (supertraits and monomorphisation since shipped as default methods/blanket impls above — vtables/`dyn` have not); no `dyn` keyword in the lexer/keyword table | Not merely deprioritized — there is no parser or typechecker path for this today. Do not document it as Experimental (which implies active work); it is a design idea only. |
+| Region *inference* (implicit, unlabeled reference regions) | Unimplemented / descoped for now | `region_inference.rs` (RES-394: region-variable machinery, union-find table) exists but `typechecker.rs` explicitly notes (RES-1611): `region_inference::infer` is a no-op stub (`Ok(())`) — "the real region-aliasing logic lives in `check_call_site_region_aliasing`", a different, already-Stable code path | Do not confuse this with the Stable "region annotation syntax" row above, which covers *explicit* `region NAME;` labels and their aliasing check — that part ships today. Full unlabeled inference does not. |
+| FFI (`extern` blocks, static + dynamic) | Experimental | `STABILITY.md` § Experimental | Both tree-walker dynamic-load path and `resilient-runtime` static registry (`--features ffi-static`) are actively changing; struct-by-pointer (RES-215) and callbacks (RES-216) not final. |
+| Z3 verification (`--features z3`, verifier directives) | Experimental | `STABILITY.md` § Experimental | V1 surface is state-local (per-function `requires`/`ensures`, single-step `recovers_to`); trace properties (liveness, fairness, refinement) are V2, tracked under RES-396. |
+| Package manager (`resilient pkg`) | Experimental | `STABILITY.md` § Experimental | Subcommand names, manifest format (RES-212), and resolution rules may change. |
+| Language server (`--lsp`) | Experimental | `STABILITY.md` § Experimental | Request/response shapes beyond stock LSP subject to change (RES-183/184/190). |
+| JIT backend (as a whole) | Backend-Limited | `resilient/src/jit_backend.rs`, `jit_runtime.rs` | Backend itself, not a language feature — listed because per-feature JIT parity is not independently re-verified by this document; see [BACKENDS.md](BACKENDS.md) for the (separately-maintained) per-backend feature matrix. |
 
 ---
 
@@ -128,6 +161,32 @@ When a Stable feature must be removed:
 
 ---
 
+## Relationship to the Conformance Suite (F-E1) and the Backend Matrix
+
+This document's tiers are the direct input to two other pieces of
+in-progress infrastructure (tracked under the RES-3933 roadmap, Track F):
+
+- **Conformance suite (F-E1)**: every row in this document's Stable tier is
+  the checklist for `resilient/tests/conformance/` — one file per feature,
+  run via a planned `--conformance` runner mode across all three backends
+  (interpreter, VM, JIT). A feature cannot be *called* Stable here without
+  an entry in that inventory once F-E1 lands; until then, the "Evidence"
+  column above (typechecker wiring + example corpus) is the interim
+  substitute proof.
+- **Backend matrix (F-E2 / [BACKENDS.md](BACKENDS.md))**: the
+  Backend-Limited tier exists specifically for features whose behavior is
+  not (yet) proven identical across interpreter/VM/JIT/embedded targets.
+  `BACKENDS.md` maintains the per-backend, per-feature support table
+  separately from this document — treat a mismatch between the two as a
+  bug in whichever file is stale, not as two independent truths.
+- Both efforts feed back into `STABILITY.md`: once F-E1's conformance
+  suite passes a feature on every backend, that is the trigger to add the
+  feature to `STABILITY.md`'s "Stable" list (closing the documentation
+  gaps flagged in the classification table above) and to drop the
+  "(evidence-based; not yet in `STABILITY.md`)" qualifier here.
+
+---
+
 ## User Guidance
 
 **Building Safety-Critical Systems:**
@@ -152,3 +211,6 @@ When evaluating Resilient for a project, check that your required features are i
 - **RES-3504**: Specify and enforce the memory model
 - **RES-3505**: Consolidate the failure and recovery semantics
 - **RES-3506**: Define the backend architecture contract
+- **RES-3510**: Reconcile `STABILITY.md` and `docs/STABILITY_POLICY.md` into one doc — will also resolve the "evidence-based; not yet in `STABILITY.md`" rows above
+- **RES-3648** (this document, RES-3501.1): create `LANGUAGE.md` with the feature-tier classification framework and populate the classification table
+- **F-E1** (RES-3933 roadmap, Track F): conformance/spec suite for the stable surface — see [Relationship to the Conformance Suite](#relationship-to-the-conformance-suite-f-e1-and-the-backend-matrix) above
