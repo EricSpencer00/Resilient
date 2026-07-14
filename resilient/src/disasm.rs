@@ -226,6 +226,7 @@ fn write_op(
         Op::Shr => write!(out, "Shr")?,
         Op::AssertFail => write!(out, "AssertFail")?,
         Op::AssertBool => write!(out, "AssertBool")?,
+        Op::Pop => write!(out, "Pop")?,
         Op::MakeTuple { len } => write!(out, "MakeTuple {}", len)?,
         Op::CallClosure { arity, source_slot } => {
             if source_slot == u16::MAX {

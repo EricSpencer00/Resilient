@@ -80,14 +80,6 @@
       "branch": "res-3510-stability-failure-module-design",
       "claimed_at": "2026-07-14T01:47:27Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3914-vm-mutable-upvalues",
-      "claimed_at": "2026-07-14T01:39:50Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-3914-vm-mutable-upvalues",
-      "claimed_at": "2026-07-14T01:39:50Z"
-    },
     "resilient/tests/it/main.rs": {
       "branch": "res-3983-conformance-scaffold",
       "claimed_at": "2026-07-14T02:26:15Z"
@@ -116,10 +108,6 @@
       "branch": "res-fe4-perf-baseline-fix",
       "claimed_at": "2026-07-14T03:07:13Z"
     },
-    "resilient/tests/it/differential.rs": {
-      "branch": "res-3990-differential-denylist",
-      "claimed_at": "2026-07-14T03:03:48Z"
-    },
     "docs/debugger.md": {
       "branch": "res-ee6-debugger-docs",
       "claimed_at": "2026-07-14T03:21:30Z"
@@ -127,6 +115,26 @@
     ".github/workflows/release.yml": {
       "branch": "res-4002-lsp-default-binary",
       "claimed_at": "2026-07-14T03:21:36Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
+    },
+    "resilient/src/disasm.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
+    },
+    "resilient/tests/it/differential.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
     }
   }
 }
