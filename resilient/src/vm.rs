@@ -375,6 +375,55 @@ struct CallFrame {
     source_slots: Box<[u16]>,
 }
 
+/// RES-3914: write mutated upvalues back to the caller's locals and
+/// the closure's own `Value::Closure` on return.
+///
+/// This is the pre-RES-3914 write-back mechanism (RES-2536): each
+/// `StoreUpvalue` inside the callee updated `frame.upvalues` in place,
+/// and on return that snapshot was copied into `caller_base + src` (the
+/// *caller's* local slot the value was originally captured from) plus
+/// the closure value's own upvalue slab. It assumed the closure never
+/// outlives the frame it was captured in — true only for the
+/// non-escaping, called-immediately case.
+///
+/// RES-3914 boxes every non-global captured variable into a shared
+/// `Value::Cell` at capture time (see `compiler.rs`'s `BOXED_FLAG`),
+/// so mutations go straight through `Cell.get()`/`Cell.set()` to the
+/// thread-local cell store — visible to every closure and scope
+/// sharing the capture without any write-back at all. `StoreUpvalue`
+/// is consequently never emitted for a boxed capture, so
+/// `popped.upvalues[i]` for those is an unchanging `Value::Cell`
+/// handle. Skip write-back for `Value::Cell` entries: if the closure
+/// has escaped its creating frame (returned out and called later),
+/// `caller_base + src` refers to an unrelated slot in whatever frame
+/// is now calling it, and writing the stale Cell handle there
+/// corrupts that frame's own local (RES-3914's crash-on-returned-
+/// counter, where it clobbered the very slot holding the closure
+/// itself). Only captured *globals* — which are deliberately not
+/// boxed, since `LoadGlobal`/`StoreGlobal` already address one shared
+/// slot directly — can still reach this path with a non-`Cell` value.
+fn write_back_upvalues(popped: &CallFrame, caller_base: usize, locals: &mut [Value]) {
+    if popped.upvalues.is_empty() {
+        return;
+    }
+    for (i, val) in popped.upvalues.iter().enumerate() {
+        if matches!(val, Value::Cell(_)) {
+            continue;
+        }
+        if let Some(&src) = popped.source_slots.get(i) {
+            let abs = caller_base + src as usize;
+            if abs < locals.len() {
+                locals[abs] = val.clone();
+            }
+        }
+    }
+    if let Some(home) = popped.closure_home
+        && let Some(Value::Closure { upvalues, .. }) = locals.get_mut(home)
+    {
+        *upvalues = popped.upvalues.clone();
+    }
+}
+
 /// RES-2544: active try-catch handler frame. Pushed by `EnterTry`,
 /// popped by `ExitTry`. When a `CheckedFailure` error fires during
 /// a function call, the VM searches this stack for a matching handler.
@@ -739,22 +788,8 @@ fn run_inner(
                 if frames.is_empty() {
                     return Ok(ret);
                 }
-                if !popped.upvalues.is_empty() {
-                    let caller_base = frames.last().map_or(0, |f| f.locals_base);
-                    for (i, val) in popped.upvalues.iter().enumerate() {
-                        if let Some(&src) = popped.source_slots.get(i) {
-                            let abs = caller_base + src as usize;
-                            if abs < locals.len() {
-                                locals[abs] = val.clone();
-                            }
-                        }
-                    }
-                    if let Some(home) = popped.closure_home
-                        && let Some(Value::Closure { upvalues, .. }) = locals.get_mut(home)
-                    {
-                        *upvalues = popped.upvalues;
-                    }
-                }
+                let caller_base = frames.last().map_or(0, |f| f.locals_base);
+                write_back_upvalues(&popped, caller_base, &mut locals);
                 locals.truncate(popped.locals_base);
                 stack.push(ret);
             }
@@ -1648,6 +1683,31 @@ fn vm_call_builtin_method(
         }
         return Ok(receiver);
     }
+    // RES-3914: `Value::Cell` upvalue-box method dispatch. The compiler
+    // routes reads/writes of a captured-mutable variable through
+    // `Cell.get()` / `Cell.set()` (see `compiler.rs`'s `BOXED_FLAG`) so
+    // every closure sharing the capture — and the defining scope
+    // itself — observes the same mutations instead of each closure
+    // holding an independent snapshot. Mirrors the interpreter's
+    // `Value::Cell` method dispatch in `lib.rs` (RES-328) by calling
+    // the same private `cell_get`/`cell_set` helpers directly; `Cell`
+    // isn't a struct/enum so it can't go through the
+    // `builtin_method_full_name` table below.
+    if let Value::Cell(id) = receiver {
+        return match method {
+            "get" => {
+                if !args.is_empty() {
+                    return Err(VmError::TypeMismatch("Cell.get: expected 0 arguments"));
+                }
+                crate::cell_get(id).map_err(VmError::BuiltinCallFailed)
+            }
+            "set" => match args.as_slice() {
+                [v] => crate::cell_set(id, v.clone()).map_err(VmError::BuiltinCallFailed),
+                _ => Err(VmError::TypeMismatch("Cell.set: expected 1 argument")),
+            },
+            _ => Err(VmError::TypeMismatch("Cell: unknown method")),
+        };
+    }
     let full_name = crate::builtin_method_full_name(&receiver, method).ok_or(
         VmError::TypeMismatch("CallMethod: receiver is not a struct or enum"),
     )?;
@@ -2028,22 +2088,8 @@ fn run_direct(
                 return Ok(state.stack.pop().unwrap_or(Value::Void));
             }
             let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
-            if !popped.upvalues.is_empty() {
-                let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
-                for (i, val) in popped.upvalues.iter().enumerate() {
-                    if let Some(&src) = popped.source_slots.get(i) {
-                        let abs = caller_base + src as usize;
-                        if abs < state.locals.len() {
-                            state.locals[abs] = val.clone();
-                        }
-                    }
-                }
-                if let Some(home) = popped.closure_home
-                    && let Some(Value::Closure { upvalues, .. }) = state.locals.get_mut(home)
-                {
-                    *upvalues = popped.upvalues;
-                }
-            }
+            let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
+            write_back_upvalues(&popped, caller_base, &mut state.locals);
             state.locals.truncate(popped.locals_base);
             state.stack.push(Value::Void);
             continue;
@@ -2334,22 +2380,8 @@ fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError>
     if state.frames.is_empty() {
         return Ok(Step::Halt(ret));
     }
-    if !popped.upvalues.is_empty() {
-        let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
-        for (i, val) in popped.upvalues.iter().enumerate() {
-            if let Some(&src) = popped.source_slots.get(i) {
-                let abs = caller_base + src as usize;
-                if abs < state.locals.len() {
-                    state.locals[abs] = val.clone();
-                }
-            }
-        }
-        if let Some(home) = popped.closure_home
-            && let Some(Value::Closure { upvalues, .. }) = state.locals.get_mut(home)
-        {
-            *upvalues = popped.upvalues;
-        }
-    }
+    let caller_base = state.frames.last().map_or(0, |f| f.locals_base);
+    write_back_upvalues(&popped, caller_base, &mut state.locals);
     state.locals.truncate(popped.locals_base);
     state.stack.push(ret);
     Ok(Step::Continue)

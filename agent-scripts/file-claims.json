@@ -60,29 +60,49 @@
       "branch": "res-3779-3780-completion",
       "claimed_at": "2026-07-13T22:35:15Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3915-vm-enum-variants",
-      "claimed_at": "2026-07-14T01:17:57Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-3915-vm-enum-variants",
-      "claimed_at": "2026-07-14T01:17:57Z"
-    },
     ".github/workflows/release-file-claims.yml": {
       "branch": "res-3901-release-file-claims-push",
       "claimed_at": "2026-07-14T01:28:40Z"
     },
-    "resilient/src/contract_verify.rs": {
-      "branch": "res-3969-body-aware-ensures",
-      "claimed_at": "2026-07-14T01:18:30Z"
+    "docs/MEMORY_MODEL.md": {
+      "branch": "res-3652-backend-contract-design-docs",
+      "claimed_at": "2026-07-14T01:30:01Z"
     },
-    "resilient/src/symbolic_eval.rs": {
-      "branch": "res-3969-body-aware-ensures",
-      "claimed_at": "2026-07-14T01:18:30Z"
+    "docs/TYPE_SYSTEM_ROADMAP.md": {
+      "branch": "res-3652-backend-contract-design-docs",
+      "claimed_at": "2026-07-14T01:30:01Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-3969-body-aware-ensures",
-      "claimed_at": "2026-07-14T01:31:53Z"
+    "docs/BACKENDS.md": {
+      "branch": "res-3652-backend-contract-design-docs",
+      "claimed_at": "2026-07-14T01:30:01Z"
+    },
+    "STDLIB.md": {
+      "branch": "res-3866-document-builtins",
+      "claimed_at": "2026-07-14T01:42:22Z"
+    },
+    "STABILITY.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "docs/STABILITY_POLICY.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "docs/FAILURE_MODEL.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "docs/MODULE_SYSTEM.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-3914-vm-mutable-upvalues",
+      "claimed_at": "2026-07-14T01:39:50Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3914-vm-mutable-upvalues",
+      "claimed_at": "2026-07-14T01:39:50Z"
     }
   }
 }

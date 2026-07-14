@@ -4,6 +4,13 @@
 
 Resilient's memory model defines how memory is allocated, accessed, and guaranteed to be safe across the compiler, runtime, and embedded targets. This document specifies the allocation tiers, aliasing rules, and mutual exclusivity guarantees that enable safe-critical systems programming.
 
+> **Reconcile-to-reality note (RES-3504.1, 2026-07):** the sections below
+> describe the memory model's *design target*. Several sub-sections read
+> as unconditional compiler guarantees; in the current implementation
+> some of them are enforced narrowly or not yet enforced at all. See
+> [Enforcement Reality Check](#enforcement-reality-check-what-is-actually-checked-today)
+> before relying on any claim in this document for a safety argument.
+
 ---
 
 ## Allocation Tiers
@@ -103,6 +110,15 @@ fn process_array(int count) -> array<int> {
 - Lifetime rules must be followed to prevent use-after-free
 - Allocation may fail (returns Option or Result)
 
+**Runtime grounding:** `resilient-runtime/src/lib.rs` is
+`#![cfg_attr(not(any(test, feature = "std-sink")), no_std)]` and gates
+every `Vec`/heap-backed code path behind `#[cfg(feature = "alloc")]`
+(e.g. lines 31, 50, 98, 124, 152, 210, 322, 334, 351). A `static-only`
+feature additionally exists for targets that want static allocation
+but must reject `alloc` entirely (`#[cfg(all(feature = "static-only",
+not(feature = "alloc")))]`), which is the concrete mechanism behind the
+"unavailable in strict `no_std`" constraint above.
+
 ---
 
 ### Tier 4: MMIO Allocation
@@ -140,7 +156,7 @@ struct GPIOA {
 
 ## Aliasing Rules
 
-Resilient follows Rust-like ownership and borrowing rules to prevent data races and use-after-free bugs.
+Resilient follows Rust-like ownership and borrowing rules to prevent data races and use-after-free bugs. **This section describes the design target.** The compiler pass that implements it today (`region_inference.rs` + `check_region_aliasing` in `lib.rs`, RES-391/RES-394) is a narrow, syntactic MVP — see [Enforcement Reality Check](#enforcement-reality-check-what-is-actually-checked-today) for exactly what it does and does not catch.
 
 ### Exclusive Access (Mutable References)
 
@@ -221,20 +237,82 @@ fn increment() {
 | Heap allocation | ✅ | ❌ | ✅ | ❌ |
 | MMIO access | ⚠️ | ✅ | ⚠️ | ✅ |
 | Concurrency | ✅ | ✅ | ✅ | ✅ |
-| GC (garbage collection) | ✅ | ❌ | ❌ | ❌ |
+
+**Correction:** an earlier revision of this table listed a "GC (garbage
+collection)" row claiming `std` builds have a garbage collector. Resilient
+has **no garbage collector in any configuration** — `grep -rn
+"garbage.collect\|GcCollect" resilient/src resilient-runtime/src` returns
+nothing. Heap values use ownership/move semantics (RES-3504 target) with no
+tracing or reference-counted collector implemented. The row has been
+removed rather than corrected to "❌" across the board, since a row that
+is always false everywhere isn't informative.
 
 ---
 
 ## Memory Safety Invariants
 
-These invariants are maintained by the compiler and enforced at runtime:
+These are the invariants the memory model is designed to guarantee. Item
+6 (bounds safety) is enforced today by a dedicated compiler pass
+(`bounds_check::check_array_bounds`, gated on `markers.has_index_expression`
+in `typechecker.rs`). Items 1–4 are **design invariants, not yet fully
+enforced** — see the next section for the precise scope of the aliasing
+checker that exists today. Treat 1–4 as the target this document is
+scoping work toward, not a guarantee you can rely on for a safety case.
 
 1. **No use-after-free**: References cannot access deallocated memory
 2. **No double-free**: Memory is freed exactly once
 3. **No dangling pointers**: References do not outlive their referents
 4. **No data races**: Exclusive access prevents simultaneous mutations
 5. **Type safety**: All memory accesses respect type constraints
-6. **Bounds safety**: All array/slice accesses are in bounds
+6. **Bounds safety**: All array/slice accesses are in bounds ✅ enforced
+
+---
+
+## Enforcement Reality Check: what is actually checked today
+
+Grounded in `resilient/src/region_inference.rs` and the
+`check_region_aliasing` pass in `resilient/src/lib.rs` (RES-391/RES-393/RES-394).
+
+**What exists:**
+- A **syntactic, function-signature-level** aliasing check. For every
+  top-level `fn`, it looks at the reference-typed parameters (`&T`,
+  `&mut T`, optionally with a `[LABEL]` region annotation) and rejects a
+  pair of `&mut` parameters that *could* alias: same declared region
+  label, or one labeled and one unlabeled.
+- Unlabeled `&mut` parameters get inference-assigned region variables
+  (`region_inference::build_region_map`); two unlabeled `&mut` params
+  with distinct inferred regions are accepted as independent (RES-394 D5).
+- A separate `region_inference::check_call_site_region_aliasing` pass
+  checks call-site region consistency; `region_inference::infer` itself
+  is a **no-op stub returning `Ok(())`** (see the comment at
+  `typechecker.rs:6397`) — the real logic lives in the call-site check,
+  not in a general inference pass.
+- When the syntactic rule rejects a program, a Z3 fallback using the
+  function's `requires` preconditions may still accept it (RES-393 D1),
+  if the `z3` feature is enabled.
+
+**What does not exist (yet):**
+- No whole-program or interprocedural alias analysis. The checker only
+  looks at parameter *signatures*; it does not track whether a reference
+  escapes into a struct field, a static, a return value, or an array
+  element.
+- No borrow checker over local variables or expressions — aliasing
+  through locals, closures, or heap-allocated structures is not analyzed.
+- No lifetime/region tracking beyond the function-parameter boundary
+  (there is no equivalent of Rust's NLL or region-based lifetime
+  elaboration across a whole function body).
+- No enforcement for Tier 3 (Heap) or Tier 4 (MMIO) aliasing beyond
+  whatever the `&`/`&mut` parameter check happens to cover if a
+  heap/MMIO reference is passed as a parameter.
+
+**Practical implication:** the "Aliasing Rules" and "Memory Safety
+Invariants" sections above describe the *intended* end-state model. Code
+that violates the invariants informally (e.g., stores a `&mut`
+reference to a struct field and reads it through a second alias that
+never appears as a function parameter pair) will compile today without
+error. Do not cite this document as evidence of a memory-safety
+guarantee beyond bounds-checking and the narrow parameter-level aliasing
+rule described above.
 
 ---
 
