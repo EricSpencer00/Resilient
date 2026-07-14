@@ -1,18 +1,40 @@
 # RES-201 + RES-111: cargo-fuzz workflow for the lexer + parser
 # targets.
 #
-# Manual dispatch only — fuzzing is bursty work, not per-PR. Each
-# target runs for 30 seconds against its own corpus directory
-# (first run starts empty; subsequent runs would pick up seeded
-# corpora if we were to commit them, which we intentionally don't
-# today).
+# RES-3933 (F-E4): previously manual-dispatch only. Now also runs:
+#   - on a nightly cron, for a longer budget (300s/target) that has
+#     time to actually explore the corpus;
+#   - on PRs that touch `resilient/src/**` (or the fuzz harnesses
+#     themselves), for a SHORT budget (20s/target) — just enough to
+#     catch an obvious regression the diff just introduced, not a
+#     real fuzzing campaign. Skipped while the PR is a draft (same
+#     "defer heavy CI on drafts" pattern as perf_gate.yml, since a
+#     draft PR can be pushed to many times before it's ready).
+#
+# Both the nightly and PR runs are ADVISORY, same as before — this
+# workflow is not in the required-status-checks set, so a fuzz
+# failure surfaces as a GitHub check but never blocks auto-merge.
+# Promoting it to required needs a flakiness-mitigation plan first
+# (see the PR body / roadmap epic F-E4).
+#
+# Each target runs for `duration_seconds` (input on manual dispatch,
+# else derived from the trigger — see the "Determine fuzz duration"
+# step) against its own corpus directory. A committed seed corpus
+# under `fuzz/seed-corpus/<target>/` gives every fresh run (no cache
+# hit, e.g. a first-time contributor or a cache eviction) a handful
+# of valid/near-valid programs to mutate from instead of starting
+# from literally nothing; the corpus itself (`fuzz/corpus/`, where
+# libFuzzer's newly-discovered inputs accumulate) stays cache-only
+# and gitignored — only the small curated seed set is committed.
 #
 # Matrix: `parse` target landed with RES-201; `lex` target added
 # by RES-111; `contracts` target added by RES-3779. All three shell
 # out to the built `rz` binary with feature-independent invocations
 # (`-t` for parse, `--dump-tokens` for lex,
 # `--emit-contract-certificate` for contracts — works on a stock,
-# non-z3 build; verdicts degrade honestly to "unknown").
+# non-z3 build; verdicts degrade honestly to "unknown"). The `jit`
+# target (RES-310) stays opt-in / manual-only — it needs a
+# `--features jit` build of `rz` and isn't in this matrix.
 
 name: fuzz
 
@@ -23,14 +45,34 @@ on:
         description: "Per-target fuzz duration in seconds"
         required: false
         default: "30"
+  schedule:
+    # 03:17 UTC daily — off-the-hour to avoid the GitHub Actions
+    # cron pile-up at :00.
+    - cron: "17 3 * * *"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "resilient/src/**"
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
 
 permissions:
   contents: read
+
+# Cancel a superseded PR run — a short fuzz pass is cheap, but there's
+# no reason to let two in-flight runs for the same PR both burn
+# Actions minutes when a newer push already obsoletes the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   fuzz:
     name: cargo-fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    # Defer while the PR is a draft; it re-runs on `ready_for_review`.
+    # Not a required check, so a deferred draft run blocks nothing.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +82,22 @@ jobs:
           - contracts
     steps:
       - uses: actions/checkout@v4
+
+      - name: Determine fuzz duration
+        id: duration
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "seconds=${{ github.event.inputs.duration_seconds }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            # Nightly: long enough to actually explore, still bounded
+            # so the job can't run away.
+            echo "seconds=300" >> "$GITHUB_OUTPUT"
+          else
+            # pull_request: just enough to catch an obvious crash the
+            # diff introduced. Total PR wall time ≈ toolchain/build
+            # overhead (shared across the 3-way matrix) + 20s.
+            echo "seconds=20" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -54,13 +112,24 @@ jobs:
             fuzz/corpus
           key: fuzz-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.toml', 'fuzz/fuzz_targets/**') }}
 
+      - name: Seed corpus from committed seeds
+        working-directory: fuzz
+        run: |
+          mkdir -p "corpus/${{ matrix.target }}"
+          if [[ -d "seed-corpus/${{ matrix.target }}" ]]; then
+            # `cp -n`: don't clobber inputs the cache already restored
+            # (or ones libFuzzer discovered on a prior run) with the
+            # committed seeds.
+            cp -n "seed-corpus/${{ matrix.target }}"/* "corpus/${{ matrix.target }}/" 2>/dev/null || true
+          fi
+
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
       - name: Build rz (release)
         run: cargo build --release --manifest-path resilient/Cargo.toml
 
-      - name: Run ${{ matrix.target }} fuzzer for ${{ github.event.inputs.duration_seconds }}s
+      - name: Run ${{ matrix.target }} fuzzer for ${{ steps.duration.outputs.seconds }}s
         env:
           RESILIENT_FUZZ_BIN: ${{ github.workspace }}/resilient/target/release/rz
         working-directory: fuzz
@@ -68,7 +137,7 @@ jobs:
           # Per-input timeout: 1 second. libFuzzer records inputs
           # that exceed it as timeouts (surfaced as crashes).
           cargo +nightly fuzz run ${{ matrix.target }} -- \
-            -max_total_time=${{ github.event.inputs.duration_seconds }} \
+            -max_total_time=${{ steps.duration.outputs.seconds }} \
             -timeout=1
 
       - name: Upload any crash artifacts

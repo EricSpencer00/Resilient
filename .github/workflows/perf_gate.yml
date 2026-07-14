@@ -4,10 +4,24 @@
 # the deltas. Exceeding the threshold (default 15%, override via
 # `PERF_THRESHOLD_PCT`) fails the workflow.
 #
+# RES-3933 (F-E4): the gate no longer measures fib(25) alone. The
+# same job now also runs `benchmarks/extended/run.sh`, which covers
+# the sum/vm/jit/contracts benchmark dirs (see that script's header
+# for exactly which rows and why lex/compile_time are deliberately
+# excluded as too slow for CI) and compares against
+# `benchmarks/baseline/extended.json` via
+# `benchmarks/extended/compare.sh`. Both comparisons reuse the same
+# release + `--features jit` binaries the fib step already builds,
+# so this adds ~seconds of wall time, not another full compile.
+#
 # Per the ticket Notes, the gate is a VISIBLE WARNING, not a
 # required check — branch-protection can opt in separately. The
 # workflow's `fail-fast: false` on its single job keeps PRs
-# mergeable while the signal is noisy (hosted-runner variance).
+# mergeable while the signal is noisy (hosted-runner variance). The
+# extended comparison is advisory for the same reason: the "Compare
+# vs baselines" step still exits non-zero when either comparison
+# regresses (so the job goes red — visible signal), it's just never
+# added to required-status-checks, so it can't block auto-merge.
 
 name: perf-gate
 
@@ -49,7 +63,7 @@ env:
 
 jobs:
   fib:
-    name: fib(25) medians
+    name: perf-gate benchmarks
     # Defer the benchmark while the PR is a draft; it re-runs on
     # `ready_for_review`. Not a required check, so a deferred draft run
     # blocks nothing.
@@ -79,29 +93,59 @@ jobs:
 
       - name: Run fib benchmark
         run: |
-          ./benchmarks/fib/run.sh > /tmp/fresh.json 2>/dev/null
-          echo "Fresh results:"
-          cat /tmp/fresh.json
+          ./benchmarks/fib/run.sh > /tmp/fresh-fib.json 2>/dev/null
+          echo "Fresh fib results:"
+          cat /tmp/fresh-fib.json
 
-      - name: Compare vs baseline
+      # RES-3933 (F-E4): reuses the release + `--features jit`
+      # binaries the fib step above just built (both live under
+      # resilient/target, which this job already builds and caches),
+      # so this step's own cost is just the benchmark runs themselves
+      # — see benchmarks/extended/run.sh for the time-budget math.
+      - name: Run extended benchmarks
+        run: |
+          ./benchmarks/extended/run.sh > /tmp/fresh-extended.json 2>/dev/null
+          echo "Fresh extended results:"
+          cat /tmp/fresh-extended.json
+
+      # Both comparisons always run (neither can short-circuit the
+      # other), and their combined pass/fail is this step's own exit
+      # code — same "capture rc, still build the PR-comment body,
+      # exit $rc at the end" shape the original single-benchmark
+      # version of this step used, just over two scripts instead of
+      # one. The job still goes red on a regression (visible, non-
+      # required signal); nothing here suppresses that failure.
+      - name: Compare vs baselines
         id: compare
         run: |
           set +e
-          ./scripts/compare_perf.sh benchmarks/baseline/fib.json /tmp/fresh.json > /tmp/compare.md
-          rc=$?
-          # Echo the markdown table so the workflow log shows it too.
-          cat /tmp/compare.md
+          ./scripts/compare_perf.sh benchmarks/baseline/fib.json /tmp/fresh-fib.json > /tmp/compare-fib.md
+          rc_fib=$?
+          ./benchmarks/extended/compare.sh benchmarks/baseline/extended.json /tmp/fresh-extended.json > /tmp/compare-extended.md
+          rc_extended=$?
+          # Echo both tables so the workflow log shows them too.
+          cat /tmp/compare-fib.md
+          cat /tmp/compare-extended.md
           # Stash for the PR-comment step.
           {
               echo 'body<<EOT'
               echo "### fib(25) perf-gate"
               echo
-              cat /tmp/compare.md
+              cat /tmp/compare-fib.md
               echo
               echo "Baseline: \`benchmarks/baseline/fib.json\` — to update, run \`scripts/update_perf_baseline.sh\` locally + review the deltas."
+              echo
+              echo "### extended benchmarks perf-gate"
+              echo
+              cat /tmp/compare-extended.md
+              echo
+              echo "Baseline: \`benchmarks/baseline/extended.json\` — regenerate with \`benchmarks/extended/run.sh\` and review the deltas before committing."
               echo "EOT"
           } >> "$GITHUB_OUTPUT"
-          exit $rc
+          if [[ $rc_fib -ne 0 || $rc_extended -ne 0 ]]; then
+            exit 1
+          fi
+          exit 0
 
       - name: Post / update PR comment
         if: github.event_name == 'pull_request' && always()
