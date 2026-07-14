@@ -115,6 +115,10 @@
     "resilient/tests/it/conformance.rs": {
       "branch": "res-3983-conformance-scaffold",
       "claimed_at": "2026-07-14T02:26:15Z"
+    },
+    "docs/EMBEDDED_PIPELINE.md": {
+      "branch": "res-3987-embedded-pipeline-design",
+      "claimed_at": "2026-07-14T02:49:00Z"
     }
   }
 }
