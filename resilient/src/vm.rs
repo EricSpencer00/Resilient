@@ -1748,6 +1748,34 @@ fn run_dispatch_loop(
                     }
                 }
             }
+            // RES-3993: `object?.field` / `object?.method(args)` pre-access
+            // unwrap. Mirrors `Interpreter::eval`'s `Node::OptionalChain` arm's
+            // `inner` match exactly (see `bytecode::Op::OptChainUnwrap` doc).
+            Op::OptChainUnwrap => {
+                let obj = stack.pop().ok_or(VmError::EmptyStack)?;
+                match obj {
+                    Value::Option(None) => {
+                        stack.push(Value::Option(None));
+                        stack.push(Value::Bool(false));
+                    }
+                    Value::Option(Some(inner)) => {
+                        stack.push(*inner);
+                        stack.push(Value::Bool(true));
+                    }
+                    Value::Result { ok: false, .. } => {
+                        stack.push(Value::Option(None));
+                        stack.push(Value::Bool(false));
+                    }
+                    Value::Result { ok: true, payload } => {
+                        stack.push(*payload);
+                        stack.push(Value::Bool(true));
+                    }
+                    other => {
+                        stack.push(other);
+                        stack.push(Value::Bool(true));
+                    }
+                }
+            }
             Op::IterPrepare => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
                 stack.push(iter_prepare_value(v)?);
@@ -2724,6 +2752,7 @@ fn op_to_index(op: Op) -> usize {
         Op::CallClosure { .. } => OP_KIND_CALL_CLOSURE,
         Op::TryUnwrap => OP_KIND_TRY_UNWRAP,
         Op::Coalesce => OP_KIND_COALESCE,
+        Op::OptChainUnwrap => OP_KIND_OPT_CHAIN_UNWRAP,
         Op::IterPrepare => OP_KIND_ITER_PREPARE,
         Op::LoadGlobal(_) => OP_KIND_LOAD_GLOBAL,
         Op::StoreGlobal(_) => OP_KIND_STORE_GLOBAL,
@@ -2791,7 +2820,9 @@ const OP_KIND_LOAD_STATIC: usize = 58;
 const OP_KIND_CONTRACT_VIOLATION: usize = 59;
 /// RES-3993: `??` null-coalescing operator.
 const OP_KIND_COALESCE: usize = 60;
-const HANDLER_TABLE_LEN: usize = 61;
+/// RES-3993: `?.` optional-chaining pre-access unwrap.
+const OP_KIND_OPT_CHAIN_UNWRAP: usize = 61;
+const HANDLER_TABLE_LEN: usize = 62;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2842,6 +2873,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_CALL_CLOSURE] = h_call_closure;
     table[OP_KIND_TRY_UNWRAP] = h_try_unwrap;
     table[OP_KIND_COALESCE] = h_coalesce;
+    table[OP_KIND_OPT_CHAIN_UNWRAP] = h_opt_chain_unwrap;
     table[OP_KIND_ITER_PREPARE] = h_iter_prepare;
     table[OP_KIND_LOAD_GLOBAL] = h_load_global;
     table[OP_KIND_STORE_GLOBAL] = h_store_global;
@@ -4157,6 +4189,39 @@ fn h_coalesce(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
             "`??` operator requires an Option on the left",
         )),
     }
+}
+
+// RES-3993: `?.` handler for the direct-threaded path. Mirrors the
+// run_inner Op::OptChainUnwrap arm exactly.
+#[inline(never)]
+fn h_opt_chain_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    if !matches!(op, Op::OptChainUnwrap) {
+        return Err(VmError::Unsupported("h_opt_chain_unwrap: wrong op"));
+    }
+    let obj = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match obj {
+        Value::Option(None) => {
+            state.stack.push(Value::Option(None));
+            state.stack.push(Value::Bool(false));
+        }
+        Value::Option(Some(inner)) => {
+            state.stack.push(*inner);
+            state.stack.push(Value::Bool(true));
+        }
+        Value::Result { ok: false, .. } => {
+            state.stack.push(Value::Option(None));
+            state.stack.push(Value::Bool(false));
+        }
+        Value::Result { ok: true, payload } => {
+            state.stack.push(*payload);
+            state.stack.push(Value::Bool(true));
+        }
+        other => {
+            state.stack.push(other);
+            state.stack.push(Value::Bool(true));
+        }
+    }
+    Ok(Step::Continue)
 }
 
 fn h_iter_prepare(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {

@@ -291,6 +291,26 @@ pub enum Op {
     /// operator. Emitted for `a ?? b` (`Node::InfixExpression` with
     /// `operator == "??"`).
     Coalesce,
+    /// RES-3993: pop TOS (the `object` in `object?.field` / `object?.method(args)`)
+    /// and push exactly two values back: an inner-or-final value, then a
+    /// `Value::Bool` "present" flag on top.
+    ///
+    /// - `Option(None)` → push `Option(None)`, then push `false`.
+    /// - `Option(Some(v))` → push `*v`, then push `true`.
+    /// - `Result { ok: false, payload }` → push `Option(None)`, then push `false`
+    ///   (an `Err` short-circuits a `?.` chain just like `None`).
+    /// - `Result { ok: true, payload }` → push `*payload`, then push `true`.
+    /// - Any other value → push it back unchanged, then push `true` (non-Option
+    ///   receivers pass straight through — `?.` is a no-op guard on them).
+    ///
+    /// The compiler follows this with `JumpIfFalse` on the `true`/`false` flag:
+    /// on `false` the remaining stack top is already the final `Option(None)`
+    /// result; on `true` it's the unwrapped-or-passthrough value, ready for a
+    /// `GetField` / `CallMethod`, whose result the compiler then wraps with
+    /// `CallBuiltin { "Some", 1 }`. Mirrors `Interpreter::eval`'s
+    /// `Node::OptionalChain` arm's pre-access unwrap step exactly. Emitted for
+    /// `object?.field` / `object?.method(args)` (`Node::OptionalChain`).
+    OptChainUnwrap,
     /// RES-2528: normalize an iterable for `for-in` loops. Pop TOS:
     ///   - `Array` / `String` → push back unchanged (LoadIndex handles both).
     ///   - `Map` → convert to sorted keys array, push that instead.

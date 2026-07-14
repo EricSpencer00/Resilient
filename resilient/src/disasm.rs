@@ -242,6 +242,7 @@ fn write_op(
         } => write!(out, "StoreUpvalue uv={} local={}", upvalue_idx, local_slot)?,
         Op::TryUnwrap => write!(out, "TryUnwrap")?,
         Op::Coalesce => write!(out, "Coalesce")?,
+        Op::OptChainUnwrap => write!(out, "OptChainUnwrap")?,
         Op::IterPrepare => write!(out, "IterPrepare")?,
         Op::LoadGlobal(idx) => write!(out, "LoadGlobal {}", idx)?,
         Op::StoreGlobal(idx) => write!(out, "StoreGlobal {}", idx)?,

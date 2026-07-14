@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use crate::bytecode::{CatchArm, Chunk, CompileError, Function, LiveHandlerEntry, Op, Program};
-use crate::{Node, Value};
+use crate::{ChainAccess, Node, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -1498,6 +1498,13 @@ fn compile_stmt(
         | Node::SupervisorDecl { .. }
         | Node::ModuleDecl { .. }
         | Node::Use { .. } => Ok(()),
+        // RES-3993: `bench "name" { ... }` blocks are silently skipped during
+        // normal program execution — the tree-walker's `Node::BenchBlock` arm
+        // is a bare `Ok(Value::Void)` no-op, since bench bodies are collected
+        // and run separately by the `rz bench` subcommand, not by `rz`/
+        // `rz --vm`. Mirror that here rather than falling through to the
+        // generic `Unsupported` catch-all below.
+        Node::BenchBlock { .. } => Ok(()),
         Node::TryCatch { body, handlers, .. } => compile_try_catch(
             body,
             handlers,
@@ -2892,6 +2899,8 @@ fn compile_stmt_in_fn(
         | Node::SupervisorDecl { .. }
         | Node::ModuleDecl { .. }
         | Node::Use { .. } => Ok(()),
+        // RES-3993: see the matching `Node::BenchBlock` arm in `compile_stmt`.
+        Node::BenchBlock { .. } => Ok(()),
         Node::Function {
             name,
             parameters,
@@ -3132,7 +3141,9 @@ fn compile_control_flow_in_fn(
         | Node::Use { .. }
         | Node::UnsafeBlock { .. }
         | Node::Assume { .. }
-        | Node::InvariantStatement { .. } => Ok(()),
+        | Node::InvariantStatement { .. }
+        // RES-3993: see the matching `Node::BenchBlock` arm in `compile_stmt`.
+        | Node::BenchBlock { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -3950,9 +3961,60 @@ fn compile_expr(
                 );
                 return Ok(());
             }
+            // RES-3993: any other callee expression (an immediately-invoked
+            // `Node::FunctionLiteral` like `fn(x) { .. }(10)` — the shape
+            // array-comprehension desugaring and nested-closure examples
+            // produce — an `IndexExpression`, a parenthesized sub-call, etc.)
+            // is compiled generically: evaluate it for its `Value::Closure`
+            // / `Value::EnumConstructor`, then dispatch through the same
+            // `CallClosure` op the named-local-closure path above uses.
+            // `source_slot: u16::MAX` marks it "temporary" (see
+            // `Op::CallClosure`'s doc comment) — there's no caller-frame
+            // local to write mutated upvalues back to, matching the
+            // tree-walker's `eval(function)` → `apply_function` dispatch,
+            // which evaluates the callee expression generically with no
+            // notion of a "home" binding either.
+            if !matches!(function.as_ref(), Node::Identifier { .. }) {
+                compile_expr(
+                    function,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
+                let arity = arguments.len();
+                for arg in arguments {
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                }
+                if arity > u8::MAX as usize {
+                    return Err(CompileError::Unsupported("too many args in indirect call"));
+                }
+                chunk.emit(
+                    Op::CallClosure {
+                        arity: arity as u8,
+                        source_slot: u16::MAX,
+                    },
+                    line,
+                );
+                return Ok(());
+            }
             let callee_name: &str = match function.as_ref() {
                 Node::Identifier { name, .. } => name.as_str(),
-                _ => return Err(CompileError::Unsupported("indirect call on non-identifier")),
+                _ => unreachable!("non-Identifier callees handled above"),
             };
             // FFI v2: foreign call takes priority over user-defined functions.
             if let Some(&idx) = ffi_index.get(callee_name) {
@@ -4930,6 +4992,83 @@ fn compile_expr(
                 line,
             )?;
             chunk.emit(Op::TryUnwrap, line);
+            Ok(())
+        }
+        // RES-3993: `object?.field` / `object?.method(args)` — compile
+        // `object`, run the shared pre-access unwrap (`OptChainUnwrap`,
+        // see its doc comment), branch on the "present" flag it leaves on
+        // top of the stack, perform the field/method access on the
+        // present path, then wrap the access result with `Some(..)` —
+        // mirrors `Interpreter::eval`'s `Node::OptionalChain` arm exactly
+        // (unwrap-or-short-circuit, then access, then re-wrap in Some).
+        Node::OptionalChain { object, access, .. } => {
+            compile_expr(
+                object,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(Op::OptChainUnwrap, line);
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            // present path: stack top is the unwrapped-or-passthrough value.
+            match access {
+                ChainAccess::Field(field) => {
+                    let fname_idx = chunk.add_string_constant(field)?;
+                    chunk.emit(
+                        Op::GetField {
+                            name_const: fname_idx,
+                        },
+                        line,
+                    );
+                }
+                ChainAccess::Method(method, arg_nodes) => {
+                    for arg in arg_nodes {
+                        compile_expr(
+                            arg,
+                            chunk,
+                            locals,
+                            next_local,
+                            fn_index,
+                            ffi_index,
+                            fns,
+                            next_fn_idx,
+                            line,
+                        )?;
+                    }
+                    let method_const = chunk.add_string_constant(method)?;
+                    if arg_nodes.len() > u8::MAX as usize {
+                        return Err(CompileError::Unsupported(
+                            "optional-chain method call with > 255 args",
+                        ));
+                    }
+                    chunk.emit(
+                        Op::CallMethod {
+                            method_const,
+                            arity: arg_nodes.len() as u8,
+                        },
+                        line,
+                    );
+                }
+            }
+            let some_const = chunk.add_string_constant("Some")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: some_const,
+                    arity: 1,
+                },
+                line,
+            );
+            let jmp_end = chunk.emit(Op::Jump(0), line);
+            // absent path: stack top is already `Option(None)`.
+            let absent_target = chunk.code.len();
+            chunk.patch_jump(jif, absent_target)?;
+            let end = chunk.code.len();
+            chunk.patch_jump(jmp_end, end)?;
             Ok(())
         }
         // RES-325: NamedArg — the name is a type-check annotation only;

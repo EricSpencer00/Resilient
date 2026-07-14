@@ -3423,7 +3423,7 @@ pub(crate) struct ExternDecl {
 
 /// RES-363: what to access after the `?.` short-circuit check.
 #[derive(Debug, Clone)]
-enum ChainAccess {
+pub(crate) enum ChainAccess {
     /// `?.field` — read a named field.
     Field(String),
     /// `?.method(args)` — call a method with arguments.
