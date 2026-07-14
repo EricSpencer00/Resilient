@@ -23,7 +23,7 @@ fn unknown_pkg_subcommand_hint_mentions_pkg_help_word() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     for expected in [
         "Error: unknown pkg subcommand `floofnicate`.",
-        "Known: init, publish, add.",
+        "Known: init, publish, add, remove, search.",
         "Run `rz pkg help` or `rz pkg --help` for usage.",
     ] {
         assert!(
