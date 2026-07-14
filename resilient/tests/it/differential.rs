@@ -223,6 +223,7 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "map_values.rz",
     "match_struct_nonexhaustive.rz",
     "negative_indices.rz",
+    "operator_overload.rz",
     "pipe_operator.rz",
     "polymorphic_types.rz",
     "precision_math.rz",
@@ -296,24 +297,42 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "showcase_quantifiers.rz",
     "unsafe_block_smoke.rz",
     "while_let.rz",
-    // RES-3994: VM runtime type-mismatch: CallMethod receiver-shape gaps, struct-
-    // update/field-lookup mismatches, `impl Add` operator-overload not
-    // consulted by `Op::Add`, plus misc completeness (no TCO for mutual
-    // recursion, `contains()` missing an (Array, T) overload).
+    // RES-3994 (remaining): `Op::CallMethod`'s built-in-container fallback
+    // (`vm_call_builtin_method`) has no path for calling a *user-supplied
+    // closure* per element — `.map()`/`.flat_map()` etc. need the VM to
+    // invoke a `Value::Closure` and resume the host-side loop with its
+    // result, which needs a re-entrant "run this call to completion"
+    // primitive the flat bytecode dispatch loop doesn't have yet (unlike
+    // the tree-walker, which just recurses). `StringBuilder` methods hit
+    // the same "receiver is a struct but there's no `$method` — check
+    // built-ins" fallback, but the interpreter's `StringBuilder` dispatch
+    // (`eval_string_builder_method`) also writes the mutated struct back to
+    // the caller's local binding, which `vm_call_builtin_method` has no
+    // handle on. `mutual_tco.rz` is unrelated to `CallMethod` — the VM has
+    // no tail-call optimization for mutual recursion, so it blows the
+    // `>1024`-frame cap where the tree-walker doesn't. (CallMethod
+    // primitive-`impl` dispatch, `impl Add`/`Sub`/`Mul` operator-overload
+    // dispatch, `Result` error-chaining methods, `Display::fmt` dispatch,
+    // `{ ..base, f: v }` struct-update-syntax field merge, and
+    // `Option::`/`Result::`-qualified match patterns were fixed in the
+    // same pass and no longer belong here). Refs #3933 · B-E3.
     "array_functional.rz",
     "array_method_chains.rz",
-    "display_trait.rz",
-    "error_chaining.rz",
-    "error_handling_patterns.rz",
     "mutual_tco.rz",
-    "operator_overload.rz",
-    "option_enum_roundtrip.rz",
-    "primitive_impl.rz",
-    "range_values.rz",
     "string_builder.rz",
-    "struct_update_syntax.rz",
-    "struct_update_trailing.rz",
-    "transaction_commit.rz",
+    // RES-4000: `compiler.rs` lowers a `lo..hi` range *literal* straight to
+    // an eagerly-materialized `array_range(...)` array at compile time (see
+    // `Node::Range` in `compile_expr`), so the VM never has a first-class
+    // `Value::Range` to hand `contains()`/`to_string()`; the interpreter
+    // keeps ranges lazy (`Value::Range`). `type_of(1..5)` already reports
+    // `"array"` under `--vm` vs `"range"` on the interpreter (caught by
+    // `interpreter_and_vm_agree_on_value_types`); `range_values.rz` hits the
+    // same root cause via `contains(range, x)`, which has no `(Array, T)`
+    // overload. Fixing needs a real `Value::Range` representation threaded
+    // through `for`-loop compilation, `len()`, `contains()`, and
+    // `to_string()` uniformly — a distinct, larger change from the
+    // `CallMethod`/struct/`Add` fixes above.
+    "range_values.rz",
     // RES-3995: VM has no `live { }` retry-loop execution context — `live_retries()`
     // fails outside a live block, and the retry mechanism itself asserts on
     // the first failing attempt instead of retrying.
@@ -878,6 +897,80 @@ fn interpreter_and_vm_agree_on_container_method_calls() {
     assert!(
         failures.is_empty(),
         "{} container-method case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
+
+/// RES-3994: `Op::CallMethod`/`Op::Add`/`Op::CallBuiltin` runtime
+/// type-mismatches found by the B-E2 differential sweep. Before the fix:
+/// `impl int { ... }`-style primitive methods and `impl Add for T`
+/// operator overloads raised `TypeMismatch` under `--vm` (the VM's
+/// `CallMethod` handler only resolved `Struct`/`EnumVariant` receivers,
+/// and `Op::Add` never consulted a struct's `$add` method the way the
+/// tree-walker's `operator_overload::try_dispatch` does); `Result`
+/// error-chaining methods (`.context()`) and a struct's `Display` impl
+/// (`to_string(x)`) hit the same missing-receiver-shape gap; and
+/// `{ ..base, f: v }` struct-update syntax silently dropped `base`
+/// entirely (the compiler's `Node::StructLiteral` match arm never bound
+/// it), producing a struct missing every un-overridden field. Each case
+/// here pins one of those independently-fixed sub-bugs so none of them
+/// can silently regress.
+#[test]
+fn interpreter_and_vm_agree_on_res3994_callmethod_struct_add_cases() {
+    let programs = [
+        (
+            "primitive_impl_int_method",
+            "impl int { fn abs(self) -> int { if self < 0 { return -self; } return self; } } fn main() { let n = -7; println(to_string(n.abs())); } main();",
+        ),
+        (
+            "primitive_impl_string_method",
+            "impl string { fn shout(self) -> string { return self + \"!\"; } } fn main() { println(\"hi\".shout()); } main();",
+        ),
+        (
+            "operator_overload_add",
+            "struct Vec2 { float x, float y, } impl Add for Vec2 { fn add(Vec2 self, Vec2 other) -> Vec2 { return new Vec2 { x: self.x + other.x, y: self.y + other.y }; } } fn main() { let a = new Vec2 { x: 1.0, y: 2.0 }; let b = new Vec2 { x: 3.0, y: 4.0 }; let c = a + b; println(c.x); println(c.y); } main();",
+        ),
+        (
+            "operator_overload_sub_mul",
+            "struct Vec2 { float x, float y, } impl Sub for Vec2 { fn sub(Vec2 self, Vec2 other) -> Vec2 { return new Vec2 { x: self.x - other.x, y: self.y - other.y }; } } impl Mul for Vec2 { fn mul(Vec2 self, Vec2 other) -> Vec2 { return new Vec2 { x: self.x * other.x, y: self.y * other.y }; } } fn main() { let a = new Vec2 { x: 5.0, y: 6.0 }; let b = new Vec2 { x: 2.0, y: 3.0 }; let d = a - b; let p = a * b; println(d.x); println(p.y); } main();",
+        ),
+        (
+            "result_error_chaining_context",
+            "fn f() -> Result<int, string> { return Err(\"bad\"); } fn main() { let r = f().context(\"outer\"); println(r); } main();",
+        ),
+        (
+            "display_trait_to_string",
+            "trait Display { fn fmt(self) -> string; } struct Point { int x, int y, } impl Display for Point { fn fmt(self) -> string { return \"(\" + to_string(self.x) + \", \" + to_string(self.y) + \")\"; } } fn main() { let p = new Point { x: 3, y: 7 }; println(to_string(p)); } main();",
+        ),
+        (
+            "struct_update_syntax_leading",
+            "struct Config { bool debug, int port, } fn main() { let base = new Config { debug: false, port: 8080 }; let dev = new Config { ..base, debug: true }; println(dev.debug); println(dev.port); } main();",
+        ),
+        (
+            "struct_update_syntax_trailing",
+            "struct Point { int x, int y, int z, } fn main() { let origin = new Point { x: 0, y: 0, z: 0 }; let p = new Point { x: 5, ..origin }; println(p.x); println(p.y); println(p.z); } main();",
+        ),
+        (
+            "qualified_option_pattern_match",
+            "fn describe(Option<int> x) -> string { match x { Option::Some(v) => \"got\", Option::None => \"nothing\", } } fn main() { println(describe(Some(42))); println(describe(None)); } main();",
+        ),
+        (
+            "qualified_result_pattern_match",
+            "fn describe(Result<int, string> r) -> int { match r { Result::Ok(v) => v, Result::Err(_) => -1, } } fn main() { println(describe(Ok(5))); println(describe(Err(\"e\"))); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} RES-3994 case(s) diverged between backends:{}",
         failures.len(),
         failures.join("")
     );

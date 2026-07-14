@@ -127,6 +127,14 @@
     "resilient/src/verifier_z3.rs": {
       "branch": "res-4014-z3-overflow",
       "claimed_at": "2026-07-14T04:21:41Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3994-vm-method-struct-add",
+      "claimed_at": "2026-07-14T04:13:43Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-3994-vm-method-struct-add",
+      "claimed_at": "2026-07-14T04:13:43Z"
     }
   }
 }

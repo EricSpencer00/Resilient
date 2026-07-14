@@ -18,6 +18,13 @@ use std::collections::HashMap;
 
 thread_local! {
     static ENUM_INDEX: RefCell<HashMap<String, Vec<crate::EnumVariant>>> = RefCell::new(HashMap::new());
+    /// RES-3994: struct name → declared field names (declaration order),
+    /// pre-scanned the same way `ENUM_INDEX` is. Used by `Node::StructLiteral`
+    /// compilation to resolve `{ ..base, f: v }` struct-update syntax — the
+    /// bytecode compiler otherwise has no way to know which fields `base`
+    /// must supply at the call site, since `Op::StructLiteral` only carries
+    /// the explicit field list.
+    static STRUCT_FIELD_INDEX: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
 }
 
 /// Tracks break/continue patch sites accumulated while compiling a loop body.
@@ -354,6 +361,22 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         for spanned in stmts {
             if let Node::EnumDecl { name, variants, .. } = &spanned.node {
                 idx.insert(name.clone(), variants.clone());
+            }
+        }
+    });
+
+    // RES-3994: pre-scan struct declarations so `Node::StructLiteral`'s
+    // `{ ..base, f: v }` struct-update syntax can resolve which fields
+    // `base` must supply (see `STRUCT_FIELD_INDEX` doc comment above).
+    STRUCT_FIELD_INDEX.with(|si| {
+        let mut idx = si.borrow_mut();
+        idx.clear();
+        for spanned in stmts {
+            if let Node::StructDecl { name, fields, .. } = &spanned.node {
+                idx.insert(
+                    name.clone(),
+                    fields.iter().map(|(_ty, fname)| fname.clone()).collect(),
+                );
             }
         }
     });
@@ -3103,7 +3126,9 @@ fn compile_expr(
         // as alternating `(field-name-const, value)` pushes followed
         // by `StructLiteral { name_const, field_count }`. Field names
         // live in the constant pool so `Op` stays `Copy`.
-        Node::StructLiteral { name, fields, .. } => {
+        Node::StructLiteral {
+            name, fields, base, ..
+        } => {
             if fields.len() > u16::MAX as usize {
                 return Err(CompileError::TooManyFields(name.clone()));
             }
@@ -3145,6 +3170,88 @@ fn compile_expr(
                 }
             }
             let name_const = chunk.add_string_constant(name)?;
+            // RES-3994: `{ ..base, f: v }` struct-update syntax. This
+            // arm previously dropped `base` on the floor entirely (the
+            // old `Node::StructLiteral { name, fields, .. }` pattern
+            // ignored it), so the resulting struct was missing every
+            // field it didn't explicitly override — surfaced at
+            // runtime as `struct Config has no field 'port'` under
+            // `--vm`. Mirror the interpreter (lib.rs's `StructLiteral`
+            // eval): evaluate `base` once, into a hidden local so its
+            // side effects don't re-run per field, then read every
+            // declared field this literal doesn't override off of it
+            // via `Op::GetField` before the explicit fields.
+            if let Some(base_expr) = base {
+                if *next_local == u16::MAX {
+                    return Err(CompileError::TooManyLocals);
+                }
+                let base_slot = *next_local;
+                *next_local += 1;
+                compile_expr(
+                    base_expr,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?;
+                chunk.emit(Op::StoreLocal(base_slot), line);
+
+                let declared_fields: Vec<String> = STRUCT_FIELD_INDEX
+                    .with(|si| si.borrow().get(name).cloned())
+                    .unwrap_or_default();
+                let overridden: std::collections::HashSet<&str> =
+                    fields.iter().map(|(n, _)| n.as_str()).collect();
+
+                let mut field_count: u16 = 0;
+                for fname in &declared_fields {
+                    if overridden.contains(fname.as_str()) {
+                        continue;
+                    }
+                    let fname_idx = chunk.add_string_constant(fname)?;
+                    chunk.emit(Op::Const(fname_idx), line);
+                    chunk.emit(Op::LoadLocal(base_slot), line);
+                    let get_field_const = chunk.add_string_constant(fname)?;
+                    chunk.emit(
+                        Op::GetField {
+                            name_const: get_field_const,
+                        },
+                        line,
+                    );
+                    field_count = field_count
+                        .checked_add(1)
+                        .ok_or_else(|| CompileError::TooManyFields(name.clone()))?;
+                }
+                for (field_name, field_expr) in fields {
+                    let fname_idx = chunk.add_string_constant(field_name)?;
+                    chunk.emit(Op::Const(fname_idx), line);
+                    compile_expr(
+                        field_expr,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                    field_count = field_count
+                        .checked_add(1)
+                        .ok_or_else(|| CompileError::TooManyFields(name.clone()))?;
+                }
+                chunk.emit(
+                    Op::StructLiteral {
+                        name_const,
+                        field_count,
+                    },
+                    line,
+                );
+                return Ok(());
+            }
             for (field_name, field_expr) in fields {
                 let fname_idx = chunk.add_string_constant(field_name)?;
                 chunk.emit(Op::Const(fname_idx), line);
@@ -4431,6 +4538,27 @@ fn compile_match_expr(
     Ok(())
 }
 
+/// RES-3994: extract the single inner sub-pattern from an
+/// `EnumPatternPayload` for `Option`/`Result` bridging in
+/// `compile_pattern_check`'s `Pattern::EnumVariant` arm. `Option::Some(v)`
+/// / `Result::Ok(v)` / `Result::Err(v)` parse with either a `Tuple`
+/// payload (positional call syntax) or a `Named` payload (brace-field
+/// syntax) depending on how the qualifier path was written, but both
+/// carry exactly one sub-pattern for these built-in types. Returns
+/// `None` for the payload-less `Option::None` case or any malformed
+/// (non-1-arity) payload, which the caller falls back to `Wildcard`
+/// for — a presence-only check, matching the interpreter's own bridge
+/// (lib.rs `match_pattern`'s `Pattern::EnumVariant` arm).
+fn enum_pattern_payload_inner(payload: &crate::EnumPatternPayload) -> Option<crate::Pattern> {
+    match payload {
+        crate::EnumPatternPayload::Tuple(pats) if pats.len() == 1 => Some(pats[0].clone()),
+        crate::EnumPatternPayload::Named(fields) if fields.len() == 1 => {
+            Some((*fields[0].1).clone())
+        }
+        _ => None,
+    }
+}
+
 /// Emit code that checks whether the current scrutinee (in `scrutinee_slot`)
 /// matches `pattern`. On failure, a `JumpIfFalse(0)` placeholder is appended
 /// to `next_arm_patches` (caller patches it to the next arm). On success, any
@@ -4885,10 +5013,52 @@ fn compile_pattern_check(
             }
         }
         Pattern::EnumVariant {
+            type_name,
             variant_name,
             payload,
-            ..
         } => {
+            // RES-3994: `Option::Some(v)` / `Option::None` /
+            // `Result::Ok(v)` / `Result::Err(v)` written with the
+            // explicit qualifier parse as a generic `Pattern::EnumVariant`
+            // — only the bare `Some(v)` / `None` / `Ok(v)` / `Err(v)`
+            // forms get the dedicated `Pattern::Some` / `Pattern::None`
+            // / `Pattern::Ok` / `Pattern::Err` treatment (see
+            // `parse_pattern_atom` in lib.rs). Their runtime values are
+            // `Value::Option` / `Value::Result`, not `Value::EnumVariant`,
+            // so the generic path below — which calls the `struct_name`
+            // builtin, valid only for Struct/EnumVariant receivers —
+            // always failed for them with "argument is not a struct or
+            // enum variant" under `--vm`. Desugar to the dedicated
+            // pattern and recurse, mirroring the interpreter's own
+            // `Pattern::EnumVariant` bridge (lib.rs `match_pattern`).
+            let bridged = match (type_name.as_deref(), variant_name.as_str()) {
+                (Some("Option"), "Some") => Some(Pattern::Some(Box::new(
+                    enum_pattern_payload_inner(payload).unwrap_or(Pattern::Wildcard),
+                ))),
+                (Some("Option"), "None") => Some(Pattern::None),
+                (Some("Result"), "Ok") => Some(Pattern::Ok(Box::new(
+                    enum_pattern_payload_inner(payload).unwrap_or(Pattern::Wildcard),
+                ))),
+                (Some("Result"), "Err") => Some(Pattern::Err(Box::new(
+                    enum_pattern_payload_inner(payload).unwrap_or(Pattern::Wildcard),
+                ))),
+                _ => None,
+            };
+            if let Some(bridged_pat) = bridged {
+                return compile_pattern_check(
+                    &bridged_pat,
+                    scrutinee_slot,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                    next_arm_patches,
+                );
+            }
             let sn_const = chunk.add_string_constant("struct_name")?;
             chunk.emit(Op::LoadLocal(scrutinee_slot), line);
             chunk.emit(

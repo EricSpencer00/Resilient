@@ -612,7 +612,33 @@ fn run_inner(
                         buf.push_str(s);
                         stack.push(Value::String(buf));
                     }
-                    _ => return Err(VmError::TypeMismatch("Add")),
+                    // RES-3994: `impl Add for T` operator-overload
+                    // dispatch — mirrors `operator_overload::try_dispatch`
+                    // (lib.rs). Pushes a `<StructName>$add` call frame
+                    // instead of computing in place; its `Return`
+                    // naturally lands the result back on the stack.
+                    (a, b) => {
+                        if let Some(fn_idx) = vm_operator_overload_fn_idx(program, "add", &a, &b) {
+                            if frames.len() >= MAX_CALL_DEPTH {
+                                return Err(VmError::CallStackOverflow);
+                            }
+                            let func = &program.functions[fn_idx];
+                            let base = locals.len();
+                            locals.resize(base + func.local_count as usize, Value::Void);
+                            locals[base] = a;
+                            locals[base + 1] = b;
+                            frames.push(CallFrame {
+                                chunk_idx: fn_idx,
+                                pc: 0,
+                                locals_base: base,
+                                upvalues: Box::default(),
+                                closure_home: None,
+                                source_slots: Box::default(),
+                            });
+                            continue;
+                        }
+                        return Err(VmError::TypeMismatch("Add"));
+                    }
                 }
             }
             Op::Sub => {
@@ -625,7 +651,29 @@ fn run_inner(
                     (Value::Float(x), Value::Float(y)) => {
                         stack.push(Value::Float(x - y));
                     }
-                    _ => return Err(VmError::TypeMismatch("Sub")),
+                    // RES-3994: `impl Sub for T` operator overload (see Add above).
+                    (a, b) => {
+                        if let Some(fn_idx) = vm_operator_overload_fn_idx(program, "sub", &a, &b) {
+                            if frames.len() >= MAX_CALL_DEPTH {
+                                return Err(VmError::CallStackOverflow);
+                            }
+                            let func = &program.functions[fn_idx];
+                            let base = locals.len();
+                            locals.resize(base + func.local_count as usize, Value::Void);
+                            locals[base] = a;
+                            locals[base + 1] = b;
+                            frames.push(CallFrame {
+                                chunk_idx: fn_idx,
+                                pc: 0,
+                                locals_base: base,
+                                upvalues: Box::default(),
+                                closure_home: None,
+                                source_slots: Box::default(),
+                            });
+                            continue;
+                        }
+                        return Err(VmError::TypeMismatch("Sub"));
+                    }
                 }
             }
             Op::Mul => {
@@ -655,7 +703,29 @@ fn run_inner(
                         }
                         stack.push(Value::String(s.repeat(n as usize)));
                     }
-                    _ => return Err(VmError::TypeMismatch("Mul")),
+                    // RES-3994: `impl Mul for T` operator overload (see Add above).
+                    (a, b) => {
+                        if let Some(fn_idx) = vm_operator_overload_fn_idx(program, "mul", &a, &b) {
+                            if frames.len() >= MAX_CALL_DEPTH {
+                                return Err(VmError::CallStackOverflow);
+                            }
+                            let func = &program.functions[fn_idx];
+                            let base = locals.len();
+                            locals.resize(base + func.local_count as usize, Value::Void);
+                            locals[base] = a;
+                            locals[base + 1] = b;
+                            frames.push(CallFrame {
+                                chunk_idx: fn_idx,
+                                pc: 0,
+                                locals_base: base,
+                                upvalues: Box::default(),
+                                closure_home: None,
+                                source_slots: Box::default(),
+                            });
+                            continue;
+                        }
+                        return Err(VmError::TypeMismatch("Mul"));
+                    }
                 }
             }
             Op::Div => {
@@ -1091,26 +1161,39 @@ fn run_inner(
                 let split = stack.len() - arity as usize;
                 let args: Vec<Value> = stack.drain(split..).collect();
                 let receiver = stack.pop().ok_or(VmError::EmptyStack)?;
-                let struct_name = match &receiver {
+                // RES-3994: primitive-`impl` receivers (`impl int { ... }`,
+                // `impl float`, `impl string`, `impl bool` — RES-2553)
+                // mangle the same way struct/enum methods do (`int$abs`).
+                let mangled_prefix = match &receiver {
                     Value::Struct { name, .. } => Some(name.clone()),
                     Value::EnumVariant { type_name, .. } => Some(type_name.clone()),
-                    _ => None,
+                    other => vm_primitive_impl_type_name(other).map(str::to_string),
                 };
-                let Some(struct_name) = struct_name else {
-                    // RES-3904: not a struct/enum — fall back to the
-                    // built-in container method sugar (String/Array/
-                    // Map/Set), which the compiler emits `CallMethod`
-                    // for identically since it has no static type info.
+                let Some(prefix) = mangled_prefix else {
+                    // RES-3904: not a struct/enum/primitive-impl receiver
+                    // — fall back to the built-in container method sugar
+                    // (String/Array/Map/Set), which the compiler emits
+                    // `CallMethod` for identically since it has no
+                    // static type info.
                     let result = vm_call_builtin_method(receiver, &method, args)?;
                     stack.push(result);
                     continue;
                 };
-                let mangled = format!("{}${}", struct_name, method);
-                let fn_idx = program
-                    .functions
-                    .iter()
-                    .position(|f| f.name == mangled)
-                    .ok_or(VmError::TypeMismatch("CallMethod: method not found"))?;
+                let mangled = format!("{}${}", prefix, method);
+                let Some(fn_idx) = program.functions.iter().position(|f| f.name == mangled) else {
+                    // RES-3994: no matching `impl` method. Struct/enum
+                    // receivers keep the existing hard error; primitive
+                    // scalars fall back to the generic built-in method
+                    // dispatch instead, mirroring the interpreter
+                    // falling through past its primitive-impl check to
+                    // the array-functional / generic builtin dispatch.
+                    if matches!(&receiver, Value::Struct { .. } | Value::EnumVariant { .. }) {
+                        return Err(VmError::TypeMismatch("CallMethod: method not found"));
+                    }
+                    let result = vm_call_builtin_method(receiver, &method, args)?;
+                    stack.push(result);
+                    continue;
+                };
                 let func = &program.functions[fn_idx];
                 let base = locals.len();
                 locals.resize(base + func.local_count as usize, Value::Void);
@@ -1191,6 +1274,31 @@ fn run_inner(
                 // arm above for the same justification.
                 let split_at = stack.len() - n;
                 let args: Vec<Value> = stack.drain(split_at..).collect();
+                // RES-3994: `to_string(struct_val)` dispatches to the
+                // struct's `Display` impl (`<StructName>$fmt`) instead
+                // of the generic scalar-only builtin — mirrors
+                // `display_trait::try_display_fmt` (lib.rs). Push a
+                // call frame instead of computing in place; the
+                // frame's `Return` lands the formatted string back on
+                // the stack.
+                if let Some(fn_idx) = vm_display_fmt_fn_idx(program, name, &args) {
+                    if frames.len() >= MAX_CALL_DEPTH {
+                        return Err(VmError::CallStackOverflow);
+                    }
+                    let func = &program.functions[fn_idx];
+                    let base = locals.len();
+                    locals.resize(base + func.local_count as usize, Value::Void);
+                    locals[base] = args.into_iter().next().expect("checked len == 1 above");
+                    frames.push(CallFrame {
+                        chunk_idx: fn_idx,
+                        pc: 0,
+                        locals_base: base,
+                        upvalues: Box::default(),
+                        closure_home: None,
+                        source_slots: Box::default(),
+                    });
+                    continue;
+                }
                 // Try the non-namespaced builtin table first, then fall
                 // back to stdlib qualified names (e.g. "math::sqrt") so
                 // `use std::math;` works under --vm.
@@ -1666,6 +1774,77 @@ fn vm_push_stringified(buf: &mut String, v: &Value) {
     }
 }
 
+/// RES-3994: mangled-method-name prefix for a `Value` under the
+/// primitive-`impl` dispatch rules (`impl int { ... }`, `impl float
+/// { ... }`, `impl string { ... }`, `impl bool { ... }` — RES-2553).
+/// Mirrors the interpreter's `prim_type_name` (lib.rs, `CallExpression`
+/// eval): the parser stores `impl int` with `struct_name == "int"`, so
+/// methods register as `int$method_name` and dispatch the same way
+/// struct/enum methods do. Returns `None` for receivers that aren't a
+/// primitive-impl-eligible scalar (Array/Map/Set/etc. never have user
+/// `impl` blocks — they only get the built-in container methods below).
+fn vm_primitive_impl_type_name(v: &Value) -> Option<&'static str> {
+    match v {
+        Value::Int(_) => Some("int"),
+        Value::Float(_) => Some("float"),
+        Value::String(_) => Some("string"),
+        Value::Bool(_) => Some("bool"),
+        _ => None,
+    }
+}
+
+/// RES-3994: operator-overload dispatch for `Op::Add` / `Op::Sub` /
+/// `Op::Mul` — mirrors `operator_overload::try_dispatch` (lib.rs),
+/// which the tree-walking interpreter consults before raising a type
+/// mismatch. When either operand is a `Value::Struct` and the program
+/// defines the conventional `<StructName>$<method>` function (`add`,
+/// `sub`, `mul` — same mapping as `operator_overload::op_method_name`),
+/// return its function index so the caller can push a call frame
+/// instead of erroring. `None` means "no overload — raise the usual
+/// `TypeMismatch`", matching the interpreter falling through to its
+/// own type-mismatch error when no method is registered.
+fn vm_operator_overload_fn_idx(
+    program: &Program,
+    method: &'static str,
+    left: &Value,
+    right: &Value,
+) -> Option<usize> {
+    let struct_name = match left {
+        Value::Struct { name, .. } => name,
+        _ => match right {
+            Value::Struct { name, .. } => name,
+            _ => return None,
+        },
+    };
+    let mangled = format!("{}${}", struct_name, method);
+    program.functions.iter().position(|f| f.name == mangled)
+}
+
+/// RES-3994: `to_string(x)` free-function dispatch to a struct's
+/// `Display` impl — mirrors `display_trait::try_display_fmt` (lib.rs),
+/// which the interpreter's `to_string` builtin call site consults
+/// before falling back to `builtin_to_string`'s scalar-only handling.
+/// Returns the `<StructName>$fmt` function index when `args` is
+/// exactly one `Value::Struct` with a registered `Display` impl;
+/// `None` otherwise (caller falls through to the generic builtin,
+/// which raises "expected scalar value" for a struct with no impl —
+/// same error the interpreter surfaces).
+fn vm_display_fmt_fn_idx(program: &Program, name: &str, args: &[Value]) -> Option<usize> {
+    if name != "to_string" {
+        return None;
+    }
+    let [
+        Value::Struct {
+            name: struct_name, ..
+        },
+    ] = args
+    else {
+        return None;
+    };
+    let mangled = format!("{}$fmt", struct_name);
+    program.functions.iter().position(|f| f.name == mangled)
+}
+
 /// RES-3904: `Op::CallMethod` fallback for built-in container
 /// receivers (`String`/`Array`/`Map`/`Set`). The compiler emits
 /// `CallMethod` for *every* `x.y(...)` dot-call uniformly (it has no
@@ -1676,6 +1855,11 @@ fn vm_push_stringified(buf: &mut String, v: &Value) {
 /// mechanism `Op::CallBuiltin` already uses. `Array::collect()` is an
 /// identity, not a builtin call, and is handled before the shared
 /// lookup, mirroring the interpreter.
+///
+/// RES-3994: also handles `Result` error-chaining methods (`.context()`,
+/// `.root_cause()`, `.chain()`) by delegating to the same pure
+/// `error_chaining::dispatch_result_method` the interpreter uses —
+/// no interpreter state is needed, so the VM can call it directly.
 fn vm_call_builtin_method(
     receiver: Value,
     method: &str,
@@ -1713,6 +1897,17 @@ fn vm_call_builtin_method(
             },
             _ => Err(VmError::TypeMismatch("Cell: unknown method")),
         };
+    }
+    // RES-3994: `Result` error-chaining methods — `.context(msg)`,
+    // `.root_cause()`, `.chain()`. Pure function of (ok, payload,
+    // method, args); no interpreter state needed, so the same
+    // `error_chaining::dispatch_result_method` the tree-walker uses
+    // can be called directly here.
+    if let Value::Result { ok, ref payload } = receiver
+        && let Some(result) =
+            crate::error_chaining::dispatch_result_method(ok, payload, method, &args)
+    {
+        return result.map_err(VmError::BuiltinCallFailed);
     }
     let full_name = crate::builtin_method_full_name(&receiver, method).ok_or(
         VmError::TypeMismatch("CallMethod: receiver is not a struct or enum"),
@@ -2226,7 +2421,33 @@ fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             buf.push_str(s);
             state.stack.push(Value::String(buf));
         }
-        _ => return Err(VmError::TypeMismatch("Add")),
+        // RES-3994: `impl Add for T` operator-overload dispatch — see
+        // the `run_inner` `Op::Add` arm for the full rationale; this
+        // is the direct-threaded-dispatch twin, kept byte-identical.
+        (a, b) => {
+            if let Some(fn_idx) = vm_operator_overload_fn_idx(state.program, "add", &a, &b) {
+                if state.frames.len() >= MAX_CALL_DEPTH {
+                    return Err(VmError::CallStackOverflow);
+                }
+                let func = &state.program.functions[fn_idx];
+                let base = state.locals.len();
+                state
+                    .locals
+                    .resize(base + func.local_count as usize, Value::Void);
+                state.locals[base] = a;
+                state.locals[base + 1] = b;
+                state.frames.push(CallFrame {
+                    chunk_idx: fn_idx,
+                    pc: 0,
+                    locals_base: base,
+                    upvalues: Box::default(),
+                    closure_home: None,
+                    source_slots: Box::default(),
+                });
+                return Ok(Step::Continue);
+            }
+            return Err(VmError::TypeMismatch("Add"));
+        }
     }
     Ok(Step::Continue)
 }
@@ -2244,7 +2465,31 @@ fn h_sub(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         (Value::Float(x), Value::Float(y)) => {
             state.stack.push(Value::Float(x - y));
         }
-        _ => return Err(VmError::TypeMismatch("Sub")),
+        // RES-3994: `impl Sub for T` operator overload (see h_add above).
+        (a, b) => {
+            if let Some(fn_idx) = vm_operator_overload_fn_idx(state.program, "sub", &a, &b) {
+                if state.frames.len() >= MAX_CALL_DEPTH {
+                    return Err(VmError::CallStackOverflow);
+                }
+                let func = &state.program.functions[fn_idx];
+                let base = state.locals.len();
+                state
+                    .locals
+                    .resize(base + func.local_count as usize, Value::Void);
+                state.locals[base] = a;
+                state.locals[base + 1] = b;
+                state.frames.push(CallFrame {
+                    chunk_idx: fn_idx,
+                    pc: 0,
+                    locals_base: base,
+                    upvalues: Box::default(),
+                    closure_home: None,
+                    source_slots: Box::default(),
+                });
+                return Ok(Step::Continue);
+            }
+            return Err(VmError::TypeMismatch("Sub"));
+        }
     }
     Ok(Step::Continue)
 }
@@ -2278,7 +2523,31 @@ fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             }
             state.stack.push(Value::String(s.repeat(n as usize)));
         }
-        _ => return Err(VmError::TypeMismatch("Mul")),
+        // RES-3994: `impl Mul for T` operator overload (see h_add above).
+        (a, b) => {
+            if let Some(fn_idx) = vm_operator_overload_fn_idx(state.program, "mul", &a, &b) {
+                if state.frames.len() >= MAX_CALL_DEPTH {
+                    return Err(VmError::CallStackOverflow);
+                }
+                let func = &state.program.functions[fn_idx];
+                let base = state.locals.len();
+                state
+                    .locals
+                    .resize(base + func.local_count as usize, Value::Void);
+                state.locals[base] = a;
+                state.locals[base + 1] = b;
+                state.frames.push(CallFrame {
+                    chunk_idx: fn_idx,
+                    pc: 0,
+                    locals_base: base,
+                    upvalues: Box::default(),
+                    closure_home: None,
+                    source_slots: Box::default(),
+                });
+                return Ok(Step::Continue);
+            }
+            return Err(VmError::TypeMismatch("Mul"));
+        }
     }
     Ok(Step::Continue)
 }
@@ -2924,6 +3193,29 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     // match-dispatch CallBuiltin above.
     let split_at = state.stack.len() - n;
     let args: Vec<Value> = state.stack.drain(split_at..).collect();
+    // RES-3994: `to_string(struct_val)` Display-impl dispatch — see
+    // the `run_inner` `Op::CallBuiltin` arm for the full rationale;
+    // this is the direct-threaded-dispatch twin, kept byte-identical.
+    if let Some(fn_idx) = vm_display_fmt_fn_idx(state.program, name, &args) {
+        if state.frames.len() >= MAX_CALL_DEPTH {
+            return Err(VmError::CallStackOverflow);
+        }
+        let func = &state.program.functions[fn_idx];
+        let base = state.locals.len();
+        state
+            .locals
+            .resize(base + func.local_count as usize, Value::Void);
+        state.locals[base] = args.into_iter().next().expect("checked len == 1 above");
+        state.frames.push(CallFrame {
+            chunk_idx: fn_idx,
+            pc: 0,
+            locals_base: base,
+            upvalues: Box::default(),
+            closure_home: None,
+            source_slots: Box::default(),
+        });
+        return Ok(Step::Continue);
+    }
     // Try the non-namespaced builtin table first, then fall back to
     // stdlib qualified names (e.g. "math::sqrt") so `use std::math;`
     // works under --vm.
@@ -3291,27 +3583,42 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let split = state.stack.len() - arity;
     let args: Vec<Value> = state.stack.drain(split..).collect();
     let receiver = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    let struct_name = match &receiver {
+    // RES-3994: primitive-`impl` receivers (`impl int { ... }`, `impl
+    // float`, `impl string`, `impl bool` — RES-2553) mangle the same
+    // way struct/enum methods do (`int$abs`).
+    let mangled_prefix = match &receiver {
         Value::Struct { name, .. } => Some(name.clone()),
         Value::EnumVariant { type_name, .. } => Some(type_name.clone()),
-        _ => None,
+        other => vm_primitive_impl_type_name(other).map(str::to_string),
     };
-    let Some(struct_name) = struct_name else {
-        // RES-3904: not a struct/enum — fall back to the built-in
-        // container method sugar (String/Array/Map/Set), which the
-        // compiler emits `CallMethod` for identically since it has no
-        // static type info.
+    let Some(prefix) = mangled_prefix else {
+        // RES-3904: not a struct/enum/primitive-impl receiver — fall
+        // back to the built-in container method sugar (String/Array/
+        // Map/Set), which the compiler emits `CallMethod` for
+        // identically since it has no static type info.
         let result = vm_call_builtin_method(receiver, &method, args)?;
         state.stack.push(result);
         return Ok(Step::Continue);
     };
-    let mangled = format!("{}${}", struct_name, method);
-    let fn_idx = state
+    let mangled = format!("{}${}", prefix, method);
+    let Some(fn_idx) = state
         .program
         .functions
         .iter()
         .position(|f| f.name == mangled)
-        .ok_or(VmError::TypeMismatch("CallMethod: method not found"))?;
+    else {
+        // RES-3994: no matching `impl` method. Struct/enum receivers
+        // keep the existing hard error; primitive scalars fall back
+        // to the generic built-in method dispatch instead, mirroring
+        // the interpreter falling through past its primitive-impl
+        // check to the array-functional / generic builtin dispatch.
+        if matches!(&receiver, Value::Struct { .. } | Value::EnumVariant { .. }) {
+            return Err(VmError::TypeMismatch("CallMethod: method not found"));
+        }
+        let result = vm_call_builtin_method(receiver, &method, args)?;
+        state.stack.push(result);
+        return Ok(Step::Continue);
+    };
     let func = &state.program.functions[fn_idx];
     let base = state.locals.len();
     state
