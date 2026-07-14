@@ -235,6 +235,17 @@ curl -fSL "https://github.com/EricSpencer00/Resilient/releases/download/${TAG}/r
 rz --version
 ```
 
+**Z3 in the box (RES-3979):** the `x86_64-unknown-linux-gnu` release
+tarball statically links Z3 — `rz --audit` gets real SMT proofs out of
+the box, no `brew install z3` / `apt-get install libz3-dev` required
+(verified: the shipped binary has no `libz3` runtime dependency). The
+other three targets (`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`,
+`aarch64-apple-darwin`) don't yet — their binaries still run fine, they
+just report `Unknown` for obligations the hand-rolled folder can't
+close, exactly like every release before this one. See
+`.github/workflows/release.yml` for the current per-target matrix and
+the tracking issue for the remaining platforms.
+
 #### From source via cargo install
 
 If you have Rust installed:
@@ -352,6 +363,11 @@ optional `z3` feature to get full SMT-backed proofs:
 # Linux:  sudo apt-get install libz3-dev z3
 rz --audit prog.rz   # SMT proofs require a binary built with --features z3
 ```
+
+If you're on `x86_64-unknown-linux-gnu`, the pre-built release binary
+already has Z3 statically linked in (see "Pre-built binaries" above) —
+skip the `apt-get`/`brew` step and `cargo install --path resilient`
+entirely.
 
 The audit report tags clauses proven by Z3 separately so users can
 see what the SMT layer added.

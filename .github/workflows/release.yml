@@ -17,9 +17,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # RES-3979: x86_64-unknown-linux-gnu is the only target that
+          # ships Z3 statically linked in today — see the `z3` build
+          # step below for why. The other three targets are a
+          # documented no-z3 fallback (tracked in the follow-up issue
+          # referenced there); their binaries still work, they just
+          # report `Unknown` for obligations the hand-rolled folder
+          # (RES-060..065) can't discharge, same as before this PR.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
+            z3: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
@@ -44,15 +52,64 @@ jobs:
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
+      # RES-3979: build-time deps for `--features z3,z3-static`.
+      # `z3-sys` vendors Z3 4.12.1's C++ source and builds it via
+      # `cmake` — none of this touches the *runtime* host, only the
+      # build host needs these. `cmake`/`build-essential`/`pkg-config`
+      # are normally preinstalled on `ubuntu-latest`, but pin them
+      # explicitly so a runner-image change can't silently regress
+      # this step. `python3` drives Z3's own codegen scripts;
+      # `libclang-dev` provides `libclang.so`, which `bindgen` (a
+      # `z3-sys` build-dependency) needs to parse `z3.h`.
+      - name: Install Z3 static-link build deps (Linux native only)
+        if: matrix.z3
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake python3 pkg-config libclang-dev
+
       - name: Build (native)
-        if: "!matrix.cross"
+        if: "!matrix.cross && !matrix.z3"
         run: cargo build --release --locked --target ${{ matrix.target }}
+        working-directory: resilient
+
+      # RES-3979: static-link libz3 into the binary so the release
+      # tarball is fully self-contained (no `libz3.so`/`.dylib` at
+      # runtime — verified via `ldd` locally). `CMAKE_POLICY_VERSION_MINIMUM`
+      # is a no-op on the cmake version `ubuntu-latest` ships today but
+      # future-proofs against a runner-image cmake bump (cmake >= 3.31
+      # otherwise refuses Z3's `cmake_minimum_required(VERSION 3.4)`).
+      #
+      # Why only this target: the *build host's* C++ compiler matters,
+      # not the runtime host. Locally-reproduced findings (see PR
+      # description): Z3 4.12.1's `math/lp` module trips a two-phase
+      # name-lookup diagnostic that very new compilers (Apple Clang 17,
+      # Homebrew GCC 16) treat as a hard error, but that GCC 12/13/14 —
+      # what `ubuntu-latest` actually ships — compiles cleanly. macOS's
+      # default toolchain is Apple Clang, so it hits the broken path;
+      # routing the macOS build through Homebrew GCC hits a separate
+      # libstdc++/libc++ ABI mismatch at the final link step that needs
+      # more plumbing than fits this PR. Tracked in the follow-up issue
+      # linked from the PR body.
+      - name: Build (native, Z3 static-linked)
+        if: matrix.z3
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: cargo build --release --locked --target ${{ matrix.target }} --features z3,z3-static
         working-directory: resilient
 
       - name: Build (cross)
         if: matrix.cross
         run: cross build --release --locked --target ${{ matrix.target }}
         working-directory: resilient
+
+      # RES-3979: a binary that merely *links* z3 could still silently
+      # fail to discharge anything through it — this actually exercises
+      # the SMT path against a fixture the hand-rolled folder can't
+      # resolve on its own, so a regression here fails the release
+      # build instead of shipping a quietly-degraded binary.
+      - name: Z3 release smoke test
+        if: matrix.z3
+        run: scripts/release-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
 
       - name: Package
         shell: bash
