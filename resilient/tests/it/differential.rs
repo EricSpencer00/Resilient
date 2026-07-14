@@ -239,30 +239,94 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // new `Op::Coalesce`, implemented in both the `run_inner` match engine
     // and the `run_direct` table-dispatch engine (`h_coalesce`).
     //
-    // The remaining entries are distinct root causes this fix does not
-    // touch: `comprehension_demo.rz`/`edge_closure_capture.rz` need
-    // indirect-call support for non-identifier callees; `option_find.rz`
-    // still fails — even with `??` now supported — because `Op::CallMethod`'s
-    // built-in fallback (`vm_call_builtin_method`) has no dispatch for
-    // `Option`'s instance methods (`.is_some()`, `.is_none()`, `.unwrap()`,
+    // `comprehension_demo.rz` is fixed: array-comprehension desugaring (and
+    // the nested-closure IIFE shape in `edge_closure_capture.rz`) call an
+    // immediately-invoked `Node::FunctionLiteral` — `fn(x) { .. }(10)` — as
+    // the callee, not a bare identifier. `compile_expr`'s `CallExpression`
+    // arm only special-cased identifier callees bound to a local (`CallClosure`
+    // off a named slot) before falling through to the identifier-only
+    // `callee_name` dispatch (named fn / FFI / builtin / enum ctor), erroring
+    // `Unsupported("indirect call on non-identifier")` for anything else. Any
+    // non-identifier, non-`FieldAccess` callee now compiles generically:
+    // evaluate it for its `Value::Closure`/`Value::EnumConstructor`, then
+    // `Op::CallClosure { arity, source_slot: u16::MAX }` — the existing
+    // "temporary, no upvalue-writeback home" sentinel (see its doc comment)
+    // — same as the tree-walker's `eval(function)` → `apply_function`, which
+    // has no notion of a "home" binding for an anonymous callee either.
+    //
+    // `bench_simple.rz` is fixed: `bench "name" { .. }` top-level blocks hit
+    // the generic `Unsupported("BenchBlock")` catch-all in `compile_stmt` —
+    // the tree-walker's `Node::BenchBlock` arm is a bare `Ok(Value::Void)`
+    // no-op (bench bodies are collected and run separately by the `rz bench`
+    // subcommand, never by plain `rz`/`rz --vm` execution). Added a matching
+    // no-op arm to all three statement-compile entry points (`compile_stmt`,
+    // `compile_stmt_in_fn`, `compile_control_flow_in_fn`).
+    //
+    // `optional_chaining.rz` is fixed: `object?.field` / `object?.method(args)`
+    // (`Node::OptionalChain`) hit the generic `<other>` catch-all — no compile
+    // arm existed at all. Added a dedicated `Op::OptChainUnwrap` (pops the
+    // object, pushes the unwrapped-or-passthrough value then a `present: Bool`
+    // flag — `Option(None)`/`Result{ok:false,..}` push `Option(None)` + `false`,
+    // everything else unwraps-or-passes-through + `true`), which `compile_expr`
+    // follows with a `JumpIfFalse` branch: present → `GetField`/`CallMethod`
+    // then wrap with `CallBuiltin { "Some", 1 }`; absent → the already-computed
+    // `Option(None)` is the result. Mirrors `Interpreter::eval`'s
+    // `Node::OptionalChain` arm's unwrap-access-rewrap shape exactly.
+    // Implemented in both the `run_inner` match engine and the `run_direct`
+    // table-dispatch engine (`h_opt_chain_unwrap`).
+    //
+    // `edge_closure_capture.rz` no longer hits the indirect-call blocker
+    // above, but still fails — `arr.map(multiply_and_add)` passes a
+    // user-defined closure to the built-in `.map()` method, which is exactly
+    // the RES-4017 gap (`Op::CallMethod`'s built-in-container fallback,
+    // `vm_call_builtin_method`, has no path to invoke a `Value::Closure` per
+    // element — see the RES-4017 block below). Left here rather than moved,
+    // since RES-4017 already owns that root cause and its own denylist block.
+    //
+    // `option_find.rz` still fails — even with `??` now supported — because
+    // `Op::CallMethod`'s built-in fallback has no dispatch for `Option`'s
+    // instance methods (`.is_some()`, `.is_none()`, `.unwrap()`,
     // `.unwrap_or(d)`), which the tree-walker handles directly in
     // `eval_method_call`. (There's also a pre-existing typechecker warning
     // on this file — an `Option`-returning fn declared with an `int` return
     // type — but that's non-fatal in both backends and not the blocker.)
-    // And `array_contains.rz`, `array_sorted_invariant.rz`, `bench_simple.rz`,
-    // `defer_stmt.rz`, `optional_chaining.rz`, `quantifier_assert.rz`,
+    //
+    // The remaining entries are two distinct, genuinely-large-scope root
+    // causes — deferred rather than forced into this PR:
+    //
+    // `array_contains.rz`, `array_sorted_invariant.rz`, `quantifier_assert.rz`,
     // `quantifier_exists.rz`, `quantifier_forall.rz`, `showcase_quantifiers.rz`
-    // are still an untriaged `<other>` catch-all (each needs the
-    // `node_kind` name surfaced per-example — left for a follow-up PR
-    // under this same ticket).
+    // all use `forall`/`exists` quantifier expressions (`Node::Quantifier`),
+    // which has no bytecode-compile arm at all (`compiler.rs`'s `node_kind`
+    // has no `Quantifier` case, so it falls to the `<other>` catch-all). The
+    // tree-walker's `crate::quantifiers::eval_quantifier` short-circuits a
+    // `for`-style loop over a `lo..hi` range or an iterable (array/set/bytes),
+    // binding the quantified variable fresh each iteration and evaluating an
+    // arbitrary boolean body expression per witness. Compiling this to
+    // bytecode needs either a new dedicated loop-with-early-exit lowering (a
+    // real, non-mechanical addition to `compile_expr` — a body-generic
+    // per-witness environment binding, short-circuit jump-out on the first
+    // false/true witness, and range-vs-iterable dispatch) or a call into a
+    // reusable "run this compiled body once per witness" primitive that
+    // doesn't exist yet. Follow-up ticket needed.
+    //
+    // `defer_stmt.rz` uses `defer <expr>;` (`Node::DeferStatement`), which
+    // likewise has no bytecode-compile arm (`<other>` catch-all). The
+    // tree-walker maintains a `defer_stack: Vec<(Node, Environment)>` on
+    // `Interpreter`, pushes `(expr, captured_env)` at each `defer` site, and
+    // drains it in LIFO order at the function-call boundary (both the
+    // implicit end-of-body path and every early `return`), regardless of
+    // whether the body succeeded or failed. The VM has no equivalent
+    // call-frame-scoped defer stack or return-path hook — adding one needs
+    // `CallFrame` to carry a per-frame deferred-bytecode list and every exit
+    // path (`Op::Return`, `Op::ReturnFromCall`, and the `TryUnwrap`/
+    // `ContractViolation` early-return paths) to drain it, in both dispatch
+    // engines. Follow-up ticket needed.
     "array_contains.rz",
     "array_sorted_invariant.rz",
-    "bench_simple.rz",
-    "comprehension_demo.rz",
     "defer_stmt.rz",
     "edge_closure_capture.rz",
     "option_find.rz",
-    "optional_chaining.rz",
     "quantifier_assert.rz",
     "quantifier_exists.rz",
     "quantifier_forall.rz",

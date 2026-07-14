@@ -132,9 +132,17 @@
       "branch": "res-3933-phase2-roadmap",
       "claimed_at": "2026-07-14T13:45:53Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-4011-nested-pattern-exhaustiveness",
-      "claimed_at": "2026-07-14T15:46:37Z"
+    "resilient/src/compiler.rs": {
+      "branch": "res-3993-vm-indirect-calls-misc",
+      "claimed_at": "2026-07-14T16:17:35Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3993-vm-indirect-calls-misc",
+      "claimed_at": "2026-07-14T16:17:35Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-3993-vm-indirect-calls-misc",
+      "claimed_at": "2026-07-14T16:17:35Z"
     }
   }
 }
