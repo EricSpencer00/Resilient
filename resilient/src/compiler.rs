@@ -1381,12 +1381,16 @@ fn compile_control_flow(
     loop_stack: &mut Vec<LoopState>,
 ) -> Result<(), CompileError> {
     match node {
+        // RES-4005: same lexical-scoping fix as `compile_control_flow_in_fn`
+        // — clone `locals` per block so an inner shadowing `let` can't
+        // overwrite the outer scope's slot for the rest of compilation.
         Node::Block { stmts, .. } => {
+            let mut block_locals = locals.clone();
             for s in stmts {
                 compile_stmt(
                     s,
                     chunk,
-                    locals,
+                    &mut block_locals,
                     next_local,
                     fn_index,
                     ffi_index,
@@ -1999,12 +2003,21 @@ fn compile_control_flow_in_fn(
     loop_stack: &mut Vec<LoopState>,
 ) -> Result<(), CompileError> {
     match node {
+        // RES-4005: a block introduces a new lexical scope — clone
+        // `locals` so `let` bindings inside the block (including ones
+        // that shadow an outer name) don't leak into the caller's view
+        // once the block exits. Mirrors `compile_block_as_expr`, which
+        // already does this for expression-position blocks. `next_local`
+        // is intentionally *not* cloned: slot numbers must keep
+        // incrementing monotonically so a shadowing `let` gets a fresh
+        // slot rather than reusing (and clobbering) the outer one.
         Node::Block { stmts, .. } => {
+            let mut block_locals = locals.clone();
             for s in stmts {
                 compile_stmt_in_fn(
                     s,
                     chunk,
-                    locals,
+                    &mut block_locals,
                     next_local,
                     fn_index,
                     ffi_index,
