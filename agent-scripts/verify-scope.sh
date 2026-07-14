@@ -205,25 +205,38 @@ def read(ref):
     except subprocess.CalledProcessError:
         return ""
 def versions(text):
+    # RES-3979: name -> {versions} (a set, not a single version). Cargo.lock
+    # legitimately carries two simultaneous semver-major lines of the same
+    # crate name (e.g. a new optional dependency pulling in `shlex 2.x`
+    # build-side while an existing dependency still pins `shlex 1.x`) —
+    # that's an *addition*, not a bump of the existing resolution, and
+    # shouldn't trip this check. The old name -> single-version dict
+    # silently overwrote same-name entries, so it flagged additions like
+    # that as a "1.3.0 -> 2.0.1 bump" even though 1.3.0 was still pinned.
     out = {}
     cur = None
     for line in text.splitlines():
         if line.startswith("name = "):
             cur = line.split('"')[1]
         elif line.startswith("version = ") and cur:
-            out[cur] = line.split('"')[1]
+            out.setdefault(cur, set()).add(line.split('"')[1])
             cur = None
     return out
 old, new = versions(read(base)), versions(read(head))
 bad = []
-for name, nv in new.items():
-    ov = old.get(name)
-    if not ov or ov == nv:
+for name, new_vs in new.items():
+    old_vs = old.get(name, set())
+    removed, added = old_vs - new_vs, new_vs - old_vs
+    if not removed or not added:
+        # Nothing disappeared (pure addition) or nothing appeared (pure
+        # removal) — neither replaces an existing pin, so it's not a bump.
         continue
-    om = re.match(r"(\d+)\.(\d+)", ov)
-    nm = re.match(r"(\d+)\.(\d+)", nv)
-    if om and nm and (om.group(1), om.group(2)) != (nm.group(1), nm.group(2)):
-        bad.append(f"{name}: {ov} → {nv}")
+    for ov in removed:
+        om = re.match(r"(\d+)\.(\d+)", ov)
+        for nv in added:
+            nm = re.match(r"(\d+)\.(\d+)", nv)
+            if om and nm and (om.group(1), om.group(2)) != (nm.group(1), nm.group(2)):
+                bad.append(f"{name}: {ov} → {nv}")
 if bad:
     print("non-patch bumps:", ", ".join(bad))
     sys.exit(1)
