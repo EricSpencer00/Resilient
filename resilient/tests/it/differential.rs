@@ -155,11 +155,31 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // RES-3992: VM bytecode compiler "unknown identifier" / "unknown function" —
     // closures/consts captured across scopes, and static/namespaced/tuple-
     // struct-constructor calls the compiler doesn't resolve to a callable.
+    //
+    // The top-level-`const` family (`const_eval.rz`, `const_eval_ext.rz`,
+    // `static_assert.rz`) is fixed: `compiler::compile` now runs a
+    // `resolve_top_level_consts` + `inline_consts` pre-pass that inlines
+    // every resolved `const` reference as a literal before compilation,
+    // mirroring `Interpreter::const_eval_program` / `eval_const_expr` (the
+    // tree-walker's canonical const-resolution oracle) — so these three no
+    // longer belong on this list.
+    //
+    // The remaining entries are a distinct root cause this pre-pass does
+    // not touch: fn-valued locals/closures captured across a function or
+    // actor-spawn boundary (`actor_*`, `effect_polymorphism.rz`,
+    // `first_class_fn_*.rz`, `generic_fn_type_params.rz`,
+    // `iterator_protocol.rz`, `showcase_actors.rz` — all fail on a plain
+    // `unknown identifier`, not a const), and static/namespaced/tuple-
+    // struct-constructor calls the compiler doesn't lower to a callable
+    // (`default_method.rz` — default trait-method dispatch,
+    // `module_namespaces.rz` — `math::add`, `pain_points_hardening.rz` —
+    // `array_none`, `tuple_struct.rz` — tuple-struct constructor call,
+    // `error_stack_traces.rz` — `stacktrace`). Both need call-site lowering
+    // changes in `compiler.rs`'s `CallExpression`/`Identifier` compilation,
+    // not an AST pre-pass — left for a follow-up PR under this same ticket.
     "actor_deadlock.rz",
     "actor_ping_pong.rz",
     "actor_spawn_send.rz",
-    "const_eval.rz",
-    "const_eval_ext.rz",
     "default_method.rz",
     "effect_polymorphism.rz",
     "error_stack_traces.rz",
@@ -170,7 +190,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "module_namespaces.rz",
     "pain_points_hardening.rz",
     "showcase_actors.rz",
-    "static_assert.rz",
     "tuple_struct.rz",
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
@@ -1421,6 +1440,70 @@ fn interpreter_and_vm_agree_on_res4005_block_scope_shadowing() {
     assert!(
         failures.is_empty(),
         "{} RES-4005 block-scope shadowing case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
+
+/// RES-3992: top-level `const NAME = expr;` declarations used to compile
+/// to a no-op in `compiler::compile` (see `Node::Const` in `compile_stmt`
+/// / `compile_stmt_in_fn`), so any later reference to the const's name
+/// fell through every identifier-resolution fallback and raised
+/// `CompileError::UnknownIdentifier` — `rz --vm` failed to compile
+/// programs the tree-walker ran fine. Fixed by a pre-pass in
+/// `compiler::compile` (`resolve_top_level_consts` and `inline_consts`)
+/// that inlines every resolved const reference as a literal before
+/// compilation, mirroring `Interpreter::const_eval_program` and
+/// `eval_const_expr` (the tree-walker's canonical const-resolution
+/// pre-pass, RES-361).
+///
+/// Covers: an int const referenced at top level, a const-referencing-const
+/// arithmetic chain, string concatenation / bitwise / conditional const
+/// expressions (RES-2580's extended const-eval surface), a const
+/// referenced from *inside* a function body (the case that needs the
+/// inliner to recurse into `Node::Function`'s body rather than only the
+/// main chunk), and a const referenced from inside an `if`/`while`/`for`
+/// body and an array literal (exercising the pre-pass's other structural
+/// recursion arms).
+#[test]
+fn interpreter_and_vm_agree_on_res3992_top_level_consts() {
+    let programs = [
+        ("const_at_top_level", "const SIZE = 16; println(SIZE);"),
+        (
+            "const_referencing_const",
+            "const A = 16; const B = 4; const C = A * B; println(C);",
+        ),
+        (
+            "const_string_concat",
+            "const P = \"Hello\"; const N = \", World\"; const G = P + N; println(G);",
+        ),
+        (
+            "const_bitwise_and_conditional",
+            "const FLAGS = 255; const MASK = 15; const LOWER = FLAGS & MASK; \
+             const A = 42; const B = 17; const MAXV = if A > B { A } else { B }; \
+             println(to_string(LOWER)); println(to_string(MAXV));",
+        ),
+        (
+            "const_referenced_inside_fn_body",
+            "const SIZE = 1024; fn main(int _d) { return SIZE; } println(main(0));",
+        ),
+        (
+            "const_referenced_inside_control_flow_and_array",
+            "const N = 3; fn main() { let arr = [N, N + 1, N + 2]; let mut i = 0; \
+             while i < N { println(arr[i]); i = i + 1; } } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} RES-3992 top-level-const case(s) diverged between backends:{}",
         failures.len(),
         failures.join("")
     );

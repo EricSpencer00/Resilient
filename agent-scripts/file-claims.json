@@ -93,12 +93,12 @@
       "claimed_at": "2026-07-14T04:21:41Z"
     },
     "resilient/src/compiler.rs": {
-      "branch": "res-4024-vm-unsafe-block",
-      "claimed_at": "2026-07-14T06:30:44Z"
+      "branch": "res-3992-vm-ident-resolution",
+      "claimed_at": "2026-07-14T07:04:01Z"
     },
     "resilient/src/vm.rs": {
-      "branch": "res-4024-vm-unsafe-block",
-      "claimed_at": "2026-07-14T06:30:44Z"
+      "branch": "res-3992-vm-ident-resolution",
+      "claimed_at": "2026-07-14T07:04:01Z"
     },
     "resilient/src/contract_certificate.rs": {
       "branch": "res-4028-cert-hardening",
