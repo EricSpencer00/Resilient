@@ -45,6 +45,22 @@ struct LoopState {
     /// patched to `continue_target`. Used by `for-in` loops, where the target
     /// is not yet known when the body is compiled.
     continue_patches: Vec<usize>,
+    /// RES-3993: `Jump(0)` instruction indices emitted for `break <expr>`
+    /// (`Node::BreakWith`) when this loop is compiled in *expression*
+    /// position (`value_mode == true`, see `compile_while_expr`). These
+    /// jump straight past the loop's default `Void` result to the PC
+    /// where the loop's value is expected on the stack — unlike
+    /// `break_patches`, which target the `Void`-push stub since a plain
+    /// `break;`/`break label;` never carries a value. Left empty (and
+    /// unused) for statement-position loops.
+    break_value_patches: Vec<usize>,
+    /// RES-3993: true when this loop was compiled by `compile_while_expr`
+    /// (i.e. it is used for its value, e.g. `let x = loop { ... };`).
+    /// `Node::BreakWith` consults the *innermost* loop's `value_mode` to
+    /// decide whether `break <expr>` should leave its value on the stack
+    /// (`value_mode == true`) or evaluate-and-discard it like a plain
+    /// `break` (`value_mode == false`, the loop's result is never read).
+    value_mode: bool,
     /// RES-2502: optional label for labeled break/continue.
     label: Option<String>,
 }
@@ -55,6 +71,8 @@ impl LoopState {
             continue_target,
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
+            break_value_patches: Vec::new(),
+            value_mode: false,
             label: None,
         }
     }
@@ -64,6 +82,8 @@ impl LoopState {
             continue_target,
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
+            break_value_patches: Vec::new(),
+            value_mode: false,
             label,
         }
     }
@@ -1231,6 +1251,43 @@ fn compile_stmt(
                 .ok_or(CompileError::Unsupported("break outside loop"))?;
             let patch = chunk.emit(Op::Jump(0), line);
             ls.break_patches.push(patch);
+            Ok(())
+        }
+        // RES-3993: `break <expr>;` — always evaluate `expr` (matching the
+        // tree-walker's `Node::BreakWith` eval, which runs unconditionally
+        // regardless of whether the enclosing loop's own value is used).
+        // If the innermost loop is compiled in expression position
+        // (`value_mode`, set only by `compile_while_expr`), leave the
+        // value on the stack and jump to the loop's value-carrying exit.
+        // Otherwise (the common statement-position loop) the loop's
+        // result is never read, so pop the value immediately — same
+        // stack-neutral shape as a plain `break;` — and jump to the
+        // ordinary `break_patches` exit.
+        Node::BreakWith { value, .. } => {
+            let value_mode = loop_stack
+                .last()
+                .ok_or(CompileError::Unsupported("break outside loop"))?
+                .value_mode;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let ls = loop_stack.last_mut().unwrap();
+            if value_mode {
+                let patch = chunk.emit(Op::Jump(0), line);
+                ls.break_value_patches.push(patch);
+            } else {
+                chunk.emit(Op::Pop, line);
+                let patch = chunk.emit(Op::Jump(0), line);
+                ls.break_patches.push(patch);
+            }
             Ok(())
         }
         Node::Continue { .. } => {
@@ -2620,6 +2677,35 @@ fn compile_stmt_in_fn(
                 .ok_or(CompileError::Unsupported("break outside loop"))?;
             let patch = chunk.emit(Op::Jump(0), line);
             ls.break_patches.push(patch);
+            Ok(())
+        }
+        // RES-3993: mirrors the `compile_stmt` arm above — see its comment
+        // for the value_mode/break_value_patches rationale.
+        Node::BreakWith { value, .. } => {
+            let value_mode = loop_stack
+                .last()
+                .ok_or(CompileError::Unsupported("break outside loop"))?
+                .value_mode;
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let ls = loop_stack.last_mut().unwrap();
+            if value_mode {
+                let patch = chunk.emit(Op::Jump(0), line);
+                ls.break_value_patches.push(patch);
+            } else {
+                chunk.emit(Op::Pop, line);
+                let patch = chunk.emit(Op::Jump(0), line);
+                ls.break_patches.push(patch);
+            }
             Ok(())
         }
         Node::Continue { .. } => {
@@ -4895,8 +4981,115 @@ fn compile_expr(
             next_fn_idx,
             line,
         ),
+        // RES-3993: `while`/`loop` in expression position (`let x =
+        // loop { ...; break v; };` — see `compile_while_expr`). Every
+        // other control-flow node already has a distinct expression-
+        // position lowering here (`IfStatement` above, `Match` via
+        // `compile_match_expr`); `WhileStatement` previously had none,
+        // so `break <expr>` had no value channel and fell through to
+        // `Unsupported("WhileStatement")`.
+        Node::WhileStatement {
+            condition,
+            body,
+            label,
+            ..
+        } => compile_while_expr(
+            condition,
+            body,
+            label,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
+}
+
+/// RES-3993: `while`/`loop` used in *expression* position — most
+/// commonly `loop { ...; break <expr>; }` used as a `let` binding's
+/// value (`loop { }` desugars to a `WhileStatement` with an always-true
+/// condition — see `parse_loop_statement` in `lib.rs`). Mirrors
+/// `compile_control_flow`'s statement-position `WhileStatement` lowering,
+/// but the loop always leaves exactly one value on the stack: `Void` if
+/// the loop exits via its condition going false or a plain `break;`/
+/// `break label;` (matching the tree-walker's `Ok(Value::Void)`
+/// fallthrough at the end of `eval`'s `WhileStatement` arm), or the
+/// `break <expr>` value if one fired (matching `Value::BreakWith`
+/// short-circuiting `eval` to return that value directly).
+///
+/// Gets its own fresh, self-contained `loop_stack` — mirroring
+/// `compile_block_as_expr`'s `&mut Vec::new()` convention for
+/// expression-position statement compilation — so nested loops inside
+/// the body push/pop correctly. Break/continue targeting an *enclosing*
+/// loop from inside an expression-position loop body shares the same
+/// pre-existing gap `compile_block_as_expr` already has for `if`/
+/// match-arm blocks (no outer `loop_stack` is threaded through
+/// expression-position compilation at all) — out of scope for this fix.
+#[allow(clippy::too_many_arguments)]
+fn compile_while_expr(
+    condition: &Node,
+    body: &Node,
+    label: &Option<String>,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    let loop_start = chunk.code.len();
+    compile_expr(
+        condition,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    let jif = chunk.emit(Op::JumpIfFalse(0), line);
+    let mut inner_loop_state = LoopState::with_label(loop_start, label.clone());
+    inner_loop_state.value_mode = true;
+    let mut loop_stack = vec![inner_loop_state];
+    compile_stmt_in_fn(
+        body,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+        &mut loop_stack,
+    )?;
+    let inner = loop_stack.pop().unwrap();
+    let jmp = chunk.emit(Op::Jump(0), line);
+    chunk.patch_jump(jmp, loop_start)?;
+    let void_exit = chunk.code.len();
+    chunk.patch_jump(jif, void_exit)?;
+    for p in inner.break_patches {
+        chunk.patch_jump(p, void_exit)?;
+    }
+    let void_idx = chunk.add_constant(Value::Void)?;
+    chunk.emit(Op::Const(void_idx), line);
+    let after = chunk.code.len();
+    for p in inner.break_value_patches {
+        chunk.patch_jump(p, after)?;
+    }
+    for p in inner.continue_patches {
+        chunk.patch_jump(p, loop_start)?;
+    }
+    Ok(())
 }
 
 /// Compile a node in "expression" position — it must leave exactly one
@@ -4953,6 +5146,31 @@ fn compile_block_as_expr(
                     fns,
                     next_fn_idx,
                     last_line,
+                ),
+                // RES-3993: `return <expr>;` as a block-in-expression-
+                // position's trailing statement — most commonly a
+                // block-bodied match arm (`Pat => { ...; return x; }`,
+                // see `match_block_arms.rz`). `compile_expr` has no arm
+                // for `ReturnStatement` (it isn't a value-producing
+                // expression — it unconditionally exits the enclosing
+                // function), so routing it through the `_` fallback
+                // below previously hit `Unsupported("ReturnStatement")`.
+                // Delegate to `compile_stmt_in_fn`, which already lowers
+                // `return` to `<value>; Op::ReturnFromCall` exactly like
+                // an ordinary function-body statement — the same
+                // "always assume function context" convention this
+                // function's `leading` statements already use.
+                Node::ReturnStatement { .. } => compile_stmt_in_fn(
+                    last_node,
+                    chunk,
+                    &mut block_locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    last_line,
+                    &mut Vec::new(),
                 ),
                 _ => compile_expr(
                     last_node,
