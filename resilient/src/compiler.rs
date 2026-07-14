@@ -2644,7 +2644,8 @@ fn compile_for_in(
     //    store in len_slot. `len` handles arrays, strings, and
     //    any other iterable — the VM's LoadIndex was extended
     //    (RES-334b) to support strings so `for c in "hello"` and
-    //    `for i in 0..10` (via array_range) both work uniformly.
+    //    `for i in 0..10` (RES-4000: `Op::IterPrepare` materializes
+    //    the `Value::Range` into an array) both work uniformly.
     let len_name_const = chunk.add_string_constant("len")?;
     chunk.emit(Op::LoadLocal(arr_slot), line);
     chunk.emit(
@@ -4082,9 +4083,15 @@ fn compile_expr(
             chunk.emit(Op::Const(idx), line);
             Ok(())
         }
-        // RES-291: `lo..hi` / `lo..=hi` range expression.
-        // Lowered to `array_range(lo, hi)` for exclusive ranges, or
-        // `array_range(lo, hi + 1)` for inclusive ranges (emit hi, Const(1), Add).
+        // RES-291 / RES-4000: `lo..hi` / `lo..=hi` range expression.
+        // Lowered to the VM-internal `__range(lo, hi, inclusive)`
+        // builtin, which constructs a first-class `Value::Range` —
+        // mirroring the interpreter's lazy `eval_range_value` (see
+        // `lib.rs`) instead of eagerly materializing an `Array`.
+        // Before RES-4000 this called the public `array_range(lo, hi)`
+        // builtin, so `type_of(1..5)` reported `"array"` under `--vm`
+        // vs `"range"` on the interpreter, and range-only operations
+        // like `contains(range, x)` had no `(Array, T)` overload.
         Node::Range {
             lo, hi, inclusive, ..
         } => {
@@ -4110,17 +4117,13 @@ fn compile_expr(
                 next_fn_idx,
                 line,
             )?;
-            if *inclusive {
-                // hi_incl = hi + 1
-                let one_idx = chunk.add_constant(Value::Int(1))?;
-                chunk.emit(Op::Const(one_idx), line);
-                chunk.emit(Op::Add, line);
-            }
-            let name_idx = chunk.add_string_constant("array_range")?;
+            let incl_idx = chunk.add_constant(Value::Bool(*inclusive))?;
+            chunk.emit(Op::Const(incl_idx), line);
+            let name_idx = chunk.add_string_constant("__range")?;
             chunk.emit(
                 Op::CallBuiltin {
                     name_const: name_idx,
-                    arity: 2,
+                    arity: 3,
                 },
                 line,
             );
@@ -6239,7 +6242,8 @@ mod tests {
     #[test]
     fn res334b_for_in_range_compiles() {
         // `for i in 0..3` must compile — the range is lowered to
-        // array_range(0, 3) by compile_expr.
+        // `__range(0, 3, false)` by compile_expr (RES-4000), then
+        // `IterPrepare` materializes it into an array for the loop.
         let p = parse_one("let n = 0; for i in 0..3 { n = n + i; } return n;");
         compile(&p).expect("for-in over range compiles");
     }
@@ -6959,31 +6963,62 @@ x;
         );
     }
 
+    // RES-4000 (test change): these two tests previously asserted that
+    // `let r = <range>; r;` produced a `Value::Array` under `--vm` —
+    // that was the bug (`type_of(1..5)` reported `"array"` under `--vm`
+    // vs `"range"` on the interpreter). The fix lowers `Node::Range` to
+    // a first-class `Value::Range` (mirroring the interpreter's
+    // `eval_range_value`) instead of eagerly calling `array_range`, so
+    // the correct assertion is `Value::Range`, not `Value::Array`.
     #[test]
-    fn range_expr_exclusive_produces_array() {
+    fn range_expr_exclusive_produces_range_value() {
         let src = "let r = 0..3; r;";
         match vm_ok(src) {
-            Value::Array(v) => {
-                assert_eq!(v.len(), 3);
-                assert!(matches!(v[0], Value::Int(0)));
-                assert!(matches!(v[1], Value::Int(1)));
-                assert!(matches!(v[2], Value::Int(2)));
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                assert_eq!(start, 0);
+                assert_eq!(end, 3);
+                assert!(!inclusive);
             }
-            other => panic!("expected Array([0,1,2]), got {:?}", other),
+            other => panic!("expected Range(0..3), got {:?}", other),
         }
     }
 
     #[test]
-    fn range_expr_inclusive_produces_array() {
+    fn range_expr_inclusive_produces_range_value() {
         let src = "let r = 1..=3; r;";
         match vm_ok(src) {
-            Value::Array(v) => {
-                assert_eq!(v.len(), 3);
-                assert!(matches!(v[0], Value::Int(1)));
-                assert!(matches!(v[2], Value::Int(3)));
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                assert_eq!(start, 1);
+                assert_eq!(end, 3);
+                assert!(inclusive);
             }
-            other => panic!("expected Array([1,2,3]), got {:?}", other),
+            other => panic!("expected Range(1..=3), got {:?}", other),
         }
+    }
+
+    // RES-4000: `for` iteration over a range literal must still yield
+    // the same element sequence it did before — `Op::IterPrepare`
+    // materializes the `Value::Range` into an array internally, but
+    // that's an implementation detail of loop compilation, not a
+    // change in `for`-loop semantics.
+    #[test]
+    fn range_expr_for_in_exclusive_iterates_correctly() {
+        let src = "let sum = 0; for i in 0..3 { sum = sum + i; } sum;";
+        assert!(matches!(vm_ok(src), Value::Int(3))); // 0+1+2
+    }
+
+    #[test]
+    fn range_expr_for_in_inclusive_iterates_correctly() {
+        let src = "let sum = 0; for i in 1..=3 { sum = sum + i; } sum;";
+        assert!(matches!(vm_ok(src), Value::Int(6))); // 1+2+3
     }
 
     #[test]

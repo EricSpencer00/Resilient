@@ -12000,6 +12000,14 @@ fn register_builtins(env: &Environment) {
     // shape was a historical artifact and prevented this from being
     // called from inside the `thread_local!` initializer.
     for (name, func) in BUILTINS {
+        // RES-4000: `__`-prefixed entries (e.g. `__range`) are
+        // VM-internal `Op::CallBuiltin` dispatch targets, resolved
+        // directly through `lookup_builtin` — never through a bound
+        // identifier. Skip binding them here so they stay uncallable
+        // from Resilient source in the tree-walker too.
+        if name.starts_with("__") {
+            continue;
+        }
         env.set((*name).to_string(), Value::Builtin { name, func: *func });
     }
 }
@@ -12009,11 +12017,18 @@ fn register_builtins(env: &Environment) {
 /// `&'static str` references so the caller doesn't have to
 /// allocate when rendering `CompletionItem.label` entries.
 ///
+/// RES-4000: skips `__`-prefixed entries — those are VM-internal
+/// dispatch targets (e.g. `__range`) never meant to be typed by a
+/// user, so they must not show up as a completion suggestion.
+///
 /// Only reachable from the `lsp` feature today; `#[allow(dead_code)]`
 /// keeps the default / `jit` / `z3` builds warning-clean.
 #[allow(dead_code)]
 pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
-    BUILTINS.iter().map(|(name, _func)| *name)
+    BUILTINS
+        .iter()
+        .map(|(name, _func)| *name)
+        .filter(|name| !name.starts_with("__"))
 }
 
 /// RES-VM (issue #266): look up a builtin by name. Returns `Some(func)`
@@ -12051,8 +12066,16 @@ pub(crate) fn lookup_builtin(name: &str) -> Option<BuiltinFn> {
 /// typechecker already covers this via env seeding in
 /// `TypeChecker::new`; this gives the eval path the same affordance
 /// for users who skip `--typecheck` (REPL, JIT, default `rz` entry).
+///
+/// RES-4000: skips `__`-prefixed entries — see `builtin_names` above.
+/// Without this, a typo'd `range(...)` call would get "did you mean
+/// `__range`?", which leaks a VM-internal dispatch target no user
+/// program should ever reference.
 pub(crate) fn all_builtin_names() -> impl Iterator<Item = &'static str> {
-    BUILTINS.iter().map(|(n, _)| *n)
+    BUILTINS
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|name| !name.starts_with("__"))
 }
 
 /// RES-487: format the "Identifier not found" runtime diagnostic with
@@ -12630,6 +12653,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_unzip", builtin_array_unzip),
     // RES-431: generate [start, start+1, ..., end-1].
     ("array_range", builtin_array_range),
+    // RES-4000 (VM-internal): construct a Value::Range at runtime.
+    // Not part of the public builtin surface — see doc comment on
+    // `builtin_make_range`.
+    ("__range", builtin_make_range),
     // RES-921: slice(arr, lo, hi, inclusive) — sub-array / sub-string.
     ("array_slice", builtin_array_slice),
     // RES-522: generate [0, 1, ..., len(arr)-1] for the given array.
@@ -16758,6 +16785,31 @@ fn builtin_array_range(args: &[Value]) -> RResult<Value> {
             "array_range: expected 2 arguments, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-4000 (VM-internal, not part of the public builtin surface):
+/// construct a `Value::Range` from two already-evaluated bounds and an
+/// inclusivity flag. The only caller is the bytecode compiler's
+/// lowering of `Node::Range` (`compiler.rs`), which needs a runtime
+/// mechanism to produce the interpreter's lazy `Value::Range` (RES-2548)
+/// instead of eagerly materializing an `Array` via `array_range`. User
+/// source constructs ranges via the `lo..hi` / `lo..=hi` literal syntax
+/// (`ranges.rs`), never by calling this directly — the leading `__`
+/// keeps it out of `builtin_names()`/`all_builtin_names()` so it never
+/// surfaces in LSP completions or "did you mean" typo suggestions.
+fn builtin_make_range(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(start), Value::Int(end), Value::Bool(inclusive)] => Ok(Value::Range {
+            start: *start,
+            end: *end,
+            inclusive: *inclusive,
+        }),
+        [a, b, c] => Err(format!(
+            "__range: expected (int, int, bool), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!("__range: expected 3 arguments, got {}", args.len())),
     }
 }
 

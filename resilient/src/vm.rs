@@ -1373,20 +1373,7 @@ fn run_inner(
             }
             Op::IterPrepare => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
-                match v {
-                    Value::Array(_) | Value::String(_) => stack.push(v),
-                    Value::Map(m) => {
-                        let mut keys: Vec<&crate::MapKey> = m.keys().collect();
-                        keys.sort_unstable_by(|a, b| crate::map_entries_merge::cmp_map_keys(a, b));
-                        let arr: Vec<Value> = keys.into_iter().map(|k| k.to_value()).collect();
-                        stack.push(Value::Array(arr));
-                    }
-                    _ => {
-                        return Err(VmError::TypeMismatch(
-                            "IterPrepare: expected Array, String, or Map",
-                        ));
-                    }
-                }
+                stack.push(iter_prepare_value(v)?);
             }
             Op::LoadGlobal(idx) => {
                 let abs = idx as usize;
@@ -3487,21 +3474,43 @@ fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 
 fn h_iter_prepare(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    state.stack.push(iter_prepare_value(v)?);
+    Ok(Step::Continue)
+}
+
+/// `Op::IterPrepare` normalizes a `for`-loop iterable into a shape the
+/// rest of `compile_for_in`'s sequential `LoadIndex` loop can walk
+/// uniformly: `Array`/`String` pass through unchanged, `Map` becomes
+/// its sorted-keys array, and (RES-4000) `Range` is materialized into
+/// an `Array` of `Value::Int` via the same `crate::ranges::iterate_range`
+/// driver the tree-walker's non-literal-range `for` path uses (`lib.rs`
+/// `eval_for_in_in_scope`). This keeps `Node::Range` itself lowering to
+/// a first-class `Value::Range` (see `compiler.rs`) for `type_of`/`len`/
+/// `contains`/`to_string` parity, while iteration still gets a concrete
+/// array to index into.
+fn iter_prepare_value(v: Value) -> Result<Value, VmError> {
     match v {
-        Value::Array(_) | Value::String(_) => state.stack.push(v),
+        Value::Array(_) | Value::String(_) => Ok(v),
         Value::Map(m) => {
             let mut keys: Vec<&crate::MapKey> = m.keys().collect();
             keys.sort_unstable_by(|a, b| crate::map_entries_merge::cmp_map_keys(a, b));
             let arr: Vec<Value> = keys.into_iter().map(|k| k.to_value()).collect();
-            state.stack.push(Value::Array(arr));
+            Ok(Value::Array(arr))
         }
-        _ => {
-            return Err(VmError::TypeMismatch(
-                "IterPrepare: expected Array, String, or Map",
-            ));
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let arr: Vec<Value> = crate::ranges::iterate_range(start, end, inclusive)
+                .map(Value::Int)
+                .collect();
+            Ok(Value::Array(arr))
         }
+        _ => Err(VmError::TypeMismatch(
+            "IterPrepare: expected Array, String, Map, or Range",
+        )),
     }
-    Ok(Step::Continue)
 }
 
 #[inline(never)]
