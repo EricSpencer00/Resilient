@@ -36,6 +36,22 @@ use crate::Pattern;
 /// Canonical indent width, in spaces.
 const INDENT: &str = "    ";
 
+/// RES-4032: some parser desugarings (array comprehensions RES-156,
+/// tuple-destructuring for-loops) synthesize hygienic binder names
+/// containing `$` (e.g. `_r$0`, `$for_tup$0`). Those names are valid
+/// internally, but `$` isn't a lexable identifier character, so
+/// printing them verbatim produces output that fails to reparse —
+/// breaking both the "never write unparseable output" and idempotence
+/// guarantees. Substitute a lexable stand-in that can't collide with
+/// any real user identifier (source identifiers never contain `$`).
+fn sanitize_ident(name: &str) -> std::borrow::Cow<'_, str> {
+    if name.contains('$') {
+        std::borrow::Cow::Owned(name.replace('$', "__"))
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    }
+}
+
 pub struct Formatter {
     out: String,
     depth: usize,
@@ -202,17 +218,50 @@ impl Formatter {
                     body,
                 );
             }
-            Node::StructDecl { name, fields, .. } => {
-                self.write_args(format_args!("struct {} {{", name));
-                self.newline();
-                self.indent();
-                for (ty, fname) in fields {
-                    self.write_args(format_args!("{} {},", ty, fname));
+            Node::StructDecl {
+                name,
+                type_params,
+                fields,
+                repr_c,
+                ..
+            } => {
+                if *repr_c {
+                    self.write("@repr(C)");
                     self.newline();
                 }
-                self.dedent();
-                self.write("}");
-                self.newline();
+                // RES-928/RES-4032: tuple structs — `struct Name(T1, T2);`
+                // — are represented with synthesized positional field
+                // names ("0", "1", ...). Printing them through the
+                // brace-struct path would turn `struct Point(int, int);`
+                // into `struct Point { int 0, int 1 }`, which doesn't
+                // reparse (field names can't be integer literals). Detect
+                // and round-trip the tuple-struct declaration form.
+                if crate::tuple_struct::is_tuple_struct(fields) {
+                    self.write_args(format_args!("struct {}", name));
+                    self.fmt_type_params(type_params);
+                    self.write("(");
+                    for (i, (ty, _)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(ty);
+                    }
+                    self.write(");");
+                    self.newline();
+                } else {
+                    self.write_args(format_args!("struct {}", name));
+                    self.fmt_type_params(type_params);
+                    self.write(" {");
+                    self.newline();
+                    self.indent();
+                    for (ty, fname) in fields {
+                        self.write_args(format_args!("{} {},", ty, fname));
+                        self.newline();
+                    }
+                    self.dedent();
+                    self.write("}");
+                    self.newline();
+                }
             }
             Node::ImplBlock {
                 trait_name,
@@ -230,7 +279,37 @@ impl Formatter {
                     if i > 0 {
                         self.blank_line();
                     }
-                    self.fmt_stmt(m);
+                    self.fmt_method(m, struct_name);
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            // RES-2552/RES-4032: blanket impl — `impl<T: Bound> Trait for T { ... }`.
+            // Previously unhandled: falling through to fmt_stmt's generic
+            // "must be an expression" branch, which degrades back to
+            // fmt_stmt for statement-shaped nodes — infinite mutual
+            // recursion between the two catch-alls, stack-overflowing on
+            // any file with a blanket impl.
+            Node::BlanketImpl {
+                type_param,
+                bounds,
+                trait_name,
+                methods,
+                ..
+            } => {
+                self.write_args(format_args!("impl<{}", type_param));
+                if !bounds.is_empty() {
+                    self.write_args(format_args!(": {}", bounds.join(" + ")));
+                }
+                self.write_args(format_args!("> {} for {} {{", trait_name, type_param));
+                self.newline();
+                self.indent();
+                for (i, m) in methods.iter().enumerate() {
+                    if i > 0 {
+                        self.blank_line();
+                    }
+                    self.fmt_method(m, type_param);
                 }
                 self.dedent();
                 self.write("}");
@@ -440,6 +519,7 @@ impl Formatter {
                 type_annot,
                 ..
             } => {
+                let name = sanitize_ident(name);
                 match type_annot {
                     Some(t) => self.write_args(format_args!("let {}: {} = ", name, t)),
                     None => self.write_args(format_args!("let {} = ", name)),
@@ -516,7 +596,7 @@ impl Formatter {
                 self.newline();
             }
             Node::Assignment { name, value, .. } => {
-                self.write_args(format_args!("{} = ", name));
+                self.write_args(format_args!("{} = ", sanitize_ident(name)));
                 self.fmt_expr(value);
                 self.write(";");
                 self.newline();
@@ -613,7 +693,7 @@ impl Formatter {
                 invariants,
                 ..
             } => {
-                self.write_args(format_args!("for {} in ", name));
+                self.write_args(format_args!("for {} in ", sanitize_ident(name)));
                 self.fmt_expr(iterable);
                 if !invariants.is_empty() {
                     self.newline();
@@ -902,13 +982,63 @@ impl Formatter {
         }
     }
 
+    /// RES-2574/RES-4032: print `<T, U>` for a non-empty type-parameter
+    /// list, or nothing at all when there are none.
+    fn fmt_type_params(&mut self, params: &[String]) {
+        if params.is_empty() {
+            return;
+        }
+        self.write("<");
+        for (i, p) in params.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write(p);
+        }
+        self.write(">");
+    }
+
+    /// RES-4032: format a method inside an `impl` block.
+    ///
+    /// `parse_method` (RES-290) stores each method's AST name mangled
+    /// as `StructName$methodName` so call sites resolve `obj.method()`
+    /// unambiguously. Printing that mangled name verbatim as `fn
+    /// StructName$methodName(...)` doesn't reparse — `$` isn't a valid
+    /// identifier character — so strip the known `struct_name$` prefix
+    /// before printing the plain method name.
+    fn fmt_method(&mut self, node: &Node, struct_name: &str) {
+        if let Node::Function {
+            name,
+            parameters,
+            body,
+            requires,
+            ensures,
+            return_type,
+            ..
+        } = node
+        {
+            let prefix = format!("{}$", struct_name);
+            let display_name = name.strip_prefix(&prefix).unwrap_or(name);
+            self.fmt_function(
+                Some(display_name),
+                parameters,
+                return_type.as_deref(),
+                requires,
+                ensures,
+                body,
+            );
+        } else {
+            self.fmt_stmt(node);
+        }
+    }
+
     // ------------------------------------------------------------------
     // expressions
     // ------------------------------------------------------------------
 
     fn fmt_expr(&mut self, node: &Node) {
         match node {
-            Node::Identifier { name, .. } => self.write(name),
+            Node::Identifier { name, .. } => self.write(&sanitize_ident(name)),
             Node::IntegerLiteral { value, .. } => self.write_args(format_args!("{}", value)),
             Node::FloatLiteral { value, .. } => {
                 // Always include a decimal point so the literal round-
@@ -1118,25 +1248,49 @@ impl Formatter {
             Node::StructLiteral {
                 name, fields, base, ..
             } => {
-                self.write_args(format_args!("new {} {{", name));
-                let mut need_comma = false;
-                if let Some(b) = base {
-                    self.write(" ..");
-                    self.fmt_expr(b);
-                    need_comma = true;
-                }
-                for (fname, v) in fields {
-                    if need_comma {
-                        self.write(",");
+                // RES-928/RES-4032: `new Pair(0, "first")` — a tuple-
+                // struct constructor call — parses into a StructLiteral
+                // with synthesized positional field names ("0", "1",
+                // ...) rather than a distinct AST node. The brace form
+                // below can't reparse numeric field names (`0: value`
+                // isn't valid struct-literal syntax), so detect the
+                // tuple shape and round-trip the constructor-call form.
+                let is_tuple_ctor = base.is_none()
+                    && !fields.is_empty()
+                    && fields
+                        .iter()
+                        .enumerate()
+                        .all(|(i, (fname, _))| fname == &i.to_string());
+                if is_tuple_ctor {
+                    self.write_args(format_args!("new {}(", name));
+                    for (i, (_, v)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.fmt_expr(v);
                     }
-                    self.write_args(format_args!(" {}: ", fname));
-                    self.fmt_expr(v);
-                    need_comma = true;
+                    self.write(")");
+                } else {
+                    self.write_args(format_args!("new {} {{", name));
+                    let mut need_comma = false;
+                    if let Some(b) = base {
+                        self.write(" ..");
+                        self.fmt_expr(b);
+                        need_comma = true;
+                    }
+                    for (fname, v) in fields {
+                        if need_comma {
+                            self.write(",");
+                        }
+                        self.write_args(format_args!(" {}: ", fname));
+                        self.fmt_expr(v);
+                        need_comma = true;
+                    }
+                    if need_comma || !fields.is_empty() {
+                        self.write(" ");
+                    }
+                    self.write("}");
                 }
-                if need_comma || !fields.is_empty() {
-                    self.write(" ");
-                }
-                self.write("}");
             }
             Node::FunctionLiteral {
                 parameters,
@@ -1303,6 +1457,13 @@ impl Formatter {
                         self.write(", ");
                     }
                     self.fmt_expr(it);
+                }
+                // RES-4032: a single-element tuple needs a trailing
+                // comma — `(42)` is a parenthesized scalar, not a
+                // 1-tuple, so dropping the comma changes the parsed
+                // node kind on reparse (breaks idempotence).
+                if items.len() == 1 {
+                    self.write(",");
                 }
                 self.write(")");
             }
@@ -2253,5 +2414,74 @@ struct Point {
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let out = Formatter::format(&prog);
         assert!(out.contains("(1"), "tuple must appear: {out}");
+    }
+
+    /// RES-4032 (E-E5): idempotence across the example corpus —
+    /// `fmt(fmt(x)) == fmt(x)` for every `resilient/examples/*.rz` file
+    /// that parses cleanly. This is the TOOLING_QUALITY.md
+    /// "Roundtrip Safety" / "Idempotence" acceptance criterion.
+    ///
+    /// Doubles as a perf sanity check: TOOLING_QUALITY.md sets a
+    /// "10K LOC in < 1s" budget for the formatter. The full corpus is
+    /// scaled against that budget with slack for slow/loaded runners,
+    /// rather than hardcoding an absolute wall-clock limit.
+    #[test]
+    fn fmt_idempotent_and_within_perf_budget_across_example_corpus() {
+        use std::fs;
+        use std::time::{Duration, Instant};
+
+        let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let mut checked = 0usize;
+        let mut total_lines = 0usize;
+        let start = Instant::now();
+
+        for entry in fs::read_dir(&examples_dir).expect("read examples/") {
+            let entry = entry.expect("readable dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rz") {
+                continue;
+            }
+            let src = fs::read_to_string(&path).expect("read example");
+            let (program, errs) = parse(&src);
+            if !errs.is_empty() {
+                // Some corpus files are intentionally-invalid parse-error
+                // regression fixtures; the formatter only promises
+                // idempotence on code it accepts in the first place.
+                continue;
+            }
+
+            let once = Formatter::format(&program);
+            let (reparsed, reparse_errs) = parse(&once);
+            assert!(
+                reparse_errs.is_empty(),
+                "{}: formatter output failed to reparse: {:?}",
+                path.display(),
+                reparse_errs
+            );
+            let twice = Formatter::format(&reparsed);
+            assert_eq!(
+                once,
+                twice,
+                "{}: fmt(fmt(x)) != fmt(x) — formatter is not idempotent",
+                path.display()
+            );
+
+            checked += 1;
+            total_lines += src.lines().count();
+        }
+
+        assert!(
+            checked > 0,
+            "expected at least one parseable example under {}",
+            examples_dir.display()
+        );
+
+        let elapsed = start.elapsed();
+        let budget = Duration::from_secs_f64((total_lines as f64 / 10_000.0).max(1.0) * 2.0);
+        assert!(
+            elapsed < budget,
+            "formatting {checked} example files ({total_lines} lines) took \
+             {elapsed:?}, budget {budget:?} (TOOLING_QUALITY.md: 10K LOC / 1s)"
+        );
     }
 }
