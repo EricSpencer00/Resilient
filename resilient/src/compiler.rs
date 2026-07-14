@@ -1336,8 +1336,26 @@ fn compile_stmt(
             line,
             loop_stack,
         ),
-        // Verification-only constructs: emit nothing at runtime.
-        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // RES-3996: `assume(cond[, msg]);` halts at runtime like `assert`
+        // when the condition is false (see `compile_assume`). Previously
+        // grouped with the declaration-only no-op arm below, which
+        // silently dropped the runtime check under `--vm`.
+        Node::Assume {
+            condition, message, ..
+        } => compile_assume(
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // Verification-only construct: emit nothing at runtime.
+        Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
         // All type information is handled at parse/typecheck time.
         Node::EnumDecl { name, variants, .. } => {
@@ -1610,6 +1628,76 @@ fn compile_assert(
     next_fn_idx: &mut u16,
     line: u32,
 ) -> Result<(), CompileError> {
+    compile_assert_like(
+        condition,
+        message,
+        Op::AssertFail,
+        "assertion failed",
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )
+}
+
+/// RES-3996: `assume(cond[, msg]);` — same runtime shape as `assert`
+/// (halt immediately when the condition is false, dead code after it
+/// never executes) but lowered to the dedicated `AssumeFail` opcode so
+/// the VM's diagnostic reads "ASSUME VIOLATED" like the tree-walker's
+/// `eval_assume`, instead of being silently dropped as a no-op (the
+/// bug this ticket fixes — see `UNSUPPORTED_BY_VM` in differential.rs).
+#[allow(clippy::too_many_arguments)]
+fn compile_assume(
+    condition: &Node,
+    message: &Option<Box<Node>>,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_assert_like(
+        condition,
+        message,
+        Op::AssumeFail,
+        "assumption failed",
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )
+}
+
+/// Shared lowering for `assert`/`assume`: evaluate `condition`, and if
+/// falsy, push the failure message and emit `fail_op` (which halts the
+/// VM unconditionally — see `dce.rs`'s terminator list). `default_msg`
+/// is pushed when no explicit message expression is given.
+#[allow(clippy::too_many_arguments)]
+fn compile_assert_like(
+    condition: &Node,
+    message: &Option<Box<Node>>,
+    fail_op: Op,
+    default_msg: &str,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
     compile_expr(
         condition,
         chunk,
@@ -1651,10 +1739,10 @@ fn compile_assert(
             }
         }
     } else {
-        let msg_idx = chunk.add_string_constant("assertion failed")?;
+        let msg_idx = chunk.add_string_constant(default_msg)?;
         chunk.emit(Op::Const(msg_idx), line);
     }
-    chunk.emit(Op::AssertFail, line);
+    chunk.emit(fail_op, line);
     let past_fail = chunk.code.len();
     chunk.patch_jump(jt, past_fail)?;
     Ok(())
@@ -2301,8 +2389,26 @@ fn compile_stmt_in_fn(
             line,
             loop_stack,
         ),
-        // Verification-only constructs: emit nothing at runtime.
-        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // RES-3996: `assume(cond[, msg]);` halts at runtime like `assert`
+        // when the condition is false (see `compile_assume`). Previously
+        // grouped with the declaration-only no-op arm below, which
+        // silently dropped the runtime check under `--vm`.
+        Node::Assume {
+            condition, message, ..
+        } => compile_assume(
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // Verification-only construct: emit nothing at runtime.
+        Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
         Node::EnumDecl { name, variants, .. } => {
             emit_unit_enum_variants(name, variants, chunk, locals, next_local, line)

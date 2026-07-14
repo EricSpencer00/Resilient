@@ -119,6 +119,14 @@
     "resilient-runtime/src/vm.rs": {
       "branch": "res-3987-runtime-loader",
       "claimed_at": "2026-07-14T08:25:39Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-3996-vm-assume-panic",
+      "claimed_at": "2026-07-14T08:25:16Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3996-vm-assume-panic",
+      "claimed_at": "2026-07-14T08:25:16Z"
     }
   }
 }

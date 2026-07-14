@@ -225,6 +225,7 @@ fn write_op(
         Op::Shl => write!(out, "Shl")?,
         Op::Shr => write!(out, "Shr")?,
         Op::AssertFail => write!(out, "AssertFail")?,
+        Op::AssumeFail => write!(out, "AssumeFail")?,
         Op::AssertBool => write!(out, "AssertBool")?,
         Op::Pop => write!(out, "Pop")?,
         Op::MakeTuple { len } => write!(out, "MakeTuple {}", len)?,

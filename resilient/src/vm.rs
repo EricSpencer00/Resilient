@@ -85,6 +85,11 @@ pub enum VmError {
     /// (the condition was false). Carries the user-supplied or
     /// auto-generated failure message.
     AssertionFailed(String),
+    /// RES-3996: `assume(cond[, msg]);` fired at runtime (the condition
+    /// was false). Carries the user-supplied or auto-generated message.
+    /// Kept distinct from `AssertionFailed` so the diagnostic reads
+    /// "ASSUME VIOLATED" — matching the tree-walker's `eval_assume`.
+    AssumeViolated(String),
     /// RES-169c: `LoadUpvalue(idx)` with `idx` outside the current
     /// frame's upvalue slab.
     UpvalueOutOfBounds(u16),
@@ -137,6 +142,9 @@ impl std::fmt::Display for VmError {
             }
             VmError::AssertionFailed(msg) => {
                 write!(f, "ASSERTION ERROR: {}", msg)
+            }
+            VmError::AssumeViolated(msg) => {
+                write!(f, "ASSUME VIOLATED: {}", msg)
             }
             VmError::UpvalueOutOfBounds(idx) => {
                 write!(f, "vm: upvalue index {} out of bounds", idx)
@@ -1670,6 +1678,13 @@ fn run_inner(
                 };
                 return Err(VmError::AssertionFailed(msg));
             }
+            Op::AssumeFail => {
+                let msg = match stack.pop().ok_or(VmError::EmptyStack)? {
+                    Value::String(s) => s,
+                    other => format!("assumption failed: {}", other),
+                };
+                return Err(VmError::AssumeViolated(msg));
+            }
             Op::AssertBool => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
                 if !matches!(v, Value::Bool(_)) {
@@ -2110,7 +2125,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 /// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
 /// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
 /// grow together.
-const OP_KIND_COUNT: usize = 38;
+const OP_KIND_COUNT: usize = 39;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -2177,6 +2192,7 @@ fn op_to_index(op: Op) -> usize {
         Op::ExitTry => OP_KIND_EXIT_TRY,
         Op::AssertBool => OP_KIND_ASSERT_BOOL,
         Op::Pop => OP_KIND_POP,
+        Op::AssumeFail => OP_KIND_ASSUME_FAIL,
     }
 }
 
@@ -2202,7 +2218,8 @@ const OP_KIND_ENTER_TRY: usize = 49;
 const OP_KIND_EXIT_TRY: usize = 50;
 const OP_KIND_ASSERT_BOOL: usize = 51;
 const OP_KIND_POP: usize = 52;
-const HANDLER_TABLE_LEN: usize = 53;
+const OP_KIND_ASSUME_FAIL: usize = 53;
+const HANDLER_TABLE_LEN: usize = 54;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2261,6 +2278,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_EXIT_TRY] = h_exit_try;
     table[OP_KIND_ASSERT_BOOL] = h_assert_bool;
     table[OP_KIND_POP] = h_pop;
+    table[OP_KIND_ASSUME_FAIL] = h_assume_fail;
     table
 };
 
@@ -3397,6 +3415,14 @@ fn h_assert_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
         other => format!("assertion failed: {}", other),
     };
     Err(VmError::AssertionFailed(msg))
+}
+
+fn h_assume_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let msg = match state.stack.pop().ok_or(VmError::EmptyStack)? {
+        Value::String(s) => s,
+        other => format!("assumption failed: {}", other),
+    };
+    Err(VmError::AssumeViolated(msg))
 }
 
 fn h_assert_bool(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
