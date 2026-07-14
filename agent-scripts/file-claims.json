@@ -115,6 +115,10 @@
     "benchmarks/baseline/extended.json": {
       "branch": "res-fe4-perf-baseline-fix",
       "claimed_at": "2026-07-14T03:07:13Z"
+    },
+    "resilient/tests/it/differential.rs": {
+      "branch": "res-3990-differential-denylist",
+      "claimed_at": "2026-07-14T03:03:48Z"
     }
   }
 }
