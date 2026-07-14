@@ -135,7 +135,14 @@ stateright = ["dep:stateright"]
 # thin `pub use resilient_span::*;` shim; `resilient-runtime`
 # does *not* take this dep (it stays no_std-clean).
 resilient-span = { path = "../resilient-span" }
-resilient-runtime = { path = "../resilient-runtime" }
+# RES-3987 (D-E1): `vm` pulls in resilient-runtime's no_std bytecode
+# VM + `.rzbc` serde module (`resilient_runtime::vm`) so `rz build
+# --target <TRIPLE>` (see `rzbc_emit.rs`) and its round-trip
+# integration test can encode/decode against the exact wire format
+# the embedded runtime consumes. Unconditional (not feature-gated on
+# the `resilient` side) — `rz build` is a normal, always-available
+# subcommand, not a backend-limited one.
+resilient-runtime = { path = "../resilient-runtime", features = ["vm"] }
 clap = { version = "4.4", features = ["derive"] }
 libloading = { version = "0.8", optional = true }
 logos = { version = "0.14", optional = true }

@@ -169,6 +169,7 @@ mod repl_smoke;
 mod rich_diag_smoke;
 mod roundtrip;
 mod runtime_feature_gating_smoke;
+mod rzbc_build_roundtrip;
 mod safety_critical_smoke;
 mod self_host_extension_copy_smoke;
 mod self_host_parity;
