@@ -135,6 +135,10 @@
     "resilient/src/compiler.rs": {
       "branch": "res-3994-vm-method-struct-add",
       "claimed_at": "2026-07-14T04:13:43Z"
+    },
+    "resilient/tests/it/differential.rs": {
+      "branch": "res-3994-denylist-comment-retarget",
+      "claimed_at": "2026-07-14T05:06:11Z"
     }
   }
 }
