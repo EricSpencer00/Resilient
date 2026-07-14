@@ -5,7 +5,9 @@
 // `rz <file> --emit-contract-certificate <out>` must:
 //   1. Never crash the process (no panic / signal).
 //   2. If a certificate file is produced, it must be well-formed
-//      JSON whose schema is `resilient-contract-certificate/v1` and
+//      JSON whose schema is `resilient-contract-certificate/v1`,
+//      whose `schema_version` is the current
+//      `contract_certificate::SCHEMA_VERSION` (C-E5, #3933), and
 //      whose every per-clause `"verdict"` is one of `"pass"`,
 //      `"fail"`, or `"unknown"` — the fixed set defined by
 //      `contract_verify::Verdict` and serialized by
@@ -146,6 +148,15 @@ fuzz_target!(|data: &[u8]| {
         json.get("schema").and_then(|v| v.as_str()),
         Some("resilient-contract-certificate/v1"),
         "unexpected certificate schema for input:\n{src}\ndocument:\n{contents}"
+    );
+    // C-E5: schema_version must always be present and equal to the
+    // one current version this fuzz target knows about — bump this
+    // alongside `contract_certificate::SCHEMA_VERSION` if it changes.
+    assert_eq!(
+        json.get("schema_version")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "unexpected certificate schema_version for input:\n{src}\ndocument:\n{contents}"
     );
 
     assert_verdicts_valid(&json, src);
