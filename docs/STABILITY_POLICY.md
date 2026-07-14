@@ -6,541 +6,143 @@ permalink: /stability-policy
 
 # Resilient Stability and Compatibility Policy
 
+This page is the GitHub Pages copy of the canonical stability policy that
+lives at [`STABILITY.md`][stability-md] in the repository root. GitHub Pages
+only serves files under `docs/`, so this page mirrors that file's content
+rather than linking off-site; if the two ever disagree, `STABILITY.md` is
+authoritative (RES-3510 closed the gap between them as of 2026-07).
+
+[stability-md]: https://github.com/EricSpencer00/Resilient/blob/main/STABILITY.md
+
 ## Overview
 
-This document defines stability promises, compatibility guarantees, deprecation rules, and the expectations users can rely on as Resilient evolves. It answers: "When will my code break?"
+Resilient is **pre-1.0**. Any release can currently break any program — the
+surface area is still being designed. This document defines what stability
+guarantees exist today, what they will become once the language reaches
+1.0, and how breaking changes are recorded so nobody upgrades blind.
 
----
+## Current status
 
-## Core Principle
+- `resilient --version` / `rz --version` prints a one-line reminder that the
+  compiler is pre-1.0.
+- Every breaking change lands in the [CHANGELOG](#changelog) at the bottom
+  of `STABILITY.md`, with a one-line migration hint where practical.
+- No deprecation cycle is *required* pre-1.0, but where it's cheap the
+  compiler still emits a warning for one release before removing a
+  construct.
+- Tagged releases (`v0.x.y`) are reproducible snapshots — pin to one for a
+  stable target. `main` is always green in CI but is not itself stable.
 
-**Stability commitment:** Once a feature reaches the **Stable** tier, it will not break in minor or patch releases.
+## Feature status vocabulary
 
-**Breaking changes** are announced at least **one major version in advance** and supported for at least **three minor releases** before removal.
+The CLI (`rz --help`) ships a three-way status vocabulary that this policy
+adopts directly (enforced by `resilient/tests/it/stability_help_smoke.rs`,
+so CLI text and this policy cannot drift silently):
 
----
-
-## Semantic Versioning
-
-Resilient follows semantic versioning (MAJOR.MINOR.PATCH):
-
-### Patch Release (1.0.x → 1.0.y)
-
-**When:** Bugfixes only, no new features
-
-**Guarantee:** No breaking changes to any public API
-
-**Example:** 1.0.5 → 1.0.6 is always safe to update
-
-### Minor Release (1.x.0 → 1.y.0)
-
-**When:** New features, incremental improvements
-
-**Guarantee:** All Stable features from 1.x.0 remain compatible
-
-**What may change:**
-- New Stable features added
-- Performance improvements
-- Better error messages
-- New warnings (not errors)
-
-**Example:** 1.2.0 → 1.3.0 is safe for production code using 1.2.0
-
-### Major Release (1.0.0 → 2.0.0)
-
-**When:** Design improvements, architectural changes, removal of deprecated features
-
-**Guarantee:** May contain breaking changes
-
-**Required action:** Users must review changelog and update their code
-
-**Example:** 1.9.9 → 2.0.0 requires testing and potential code updates
-
----
-
-## Feature Tier System
+| Status | Meaning |
+|---|---|
+| **Stable** | Core of the language. Goes through a deprecation cycle (at least one MINOR release with a warning) before any breaking change, even pre-1.0. |
+| **Backend-limited** | Fully specified and won't change on backends that support it, but requires a build feature or target (`--features jit`, `--features lsp`, `--features z3`, `--features ffi-static`, or a specific embedded target triple). Unsupported builds print a rebuild hint rather than silently degrading. This is a build-time gate, not a design-freeze — some backend-limited surfaces are *also* Experimental below because their shape is still moving. |
+| **Experimental** | Useful today but still evolving. Breaking changes with no warning cycle. |
 
 ### Stable
 
-**Definition:** Fully specified, tested, documented, and ready for long-term production use.
+Core syntax (`let`, `fn`, `if`/`else`, `while`, `match`, `return`); primitive
+types (`Int`, `Float`, `Bool`, `String`, `Bytes`); arithmetic/comparison
+operators; function declaration/call syntax; string/byte literal escapes;
+`unsafe` blocks (the compile-time gate around `volatile_read_*` /
+`volatile_write_*`); the `#[interrupt(name = "…")]` attribute (Cortex-M4F and
+RV32IMAC targets); `region NAME;` / `&[NAME] T` / `&mut[NAME] T` region
+annotations and their same-function alias-rejection check; and
+region-polymorphic function syntax (`fn f<R, S>(...)`, V1 single-label
+inference).
 
-**Stability guarantee:**
-- Will not change in incompatible ways in minor versions
-- Will be supported indefinitely (until explicitly deprecated)
-- Breaking changes only in major versions
+The full, current list lives in `STABILITY.md` § Stable — this page doesn't
+duplicate it item-for-item to avoid the two copies drifting on exactly the
+list that matters most.
 
-**Migration guarantee:** If removed, users get:
-- At least 3 minor releases warning
-- Clear deprecation message
-- Migration guide
-- Compiler support for old syntax (with warning)
+### Backend-limited
 
-**Example Stable features:**
-- Basic types (int, float, bool, string, arrays)
-- Function definitions and calls
-- Control flow (if, while, for, match)
-- Memory model (stack, static allocation)
-- Pattern matching
-
-### Backend-Limited
-
-**Definition:** Fully implemented on some backends, not all.
-
-**Stability guarantee:**
-- Will not change on supported backends without notice
-- Support status may change in minor versions
-
-**Migration guarantee:** If support is dropped, users get:
-- Compiler error on unsupported backends
-- Clear diagnostic
-- Documentation of migration path
-
-**Example Backend-Limited features:**
-- JIT-specific optimizations
-- RISC-V interrupt handling
-- Cortex-M MMIO annotations
+`--jit` (Cranelift JIT, `--features jit`), `--lsp` (`--features lsp`),
+`--emit-certificate` / `verify-cert` / `verify-all` (Z3 verifier,
+`--features z3`), and the static FFI registry (`--features ffi-static`).
 
 ### Experimental
 
-**Definition:** Under design or implementation, may change frequently.
+`live {}` blocks (retry/backoff/timeout semantics); the effect system
+(`-e->` arrow — parsed today, polymorphic unification not yet implemented,
+see [FAILURE_MODEL.md](/failure-model)); FFI (`extern` blocks, both the
+tree-walker dynamic-load path and the static registry); Z3 verification
+directives and certificate format (state-local V1 surface; trace properties
+are a V2 capability); the package manager (`resilient pkg`, see
+[MODULE_SYSTEM.md](/module-system)); and the language server beyond stock
+LSP request/response shapes.
 
-**Stability guarantee:** None. Breaking changes without notice.
+## Versioning intent (post-1.0)
 
-**No migration guarantee:** May be removed or significantly changed at any time.
+Once Resilient reaches 1.0 it follows [Semantic Versioning
+2.0](https://semver.org/):
 
-**Example Experimental features:**
-- Async/await (future)
-- Generic constraints (future)
-- Effects system (future)
+- **MAJOR** — backwards-incompatible changes to the stable surface.
+  Requires at least one MINOR release that ships the replacement alongside a
+  deprecation warning first. Removed items stay in the CHANGELOG
+  indefinitely.
+- **MINOR** — backwards-compatible additions: new syntax that doesn't
+  conflict with existing programs, new builtins/stdlib functions, new
+  compiler flags, additional diagnostics. May promote an Experimental
+  feature to Stable. Never removes anything.
+- **PATCH** — backwards-compatible bug fixes, performance improvements, and
+  documentation. No surface-visible changes.
 
----
+Compiler-internal APIs (the `resilient` crate's Rust types, the VM bytecode
+format, the JIT ABI, `resilient-runtime`'s non-public items) are **never**
+covered by SemVer.
 
-## Backward Compatibility Rules
+## How breaking changes land
 
-### What's NOT a breaking change
+1. The change is proposed as a GitHub Issue (`RES-NNN`).
+2. If the affected surface is Stable, the ticket must include a deprecation
+   plan: which version prints a warning, which version removes the
+   construct.
+3. The PR updates `STABILITY.md`'s CHANGELOG with the date, the version that
+   first contains the change, a one-line description, and a pointer to the
+   migration.
+4. `resilient --version` keeps pointing contributors at `STABILITY.md` so
+   nobody upgrades blind.
 
-The following are safe in minor releases:
+## The `@experimental` convention
 
-✅ Adding new functions or methods  
-✅ Adding new public types (as long as existing code doesn't break)  
-✅ Making type checking stricter (previously accepted code may now error)  
-✅ Adding compiler warnings (not errors)  
-✅ Improving error messages  
-✅ Performance improvements (as long as semantics unchanged)  
-✅ Adding new compiler options/flags  
-✅ Optimizing stdlib functions  
+There is no attribute syntax yet; experimental surface is flagged with a
+comment directly above the declaration:
 
-### What IS a breaking change
-
-The following require a major version bump:
-
-❌ Removing a public function, type, or constant  
-❌ Changing function signature (parameter types, return type)  
-❌ Changing type definition (adding non-optional fields, removing fields)  
-❌ Changing behavior of a stable function  
-❌ Changing error codes or diagnostic format (in a non-backward-compatible way)  
-❌ Removing support for a stable backend  
-❌ Changing memory layout of public types  
-
----
-
-## Deprecation Process
-
-### Step 1: Announce (Minor Release N)
-
-Add deprecation warning to the feature:
-
-```rust
-/// Deprecated since 1.5.0; use `new_function` instead.
-#[deprecated(since = "1.5.0", note = "use new_function")]
-pub fn old_function() {
-    // ...
+```resilient
+# @experimental: live-block API may change — see STABILITY.md
+fn retry_with_backoff(int attempts) {
+    live backoff(base_ms=10, factor=2, max_ms=1000) {
+        # ...
+    }
 }
 ```
 
-**Action:**
-- Release notes mention deprecation
-- Compiler warns when code uses feature
-- Error message suggests alternative
+Tooling does not enforce this today — it's a promise to future readers, not
+a compiler-checked attribute.
 
-### Step 2: Support Period (Minor Releases N, N+1, N+2)
+## Security and memory safety
 
-The old feature continues to work with warnings:
+Memory safety guarantees (no use-after-free, no data races, etc.) are not
+subject to change except to become stricter. If a bug is found in the safety
+checker, the fix ships immediately even if it invalidates previously-valid
+code; that is not treated as a breaking change, because safety is paramount.
+Report suspected vulnerabilities the same way as any other issue — through
+[GitHub Issues](https://github.com/EricSpencer00/Resilient/issues); there is
+no separate embargo/security-advisory process at this stage of the project.
 
-- **1.5.0:** Warning introduced
-- **1.6.0:** Still works, still warns
-- **1.7.0:** Still works, still warns
-- **1.8.0:** Last chance! Final warning
+## CHANGELOG
 
-### Step 3: Hard Error (Minor Release N+3)
+The authoritative, continuously-updated CHANGELOG lives in `STABILITY.md` §
+CHANGELOG. This page is not re-synced on every entry — check the source file
+for the current table.
 
-Feature becomes hard error:
+## Questions?
 
-- **1.9.0:** Compiler rejects the feature
-- Users must update their code
-
-### Step 4: Removal (Later Major Release)
-
-In version 2.0+, implementation code may be removed entirely.
-
----
-
-## Language Reference Stability
-
-### Stable Language Features
-
-These will remain compatible:
-
-- Core syntax (functions, variables, types)
-- Arithmetic and logic operators
-- Control flow (if, for, while, match)
-- Memory safety rules
-- Type system basics
-- Pattern matching
-- Error handling (Result, try)
-
-### Subject to Change (with notice)
-
-- Compiler error messages (format, codes)
-- Exact diagnostics and their positions
-- Stdlib API organization (re-exports may move)
-- Optimization behavior (as long as semantics preserved)
-- Backend implementation details
-
-### Not Guaranteed
-
-- Internal compiler structure
-- Exact performance characteristics
-- Timing of compilation passes
-- Specific optimization order
-- Internals of stdlib functions
-
----
-
-## Stdlib Stability
-
-### Tier 0 (Core): Stable
-
-All Tier 0 (Core) functions are Stable:
-
-```rust
-pub fn add(int x, int y) -> int { ... }      // Stable
-pub fn reverse<T>(array<T>) -> array<T> { ...} // Stable
-```
-
-**Guarantee:** Never changes, never removed
-
-### Tier 1 (Alloc): Stable (feature-gated)
-
-Tier 1 functions are Stable when the `alloc` feature is enabled:
-
-```rust
-#[cfg(feature = "alloc")]
-pub fn allocate_vector(capacity: int) -> Vec<int> { ... } // Stable (when alloc enabled)
-```
-
-**Guarantee:** Doesn't change when feature is enabled
-
-### Tier 2 (Std): Stable (host-only)
-
-Tier 2 functions are Stable on host platforms:
-
-```rust
-#[cfg(feature = "std")]
-pub fn read_file(path: string) -> Result<string, string> { ... } // Stable
-```
-
-**Guarantee:** Doesn't change on supported platforms
-
-### Tier 3 (Platform): Backend-Limited
-
-Platform-specific APIs may change:
-
-```rust
-#[cfg(target = "thumbv7em-none-eabihf")]
-pub fn cortex_m_specific() { ... } // Backend-Limited
-```
-
----
-
-## API Evolution Patterns
-
-### Pattern 1: Rename with Deprecation
-
-```rust
-// v1.4.0
-#[deprecated(since = "1.4.0", note = "use compute_result")]
-pub fn compute(x: int) -> int {
-    return compute_result(x);  // delegate to new name
-}
-
-pub fn compute_result(x: int) -> int {
-    // actual implementation
-}
-
-// v1.8.0+: remove old function entirely
-```
-
-### Pattern 2: Add Optional Parameter with Feature Gate
-
-```rust
-// v1.5.0: old signature
-pub fn process(data: string) -> string {
-    return process_internal(data, false);
-}
-
-// v1.6.0: new optional param (feature-gated)
-#[cfg(feature = "strict_mode")]
-pub fn process(data: string, strict: bool) -> string {
-    return process_internal(data, strict);
-}
-```
-
-### Pattern 3: Move Function to Module
-
-```rust
-// v1.4.0
-pub fn old_location_compute() { ... }
-
-// v1.5.0
-pub mod computing {
-    pub fn compute() { ... }
-}
-
-#[deprecated(since = "1.5.0", note = "use computing::compute")]
-pub fn old_location_compute() {
-    return computing::compute();
-}
-
-// v1.9.0: remove old location
-```
-
----
-
-## Tooling Stability
-
-### Compiler (rz)
-
-**Stable:**
-- Exit codes (0 = success, 1+ = errors)
-- Diagnostic format (file:line:col: level: message)
-- Command-line options listed in `--help`
-
-**Subject to change:**
-- Exact error messages
-- Internal compiler optimizations
-- Specific diagnostic colors/formatting
-
-### Package Manager (rz package)
-
-**Stable:**
-- Resilient.toml format
-- Dependency resolution algorithm
-- Lock file format
-- Package naming conventions
-
-**Subject to change:**
-- CLI subcommand names (with deprecation)
-- Config file locations
-- Registry protocol details (with migration path)
-
-### LSP Server
-
-**Stable:**
-- Basic completion support
-- Hover information
-- Go to definition
-
-**Subject to change:**
-- Exact ordering of completions
-- Performance characteristics
-- Internal diagnostic codes
-
----
-
-## Security and Safety
-
-### Security Policy
-
-**Vulnerability reporting:** security@resilient-lang.org
-
-**Supported versions:**
-- Latest major version: all patches
-- Previous major version: security patches only
-- Older: no support
-
-**Notification:** Security fixes announced in release notes
-
-### Memory Safety
-
-The memory safety guarantees (no use-after-free, no data races, etc.) are **not subject to change** except to become stricter.
-
-If a bug is found in the safety checker, it will be:
-1. Fixed immediately
-2. May cause previously valid code to become invalid
-3. Announced in release notes
-4. Not considered a breaking change (safety is paramount)
-
----
-
-## Breaking Change Examples
-
-### Example 1: Function Removal
-
-```
-v1.5.0: fn read_sync() [deprecated, use read_async]
-v1.6.0: fn read_sync() [still there, warns]
-v1.7.0: fn read_sync() [still there, warns]
-v1.8.0: fn read_sync() [still there, warns]
-v1.9.0: Compilation error [fn read_sync() removed]
-v2.0.0: Function gone forever
-```
-
-### Example 2: Type Change
-
-```rust
-// v1.5.0
-pub fn get_value() -> Result<int, string> { ... }
-
-// v1.8.0 [planned for 2.0]
-// [deprecation period]
-
-// v2.0.0 [breaking change]
-pub fn get_value() -> Result<int, Error> { ... }  // Changed error type
-```
-
-### Example 3: Feature Removal
-
-```toml
-# v1.5.0
-[features]
-legacy_api = []  # Experimental API
-
-# v1.8.0
-# [removed without warning - was Experimental]
-
-# v1.9.0
-# Users must remove feature from Resilient.toml
-```
-
----
-
-## Upgrade Guidance
-
-### From 1.x to 1.y (Same Major)
-
-**Action:** Safe to upgrade automatically (or in CI)
-
-```bash
-rz update  # Safe: no breaking changes
-```
-
-### From 1.x to 2.0 (Major)
-
-**Action:** Review changelog and test thoroughly
-
-1. Read breaking changes section in release notes
-2. Update code to use new APIs
-3. Run full test suite
-4. Deploy with confidence
-
----
-
-## Version Pinning Strategy
-
-### For Applications
-
-Pin major version, allow minor/patch:
-
-```toml
-[dependencies]
-mylib = "1.5"  # Allows 1.5.0, 1.6.0, but not 2.0.0
-```
-
-### For Libraries
-
-Pin major version, be conservative with minor:
-
-```toml
-[dependencies]
-foundation = "1.0"  # Stability critical
-utils = "2"         # Less critical
-```
-
-### For Research/Experimental
-
-Can use experimental features with understanding of risk:
-
-```toml
-[features]
-experimental_async = []  # Will break in future
-```
-
----
-
-## Feedback and Discussions
-
-### Proposing Changes
-
-1. Open GitHub discussion for feedback
-2. Collect community input
-3. Document design decision
-4. Implement with proper deprecation if breaking
-
-### Reporting Incompatibilities
-
-If you believe something breaks the stability policy:
-
-1. Check release notes (might be intentional)
-2. Open GitHub issue with details
-3. Include version information
-4. Provide minimal reproduction
-
----
-
-## Timeline
-
-### v0.x Series (Development)
-
-- Breaking changes allowed
-- Features may move between tiers
-- No strict compatibility guarantees
-
-### v1.0 (Stability Release)
-
-- Feature set stabilized
-- Compatibility policy kicks in fully
-- Semver strictly followed
-
-### v1.x Series (Stable)
-
-- Compatibility guaranteed
-- Breaking changes only in v2.0+
-- Long-term production use recommended
-
-### v2.0+ (Future)
-
-- May include breaking changes
-- Clear migration path provided
-- Multiple deprecation cycle approach
-
----
-
-## Summary
-
-| Action | Patch | Minor | Major |
-|--------|-------|-------|-------|
-| New features | ❌ | ✅ | ✅ |
-| Bug fixes | ✅ | ✅ | ✅ |
-| Breaking changes | ❌ | ❌ | ✅ |
-| Deprecate features | ❌ | ✅ | ✅ |
-| Remove deprecated | ❌ | ❌ | ✅ |
-
----
-
-## References
-
-- **RES-3510:** Publish a stability and compatibility policy
-- **RES-3501:** Stabilize language reference and feature-tier policy
-- **LANGUAGE.md:** Feature tier definitions
-- **MODULE_SYSTEM.md:** Package versioning
+Open an issue or email [ericspencer1450@gmail.com](mailto:ericspencer1450@gmail.com).
