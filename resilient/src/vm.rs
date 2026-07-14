@@ -1688,6 +1688,11 @@ fn run_dispatch_loop(
                     Value::Int(
                         VM_LIVE_TOTAL_EXHAUSTIONS.load(std::sync::atomic::Ordering::Relaxed) as i64,
                     )
+                } else if name == "array_none" {
+                    // RES-3993: see `vm_array_none_builtin`'s doc comment —
+                    // needs closure-invocation access the generic
+                    // `BuiltinFn` table doesn't have.
+                    vm_array_none_builtin(program, &args, overflow_mode)?
                 } else if let Some(func) = crate::lookup_builtin(name) {
                     func(&args).map_err(VmError::BuiltinCallFailed)?
                 } else if let Some(stdlib_result) =
@@ -2051,6 +2056,20 @@ fn run_dispatch_loop(
                             // and char-literal `match` arms silently diverge
                             // between the interpreter and the `--vm` backend.
                             stack.push(Value::Char(ch));
+                        }
+                        // RES-3993: `.0`/`.1` on a tuple-struct value
+                        // (`struct Point(int, int);` → `Value::Struct`
+                        // with synthesized field names `"0"`, `"1"`,
+                        // ...) compiles to the same `Op::LoadIndex` as a
+                        // real `Value::Tuple` — see `Node::TupleIndex`'s
+                        // compile arm, which has no static type info to
+                        // tell the two apart. Reuse `vm_get_field_value`
+                        // (the `GetField` resolver) so the stringified
+                        // index looks the field up by name, mirroring
+                        // the tree-walker's `eval_tuple_index`'s
+                        // `Value::Struct` arm.
+                        Value::Struct { .. } => {
+                            stack.push(vm_get_field_value(target, &idx.to_string())?);
                         }
                         _ => return Err(VmError::TypeMismatch("LoadIndex (non-indexable target)")),
                     }
@@ -2736,6 +2755,49 @@ fn vm_call_array_functional_method(
         })(),
         _ => return None,
     })
+}
+
+/// RES-3993: `array_none(arr, predicate)` — true iff no element of
+/// `arr` satisfies `predicate` (the free-function complement of
+/// `.any()`). The tree-walker's `array_dedup_none::builtin_array_none`
+/// takes `&mut Interpreter` to invoke the closure, but the VM's generic
+/// `BuiltinFn = fn(&[Value]) -> RResult<Value>` table has no interpreter
+/// access — so `Op::CallBuiltin`'s dispatch intercepts this name before
+/// the generic table lookup (same pattern as `vm_display_fmt_fn_idx`)
+/// and drives the predicate through `vm_call_closure_value`, the same
+/// re-entrant call primitive `vm_call_array_functional_method`'s
+/// `.any()`/`.all()` arms use. Short-circuits `false` on the first
+/// element the predicate accepts, mirroring the interpreter's early
+/// return.
+fn vm_array_none_builtin(
+    program: &Program,
+    args: &[Value],
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
+    let [Value::Array(items), predicate] = args else {
+        return Err(VmError::BuiltinCallFailed(format!(
+            "array_none: expected 2 arguments (array, predicate), got {}",
+            args.len()
+        )));
+    };
+    for item in items {
+        match vm_call_closure_value(
+            program,
+            predicate.clone(),
+            vec![item.clone()],
+            overflow_mode,
+        )? {
+            Value::Bool(true) => return Ok(Value::Bool(false)),
+            Value::Bool(false) => {}
+            other => {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "array_none: predicate must return Bool, got {}",
+                    other
+                )));
+            }
+        }
+    }
+    Ok(Value::Bool(true))
 }
 
 /// RES-4017: `Option<T>` instance-method dispatch — `.is_some()`,
@@ -4301,6 +4363,14 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             // match-loop `Op::LoadIndex` arm for the parity rationale.
             state.stack.push(Value::Char(ch));
         }
+        // RES-3993: tuple-struct `.N` access — see the match-loop
+        // `Op::LoadIndex` arm's `Value::Struct` case for the parity
+        // rationale.
+        Value::Struct { .. } => {
+            state
+                .stack
+                .push(vm_get_field_value(target, &idx.to_string())?);
+        }
         _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
     }
     Ok(Step::Continue)
@@ -4448,7 +4518,11 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     // Try the non-namespaced builtin table first, then fall back to
     // stdlib qualified names (e.g. "math::sqrt") so `use std::math;`
     // works under --vm.
-    let result = if let Some(func) = crate::lookup_builtin(name) {
+    let result = if name == "array_none" {
+        // RES-3993: see the match-dispatch `Op::CallBuiltin` arm and
+        // `vm_array_none_builtin`'s doc comment for the rationale.
+        vm_array_none_builtin(state.program, &args, state.overflow_mode)?
+    } else if let Some(func) = crate::lookup_builtin(name) {
         func(&args).map_err(VmError::BuiltinCallFailed)?
     } else if let Some(stdlib_result) = crate::stdlib::call_by_qualified_name(name, &args) {
         stdlib_result.map_err(VmError::BuiltinCallFailed)?

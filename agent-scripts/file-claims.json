@@ -132,17 +132,17 @@
       "branch": "res-3933-phase2-roadmap",
       "claimed_at": "2026-07-14T13:45:53Z"
     },
-    "resilient/src/vm.rs": {
-      "branch": "res-4017-vm-mutual-tco",
-      "claimed_at": "2026-07-14T17:05:31Z"
+    "resilient/tests/it/differential.rs": {
+      "branch": "res-3993-vm-denylist-retriage",
+      "claimed_at": "2026-07-14T17:35:45Z"
     },
     "resilient/src/compiler.rs": {
-      "branch": "res-4017-vm-mutual-tco",
-      "claimed_at": "2026-07-14T17:05:31Z"
+      "branch": "res-3993-vm-denylist-retriage",
+      "claimed_at": "2026-07-14T17:35:45Z"
     },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-4017-vm-mutual-tco",
-      "claimed_at": "2026-07-14T17:05:31Z"
+    "resilient/src/vm.rs": {
+      "branch": "res-3993-vm-denylist-retriage",
+      "claimed_at": "2026-07-14T17:35:45Z"
     }
   }
 }
