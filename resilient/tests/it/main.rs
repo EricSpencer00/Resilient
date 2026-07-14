@@ -96,6 +96,7 @@ mod ffi_docs_callback_copy_smoke;
 mod ffi_docs_string_support_smoke;
 mod ffi_integration;
 mod ffi_variadic_integration;
+mod fmt_check_smoke;
 mod fmt_help_smoke;
 mod free_vars_docs_copy_smoke;
 mod fuzz_docs_cli_names_smoke;

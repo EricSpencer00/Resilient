@@ -118,10 +118,15 @@ pub(crate) fn parse_let_tuple_destructure(parser: &mut Parser, stmt_span: Span) 
         }
         match &parser.current_token {
             Token::Identifier(n) => names.push(n.clone()),
+            // RES-4032: accept `_` alongside plain identifiers, matching
+            // `parse_for_tuple_in_statement`'s `for (a, _) in ...` grammar.
+            // Needed so the formatter can round-trip the `LetTupleDestructure`
+            // that `for`-tuple-binding desugars into when a wildcard is used.
+            Token::Underscore => names.push("_".to_string()),
             other => {
                 let tok = other.clone();
                 parser.record_error(format!(
-                    "Expected identifier in tuple destructure, found {}",
+                    "Expected identifier or `_` in tuple destructure, found {}",
                     tok
                 ));
             }

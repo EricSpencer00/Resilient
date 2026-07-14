@@ -32534,12 +32534,14 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
-/// RES-fmt: `resilient fmt <file> [--in-place]` — pretty-print a
+/// RES-4032: `resilient fmt <file> [--in-place]` — pretty-print a
 /// Resilient source file in canonical style.
 ///
 /// Exit codes:
-/// - 0 = formatted (printed to stdout, or overwrote the file).
-/// - 1 = parse errors (formatter refuses to touch broken input).
+/// - 0 = formatted (printed to stdout, or overwrote the file); or, under
+///   `--check`, every file was already canonically formatted.
+/// - 1 = parse errors (formatter refuses to touch broken input); or,
+///   under `--check`, at least one file would be reformatted.
 /// - 2 = usage error (missing path, bad flag).
 ///
 /// Returns `None` when the first arg isn't `fmt`.
@@ -32552,29 +32554,37 @@ fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
         return Some(0);
     }
 
-    let mut file: Option<PathBuf> = None;
+    let mut files: Vec<PathBuf> = Vec::new();
     let mut in_place = false;
+    let mut check = false;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
         if a == "--in-place" || a == "-i" {
             in_place = true;
+        } else if a == "--check" {
+            check = true;
         } else if a.starts_with("--") {
             eprintln!("Error: unknown flag `{}` to fmt", a);
             return Some(2);
-        } else if file.is_none() {
-            file = Some(PathBuf::from(a));
         } else {
-            eprintln!("Error: unexpected argument `{}` to fmt", a);
-            return Some(2);
+            files.push(PathBuf::from(a));
         }
         i += 1;
     }
 
-    let Some(path) = file else {
+    if check {
+        return dispatch_fmt_check(&files, in_place);
+    }
+
+    let Some(path) = files.first().cloned() else {
         eprintln!("Error: `rz fmt <file> [--in-place]` requires a file path");
         return Some(2);
     };
+    if files.len() > 1 {
+        eprintln!("Error: unexpected argument `{}` to fmt", files[1].display());
+        return Some(2);
+    }
 
     let src = match fs::read_to_string(&path) {
         Ok(s) => s,
@@ -32606,6 +32616,62 @@ fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
         print!("{}", formatted);
     }
     Some(0)
+}
+
+/// RES-4032: `rz fmt --check <file>...` — CI/pre-commit mode.
+///
+/// Formats each file in memory and compares it to the on-disk source.
+/// Never writes. Prints nothing on success; each file that would be
+/// reformatted (or that fails to parse) gets a one-line diagnostic on
+/// stderr. Exits 0 only when every file is already canonically
+/// formatted.
+fn dispatch_fmt_check(files: &[PathBuf], in_place: bool) -> Option<i32> {
+    if in_place {
+        eprintln!("Error: --check cannot be combined with --in-place");
+        return Some(2);
+    }
+    if files.is_empty() {
+        eprintln!("Error: `rz fmt --check <file>...` requires at least one file path");
+        return Some(2);
+    }
+
+    let mut needs_reformat = false;
+    let mut had_error = false;
+
+    for path in files {
+        let src = match fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: could not read {}: {}", path.display(), e);
+                had_error = true;
+                continue;
+            }
+        };
+
+        let (program, parse_errs) = parse(&src);
+        if !parse_errs.is_empty() {
+            eprintln!(
+                "{}: fmt --check aborted due to parse errors",
+                path.display()
+            );
+            had_error = true;
+            continue;
+        }
+
+        let formatted = formatter::Formatter::format(&program);
+        if formatted != src {
+            eprintln!("{}: would reformat", path.display());
+            needs_reformat = true;
+        }
+    }
+
+    if had_error {
+        Some(2)
+    } else if needs_reformat {
+        Some(1)
+    } else {
+        Some(0)
+    }
 }
 
 /// RES-211: help text printed by `--help` / `-h`. Lists the most
@@ -32758,17 +32824,26 @@ const FMT_HELP_TEXT: &str = r#"rz fmt — format a Resilient source file
 
 USAGE:
     rz fmt <file> [--in-place]
+    rz fmt --check <file>...
 
 OUTPUT:
     By default, prints the formatted source to stdout.
     With --in-place, rewrites the file and prints nothing on success.
+    With --check, writes nothing and prints nothing on success; each
+    file that would be reformatted (or fails to parse) is reported on
+    stderr, and the process exits non-zero. Useful in CI and
+    pre-commit hooks. --check cannot be combined with --in-place.
 
 FLAGS:
     -i, --in-place    Rewrite the file instead of printing formatted source
+        --check       Exit non-zero if any file(s) are not already
+                       formatted; supports one file or a set
 
 EXAMPLES:
     rz fmt examples/hello.rz
     rz fmt --in-place examples/hello.rz
+    rz fmt --check examples/hello.rz
+    rz fmt --check examples/*.rz
 
 Run `rz --help` for global flags and other subcommands.
 "#;
