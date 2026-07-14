@@ -249,9 +249,19 @@ pub enum Type {
         params: Vec<Type>,
         return_type: Box<Type>,
     },
-    /// RES-053: Array — element type not tracked at MVP (typed arrays
-    /// land with RES-055 / generics).
+    /// RES-053: Array with an untracked element type. Produced by
+    /// empty or heterogeneous literals and by builtins that return an
+    /// array of unknown element type. `arr[i]` on this form yields
+    /// `Any`. See `TypedArray` for the element-tracked form.
     Array,
+    /// RES-3923: Array with a tracked element type. Produced by
+    /// homogeneous array literals, `[T; N]` / `array<T>` annotations,
+    /// and slicing a tracked array. `arr[i]` recovers the element type
+    /// `T` instead of leaking `Any`, which restores type checking on
+    /// the most common expression form. `TypedArray(Box::new(Any))` is
+    /// semantically equal to the untyped `Array`; compatibility treats
+    /// the two as interchangeable.
+    TypedArray(Box<Type>),
     /// RES-2548: first-class range value type.
     Range,
     /// RES-053: Result<T, E> — payload types not tracked at MVP.
@@ -325,6 +335,7 @@ impl std::fmt::Display for Type {
                 write!(f, ") -> {}", return_type)
             }
             Type::Array => write!(f, "array"),
+            Type::TypedArray(elem) => write!(f, "[{}]", elem),
             Type::Range => write!(f, "range"),
             Type::Result => write!(f, "Result"),
             Type::Option(inner) => {
@@ -470,7 +481,24 @@ fn infer_generic_return_type(
 }
 
 fn compatible(a: &Type, b: &Type) -> bool {
+    // RES-3923: array element-type compatibility is handled here so the
+    // shared `type_relations` module stays array-agnostic. An untyped
+    // `Array` pairs with any element-tracked array (a builtin returning
+    // an untyped array can still satisfy a `[T]` annotation); two
+    // tracked arrays are element-covariant.
+    match (a, b) {
+        (Type::Array, Type::TypedArray(_)) | (Type::TypedArray(_), Type::Array) => return true,
+        (Type::TypedArray(x), Type::TypedArray(y)) => return compatible(x, y),
+        _ => {}
+    }
     crate::type_relations::compatible(a, b)
+}
+
+/// RES-3923: true for both the untyped `Array` and the element-tracked
+/// `TypedArray`. Used where array-ness matters but the element type
+/// does not (method resolution, indexability, iteration).
+fn is_array_ty(t: &Type) -> bool {
+    matches!(t, Type::Array | Type::TypedArray(_))
 }
 
 /// RES-2713: map a literal-pattern node to its type so
@@ -8099,7 +8127,13 @@ impl TypeChecker {
                         ));
                     }
                 }
-                Ok(Type::Array)
+                // RES-3923: track the homogeneous element type so
+                // `arr[i]` recovers it downstream. Empty or all-`Any`
+                // literals stay untyped (`Array`).
+                match concrete.first() {
+                    Some((elem_ty, _)) => Ok(Type::TypedArray(Box::new(elem_ty.clone()))),
+                    None => Ok(Type::Array),
+                }
             }
 
             // RES-148: map literal — walk every key and value to
@@ -9117,7 +9151,7 @@ impl TypeChecker {
                 // When the method is called as `arr.map(fn)`, the FieldAccess
                 // node is used as the callee in a CallExpression; returning a
                 // Function type here lets the call site infer the correct return.
-                if tgt_ty == Type::Array {
+                if is_array_ty(&tgt_ty) {
                     let ret = match field.as_str() {
                         // HOF methods: take a callback / element as the extra arg.
                         "map" | "filter" | "push" | "flat_map" => Type::Function {
@@ -9225,7 +9259,7 @@ impl TypeChecker {
                 // When the method is called as `arr.map(fn)`, the FieldAccess
                 // node is used as the callee in a CallExpression; returning a
                 // Function type here lets the call site infer the correct return.
-                if tgt_ty == Type::Array {
+                if is_array_ty(&tgt_ty) {
                     match field.as_str() {
                         "map" | "filter" | "flat_map" => {
                             return Ok(Type::Function {
@@ -9331,7 +9365,7 @@ impl TypeChecker {
                 // RES-405: array/string indexing must use an integer
                 // index. Reject obvious type errors like `arr["key"]`
                 // while keeping Map targets permissive (Any index).
-                if matches!(tgt_ty, Type::Array | Type::String)
+                if matches!(tgt_ty, Type::Array | Type::TypedArray(_) | Type::String)
                     && !matches!(idx_ty, Type::Int | Type::Any)
                     && !is_pinned_int(&idx_ty)
                 {
@@ -9347,9 +9381,11 @@ impl TypeChecker {
                 // out-of-range negative indices) is caught at runtime.
                 // String indexing returns a char (RES-2709 + RES-2711):
                 // runtime yields Value::Char; typechecker mirrors that here.
-                // Array indexing returns Any (no element-type tracking yet).
+                // RES-3923: a tracked array yields its element type; an
+                // untyped array still falls back to `Any`.
                 match tgt_ty {
                     Type::String => Ok(Type::Char),
+                    Type::TypedArray(elem) => Ok(*elem),
                     _ => Ok(Type::Any),
                 }
             }
@@ -9381,6 +9417,8 @@ impl TypeChecker {
                 }
                 match target_ty {
                     Type::String => Ok(Type::String),
+                    // RES-3923: slicing a tracked array preserves its element type.
+                    Type::TypedArray(elem) => Ok(Type::TypedArray(elem)),
                     _ => Ok(Type::Array),
                 }
             }
@@ -9402,7 +9440,7 @@ impl TypeChecker {
                         tgt_ty
                     ));
                 }
-                if matches!(tgt_ty, Type::Array | Type::String)
+                if matches!(tgt_ty, Type::Array | Type::TypedArray(_) | Type::String)
                     && !matches!(idx_ty, Type::Int | Type::Any)
                     && !is_pinned_int(&idx_ty)
                 {
@@ -9429,7 +9467,12 @@ impl TypeChecker {
                 // RES-2548: Range is also iterable.
                 if !matches!(
                     iter_ty,
-                    Type::Array | Type::String | Type::Any | Type::Range | Type::Function { .. }
+                    Type::Array
+                        | Type::TypedArray(_)
+                        | Type::String
+                        | Type::Any
+                        | Type::Range
+                        | Type::Function { .. }
                 ) && !matches!(iter_ty, Type::Struct(_))
                 {
                     return Err(format!(
@@ -9457,6 +9500,10 @@ impl TypeChecker {
                     Type::Int
                 } else if iter_ty == Type::String {
                     Type::String
+                } else if let Type::TypedArray(elem) = &iter_ty {
+                    // RES-3923: iterating a tracked array binds the loop
+                    // variable to the concrete element type.
+                    (**elem).clone()
                 } else if let Node::CallExpression { function, .. } = iterable.as_ref()
                     && let Node::Identifier { name: callee, .. } = function.as_ref()
                 {
@@ -10857,6 +10904,31 @@ impl TypeChecker {
             // which never matches Type::Result from Ok()/Err() and produces a
             // false-positive "return type mismatch" on every annotated function.
             other if other.starts_with("Result<") && other.ends_with('>') => Ok(Type::Result),
+            // RES-3923: `array<T>` / `Array<T>` — element-tracked array
+            // annotation. The inner type is resolved recursively so
+            // `array<int>` becomes `TypedArray(Int)` and `arr[i]` and
+            // `let` bindings type-check against the element type.
+            other
+                if (other.starts_with("array<") || other.starts_with("Array<"))
+                    && other.ends_with('>') =>
+            {
+                let inner = &other[6..other.len() - 1];
+                let inner_ty = self.parse_type_name_inner(inner.trim(), seen)?;
+                Ok(Type::TypedArray(Box::new(inner_ty)))
+            }
+            // RES-3923: `[T]` / `[T; N]` — bracketed array annotation.
+            // The optional `; N` length is discarded (arrays are not
+            // length-tracked at the type level yet); only the element
+            // type is retained.
+            other if other.starts_with('[') && other.ends_with(']') => {
+                let inner = &other[1..other.len() - 1];
+                let elem_str = inner.split(';').next().unwrap_or(inner).trim();
+                if elem_str.is_empty() {
+                    return Ok(Type::Array);
+                }
+                let elem_ty = self.parse_type_name_inner(elem_str, seen)?;
+                Ok(Type::TypedArray(Box::new(elem_ty)))
+            }
             // RES-426: tuple type `(T1, T2, ...)`. Encoded by the
             // parser as a parenthesised comma-list; at type-check
             // level a tuple is represented as Type::Any (the interpreter
@@ -17793,5 +17865,120 @@ mod std_only_builtin_gating_tests {
             ok,
             "user-defined `clock_ms` should shadow the std-only builtin when std is disabled"
         );
+    }
+}
+
+/// RES-3923: array indexing must recover the element type instead of
+/// erasing it to `Any`. These tests pin the soundness fix — the two
+/// `#3923` repros (reject a wrong-typed binding, accept a correct one)
+/// plus the annotation / iteration / method paths that depend on it.
+#[cfg(test)]
+mod res3923_array_element_type {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, needle: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let err = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error");
+        assert!(
+            err.contains(needle),
+            "error should contain \"{needle}\", got: {err}"
+        );
+    }
+
+    // The #3923 reject repro: an int array's element must not satisfy a
+    // `string` annotation. Before the fix `int_arr[0]` typed as `Any`
+    // and this was silently accepted.
+    #[test]
+    fn index_of_int_array_rejects_string_binding() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let s: string = xs[0]; }\nmain();\n",
+            "value has type int",
+        );
+    }
+
+    // The #3923 accept repro: the correct element type still binds.
+    #[test]
+    fn index_of_int_array_accepts_int_binding() {
+        check_ok("fn main() { let xs = [1, 2, 3]; let i: int = xs[0]; }\nmain();\n");
+    }
+
+    #[test]
+    fn index_of_string_array_rejects_int_binding() {
+        check_err(
+            "fn main() { let xs = [\"a\", \"b\"]; let n: int = xs[0]; }\nmain();\n",
+            "value has type string",
+        );
+    }
+
+    #[test]
+    fn bracket_annotation_tracks_element_type() {
+        check_err(
+            "fn main() { let xs: [int; 3] = [1, 2, 3]; let s: string = xs[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_ok("fn main() { let xs: [int; 3] = [1, 2, 3]; let i: int = xs[0]; }\nmain();\n");
+    }
+
+    #[test]
+    fn generic_annotation_tracks_element_type() {
+        check_err(
+            "fn main() { let xs: array<int> = [1, 2, 3]; let s: string = xs[0]; }\nmain();\n",
+            "value has type int",
+        );
+    }
+
+    #[test]
+    fn bracket_annotation_rejects_wrong_element_literal() {
+        check_err(
+            "fn main() { let xs: [string; 3] = [1, 2, 3]; }\nmain();\n",
+            "value has type",
+        );
+    }
+
+    #[test]
+    fn for_in_binds_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; for n in xs { let s: string = n; } }\nmain();\n",
+            "value has type int",
+        );
+    }
+
+    // Untyped arrays (here from a builtin) stay permissive: no element
+    // type is known, so `arr[i]` yields `Any` and must not spuriously
+    // reject a binding of any type.
+    #[test]
+    fn untyped_builtin_array_index_stays_permissive() {
+        check_ok("fn main() { let xs = divisors(12); let s: string = xs[0]; }\nmain();\n");
+    }
+
+    // Slice-syntax `xs[lo..hi]` preserves the element type, so indexing
+    // the slice recovers it and a wrong-typed binding is rejected.
+    #[test]
+    fn slice_syntax_preserves_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let s = xs[1..3]; let bad: string = s[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_ok(
+            "fn main() { let xs = [1, 2, 3]; let s = xs[1..3]; let ok: int = s[0]; }\nmain();\n",
+        );
+    }
+
+    // Array methods must still resolve on element-tracked arrays.
+    #[test]
+    fn methods_resolve_on_tracked_arrays() {
+        check_ok("fn main() { let xs = [1, 2, 3]; let n: int = xs.len(); }\nmain();\n");
     }
 }

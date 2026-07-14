@@ -1,0 +1,5 @@
+10
+60
+20
+typed
+Program executed successfully

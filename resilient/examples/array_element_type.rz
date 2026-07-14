@@ -1,0 +1,31 @@
+// RES-3923 demo: array indexing now recovers the element type instead
+// of erasing it to `Any`. A homogeneous literal types as `[int]`, so
+// `xs[0]` is an `int` and can be bound to an `int` annotation, summed,
+// and iterated with the loop variable typed as the element type.
+
+fn main() {
+    let xs: [int; 3] = [10, 20, 30];
+
+    // Indexing recovers `int` — bind it to an explicit `int`.
+    let first: int = xs[0];
+    println(first);
+
+    // Iteration binds `n` to the element type `int`.
+    let mut total: int = 0;
+    for n in xs {
+        total = total + n;
+    }
+    println(total);
+
+    // Slicing preserves the element type; the slice indexes as `int`.
+    let tail = xs.slice(1, 3);
+    let second: int = tail[0];
+    println(second);
+
+    // String arrays track their element type too.
+    let words = ["safe", "typed", "arrays"];
+    let w: string = words[1];
+    println(w);
+}
+
+main();

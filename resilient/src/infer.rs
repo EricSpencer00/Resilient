@@ -170,6 +170,8 @@ fn collect_ftv(ty: &Type, out: &mut std::collections::HashSet<u32>) {
                 collect_ftv(ty, out);
             }
         }
+        // RES-3923: a tracked array's element type may hold type vars.
+        Type::TypedArray(inner) => collect_ftv(inner, out),
         // Primitive / opaque types have no type variables.
         Type::Int
         | Type::Int8
