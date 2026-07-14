@@ -127,6 +127,26 @@
     "resilient/src/traits.rs": {
       "branch": "res-4048-trait-bound-enforcement",
       "claimed_at": "2026-07-14T09:50:50Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-4045-vm-soundness-bugs",
+      "claimed_at": "2026-07-14T09:48:01Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-4045-vm-soundness-bugs",
+      "claimed_at": "2026-07-14T09:48:01Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-4045-vm-soundness-bugs",
+      "claimed_at": "2026-07-14T09:48:01Z"
+    },
+    "resilient/src/peephole.rs": {
+      "branch": "res-4045-vm-soundness-bugs",
+      "claimed_at": "2026-07-14T10:07:38Z"
+    },
+    "resilient/src/disasm.rs": {
+      "branch": "res-4045-vm-soundness-bugs",
+      "claimed_at": "2026-07-14T10:07:38Z"
     }
   }
 }
