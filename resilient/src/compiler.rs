@@ -997,6 +997,26 @@ fn compile_stmt(
             line,
             loop_stack,
         ),
+        // RES-4024: the MMIO-wrapper block keyword lifts the typechecker's
+        // capability gate on volatile MMIO intrinsics but is otherwise
+        // identical to a plain block at runtime (see `parse_unsafe_block`'s
+        // doc comment and the tree-walker's `Node::UnsafeBlock =>
+        // self.eval(body)`). Compile the body exactly like `LiveBlock` —
+        // previously this was grouped with the declaration-only nodes
+        // below and silently dropped, so `--vm` skipped the entire block
+        // body.
+        Node::UnsafeBlock { body, .. } => compile_stmt(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        ),
         // Verification-only constructs: emit nothing at runtime.
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
@@ -1015,8 +1035,7 @@ fn compile_stmt(
         | Node::RegionDecl { .. }
         | Node::SupervisorDecl { .. }
         | Node::ModuleDecl { .. }
-        | Node::Use { .. }
-        | Node::UnsafeBlock { .. } => Ok(()),
+        | Node::Use { .. } => Ok(()),
         Node::TryCatch { body, handlers, .. } => compile_try_catch(
             body,
             handlers,
@@ -1928,6 +1947,23 @@ fn compile_stmt_in_fn(
             line,
             loop_stack,
         ),
+        // RES-4024: the MMIO-wrapper block keyword inside fn body —
+        // compile the body exactly like `LiveBlock`. See the matching
+        // comment in `compile_stmt` above; this arm was previously grouped
+        // with the declaration-only nodes below and silently dropped the
+        // body.
+        Node::UnsafeBlock { body, .. } => compile_stmt_in_fn(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        ),
         // Verification-only constructs: emit nothing at runtime.
         Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
@@ -1947,8 +1983,7 @@ fn compile_stmt_in_fn(
         | Node::ClusterDecl { .. }
         | Node::SupervisorDecl { .. }
         | Node::ModuleDecl { .. }
-        | Node::Use { .. }
-        | Node::UnsafeBlock { .. } => Ok(()),
+        | Node::Use { .. } => Ok(()),
         Node::Function {
             name,
             parameters,

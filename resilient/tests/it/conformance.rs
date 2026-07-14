@@ -205,9 +205,10 @@ const CASES: &[&str] = &[
     // Stable: the compile-time-gated MMIO-wrapper block keyword (see
     // STABILITY.md's matching Stable bullet, and this case's own `.rz`
     // source for the literal syntax) — ordinary statements inside the
-    // block execute like they would outside it. See
-    // `VM_BACKEND_EXCEPTIONS` (#4024): `--vm` currently drops the block
-    // body entirely.
+    // block execute like they would outside it. RES-4024 fixed `--vm`
+    // dropping the block body, so this case now runs the normal,
+    // unconditional `--vm`/`--jit` parity assertions like every other
+    // row here.
     "unsafe_block_basic",
     // Stable: "Region annotation syntax" — `region NAME;`, `&[R] T`,
     // `&mut[R] T`, distinct-region acceptance path.
@@ -344,27 +345,14 @@ const JIT_BACKEND_EXCEPTIONS: &[(&str, &str)] = &[
 /// `docs/CONFORMANCE.md` for the same convention already established
 /// for [`JIT_BACKEND_EXCEPTIONS`].
 ///
-/// Today this table has exactly one row: `--vm` drops the entire body
-/// of the MMIO-wrapper block (see `unsafe_block_basic.rz` for its
-/// literal syntax) instead of executing its statements (confirmed
-/// independently against `resilient/examples/unsafe_block_smoke.rz`,
-/// which is not part of this suite). Filed as
-/// [#4024](https://github.com/EricSpencer00/Resilient/issues/4024) — a
-/// real backend-parity bug on Stable surface, fixed by editing
-/// `resilient/src/vm.rs` / `resilient/src/compiler.rs`, which is
-/// outside this ticket's file-ownership scope (conformance-suite
-/// content only). Since `--jit`'s fallback path (`run_via_vm`) reuses
-/// the VM, every stem here also has to be excluded from the `--jit`
-/// parity assertion — the JIT can't produce a *more* correct answer
-/// than the backend its fallback delegates to.
+/// Empty as of RES-4024: the sole row (`unsafe_block_basic` — `--vm`
+/// dropped the entire body of the MMIO-wrapper block, see
+/// `resilient/src/compiler.rs`'s `compile_stmt`/`compile_stmt_in_fn`)
+/// was fixed and removed. That case now runs the normal, unconditional
+/// `--vm`/`--jit` parity assertions like every other row in [`CASES`].
 ///
-/// Invariant: every stem here must also appear in [`CASES`]. As #4024
-/// is fixed, remove the row here (the case then falls back to the
-/// normal, unconditional `--vm`/`--jit` parity assertions).
-const VM_BACKEND_EXCEPTIONS: &[(&str, &str)] = &[(
-    "unsafe_block_basic",
-    "#4024: --vm drops the body of the MMIO-wrapper block (see unsafe_block_basic.rz) instead of executing it (prints `0` where the tree-walker prints the block's real output)",
-)];
+/// Invariant: every stem here must also appear in [`CASES`].
+const VM_BACKEND_EXCEPTIONS: &[(&str, &str)] = &[];
 
 #[test]
 fn conformance_cases_exist_on_disk() {

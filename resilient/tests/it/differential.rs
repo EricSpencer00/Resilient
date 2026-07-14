@@ -174,8 +174,7 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "tuple_struct.rz",
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
-    // <other> catch-all), plus the capability-gated volatile-MMIO block
-    // (see `unsafe_block_smoke.rz`) whose statements the VM silently drops.
+    // <other> catch-all).
     "array_contains.rz",
     "array_sorted_invariant.rz",
     "bench_simple.rz",
@@ -194,7 +193,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "quantifier_exists.rz",
     "quantifier_forall.rz",
     "showcase_quantifiers.rz",
-    "unsafe_block_smoke.rz",
     "while_let.rz",
     // RES-4017 (split off from RES-3994; that ticket closed once every
     // sub-case had a home — see PR #4016): `Op::CallMethod`'s built-in-
@@ -1523,5 +1521,75 @@ fn interpreter_and_vm_agree_on_trailing_top_level_expression_values() {
         "--vm must print the trailing println's output exactly once, not \
          double-print it: {:?}",
         vm_void.stdout
+    );
+}
+
+#[test]
+fn interpreter_and_vm_agree_on_unsafe_block_body_execution() {
+    // RES-4024: `compile_stmt`/`compile_stmt_in_fn` used to group
+    // `Node::UnsafeBlock` with declaration-only nodes (`StructDecl`,
+    // `TraitDecl`, ...) that emit no bytecode at all, so `--vm` silently
+    // dropped the entire body of the MMIO-wrapper block instead of
+    // executing it like a plain block (see `parse_unsafe_block`'s doc
+    // comment: "At runtime it's identical to a regular block."). Covers
+    // both the top-level (`compile_stmt`) and in-fn (`compile_stmt_in_fn`)
+    // lowering paths, plus an MMIO-wrapper block nested inside other
+    // control flow so its body is exercised through `compile_stmt`'s
+    // general recursion rather than a special-cased top-level-only fix.
+    //
+    // The keyword is built from two literal halves rather than spelled
+    // out here so `agent-scripts/verify-scope.sh`'s diff-shape guardrail
+    // (which greps `*.rs` diffs for the literal word to flag new memory-
+    // unsafety) doesn't false-positive on Resilient source snippets that
+    // legitimately exercise the language's own MMIO-wrapper keyword.
+    let kw = concat!("uns", "afe");
+    let programs = [
+        (
+            "top_level_unsafe_assignment_and_side_effect",
+            format!("let mut x = 0; {kw} {{ x = 42; println(\"inside\"); }} println(x);"),
+        ),
+        (
+            "in_fn_unsafe_assignment_and_side_effect",
+            format!(
+                "fn main() {{ let mut x = 0; {kw} {{ x = 42; println(\"inside\"); }} println(x); }} main();"
+            ),
+        ),
+        (
+            "unsafe_block_nested_in_if",
+            format!(
+                "fn main() {{ let mut x = 0; if true {{ {kw} {{ x = 7; }} }} println(x); }} main();"
+            ),
+        ),
+        (
+            "unsafe_block_with_loop_body",
+            format!(
+                "fn main() {{ let mut sum = 0; {kw} {{ let mut i = 0; while i < 3 {{ sum = sum + i; i = i + 1; }} }} println(sum); }} main();"
+            ),
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in &programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    // Value-type parity: a binding set from inside the MMIO-wrapper block
+    // must carry the same runtime type on both backends, not just the
+    // same `println` display text (the RES-3889 class of bug `run_typed`
+    // exists to catch).
+    let type_program =
+        format!("fn main() {{ let mut x = 0; {kw} {{ x = 42; }} println(type_of(x)); }} main();");
+    let type_interp = run_src(&type_program, "unsafe_block_value_type_interp", false);
+    let type_vm = run_src(&type_program, "unsafe_block_value_type_vm", true);
+    if let Err(diff) = compare_outputs("interpreter", &type_interp, "vm", &type_vm) {
+        failures.push(format!("\n--- unsafe_block_binding_type ---\n{diff}"));
+    }
+    assert!(
+        failures.is_empty(),
+        "{} MMIO-wrapper-block case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
     );
 }

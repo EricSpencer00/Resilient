@@ -9,11 +9,10 @@
 // that those intrinsics are *reachable* inside `unsafe` (no address to
 // round-trip against without a real or emulated peripheral).
 //
-// KNOWN GAP (#4024): `--vm` currently drops the entire block body and
-// treats `unsafe { ... }` as if it evaluated to `0`, so this case is
-// listed in `VM_BACKEND_EXCEPTIONS` below rather than asserted against
-// `--vm` output. The tree-walker (oracle) and `--jit` (via VM fallback,
-// once #4024 is fixed) still hold this case to the full parity bar.
+// RES-4024 fixed a `--vm` bug where the entire block body was dropped
+// and `unsafe { ... }` evaluated as if it were `0`; this case now runs
+// the normal, unconditional `--vm`/`--jit` parity assertions like every
+// other case in the suite.
 fn main() {
     let mut x = 0;
     unsafe {
