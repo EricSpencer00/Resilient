@@ -275,21 +275,9 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // Implemented in both the `run_inner` match engine and the `run_direct`
     // table-dispatch engine (`h_opt_chain_unwrap`).
     //
-    // `edge_closure_capture.rz` no longer hits the indirect-call blocker
-    // above, but still fails — `arr.map(multiply_and_add)` passes a
-    // user-defined closure to the built-in `.map()` method, which is exactly
-    // the RES-4017 gap (`Op::CallMethod`'s built-in-container fallback,
-    // `vm_call_builtin_method`, has no path to invoke a `Value::Closure` per
-    // element — see the RES-4017 block below). Left here rather than moved,
-    // since RES-4017 already owns that root cause and its own denylist block.
-    //
-    // `option_find.rz` still fails — even with `??` now supported — because
-    // `Op::CallMethod`'s built-in fallback has no dispatch for `Option`'s
-    // instance methods (`.is_some()`, `.is_none()`, `.unwrap()`,
-    // `.unwrap_or(d)`), which the tree-walker handles directly in
-    // `eval_method_call`. (There's also a pre-existing typechecker warning
-    // on this file — an `Option`-returning fn declared with an `int` return
-    // type — but that's non-fatal in both backends and not the blocker.)
+    // `edge_closure_capture.rz` and `option_find.rz` were fixed under
+    // RES-4017 (the same `Op::CallMethod` built-in-container-fallback gap
+    // the block below owns) and no longer belong here.
     //
     // The remaining entries are two distinct, genuinely-large-scope root
     // causes — deferred rather than forced into this PR:
@@ -325,37 +313,46 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "array_contains.rz",
     "array_sorted_invariant.rz",
     "defer_stmt.rz",
-    "edge_closure_capture.rz",
-    "option_find.rz",
     "quantifier_assert.rz",
     "quantifier_exists.rz",
     "quantifier_forall.rz",
     "showcase_quantifiers.rz",
     // RES-4017 (split off from RES-3994; that ticket closed once every
-    // sub-case had a home — see PR #4016): `Op::CallMethod`'s built-in-
-    // container fallback (`vm_call_builtin_method`) has no path for
-    // calling a *user-supplied closure* per element — `.map()`/
-    // `.flat_map()` etc. need the VM to invoke a `Value::Closure` and
-    // resume the host-side loop with its result, which needs a re-entrant
-    // "run this call to completion" primitive the flat bytecode dispatch
-    // loop doesn't have yet (unlike the tree-walker, which just recurses).
-    // `StringBuilder` methods hit the same "receiver is a struct but
-    // there's no `$method` — check built-ins" fallback, but the
-    // interpreter's `StringBuilder` dispatch (`eval_string_builder_method`)
-    // also writes the mutated struct back to the caller's local binding,
-    // which `vm_call_builtin_method` has no handle on. `mutual_tco.rz` is
-    // unrelated to `CallMethod` — the VM has no tail-call optimization for
-    // mutual recursion, so it blows the `>1024`-frame cap where the
-    // tree-walker doesn't. (CallMethod primitive-`impl` dispatch, `impl
-    // Add`/`Sub`/`Mul` operator-overload dispatch, `Result` error-chaining
-    // methods, `Display::fmt` dispatch, `{ ..base, f: v }` struct-update-
-    // syntax field merge, and `Option::`/`Result::`-qualified match
-    // patterns were fixed under RES-3994 and no longer belong here).
-    // Refs #3933 · B-E3.
-    "array_functional.rz",
-    "array_method_chains.rz",
+    // sub-case had a home — see PR #4016): the `Op::CallMethod`
+    // built-in-container-fallback / closure-invocation slice of this
+    // ticket is fixed — `vm_call_builtin_method` (`vm.rs`) now takes
+    // `program`/`overflow_mode` and, for a user-supplied `Value::Closure`
+    // callback, invokes it via `vm_call_closure_value`: a re-entrant
+    // "run this call to completion" primitive shaped exactly like
+    // `run_postcheck` (RES-4041) — a fully isolated sub-run (fresh
+    // stack/locals/frames/try-stack) driven through the shared
+    // `run_dispatch_loop` engine, callable from both the match dispatch
+    // engine (`run_dispatch_loop`'s own `Op::CallMethod` arm) and the
+    // direct-threaded engine (`h_call_method`) since both already share
+    // `vm_call_builtin_method`.
+    // `array_functional.rz`, `array_method_chains.rz`, `edge_closure_capture.rz`,
+    // and `option_find.rz` (`Option`'s `.is_some()`/`.is_none()`/`.unwrap()`/
+    // `.unwrap_or(d)`, dispatched by the new pure `vm_call_option_method`)
+    // no longer belong here. `StringBuilder` methods hit the same
+    // "receiver is a struct but there's no `$method` — check built-ins"
+    // fallback and are also fixed (`vm_call_string_builder_method`,
+    // intercepted before the generic struct-method mangled-name lookup,
+    // same as the interpreter's dispatch order) — see that function's doc
+    // comment for why no caller-local-slot write-back is needed: the
+    // builder's state lives in a thread-local slab keyed by an opaque
+    // `_id` the struct value carries, so every `Value::Struct` sharing
+    // that id already observes the same mutation regardless of which
+    // struct *value* a variable holds.
+    //
+    // `mutual_tco.rz` remains — it is unrelated to `CallMethod` — the VM
+    // has no tail-call optimization for mutual recursion, so it blows the
+    // `>1024`-frame cap where the tree-walker doesn't. Follow-up ticket
+    // needed. (CallMethod primitive-`impl` dispatch, `impl Add`/`Sub`/`Mul`
+    // operator-overload dispatch, `Result` error-chaining methods,
+    // `Display::fmt` dispatch, `{ ..base, f: v }` struct-update-syntax
+    // field merge, and `Option::`/`Result::`-qualified match patterns were
+    // fixed under RES-3994 and no longer belong here). Refs #3933 · B-E3.
     "mutual_tco.rz",
-    "string_builder.rz",
     // RES-3995 fixed the VM's `live { }` retry-loop execution context
     // (`live_retries()`, backoff, timeout, invariants, and the retry
     // loop itself all now work under `--vm`) — `live_blocks.rz`,
