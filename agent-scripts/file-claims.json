@@ -131,6 +131,26 @@
     "resilient/src/tuples.rs": {
       "branch": "res-4032-fmt-check",
       "claimed_at": "2026-07-14T06:53:25Z"
+    },
+    "resilient-runtime/Cargo.toml": {
+      "branch": "res-3987-runtime-vm-skeleton",
+      "claimed_at": "2026-07-14T06:31:43Z"
+    },
+    "resilient/tests/it/conformance.rs": {
+      "branch": "res-4023-conformance-expand",
+      "claimed_at": "2026-07-14T05:45:20Z"
+    },
+    "docs/CONFORMANCE.md": {
+      "branch": "res-4023-conformance-expand",
+      "claimed_at": "2026-07-14T05:45:20Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3991-vm-trailing-autoprint",
+      "claimed_at": "2026-07-14T05:39:59Z"
+    },
+    "resilient-runtime/src/lib.rs": {
+      "branch": "res-3987-runtime-vm-skeleton",
+      "claimed_at": "2026-07-14T06:31:43Z"
     }
   }
 }
