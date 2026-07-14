@@ -12,6 +12,7 @@ libFuzzer.
 | `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `rz --dump-tokens`. Fails on panic.                |
 | `jit`   | RES-310  | The Cranelift JIT lowering path: random bytes → UTF-8 filter → `rz --jit`. Fails on panic.  |
 | `contracts` | RES-3779 (#3779) | The contract-certificate pipeline: random bytes → UTF-8 filter → `rz --emit-contract-certificate`. Fails on panic, or on a written certificate that isn't well-formed JSON with an in-schema `"verdict"`. |
+| `z3_translate` | RES-4039 (C-E6, #3933) | The Z3 SMT translation layer (`verifier_z3.rs`'s `prove_*` entry points): seeded/fuzzed contract source → UTF-8 filter → `rz -t`, requires a `--features z3` `rz` build. Fails on panic. |
 
 Additional targets slot in by adding a file under
 `fuzz_targets/` and a `[[bin]]` entry in `fuzz/Cargo.toml`; the
@@ -79,6 +80,25 @@ RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
     --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=1
+
+# RES-4039 (C-E6): Z3-translation target. Requires the `rz` binary
+# to be built with `--features z3`, AND the fuzz crate's own `z3`
+# feature (gates the `[[bin]]`). Without `--features z3` on the
+# compiler, `verifier_z3` isn't compiled in — every contract clause
+# falls back to the hand-rolled folder, so the fuzzer produces no
+# Z3-translation coverage. On macOS with a Homebrew z3 install, set
+# the bindgen/link env vars first:
+#
+#   export Z3_SYS_Z3_HEADER=/opt/homebrew/opt/z3/include/z3.h
+#   export BINDGEN_EXTRA_CLANG_ARGS="-I/opt/homebrew/opt/z3/include"
+#   export LIBRARY_PATH="/opt/homebrew/opt/z3/lib:${LIBRARY_PATH:-}"
+#   export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/opt/z3/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+cargo build --release --features z3 --manifest-path resilient/Cargo.toml
+RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
+  cargo +nightly fuzz run z3_translate --features z3 \
+    --manifest-path fuzz/Cargo.toml -- \
+    -max_total_time=30 \
+    -timeout=5
 ```
 
 - `-max_total_time=N` caps the fuzz run at N seconds.

@@ -32,9 +32,27 @@
 # out to the built `rz` binary with feature-independent invocations
 # (`-t` for parse, `--dump-tokens` for lex,
 # `--emit-contract-certificate` for contracts — works on a stock,
-# non-z3 build; verdicts degrade honestly to "unknown"). The `jit`
-# target (RES-310) stays opt-in / manual-only — it needs a
-# `--features jit` build of `rz` and isn't in this matrix.
+# non-z3 build; verdicts degrade honestly to "unknown").
+#
+# RES-4039 (C-E6): two more targets join the matrix, each needing a
+# differently-featured `rz` build:
+#   - `jit` (RES-310): the Cranelift JIT lowering path. Needs `rz`
+#     built with `--features jit` (`matrix.rz_features`), and the
+#     fuzz crate's own `jit` feature to build the gated `[[bin]]`
+#     (`matrix.fuzz_features`) — see `fuzz/Cargo.toml`.
+#   - `z3_translate` (RES-4039): the Z3 SMT translation layer
+#     (`verifier_z3.rs`'s `prove_*` entry points), reached via the
+#     typechecker's contract/refinement/alias/non-interference
+#     passes. Needs `rz` built with `--features z3`, the fuzz
+#     crate's own `z3` feature, AND libz3 on the runner (`apt-get
+#     install libz3-dev z3 clang`, same as `ci.yml`'s `z3_ci` job).
+#     A Z3 solver call can legitimately run longer than a lex/parse
+#     pass, so this target alone uses a 5s (not 1s) per-input
+#     libFuzzer timeout (`matrix.per_input_timeout`).
+# Without its required compiler feature, a target's `[[bin]]` simply
+# wouldn't build — the matrix always builds `rz` and the fuzz crate
+# with the right features for each target, so every entry here is
+# meaningful, not a trivial pass-through.
 
 name: fuzz
 
@@ -76,12 +94,38 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - parse
-          - lex
-          - contracts
+        include:
+          - target: parse
+            rz_features: ""
+            fuzz_features: ""
+            needs_z3: false
+            per_input_timeout: 1
+          - target: lex
+            rz_features: ""
+            fuzz_features: ""
+            needs_z3: false
+            per_input_timeout: 1
+          - target: contracts
+            rz_features: ""
+            fuzz_features: ""
+            needs_z3: false
+            per_input_timeout: 1
+          - target: jit
+            rz_features: "jit"
+            fuzz_features: "jit"
+            needs_z3: false
+            per_input_timeout: 1
+          - target: z3_translate
+            rz_features: "z3"
+            fuzz_features: "z3"
+            needs_z3: true
+            per_input_timeout: 5
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Z3 (z3_translate only)
+        if: matrix.needs_z3
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
 
       - name: Determine fuzz duration
         id: duration
@@ -94,8 +138,8 @@ jobs:
             echo "seconds=300" >> "$GITHUB_OUTPUT"
           else
             # pull_request: just enough to catch an obvious crash the
-            # diff introduced. Total PR wall time ≈ toolchain/build
-            # overhead (shared across the 3-way matrix) + 20s.
+            # diff introduced. Total PR wall time per matrix entry ≈
+            # its own toolchain/build overhead + 20s.
             echo "seconds=20" >> "$GITHUB_OUTPUT"
           fi
 
@@ -127,18 +171,39 @@ jobs:
         run: cargo install cargo-fuzz --locked
 
       - name: Build rz (release)
-        run: cargo build --release --manifest-path resilient/Cargo.toml
+        run: |
+          if [[ -n "${{ matrix.rz_features }}" ]]; then
+            cargo build --release --features "${{ matrix.rz_features }}" --manifest-path resilient/Cargo.toml
+          else
+            cargo build --release --manifest-path resilient/Cargo.toml
+          fi
+        env:
+          # Linux distro paths for bindgen + linker (for z3), same as
+          # `ci.yml`'s `z3_ci` job. Harmless no-ops for the other
+          # targets' non-z3 builds.
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
 
       - name: Run ${{ matrix.target }} fuzzer for ${{ steps.duration.outputs.seconds }}s
         env:
           RESILIENT_FUZZ_BIN: ${{ github.workspace }}/resilient/target/release/rz
         working-directory: fuzz
         run: |
-          # Per-input timeout: 1 second. libFuzzer records inputs
-          # that exceed it as timeouts (surfaced as crashes).
-          cargo +nightly fuzz run ${{ matrix.target }} -- \
-            -max_total_time=${{ steps.duration.outputs.seconds }} \
-            -timeout=1
+          # Per-input timeout is target-specific (`matrix.per_input_timeout`):
+          # 1 second for the CLI-boundary lex/parse/contracts/jit
+          # targets, 5 seconds for `z3_translate` since a Z3 solver
+          # call can legitimately take longer. libFuzzer records
+          # inputs that exceed the timeout as timeouts (surfaced as
+          # crashes).
+          if [[ -n "${{ matrix.fuzz_features }}" ]]; then
+            cargo +nightly fuzz run ${{ matrix.target }} --features "${{ matrix.fuzz_features }}" -- \
+              -max_total_time=${{ steps.duration.outputs.seconds }} \
+              -timeout=${{ matrix.per_input_timeout }}
+          else
+            cargo +nightly fuzz run ${{ matrix.target }} -- \
+              -max_total_time=${{ steps.duration.outputs.seconds }} \
+              -timeout=${{ matrix.per_input_timeout }}
+          fi
 
       - name: Upload any crash artifacts
         if: failure()
