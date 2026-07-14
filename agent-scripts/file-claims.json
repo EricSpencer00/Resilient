@@ -67,6 +67,10 @@
     "resilient/src/vm.rs": {
       "branch": "res-3915-vm-enum-variants",
       "claimed_at": "2026-07-14T01:17:57Z"
+    },
+    ".github/workflows/release-file-claims.yml": {
+      "branch": "res-3901-release-file-claims-push",
+      "claimed_at": "2026-07-14T01:28:40Z"
     }
   }
 }

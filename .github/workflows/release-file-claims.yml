@@ -21,11 +21,11 @@ jobs:
       - name: Release claims for closed branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGED: ${{ github.event.pull_request.merged }}
         run: |
           set -euo pipefail
-          BRANCH="${{ github.event.pull_request.head.ref }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          MERGED="${{ github.event.pull_request.merged }}"
           bash agent-scripts/release-claims.sh "$BRANCH" "$PR_NUMBER"
 
           if [ "$MERGED" != "true" ]; then
@@ -81,14 +81,58 @@ jobs:
               print("No stale claims found.")
           PYEOF
 
-      - name: Commit updated claims
+      # RES-3901: `main` is protected and requires 7 status checks on
+      # every ref update (build/test/clippy, z3, board hygiene, three
+      # embedded cross targets, .text budget). A raw
+      # `git push origin HEAD:refs/heads/main` can never satisfy that —
+      # GitHub rejects it outright with GH006 regardless of which token
+      # performs the push, because a direct push has no PR/checks
+      # attached to it. That left every file claim permanently stuck
+      # since this workflow was added (confirmed: no push-restrictions
+      # allowlist and no admin-bypass token exist for this repo —
+      # `repos/.../branches/main/protection/restrictions` returns 404
+      # "Push restrictions not enabled", and GITHUB_TOKEN is not an
+      # admin so `enforce_admins: false` doesn't help it either).
+      #
+      # `agent-auto-merge.yml` already proves the mechanism that DOES
+      # work for GITHUB_TOKEN to land changes on protected `main`: open a
+      # normal PR and call `gh pr merge --squash --auto` (GitHub's native
+      # auto-merge), which waits for the required checks to go green and
+      # then squash-merges through the front door. Mirror that here
+      # instead of pushing directly.
+      - name: Open claims-release PR and enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SRC_BRANCH: ${{ github.event.pull_request.head.ref }}
+          SRC_PR: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           if git diff --quiet agent-scripts/file-claims.json; then
             echo "No claims to release."
-          else
-            git add agent-scripts/file-claims.json
-            git commit -m "chore: release file claims (+ sweep stale) for ${{ github.event.pull_request.head.ref }}"
-            git push origin HEAD:refs/heads/main
+            exit 0
           fi
+
+          RELEASE_BRANCH="chore/release-claims-${SRC_PR}-${RUN_ID}"
+
+          git checkout -b "$RELEASE_BRANCH"
+          git add agent-scripts/file-claims.json
+          git commit -m "chore: release file claims (+ sweep stale) for ${SRC_BRANCH}"
+          git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+
+          gh pr create \
+            --base main \
+            --head "$RELEASE_BRANCH" \
+            --title "chore: release file claims for ${SRC_BRANCH}" \
+            --body "Releases file claims held by \`${SRC_BRANCH}\` (PR #${SRC_PR}), plus the stale-claim sweep. Automated by \`release-file-claims.yml\` (RES-3901) — opened as a PR instead of pushing to \`main\` directly because branch protection rejects direct pushes; this goes through the same \`gh pr merge --squash --auto\` path \`agent-auto-merge.yml\` uses to land agent PRs."
+
+          # Native GitHub auto-merge: waits for the 7 required checks to
+          # report SUCCESS, then squash-merges. This is orthogonal to
+          # agent-auto-merge.yml's custom integration-synced/agent-vetted
+          # gate, which only applies to agent feature PRs — this claims
+          # PR relies solely on GitHub's built-in auto-merge feature
+          # (confirmed enabled: `allow_auto_merge: true` on the repo).
+          gh pr merge "$RELEASE_BRANCH" --squash --auto --delete-branch
