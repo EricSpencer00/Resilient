@@ -7,6 +7,14 @@ project offers today and the guarantees it will offer once the language hits
 If you are depending on Resilient in production, read this file end-to-end
 before upgrading compiler versions.
 
+**This file is the single canonical stability policy.** `docs/STABILITY_POLICY.md`
+is the same policy published on the [documentation
+site](https://ericspencer.us/Resilient/stability-policy) (GitHub Pages only
+serves pages under `docs/`, so it can't just be a symlink to this file); if the
+two ever disagree, this file is authoritative and `docs/STABILITY_POLICY.md`
+should be updated to match. RES-3510 closed the reconciliation gap between the
+two files — see the [CHANGELOG](#changelog) entry below.
+
 ---
 
 ## TL;DR
@@ -63,6 +71,23 @@ Until the first `1.0.0` tag:
 ---
 
 ## Feature Stability
+
+The CLI (`rz --help`) already ships a three-way status vocabulary — `stable`,
+`backend-limited`, `experimental` — enforced by
+`resilient/tests/it/stability_help_smoke.rs`. This section maps that
+vocabulary onto the language/tooling surface:
+
+- **Stable** — see below. Deprecation cycle required before removal.
+- **Backend-limited** — fully specified and won't change *on the backends
+  that support it*, but only available when a build feature or target is
+  present; an unsupported build prints a rebuild hint instead of silently
+  degrading. Today that's `--jit` (needs `cargo build --features jit`),
+  `--lsp` (`--features lsp`), `--emit-certificate`/`verify-cert`/`verify-all`
+  (`--features z3`), and the static FFI registry (`--features ffi-static`).
+  Backend-limited is a build-time gate, not a promise that the *design* is
+  final — several backend-limited surfaces (Z3 verifier encoding, FFI ABI)
+  are also listed Experimental below because their shape is still moving.
+- **Experimental** — see below. May change without notice.
 
 ### Stable (deprecation cycle required before removal)
 
@@ -169,6 +194,7 @@ Chronological log of breaking and stability-relevant changes. Newest first.
 
 | Date    | Version | Area        | Change                                                                                           |
 |---------|---------|-------------|--------------------------------------------------------------------------------------------------|
+| 2026-07 | 0.2.x   | Docs        | RES-3510: reconciled this file with `docs/STABILITY_POLICY.md` into one canonical policy; added the `backend-limited` tier (already shipped in `rz --help`, RES-3133) to the written policy. No change to the Stable/Experimental feature lists themselves. |
 | 2026-04 | 0.1.x   | FFI         | Static-registry FFI landed behind `--features ffi-static` in `resilient-runtime`. Experimental — signatures, type mapping, and registration macros may change (RES-FFI phase 1). |
 | 2026-04 | 0.1.x   | FFI         | `extern "lib" { fn name(...) -> T = "symbol"; }` syntax added for dynamically loaded libm-style libraries in the tree walker. Experimental; struct-by-pointer and callbacks tracked as RES-215 / RES-216. |
 | 2026-04 | 0.1.x   | live blocks | `live backoff(base_ms=, factor=, max_ms=)` and `live within Nms` clauses formalised (RES-138 / RES-139 / RES-142). Keyword and parameter names experimental. |

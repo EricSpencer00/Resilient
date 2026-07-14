@@ -7,645 +7,234 @@ permalink: /module-system
 
 # Resilient Module and Package System
 
-## Overview
+## v1 scope (this document's design decision)
 
-Resilient's module system provides visibility control, dependency management, and code organization for both single-file programs and multi-package ecosystems. This design unifies embedded no_std packages with host-side tooling.
+RES-3502 asked for a real module and package system design, grounded in
+what's actually implemented rather than a Cargo/crates.io lookalike. The v1
+cut this document commits to is:
+
+- **In scope, shipped:** inline `mod name { ... }` namespaces, file-based
+  `use "path/to/file.rz";` splicing, a module dependency graph with cycle
+  detection, three-level `pub`/`pub(crate)`/private visibility, a
+  hand-rolled `resilient.toml` manifest (`name`, `version`,
+  `[dependencies]`), a `resilient.lock` lockfile, and **local-path and
+  git dependencies** (no central registry).
+- **Explicitly out of scope for v1, tracked as follow-ups:** a central
+  package registry / `rz publish` upload, workspaces (multi-package
+  projects sharing one manifest), a `[features]` manifest section with
+  dependency-level feature unification, and semver-range dependency
+  resolution against a registry index (there is no registry to resolve
+  against yet).
+
+If you're deciding whether a design gap here is a bug or a v1 boundary:
+if it involves fetching a package by name+semver-range from somewhere
+other than a local path or a git URL, it's out of scope by design, not an
+oversight.
 
 ---
 
-## Core Concepts
+## Modules
 
-### Module
+### Inline `mod` blocks (RES-324)
 
-A **module** is a namespace that groups related code. Modules are organized in a tree structure.
-
-```rust
-// file: math.rz
-pub mod arithmetic {
-    pub fn add(int x, int y) -> int {
+```resilient
+mod arithmetic {
+    fn add(int x, int y) -> int {
         return x + y;
     }
 }
 
-pub mod trigonometry {
-    pub fn sine(float x) -> float {
-        // implementation
-    }
-}
-```
-
-**Usage:**
-```rust
-use math::arithmetic;
 fn main() {
     let result = arithmetic::add(1, 2);
 }
 ```
 
-### Package
+A `mod name { ... }` block groups declarations under a namespace prefix
+*within a single file*. Every `fn`/`struct` declared inside is renamed to
+`"name::item"` and registered directly in the environment — the parser
+already collapses `arithmetic::add` into a flat identifier via the `::`
+path token, so no separate cross-module symbol table is needed at this
+tier. This is the lightweight form: no visibility enforcement of its own
+(that comes from the full module system below), no separate file required.
 
-A **package** is a self-contained unit of code with metadata, dependencies, and a publish identity.
+### File-based imports: `use "path.rz";` (RES-073)
 
-**Package manifest:**
-```yaml
-# Resilient.toml
-[package]
-name = "math"
-version = "0.2.0"
-authors = ["you"]
-edition = "2024"
-
-[dependencies]
-# no_std compatible dependencies
-serde = { version = "1.0", features = ["no_std"] }
-
-[dev-dependencies]
-# testing only
-tempfile = "3.0"
-
-[features]
-default = ["std"]
-std = ["serde/std"]  # bring in std support
+```resilient
+use "sensors/thermal.rz";
+use "sensors/thermal.rz" as thermal;   // RES-360: alias
 ```
 
-### Crate
+`use "path/to/file.rz";` splices the target file's content into the
+importing program **before typechecking** (`imports::expand_recursive`
+walks and drains every top-level `Node::Use`, either splicing in the
+resolved content or aborting compilation with a "could not be resolved"
+diagnostic). By the time the typechecker runs, there are no `Use` nodes
+left — this is closer to a C `#include` / textual expansion than a
+separately-compiled-and-linked module, though the compiler tracks it well
+enough to validate `use pkg::module` package-name references against known
+package names at import time (RES-3838) — file-based (`use "path.rz"`) and
+standard-library (`use std::*`) imports are exempt from that specific
+existence check, since they're validated by simpler means (file exists /
+stdlib symbol exists).
 
-A **crate** is the smallest unit that can be compiled. A crate is produced from:
-- A single `.rz` file (binary or library crate)
-- A directory with `lib.rz` or `main.rz` (library or binary package)
+### Visibility and the module dependency graph (`full_modules.rs`, "Feature 40/50")
+
+A second, independently-wired pass (`full_modules::check`, in the
+typechecker's `<EXTENSION_PASSES>` block) extends the textual-splicing
+model above with:
+
+- A **visibility registry**: `pub` (public), `pub(crate)` (crate-visible),
+  or private (the default, no modifier). `pub(super)`-style syntax is not
+  a distinct visibility level in the checker today — only `pub` and
+  `pub(crate)` are recognized; anything else falls back to private. Don't
+  write `pub(super)` expecting parent-module-only visibility semantics
+  yet.
+- A **module dependency graph** built from `use` statements.
+- A **cycle detector** over that graph — a circular `use` dependency is a
+  compile-time error, not a runtime surprise.
 
 ---
 
-## Module System
+## Packages
 
-### File-Based Modules
-
-```
-project/
-├── lib.rz              # lib crate root
-├── math.rz             # mod math
-├── strings/
-│   ├── format.rz       # mod strings::format
-│   └── parse.rz        # mod strings::parse
-└── tests/
-    └── math_tests.rz   # integration tests
-```
-
-**lib.rz declares submodules:**
-```rust
-pub mod math;
-pub mod strings;
-
-#[cfg(test)]
-mod tests;
-```
-
-**strings/format.rz declares its children:**
-```rust
-pub mod format {
-    pub fn to_string(int x) -> string {
-        // implementation
-    }
-}
-```
-
-### Visibility Rules
-
-| Declaration | Visibility | Example |
-|-------------|------------|---------|
-| `pub` | Public (exported) | `pub fn add(...)` |
-| `pub(crate)` | Visible in crate | `pub(crate) fn internal(...)` |
-| `pub(super)` | Visible in parent module | `pub(super) fn helper(...)` |
-| (no `pub`) | Private (module-only) | `fn private(...)` |
-
-**Example:**
-```rust
-pub mod api {
-    pub fn process(data: string) -> Result<int, string> {
-        let validated = validate_internal(data)?;  // OK: pub(crate)
-        return parse(validated);                   // OK: public
-    }
-
-    pub(crate) fn validate_internal(s: string) -> Result<string, string> {
-        // visible in crate, not re-exported
-    }
-
-    pub fn parse(s: string) -> Result<int, string> {
-        // public function
-    }
-}
-```
-
----
-
-## Package System
-
-### Package Metadata (Resilient.toml)
+### Manifest: `resilient.toml`
 
 ```toml
 [package]
 name = "physics_sim"
 version = "1.2.3"
-authors = ["Alice <alice@example.com>", "Bob"]
-edition = "2024"
-description = "Physics simulation engine"
-license = "MIT"
-repository = "https://github.com/example/physics_sim"
-documentation = "https://docs.example.com"
-
-[profile.release]
-opt-level = 3
-lto = true
 
 [dependencies]
-# Semantic versioning
-serde = "1.0"
-nalgebra = "0.31"
-
-# Minimum supported version
-rand = ">= 0.8, < 0.9"
-
-# No_std compatible
-heapless = { version = "0.7", features = ["serde"] }
-
-# Conditional dependencies
-parking_lot = { version = "0.12", optional = true }
-
-[dev-dependencies]
-criterion = "0.4"  # benchmarking
-proptest = "1.0"   # property testing
-
-[features]
-default = ["std", "threading"]
-std = []
-threading = ["parking_lot"]
+heapless = { path = "../libs/heapless" }
+netutil = { git = "https://github.com/user/netutil", rev = "abc123" }
 ```
 
-### Semantic Versioning
+The manifest file is named **`resilient.toml`** (lowercase); `rz.toml` is
+also accepted as an alternate filename. The parser (`package_manager.rs`)
+is a small hand-rolled line-based reader — it understands `[package]`
+(`name`, `version`) and `[dependencies]` sections. There is currently no
+`[features]`, `authors`, `edition`, `license`, or `[dev-dependencies]`
+section recognized by the manifest parser; don't add them expecting any
+effect yet.
 
-Resilient follows semantic versioning:
+### Dependencies: path and git only
 
-| Version | Change | Implication |
-|---------|--------|-------------|
-| 1.0.0 → 1.0.1 | Patch (bugfix) | Safe to upgrade automatically |
-| 1.0.0 → 1.1.0 | Minor (new API) | Safe to upgrade, new features available |
-| 1.0.0 → 2.0.0 | Major (breaking) | Must review changes before upgrade |
-
-**Stability guarantees:**
-- `1.x.y` → `1.x.z` (same major.minor): No breaking changes to public API
-- `1.x.y` → `1.y.z` (same major): New APIs added, old ones available
-- `1.x.y` → `2.x.y` (new major): May have breaking changes
-
-### Dependency Resolution
-
-Resilient uses a **lock file** (`Resilient.lock`) for reproducible builds:
-
-```
-rz build                    # Resolves deps, creates/updates lock
-rz update                   # Updates lock to latest compatible
-rz update --aggressive      # Updates to latest (may be major)
+```toml
+[dependencies]
+mylib = { path = "../libs/mylib" }
+netutil = { git = "https://github.com/user/netutil", rev = "abc123" }
 ```
 
-**Lock file:**
+`pkg_deps.rs`'s `DepSource` enum has exactly two variants: `Path` and
+`Git` — there is no registry/version-index source. A path dependency is
+validated to have its own `resilient.toml` and a `src/` directory before
+it's accepted; a git dependency is cloned into
+`~/.resilient/cache/git/<hash>/` and checked out at the given
+`rev`/`tag`/`branch`. Plain semver-string dependencies (`serde = "1.0"`)
+parse without erroring but have nothing to resolve against — there is no
+registry to fetch a named+versioned package from yet, so don't rely on
+that form actually pulling in code.
+
+CLI: `rz pkg add <name> path:../libs/mylib` or
+`rz pkg add <name> git:https://github.com/user/netutil --rev abc123`
+appends the corresponding entry to `[dependencies]`.
+
+### Lockfile: `resilient.lock`
+
 ```toml
 [[package]]
-name = "physics_sim"
-version = "1.2.3"
-source = "registry"
+name = "mylib"
+source = "path:../libs/mylib"
 
 [[package]]
-name = "nalgebra"
-version = "0.31.4"
-source = "registry"
-dependencies = ["simba 0.7"]
+name = "netutil"
+source = "git:https://github.com/user/netutil"
+rev = "abc123"
 ```
+
+### Publishing (`rz pkg publish`, RES-342) — dry-run only
+
+`rz pkg publish` reads the four manifest fields a registry would need
+(`name`, `version`, `description`, `entry`), walks the project tree
+(respecting a small subset of `.gitignore` patterns), and builds a
+deterministic in-memory tarball with a hand-rolled tar writer. **There is
+no registry endpoint configured yet** — `pkg publish` requires
+`--dry-run` and prints a "registry endpoint not configured" error
+otherwise. Deliberately deferred, per the module's own doc comment: the
+actual HTTP upload, version-collision detection (nothing to check
+collisions against without a registry), and source signing over the
+published archive.
+
+### Scaffolding: `rz pkg init`
+
+```
+rz pkg init my_project
+```
+
+Writes three files and refuses to clobber an existing manifest:
+`resilient.toml` (with `[package]` and an empty `[dependencies]`),
+`src/main.rz` (hello-world entry point), and `.gitignore`.
 
 ---
 
-## Import and Use
+## Conditional compilation: `#[cfg(...)]`
 
-### Simple Import
+```resilient
+#[cfg(feature = "verbose")]
+fn debug_log(string msg) { println(msg); }
 
-```rust
-use math::arithmetic::add;
+#[cfg(not(feature = "verbose"))]
+fn debug_log(string msg) { }
 
-fn main() {
-    let x = add(1, 2);  // direct name
-}
+#[cfg(any(feature = "std", feature = "alloc"))]
+fn needs_heap() { }
 ```
 
-### Re-export
-
-```rust
-// math::arithmetic is re-exported as math::add
-pub use arithmetic::add;
-
-// Now users can do:
-// use math::add;
-```
-
-### Glob Import
-
-```rust
-use math::*;  // all public items from math
-
-fn main() {
-    arithmetic::add(1, 2);      // OK
-    trigonometry::sine(1.57);   // OK
-}
-```
-
-### Selective Import
-
-```rust
-use math::{arithmetic, trigonometry};
-
-fn main() {
-    arithmetic::add(1, 2);
-    trigonometry::sine(1.57);
-}
-```
+`#[cfg(key = "value")]` predicates (RES-2581, RES-2988, RES-343), with
+`not`/`any`/`all` combinators, gate declarations at compile time based on
+`--cfg key=value` (or bare `--cfg test`, which sets the built-in `test`
+flag) CLI arguments. This is **independent of the package manifest** —
+there is no `[features]` manifest section that declares named feature
+sets or wires a `--cfg` value to a dependency's own feature flags; you
+pass `--cfg` flags directly to `rz build`/`rz run`.
 
 ---
 
-## Package Distribution
+## std / no_std / alloc tiers
 
-### Publishing to Registry
-
-```bash
-rz publish --registry crates.io
-```
-
-**Registry requirements:**
-- Valid `Resilient.toml` with name, version, description
-- All dependencies must exist in registry
-- License field required (or UNLICENSED)
-- Source code must pass lint checks
-- Tests must pass on all supported platforms
-
-### Version Constraints
-
-Users specify version constraints in dependencies:
-
-```toml
-[dependencies]
-serde = "1.0"               # = 1.x.y (any 1.x version)
-rand = "0.8.4"              # >= 0.8.4, < 0.9
-nalgebra = ">= 0.30"        # >= 0.30, no upper bound
-parking_lot = "~0.12"       # >= 0.12, < 0.13 (tilde)
-```
+The runtime crate (`resilient-runtime`) is `#![no_std]` by default; heap
+types gate behind `#[cfg(feature = "alloc")]`, and host-only capabilities
+(file I/O, environment access) gate behind the crate's own Cargo
+`std`/`alloc` features — see `STDLIB_PORTABILITY.md` for the authoritative
+tier breakdown and which builtins are available on which target. This
+document does not restate that tier table to avoid the two drifting.
 
 ---
 
-## Feature Flags
-
-### Conditional Compilation
-
-```toml
-[features]
-default = ["std"]
-std = []
-threading = ["parking_lot"]
-serialization = ["serde"]
-```
-
-**In code:**
-```rust
-#[cfg(feature = "std")]
-pub mod file_io {
-    pub fn read_file(path: string) -> Result<string, string> {
-        // std-only implementation
-    }
-}
-
-#[cfg(feature = "threading")]
-pub mod async_compute {
-    pub fn parallel_map<T, U>(
-        items: &array<T>,
-        f: (T) -> U,
-    ) -> array<U> {
-        // threading implementation
-    }
-}
-
-#[cfg(not(feature = "std"))]
-pub fn embedded_only() {
-    // runs only in no_std builds
-}
-```
-
-**Using features:**
-```toml
-[dependencies]
-my_lib = { version = "1.0", features = ["std", "threading"] }
-```
-
----
-
-## std / no_std / alloc Tiers
-
-### Tier 1: Core (always available)
-
-```rust
-// No imports needed, always available
-fn pure_fn(int x) -> int {
-    return x + 1;
-}
-```
-
-**Available:** Basic types, pure functions, stack allocation, static allocation.
-
-### Tier 2: Alloc (optional heap)
-
-```rust
-#[cfg(feature = "alloc")]
-pub fn allocate_vec(capacity: int) -> array<int> {
-    // heap allocation
-}
-```
-
-**Available when:** User enables `alloc` feature.
-
-### Tier 3: Std (host only)
-
-```rust
-#[cfg(feature = "std")]
-pub fn read_env(key: string) -> Option<string> {
-    // environment access (host only)
-}
-```
-
-**Available when:** Building for host (Linux, Windows, macOS) with `std` feature.
-
-### Package declaring its tiers:
-
-```toml
-[features]
-default = ["std", "alloc"]
-std = []
-alloc = []
-core = []  # core-only builds
-```
-
----
-
-## Workspaces
-
-A **workspace** coordinates multiple related packages:
-
-```
-workspace/
-├── Resilient.toml          # workspace manifest
-├── packages/
-│   ├── core/
-│   │   ├── Resilient.toml
-│   │   └── lib.rz
-│   ├── simulation/
-│   │   ├── Resilient.toml
-│   │   └── lib.rz
-│   └── cli/
-│       ├── Resilient.toml
-│       └── main.rz
-```
-
-**Workspace manifest:**
-```toml
-[workspace]
-members = ["packages/core", "packages/simulation", "packages/cli"]
-
-[workspace.dependencies]
-# shared versions
-serde = "1.0"
-```
-
-**Per-package manifest:**
-```toml
-[package]
-name = "physics_core"
-version = "1.0.0"
-
-[dependencies]
-# Can reference workspace members
-physics_sim = { path = "../simulation" }
-serde.workspace = true  # use workspace version
-```
-
----
-
-## Build System
-
-### Build Process
-
-```
-rz build                         # debug build
-rz build --release               # optimized
-rz build --target thumbv7em-none-eabihf  # cross-compile
-```
-
-**Build steps:**
-1. Parse `Resilient.toml` and resolve dependencies
-2. Fetch dependencies from registry or workspace
-3. Typecheck all code
-4. Generate code for target backend
-5. Link into final binary
-
-### Conditional Compilation
-
-```rust
-#[cfg(target = "x86_64-unknown-linux-gnu")]
-fn platform_specific() {
-    eprintln!("running on Linux x86_64");
-}
-
-#[cfg(target = "thumbv7em-none-eabihf")]
-fn embedded_specific() {
-    // Cortex-M4F specific code
-}
-```
-
----
-
-## Stability and Deprecation
-
-### Marking APIs as Unstable
-
-```rust
-/// Unstable API; may change in next major version.
-#[unstable(feature = "future_api", issue = "3502")]
-pub fn experimental_feature() {
-    // ...
-}
-```
-
-### Deprecation
-
-```rust
-/// Deprecated since 1.5.0; use new_function instead.
-#[deprecated(since = "1.5.0", note = "use new_function")]
-pub fn old_function() {
-    // ...
-}
-```
-
----
-
-## Best Practices
-
-### 1. Organize by Feature, Not by Layer
-
-```
-// Good
-project/
-├── auth/
-│   ├── credentials.rz
-│   └── token.rz
-├── storage/
-│   ├── cache.rz
-│   └── persistence.rz
-
-// Avoid
-project/
-├── core/
-│   ├── auth.rz
-│   ├── storage.rz
-├── models/
-│   ├── user.rz
-```
-
-### 2. Keep Modules Focused
-
-**Good:**
-```rust
-pub mod encryption {
-    pub fn encrypt(data: string, key: string) -> Result<string, string> { ... }
-    pub fn decrypt(encrypted: string, key: string) -> Result<string, string> { ... }
-}
-```
-
-**Avoid:**
-```rust
-pub mod utils {
-    pub fn everything_else() { ... }
-}
-```
-
-### 3. Minimize Public Surface
-
-```rust
-// Good: only expose what users need
-pub fn process_data(input: string) -> Result<Output, Error> { ... }
-pub(crate) fn internal_helper() { ... }
-
-// Avoid: exposing all internals
-pub fn _internal_step_1() { ... }
-pub fn _internal_step_2() { ... }
-```
-
-### 4. Document Module Purpose
-
-```rust
-//! Authentication module.
-//!
-//! Handles user credentials, token validation, and session management.
-//! Supports both password-based and token-based authentication.
-
-pub mod credentials;
-pub mod tokens;
-```
-
-### 5. Version Carefully
-
-- **Patch releases** (1.0.0 → 1.0.1): Only for bugfixes, no API changes
-- **Minor releases** (1.0.0 → 1.1.0): New public APIs, backward compatible
-- **Major releases** (1.0.0 → 2.0.0): May have breaking changes
-
----
-
-## Roadmap
-
-### v0.3: Module System Stabilization
-- [x] File-based modules
-- [x] Visibility rules (pub, pub(crate), pub(super))
-- [ ] Module path resolution in compiler
-- [ ] Module documentation generation
-
-### v0.4: Package System Foundation
-- [ ] Resilient.toml parsing and validation
-- [ ] Dependency resolution algorithm
-- [ ] Lock file generation and reproducibility
-- [ ] Package name registry
-
-### v0.5: Package Distribution
-- [ ] Central package registry (crates.io equivalent)
-- [ ] Publishing workflow (`rz publish`)
-- [ ] Dependency version management
-- [ ] Security audit support
-
-### v0.6+: Advanced Features
-- [ ] Workspaces with interdependencies
-- [ ] Feature flag refinement
-- [ ] Build profiles (release, debug, embedded)
-- [ ] Conditional compilation across std/no_std/alloc
-
----
-
-## Example: Complete Package
-
-```toml
-# Resilient.toml
-[package]
-name = "embedded_crypto"
-version = "0.3.0"
-authors = ["Security Team"]
-edition = "2024"
-description = "Cryptographic primitives for embedded systems"
-
-[features]
-default = ["aes"]
-aes = []
-sha256 = []
-
-[dependencies]
-heapless = "0.7"
-
-[dev-dependencies]
-proptest = "1.0"
-```
-
-```rust
-// lib.rz
-//! Embedded cryptography library
-//! 
-//! Provides AES, SHA256, and HMAC with no_std support.
-
-pub mod aes;
-
-#[cfg(feature = "sha256")]
-pub mod sha256;
-
-pub mod hmac;
-```
-
-```rust
-// aes.rz
-pub mod aes {
-    const BLOCK_SIZE: int = 16;
-    
-    pub fn encrypt(plaintext: &array<byte>, key: &array<byte>) -> Result<array<byte>, string> {
-        // AES-128 encryption
-    }
-    
-    pub fn decrypt(ciphertext: &array<byte>, key: &array<byte>) -> Result<array<byte>, string> {
-        // AES-128 decryption
-    }
-}
-```
+## What v2+ would need to add
+
+Tracked as follow-up scope, not implied by anything above:
+
+- A central package registry and the `rz publish` HTTP upload path.
+- Workspaces — today every `resilient.toml` describes exactly one
+  package; there is no multi-package workspace manifest or member list.
+- A `[features]` manifest section with cross-crate feature unification
+  (today, `#[cfg(feature = "x")]` and `--cfg` are the only conditional
+  compilation mechanism, and they don't consult the manifest).
+- Semver-range dependency resolution against a registry index (only
+  exact path/git sources resolve today).
+- A distinct `pub(super)` visibility level in `full_modules.rs`.
 
 ---
 
 ## References
 
-- **RES-3502:** Design a real module and package system
-- **RES-3507:** Design a production-grade standard library portability model
-- **FAILURE_MODEL.md:** Error handling across packages
-- **MEMORY_MODEL.md:** Allocation tiers for no_std/alloc/std
+- **RES-3502:** Design a real module and package system (this doc).
+- **RES-324:** inline `mod name { ... }` namespace blocks.
+- **RES-073 / RES-360:** `use "path.rz";` file imports and `as` aliasing.
+- **RES-3838:** package-name existence validation at import time.
+- **"Feature 40/50" (`full_modules.rs`):** visibility registry + module
+  dependency graph + cycle detection.
+- **RES-205 / RES-212 / RES-342:** `pkg init`, `pkg add`, `pkg publish`.
+- **FAILURE_MODEL.md:** error handling, independent of package boundaries.
+- **STDLIB_PORTABILITY.md:** std/no_std/alloc tier table (authoritative).

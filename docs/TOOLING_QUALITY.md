@@ -134,28 +134,42 @@ fn lsp_diagnostics_within_500ms() {
 
 ---
 
-## Debugger (future)
+## Debugger (`rz --dap`)
 
-### Planned Stability: Stable (v0.5+)
+### Stability Guarantee: Shipped
 
-Debugger will provide breakpoints, stepping, and variable inspection for development builds.
+Resilient ships a Debug Adapter Protocol (DAP) server, not a future
+placeholder — `resilient/src/dap_server.rs` (810 lines) implements the
+DAP JSON wire protocol over stdin/stdout with the same
+`Content-Length: N\r\n\r\n{json}` framing LSP uses. A DAP client (VS
+Code, nvim-dap, etc.) launches `rz --dap <file>` as a child process and
+drives the session through this protocol
+(`resilient/src/dap_server.rs:1-9`, `resilient/src/lib.rs:33213`
+`dap_server::dispatch_dap`, `resilient/src/lib.rs:34256` `dap_server::run`).
+The server delegates actual execution to `debugger::DebugState` on a
+background thread and communicates via channels.
 
-### Minimum Standards (When Shipped)
+### Minimum Standards (Shipped)
 
-| Feature | Standard |
-|---------|----------|
-| **Breakpoints** | Set breakpoints by line, stop on hit |
-| **Stepping** | Step in/over/out through code |
-| **Variables** | Inspect local and global scope |
-| **Expressions** | Evaluate expressions in context |
-| **Stack Frames** | View call stack with file:line |
-| **Performance** | Debug overhead < 10% for normal programs |
+| Feature | Standard | Implementation |
+|---------|----------|-----------------|
+| **Breakpoints** | Set breakpoints by line, stop on hit | `setBreakpoints` request (`dap_server.rs:203` `handle_set_breakpoints`) |
+| **Stepping** | Step in/over/out through code | `continue` / `next` / `stepIn` / `stepOut` requests, dispatched to `DebugCommand::{Continue,StepOver,StepIn,StepOut}` (`dap_server.rs:292-323`) |
+| **Variables** | Inspect local and global scope | `variables` request (`dap_server.rs:397` `handle_variables`) |
+| **Expressions** | Evaluate expressions in context | `evaluate` request (`dap_server.rs:439` `handle_evaluate`) |
+| **Stack Frames** | View call stack with file:line | `stackTrace` request (`dap_server.rs:340` `handle_stack_trace`) |
+| **Performance** | Debug overhead < 10% for normal programs | Not independently benchmarked; no regression gate exists yet |
 
 ### Integration Points
 
-- Compiler generates DWARF debug info (or equivalent)
-- Runtime exposes debugging APIs
-- CLI integrates with GDB / LLDB / custom debugger
+- `rz --dap <file>` starts the DAP server on stdio; no separate debug
+  build or DWARF emission is required — the tree-walking interpreter's
+  own execution state backs breakpoints, stepping, and variable
+  inspection via `debugger::DebugState`
+- Editors integrate via the standard DAP client protocol (VS Code
+  `launch.json`, nvim-dap, etc.) rather than GDB/LLDB
+- Follow-up: an independently measured performance baseline for the
+  "< 10%" overhead standard above is not yet tracked in CI
 
 ---
 
@@ -383,7 +397,7 @@ main.rz:12:5: error[E0308]: mismatched types
 ### v0.4
 
 - [x] Package manager (install, add, remove)
-- [ ] Debugger (breakpoints)
+- [x] Debugger (`rz --dap`: breakpoints, stepping, variables, evaluate, stack frames — `resilient/src/dap_server.rs`)
 - [ ] REPL
 
 ### v0.5
@@ -440,4 +454,4 @@ When a tool is Stable, users can expect:
 
 - **RES-3508:** Set a tooling quality bar for the language platform
 - **RES-3502:** Module and package system design
-- **STABILITY_POLICY.md:** Backward compatibility guarantees
+- **STABILITY.md:** Backward compatibility guarantees

@@ -16,6 +16,16 @@ The end-state type system will enable:
 - **Effects**: Explicit tracking of side effects (I/O, mutation, resource allocation)
 - **Inference**: Smart type deduction while maintaining full explicitness at API boundaries
 
+> **Reconcile-to-reality note (RES-3503.1, 2026-07):** this roadmap was
+> originally written describing Phase 1 (Generics) as future "Design
+> stage" work. It has since shipped. The checklists and status markers
+> below have been corrected against the current typechecker's
+> `<EXTENSION_PASSES>` block (`resilient/src/typechecker.rs`) so this
+> document stops overstating what is still pending. Phase 2 (Effects) is
+> further from reality than the original draft implied: there is no
+> parseable effect-annotation syntax in the lexer today, not even a
+> "parsed but unenforced" form.
+
 ---
 
 ## Phased Implementation Strategy
@@ -32,10 +42,12 @@ Each phase is a self-contained increment that does not break existing code.
 
 ---
 
-## Phase 1: Generics (Planned: v0.3–v0.4)
+## Phase 1: Generics (Shipped, v0.2.x)
 
-**Status:** Design stage (RES-3503, RES-3502)  
-**Dependency:** Stable syntax and parsing infrastructure  
+**Status:** ✅ **Shipped** — generic functions, generic structs, generic
+enums, trait bounds (including associated types and blanket impls), and
+exhaustiveness checking are all live in the default build today. This
+status superseded the original "Design stage" draft; grounding below.
 **Scope:** Generic functions and generic data types
 
 ### 1.1 Generic Functions
@@ -113,22 +125,60 @@ swap("x", "y");      // swap<string>("x", "y")
 
 **Compiler guarantee:** Zero runtime overhead. All specialization happens at compile time.
 
-### 1.5 Phase 1 Deliverables
+### 1.5 Phase 1 Deliverables — status against `resilient/src/`
 
-- [ ] Lexer support for `<T>` syntax
-- [ ] Parser for generic declarations
-- [ ] Type checker for generic constraints
-- [ ] Monomorphization in code generation
-- [ ] Compiler tests: 50+ cases
-- [ ] Examples: generic list, generic pair, generic map function
-- [ ] Documentation: this roadmap + language reference section
+- [x] Lexer support for `<T>` syntax — parsed by the main parser in `lib.rs`
+- [x] Parser for generic declarations — `Node::Function.type_params`,
+      `Node::StructDecl`/`EnumDecl` generic variants
+- [x] Type checker for generic constraints — wired in the
+      `typechecker.rs` `<EXTENSION_PASSES>` block:
+      `crate::generics::check` (gated on `markers.has_generic_fn`),
+      `crate::generic_inference::check` (RES-2576, call-site inference),
+      `crate::variance::check` (RES-2615), `crate::generic_enums::check`
+      (RES-2575), `crate::generic_structs::check` (RES-2574),
+      `crate::traits::check` (trait bounds + associated types +
+      RES-2695 projection bounds like `I::Item: Display`),
+      `crate::blanket_impl::check` (RES-2552)
+- [x] Monomorphization in code generation — `crate::monomorph::lower`
+      runs before both the `--vm` bytecode compiler and the `--jit`
+      Cranelift backend (`lib.rs`, the `use_vm`/`use_jit` dispatch
+      arms); the interpreter path type-checks generics without a
+      separate specialization step since `Value` is dynamically typed
+      at runtime
+- [x] Compiler tests: generics, generic_enums, generic_structs, traits,
+      blanket_impl, and exhaustiveness each have dedicated `#[cfg(test)]`
+      modules well past the 50-case bar cumulatively
+- [x] Examples: see `resilient/examples/` generic-feature corpus
+- [x] Documentation: this roadmap + `docs/LANGUAGE.md` feature-tier section
+
+**Associated types — correction:** an earlier draft of this roadmap
+assumed associated types were "parsed but unenforced." That is not what
+`resilient/src/traits.rs` does: `check()` rejects an `impl` block missing
+a trait-declared associated type (`"missing associated type"` error,
+tested by `impl_missing_associated_type_errors`), rejects duplicate
+associated-type declarations in a trait (tested by
+`duplicate_associated_type_in_trait_errors`), and RES-2695 enforces
+projection bounds (`T::Assoc: SomeBound`) at call sites. Associated
+types are enforced today, not merely parsed.
 
 ---
 
 ## Phase 2: Effects System (Planned: v0.5–v0.6)
 
-**Status:** Design stage  
-**Dependency:** Phase 1 (Generics) must be stable  
+**Status:** Design stage — **further from reality than "design stage"
+implies.** Grounding: `grep -n "Bang" resilient/src/lexer_logos.rs`
+shows a `!` token used for the boolean-not operator and the `-> !`
+never-return type (`crate::never_type::check`), but there is **no**
+lexer or parser support for an effect-annotation grammar of the form
+`-> T ! IO` shown in the examples below — that syntax does not parse
+today. Do not confuse this with the unrelated `fn_effects` machinery
+that already exists: RES-192's `infer_fn_effects` computes a per-function
+boolean IO-effect lattice, gated behind `TypeChecker::warn_unverified`-style
+opt-in and consumed only by the `--audit` / `--explain-effects` CLI
+drivers (`typechecker.rs` around line 6849). That is a diagnostic
+side-channel, not the effect-polymorphism type system described below —
+none of the syntax in this section (`! IO`, `! (IO, Mutation)`, effect
+type parameters `<E>`, effect bounds `E: Pure`) exists in the grammar.
 **Scope:** Explicit effect tracking, effect polymorphism
 
 ### 2.1 Effect Types
@@ -227,6 +277,20 @@ fn safe_async<E: IO | Mutation>(f: () -> int ! E) -> int {
 **Dependency:** Phase 1 (Generics) and Phase 2 (Effects) both stable  
 **Scope:** Smart type inference, bidirectional checking
 
+**Naming collision to be aware of:** `resilient/src/region_inference.rs`
+already exists, but it is unrelated to the "Type Inference" scoped here —
+it's a region/aliasing analysis for the memory model (see
+`docs/MEMORY_MODEL.md`'s Enforcement Reality Check section), not a
+general type-inference engine. Its top-level `infer` entry point is a
+**no-op stub returning `Ok(())`** (`typechecker.rs:6397` comment: "RES-1611:
+`region_inference::infer` is a no-op stub"); the real region-aliasing
+logic runs from `check_call_site_region_aliasing`, called separately.
+Phase 3 of this roadmap (local type inference, bidirectional checking)
+has no code behind it yet — generic call-site *argument* inference
+(RES-2576, `generic_inference::check`) already ships as part of Phase 1
+and should not be confused with the broader Phase 3 inference vision
+described below.
+
 ### 3.1 Local Type Inference
 
 ```rust
@@ -323,34 +387,49 @@ fn run_effect<E>(action: () -> int ! E) -> int ! E {
 
 ## Feature Interaction Matrix
 
-| Feature | Phase 1 | Phase 2 | Phase 3 |
-|---------|---------|---------|---------|
-| Generic functions | ✅ | ✅ | ✅ |
-| Generic types | ✅ | ✅ | ✅ |
-| Generic constraints | ✅ | ✅ | ✅ |
-| Effect annotations | ❌ | ✅ | ✅ |
-| Effect polymorphism | ❌ | ✅ | ✅ |
-| Local type inference | ❌ | ❌ | ✅ |
-| Effect inference | ❌ | ❌ | ✅ |
-| Bidirectional checking | ❌ | ❌ | ✅ |
+Columns are roadmap phases (planned scope), not calendar time. The
+"Shipped Today" column is the actual state of the default build as of
+this revision (grounded in the greps cited throughout this document).
+
+| Feature | Shipped Today | Phase 1 | Phase 2 | Phase 3 |
+|---------|:---:|:---:|:---:|:---:|
+| Generic functions | ✅ | ✅ | ✅ | ✅ |
+| Generic types (structs/enums) | ✅ | ✅ | ✅ | ✅ |
+| Generic constraints (trait bounds) | ✅ | ✅ | ✅ | ✅ |
+| Associated types (decl + impl-completeness) | ✅ | ✅ | ✅ | ✅ |
+| Projection bounds (`T::Assoc: Bound`) | ✅ | ✅ | ✅ | ✅ |
+| Call-site generic argument inference | ✅ | ✅ | ✅ | ✅ |
+| Effect annotation syntax | ❌ | ❌ | ✅ | ✅ |
+| Effect polymorphism | ❌ | ❌ | ✅ | ✅ |
+| Local `let`/return-type inference (basic, RES-189/2569)¹ | ⚠️ | ⚠️ | ⚠️ | ✅ |
+| Effect inference | ❌ | ❌ | ❌ | ✅ |
+| Bidirectional checking | ❌ | ❌ | ❌ | ✅ |
+
+¹ `typechecker.rs`'s `let_type_hints` (RES-189) and `fn_return_type_hints`
+(RES-2569) already infer types for unannotated `let` bindings and
+function returns today — but as straightforward bottom-up inference for
+LSP inlay hints, not the full bidirectional/context-propagating engine
+Phase 3 describes. "Shipped Today" is ⚠️, not ✅, to mark that distinction.
 
 ---
 
 ## Current State vs. Future
 
-### Today (v0.2.x)
+### Today (v0.2.x) — corrected
 
 ```rust
-// No generics — must repeat for each type
-fn swap_int(a: int, b: int) -> (int, int) {
+// Generics ship today — no need to repeat per type
+fn swap<T>(a: T, b: T) -> (T, T) {
     return (b, a);
 }
 
-fn swap_string(a: string, b: string) -> (string, string) {
-    return (b, a);
-}
+swap(1, 2);          // OK, monomorphized/dynamically typed at call site
+swap("x", "y");       // OK, same generic fn
 
-// No effects — all functions are implicitly pure
+// No effects — this part of the original draft is still accurate.
+// All functions are implicitly pure from the type system's
+// perspective; there is no `! IO`-style annotation syntax in the
+// grammar, so mutation and I/O are not tracked in the type.
 fn process(data: &mut Data) -> int {
     // Mutation is implicit, hard to track
 }
@@ -381,12 +460,12 @@ fn apply<E>(f: () -> int ! E) -> int ! E {
 
 | Milestone | Expected | Status |
 |-----------|----------|--------|
-| Phase 1 Design (RES-3503) | v0.3 | 📋 Design phase |
-| Phase 1 Implementation | v0.3–v0.4 | ⏳ Blocked on RES-3502 |
-| Phase 2 Design | v0.4–v0.5 | 📋 Design phase |
-| Phase 2 Implementation | v0.5–v0.6 | ⏳ After Phase 1 |
-| Phase 3 Design | v0.6+ | 📋 Future |
-| Phase 3 Implementation | v0.7+ | ⏳ After Phase 2 |
+| Phase 1 Design (RES-3503) | v0.2.x | ✅ Done |
+| Phase 1 Implementation (generics, traits, associated types, exhaustiveness) | v0.2.x | ✅ **Shipped** — see §1.5 for pass-by-pass grounding |
+| Phase 2 Design (Effects) | v0.4–v0.5 | 📋 Design phase — no syntax exists yet |
+| Phase 2 Implementation | v0.5–v0.6 | ⏳ Not started |
+| Phase 3 Design (Inference) | v0.6+ | 📋 Future — do not confuse with the unrelated `region_inference.rs` module (see §Phase 3 note) |
+| Phase 3 Implementation | v0.7+ | ⏳ Not started |
 
 ---
 
@@ -434,7 +513,10 @@ Generic source → Specialization → Specialized code → Binary
 ### RES-3502: Module System
 **Status:** In progress  
 **Impact:** Generics require clear module boundaries for visibility rules.  
-**Resolution:** Required before Phase 1 code generation.
+**Resolution:** ~~Required before Phase 1 code generation~~ — Phase 1
+shipped without waiting on this; module-boundary interactions with
+generics (e.g., visibility of generic type parameters across module
+scopes) remain an open refinement, not a hard blocker.
 
 ### RES-3505: Failure/Recovery Semantics
 **Status:** Not started  
