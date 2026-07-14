@@ -79,6 +79,22 @@
     "STDLIB.md": {
       "branch": "res-3866-document-builtins",
       "claimed_at": "2026-07-14T01:42:22Z"
+    },
+    "STABILITY.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "docs/STABILITY_POLICY.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "docs/FAILURE_MODEL.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
+    },
+    "docs/MODULE_SYSTEM.md": {
+      "branch": "res-3510-stability-failure-module-design",
+      "claimed_at": "2026-07-14T01:47:27Z"
     }
   }
 }
