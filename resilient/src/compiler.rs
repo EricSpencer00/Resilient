@@ -11,7 +11,7 @@
 
 #![allow(dead_code)]
 
-use crate::bytecode::{CatchArm, Chunk, CompileError, Function, Op, Program};
+use crate::bytecode::{CatchArm, Chunk, CompileError, Function, LiveHandlerEntry, Op, Program};
 use crate::{Node, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1301,11 +1301,25 @@ fn compile_stmt(
         Node::Const { .. } => Ok(()),
         // RES-2660: static_assert is evaluated at compile time. No-op in codegen.
         Node::StaticAssert { .. } => Ok(()),
-        // RES-139: `live { body }` — compile the body once.
-        // Retry / backoff / invariant semantics are verification-only and
-        // are not emitted in the bytecode backend.
-        Node::LiveBlock { body, .. } => compile_stmt(
+        // RES-3995: `live { body }` — full retry/backoff/invariant/timeout
+        // semantics, matching the tree-walker's `eval_live_block`. See
+        // `compile_live_block` for the bytecode shape and `vm::run_inner`
+        // for the retry-loop execution.
+        Node::LiveBlock {
             body,
+            invariants,
+            backoff,
+            backoff_kind,
+            timeout,
+            max_retries,
+            ..
+        } => compile_live_block(
+            body,
+            invariants,
+            backoff,
+            *backoff_kind,
+            timeout,
+            *max_retries,
             chunk,
             locals,
             next_local,
@@ -1315,6 +1329,7 @@ fn compile_stmt(
             next_fn_idx,
             line,
             loop_stack,
+            false,
         ),
         // RES-4024: the MMIO-wrapper block keyword lifts the typechecker's
         // capability gate on volatile MMIO intrinsics but is otherwise
@@ -1510,6 +1525,105 @@ fn compile_try_catch(
     for jmp in end_jumps {
         chunk.patch_jump(jmp, end_pc)?;
     }
+    Ok(())
+}
+
+/// RES-3995: `live { ... }` / `live invariant EXPR { ... }` lowering.
+///
+/// Emits `EnterLive(handler_idx)`, then the body, then each invariant
+/// clause as an `assert`-shaped check (a false invariant fails exactly
+/// like a body-level error), then `ExitLive`. The retry/backoff/
+/// timeout/invariant *semantics* all live in `vm::run_inner`, which
+/// recursively re-runs the bytecode between `EnterLive` and `ExitLive`
+/// on any error until the block's retry budget is exhausted — mirrors
+/// the tree-walker's `eval_live_block` exactly (same retry-count
+/// arithmetic, same env-snapshot-and-restore-on-retry behavior). This
+/// function only emits the *static* bytecode shape; it does not know
+/// or care how many times the VM ends up executing it.
+#[allow(clippy::too_many_arguments)]
+fn compile_live_block(
+    body: &Node,
+    invariants: &[Node],
+    backoff: &Option<crate::BackoffConfig>,
+    backoff_kind: crate::BackoffKind,
+    timeout: &Option<Box<Node>>,
+    max_retries: Option<u32>,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    loop_stack: &mut Vec<LoopState>,
+    in_fn: bool,
+) -> Result<(), CompileError> {
+    // RES-142: unpack the `within <duration>` clause into a flat `u64`
+    // ns budget — mirrors the tree-walker's `Node::LiveBlock` eval arm.
+    let timeout_ns = timeout.as_ref().and_then(|n| match n.as_ref() {
+        Node::DurationLiteral { nanos, .. } => Some(*nanos),
+        _ => None,
+    });
+    let handler_idx = chunk.add_live_handler(LiveHandlerEntry {
+        body_start_pc: 0,
+        max_retries: max_retries.unwrap_or(crate::DEFAULT_LIVE_MAX_RETRIES),
+        backoff: *backoff,
+        backoff_kind,
+        timeout_ns,
+    })?;
+    let enter_pc = chunk.emit(Op::EnterLive(handler_idx), line);
+    chunk.set_live_handler_body_start(handler_idx, enter_pc + 1);
+
+    if in_fn {
+        compile_stmt_in_fn(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+    } else {
+        compile_stmt(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+    }
+
+    // RES-036: a failing invariant retries exactly like a body error —
+    // lower each clause as a plain assert positioned after the body,
+    // still between EnterLive/ExitLive so the retry-catch mechanism in
+    // the VM sees it the same way it sees any other runtime error.
+    for inv in invariants {
+        let inv_line = node_line(inv).unwrap_or(line);
+        compile_assert(
+            inv,
+            &None,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            inv_line,
+        )?;
+    }
+
+    chunk.emit(Op::ExitLive, line);
     Ok(())
 }
 
@@ -2359,9 +2473,22 @@ fn compile_stmt_in_fn(
         Node::Const { .. } => Ok(()),
         // RES-2660: static_assert — compile-time only, no emission.
         Node::StaticAssert { .. } => Ok(()),
-        // RES-139: `live { body }` inside fn body — compile body once.
-        Node::LiveBlock { body, .. } => compile_stmt_in_fn(
+        // RES-3995: `live { body }` inside fn body — see `compile_live_block`.
+        Node::LiveBlock {
             body,
+            invariants,
+            backoff,
+            backoff_kind,
+            timeout,
+            max_retries,
+            ..
+        } => compile_live_block(
+            body,
+            invariants,
+            backoff,
+            *backoff_kind,
+            timeout,
+            *max_retries,
             chunk,
             locals,
             next_local,
@@ -2371,6 +2498,7 @@ fn compile_stmt_in_fn(
             next_fn_idx,
             line,
             loop_stack,
+            true,
         ),
         // RES-4024: the MMIO-wrapper block keyword inside fn body —
         // compile the body exactly like `LiveBlock`. See the matching

@@ -267,14 +267,27 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "array_method_chains.rz",
     "mutual_tco.rz",
     "string_builder.rz",
-    // RES-3995: VM has no `live { }` retry-loop execution context — `live_retries()`
-    // fails outside a live block, and the retry mechanism itself asserts on
-    // the first failing attempt instead of retrying.
-    "live_blocks.rz",
-    "live_retry_log.rz",
+    // RES-3995 fixed the VM's `live { }` retry-loop execution context
+    // (`live_retries()`, backoff, timeout, invariants, and the retry
+    // loop itself all now work under `--vm`) — `live_blocks.rz`,
+    // `live_retry_log.rz`, `showcase_live_invariant.rz`, and
+    // `telemetry_demo.rz` were removed from this list in that PR.
+    // The two entries below still diverge, but for *unrelated*,
+    // independently-filed reasons — neither is a live-block bug:
+    //
+    // - `self_healing.rz`: its `read_random` helper relies on a
+    //   function-scoped `static let toggle` to deterministically
+    //   alternate pass/fail every call. The VM resets that `static
+    //   let` to its initializer on every call instead of persisting
+    //   it (pre-existing bug, unrelated to live blocks — top-level
+    //   `static let` works fine under `--vm`). See #4046.
+    // - `thermal_safety_cutoff.rz`: its `safe_read` function's
+    //   `return reading;` follows an `if !is_plausible(reading) {
+    //   assert(false, ...); }` — the VM drops the `LoadLocal` for the
+    //   return value in exactly this shape (if-branch ending in
+    //   `Op::AssertFail`), silently returning `Void`. Reproduces with
+    //   no live block involved at all (pre-existing bug). See #4045.
     "self_healing.rz",
-    "showcase_live_invariant.rz",
-    "telemetry_demo.rz",
     "thermal_safety_cutoff.rz",
     // RES-4041: VM never checks `ensures`/`recovers_to` function-contract
     // postconditions (a much bigger gap than #3996's `assume` fix — it
