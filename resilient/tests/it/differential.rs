@@ -194,6 +194,39 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
     // <other> catch-all).
+    //
+    // The `Match`-as-statement family is fixed: `if let`/`while let`
+    // (RES-908/RES-914) desugar to a bare `Node::Match` inside a `Block`
+    // (see `parse_if_let_statement`/`parse_while_let_statement` in
+    // `lib.rs`), but neither `compile_stmt` nor `compile_stmt_in_fn` had a
+    // `Match` arm — every if-let/while-let fell through to the generic
+    // `Unsupported("Match")` catch-all even though `compile_match_expr`
+    // already handled `Match` in *expression* position. Added
+    // `compile_match_stmt`/`compile_match_stmt_in_fn` (mirrors
+    // `compile_match_expr`'s pattern-check/guard machinery, but compiles
+    // arm bodies with `compile_stmt`/`compile_stmt_in_fn` instead of
+    // `compile_expr` so `return`/`break`/`continue` inside an arm work,
+    // and doesn't leave a fallthrough value on the stack) and wired both
+    // into their respective statement dispatchers — `edge_if_let_pattern.rz`,
+    // `edge_while_let.rz`, `if_let.rz`, `while_let.rz` no longer belong here.
+    //
+    // The remaining entries are distinct root causes this fix does not
+    // touch: `break_with_value.rz` needs a `loop`-as-expression value
+    // channel for `WhileStatement` in expression position (`break <expr>`
+    // via `Node::BreakWith`); `match_block_arms.rz` needs `ReturnStatement`
+    // support inside a match arm's block when the match itself is compiled
+    // in *expression* position (`compile_block_as_expr` doesn't handle
+    // `return`); `comprehension_demo.rz`/`edge_closure_capture.rz` need
+    // indirect-call support for non-identifier callees; `null_coalescing_
+    // operator.rz`/`option_find.rz` need the `??` operator (and, for
+    // `option_find.rz`, an `Option`-returning fn declared with an `int`
+    // return type — a pre-existing typechecker gap unrelated to the VM);
+    // and `array_contains.rz`, `array_sorted_invariant.rz`, `bench_simple.rz`,
+    // `defer_stmt.rz`, `optional_chaining.rz`, `quantifier_assert.rz`,
+    // `quantifier_exists.rz`, `quantifier_forall.rz`, `showcase_quantifiers.rz`
+    // are still an untriaged `<other>` catch-all (each needs the
+    // `node_kind` name surfaced per-example — left for a follow-up PR
+    // under this same ticket).
     "array_contains.rz",
     "array_sorted_invariant.rz",
     "bench_simple.rz",
@@ -201,9 +234,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "comprehension_demo.rz",
     "defer_stmt.rz",
     "edge_closure_capture.rz",
-    "edge_if_let_pattern.rz",
-    "edge_while_let.rz",
-    "if_let.rz",
     "match_block_arms.rz",
     "null_coalescing_operator.rz",
     "option_find.rz",
@@ -212,7 +242,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "quantifier_exists.rz",
     "quantifier_forall.rz",
     "showcase_quantifiers.rz",
-    "while_let.rz",
     // RES-4017 (split off from RES-3994; that ticket closed once every
     // sub-case had a home — see PR #4016): `Op::CallMethod`'s built-in-
     // container fallback (`vm_call_builtin_method`) has no path for
