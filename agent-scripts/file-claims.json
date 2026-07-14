@@ -60,9 +60,17 @@
       "branch": "res-3779-3780-completion",
       "claimed_at": "2026-07-13T22:35:15Z"
     },
-    "docs/LANGUAGE.md": {
-      "branch": "res-3648-language-tier-framework",
-      "claimed_at": "2026-07-14T01:21:21Z"
+    "resilient/src/compiler.rs": {
+      "branch": "res-3915-vm-enum-variants",
+      "claimed_at": "2026-07-14T01:17:57Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3915-vm-enum-variants",
+      "claimed_at": "2026-07-14T01:17:57Z"
+    },
+    ".github/workflows/release-file-claims.yml": {
+      "branch": "res-3901-release-file-claims-push",
+      "claimed_at": "2026-07-14T01:28:40Z"
     }
   }
 }
