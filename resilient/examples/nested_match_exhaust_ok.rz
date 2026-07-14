@@ -1,0 +1,21 @@
+// RES-4011: exhaustive NESTED pattern — the sibling of
+// nested_match_exhaust_missing.rz. Both `Shape` variants are covered
+// inside the `Some(..)` arm, so the nested exhaustiveness check accepts
+// the program.
+
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+
+fn area(Option<Shape> shape) -> int {
+    return match shape {
+        Some(Shape::Circle(r)) => r * r,
+        Some(Shape::Square(s)) => s * s,
+        None => 0,
+    };
+}
+
+println(area(Some(Shape::Circle(3))));
+println(area(Some(Shape::Square(4))));
+println(area(None));

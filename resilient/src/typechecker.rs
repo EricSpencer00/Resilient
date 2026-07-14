@@ -6776,6 +6776,19 @@ impl TypeChecker {
                 if markers.has_enum_decl && markers.has_match_expr {
                     crate::enum_exhaustiveness::check(program, source_path)?;
                 }
+                // RES-4011: nested/payload pattern exhaustiveness — the
+                // check above only covers a match's TOP-LEVEL pattern
+                // shape (e.g. `Some(..)` / `None`), so a program like
+                // `match os { Some(Shape::Circle(r)) => r, None => 0 }`
+                // was accepted even when `Shape` also declares `Square`,
+                // silently producing a wrong value at runtime. Recurses
+                // into enum-variant payloads and `Option`'s `Some(..)`
+                // payload at any depth; gated on `has_match_expr` alone
+                // (not `has_enum_decl`) since bare `Some(true)`/`None`
+                // nesting needs no user-declared enum to be unsound.
+                if markers.has_match_expr {
+                    crate::enum_exhaustiveness::check_nested(program, source_path)?;
+                }
                 // RES-2533: enum payload arity — verify that match arm
                 // patterns supply the correct number of bindings for the
                 // variant's declared payload. Gated on the same marker
@@ -18189,6 +18202,107 @@ mod res4012_unify_exhaustiveness {
              };\n\
              }\n",
             "Non-exhaustive match on struct `Flag`",
+        );
+    }
+}
+
+/// RES-4011: end-to-end proof that nested/payload pattern exhaustiveness
+/// is now checked, not just a match's top-level shape. Before this fix,
+/// `crate::enum_exhaustiveness::check_nested` didn't exist and neither
+/// this module's inline `Node::Match` gate nor `enum_exhaustiveness.rs`
+/// looked past the top-level `Some(..)`/`None` (or bare enum variant)
+/// pattern, so a `Some(Shape::Circle(r))` arm silently accepted an
+/// incomplete inner `Shape` match — a soundness hole (RES-3935 / #4011),
+/// not merely a missing lint: the uncovered variant compiled and
+/// produced a wrong runtime value.
+#[cfg(test)]
+mod res4011_nested_pattern_exhaustiveness {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    // The exact program from issue #4011: `Shape` declares `Square` but
+    // only `Circle` is covered inside the `Some(..)` arm. Must now be
+    // rejected, naming the missing nested variant.
+    #[test]
+    fn missing_variant_nested_inside_option_some_is_rejected() {
+        check_err(
+            "enum Shape { Circle(int), Square(int) }\n\
+             fn f(Option<Shape> os) -> int {\n\
+             return match os {\n\
+             Some(Shape::Circle(r)) => r,\n\
+             None => 0,\n\
+             };\n\
+             }\n",
+            "Shape::Square",
+        );
+    }
+
+    // The mirror case: every `Shape` variant is covered inside `Some(..)`
+    // — genuinely exhaustive, must be accepted.
+    #[test]
+    fn fully_covered_variant_nested_inside_option_some_is_accepted() {
+        check_ok(
+            "enum Shape { Circle(int), Square(int) }\n\
+             fn f(Option<Shape> os) -> int {\n\
+             return match os {\n\
+             Some(Shape::Circle(r)) => r,\n\
+             Some(Shape::Square(s)) => s,\n\
+             None => 0,\n\
+             };\n\
+             }\n",
+        );
+    }
+
+    // An identifier binding at the nested position covers every
+    // remaining `Shape` variant without naming them individually.
+    #[test]
+    fn wildcard_at_nested_position_is_accepted() {
+        check_ok(
+            "enum Shape { Circle(int), Square(int) }\n\
+             fn f(Option<Shape> os) -> int {\n\
+             return match os {\n\
+             Some(s) => 0,\n\
+             None => 1,\n\
+             };\n\
+             }\n",
+        );
+    }
+
+    // Nesting directly inside a user-declared enum's own payload (no
+    // `Option` involved): `Wrap::Has(Shape::Circle(r))` leaves
+    // `Shape::Square` uncovered.
+    #[test]
+    fn missing_variant_nested_inside_enum_payload_is_rejected() {
+        check_err(
+            "enum Shape { Circle(int), Square(int) }\n\
+             enum Wrap { Has(Shape) }\n\
+             fn f(Wrap w) -> int {\n\
+             return match w {\n\
+             Wrap::Has(Shape::Circle(r)) => r,\n\
+             };\n\
+             }\n",
+            "Shape::Square",
         );
     }
 }

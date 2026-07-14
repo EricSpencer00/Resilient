@@ -273,6 +273,543 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     ))
 }
 
+// ---------- RES-4011: nested/payload pattern exhaustiveness ----------
+//
+// The checks above (and `struct_exhaustiveness.rs` / the inline gate in
+// `typechecker.rs`) only ever look at a match's TOP-LEVEL pattern shape.
+// A match like:
+//
+//   match os {
+//       Some(Shape::Circle(r)) => r,
+//       None => 0,
+//   }
+//
+// is accepted by every existing pass — `os`'s top level (`Some`/`None`)
+// is fully covered, so nothing ever looks at whether `Shape::Circle(r)`
+// is itself an exhaustive match against `Shape`'s declared variants. If
+// `Shape` also declares `Square`, this program compiles and produces a
+// silently wrong runtime value (a `None`-shaped hole) the moment
+// `Shape::Square` reaches this position — a soundness hole, not merely
+// a missing lint.
+//
+// This section implements a decision-tree / recursive-descent
+// exhaustiveness check over the FULL nested pattern shape: enum variant
+// payloads, and `Option`'s `Some(..)` payload, at any depth. It is
+// deliberately scoped to constructors whose full domain can be read
+// straight off the pattern text with no type inference (declared enum
+// variants, `bool` literals, and `Option`'s two built-in variants) —
+// anything else (struct payloads, int/string/range literals, `Result`,
+// generic type parameters, ...) is treated as an opaque leaf and simply
+// not decomposed further, exactly like every check above. That keeps
+// this pass strictly additive: it only ever rejects programs no existing
+// pass already accepted-by-analysis, never a program the top-level
+// checks already prove exhaustive.
+//
+// Deliberately out of scope (documented, not silently wrong): struct
+// payload fields and `Result::Ok`/`Err` payloads are not recursed into.
+// `struct_exhaustiveness.rs` already owns bool-domain struct coverage
+// at the top level; generalizing that cartesian truth table to nested
+// positions is a larger, separate follow-up.
+
+/// One cell in the pattern matrix: either a real sub-pattern borrowed
+/// from the AST, or a synthetic wildcard standing in for a position a
+/// wildcard/identifier arm expanded into (e.g. `_` at the top level of
+/// an enum column expands into `arity` synthetic wildcards, one per
+/// declared field, when specializing on a particular variant).
+#[derive(Debug, Clone, Copy)]
+enum Cell<'p> {
+    P(&'p crate::Pattern),
+    Wild,
+}
+
+fn cell_is_wildcard(c: &Cell) -> bool {
+    matches!(
+        c,
+        Cell::Wild | Cell::P(crate::Pattern::Wildcard) | Cell::P(crate::Pattern::Identifier(_))
+    )
+}
+
+/// Declared shape of one enum variant, reduced to exactly what the
+/// matrix algorithm needs: its name, how many payload fields it has,
+/// and (for named-field payloads) the declared field names in order so
+/// a `{ field: pat }` sub-pattern can be aligned positionally.
+#[derive(Debug, Clone)]
+struct VariantMeta<'a> {
+    name: &'a str,
+    arity: usize,
+    /// `Some(names)` for a named-field payload (declaration order);
+    /// `None` for a tuple or payload-less variant (positional / empty).
+    field_names: Option<Vec<&'a str>>,
+}
+
+/// Build `enum_name -> declared variant shapes` for every top-level
+/// `Node::EnumDecl`. Unlike `collect_enum_variants` this also records
+/// payload arity/field-names so the matrix algorithm can specialize a
+/// column into the right number of sub-columns.
+fn collect_enum_meta(program: &Node) -> HashMap<&str, Vec<VariantMeta<'_>>> {
+    let mut map: HashMap<&str, Vec<VariantMeta<'_>>> = HashMap::new();
+    let Node::Program(stmts) = program else {
+        return map;
+    };
+    for s in stmts {
+        if let Node::EnumDecl { name, variants, .. } = &s.node {
+            let metas = variants
+                .iter()
+                .map(|v| {
+                    let (arity, field_names) = match &v.payload {
+                        crate::EnumPayload::None => (0, None),
+                        crate::EnumPayload::Tuple(tys) => (tys.len(), None),
+                        crate::EnumPayload::Named(fields) => (
+                            fields.len(),
+                            Some(fields.iter().map(|f| f.name.as_str()).collect()),
+                        ),
+                    };
+                    VariantMeta {
+                        name: v.name.as_str(),
+                        arity,
+                        field_names,
+                    }
+                })
+                .collect();
+            map.insert(name.as_str(), metas);
+        }
+    }
+    map
+}
+
+/// What column 0 of the (Or/Bind-expanded) matrix decomposes into, read
+/// straight off the pattern shapes present. `Skip` covers both "every
+/// row is a wildcard here" and "some row uses a shape we don't
+/// recursively understand" — both cases are treated identically:
+/// drop the column and don't require anything further of it.
+enum ColKind {
+    Skip,
+    Bool,
+    OptionK,
+    Enum(String),
+}
+
+fn detect_col_kind(rows: &[Vec<Cell>]) -> ColKind {
+    for r in rows {
+        match &r[0] {
+            c if cell_is_wildcard(c) => continue,
+            Cell::P(crate::Pattern::Literal(Node::BooleanLiteral { .. })) => {
+                return ColKind::Bool;
+            }
+            Cell::P(crate::Pattern::Some(_)) | Cell::P(crate::Pattern::None) => {
+                return ColKind::OptionK;
+            }
+            Cell::P(crate::Pattern::EnumVariant {
+                type_name: Some(tn),
+                variant_name,
+                ..
+            }) => {
+                if tn == "Option" && (variant_name == "Some" || variant_name == "None") {
+                    return ColKind::OptionK;
+                }
+                return ColKind::Enum(tn.clone());
+            }
+            _ => return ColKind::Skip,
+        }
+    }
+    ColKind::Skip
+}
+
+/// Expand `Or` patterns and unwrap `Bind` patterns sitting at column 0,
+/// recursively, until no row's column 0 is an `Or`/`Bind`. Row order is
+/// irrelevant to exhaustiveness (only the covered *set* matters), so a
+/// simple work-stack is enough.
+fn expand_col0<'p>(rows: Vec<Vec<Cell<'p>>>) -> Vec<Vec<Cell<'p>>> {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut stack = rows;
+    while let Some(mut row) = stack.pop() {
+        match &row[0] {
+            Cell::P(crate::Pattern::Or(branches)) => {
+                for b in branches {
+                    let mut nr = row.clone();
+                    nr[0] = Cell::P(b);
+                    stack.push(nr);
+                }
+            }
+            Cell::P(crate::Pattern::Bind(_, inner)) => {
+                row[0] = Cell::P(inner.as_ref());
+                stack.push(row);
+            }
+            _ => out.push(row),
+        }
+    }
+    out
+}
+
+fn chain_wild<'p>(n: usize, rest: &[Cell<'p>]) -> Vec<Cell<'p>> {
+    let mut v = vec![Cell::Wild; n];
+    v.extend_from_slice(rest);
+    v
+}
+
+fn chain_one<'p>(c: Cell<'p>, rest: &[Cell<'p>]) -> Vec<Cell<'p>> {
+    let mut v = Vec::with_capacity(rest.len() + 1);
+    v.push(c);
+    v.extend_from_slice(rest);
+    v
+}
+
+fn chain_many<'p>(cells: Vec<Cell<'p>>, rest: &[Cell<'p>]) -> Vec<Cell<'p>> {
+    let mut v = cells;
+    v.extend_from_slice(rest);
+    v
+}
+
+/// A single field of an `EnumVariant` sub-pattern's payload, as a `Cell`
+/// aligned to `variant`'s declared field order. Defensive fallbacks
+/// (missing/extra fields) return `Cell::Wild` rather than panicking —
+/// genuine arity mismatches are already a hard error from
+/// `enum_payload_match::check`, so this path is unreachable for valid
+/// programs and must never be the thing that panics on an invalid one.
+fn extract_payload_cells<'p>(
+    payload: &'p crate::EnumPatternPayload,
+    variant: &VariantMeta,
+) -> Vec<Cell<'p>> {
+    match payload {
+        crate::EnumPatternPayload::None => Vec::new(),
+        crate::EnumPatternPayload::Tuple(subs) => {
+            let mut cells: Vec<Cell> = subs.iter().map(Cell::P).collect();
+            cells.truncate(variant.arity);
+            while cells.len() < variant.arity {
+                cells.push(Cell::Wild);
+            }
+            cells
+        }
+        crate::EnumPatternPayload::Named(fields) => match &variant.field_names {
+            Some(names) => names
+                .iter()
+                .map(|fname| {
+                    fields
+                        .iter()
+                        .find(|(n, _)| n == fname)
+                        .map(|(_, p)| Cell::P(p.as_ref()))
+                        .unwrap_or(Cell::Wild)
+                })
+                .collect(),
+            None => {
+                let mut cells: Vec<Cell> =
+                    fields.iter().map(|(_, p)| Cell::P(p.as_ref())).collect();
+                cells.truncate(variant.arity);
+                while cells.len() < variant.arity {
+                    cells.push(Cell::Wild);
+                }
+                cells
+            }
+        },
+    }
+}
+
+/// The single payload cell of a qualified `Option::Some(x)` pattern
+/// (`Pattern::EnumVariant { variant_name: "Some", .. }`) — the
+/// unqualified `Some(x)` form parses to `Pattern::Some` directly and is
+/// handled separately.
+fn extract_option_some_cell(payload: &crate::EnumPatternPayload) -> Cell<'_> {
+    match payload {
+        crate::EnumPatternPayload::Tuple(subs) if !subs.is_empty() => Cell::P(&subs[0]),
+        crate::EnumPatternPayload::Named(fields) if !fields.is_empty() => {
+            Cell::P(fields[0].1.as_ref())
+        }
+        _ => Cell::Wild,
+    }
+}
+
+/// Breadcrumb of constructors traversed on the way to a missing case,
+/// outermost first, plus a human-readable description of what's
+/// missing at the innermost point.
+#[derive(Debug, Clone)]
+struct Witness {
+    path: Vec<String>,
+    missing: String,
+}
+
+/// A self-referential enum (`enum Expr { Add(Expr, Expr), Lit(int) }`)
+/// would otherwise recurse forever resolving its own payload's domain.
+/// Bounding both by an explicit visited-set (an enum already on the
+/// active recursion stack resolves to `Skip` instead of recursing
+/// again) and a hard depth cap keeps this pass total on any input.
+const MAX_NESTING_DEPTH: usize = 8;
+
+/// The core decision-tree exhaustiveness check. `rows` holds one Vec
+/// per still-reachable arm; every row has the same length (the number
+/// of pending columns still to be resolved). Returns `Ok(())` when
+/// every combination reachable through the pending columns is covered,
+/// or `Err(Witness)` naming one uncovered combination.
+fn matrix_exhaustive<'p>(
+    rows: Vec<Vec<Cell<'p>>>,
+    enum_meta: &HashMap<&str, Vec<VariantMeta<'_>>>,
+    stack: &mut Vec<String>,
+) -> Result<(), Witness> {
+    if rows.is_empty() {
+        return Err(Witness {
+            path: Vec::new(),
+            missing: "_".to_string(),
+        });
+    }
+    if rows[0].is_empty() {
+        return Ok(());
+    }
+    let rows = expand_col0(rows);
+    if rows.is_empty() {
+        return Err(Witness {
+            path: Vec::new(),
+            missing: "_".to_string(),
+        });
+    }
+
+    match detect_col_kind(&rows) {
+        ColKind::Skip => {
+            let next: Vec<Vec<Cell>> = rows
+                .into_iter()
+                .map(|mut r| {
+                    r.remove(0);
+                    r
+                })
+                .collect();
+            matrix_exhaustive(next, enum_meta, stack)
+        }
+        ColKind::Bool => {
+            for want in [true, false] {
+                let specialized: Vec<Vec<Cell>> = rows
+                    .iter()
+                    .filter_map(|r| match &r[0] {
+                        c if cell_is_wildcard(c) => Some(r[1..].to_vec()),
+                        Cell::P(crate::Pattern::Literal(Node::BooleanLiteral {
+                            value, ..
+                        })) if *value == want => Some(r[1..].to_vec()),
+                        _ => None,
+                    })
+                    .collect();
+                if specialized.is_empty() {
+                    return Err(Witness {
+                        path: Vec::new(),
+                        missing: format!("`{}`", want),
+                    });
+                }
+                if let Err(mut w) = matrix_exhaustive(specialized, enum_meta, stack) {
+                    w.path.insert(0, format!("{}", want));
+                    return Err(w);
+                }
+            }
+            Ok(())
+        }
+        ColKind::OptionK => {
+            let some_rows: Vec<Vec<Cell>> = rows
+                .iter()
+                .filter_map(|r| match &r[0] {
+                    c if cell_is_wildcard(c) => Some(chain_wild(1, &r[1..])),
+                    Cell::P(crate::Pattern::Some(inner)) => {
+                        Some(chain_one(Cell::P(inner.as_ref()), &r[1..]))
+                    }
+                    Cell::P(crate::Pattern::EnumVariant {
+                        variant_name,
+                        payload,
+                        ..
+                    }) if variant_name == "Some" => {
+                        Some(chain_one(extract_option_some_cell(payload), &r[1..]))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if some_rows.is_empty() {
+                return Err(Witness {
+                    path: Vec::new(),
+                    missing: "`Some(_)`".to_string(),
+                });
+            }
+            if let Err(mut w) = matrix_exhaustive(some_rows, enum_meta, stack) {
+                w.path.insert(0, "Some(..)".to_string());
+                return Err(w);
+            }
+
+            let none_rows: Vec<Vec<Cell>> = rows
+                .iter()
+                .filter_map(|r| match &r[0] {
+                    c if cell_is_wildcard(c) => Some(r[1..].to_vec()),
+                    Cell::P(crate::Pattern::None) => Some(r[1..].to_vec()),
+                    Cell::P(crate::Pattern::EnumVariant { variant_name, .. })
+                        if variant_name == "None" =>
+                    {
+                        Some(r[1..].to_vec())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if none_rows.is_empty() {
+                return Err(Witness {
+                    path: Vec::new(),
+                    missing: "`None`".to_string(),
+                });
+            }
+            matrix_exhaustive(none_rows, enum_meta, stack)
+        }
+        ColKind::Enum(name) => {
+            let Some(variants) = enum_meta.get(name.as_str()) else {
+                // Unknown to `enum_meta` (e.g. `Result`, a type-param, or
+                // any other builtin/unmodeled qualifier) — not ours to
+                // check; drop the column and move on, same as `Skip`.
+                let next: Vec<Vec<Cell>> = rows
+                    .into_iter()
+                    .map(|mut r| {
+                        r.remove(0);
+                        r
+                    })
+                    .collect();
+                return matrix_exhaustive(next, enum_meta, stack);
+            };
+            if stack.iter().any(|s| s == &name) || stack.len() >= MAX_NESTING_DEPTH {
+                let next: Vec<Vec<Cell>> = rows
+                    .into_iter()
+                    .map(|mut r| {
+                        r.remove(0);
+                        r
+                    })
+                    .collect();
+                return matrix_exhaustive(next, enum_meta, stack);
+            }
+            stack.push(name.clone());
+            let result = (|| {
+                for v in variants {
+                    let specialized: Vec<Vec<Cell>> = rows
+                        .iter()
+                        .filter_map(|r| match &r[0] {
+                            c if cell_is_wildcard(c) => Some(chain_wild(v.arity, &r[1..])),
+                            Cell::P(crate::Pattern::EnumVariant {
+                                variant_name,
+                                payload,
+                                ..
+                            }) if variant_name.as_str() == v.name => {
+                                Some(chain_many(extract_payload_cells(payload, v), &r[1..]))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if specialized.is_empty() {
+                        return Err(Witness {
+                            path: Vec::new(),
+                            missing: format!("`{}::{}`", name, v.name),
+                        });
+                    }
+                    if let Err(mut w) = matrix_exhaustive(specialized, enum_meta, stack) {
+                        w.path.insert(0, format!("{}::{}(..)", name, v.name));
+                        return Err(w);
+                    }
+                }
+                Ok(())
+            })();
+            stack.pop();
+            result
+        }
+    }
+}
+
+/// One non-exhaustive nested pattern finding.
+#[derive(Debug, Clone)]
+pub struct NestedExhaustivenessError {
+    pub context: String,
+    pub message: String,
+}
+
+fn format_witness(w: &Witness) -> String {
+    if w.path.is_empty() {
+        format!(
+            "missing case {} — add a wildcard `_` or identifier arm to cover it",
+            w.missing
+        )
+    } else {
+        format!(
+            "inside `{}`, missing case {} — add a wildcard `_` or identifier arm to cover it",
+            w.path.join(" -> "),
+            w.missing
+        )
+    }
+}
+
+/// Check a single `Node::Match`'s arms for nested (beyond-top-level)
+/// non-exhaustiveness. Guard-blind, matching the conservative behavior
+/// of `check_match` above: a guarded arm's pattern still counts toward
+/// coverage since a guard may fail, so treating it as *not* covering
+/// would be strictly more precise but is out of scope here — the same
+/// documented gap already exists at the top level.
+fn check_one_match(
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    enum_meta: &HashMap<&str, Vec<VariantMeta<'_>>>,
+) -> Option<Witness> {
+    let rows: Vec<Vec<Cell>> = arms.iter().map(|(p, _guard, _)| vec![Cell::P(p)]).collect();
+    let mut stack = Vec::new();
+    matrix_exhaustive(rows, enum_meta, &mut stack).err()
+}
+
+fn walk_nested(
+    node: &Node,
+    enum_meta: &HashMap<&str, Vec<VariantMeta<'_>>>,
+    context: &str,
+    errors: &mut Vec<NestedExhaustivenessError>,
+) {
+    if let Node::Function { name, body, .. } = node {
+        walk_nested(body, enum_meta, name.as_str(), errors);
+        return;
+    }
+    if let Node::Match { arms, .. } = node {
+        if let Some(w) = check_one_match(arms, enum_meta) {
+            errors.push(NestedExhaustivenessError {
+                context: context.to_string(),
+                message: format_witness(&w),
+            });
+        }
+    }
+    let mut nested: Vec<NestedExhaustivenessError> = Vec::new();
+    crate::uniqueness_walk::visit(node, &mut |n| {
+        if matches!(n, Node::Function { .. }) {
+            return;
+        }
+        if let Node::Match { arms, .. } = n {
+            if let Some(w) = check_one_match(arms, enum_meta) {
+                nested.push(NestedExhaustivenessError {
+                    context: context.to_string(),
+                    message: format_witness(&w),
+                });
+            }
+        }
+    });
+    errors.extend(nested);
+}
+
+/// Analyze the program for non-exhaustive NESTED patterns — i.e. a
+/// match whose top-level shape is already fully covered (or is beyond
+/// this pass's scope) but whose nested enum-variant / `Option` payload
+/// patterns are not. See the module-level comment above for the exact
+/// scope (`RES-4011`).
+pub fn analyze_nested(program: &Node) -> Vec<NestedExhaustivenessError> {
+    let enum_meta = collect_enum_meta(program);
+    let mut errors = Vec::new();
+    let Node::Program(stmts) = program else {
+        return errors;
+    };
+    for s in stmts {
+        walk_nested(&s.node, &enum_meta, "<top-level>", &mut errors);
+    }
+    errors
+}
+
+/// Type-checker entry point (RES-4011). Returns `Err` on the first
+/// non-exhaustive nested pattern found.
+pub(crate) fn check_nested(program: &Node, source_path: &str) -> Result<(), String> {
+    let errs = analyze_nested(program);
+    if errs.is_empty() {
+        return Ok(());
+    }
+    let e = &errs[0];
+    Err(format!(
+        "{}: error: non-exhaustive nested match pattern in `{}`: {}",
+        source_path, e.context, e.message
+    ))
+}
+
 // ---------- Tests ----------
 
 #[cfg(test)]
@@ -867,18 +1404,23 @@ fn classify(Reading r) -> int {
         );
     }
 
-    /// RES-3934: known gap, tracked as a follow-up rather than fixed
-    /// here (fixing it requires a genuinely different algorithm — see
-    /// the module doc comment's "Detection strategy" section). This
-    /// module only inspects the TOP-LEVEL arm pattern of a `Node::Match`;
-    /// it has no concept of "nested match completeness" for an enum
-    /// pattern embedded inside another pattern (e.g. `Some(Shape::Circle(r))`
-    /// nested inside an `Option<Shape>` match). Such a match can compile
-    /// and run today even when the inner `Shape` variant set isn't fully
-    /// covered — reaching the uncovered case currently produces a wrong
-    /// runtime value (observed: silently returns `void`) instead of a
-    /// compile error. `analyze()` reports nothing for this program by
-    /// design of its current scope.
+    /// RES-3934: documents `analyze()`'s permanent scope — it only ever
+    /// inspects the TOP-LEVEL arm pattern of a `Node::Match` and has no
+    /// concept of "nested match completeness" for an enum pattern
+    /// embedded inside another pattern (e.g. `Some(Shape::Circle(r))`
+    /// nested inside an `Option<Shape>` match). `analyze()` itself is
+    /// intentionally left unchanged (many callers/tests rely on its
+    /// top-level-only wording and did-you-mean hints), so this
+    /// assertion stays true.
+    ///
+    /// RES-4011: the actual soundness hole this documented — an
+    /// uncovered nested variant compiling and producing a wrong runtime
+    /// value instead of a compile error — is now closed by the sibling
+    /// `analyze_nested()` / `check_nested()` pass below, which *does*
+    /// recurse into enum-variant payloads and `Option`'s `Some(..)`
+    /// payload. See `res4011_nested_exhaustiveness::
+    /// missing_nested_variant_inside_some_is_detected` for the same
+    /// program now being rejected end-to-end.
     #[test]
     fn nested_enum_pattern_inside_option_is_not_analyzed() {
         let src = r#"
@@ -957,5 +1499,254 @@ fn handle(Status s) -> int {
             !msg.contains("did you mean"),
             "no unrecognized variant names — no hint expected: {msg}"
         );
+    }
+}
+
+// RES-4011: nested/payload pattern exhaustiveness — `analyze_nested` /
+// `check_nested` tests. See the module-level comment above those
+// functions for the exact scope (enum-variant payloads and `Option`'s
+// `Some(..)` payload, recursively; everything else is left alone).
+#[cfg(test)]
+mod res4011_nested_exhaustiveness {
+    use super::*;
+
+    /// The exact motivating example from issue #4011: `Shape` declares
+    /// `Square` but only `Circle` is covered inside the `Some(..)` arm.
+    /// This compiled silently before RES-4011 and produced a wrong
+    /// runtime value the moment `Shape::Square` reached this position.
+    #[test]
+    fn missing_nested_variant_inside_some_is_detected() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Shape> os) -> int {
+    return match os {
+        Some(Shape::Circle(r)) => r,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected exactly one nested exhaustiveness error; got: {:?}",
+            errs
+        );
+        assert!(
+            errs[0].message.contains("Shape::Square"),
+            "error must name the missing nested variant Shape::Square: {}",
+            errs[0].message
+        );
+    }
+
+    /// The same shape, fully covered — must not be flagged.
+    #[test]
+    fn fully_covered_nested_variant_inside_some_is_accepted() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Shape> os) -> int {
+    return match os {
+        Some(Shape::Circle(r)) => r,
+        Some(Shape::Square(s)) => s,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert!(
+            errs.is_empty(),
+            "both Shape variants covered inside Some — expected no errors; got: {:?}",
+            errs
+        );
+    }
+
+    /// A wildcard/identifier at the nested position covers every
+    /// remaining variant, exactly like at the top level.
+    #[test]
+    fn wildcard_at_nested_position_is_accepted() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Shape> os) -> int {
+    return match os {
+        Some(s) => 0,
+        None => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert!(
+            errs.is_empty(),
+            "identifier binding at the nested position covers every Shape variant; got: {:?}",
+            errs
+        );
+    }
+
+    /// Nesting more than one level deep: `Some(Wrap::Has(Shape::Circle(_)))`
+    /// with `Shape::Square` never covered.
+    #[test]
+    fn two_levels_of_nesting_missing_case_is_detected() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+enum Wrap {
+    Has(Shape),
+}
+fn f(Option<Wrap> ow) -> int {
+    return match ow {
+        Some(Wrap::Has(Shape::Circle(r))) => r,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert_eq!(errs.len(), 1, "expected one nested error; got: {:?}", errs);
+        assert!(
+            errs[0].message.contains("Shape::Square"),
+            "error must name the missing deeply-nested variant: {}",
+            errs[0].message
+        );
+    }
+
+    /// A self-referential enum (`Add(Expr, Expr)`) must not cause
+    /// infinite recursion — plain identifier bindings at every payload
+    /// position are trivially exhaustive regardless of recursion depth.
+    #[test]
+    fn self_referential_enum_does_not_infinite_loop() {
+        let src = r#"
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+fn eval(Expr e) -> int {
+    return match e {
+        Expr::Lit(n) => n,
+        Expr::Add(a, b) => 0,
+        Expr::Neg(x) => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert!(
+            errs.is_empty(),
+            "self-referential Expr with identifier bindings is exhaustive; got: {:?}",
+            errs
+        );
+    }
+
+    /// Bool literals at a nested position are also checked: `Some(true)`
+    /// alone is missing the `Some(false)` case.
+    #[test]
+    fn missing_nested_bool_case_is_detected() {
+        let src = r#"
+fn f(Option<bool> ob) -> int {
+    return match ob {
+        Some(true) => 1,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert_eq!(errs.len(), 1, "expected one nested error; got: {:?}", errs);
+        assert!(
+            errs[0].message.contains("false"),
+            "error must name the missing `false` case: {}",
+            errs[0].message
+        );
+    }
+
+    /// Struct payloads are intentionally out of scope for this pass —
+    /// mirrors the top-level module's own documented scope limit
+    /// (`struct_payload_variant_coverage_tracked_independent_of_nested_pattern`).
+    /// `Shape` itself is fully covered (`At` + `Origin`, both reachable
+    /// through `Some`/`None`); the struct destructure inside `At`'s
+    /// payload must not be decomposed field-by-field or otherwise
+    /// confuse the recursion — this must report no error.
+    #[test]
+    fn struct_payload_at_nested_position_is_not_analyzed() {
+        let src = r#"
+struct Point { int x, int y }
+enum Shape {
+    At(Point),
+    Origin,
+}
+fn f(Option<Shape> os) -> int {
+    return match os {
+        Some(Shape::At(Point { x, y })) => x,
+        Some(Shape::Origin) => 0,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze_nested(&prog);
+        assert!(
+            errs.is_empty(),
+            "Shape fully covered; struct payload fields are out of scope — expected no errors; got: {:?}",
+            errs
+        );
+    }
+
+    /// `check_nested` surfaces the diagnostic through the `Result`
+    /// entry point used by the typechecker.
+    #[test]
+    fn check_nested_errors_on_missing_case() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Shape> os) -> int {
+    return match os {
+        Some(Shape::Circle(r)) => r,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let result = check_nested(&prog, "test.rz");
+        assert!(result.is_err(), "expected check_nested to fail");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("non-exhaustive nested match pattern"),
+            "error must contain 'non-exhaustive nested match pattern': {msg}"
+        );
+        assert!(msg.contains("Shape::Square"), "error text: {msg}");
+    }
+
+    #[test]
+    fn check_nested_ok_for_fully_covered_program() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Shape> os) -> int {
+    return match os {
+        Some(Shape::Circle(r)) => r,
+        Some(Shape::Square(s)) => s,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        assert!(check_nested(&prog, "test.rz").is_ok());
     }
 }

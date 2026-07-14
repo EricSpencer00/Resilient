@@ -1,0 +1,31 @@
+// RES-4011: non-exhaustive NESTED pattern — the outer `Option<Shape>`
+// match is fully covered (`Some(..)` / `None`), but the pattern nested
+// inside the `Some(..)` arm only covers `Shape::Circle`, not
+// `Shape::Square`. Before RES-4011 this compiled clean: only the
+// top-level `Some`/`None` shape was checked, so a `Shape::Square` value
+// reaching this position silently produced a wrong runtime value
+// instead of a compile error.
+//
+// Expected compile error (soft-mode output, printed to stderr — this
+// program is intentionally invalid):
+//   non-exhaustive nested match pattern in `area`: inside `Some(..)`,
+//   missing case `Shape::Square` — add a wildcard `_` or identifier
+//   arm to cover it
+//
+// The default driver keeps type errors soft, so the program still runs;
+// this call only ever reaches the covered `Circle` branch, so stdout is
+// unaffected by the (unreached) missing case.
+
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+
+fn area(Option<Shape> shape) -> int {
+    return match shape {
+        Some(Shape::Circle(r)) => r * r,
+        None => 0,
+    };
+}
+
+println(area(Some(Shape::Circle(3))));
