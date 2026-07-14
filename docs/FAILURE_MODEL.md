@@ -9,507 +9,284 @@ permalink: /failure-model
 
 ## Overview
 
-Resilient's failure model is designed for safety-critical embedded systems. It unifies compile-time guarantees, runtime diagnostics, recoverable faults, and explicit recovery semantics into one coherent framework.
+Resilient gives a program four ways to talk about the ways it can fail:
 
-The model answers four core questions:
-1. **What can fail?** (contract violations, invalid operations, resource exhaustion)
-2. **How does it fail?** (panics, errors, recoverable exceptions, proof of safety)
-3. **What can recover?** (explicit `live {}` blocks, error handling, fault tolerance)
-4. **What is statically guaranteed?** (memory safety, type safety, provable contracts)
+1. **Checked failures** (`fails Variant, ...`) — a function declares, on its
+   signature, the named failure variants it can raise. Callers must either
+   propagate every variant on their own `fails` list, or discharge it with a
+   `try { } catch Variant { }` handler.
+2. **Contracts** (`requires` / `ensures` / `recovers_to:`) — precondition,
+   postcondition, and (for functions inside a recovery path) a single-step
+   "the invariant holds again" clause. Checked at runtime always; proved
+   statically when built with `--features z3` and the verifier succeeds.
+3. **Retry-based recovery** (`live { }` / `live invariant COND { }` blocks) —
+   a block re-runs itself (optionally with backoff and a wall-clock budget)
+   when an `assert()` inside it fails, instead of aborting the whole program.
+4. **`Result<T, E>` / `Option<T>`** — ordinary value-level error handling for
+   the failure modes that don't need a checked-failure declaration on the
+   signature: parsing, I/O helper functions, anything expressed as
+   `Ok`/`Err`/`Some`/`None` and matched explicitly.
 
----
+These four are independent mechanisms that compose, not four rungs of one
+escalating ladder — a function can declare `fails`, take `requires`, contain
+a `live` block, and internally use `Result` for a helper call, all at once
+(see `resilient/examples/assume_recovers_to.rz`, which combines `requires`,
+`fails`, and `recovers_to:` on one signature).
 
-## Failure Categories
-
-### Category 1: Compile-Time Guarantees (No Runtime Failure)
-
-**Definition:** Errors provably impossible at compile time.
-
-**Guarantee:** Code that passes typechecking is guaranteed not to produce these errors at runtime.
-
-**Examples:**
-- Memory safety violations (use-after-free, double-free)
-- Type mismatches in expressions
-- Dangling pointer dereferences
-- Array out-of-bounds access (statically known)
-- Missing function parameters
-
-**Mechanism:**
-- Rust-like borrow checker
-- Type system constraints
-- Bounds checking at compile time
-- Ownership and lifetime rules
-
-**Error reporting:** Compiler diagnostic, non-recoverable.
+This document intentionally does **not** re-describe the memory-safety or
+region/borrow rules that prevent whole classes of failure at compile time —
+see [MEMORY_MODEL.md](/memory-model) and `STABILITY.md` § Stable (region
+annotations) for those.
 
 ---
 
-### Category 2: Runtime Errors (Recoverable via `Result`/`try`)
+## 1. Checked failures: `fails`
 
-**Definition:** Errors that occur at runtime but can be caught and handled.
+A function signature can declare the named failure variants it may raise:
 
-**Guarantee:** Error is either handled via `Result` / `try` or causes program termination.
-
-**Examples:**
-- Division by zero
-- Array access (dynamically unknown bounds)
-- Integer overflow (checked arithmetic)
-- File I/O failures
-- Network timeouts
-- Resource allocation failures
-
-**Mechanism:**
-- `Result<T, E>` return types
-- `try` expressions for error propagation
-- Match expressions for error handling
-
-**Example:**
-```rust
-fn safe_divide(a: int, b: int) -> Result<int, string> {
-    if b == 0 {
-        return Err("division by zero");
-    }
-    return Ok(a / b);
+```resilient
+fn read_sensor(int addr)
+    requires addr >= 0
+    fails HardwareFault, Timeout
+    recovers_to: addr >= 0;
+{
+    return addr;
 }
+```
 
-fn main() {
-    match safe_divide(10, 2) {
-        Ok(result) => { print(result); }
-        Err(msg) => { eprintln(msg); }
+**Propagation rule (RES-387):** a caller that invokes `read_sensor` must
+either add `HardwareFault` and `Timeout` to its *own* `fails` list, or
+discharge them explicitly:
+
+```resilient
+fn caller(int addr) {
+    try {
+        let v = read_sensor(addr);
+        println(v);
+    } catch Timeout {
+        println(-1);
     }
 }
 ```
 
-**Error reporting:** `Result` or panic (if unhandled).
+**Discharge rule (RES-224):** each `catch Variant { ... }` arm subtracts that
+variant from the propagation obligation for calls made inside the `try`
+body. If every declared variant on every call inside the block is caught,
+the surrounding function needs no `fails` clause of its own. A partially
+handled call still requires the leftover variants on the caller's
+signature — there's no way to silently swallow a variant.
+
+**Runtime behavior (RES-775):** with the tree-walking interpreter, the
+compiler can inject a declared checked failure deterministically (used for
+testing recovery paths); the injected failure enters the callee's `try`
+site as if the callee had actually raised that variant, so the matching
+`catch` arm executes.
+
+Checked failures are a distinct mechanism from `Result<T, E>` — they are
+part of the function's *type signature* and checked by the typechecker
+(propagation is a compile error, not a runtime possibility), whereas
+`Result` is an ordinary value the caller chooses whether to inspect.
 
 ---
 
-### Category 3: Recoverable Faults (via `live {}` blocks)
+## 2. Contracts: `requires` / `ensures` / `recovers_to`
 
-**Definition:** Failures from which execution can recover and continue from a known safe state.
-
-**Guarantee:** Faults trigger explicit recovery code; without recovery, execution terminates.
-
-**Examples:**
-- Invalid input format
-- Expected data not received
-- Sensor reading out of range
-- Configuration mismatch
-- Transient hardware faults
-
-**Mechanism:**
-- `live { attempt } recover { recovery_code }` blocks
-- Automatic state snapshots and rollback
-- Fault injection testing with Stateright
-
-**Example:**
-```rust
-live {
-    sensor_reading = read_sensor();  // May return bad value
-    if sensor_reading < MIN || sensor_reading > MAX {
-        fault "invalid sensor";
-    }
-} recover {
-    sensor_reading = default_value;
-    log_fault("sensor out of range");
-}
-
-process(sensor_reading);  // Always valid after recover
-```
-
-**Guarantees:**
-1. If `attempt` succeeds, execution continues normally
-2. If `attempt` signals fault, `recover` executes
-3. After recovery, state is guaranteed to be valid per contract
-4. No partial state leaks between attempt and recovery
-
-**Error reporting:** Fault signal + recovery execution + continue.
-
----
-
-### Category 4: Contract Violations (Checked at Entry/Exit)
-
-**Definition:** Precondition and postcondition violations on functions.
-
-**Guarantee (with Z3 verifier):** 
-- If verified: no contract violation is possible
-- If not verified: violations cause runtime error with diagnostic
-
-**Example:**
-```rust
-#[requires(x >= 0)]
-#[requires(y >= 0)]
-#[ensures(return >= x and return >= y)]
-fn max(int x, int y) -> int {
+```resilient
+fn max(int x, int y) -> int
+    requires x >= 0
+    requires y >= 0
+    ensures return >= x
+{
     if x > y { return x; }
     return y;
 }
 ```
 
-**Precondition violation:** Caller passes invalid arguments → runtime error
+- **`requires`** — precondition on the caller. Violated calls fail at
+  runtime with a contract diagnostic; with `--features z3`, the verifier
+  attempts to prove every call site satisfies it statically.
+- **`ensures`** — postcondition on the function's own return value.
+- **`recovers_to: expr;`** — a postcondition specifically for the state a
+  function (or the tail of a `live` block) leaves behind after handling a
+  fault. It is a **single-transition** property — "this one step
+  re-establishes the invariant" — not a temporal "eventually holds" claim.
+  Multi-step recovery reasoning is a V2 verifier capability tracked under
+  RES-396; don't read a V1 `recovers_to` success as a liveness guarantee.
 
-**Postcondition violation:** Function returns invalid result → runtime error
-
-**Mechanism:**
-- Contract assertions at function entry/exit
-- Optional SMT verification (Z3) for static proof
-- Runtime checking when not verified
-
-**Error reporting:** Contract assertion failure + diagnostic.
-
----
-
-### Category 5: Panic (Unrecoverable System Failure)
-
-**Definition:** A state from which safe recovery is impossible.
-
-**Guarantee:** Program terminates immediately with diagnostic.
-
-**Examples:**
-- Invariant violation
-- Unreachable code path
-- Stack overflow
-- Out-of-memory (allocator failure)
-
-**Mechanism:**
-- `panic!()` macro
-- Invariant violation detection
-- Stack/memory exhaustion detection
-- Uncaught exceptions
-
-**Rule:** Panics should not occur in production-grade code. If a panic is possible, it's a bug that should be fixed via proper error handling.
-
-**Error reporting:** Panic message + stack trace + termination.
+**Verification tiers, honestly:**
+- Default build: `requires`/`ensures`/`recovers_to` are runtime-checked
+  assertions. A violation is a runtime error with a diagnostic; it is not
+  proved absent.
+- `--features z3`: the verifier attempts a static proof per function
+  (`requires`/`ensures`, one-step `recovers_to`, snapshot cluster
+  invariants). This surface is intentionally **state-local** — it does not
+  reason about traces (liveness, fairness, multi-actor interleavings); see
+  `STABILITY.md` § Experimental and `VERIFICATION_MODEL.md`.
+- `assume(expr)` inside a function body is accepted as an axiom by the
+  verifier for that function only (RES-133b) — useful when the caller-side
+  precondition isn't visible to the callee's own proof obligation.
 
 ---
 
-## Effect Annotations and Failure
+## 3. Retry-based recovery: `live { }`
 
-### Pure Functions (No Effects)
-
-```rust
-fn add(int x, int y) -> int {
-    return x + y;  // No failures possible
-}
-```
-
-**Guarantee:** Function cannot fail (no I/O, no allocation, no division).
-
----
-
-### I/O Functions
-
-```rust
-fn read_file(path: string) -> Result<string, string> ! IO {
-    // May fail: file not found, permission denied, read error
-}
-```
-
-**Guarantee:** Failures are only via `Result` or panic.
-
----
-
-### Mutation Functions
-
-```rust
-fn update_counter(counter: &mut int) -> unit ! Mutation {
-    *counter += 1;  // Cannot fail (mutation is atomic)
-}
-```
-
-**Guarantee:** Mutation itself cannot fail; side effects are atomic from caller's perspective.
-
----
-
-## Error Handling Patterns
-
-### Pattern 1: Propagate Errors with `try`
-
-```rust
-fn read_and_process(path: string) -> Result<string, string> {
-    let data = try read_file(path);     // Errors propagate
-    let result = try parse_data(data);  // Errors propagate
-    return Ok(result);
-}
-```
-
----
-
-### Pattern 2: Recover with `live {}`
-
-```rust
-live {
-    let value = fetch_from_network();
-    if value < 0 {
-        fault "invalid network value";
+```resilient
+fn safe_sensor_read() -> int {
+    live {
+        let reading = read_sensor_with_retry();
+        return reading;
     }
-} recover {
-    value = cached_value;
 }
-
-process_value(value);  // Guaranteed to be valid
 ```
+
+A `live { ... }` block re-runs its body when an `assert(cond, msg)` inside
+it fails, instead of terminating the enclosing function. `live_retries()`
+inside the block reports the current attempt number (0 on the first pass),
+which callee code can use to simulate "succeeds on the Nth attempt"
+behavior in tests.
+
+`live invariant COND { ... }` additionally restates a safety invariant that
+must hold across every retry; a body that violates it (again via a failing
+`assert`) retries rather than continuing with a broken invariant:
+
+```resilient
+live invariant count >= 0 && count <= max_count {
+    count = count + 1;
+    if count > max_count {
+        assert(false, "count exceeded max");
+    }
+}
+```
+
+**Backoff and deadlines (RES-138/139/142, Experimental):**
+`live backoff(base_ms=10, factor=2, max_ms=1000) { ... }` attaches a delay
+between retries; `live backoff(...) within 50ms { ... }` additionally caps
+total wall-clock time spent across all retries and their backoff sleeps —
+exceeding the budget fails the block instead of retrying forever. A plain
+`live { ... }` with no `backoff(...)` clause retries with zero sleep. The
+`no_std` runtime does not provide `within`'s wall-clock enforcement (no
+clock source is assumed present); see `docs/live-block-semantics.md` for
+the full state machine. Keyword parameter names and telemetry counter
+names are Experimental — expect them to move (`STABILITY.md` §
+Experimental).
+
+`live` blocks are unrelated to the `fails`/`try`/`catch` mechanism above:
+`live` recovers by **re-running the same code**, while `try`/`catch`
+recovers by **running different code** for a specific declared variant. A
+function can nest both.
 
 ---
 
-### Pattern 3: Convert Panics to Errors
+## 4. `Result<T, E>` and `Option<T>`
 
-```rust
-fn safe_divide(a: int, b: int) -> Result<int, string> {
+```resilient
+fn safe_divide(int a, int b) -> Option<int> {
     if b == 0 {
-        return Err("division by zero");
+        return None;
     }
-    return Ok(a / b);
+    return Some(a / b);
 }
-```
 
----
-
-### Pattern 4: Contract-Based Safety
-
-```rust
-#[requires(items.len() > 0)]
-#[ensures(return >= 0)]
-fn find_minimum(items: &array<int>) -> int {
-    let min = items[0];
-    for i in 1..items.len() {
-        if items[i] < min {
-            min = items[i];
-        }
+fn parse_int_from_string(string s) -> Result {
+    if len(s) == 0 {
+        return Err("invalid format: empty string");
     }
-    return min;
-}
-
-// Caller must ensure non-empty array
-fn main() {
-    let data = [1, 2, 3];
-    let min = find_minimum(&data);  // Precondition satisfied
+    let parsed = parse_int(s);
+    if is_err(parsed) {
+        return Err("invalid format: contains non-digit characters");
+    }
+    return parsed;
 }
 ```
+
+Match on `Option::Some(v)` / `Option::None` and `Result::Ok(v)` /
+`Result::Err(e)` explicitly, or use the `is_err`/`unwrap`/`unwrap_err`
+builtins. A postfix `?` (RES-086, RES-375) short-circuits both: `expr?`
+inside a function returning `Result` unwraps `Ok(v)` to `v` and returns the
+`Err(..)` early on failure; inside a function returning `Option`, it
+unwraps `Some(v)` to `v` and returns `None` early. `?.` (optional
+chaining, RES-363) and `??` (coalescing, RES-375) are separate,
+narrower operators for accessing a field/method or supplying a default on
+an `Option` value without a full early return — see
+`resilient/examples/error_handling_patterns.rz` and `resilient/examples/edge_if_let_pattern.rz`.
+
+This mechanism and the `fails` checked-failure system both express
+"this can go wrong," but neither is a strict superset of the other: use
+`fails` when the caller must be statically forced to handle (or
+re-declare) a specific named failure; use `Result`/`Option` for ordinary
+value-level outcomes the caller can freely choose to inspect, ignore, or
+pattern-match on.
 
 ---
 
-## Verification and Proof
+## Effect annotations — parsed, not enforced
 
-### Static Verification (Z3-based)
+The parser accepts a `-e-> TYPE` effect-variable arrow on function
+parameter and return types (RES-193), intended to let a higher-order
+function's effect classification depend on the effect of a function value
+passed to it:
 
-```rust
-#[verify]  // Request formal verification
-fn safe_add(x: int, y: int) -> int {
-    return x + y;
+```resilient
+fn apply(fn(int) -e-> int f, int x) -e-> int {
+    return f(x);
 }
 ```
 
-**After verification:**
-- `safe_add` is proven to never overflow (for bounded inputs)
-- Z3 generates a proof
-- No runtime checking needed for this function
+**This is honestly Experimental and effectively inert today.** The parser
+records the effect variable, but effect-polymorphism unification — the
+step that would actually classify `apply(pure_fn, ...)` as pure and
+`apply(io_fn, ...)` as performing I/O — is not implemented; it is blocked
+on a prerequisite chain (an HM-style type walker, generics integration).
+Do not treat an `-e->` annotation as a checked or enforced effect boundary;
+treat it as a currently-inert placeholder for a future capability. See
+`docs/LANGUAGE.md` § Effect system for the same caveat from the language
+reference's point of view.
 
 ---
 
-### Runtime Checking (Fallback)
+## Concurrency and actor failures
 
-```rust
-#[requires(x >= 0 and y >= 0)]
-fn checked_add(int x, int y) -> int {
-    // Runtime check: x >= 0 and y >= 0
-    return x + y;  // May overflow but precondition verified
-}
-```
-
----
-
-## Safety Guarantees
-
-### Memory Safety
-
-| Guarantee | Mechanism |
-|-----------|-----------|
-| No use-after-free | Borrow checker + lifetime rules |
-| No double-free | Ownership model |
-| No dangling pointers | Reference lifetime checking |
-| No data races | Exclusive access rules + effect tracking |
-| No buffer overflows | Bounds checking + static analysis |
-
-### Type Safety
-
-| Guarantee | Mechanism |
-|-----------|-----------|
-| No type mismatches | Compile-time type checking |
-| No invalid casts | Type system constraints |
-| No null pointer dereferences | Non-null by default (Option for nullable) |
-| No uninitialized variables | Must-init checking |
-
-### Concurrency Safety
-
-| Guarantee | Mechanism |
-|-----------|-----------|
-| No data races | Exclusive vs. shared access rules |
-| No deadlocks (future) | Effect types + Stateright verification |
-| No use-after-free in concurrent code | Lifetime + borrow rules |
+Actors (`actor Name { ... }`, RES-332/386/388) attach their own contract
+forms: `concurrent_ensures: expr;` (a race-freedom clause the Z3
+verifier checks via a commutativity argument), `always: expr;` (a
+per-actor safety invariant), and `eventually(after: handler): expr;` (a
+bounded-liveness claim). `rz stateright check <file.rz>` model-checks a
+**narrow actor-state subset** of the language via a bridge into the
+Stateright model checker — it does not model the full language or full
+runtime actor semantics, and is explicitly scoped that way in
+`stateright_bridge.rs` to avoid overclaiming coverage.
 
 ---
 
-## Failure Timeline
+## What is *not* a language-level failure mode
 
-```
-┌─────────────────┐
-│ Function called │
-└────────┬────────┘
-         │
-         v
-┌─────────────────────────────┐
-│ Check preconditions         │
-│ (if @requires present)      │
-└────────┬──────────┬─────────┘
-         │          │
-         │ FAIL     │ OK
-         v          │
-      Error         │
-    (Contract)      │
-                    v
-            ┌──────────────────┐
-            │ Execute function │
-            │ body             │
-            └────┬────┬────┬───┘
-                 │    │    │
-         ┌───────┘    │    └──────┐
-         v            v           v
-      Success    Error/Fault   Panic
-      (Normal)   (Recoverable)  (Fatal)
-         │            │          │
-         v            v          v
-   ┌──────────┐  ┌────────────┐ ┌──────┐
-   │Continue  │  │Live/Recover│ │Abort │
-   └────┬─────┘  │or try/match│ └──────┘
-        │        └────────────┘
-        v
-┌─────────────────┐
-│ Check           │
-│ postconditions  │
-└────┬────────┬───┘
-     │        │
-     │ OK     │ FAIL
-     v        v
-   Return   Error
-           (Contract)
-```
-
----
-
-## When to Use Each Failure Mode
-
-| Scenario | Recommended | Why |
-|----------|-------------|-----|
-| File not found | `Result<T, Error>` | Expected, recoverable |
-| Invalid JSON | `Result<T, Error>` + `try` | Expected, needs specific handling |
-| Sensor out of range | `live {} recover {}` | Transient, needs fallback |
-| Precondition violated | Contract assertion | Caller bug, should not happen |
-| Out of memory | Panic | System failure, cannot recover |
-| Network timeout | `Result<T, Error>` | Expected in distributed systems |
-| Invariant broken | `panic!()` | Internal logic error |
-| User input mismatch | `live {} recover {}` | Transient, auto-recovery |
-
----
-
-## Best Practices
-
-### 1. Be Explicit About Failure
-
-```rust
-// Good
-fn parse_int(s: string) -> Result<int, string> {
-    // ... parsing logic ...
-}
-
-// Avoid: silent fallback
-fn parse_int_unsafe(s: string) -> int {
-    // may panic on bad input
-}
-```
-
-### 2. Prefer Errors Over Panics in Libraries
-
-```rust
-// Library function: use Result
-pub fn query_database(sql: string) -> Result<Data, string> {
-    // Return errors, don't panic
-}
-
-// Application code: can panic if unrecoverable
-fn main() {
-    let data = query_database("SELECT ...")
-        .expect("database must be accessible");
-}
-```
-
-### 3. Use `live {}` for Transient Faults
-
-```rust
-// Good: recover from transient sensor failure
-live {
-    reading = sensor.read();
-} recover {
-    reading = last_known_good_value;
-}
-
-// Avoid: silently ignoring failures
-let reading = sensor.read_or_zero();  // Hides real problems
-```
-
-### 4. Document Contract Assumptions
-
-```rust
-#[requires(list.len() > 0, "list must not be empty")]
-fn head<T>(list: &array<T>) -> T {
-    return list[0];
-}
-```
-
-### 5. Test Error Paths
-
-```rust
-#[test]
-fn test_division_by_zero() {
-    let result = safe_divide(10, 0);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("division"));
-}
-```
-
----
-
-## Roadmap
-
-### v0.3: Enhance Error Messages
-
-- [ ] Better contract violation diagnostics
-- [ ] Suggestions for fixing common errors
-- [ ] Error backtrace with function names
-
-### v0.4: Recovery Semantics
-
-- [ ] Formalize `live {} recover {}` semantics with Stateright
-- [ ] Add fault injection testing
-- [ ] Document recovery patterns
-
-### v0.5: SMT Verification
-
-- [ ] Z3 verification for all contract forms
-- [ ] Automatic precondition inference
-- [ ] Proof generation and storage
-
-### v0.6+: Future Directions
-
-- [ ] Exception types (checked exceptions)
-- [ ] Async error handling (Future<T, E>)
-- [ ] Distributed system failure modes
+Rust-level `panic!`/`unwrap`/`expect` inside the compiler or runtime
+implementation are **implementation bugs**, not a Resilient-language
+failure primitive — there is no `panic!()` keyword in the language itself.
+Per this repository's contribution rules: `resilient-runtime` must have
+zero panics in its default `no_std` build (every `unwrap`/`expect` there is
+a bug), and the parser/lexer must return a typed `Error` on every failure
+path rather than panicking. A `rz`-compiled program's own closest analogue
+to "unrecoverable failure" is an unhandled `assert(false, ...)` outside any
+`live` block, or an `unwrap()`/`unwrap_err()` builtin call on the wrong
+variant — both are runtime errors that terminate the program, and neither
+is proved absent by the compiler; write `fails`, `Result`, or a `live`
+block instead where recovery matters.
 
 ---
 
 ## References
 
-- **RES-3505:** Consolidate the failure and recovery semantics
-- **RES-3504:** Specify and enforce the memory model
-- **MEMORY_MODEL.md:** Memory safety model
-- **TYPE_SYSTEM_ROADMAP.md:** Type system design
+- **RES-3505:** Consolidate the failure and recovery semantics (this doc).
+- **RES-387 / RES-224 / RES-775:** `fails` declaration, `try`/`catch`
+  discharge, runtime checked-failure injection.
+- **RES-133b:** `assume()` axioms for `recovers_to` verification.
+- **RES-138/139/140/141/142:** `live` backoff/within/escalation semantics.
+- **RES-193:** effect-variable arrow (parsed only).
+- `docs/live-block-semantics.md` — full `live` block state machine.
+- `STABILITY.md` § Experimental — stability status for `live`, effects,
+  Z3 verification, and FFI.
+- `VERIFICATION_MODEL.md` — what the Z3 verifier actually proves and its
+  V1/V2 scope split.
+- `MEMORY_MODEL.md` — the compile-time guarantees this document
+  deliberately doesn't restate.
