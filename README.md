@@ -246,6 +246,17 @@ close, exactly like every release before this one. See
 `.github/workflows/release.yml` for the current per-target matrix and
 the tracking issue for the remaining platforms.
 
+**LSP in the box (RES-4002):** every pre-built release binary, on all
+four targets, ships with `--features lsp` — `rz --lsp` works
+out of the box for editor integration (the VS Code extension,
+`lspconfig`, etc.), no source rebuild required. This adds
+~2.4 MB to the binary (`tower-lsp` + `tokio`'s transitive dep tree);
+CI verifies each released binary actually answers an `initialize`
+handshake via `scripts/release-lsp-smoke-test.sh`. The `cargo install
+--path resilient` / `cargo build` path below still defaults to
+`lsp` **off** — pass `--features lsp` explicitly for a from-source
+build with editor support.
+
 #### From source via cargo install
 
 If you have Rust installed:
@@ -259,7 +270,10 @@ rz --version
 
 This puts `rz` in `~/.cargo/bin/rz` (already on `PATH` if cargo is configured
 normally). Add `--features z3` for SMT-backed verification (requires
-`brew install z3` or `apt-get install libz3-dev`).
+`brew install z3` or `apt-get install libz3-dev`), or `--features lsp`
+for editor integration (`rz --lsp`) — both are off by default for a
+from-source build to keep the fast path free of their dependency trees.
+Pre-built release binaries (above) ship with `lsp` on already.
 
 ### Feature tiers
 

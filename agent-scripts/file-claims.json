@@ -123,6 +123,10 @@
     "docs/debugger.md": {
       "branch": "res-ee6-debugger-docs",
       "claimed_at": "2026-07-14T03:21:30Z"
+    },
+    ".github/workflows/release.yml": {
+      "branch": "res-4002-lsp-default-binary",
+      "claimed_at": "2026-07-14T03:21:36Z"
     }
   }
 }
