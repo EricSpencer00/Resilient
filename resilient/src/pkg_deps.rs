@@ -140,6 +140,9 @@ pub enum PkgDepsError {
         path: PathBuf,
         source: io::Error,
     },
+    DependencyNotFound {
+        name: String,
+    },
     Io {
         context: String,
         source: io::Error,
@@ -191,6 +194,11 @@ impl fmt::Display for PkgDepsError {
             Self::ManifestWriteError { path, source } => {
                 write!(f, "could not write manifest {}: {}", path.display(), source)
             }
+            Self::DependencyNotFound { name } => write!(
+                f,
+                "no dependency named `{}` in [dependencies] — nothing to remove",
+                name
+            ),
             Self::Io { context, source } => write!(f, "{}: {}", context, source),
         }
     }
@@ -799,6 +807,162 @@ fn format_dep_entry(dep: &Dependency) -> String {
     }
 }
 
+// ── CLI: `rz pkg remove` ─────────────────────────────────────────
+
+/// Remove a dependency from `resilient.toml` and rewrite the lockfile
+/// to match. Errors if the dependency isn't declared.
+pub fn remove_dependency(name: &str) -> Result<(), PkgDepsError> {
+    let cwd = env::current_dir().map_err(|e| PkgDepsError::Io {
+        context: "reading current directory".to_string(),
+        source: e,
+    })?;
+    let manifest_path =
+        pkg_init::find_manifest_upwards(&cwd).ok_or_else(|| PkgDepsError::ManifestNotFound {
+            searched_from: cwd.clone(),
+        })?;
+    let project_root = manifest_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or(cwd);
+
+    remove_dep_from_manifest(&manifest_path, name)?;
+
+    // Re-resolve the remaining deps and rewrite the lockfile so it
+    // never drifts from the manifest.
+    let all = resolve_all(&manifest_path)?;
+    write_lockfile(&project_root, &all)?;
+
+    println!(
+        "Removed `{}` from {} ({} dependency/ies remain)",
+        name,
+        manifest_path.display(),
+        all.len()
+    );
+    Ok(())
+}
+
+/// Drop the `name = { ... }` (or shorthand string) line for `name`
+/// from the `[dependencies]` section of the manifest at
+/// `manifest_path`. Errors with `DependencyNotFound` if no such
+/// entry exists — mirrors `parse_dependencies_from_str`'s section
+/// detection so the two stay in lockstep.
+fn remove_dep_from_manifest(manifest_path: &Path, name: &str) -> Result<(), PkgDepsError> {
+    let contents =
+        fs::read_to_string(manifest_path).map_err(|e| PkgDepsError::ManifestUnreadable {
+            path: manifest_path.to_path_buf(),
+            source: e,
+        })?;
+
+    let deps = parse_dependencies_from_str(&contents)?;
+    if !deps.iter().any(|d| d.name == name) {
+        return Err(PkgDepsError::DependencyNotFound {
+            name: name.to_string(),
+        });
+    }
+
+    let mut in_deps = false;
+    let mut out_lines: Vec<&str> = Vec::new();
+    for raw in contents.lines() {
+        let trimmed = raw.trim();
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            in_deps = if rest.starts_with('[') {
+                false
+            } else {
+                rest.trim_end_matches(']').trim() == "dependencies"
+            };
+            out_lines.push(raw);
+            continue;
+        }
+        if in_deps
+            && let Some((key, _)) = trimmed.split_once('=')
+            && key.trim() == name
+        {
+            // Drop this line — it's the entry being removed.
+            continue;
+        }
+        out_lines.push(raw);
+    }
+
+    let mut joined = out_lines.join("\n");
+    if contents.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+
+    fs::write(manifest_path, joined).map_err(|e| PkgDepsError::ManifestWriteError {
+        path: manifest_path.to_path_buf(),
+        source: e,
+    })
+}
+
+// ── CLI: `rz pkg search` ─────────────────────────────────────────
+
+/// A local dependency-search result. There is no remote registry
+/// index yet (tracked as E-E2 follow-up work), so search covers only
+/// what's already resolvable from the manifest and lockfile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub name: String,
+    /// `"path:../libs/mylib"` or `"git:https://..."`.
+    pub source: String,
+    /// Whether this dependency also has a `resilient.lock` entry.
+    pub locked: bool,
+}
+
+/// Search the nearest `resilient.toml` (and its `resilient.lock`, if
+/// present) for dependencies whose name contains `query`
+/// (case-insensitive substring match).
+pub fn search_dependencies(query: &str) -> Result<Vec<SearchMatch>, PkgDepsError> {
+    let cwd = env::current_dir().map_err(|e| PkgDepsError::Io {
+        context: "reading current directory".to_string(),
+        source: e,
+    })?;
+    let manifest_path =
+        pkg_init::find_manifest_upwards(&cwd).ok_or_else(|| PkgDepsError::ManifestNotFound {
+            searched_from: cwd.clone(),
+        })?;
+    search_dependencies_in(&manifest_path, query)
+}
+
+/// Core, disk-path-driven implementation of `search_dependencies` —
+/// testable without relying on the process's current directory.
+fn search_dependencies_in(
+    manifest_path: &Path,
+    query: &str,
+) -> Result<Vec<SearchMatch>, PkgDepsError> {
+    let deps = parse_dependencies(manifest_path)?;
+    let project_root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let lock_path = project_root.join(LOCKFILE_NAME);
+    let locked = parse_lockfile(&lock_path)?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let query_lower = query.to_lowercase();
+    let mut matches: Vec<SearchMatch> = deps
+        .iter()
+        .filter(|d| d.name.to_lowercase().contains(&query_lower))
+        .map(|d| SearchMatch {
+            name: d.name.clone(),
+            source: dep_source_display(&d.source),
+            locked: locked.contains(&d.name),
+        })
+        .collect();
+    matches.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(matches)
+}
+
+/// Render a `DepSource` the same way the lockfile does
+/// (`"path:..."` / `"git:..."`), for display in search results.
+fn dep_source_display(source: &DepSource) -> String {
+    match source {
+        DepSource::Path { path } => format!("path:{}", path),
+        DepSource::Git { url, rev, .. } => match rev {
+            Some(r) => format!("git:{} (rev {})", url, r),
+            None => format!("git:{}", url),
+        },
+    }
+}
+
 // ── Import integration ───────────────────────────────────────────
 
 /// Look up a dependency by name in the nearest `resilient.toml` and
@@ -1337,6 +1501,171 @@ lib = { git = \"https://ex.com/lib\", branch = \"develop\" }
         assert_eq!(resolved.len(), 2);
         assert_eq!(resolved[0].name, "libA");
         assert_eq!(resolved[1].name, "libB");
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    // ── remove_dep_from_manifest tests ───────────────────────────
+
+    #[test]
+    fn remove_dep_drops_entry_and_keeps_others() {
+        let project = tmp_dir("remove_dep");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+             mylib = { path = \"../mylib\" }\n\
+             netutil = { git = \"https://ex.com/netutil\", rev = \"abc123\" }\n",
+        )
+        .unwrap();
+
+        remove_dep_from_manifest(&manifest, "mylib").unwrap();
+
+        let content = fs::read_to_string(&manifest).unwrap();
+        assert!(
+            !content.contains("mylib"),
+            "mylib should be removed: {}",
+            content
+        );
+        assert!(
+            content.contains("netutil = { git = \"https://ex.com/netutil\", rev = \"abc123\" }"),
+            "netutil should remain: {}",
+            content
+        );
+        assert!(content.contains("[package]"));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn remove_dep_errors_when_absent() {
+        let project = tmp_dir("remove_dep_absent");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n",
+        )
+        .unwrap();
+
+        let err = remove_dep_from_manifest(&manifest, "nope").unwrap_err();
+        assert!(matches!(err, PkgDepsError::DependencyNotFound { name } if name == "nope"));
+
+        // Manifest is untouched on error.
+        let content = fs::read_to_string(&manifest).unwrap();
+        assert!(content.contains("mylib = { path = \"../mylib\" }"));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn remove_dependency_end_to_end_updates_lockfile() {
+        let project = tmp_dir("remove_dependency_e2e");
+        for name in &["keep", "drop"] {
+            let d = project.join(name);
+            fs::create_dir_all(d.join("src")).unwrap();
+            fs::write(
+                d.join("resilient.toml"),
+                format!("[package]\nname = \"{}\"\n", name),
+            )
+            .unwrap();
+        }
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\n\
+             keep = { path = \"keep\" }\ndrop = { path = \"drop\" }\n",
+        )
+        .unwrap();
+
+        // Simulate the CWD-driven CLI path via the pure core function,
+        // then re-resolve + write the lockfile exactly as
+        // `remove_dependency` does, since that function depends on
+        // `env::current_dir()` and isn't directly unit-testable.
+        remove_dep_from_manifest(&manifest, "drop").unwrap();
+        let remaining = resolve_all(&manifest).unwrap();
+        write_lockfile(&project, &remaining).unwrap();
+
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "keep");
+
+        let lock_content = fs::read_to_string(project.join(LOCKFILE_NAME)).unwrap();
+        assert!(lock_content.contains("name = \"keep\""));
+        assert!(!lock_content.contains("name = \"drop\""));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    // ── search_dependencies_in tests ─────────────────────────────
+
+    #[test]
+    fn search_finds_substring_match_case_insensitive() {
+        let project = tmp_dir("search_basic");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\n\
+             mylib = { path = \"../mylib\" }\n\
+             netutil = { git = \"https://ex.com/netutil\", rev = \"abc123\" }\n",
+        )
+        .unwrap();
+
+        let matches = search_dependencies_in(&manifest, "LIB").unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "mylib");
+        assert_eq!(matches[0].source, "path:../mylib");
+        assert!(!matches[0].locked);
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn search_marks_locked_dependencies() {
+        let project = tmp_dir("search_locked");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\n\
+             netutil = { git = \"https://ex.com/netutil\", rev = \"abc123\" }\n",
+        )
+        .unwrap();
+        fs::write(
+            project.join(LOCKFILE_NAME),
+            "[[package]]\nname = \"netutil\"\nsource = \"git:https://ex.com/netutil\"\nrev = \"abc123\"\n",
+        )
+        .unwrap();
+
+        let matches = search_dependencies_in(&manifest, "net").unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "netutil");
+        assert_eq!(matches[0].source, "git:https://ex.com/netutil (rev abc123)");
+        assert!(matches[0].locked);
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn search_returns_empty_for_no_matches() {
+        let project = tmp_dir("search_empty");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n",
+        )
+        .unwrap();
+
+        let matches = search_dependencies_in(&manifest, "nonexistent").unwrap();
+        assert!(matches.is_empty());
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn search_results_are_sorted_by_name() {
+        let project = tmp_dir("search_sorted");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\n\
+             zeta = { path = \"zeta\" }\nalpha = { path = \"alpha\" }\n",
+        )
+        .unwrap();
+
+        let matches = search_dependencies_in(&manifest, "a").unwrap();
+        let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
         let _ = fs::remove_dir_all(&project);
     }
 }

@@ -119,6 +119,30 @@
     "resilient/src/compiler.rs": {
       "branch": "res-3998-vm-container-equality",
       "claimed_at": "2026-07-14T03:56:56Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
+    },
+    "resilient/src/disasm.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
+    },
+    "resilient/tests/it/differential.rs": {
+      "branch": "res-3997-vm-discard-stmt-value",
+      "claimed_at": "2026-07-14T03:47:49Z"
+    },
+    "resilient/src/pkg_deps.rs": {
+      "branch": "res-4007-pkg-remove-search",
+      "claimed_at": "2026-07-14T03:55:37Z"
+    },
+    "resilient/src/package_manager.rs": {
+      "branch": "res-4007-pkg-remove-search",
+      "claimed_at": "2026-07-14T03:55:37Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-4007-pkg-remove-search",
+      "claimed_at": "2026-07-14T03:55:37Z"
     }
   }
 }
