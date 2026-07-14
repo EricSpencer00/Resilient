@@ -1489,6 +1489,23 @@ fn run_dispatch_loop(
                 let split = stack.len() - arity as usize;
                 let args: Vec<Value> = stack.drain(split..).collect();
                 let receiver = stack.pop().ok_or(VmError::EmptyStack)?;
+                // RES-4017: `StringBuilder` methods intercept before the
+                // generic struct `$method` mangled lookup below, mirroring
+                // the interpreter's `eval_string_builder_method` dispatch
+                // order — `StringBuilder` has no compiled `impl` block, so
+                // falling through to the mangled-name search would always
+                // miss and hard-error via the `Value::Struct` arm at the
+                // `fn_idx` lookup below.
+                if let Value::Struct {
+                    ref name,
+                    ref fields,
+                } = receiver
+                    && name == "StringBuilder"
+                {
+                    let result = vm_call_string_builder_method(fields, &method, &args)?;
+                    stack.push(result);
+                    continue;
+                }
                 // RES-3994: primitive-`impl` receivers (`impl int { ... }`,
                 // `impl float`, `impl string`, `impl bool` — RES-2553)
                 // mangle the same way struct/enum methods do (`int$abs`).
@@ -1503,7 +1520,8 @@ fn run_dispatch_loop(
                     // (String/Array/Map/Set), which the compiler emits
                     // `CallMethod` for identically since it has no
                     // static type info.
-                    let result = vm_call_builtin_method(receiver, &method, args)?;
+                    let result =
+                        vm_call_builtin_method(program, receiver, &method, args, overflow_mode)?;
                     stack.push(result);
                     continue;
                 };
@@ -1518,7 +1536,8 @@ fn run_dispatch_loop(
                     if matches!(&receiver, Value::Struct { .. } | Value::EnumVariant { .. }) {
                         return Err(VmError::TypeMismatch("CallMethod: method not found"));
                     }
-                    let result = vm_call_builtin_method(receiver, &method, args)?;
+                    let result =
+                        vm_call_builtin_method(program, receiver, &method, args, overflow_mode)?;
                     stack.push(result);
                     continue;
                 };
@@ -2415,6 +2434,492 @@ fn vm_display_fmt_fn_idx(program: &Program, name: &str, args: &[Value]) -> Optio
     program.functions.iter().position(|f| f.name == mangled)
 }
 
+/// RES-4017: re-entrant "call this closure value to completion and
+/// return its result" primitive. `Op::CallMethod`'s built-in-container
+/// fallback (`vm_call_builtin_method`) needs to invoke a *user-supplied*
+/// `Value::Closure` once per element for `.map()`/`.filter()`/
+/// `.flat_map()` etc, but the flat bytecode dispatch loop has no notion
+/// of recursing mid-opcode the way the tree-walker's `apply_function`
+/// does. This gives it one, shaped exactly like `run_postcheck`
+/// (RES-4041): a fully isolated sub-run — fresh operand stack, locals
+/// slab, frame stack, try-stack, and statics tables — that pushes the
+/// closure's own frame (carrying its captured `upvalues` so
+/// `LoadUpvalue` resolves inside the body) and drives it through
+/// `run_dispatch_loop` to its own `Op::ReturnFromCall`.
+///
+/// `closure_home`/`source_slots` are left empty (matching
+/// `Op::CallClosure`'s `source_slot: u16::MAX` "temporary, no
+/// upvalue-writeback home" sentinel — see its doc comment): the isolated
+/// frame stack has exactly one frame, so `ReturnFromCall` sees
+/// `frames.is_empty()` and halts *before* `write_back_upvalues` ever
+/// runs. Any captured *mutable* variable is boxed into a `Value::Cell`
+/// at capture time (RES-3914) and mutates through the thread-local cell
+/// store regardless of write-back, so this loses nothing observable —
+/// same reasoning `run_postcheck` already relies on.
+///
+/// The `MAX_CALL_DEPTH` cap applies independently to each invocation
+/// (the frame stack starts fresh every call), so a closure recursing
+/// internally is still bounded exactly like a top-level call; it does
+/// not accumulate across the container's elements.
+fn vm_call_closure_value(
+    program: &Program,
+    closure: Value,
+    args: Vec<Value>,
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
+    let (fn_idx, upvalues, source_slots) = match closure {
+        Value::Closure {
+            fn_idx,
+            upvalues,
+            source_slots,
+        } => (fn_idx, upvalues, source_slots),
+        // RES-3915: a first-class enum constructor value passed as the
+        // callback (`arr.map(Color::Rgb)`) — mirrors `Op::CallClosure`'s
+        // identical arm and the tree-walker's `apply_function` →
+        // `apply_constructor` path.
+        Value::EnumConstructor {
+            type_name,
+            variant,
+            arity,
+        } => {
+            return crate::enum_ctors::apply_constructor(&type_name, &variant, arity, args)
+                .map_err(|_| VmError::TypeMismatch("CallMethod: enum constructor arity mismatch"));
+        }
+        _ => {
+            return Err(VmError::TypeMismatch(
+                "CallMethod: callback is not callable",
+            ));
+        }
+    };
+    let func = program
+        .functions
+        .get(fn_idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    let mut locals: Vec<Value> = vec![Value::Void; func.local_count as usize];
+    for (i, v) in args.into_iter().enumerate() {
+        if let Some(slot) = locals.get_mut(i) {
+            *slot = v;
+        }
+    }
+    let mut stack: Vec<Value> = Vec::new();
+    let mut frames: Vec<CallFrame> = vec![CallFrame {
+        chunk_idx: fn_idx as usize,
+        pc: 0,
+        locals_base: 0,
+        upvalues,
+        closure_home: None,
+        source_slots,
+    }];
+    let mut try_stack: Vec<TryFrame> = Vec::new();
+    let mut statics: Vec<Vec<Value>> = Vec::new();
+    let mut statics_init: Vec<Vec<bool>> = Vec::new();
+    let mut last_pc: (usize, usize) = (fn_idx as usize, 0);
+    match run_dispatch_loop(
+        program,
+        &mut stack,
+        &mut locals,
+        &mut frames,
+        &mut try_stack,
+        &mut statics,
+        &mut statics_init,
+        overflow_mode,
+        &mut last_pc,
+        None,
+    )? {
+        LoopOutcome::Halted(v) => Ok(v),
+        // `tracked: None` means only `Halted` is ever produced — see
+        // `run_postcheck`'s identical isolated single-frame invocation.
+        LoopOutcome::ExitedNormally | LoopOutcome::ReturnedFromFrame(_) => {
+            unreachable!("vm_call_closure_value's untracked, single-frame sub-run only ever halts")
+        }
+    }
+}
+
+/// RES-4017: array higher-order methods (`.map()`, `.filter()`,
+/// `.reduce()`, `.flat_map()`, `.for_each()`, `.find()`, `.any()`,
+/// `.all()`) that take a user closure/callback argument. Mirrors the
+/// tree-walker's inline `Value::Array` block in `eval` (`lib.rs`,
+/// RES-927/RES-2707) element-for-element — same order, same
+/// short-circuit behavior, same error text shapes — except each
+/// `self.apply_function(&callback, ..)` becomes a
+/// `vm_call_closure_value(program, callback.clone(), .., overflow_mode)`
+/// call. Returns `None` when `method` isn't one of these eight, so the
+/// caller can fall through to the next dispatch tier.
+fn vm_call_array_functional_method(
+    program: &Program,
+    items: Vec<Value>,
+    method: &str,
+    mut args: Vec<Value>,
+    overflow_mode: OverflowMode,
+) -> Option<Result<Value, VmError>> {
+    let call = |program: &Program, f: &Value, call_args: Vec<Value>| {
+        vm_call_closure_value(program, f.clone(), call_args, overflow_mode)
+    };
+    Some(match method {
+        "map" => (|| {
+            if args.len() != 1 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "map: expected 1 callback argument, got {}",
+                    args.len()
+                )));
+            }
+            let callback = args.pop().unwrap();
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(call(program, &callback, vec![item])?);
+            }
+            Ok(Value::Array(out))
+        })(),
+        "filter" => (|| {
+            if args.len() != 1 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "filter: expected 1 predicate argument, got {}",
+                    args.len()
+                )));
+            }
+            let predicate = args.pop().unwrap();
+            let mut out = Vec::new();
+            for item in items {
+                match call(program, &predicate, vec![item.clone()])? {
+                    Value::Bool(true) => out.push(item),
+                    Value::Bool(false) => {}
+                    other => {
+                        return Err(VmError::BuiltinCallFailed(format!(
+                            "filter: predicate must return Bool, got {}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        })(),
+        "reduce" => (|| match args.len() {
+            1 => {
+                let callback = args.pop().unwrap();
+                let mut iter = items.into_iter();
+                let mut acc = iter.next().ok_or_else(|| {
+                    VmError::BuiltinCallFailed(
+                        "reduce: cannot reduce an empty array without an initial value".to_string(),
+                    )
+                })?;
+                for item in iter {
+                    acc = call(program, &callback, vec![acc, item])?;
+                }
+                Ok(acc)
+            }
+            2 => {
+                let callback = args.pop().unwrap();
+                let mut acc = args.pop().unwrap();
+                for item in items {
+                    acc = call(program, &callback, vec![acc, item])?;
+                }
+                Ok(acc)
+            }
+            n => Err(VmError::BuiltinCallFailed(format!(
+                "reduce: expected 1 or 2 arguments (fn | init, fn), got {}",
+                n
+            ))),
+        })(),
+        "flat_map" => (|| {
+            if args.len() != 1 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "flat_map: expected 1 callback argument, got {}",
+                    args.len()
+                )));
+            }
+            let callback = args.pop().unwrap();
+            let mut out = Vec::new();
+            for item in items {
+                match call(program, &callback, vec![item])? {
+                    Value::Array(inner) => out.extend(inner),
+                    other => out.push(other),
+                }
+            }
+            Ok(Value::Array(out))
+        })(),
+        "for_each" => (|| {
+            if args.len() != 1 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "for_each: expected 1 callback argument, got {}",
+                    args.len()
+                )));
+            }
+            let callback = args.pop().unwrap();
+            for item in items {
+                call(program, &callback, vec![item])?;
+            }
+            Ok(Value::Void)
+        })(),
+        "find" => (|| {
+            if args.len() != 1 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "find: expected 1 predicate argument, got {}",
+                    args.len()
+                )));
+            }
+            let predicate = args.pop().unwrap();
+            for item in items {
+                match call(program, &predicate, vec![item.clone()])? {
+                    Value::Bool(true) => return Ok(Value::Option(Some(Box::new(item)))),
+                    Value::Bool(false) => {}
+                    other => {
+                        return Err(VmError::BuiltinCallFailed(format!(
+                            "find: predicate must return bool, got {}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(Value::Option(None))
+        })(),
+        "any" => (|| {
+            if args.len() != 1 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "any: expected 1 predicate argument, got {}",
+                    args.len()
+                )));
+            }
+            let predicate = args.pop().unwrap();
+            for item in items {
+                match call(program, &predicate, vec![item])? {
+                    Value::Bool(true) => return Ok(Value::Bool(true)),
+                    Value::Bool(false) => {}
+                    other => {
+                        return Err(VmError::BuiltinCallFailed(format!(
+                            "any: predicate must return bool, got {}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(Value::Bool(false))
+        })(),
+        "all" => (|| {
+            if args.len() != 1 {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "all: expected 1 predicate argument, got {}",
+                    args.len()
+                )));
+            }
+            let predicate = args.pop().unwrap();
+            for item in items {
+                match call(program, &predicate, vec![item])? {
+                    Value::Bool(true) => {}
+                    Value::Bool(false) => return Ok(Value::Bool(false)),
+                    other => {
+                        return Err(VmError::BuiltinCallFailed(format!(
+                            "all: predicate must return bool, got {}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(Value::Bool(true))
+        })(),
+        _ => return None,
+    })
+}
+
+/// RES-4017: `Option<T>` instance-method dispatch — `.is_some()`,
+/// `.is_none()`, `.unwrap()`, `.unwrap_or(default)`. Pure function of
+/// `(inner, method, args)`, mirroring the tree-walker's inline
+/// `Value::Option` block in `eval` (`lib.rs`, RES-375) exactly; no
+/// interpreter state is needed, so the VM can dispatch it directly
+/// without a closure-invocation primitive. Returns `None` when `method`
+/// isn't one of these four, so the caller can fall through.
+fn vm_call_option_method(
+    inner: &Option<Box<Value>>,
+    method: &str,
+    args: &[Value],
+) -> Option<Result<Value, VmError>> {
+    Some(match method {
+        "is_some" => Ok(Value::Bool(inner.is_some())),
+        "is_none" => Ok(Value::Bool(inner.is_none())),
+        "unwrap" => match inner {
+            Some(v) => Ok((**v).clone()),
+            None => Err(VmError::BuiltinCallFailed(
+                "unwrap called on None".to_string(),
+            )),
+        },
+        "unwrap_or" => match (inner, args.first()) {
+            (Some(v), _) => Ok((**v).clone()),
+            (None, Some(d)) => Ok(d.clone()),
+            (None, None) => Err(VmError::BuiltinCallFailed(
+                "unwrap_or: expected a default argument".to_string(),
+            )),
+        },
+        _ => return None,
+    })
+}
+
+/// RES-4017: `StringBuilder` method dispatch (`.append()`,
+/// `.append_int()`, `.append_line()`, `.append_float()`,
+/// `.append_char()`, `.build()`, `.to_string()`, `.len()`,
+/// `.remaining()`, `.clear()`). Mirrors the tree-walker's
+/// `eval_string_builder_method` (`lib.rs`, RES-353/RES-2584) exactly,
+/// calling the same private `sb_*` free functions directly — they're
+/// declared in the crate-root module, so this descendant module sees
+/// them without any visibility change.
+///
+/// The interpreter additionally writes the mutated struct back to the
+/// caller's local binding (`self.env.reassign`). That write-back is not
+/// reproduced here: `StringBuilderState` lives in a thread-local slab
+/// keyed by the builder's opaque `_id` (see `sb_struct`), and every
+/// `Value::Struct { name: "StringBuilder", fields: [("_id", id)] }`
+/// sharing that id observes the same mutation regardless of which
+/// struct *value* a variable happens to hold — `sb_struct(id)` always
+/// reconstructs the identical `{_id: id}` value. Write-back would be a
+/// no-op here; the interpreter's own comment notes the same write-back
+/// is skipped for anything but a bare `IDENT.method()` receiver anyway.
+fn vm_call_string_builder_method(
+    fields: &[(String, Value)],
+    method: &str,
+    args: &[Value],
+) -> Result<Value, VmError> {
+    let id = crate::sb_id(fields).map_err(VmError::BuiltinCallFailed)?;
+    let one_string = |args: &[Value]| match args {
+        [Value::String(s)] => Ok(s.clone()),
+        [other] => Err(VmError::BuiltinCallFailed(format!(
+            "StringBuilder.{method}: expected String argument, got {other}"
+        ))),
+        _ => Err(VmError::BuiltinCallFailed(format!(
+            "StringBuilder.{method}: expected 1 argument, got {}",
+            args.len()
+        ))),
+    };
+    match method {
+        "append" => {
+            let s = one_string(args)?;
+            crate::sb_append_text(id, &s).map_err(VmError::BuiltinCallFailed)?;
+            Ok(crate::sb_struct(id))
+        }
+        "append_int" => match args {
+            [Value::Int(n)] => {
+                crate::sb_append_text(id, &n.to_string()).map_err(VmError::BuiltinCallFailed)?;
+                Ok(crate::sb_struct(id))
+            }
+            [other] => Err(VmError::BuiltinCallFailed(format!(
+                "StringBuilder.append_int: expected Int argument, got {other}"
+            ))),
+            _ => Err(VmError::BuiltinCallFailed(format!(
+                "StringBuilder.append_int: expected 1 argument, got {}",
+                args.len()
+            ))),
+        },
+        "append_line" => {
+            let s = one_string(args)?;
+            let mut line = String::with_capacity(s.len() + 1);
+            line.push_str(&s);
+            line.push('\n');
+            crate::sb_append_text(id, &line).map_err(VmError::BuiltinCallFailed)?;
+            Ok(crate::sb_struct(id))
+        }
+        "append_float" => match args {
+            [Value::Float(f)] => {
+                crate::sb_append_text(id, &f.to_string()).map_err(VmError::BuiltinCallFailed)?;
+                Ok(crate::sb_struct(id))
+            }
+            [other] => Err(VmError::BuiltinCallFailed(format!(
+                "StringBuilder.append_float: expected Float argument, got {other}"
+            ))),
+            _ => Err(VmError::BuiltinCallFailed(format!(
+                "StringBuilder.append_float: expected 1 argument, got {}",
+                args.len()
+            ))),
+        },
+        "append_char" => match args {
+            [Value::Int(cp)] => {
+                let c = char::from_u32(*cp as u32).ok_or_else(|| {
+                    VmError::BuiltinCallFailed(format!(
+                        "StringBuilder.append_char: {cp} is not a valid Unicode codepoint"
+                    ))
+                })?;
+                crate::sb_append_text(id, &c.to_string()).map_err(VmError::BuiltinCallFailed)?;
+                Ok(crate::sb_struct(id))
+            }
+            [other] => Err(VmError::BuiltinCallFailed(format!(
+                "StringBuilder.append_char: expected Int (codepoint) argument, got {other}"
+            ))),
+            _ => Err(VmError::BuiltinCallFailed(format!(
+                "StringBuilder.append_char: expected 1 argument, got {}",
+                args.len()
+            ))),
+        },
+        "build" => {
+            if !args.is_empty() {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "StringBuilder.build: expected 0 arguments, got {}",
+                    args.len()
+                )));
+            }
+            if crate::sb_overflow(id).map_err(VmError::BuiltinCallFailed)? {
+                Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String("capacity exceeded".to_string())),
+                })
+            } else {
+                Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(Value::String(
+                        crate::sb_to_string(id).map_err(VmError::BuiltinCallFailed)?,
+                    )),
+                })
+            }
+        }
+        "to_string" => {
+            if !args.is_empty() {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "StringBuilder.to_string: expected 0 arguments, got {}",
+                    args.len()
+                )));
+            }
+            if crate::sb_overflow(id).map_err(VmError::BuiltinCallFailed)? {
+                return Err(VmError::BuiltinCallFailed(
+                    "StringBuilder.to_string: capacity exceeded".to_string(),
+                ));
+            }
+            Ok(Value::String(
+                crate::sb_to_string(id).map_err(VmError::BuiltinCallFailed)?,
+            ))
+        }
+        "len" => {
+            if !args.is_empty() {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "StringBuilder.len: expected 0 arguments, got {}",
+                    args.len()
+                )));
+            }
+            Ok(Value::Int(
+                crate::sb_len(id).map_err(VmError::BuiltinCallFailed)?,
+            ))
+        }
+        "remaining" => {
+            if !args.is_empty() {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "StringBuilder.remaining: expected 0 arguments, got {}",
+                    args.len()
+                )));
+            }
+            Ok(Value::Int(
+                crate::sb_remaining(id).map_err(VmError::BuiltinCallFailed)?,
+            ))
+        }
+        "clear" => {
+            if !args.is_empty() {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "StringBuilder.clear: expected 0 arguments, got {}",
+                    args.len()
+                )));
+            }
+            crate::sb_clear(id).map_err(VmError::BuiltinCallFailed)?;
+            Ok(crate::sb_struct(id))
+        }
+        other => Err(VmError::BuiltinCallFailed(format!(
+            "StringBuilder has no method '{other}'"
+        ))),
+    }
+}
+
 /// RES-3904: `Op::CallMethod` fallback for built-in container
 /// receivers (`String`/`Array`/`Map`/`Set`). The compiler emits
 /// `CallMethod` for *every* `x.y(...)` dot-call uniformly (it has no
@@ -2430,19 +2935,59 @@ fn vm_display_fmt_fn_idx(program: &Program, name: &str, args: &[Value]) -> Optio
 /// `.root_cause()`, `.chain()`) by delegating to the same pure
 /// `error_chaining::dispatch_result_method` the interpreter uses —
 /// no interpreter state is needed, so the VM can call it directly.
+///
+/// RES-4017: also handles the array higher-order methods
+/// (`vm_call_array_functional_method`), `Option` instance methods
+/// (`vm_call_option_method`), and `StringBuilder` methods
+/// (`vm_call_string_builder_method`) — see each helper's doc comment.
 fn vm_call_builtin_method(
+    program: &Program,
+    receiver: Value,
+    method: &str,
+    args: Vec<Value>,
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
+    if let Value::Array(items) = receiver {
+        if method == "collect" {
+            if !args.is_empty() {
+                return Err(VmError::TypeMismatch("collect: expected 0 arguments"));
+            }
+            return Ok(Value::Array(items));
+        }
+        if matches!(
+            method,
+            "map" | "filter" | "reduce" | "flat_map" | "for_each" | "find" | "any" | "all"
+        ) {
+            return vm_call_array_functional_method(program, items, method, args, overflow_mode)
+                .expect("method name checked against the exact set this helper handles");
+        }
+        return vm_call_builtin_method_scalar(Value::Array(items), method, args);
+    }
+    if let Value::Option(ref inner) = receiver
+        && let Some(result) = vm_call_option_method(inner, method, &args)
+    {
+        return result;
+    }
+    if let Value::Struct {
+        ref name,
+        ref fields,
+    } = receiver
+        && name == "StringBuilder"
+    {
+        return vm_call_string_builder_method(fields, method, &args);
+    }
+    vm_call_builtin_method_scalar(receiver, method, args)
+}
+
+/// The RES-3904/RES-3994 scalar fallback tier (`Cell`, `Result`
+/// error-chaining, and the shared `builtin_method_full_name` +
+/// `lookup_builtin` table) — split out of `vm_call_builtin_method` so
+/// the RES-4017 additions above it can `return` early without nesting.
+fn vm_call_builtin_method_scalar(
     receiver: Value,
     method: &str,
     args: Vec<Value>,
 ) -> Result<Value, VmError> {
-    if let Value::Array(_) = &receiver
-        && method == "collect"
-    {
-        if !args.is_empty() {
-            return Err(VmError::TypeMismatch("collect: expected 0 arguments"));
-        }
-        return Ok(receiver);
-    }
     // RES-3914: `Value::Cell` upvalue-box method dispatch. The compiler
     // routes reads/writes of a captured-mutable variable through
     // `Cell.get()` / `Cell.set()` (see `compiler.rs`'s `BOXED_FLAG`) so
@@ -4344,6 +4889,20 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let split = state.stack.len() - arity;
     let args: Vec<Value> = state.stack.drain(split..).collect();
     let receiver = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    // RES-4017: `StringBuilder` methods intercept before the generic
+    // struct `$method` mangled lookup below — see the identical check
+    // in `run_dispatch_loop`'s `Op::CallMethod` arm for the full
+    // rationale.
+    if let Value::Struct {
+        ref name,
+        ref fields,
+    } = receiver
+        && name == "StringBuilder"
+    {
+        let result = vm_call_string_builder_method(fields, &method, &args)?;
+        state.stack.push(result);
+        return Ok(Step::Continue);
+    }
     // RES-3994: primitive-`impl` receivers (`impl int { ... }`, `impl
     // float`, `impl string`, `impl bool` — RES-2553) mangle the same
     // way struct/enum methods do (`int$abs`).
@@ -4357,7 +4916,8 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         // back to the built-in container method sugar (String/Array/
         // Map/Set), which the compiler emits `CallMethod` for
         // identically since it has no static type info.
-        let result = vm_call_builtin_method(receiver, &method, args)?;
+        let result =
+            vm_call_builtin_method(state.program, receiver, &method, args, state.overflow_mode)?;
         state.stack.push(result);
         return Ok(Step::Continue);
     };
@@ -4376,7 +4936,8 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         if matches!(&receiver, Value::Struct { .. } | Value::EnumVariant { .. }) {
             return Err(VmError::TypeMismatch("CallMethod: method not found"));
         }
-        let result = vm_call_builtin_method(receiver, &method, args)?;
+        let result =
+            vm_call_builtin_method(state.program, receiver, &method, args, state.overflow_mode)?;
         state.stack.push(result);
         return Ok(Step::Continue);
     };
