@@ -273,18 +273,13 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // `live_retry_log.rz`, `showcase_live_invariant.rz`, and
     // `telemetry_demo.rz` were removed from this list in that PR.
     // `self_healing.rz` (RES-4046: function-scoped `static let` didn't
-    // persist across calls under `--vm`) and `thermal_safety_cutoff.rz`
+    // persist across calls under `--vm`), `thermal_safety_cutoff.rz`
     // (RES-4045: `return EXPR;` after an if-branch ending in
-    // `Op::AssertFail` dropped the `LoadLocal`) were removed from this
+    // `Op::AssertFail` dropped the `LoadLocal`), and `recovers_to_fail.rz`
+    // (RES-4041: the VM never checked `ensures`/`recovers_to`
+    // function-contract postconditions at all) were removed from this
     // list once those independently-filed, non-live-block bugs were
     // fixed.
-    // RES-4041: VM never checks `ensures`/`recovers_to` function-contract
-    // postconditions (a much bigger gap than #3996's `assume` fix — it
-    // needs a per-call runtime check compiled alongside `ReturnFromCall`,
-    // not a single-node lowering). The interpreter raises "Contract
-    // violation in fn init_actuator: recovers_to result == 0 failed"
-    // (exit 1); `--vm` returns normally (exit 0, prints "3").
-    "recovers_to_fail.rz",
 ];
 
 /// Every `examples/*.rz` file, sorted, read fresh from disk each run so
@@ -1746,4 +1741,89 @@ fn interpreter_and_vm_agree_on_assume_false_dead_code() {
         failures.len(),
         failures.join("")
     );
+}
+
+#[test]
+fn interpreter_and_vm_agree_on_ensures_recovers_to_postconditions() {
+    // RES-4041: the tree-walking interpreter runtime-checks `ensures`/
+    // `recovers_to` function-contract postconditions after a function's
+    // body returns (see `lib.rs`'s post-body check in the
+    // `Value::Function` call-evaluation arm), but the bytecode VM used
+    // to have no equivalent check anywhere — a function whose body
+    // violated a runtime `ensures`/`recovers_to` clause errored under
+    // the interpreter but silently returned normally under `--vm`.
+    // `examples/recovers_to_fail.rz` (covered by
+    // `interpreter_and_vm_agree_on_all_examples` now that it's off
+    // `UNSUPPORTED_BY_VM`) is one fixed instance of this; these cases
+    // pin the fix directly, independent of that example file, and
+    // additionally cover: a satisfied `ensures`, a violated `ensures`
+    // that never touches `recovers_to`, and a nested `fn` (not just a
+    // top-level one) declaring `ensures`.
+    let programs = [
+        (
+            "ensures_satisfied_passes",
+            "fn double_it(int x) -> int ensures result == x * 2 { return x * 2; } \
+             fn main() { println(double_it(5)); } main();"
+                .to_string(),
+        ),
+        (
+            "ensures_violated_halts",
+            "fn broken_double(int x) -> int ensures result == x * 2 { return x * 3; } \
+             fn main() { let v = broken_double(5); println(v); } main();"
+                .to_string(),
+        ),
+        (
+            "recovers_to_satisfied_passes",
+            "fn init_actuator(int id) -> int recovers_to: result == 0; { return 0; } \
+             fn main() { println(init_actuator(1)); } main();"
+                .to_string(),
+        ),
+        (
+            "recovers_to_violated_halts",
+            "fn init_actuator(int id) -> int recovers_to: result == 0; { return 3; } \
+             fn main() { let mode = init_actuator(1); println(mode); } main();"
+                .to_string(),
+        ),
+        (
+            "nested_fn_ensures_violated_halts",
+            "fn main() { \
+                 fn broken_double(int x) -> int ensures result == x * 2 { return x * 3; } \
+                 println(broken_double(5)); \
+             } main();"
+                .to_string(),
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in &programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} ensures/recovers_to case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+
+    // The violated cases must actually halt (both backends) — a test
+    // that "agrees" by both backends silently succeeding would defeat
+    // the point.
+    for tag in [
+        "ensures_violated_halts",
+        "recovers_to_violated_halts",
+        "nested_fn_ensures_violated_halts",
+    ] {
+        let (_, src) = programs.iter().find(|(t, _)| *t == tag).unwrap();
+        let vm = run_src(src, tag, true);
+        assert_ne!(
+            vm.code,
+            Some(0),
+            "{tag}: expected --vm to halt on the violated postcondition, got exit {:?} stdout {:?}",
+            vm.code,
+            vm.stdout
+        );
+    }
 }

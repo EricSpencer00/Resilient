@@ -273,6 +273,15 @@ fn write_op(
         Op::PushStaticInitialized(idx) => write!(out, "PushStaticInitialized {}", idx)?,
         Op::StoreStatic(idx) => write!(out, "StoreStatic {}", idx)?,
         Op::LoadStatic(idx) => write!(out, "LoadStatic {}", idx)?,
+        Op::ContractViolation {
+            name_const,
+            clause_const,
+            is_recovers_to,
+        } => write!(
+            out,
+            "ContractViolation name={} clause={} recovers_to={}",
+            name_const, clause_const, is_recovers_to
+        )?,
     }
     Ok(())
 }
@@ -362,6 +371,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -391,6 +401,7 @@ mod tests {
                     local_count: 1,
                     upvalue_source_slots: Box::default(),
                     fails: Box::default(),
+                    postcheck: None,
                 },
                 Function {
                     name: "beta".to_string(),
@@ -399,6 +410,7 @@ mod tests {
                     local_count: 2,
                     upvalue_source_slots: Box::default(),
                     fails: Box::default(),
+                    postcheck: None,
                 },
             ],
             #[cfg(feature = "ffi")]
@@ -454,6 +466,7 @@ mod tests {
                 local_count: 1,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -533,6 +546,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),

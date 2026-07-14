@@ -95,6 +95,13 @@ pub enum VmError {
     UpvalueOutOfBounds(u16),
     /// RES-2544: a function with `fails` was called inside a try block.
     CheckedFailure(String),
+    /// RES-4041: a runtime-checked `ensures`/`recovers_to` postcondition
+    /// clause evaluated falsy. Carries the fully-formatted diagnostic
+    /// (matching the tree-walking interpreter's `Contract violation in
+    /// fn {name}: ensures {clause} failed (result = {value})` / the
+    /// `recovers_to` final-state-counterexample wording) — see
+    /// `Op::ContractViolation`.
+    ContractViolation(String),
 }
 
 impl VmError {
@@ -152,6 +159,7 @@ impl std::fmt::Display for VmError {
             VmError::CheckedFailure(variant) => {
                 write!(f, "vm: checked failure: {}", variant)
             }
+            VmError::ContractViolation(msg) => write!(f, "{}", msg),
         }
     }
 }
@@ -465,6 +473,50 @@ fn write_back_upvalues(popped: &CallFrame, caller_base: usize, locals: &mut [Val
     }
 }
 
+/// RES-4041: build the `Contract violation in fn ...` diagnostic for
+/// `Op::ContractViolation`, matching the tree-walking interpreter's
+/// wording exactly (`lib.rs`'s `ensures`/`recovers_to` post-body check):
+///
+/// - `ensures`: `Contract violation in fn {name}: ensures {clause}
+///   failed (result = {value})`
+/// - `recovers_to`: `Contract violation in fn {name}: recovers_to
+///   {clause} failed — final-state counterexample: result = {value}`
+fn format_contract_violation(
+    chunk: &Chunk,
+    name_const: u16,
+    clause_const: u16,
+    is_recovers_to: bool,
+    result: &Value,
+) -> Result<String, VmError> {
+    let name = match chunk
+        .constants
+        .get(name_const as usize)
+        .ok_or(VmError::ConstantOutOfBounds(name_const))?
+    {
+        Value::String(s) => s.as_str(),
+        _ => return Err(VmError::ConstantOutOfBounds(name_const)),
+    };
+    let clause = match chunk
+        .constants
+        .get(clause_const as usize)
+        .ok_or(VmError::ConstantOutOfBounds(clause_const))?
+    {
+        Value::String(s) => s.as_str(),
+        _ => return Err(VmError::ConstantOutOfBounds(clause_const)),
+    };
+    Ok(if is_recovers_to {
+        format!(
+            "Contract violation in fn {}: recovers_to {} failed — final-state counterexample: result = {}",
+            name, clause, result
+        )
+    } else {
+        format!(
+            "Contract violation in fn {}: ensures {} failed (result = {})",
+            name, clause, result
+        )
+    })
+}
+
 /// RES-2544: active try-catch handler frame. Pushed by `EnterTry`,
 /// popped by `ExitTry`. When a `CheckedFailure` error fires during
 /// a function call, the VM searches this stack for a matching handler.
@@ -590,6 +642,83 @@ enum LoopOutcome {
     /// `thermal_safety_cutoff.rz`'s `safe_read`). Also a success —
     /// there's no more of the block left to retry.
     ReturnedFromFrame(Value),
+}
+
+/// RES-4041: run a synthesized postcheck function (see
+/// `compiler::build_postcheck_function`) to completion as an ordinary,
+/// fully isolated call — its own fresh operand stack, locals slab, and
+/// frame stack, entirely decoupled from whatever call is in progress
+/// in the caller. This reuses `run_dispatch_loop` (the same engine that
+/// runs every other bytecode-compiled expression) instead of a
+/// hand-rolled mini-evaluator, so `ensures`/`recovers_to` clauses get
+/// full expression support — arithmetic, comparisons, even further
+/// calls — for free and with zero risk of drifting from the rest of
+/// the VM's semantics.
+///
+/// `fn_idx` must reference a function whose *only* frame is pushed
+/// here (no enclosing "main" wrapper below it), so its own
+/// `Op::ReturnFromCall` empties `frames` and the call surfaces as
+/// `LoopOutcome::Halted` — see `run_dispatch_loop`'s `frames.is_empty()`
+/// check. `args` must have exactly `functions[fn_idx].arity` entries.
+fn run_postcheck(
+    program: &Program,
+    fn_idx: u16,
+    args: Vec<Value>,
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
+    let func = program
+        .functions
+        .get(fn_idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    let mut locals: Vec<Value> = vec![Value::Void; func.local_count as usize];
+    for (i, v) in args.into_iter().enumerate() {
+        if let Some(slot) = locals.get_mut(i) {
+            *slot = v;
+        }
+    }
+    let mut stack: Vec<Value> = Vec::new();
+    let mut frames: Vec<CallFrame> = vec![CallFrame {
+        chunk_idx: fn_idx as usize,
+        pc: 0,
+        locals_base: 0,
+        upvalues: Box::default(),
+        closure_home: None,
+        source_slots: Box::default(),
+    }];
+    let mut try_stack: Vec<TryFrame> = Vec::new();
+    // RES-4046: `statics`/`statics_init` persist a fn's `static let`
+    // bindings across separate calls *within the same run*. A
+    // postcheck's own body never declares one (see
+    // `build_postcheck_function`), and this call is a fully isolated
+    // sub-run anyway (fresh stack/locals/frames) — so fresh, empty
+    // tables here (rather than sharing the enclosing call's) are
+    // consistent with that isolation. The one edge case this doesn't
+    // cover — a clause calling a *user* fn that itself uses
+    // `static let` — resets that fn's statics for the duration of the
+    // clause check only; nothing in `examples/*.rz` exercises it.
+    let mut statics: Vec<Vec<Value>> = Vec::new();
+    let mut statics_init: Vec<Vec<bool>> = Vec::new();
+    let mut last_pc: (usize, usize) = (fn_idx as usize, 0);
+    match run_dispatch_loop(
+        program,
+        &mut stack,
+        &mut locals,
+        &mut frames,
+        &mut try_stack,
+        &mut statics,
+        &mut statics_init,
+        overflow_mode,
+        &mut last_pc,
+        None,
+    )? {
+        LoopOutcome::Halted(v) => Ok(v),
+        // `tracked: None` means only `Halted` is ever produced (see
+        // `run_inner`'s identical top-level invocation) — a single,
+        // untracked frame stack has no other exit path.
+        LoopOutcome::ExitedNormally | LoopOutcome::ReturnedFromFrame(_) => {
+            unreachable!("run_postcheck's untracked frame stack only ever halts")
+        }
+    }
 }
 
 /// RES-091: the original dispatch loop, factored out so `run` can
@@ -1020,6 +1149,29 @@ fn run_dispatch_loop(
                 // semantics.
                 let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                // RES-4041: run `popped`'s `ensures`/`recovers_to`
+                // postcondition checks now, while its own parameters are
+                // still addressable via `popped.locals_base` — mirrors
+                // the tree-walking interpreter, which runs this check
+                // before the call's environment is torn down. A
+                // violation aborts the whole VM run, exactly like the
+                // interpreter's `Contract violation in fn ...` error.
+                if popped.chunk_idx != usize::MAX
+                    && let Some(postcheck_idx) = program.functions[popped.chunk_idx].postcheck
+                {
+                    let arity = program.functions[popped.chunk_idx].arity as usize;
+                    let mut args = Vec::with_capacity(arity + 1);
+                    for i in 0..arity {
+                        args.push(
+                            locals
+                                .get(popped.locals_base + i)
+                                .cloned()
+                                .unwrap_or(Value::Void),
+                        );
+                    }
+                    args.push(ret.clone());
+                    run_postcheck(program, postcheck_idx, args, overflow_mode)?;
+                }
                 if frames.is_empty() {
                     return Ok(LoopOutcome::Halted(ret));
                 }
@@ -2041,6 +2193,20 @@ fn run_dispatch_loop(
                 };
                 return Err(VmError::AssumeViolated(msg));
             }
+            Op::ContractViolation {
+                name_const,
+                clause_const,
+                is_recovers_to,
+            } => {
+                let result = stack.pop().ok_or(VmError::EmptyStack)?;
+                return Err(VmError::ContractViolation(format_contract_violation(
+                    chunk,
+                    name_const,
+                    clause_const,
+                    is_recovers_to,
+                    &result,
+                )?));
+            }
             Op::AssertBool => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
                 if !matches!(v, Value::Bool(_)) {
@@ -2554,6 +2720,7 @@ fn op_to_index(op: Op) -> usize {
         Op::PushStaticInitialized(_) => OP_KIND_PUSH_STATIC_INITIALIZED,
         Op::StoreStatic(_) => OP_KIND_STORE_STATIC,
         Op::LoadStatic(_) => OP_KIND_LOAD_STATIC,
+        Op::ContractViolation { .. } => OP_KIND_CONTRACT_VIOLATION,
     }
 }
 
@@ -2598,7 +2765,12 @@ const OP_KIND_EXIT_LIVE: usize = 55;
 const OP_KIND_PUSH_STATIC_INITIALIZED: usize = 56;
 const OP_KIND_STORE_STATIC: usize = 57;
 const OP_KIND_LOAD_STATIC: usize = 58;
-const HANDLER_TABLE_LEN: usize = 59;
+/// RES-4041: only ever reached via a synthesized postcheck function's
+/// own chunk, which `h_return_from_call` refuses to invoke under the
+/// Direct engine (see its doc comment) — this handler exists for
+/// dispatch-table completeness, not because it's reachable today.
+const OP_KIND_CONTRACT_VIOLATION: usize = 59;
+const HANDLER_TABLE_LEN: usize = 60;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2663,6 +2835,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_PUSH_STATIC_INITIALIZED] = h_static_unsupported;
     table[OP_KIND_STORE_STATIC] = h_static_unsupported;
     table[OP_KIND_LOAD_STATIC] = h_static_unsupported;
+    table[OP_KIND_CONTRACT_VIOLATION] = h_contract_violation;
     table
 };
 
@@ -3092,6 +3265,21 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let ret = state.stack.pop().unwrap_or(Value::Void);
     let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+    // RES-4041: the Direct (table-dispatch) engine doesn't implement
+    // the postcheck's isolated nested-call recursion yet (same scope
+    // cut as `OP_KIND_ENTER_LIVE`'s live-block retry semantics) —
+    // surface a clean `Unsupported` instead of silently skipping the
+    // check. `--vm`'s default Match engine (`run_inner`) always runs
+    // it; this only matters under `RESILIENT_DISPATCH=direct`.
+    if popped.chunk_idx != usize::MAX
+        && state.program.functions[popped.chunk_idx]
+            .postcheck
+            .is_some()
+    {
+        return Err(VmError::Unsupported(
+            "ensures/recovers_to postcondition check (RESILIENT_DISPATCH=direct doesn't implement RES-4041 postcheck recursion yet)",
+        ));
+    }
     if state.frames.is_empty() {
         return Ok(Step::Halt(ret));
     }
@@ -3832,6 +4020,26 @@ fn h_assume_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     Err(VmError::AssumeViolated(msg))
 }
 
+fn h_contract_violation(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::ContractViolation {
+        name_const,
+        clause_const,
+        is_recovers_to,
+    } = op
+    else {
+        unreachable!()
+    };
+    let result = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let chunk = state.current_chunk();
+    Err(VmError::ContractViolation(format_contract_violation(
+        chunk,
+        name_const,
+        clause_const,
+        is_recovers_to,
+        &result,
+    )?))
+}
+
 fn h_assert_bool(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
     if !matches!(v, Value::Bool(_)) {
@@ -4506,6 +4714,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -4813,6 +5022,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]
@@ -6016,6 +6226,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -6055,6 +6266,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]

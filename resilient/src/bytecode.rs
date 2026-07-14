@@ -343,6 +343,26 @@ pub enum Op {
     /// declaration's guarded init sequence has executed at least once
     /// (this call or an earlier one).
     LoadStatic(u16),
+    /// RES-4041: pop TOS (the function's return value, bound to the
+    /// synthesized postcheck function's `result` parameter — see
+    /// `compiler::build_postcheck_function`) and raise a
+    /// `VmError::ContractViolation` whose message matches the
+    /// tree-walking interpreter's `ensures`/`recovers_to` diagnostic
+    /// (`lib.rs`'s post-body check in the `Value::Function` call arm):
+    /// `Contract violation in fn {name}: ensures {clause} failed
+    /// (result = {value})` for `is_recovers_to == false`, or the
+    /// `recovers_to ... final-state counterexample: result = {value}`
+    /// wording otherwise. `name_const`/`clause_const` index into the
+    /// chunk's constant pool (both `Value::String`, baked in at
+    /// compile time since the function name and clause text are
+    /// static). Guarded by a preceding `JumpIfTrue` that skips this
+    /// sequence when the clause holds — same shape as `AssertFail`/
+    /// `AssumeFail`.
+    ContractViolation {
+        name_const: u16,
+        clause_const: u16,
+        is_recovers_to: bool,
+    },
 }
 
 /// RES-2544: one catch arm in a try-catch handler table.
@@ -447,6 +467,14 @@ pub struct Function {
     /// called inside a `try` block, the VM injects a checked failure
     /// for the first variant instead of running the body.
     pub fails: Box<[String]>,
+    /// RES-4041: index into `Program::functions` of the synthesized
+    /// postcondition-check function for this fn's `ensures`/
+    /// `recovers_to` clauses (see `compiler::build_postcheck_function`),
+    /// or `None` when the fn declares neither. `vm::run_dispatch_loop`
+    /// calls it automatically on every `Op::ReturnFromCall`, passing
+    /// this fn's own parameters plus the return value — exactly
+    /// mirroring the tree-walking interpreter's post-body check.
+    pub postcheck: Option<u16>,
 }
 
 /// RES-081: top-level compile output. `main` is the entrypoint

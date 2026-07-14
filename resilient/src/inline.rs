@@ -666,6 +666,7 @@ mod tests {
             local_count: 1,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(
                 vec![Op::LoadLocal(0), Op::ReturnFromCall, Op::ReturnFromCall],
                 vec![],
@@ -682,6 +683,7 @@ mod tests {
             local_count: 1,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(
                 vec![
                     Op::LoadLocal(0),
@@ -704,6 +706,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(vec![Op::Call(0), Op::ReturnFromCall], vec![], vec![1, 1]),
         }
     }
@@ -728,6 +731,7 @@ mod tests {
             local_count: 1,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(code, vec![Value::Int(0)], lines),
         }
     }
@@ -776,6 +780,7 @@ mod tests {
             local_count: 1,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(code, vec![], lines),
         };
         let funcs = vec![func];
@@ -796,6 +801,7 @@ mod tests {
             local_count: 1,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(code, vec![], lines),
         };
         let funcs = vec![func];
@@ -810,6 +816,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(vec![Op::TailCall(0), Op::Return], vec![], vec![1, 1]),
         };
         let funcs = vec![func];
@@ -824,6 +831,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(
                 vec![Op::CallForeign(0), Op::ReturnFromCall],
                 vec![],
@@ -842,6 +850,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(
                 vec![
                     Op::MakeClosure {
@@ -969,6 +978,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
             chunk: mk_chunk(
                 vec![Op::Const(0), Op::ReturnFromCall, Op::ReturnFromCall],
                 vec![Value::Int(0)],

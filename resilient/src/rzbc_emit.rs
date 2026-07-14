@@ -365,6 +365,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),

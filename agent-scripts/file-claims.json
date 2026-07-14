@@ -128,26 +128,6 @@
       "branch": "res-4048-trait-bound-enforcement",
       "claimed_at": "2026-07-14T09:50:50Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-4045-vm-soundness-bugs",
-      "claimed_at": "2026-07-14T09:48:01Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-4045-vm-soundness-bugs",
-      "claimed_at": "2026-07-14T09:48:01Z"
-    },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-4045-vm-soundness-bugs",
-      "claimed_at": "2026-07-14T09:48:01Z"
-    },
-    "resilient/src/peephole.rs": {
-      "branch": "res-4045-vm-soundness-bugs",
-      "claimed_at": "2026-07-14T10:07:38Z"
-    },
-    "resilient/src/disasm.rs": {
-      "branch": "res-4045-vm-soundness-bugs",
-      "claimed_at": "2026-07-14T10:07:38Z"
-    },
     "resilient/src/typechecker.rs": {
       "branch": "res-4012-unify-exhaustiveness",
       "claimed_at": "2026-07-14T10:39:37Z"
@@ -159,6 +139,18 @@
     "resilient/src/struct_exhaustiveness.rs": {
       "branch": "res-4012-unify-exhaustiveness",
       "claimed_at": "2026-07-14T10:39:37Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-4041-vm-postconditions",
+      "claimed_at": "2026-07-14T11:01:38Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-4041-vm-postconditions",
+      "claimed_at": "2026-07-14T11:01:38Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-4041-vm-postconditions",
+      "claimed_at": "2026-07-14T11:01:38Z"
     }
   }
 }
