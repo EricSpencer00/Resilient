@@ -111,6 +111,26 @@
     "resilient/src/vm.rs": {
       "branch": "res-3991-vm-trailing-autoprint",
       "claimed_at": "2026-07-14T05:39:59Z"
+    },
+    "resilient/src/contract_certificate.rs": {
+      "branch": "res-4028-cert-hardening",
+      "claimed_at": "2026-07-14T06:13:56Z"
+    },
+    "resilient/src/cert_sign.rs": {
+      "branch": "res-4028-cert-hardening",
+      "claimed_at": "2026-07-14T06:13:56Z"
+    },
+    "resilient/tests/it/contract_certificate_e2e_smoke.rs": {
+      "branch": "res-4028-cert-hardening",
+      "claimed_at": "2026-07-14T06:13:56Z"
+    },
+    "fuzz/fuzz_targets/contracts.rs": {
+      "branch": "res-4028-cert-hardening",
+      "claimed_at": "2026-07-14T06:13:56Z"
+    },
+    "docs/HOWTO_PROVABLY_CORRECT_AI_CODE.md": {
+      "branch": "res-4028-cert-hardening",
+      "claimed_at": "2026-07-14T06:13:56Z"
     }
   }
 }
