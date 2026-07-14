@@ -443,6 +443,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         local_count: 0,
         upvalue_source_slots: Box::default(),
         fails: Box::default(),
+        postcheck: None,
     };
     for _ in 0..fn_count {
         functions.push(placeholder());
@@ -453,6 +454,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                body: &Node,
                                fn_line: u32,
                                fails: Box<[String]>,
+                               ensures: &[Node],
+                               recovers_to: &Option<Box<Node>>,
                                functions: &mut Vec<Function>,
                                next_fn_idx: &mut u16|
      -> Result<(), CompileError> {
@@ -491,6 +494,23 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         crate::peephole::optimize(&mut chunk)
             .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
         crate::dce::eliminate(&mut chunk);
+        // RES-4041: synthesize the postcondition-check function (if any)
+        // *before* recording this fn's own entry — the postcheck may
+        // itself push nested functions onto `functions` (e.g. a clause
+        // calling another fn), and this fn's own slot (`top_idx`) is
+        // already reserved regardless of how many entries get appended
+        // after it.
+        let postcheck = build_postcheck_function(
+            name,
+            parameters,
+            ensures,
+            recovers_to,
+            &fn_index,
+            &ffi_index,
+            functions,
+            next_fn_idx,
+            fn_line,
+        )?;
         functions[top_idx] = Function {
             name: name.to_string(),
             arity,
@@ -498,6 +518,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             local_count: next_local,
             upvalue_source_slots: Box::default(),
             fails,
+            postcheck,
         };
         top_idx += 1;
         Ok(())
@@ -509,6 +530,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 parameters,
                 body,
                 fails,
+                ensures,
+                recovers_to,
                 ..
             } => {
                 compile_fn_body(
@@ -517,6 +540,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     body,
                     spanned.span.start.line as u32,
                     fails.clone().into_boxed_slice(),
+                    ensures,
+                    recovers_to,
                     &mut functions,
                     &mut next_fn_idx,
                 )?;
@@ -527,6 +552,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                         name,
                         parameters,
                         body,
+                        ensures,
+                        recovers_to,
                         ..
                     } = m
                     {
@@ -537,6 +564,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                             body,
                             line,
                             Box::default(),
+                            ensures,
+                            recovers_to,
                             &mut functions,
                             &mut next_fn_idx,
                         )?;
@@ -1257,11 +1286,15 @@ fn compile_stmt(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             ..
         } => compile_nested_fn(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             chunk,
             locals,
             next_local,
@@ -2114,6 +2147,8 @@ fn compile_nested_fn(
     name: &str,
     parameters: &[(String, String)],
     body: &Node,
+    ensures: &[Node],
+    recovers_to: &Option<Box<Node>>,
     outer_chunk: &mut Chunk,
     outer_locals: &mut HashMap<String, u16>,
     outer_next_local: &mut u16,
@@ -2146,6 +2181,7 @@ fn compile_nested_fn(
         local_count: 0,
         upvalue_source_slots: Box::default(),
         fails: Box::default(),
+        postcheck: None,
     });
     let mut inner_fn_index = fn_index.clone();
     inner_fn_index.insert(name.to_string(), fn_idx);
@@ -2171,6 +2207,20 @@ fn compile_nested_fn(
     crate::peephole::optimize(&mut chunk)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
     crate::dce::eliminate(&mut chunk);
+    // RES-4041: see the matching comment in the top-level `compile_fn_body`
+    // closure — synthesize the postcheck fn (if any) before recording this
+    // fn's own entry.
+    let postcheck = build_postcheck_function(
+        name,
+        parameters,
+        ensures,
+        recovers_to,
+        &inner_fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
     fns[fn_idx as usize] = Function {
         name: name.to_string(),
         arity,
@@ -2178,6 +2228,7 @@ fn compile_nested_fn(
         local_count: next_local,
         upvalue_source_slots: Box::default(),
         fails: Box::default(),
+        postcheck,
     };
     outer_chunk.emit(
         Op::MakeClosure {
@@ -2193,6 +2244,166 @@ fn compile_nested_fn(
     *outer_next_local += 1;
     outer_locals.insert(name.to_string(), slot);
     outer_chunk.emit(Op::StoreLocal(slot), line);
+    Ok(())
+}
+
+/// RES-4041: synthesize a standalone bytecode `Function` that evaluates
+/// `name`'s `ensures`/`recovers_to` postconditions, given its own
+/// parameters plus the return value. `vm::run_dispatch_loop` calls the
+/// result automatically on every `Op::ReturnFromCall` for `name` (see
+/// the `Function::postcheck` doc comment in `bytecode.rs`) — mirroring
+/// the tree-walking interpreter's post-body check (`lib.rs`, the
+/// `ensures`/`recovers_to` block in the `Value::Function` call-
+/// evaluation arm): bind `result` to the return value, evaluate each
+/// `ensures` clause in declaration order, then the optional
+/// `recovers_to` clause, and raise a `Contract violation in fn {name}:
+/// ...` error on the first falsy one.
+///
+/// Returns `Ok(None)` when `name` declares neither clause — the common
+/// case, and free of any runtime cost.
+///
+/// Scope (RES-4041): a clause may reference `name`'s own parameters and
+/// `result` only — exactly what every `ensures`/`recovers_to` clause in
+/// `examples/*.rz` does. A clause referencing an outer `let`-bound
+/// local from the function body (not a parameter) fails to compile
+/// here with `CompileError::UnknownIdentifier` — a loud, honest
+/// compile-time failure rather than a silent runtime divergence from
+/// the interpreter. Full free-variable capture (mirroring
+/// `collect_free_vars`'s closure-upvalue handling) is a follow-up if
+/// that shape is ever exercised.
+#[allow(clippy::too_many_arguments)]
+fn build_postcheck_function(
+    name: &str,
+    parameters: &[(String, String)],
+    ensures: &[Node],
+    recovers_to: &Option<Box<Node>>,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<Option<u16>, CompileError> {
+    if ensures.is_empty() && recovers_to.is_none() {
+        return Ok(None);
+    }
+    if parameters.len() >= u8::MAX as usize {
+        return Err(CompileError::Unsupported("fn with >255 params"));
+    }
+    let arity = parameters.len() as u8 + 1;
+    let mut chunk = Chunk::with_capacity(32);
+    let mut locals: HashMap<String, u16> = HashMap::with_capacity(parameters.len() + 2);
+    let mut next_local: u16 = 0;
+    for (_type_name, pname) in parameters {
+        locals.insert(pname.clone(), next_local);
+        next_local += 1;
+    }
+    // RES-035/RES-392: `result` is bound alongside the parameters,
+    // exactly like the interpreter binds it into the same call
+    // environment the parameters already live in.
+    locals.insert("result".to_string(), next_local);
+    let result_slot = next_local;
+    next_local += 1;
+
+    let name_const = chunk.add_string_constant(name)?;
+    for clause in ensures {
+        compile_contract_clause(
+            clause,
+            false,
+            name_const,
+            &mut chunk,
+            &mut locals,
+            &mut next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+    }
+    if let Some(rec) = recovers_to {
+        compile_contract_clause(
+            rec,
+            true,
+            name_const,
+            &mut chunk,
+            &mut locals,
+            &mut next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+    }
+    // Every clause held — return the (unused) result value so this
+    // function's own `ReturnFromCall` has something to pop.
+    chunk.emit(Op::LoadLocal(result_slot), line);
+    chunk.emit(Op::ReturnFromCall, line);
+
+    crate::const_fold::optimize_if_enabled(&mut chunk)
+        .map_err(|_| CompileError::InternalError("constant folder failed"))?;
+    crate::peephole::optimize(&mut chunk)
+        .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
+    crate::dce::eliminate(&mut chunk);
+
+    let fn_idx = fns.len() as u16;
+    fns.push(Function {
+        name: format!("{name}$postcheck"),
+        arity,
+        chunk,
+        local_count: next_local,
+        upvalue_source_slots: Box::default(),
+        fails: Box::default(),
+        postcheck: None,
+    });
+    Ok(Some(fn_idx))
+}
+
+/// RES-4041: compile one `ensures`/`recovers_to` clause inside a
+/// synthesized postcheck function (see `build_postcheck_function`).
+/// Evaluates `clause`, and if falsy, loads `result` (already bound as
+/// an ordinary local — see the caller) and raises
+/// `Op::ContractViolation` — the same JumpIfTrue-guarded shape as
+/// `compile_assert_like`.
+#[allow(clippy::too_many_arguments)]
+fn compile_contract_clause(
+    clause: &Node,
+    is_recovers_to: bool,
+    name_const: u16,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_expr(
+        clause,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    let jt = chunk.emit(Op::JumpIfTrue(0), line);
+    let result_slot = locals["result"];
+    chunk.emit(Op::LoadLocal(result_slot), line);
+    let clause_const = chunk.add_string_constant(&crate::format_contract_expr(clause))?;
+    chunk.emit(
+        Op::ContractViolation {
+            name_const,
+            clause_const,
+            is_recovers_to,
+        },
+        line,
+    );
+    let past_fail = chunk.code.len();
+    chunk.patch_jump(jt, past_fail)?;
     Ok(())
 }
 
@@ -2599,11 +2810,15 @@ fn compile_stmt_in_fn(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             ..
         } => compile_nested_fn(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             chunk,
             locals,
             next_local,
@@ -4371,6 +4586,7 @@ fn compile_expr(
                     local_count: 0,
                     upvalue_source_slots: Box::default(),
                     fails: Box::default(),
+                    postcheck: None,
                 });
             }
             fns[fn_idx as usize] = Function {
@@ -4380,6 +4596,7 @@ fn compile_expr(
                 local_count,
                 upvalue_source_slots: source_slots,
                 fails: Box::default(),
+                postcheck: None,
             };
 
             // Emit: push each captured value onto the stack, then
