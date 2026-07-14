@@ -87,6 +87,14 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
         Some("resilient-contract-certificate/v1"),
         "unexpected certificate: {cert}"
     );
+    // C-E5: the schema_version field lets a consumer fail closed on a
+    // future document shape it doesn't understand instead of
+    // silently misparsing it.
+    assert_eq!(
+        cert.get("schema_version").and_then(|v| v.as_u64()),
+        Some(1),
+        "unexpected certificate: {cert}"
+    );
     assert_eq!(
         cert.get("source").and_then(|v| v.as_str()),
         Some(src_path.to_string_lossy().as_ref())

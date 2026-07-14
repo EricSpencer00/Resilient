@@ -216,6 +216,7 @@ $ rz my_module.rz --emit-contract-certificate cert.json
 ```json
 {
   "schema": "resilient-contract-certificate/v1",
+  "schema_version": 1,
   "source": "my_module.rz",
   "functions": [
     {
@@ -287,6 +288,24 @@ because `"unknown"` is a legitimate, documented verdict rather than a
 failure. `provenance` is informational only: it never changes a
 verdict, only records that the function carried `@ai_generated` and/or
 `#[generated(...)]`.
+
+### Trusting the certificate — `schema_version` and tamper-evidence
+
+The `"schema_version"` field (currently `1`) is a numeric contract on
+the document's shape: a consumer checks it before parsing anything
+else, so a future field addition or reinterpretation fails closed
+(a typed error) instead of silently misparsing. Resilient's own
+`contract_certificate::verify_schema_version` never panics on
+malformed or missing input — see `resilient/src/contract_certificate.rs`.
+
+The JSON document itself carries no cryptographic material by
+default — trusting it means trusting the `rz` binary that produced
+it. Under `--features z3`, `contract_certificate::sign_bytes` /
+`verify_signed` reuse the same RES-194 Ed25519 primitives as
+`--emit-certificate`/`--sign-cert` (see
+[`CERTIFICATES.md`](CERTIFICATES.md)) to bind a certificate's exact
+bytes to a keypair: any tampering, down to a single flipped bit,
+fails verification.
 
 ## Step 7 — Cheap CI signal: `--vibe-gate`
 
