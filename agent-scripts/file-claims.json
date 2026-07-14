@@ -133,16 +133,16 @@
       "claimed_at": "2026-07-14T13:45:53Z"
     },
     "resilient/src/vm.rs": {
-      "branch": "res-4017-vm-callmethod-closures",
-      "claimed_at": "2026-07-14T16:38:41Z"
+      "branch": "res-4017-vm-mutual-tco",
+      "claimed_at": "2026-07-14T17:05:31Z"
     },
     "resilient/src/compiler.rs": {
-      "branch": "res-4017-vm-callmethod-closures",
-      "claimed_at": "2026-07-14T16:38:41Z"
+      "branch": "res-4017-vm-mutual-tco",
+      "claimed_at": "2026-07-14T17:05:31Z"
     },
     "resilient/src/bytecode.rs": {
-      "branch": "res-4017-vm-callmethod-closures",
-      "claimed_at": "2026-07-14T16:38:41Z"
+      "branch": "res-4017-vm-mutual-tco",
+      "claimed_at": "2026-07-14T17:05:31Z"
     }
   }
 }

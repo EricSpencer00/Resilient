@@ -508,7 +508,17 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         )?;
         chunk.emit(Op::ReturnFromCall, 0);
         let own_fn_idx = top_idx as u16;
-        rewrite_tail_calls(&mut chunk, own_fn_idx);
+        // RES-4017: only functions in a `#[mutual_tail_call]` group may
+        // tail-call into a *different* function's frame; everything
+        // else keeps the RES-384 self-recursion-only behavior (empty
+        // set here means `rewrite_tail_calls` only ever matches
+        // `own_fn_idx`).
+        let mutual_targets = if crate::mutual_tco::is_mutual_tail_call(name) {
+            crate::mutual_tco::mutual_tail_call_indices(&fn_index)
+        } else {
+            std::collections::HashSet::new()
+        };
+        rewrite_tail_calls(&mut chunk, own_fn_idx, &mutual_targets);
         crate::const_fold::optimize_if_enabled(&mut chunk)
             .map_err(|_| CompileError::InternalError("constant folder failed"))?;
         crate::peephole::optimize(&mut chunk)
@@ -2265,7 +2275,11 @@ fn compile_nested_fn(
         line,
     )?;
     chunk.emit(Op::ReturnFromCall, 0);
-    rewrite_tail_calls(&mut chunk, fn_idx);
+    // RES-4017: `#[mutual_tail_call]` only ever annotates top-level
+    // functions (see `mutual_tco::check`'s `Node::Program` scan), so a
+    // nested `fn` can never be part of a mutual-recursion group —
+    // self-recursion only, same as before.
+    rewrite_tail_calls(&mut chunk, fn_idx, &std::collections::HashSet::new());
     crate::const_fold::optimize_if_enabled(&mut chunk)
         .map_err(|_| CompileError::InternalError("constant folder failed"))?;
     crate::peephole::optimize(&mut chunk)
@@ -6898,7 +6912,9 @@ fn node_kind(n: &Node) -> &'static str {
 // ============================================================
 
 /// Scan `chunk.code` for every adjacent `Call(fn_idx); ReturnFromCall`
-/// pair where `fn_idx == own_fn_idx` and replace the pair with a
+/// pair where `fn_idx == own_fn_idx` (self-recursion, RES-384) or
+/// `fn_idx` is in `mutual_targets` (RES-4017: another function in the
+/// same `#[mutual_tail_call]` group) and replace the pair with a
 /// single `TailCall(fn_idx)`. The removed `ReturnFromCall` leaves a
 /// hole; rather than shifting the Vec (which would invalidate all
 /// existing jump targets), we overwrite the second slot of each pair
@@ -6920,7 +6936,20 @@ fn node_kind(n: &Node) -> &'static str {
 /// TO (no other op emits a forward-jump into `ReturnFromCall`; all
 /// branch targets land on the instruction AFTER a block, not ON a
 /// return). This invariant holds for the patterns the compiler emits.
-fn rewrite_tail_calls(chunk: &mut crate::bytecode::Chunk, own_fn_idx: u16) {
+///
+/// `mutual_targets` is the set of fn-table indices this function may
+/// tail-call into as part of a `#[mutual_tail_call]` group (empty
+/// when the function isn't annotated — see
+/// `mutual_tco::mutual_tail_call_indices`). `Call(idx); ReturnFromCall`
+/// only ever arises when the call's result flows straight into the
+/// return — i.e. genuine tail position — regardless of which `if`/
+/// `match` arm it came from, so no separate AST-level tail analysis
+/// is needed here.
+fn rewrite_tail_calls(
+    chunk: &mut crate::bytecode::Chunk,
+    own_fn_idx: u16,
+    mutual_targets: &std::collections::HashSet<u16>,
+) {
     let len = chunk.code.len();
     if len < 2 {
         return;
@@ -6929,16 +6958,19 @@ fn rewrite_tail_calls(chunk: &mut crate::bytecode::Chunk, own_fn_idx: u16) {
     // walk. The intermediate `Vec<usize>` of positions was unnecessary
     // — rewriting in place doesn't break the next iteration's read
     // because the new `Op::Return` tombstone at `i+1` cannot itself
-    // match `Op::Call(own_fn_idx)` at any later i. Drops the Vec
-    // allocation and halves the linear scans.
+    // match a tail-call-eligible `Op::Call` at any later i. Drops the
+    // Vec allocation and halves the linear scans.
     for i in 0..len - 1 {
-        if chunk.code[i] == Op::Call(own_fn_idx) && chunk.code[i + 1] == Op::ReturnFromCall {
+        if let Op::Call(target) = chunk.code[i]
+            && chunk.code[i + 1] == Op::ReturnFromCall
+            && (target == own_fn_idx || mutual_targets.contains(&target))
+        {
             // Replace the Call with TailCall; mark the ReturnFromCall
             // dead by overwriting with a no-op Return. The VM never
             // reaches it because TailCall resets pc, but leaving a
             // valid opcode keeps the chunk well-formed for the
             // disassembler and any future static analyses.
-            chunk.code[i] = Op::TailCall(own_fn_idx);
+            chunk.code[i] = Op::TailCall(target);
             chunk.code[i + 1] = Op::Return; // unreachable tombstone
         }
     }

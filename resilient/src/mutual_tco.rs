@@ -62,6 +62,28 @@ pub(crate) fn is_mutual_tail_call(fn_name: &str) -> bool {
     attrs.iter().any(|(name, _)| name == fn_name)
 }
 
+/// RES-4017: fn-table indices of every `#[mutual_tail_call]`-annotated
+/// function, resolved through `fn_index` (name → `Program::functions`
+/// slot).
+///
+/// Used by the VM compiler's `rewrite_tail_calls` pass: when the function
+/// currently being compiled is itself `#[mutual_tail_call]`, any call in
+/// tail position to another index in this set is a cross-function tail
+/// call within the same mutual-recursion group and gets rewritten to
+/// `Op::TailCall`, reusing the current call frame instead of pushing a
+/// new one (see `vm.rs`'s `Op::TailCall` handler). Mirrors the
+/// tree-walking interpreter's `Value::MutualTailCall` trampoline
+/// condition in `lib.rs`'s `CallExpression` eval.
+pub(crate) fn mutual_tail_call_indices(
+    fn_index: &std::collections::HashMap<String, u16>,
+) -> std::collections::HashSet<u16> {
+    let attrs = feature_attrs::find_kind("mutual_tail_call");
+    attrs
+        .iter()
+        .filter_map(|(name, _)| fn_index.get(name.as_str()).copied())
+        .collect()
+}
+
 /// Typecheck pass: validate `#[mutual_tail_call]` usage.
 ///
 /// Currently checks that each annotated function calls at least one other
