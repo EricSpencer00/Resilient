@@ -82,10 +82,16 @@ fn remove_unreachable(chunk: &mut Chunk) {
         }
         // Fall-through: everything except unconditional terminators.
         // RES-2514: TailCall and AssertFail are also terminators that
-        // never fall through to the next instruction.
+        // never fall through to the next instruction. RES-3996:
+        // AssumeFail is the same shape as AssertFail.
         let falls_through = !matches!(
             op,
-            Op::Return | Op::ReturnFromCall | Op::Jump(_) | Op::TailCall(_) | Op::AssertFail
+            Op::Return
+                | Op::ReturnFromCall
+                | Op::Jump(_)
+                | Op::TailCall(_)
+                | Op::AssertFail
+                | Op::AssumeFail
         );
         let next_pc = pc + 1;
         if falls_through && next_pc < n && !reachable[next_pc] {

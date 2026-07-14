@@ -276,13 +276,12 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "showcase_live_invariant.rz",
     "telemetry_demo.rz",
     "thermal_safety_cutoff.rz",
-    // RES-3996: VM doesn't enforce `assume(false)` / panic-recovery dead-code
-    // runtime checks — the interpreter exits non-zero before reaching "dead"
-    // code; `--vm` runs straight through it.
-    "assume_debug.rz",
-    "assume_false_dead_code.rz",
-    "assume_literal_false.rz",
-    "assume_violated.rz",
+    // RES-4041: VM never checks `ensures`/`recovers_to` function-contract
+    // postconditions (a much bigger gap than #3996's `assume` fix — it
+    // needs a per-call runtime check compiled alongside `ReturnFromCall`,
+    // not a single-node lowering). The interpreter raises "Contract
+    // violation in fn init_actuator: recovers_to result == 0 failed"
+    // (exit 1); `--vm` returns normally (exit 0, prints "3").
     "recovers_to_fail.rz",
 ];
 
@@ -1691,6 +1690,57 @@ fn interpreter_and_vm_agree_on_unsafe_block_body_execution() {
     assert!(
         failures.is_empty(),
         "{} MMIO-wrapper-block case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
+
+#[test]
+fn interpreter_and_vm_agree_on_assume_false_dead_code() {
+    // RES-3996: `compile_stmt`/`compile_stmt_in_fn` used to group
+    // `Node::Assume` with declaration-only nodes that emit no bytecode at
+    // all, so `--vm` silently no-op'd `assume(cond[, msg]);` and ran
+    // straight through code the tree-walker's `eval_assume` treats as
+    // unreachable. Covers both the top-level (`compile_stmt`) and in-fn
+    // (`compile_stmt_in_fn`) lowering paths, a custom failure message,
+    // an `assume` nested inside other control flow, and a passing
+    // `assume` so the fix doesn't regress the true-condition case.
+    let programs = [
+        (
+            "top_level_assume_false_dead_code",
+            "assume(false); println(\"unreachable\");".to_string(),
+        ),
+        (
+            "in_fn_assume_false_dead_code",
+            "fn main() { println(\"before\"); assume(false); println(\"unreachable\"); } main();"
+                .to_string(),
+        ),
+        (
+            "assume_false_with_custom_message",
+            "fn main() { assume(false, \"sensor offline\"); println(\"unreachable\"); } main();"
+                .to_string(),
+        ),
+        (
+            "assume_false_nested_in_if",
+            "fn main() { if true { assume(false); println(\"unreachable\"); } } main();"
+                .to_string(),
+        ),
+        (
+            "assume_true_does_not_halt",
+            "fn main() { assume(1 > 0); println(\"reached\"); } main();".to_string(),
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in &programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} assume(false) case(s) diverged between backends:{}",
         failures.len(),
         failures.join("")
     );

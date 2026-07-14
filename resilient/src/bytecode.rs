@@ -244,6 +244,15 @@ pub enum Op {
     /// a preceding `Const` instruction; the JumpIfTrue before it skips
     /// the fail sequence entirely when the condition holds.
     AssertFail,
+    /// RES-3996: pop a `Value::String` message from the operand stack and
+    /// return `VmError::AssumeViolated(msg)`. Emitted by the bytecode
+    /// compiler for `assume(cond[, msg]);` when the condition evaluates to
+    /// false at runtime — same lowering shape as `AssertFail` (a preceding
+    /// `Const` pushes the message, guarded by a `JumpIfTrue` that skips the
+    /// fail sequence when the condition holds), kept as a distinct opcode
+    /// so the runtime diagnostic says "ASSUME VIOLATED" rather than
+    /// "ASSERTION ERROR", matching the tree-walker's `eval_assume`.
+    AssumeFail,
     /// RES-3894: pop TOS and require it to be a `Value::Bool`, pushing it back
     /// unchanged. Returns `VmError::TypeMismatch` otherwise. Emitted by the
     /// bytecode compiler for each operand of `&&` / `||` so the VM rejects
