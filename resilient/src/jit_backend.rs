@@ -543,6 +543,36 @@ impl std::fmt::Display for JitError {
     }
 }
 
+impl JitError {
+    /// RES-XXXX (B-E4): true for errors raised before any JIT'd
+    /// native code has executed — construct rejection during
+    /// lowering (`Unsupported`), the "no top-level return"
+    /// structural gap (`EmptyProgram`), or module/link/ISA setup
+    /// failure (`IsaInit`, `LinkError`). Nothing has run yet at
+    /// this point, so a caller can transparently retry the same
+    /// program on another backend (VM, tree-walker) with no risk
+    /// of duplicating side effects.
+    ///
+    /// `OutOfBounds`, `EmptyPop`, and `UnknownAbort` are
+    /// deliberately excluded: they only surface via
+    /// `jit_invoke_with_abort_catch` *after* the compiled
+    /// function has already been invoked, so the aborting run may
+    /// have already produced observable side effects (e.g. a
+    /// `println` before the bounds violation). Silently re-running
+    /// the program on a fallback backend in that case would
+    /// duplicate those effects, so callers must treat those three
+    /// variants as genuine runtime errors instead.
+    pub fn is_precompile(&self) -> bool {
+        matches!(
+            self,
+            JitError::Unsupported(_)
+                | JitError::EmptyProgram
+                | JitError::IsaInit(_)
+                | JitError::LinkError(_)
+        )
+    }
+}
+
 impl std::error::Error for JitError {}
 
 /// RES-380: payload the array / pop runtime shims raise on a
@@ -5515,5 +5545,60 @@ return add_two(10, 32);
     fn jit_match_identifier_binding() {
         let p = parse_program("let x = 7; return match x { y => y + 1 };");
         assert_eq!(run(&p).unwrap(), 8);
+    }
+
+    // ============================================================
+    // RES-4019 (B-E4): `JitError::is_precompile()` — the
+    // classification the CLI driver (`lib.rs`) uses to decide
+    // whether an error is safe to silently retry on the VM.
+    // ============================================================
+
+    #[test]
+    fn is_precompile_true_for_unsupported() {
+        assert!(JitError::Unsupported("whatever").is_precompile());
+    }
+
+    #[test]
+    fn is_precompile_true_for_empty_program() {
+        assert!(JitError::EmptyProgram.is_precompile());
+    }
+
+    #[test]
+    fn is_precompile_true_for_isa_init_and_link_error() {
+        assert!(JitError::IsaInit("no host ISA".to_string()).is_precompile());
+        assert!(JitError::LinkError("link failed".to_string()).is_precompile());
+    }
+
+    #[test]
+    fn is_precompile_false_for_post_execution_aborts() {
+        // These three only surface via `jit_invoke_with_abort_catch`
+        // *after* the compiled function has already been invoked —
+        // by the time a caller sees one, the program may have already
+        // produced side effects (e.g. a `println` before the abort).
+        // A caller must never silently retry on another backend here,
+        // or it would duplicate those side effects.
+        assert!(!JitError::OutOfBounds { index: 5, len: 3 }.is_precompile());
+        assert!(!JitError::EmptyPop.is_precompile());
+        assert!(!JitError::UnknownAbort("boom".to_string()).is_precompile());
+    }
+
+    #[test]
+    fn real_unsupported_and_empty_program_errors_are_precompile() {
+        // Sanity-check the classification against errors this module
+        // actually produces, not just hand-built variants.
+        let unsupported = run(&parse_program("return undefined_var;")).unwrap_err();
+        assert!(unsupported.is_precompile(), "{unsupported}");
+
+        let empty = run(&parse_program("let x = 1;")).unwrap_err();
+        assert!(empty.is_precompile(), "{empty}");
+    }
+
+    #[test]
+    fn real_out_of_bounds_error_is_not_precompile() {
+        // Contrast case: a genuine runtime abort from a program the
+        // JIT *did* start executing must not be classified as
+        // precompile-safe-to-retry.
+        let err = run(&parse_program("let a = [10, 20, 30]; return a[5];")).unwrap_err();
+        assert!(!err.is_precompile(), "{err}");
     }
 }

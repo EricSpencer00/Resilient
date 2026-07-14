@@ -21,21 +21,34 @@
 //! exception, because both backends are expected to fully support the
 //! Stable surface today.
 //!
-//! ## Why `--jit` doesn't run the shared assertion
+//! ## Why `--jit` now runs the shared assertion too
 //!
-//! The Cranelift JIT (`jit_backend.rs`) lowers a narrow, i64-only
-//! subset: no builtin calls (`println`, `type_of`, ...), no `while`,
-//! no `match`, no `Bool`/`String`/`Bytes` values, and it requires a
-//! top-level `return` rather than the `fn main() { ... } main();`
-//! idiom every other backend test in this repo uses. Every case seeded
-//! here uses `println` for observable output, so every case currently
-//! fails to lower at all. That's not a silent gap: `--jit` exits
-//! non-zero with a `jit: unsupported: ...` diagnostic. This file
-//! encodes that as data ([`JIT_BACKEND_EXCEPTIONS`]) and — under
-//! `--features jit` — actively asserts the failure is the clean,
-//! documented kind rather than a silent wrong-answer or a panic. See
-//! `#3933` (track B-E4, "JIT completeness + honest feature matrix") for
-//! the follow-up that narrows this list as JIT lowering grows.
+//! The Cranelift JIT (`jit_backend.rs`) natively lowers only a narrow,
+//! i64-only subset: no builtin calls outside a small allowlist, no
+//! `while`, no `match` on non-`i64` scrutinees, no `Bool`/`String`/
+//! `Bytes` values, and it requires a top-level `return` rather than the
+//! `fn main() { ... } main();` idiom every other backend test in this
+//! repo uses. Every case seeded here uses `println` and/or the
+//! `fn main()` idiom, so every case currently fails to natively lower
+//! at all — that gap is documented as data in
+//! [`JIT_BACKEND_EXCEPTIONS`].
+//!
+//! That native-lowering gap used to mean `--jit` exited non-zero with a
+//! `jit: unsupported: ...` diagnostic for every case in this suite. As
+//! of `#4019` (roadmap track B-E4, "JIT completeness + honest feature
+//! matrix"), the CLI's `--jit` dispatch site transparently falls back
+//! to the VM whenever `jit_backend.rs` bails out with an error that's
+//! detectable *before* any native code executed (see
+//! `JitError::is_precompile()` in `jit_backend.rs` and `run_via_vm` in
+//! `lib.rs`) — so `--jit` now produces output identical to the
+//! tree-walker for every case in [`CASES`], via native lowering where
+//! `jit_backend.rs` supports it and via the VM fallback everywhere
+//! else. [`interpreter_and_jit_agree_on_every_conformance_case`] is
+//! that shared assertion, now unconditionally exercised (under
+//! `--features jit`) instead of being deferred. `JIT_BACKEND_EXCEPTIONS`
+//! stays in the file as documentation of *native*-lowering gaps — as
+//! B-E4 grows real native JIT support, cases move out of that table,
+//! but the parity assertion itself doesn't need to change either way.
 //!
 //! ## Growing this suite
 //!
@@ -97,6 +110,17 @@ fn run_vm(stem: &str) -> Run {
     run_with(stem, Some("--vm"))
 }
 
+/// RES-4019 (B-E4): run a case through `--jit`. Since the CLI dispatch
+/// site transparently falls back to the VM for every documented
+/// native-lowering gap (see [`JIT_BACKEND_EXCEPTIONS`]), this should
+/// now behave identically to [`run_interpreter`] for every case in
+/// [`CASES`] — either via genuine native JIT lowering or via the
+/// fallback.
+#[cfg(feature = "jit")]
+fn run_jit(stem: &str) -> Run {
+    run_with(stem, Some("--jit"))
+}
+
 fn normalize(s: &str) -> String {
     s.trim_end_matches(['\n', '\r'])
         .lines()
@@ -141,17 +165,25 @@ const CASES: &[&str] = &[
     "bool_bytes_types",
 ];
 
-/// RES-3983: cases where `--jit` is known not to lower the program at
-/// all today. Each row names the reason so the table reads as
-/// documentation, not just a skip-list. Referenced from `#3933` (track
-/// B-E4, "JIT completeness + honest feature matrix").
+/// RES-3983 / RES-4019: cases where `jit_backend.rs` is known not to
+/// natively lower the program at all today. Each row names the reason
+/// so the table reads as documentation, not just a skip-list.
+/// Referenced from `#3933` (track B-E4, "JIT completeness + honest
+/// feature matrix").
+///
+/// As of `#4019`, a native-lowering gap no longer means `--jit` fails
+/// for these cases — the CLI dispatch falls back to the VM and the run
+/// still succeeds with tree-walker-identical output (see
+/// [`jit_backend_exceptions_fall_back_to_vm_and_match_interpreter`] and
+/// the suite-wide [`interpreter_and_jit_agree_on_every_conformance_case`]).
+/// This table only tracks the narrower question of native JIT
+/// compilation coverage.
 ///
 /// Invariant enforced by [`jit_backend_exceptions_cover_every_case`]:
-/// every stem in [`CASES`] must appear here until B-E4 lands JIT support
-/// for it — at which point it should move out of this table and get
-/// its own `--jit`-asserting case (or, if it can share the existing
-/// `.expected.txt`, simply be removed from here and covered by a
-/// (to-be-written) `interpreter_vm_and_jit_agree` variant).
+/// every stem in [`CASES`] must appear here until B-E4 lands *native*
+/// JIT support for it — at which point it should move out of this
+/// table (the parity assertions above don't need to change, since they
+/// already cover both the native-success and fallback paths).
 const JIT_BACKEND_EXCEPTIONS: &[(&str, &str)] = &[
     (
         "int_arithmetic",
@@ -292,36 +324,80 @@ fn jit_backend_exceptions_cover_every_case() {
 
 #[test]
 #[cfg(feature = "jit")]
-fn jit_backend_exceptions_fail_cleanly_not_silently() {
-    // RES-3983: this is the test that actually earns the "documented
-    // exception" label — rather than just not asserting parity, it
-    // pins that the JIT's refusal is the clean, typed kind (non-zero
-    // exit + a `jit:`-prefixed diagnostic on stderr), not a panic and
-    // not a silent wrong answer sharing the tree-walker's exit code.
-    // If a future JIT change makes one of these start silently
-    // "succeeding" with different output, this test turns red instead
-    // of the gap staying invisible.
+fn jit_backend_exceptions_fall_back_to_vm_and_match_interpreter() {
+    // RES-4019 (B-E4): this test used to pin the *old* `--jit`
+    // contract — every documented native-lowering gap had to exit
+    // non-zero with a `jit:`-prefixed diagnostic. That contract was
+    // exactly the bug B-E4 exists to fix: a program using any
+    // construct `jit_backend.rs` can't natively lower (println,
+    // `while`, `match`, `String`/`Bytes` values, the `fn main(){}
+    // main();` idiom, ...) used to hard-fail `--jit` instead of
+    // running correctly.
+    //
+    // Test changes (RES-4019): `JitError::is_precompile()` now lets the
+    // CLI driver detect these "never started executing" errors and
+    // transparently retry on the VM (`run_via_vm` in `lib.rs`), so
+    // every documented exception must now exit 0 with stdout matching
+    // the tree-walker's golden file — the same bar
+    // `interpreter_and_jit_agree_on_every_conformance_case` holds the
+    // whole `CASES` list to, scoped here to the native-lowering-gap
+    // subset so the `reason` column stays load-bearing documentation
+    // instead of dead prose. A silent-wrong-answer or panic regression
+    // still turns this test red.
     let mut failures = Vec::new();
     for (stem, reason) in JIT_BACKEND_EXCEPTIONS {
-        let output = Command::new(bin())
-            .arg("--jit")
-            .arg(case_path(stem))
-            .output()
-            .unwrap_or_else(|e| panic!("failed to spawn rz --jit for {stem}: {e}"));
-        let code = output.status.code();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let clean_refusal = code.map(|c| c != 0).unwrap_or(false) && stderr.contains("jit:");
-        if !clean_refusal {
+        let expected = std::fs::read_to_string(expected_path(stem))
+            .unwrap_or_else(|e| panic!("reading expected file for {stem}: {e}"));
+        let jit = run_jit(stem);
+        let (e, a) = (normalize(&expected), normalize(&jit.stdout));
+        if e != a || jit.code != Some(0) {
             failures.push(format!(
-                "--- {stem} ({reason}) ---\n  exit: {code:?}\n  stderr:\n{stderr}"
+                "--- {stem} ({reason}) ---\n  exit: {:?}\n  expected:\n{e}\n  actual:\n{a}",
+                jit.code
             ));
         }
     }
     assert!(
         failures.is_empty(),
-        "{} documented JIT exception(s) did not fail in the expected clean way \
-         (non-zero exit + `jit:` diagnostic) — a silent-success or panic regression \
-         would otherwise hide here:\n{}",
+        "{} documented JIT native-lowering exception(s) did not cleanly fall back to a \
+         correct VM run (exit 0, stdout matching the tree-walker golden):\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+#[test]
+#[cfg(feature = "jit")]
+fn interpreter_and_jit_agree_on_every_conformance_case() {
+    // RES-4019 (B-E4): the core F-E1 assertion for the third backend —
+    // `--jit` and the tree-walker must produce byte-identical
+    // (post-normalization) stdout and the same exit code for every
+    // case seeded from STABILITY.md's Stable list, whether `--jit`
+    // gets there via genuine native lowering or via the transparent VM
+    // fallback (`JitError::is_precompile()` in `jit_backend.rs`,
+    // `run_via_vm` in `lib.rs`). This subsumes
+    // `jit_backend_exceptions_fall_back_to_vm_and_match_interpreter`
+    // for the exception subset and additionally covers any case that
+    // *does* natively JIT-lower today or in the future — no separate
+    // per-case `--jit` assertion is needed as B-E4 grows native
+    // coverage, since this test already treats native success and
+    // fallback success as equally correct.
+    let mut failures = Vec::new();
+    for stem in CASES {
+        let interp = run_interpreter(stem);
+        let jit = run_jit(stem);
+        let (i, j) = (normalize(&interp.stdout), normalize(&jit.stdout));
+        if i != j || interp.code != jit.code {
+            failures.push(format!(
+                "--- {stem} ---\n  interpreter (exit {:?}):\n{i}\n  jit (exit {:?}):\n{j}",
+                interp.code, jit.code
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} case(s) diverged between tree-walker and --jit (native lowering or VM \
+         fallback):\n{}",
         failures.len(),
         failures.join("\n\n")
     );

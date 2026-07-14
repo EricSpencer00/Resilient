@@ -29,7 +29,7 @@ Resilient supports multiple execution backends for different use cases. This doc
 |---------|---------|-----------|-------------|--------|
 | **Interpreter** | Development, debugging, prototyping | Stable | Slow (1000x) | High |
 | **VM** | Bytecode execution on desktop hosts today; embedded is the design target¹ | Stable | Medium (10-100x) | Low |
-| **JIT** | Production systems, performance-critical | Backend-Limited | Fast (1-5x native) | Medium |
+| **JIT** | Production systems, performance-critical | Backend-Limited² | Fast (1-5x native) | Medium |
 | **Verifier** | Safety proofs, formal verification | Experimental | N/A (static) | N/A |
 
 ¹ See the VM section's "Target Platforms" correction below: `resilient/src/vm.rs`
@@ -37,6 +37,15 @@ runs only on desktop hosts (`x86_64-unknown-linux-gnu` and equivalent) today.
 No CI job cross-compiles `resilient/` (the crate containing `vm.rs`) to any
 embedded target — only the separate `resilient-runtime`/
 `resilient-runtime-cortex-m-demo` crates get embedded builds.
+
+² "Backend-Limited" describes `jit_backend.rs`'s *native* code-generation
+coverage, which is still a narrow `i64`-focused subset (see the JIT
+section's Feature Support table below). It does **not** mean `--jit`
+produces wrong output or hard-errors outside that subset: since RES-4019
+(roadmap track B-E4), the `--jit` CLI dispatch transparently falls back
+to the VM for every construct `jit_backend.rs` can't natively compile,
+so end-to-end `--jit` behavior matches the interpreter for the full
+Stable surface today — see the JIT section's "Conformance Rules" below.
 
 ---
 
@@ -296,8 +305,8 @@ as unbacked by any test or CI gate found in `resilient/`.
 
 ### Conformance Rules
 
-1. Must produce output identical to interpreter (within floating-point precision) — enforced by `resilient/tests/it/differential.rs`
-2. Unsupported AST shapes must fail cleanly via `JitError::Unsupported`, never panic — this is the actual contract (`has_disqualifying_construct` gates only the trivial-leaf inliner, not general JIT support; the real support boundary is whatever `lower_expr`/`lower_stmt` handles before falling through to the `node_kind`-tagged `JitError::Unsupported` catch-all)
+1. Must produce output identical to interpreter (within floating-point precision) — enforced by `resilient/tests/it/differential.rs` (VM) and `resilient/tests/it/conformance.rs` (VM and, since RES-4019, JIT)
+2. **Corrected (RES-4019, roadmap track B-E4):** an earlier draft of this rule said an AST shape `jit_backend.rs` can't natively lower "must fail cleanly via `JitError::Unsupported`, never panic," and left it there — i.e. `--jit` hard-erred on the entire subset it doesn't natively compile. That was true of `jit_backend.rs`'s own `run()` contract (still is — it never panics on an unsupported construct; `has_disqualifying_construct` gates only the trivial-leaf inliner, not general JIT support, and the real native-lowering boundary is whatever `lower_expr`/`lower_stmt` handles before falling through to the `node_kind`-tagged `JitError::Unsupported` catch-all), but it described a CLI-visible failure that RES-4019 removed: the `--jit` dispatch site (`execute_file` in `resilient/src/lib.rs`) now classifies every `JitError` with `JitError::is_precompile()` — true for `Unsupported`, `EmptyProgram`, `IsaInit`, and `LinkError`, since none of those can fire after the compiled function has started running — and transparently retries the *same* program on the VM instead of surfacing an error. Errors that only surface after native execution has begun (`OutOfBounds`, `EmptyPop`, `UnknownAbort`) are excluded from the fallback and still propagate as hard errors, because the program may already have produced side effects a blind retry would duplicate. Net effect: `--jit` today produces tree-walker-identical output and exit code for every case in `resilient/tests/it/conformance.rs`'s `CASES` list, including every one `jit_backend.rs` can't natively compile — see `interpreter_and_jit_agree_on_every_conformance_case` and `jit_backend_exceptions_fall_back_to_vm_and_match_interpreter`.
 3. Stack allocation must not exceed platform limits
 
 ---
