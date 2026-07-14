@@ -1191,15 +1191,24 @@ fn run_dispatch_loop(
                     return Ok(LoopOutcome::ReturnedFromFrame(ret));
                 }
             }
-            // RES-384: self-tail-call. Reuse the current frame
+            // RES-384/RES-4017: tail-call. Reuse the current frame
             // instead of pushing a new one — O(1) call-stack depth
-            // for tail-recursive functions. Steps:
-            //   1. Look up the callee (must be the same function).
+            // for tail-recursive functions. `idx` names the callee,
+            // which is either this same function (self-recursion,
+            // RES-384) or — for `#[mutual_tail_call]` groups — a
+            // *different* function (RES-4017: `f` tail-calls `g`
+            // tail-calls `f`...). Steps:
+            //   1. Look up the callee.
             //   2. Pop `arity` args off the operand stack.
-            //   3. Overwrite locals[locals_base..locals_base+arity]
-            //      with the new args (in source order).
-            //   4. Reset frame.pc to 0 so the next iteration
-            //      starts the function from the top.
+            //   3. Resize the locals slab to the callee's own
+            //      `local_count` (self-recursion: same size, a
+            //      no-op; mutual recursion: the callee may declare a
+            //      different number of locals) and write the new
+            //      args into locals[base..base+arity] in source
+            //      order.
+            //   4. Point the frame at the callee's chunk and reset
+            //      pc to 0 so the next iteration starts the callee's
+            //      body from the top.
             // We do NOT push a new CallFrame — the existing frame is
             // reused with its locals slab base unchanged.
             Op::TailCall(idx) => {
@@ -1211,11 +1220,13 @@ fn run_dispatch_loop(
                 if stack.len() < arity {
                     return Err(VmError::EmptyStack);
                 }
-                // The locals slab for this frame may be larger than
-                // arity (body has let-bindings beyond params). We
-                // only reset the parameter slots; body-locals are
-                // re-initialized by StoreLocal on the next pass.
                 let base = frames[frame_idx].locals_base;
+                // Reserve the callee's locals slab (may differ in
+                // size from the caller's own when `idx` names a
+                // different function) before writing args — mirrors
+                // the resize the Call path does for a fresh frame.
+                locals.truncate(base);
+                locals.resize(base + func.local_count as usize, Value::Void);
                 // Pop args in reverse order (rightmost first) and
                 // write into locals[base+0..base+arity] in source
                 // order, matching the Call path.
@@ -1223,9 +1234,16 @@ fn run_dispatch_loop(
                     let v = stack.pop().ok_or(VmError::EmptyStack)?;
                     locals[base + i] = v;
                 }
-                // Reset pc: the next loop iteration picks up at
-                // instruction 0 of this frame's chunk.
-                frames[frame_idx].pc = 0;
+                let f = &mut frames[frame_idx];
+                f.chunk_idx = idx as usize;
+                f.pc = 0;
+                // A tail-called function is never a closure — clear
+                // any upvalue state the *previous* occupant of this
+                // frame left behind so a stale `closure_home` /
+                // `source_slots` can't leak into the callee.
+                f.upvalues = Box::default();
+                f.closure_home = None;
+                f.source_slots = Box::default();
             }
             Op::Jump(offset) => {
                 let new_pc = (frames[frame_idx].pc as isize) + offset as isize;
@@ -4183,6 +4201,9 @@ fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     Ok(Step::Continue)
 }
 
+// RES-4017: see the matching comment on `Op::TailCall` in
+// `run_dispatch_loop` — `idx` may name a different function than the
+// one currently executing (mutual-recursion TCO), not just `self`.
 #[inline(never)]
 fn h_tail_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::TailCall(idx) = op else {
@@ -4199,11 +4220,20 @@ fn h_tail_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     }
     let frame_idx = state.frame_idx();
     let base = state.frames[frame_idx].locals_base;
+    state.locals.truncate(base);
+    state
+        .locals
+        .resize(base + func.local_count as usize, Value::Void);
     for i in (0..arity).rev() {
         let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
         state.locals[base + i] = v;
     }
-    state.frames[frame_idx].pc = 0;
+    let f = &mut state.frames[frame_idx];
+    f.chunk_idx = idx as usize;
+    f.pc = 0;
+    f.upvalues = Box::default();
+    f.closure_home = None;
+    f.source_slots = Box::default();
     Ok(Step::Continue)
 }
 
@@ -5665,6 +5695,114 @@ mod tests {
         let src =
             "fn fib(int n) { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fib(10);";
         assert_int(compile_run(src).unwrap(), 55);
+    }
+
+    // ---------- RES-4017: mutual-recursion TCO ----------
+
+    #[test]
+    fn res4017_mutual_tail_call_opcode_is_emitted_for_annotated_group() {
+        // Unlike the plain (unannotated) mutual recursion in
+        // `res384_mutual_recursion_still_works_via_call`, a cross-function
+        // call between `#[mutual_tail_call]`-annotated functions in tail
+        // position must be rewritten to `TailCall(target)`, not left as a
+        // plain `Call`.
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+            #[mutual_tail_call]
+            fn is_even(int n) -> bool { if n == 0 { return true; } return is_odd(n - 1); }
+            #[mutual_tail_call]
+            fn is_odd(int n) -> bool { if n == 0 { return false; } return is_even(n - 1); }
+            is_even(10);
+        "#;
+        let (ast, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let prog = crate::compiler::compile(&ast).unwrap();
+        crate::feature_attrs::reset();
+
+        // fn 0 = is_even, fn 1 = is_odd (declaration order).
+        let is_even_fn = &prog.functions[0];
+        let is_odd_fn = &prog.functions[1];
+        let is_even_tail_calls_is_odd = is_even_fn
+            .chunk
+            .code
+            .iter()
+            .any(|op| matches!(op, crate::bytecode::Op::TailCall(1)));
+        let is_odd_tail_calls_is_even = is_odd_fn
+            .chunk
+            .code
+            .iter()
+            .any(|op| matches!(op, crate::bytecode::Op::TailCall(0)));
+        assert!(
+            is_even_tail_calls_is_odd,
+            "expected TailCall(1) (is_odd) in is_even's body: {:?}",
+            is_even_fn.chunk.code
+        );
+        assert!(
+            is_odd_tail_calls_is_even,
+            "expected TailCall(0) (is_even) in is_odd's body: {:?}",
+            is_odd_fn.chunk.code
+        );
+    }
+
+    #[test]
+    fn res4017_mutual_tco_correct_for_small_input() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+            #[mutual_tail_call]
+            fn is_even(int n) -> bool { if n == 0 { return true; } return is_odd(n - 1); }
+            #[mutual_tail_call]
+            fn is_odd(int n) -> bool { if n == 0 { return false; } return is_even(n - 1); }
+            is_even(10);
+        "#;
+        let result = compile_run(src);
+        crate::feature_attrs::reset();
+        match result.unwrap() {
+            Value::Bool(b) => assert!(b, "is_even(10) should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res4017_mutual_tco_deep_recursion_does_not_overflow_call_stack() {
+        // Without mutual-recursion TCO this blows MAX_CALL_DEPTH (1024)
+        // almost immediately — 100_000 cross-function tail calls must
+        // reuse a single frame instead of pushing a new one per hop.
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+            #[mutual_tail_call]
+            fn is_even(int n) -> bool { if n == 0 { return true; } return is_odd(n - 1); }
+            #[mutual_tail_call]
+            fn is_odd(int n) -> bool { if n == 0 { return false; } return is_even(n - 1); }
+            is_even(100000);
+        "#;
+        let result = compile_run(src);
+        crate::feature_attrs::reset();
+        match result.unwrap() {
+            Value::Bool(b) => assert!(b, "is_even(100000) should be true"),
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res4017_mutual_tco_three_way_cycle() {
+        // a -> b -> c -> a, all tail calls, each annotated.
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+            #[mutual_tail_call]
+            fn count_a(int n) -> int { if n == 0 { return 0; } return count_b(n - 1); }
+            #[mutual_tail_call]
+            fn count_b(int n) -> int { if n == 0 { return 0; } return count_c(n - 1); }
+            #[mutual_tail_call]
+            fn count_c(int n) -> int { if n == 0 { return 0; } return count_a(n - 1); }
+            count_a(99999);
+        "#;
+        let result = compile_run(src);
+        crate::feature_attrs::reset();
+        assert_int(result.unwrap(), 0);
     }
 
     // ---------- RES-169c: closure opcodes are fully implemented ----------

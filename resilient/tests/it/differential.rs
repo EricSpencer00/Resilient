@@ -344,15 +344,22 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // that id already observes the same mutation regardless of which
     // struct *value* a variable holds.
     //
-    // `mutual_tco.rz` remains — it is unrelated to `CallMethod` — the VM
-    // has no tail-call optimization for mutual recursion, so it blows the
-    // `>1024`-frame cap where the tree-walker doesn't. Follow-up ticket
-    // needed. (CallMethod primitive-`impl` dispatch, `impl Add`/`Sub`/`Mul`
-    // operator-overload dispatch, `Result` error-chaining methods,
-    // `Display::fmt` dispatch, `{ ..base, f: v }` struct-update-syntax
-    // field merge, and `Option::`/`Result::`-qualified match patterns were
-    // fixed under RES-3994 and no longer belong here). Refs #3933 · B-E3.
-    "mutual_tco.rz",
+    // `mutual_tco.rz` no longer belongs here: the VM's `Op::TailCall`
+    // rewrite (`compiler.rs`'s `rewrite_tail_calls`) now recognizes
+    // cross-function tail calls within a `#[mutual_tail_call]` group
+    // (not just self-recursion, RES-384's original scope) and the
+    // runtime handler (`vm.rs`, both `run_inner`'s dispatch loop and
+    // `run_direct`'s `h_tail_call`) reuses the current call frame across
+    // the whole `f -> g -> f -> ...` cycle instead of pushing a new one
+    // — mutual recursion no longer blows the `>1024`-frame cap. This was
+    // the last open sub-case of #4017 (CallMethod primitive-`impl`
+    // dispatch, `impl Add`/`Sub`/`Mul` operator-overload dispatch,
+    // `Result` error-chaining methods, `Display::fmt` dispatch,
+    // `{ ..base, f: v }` struct-update-syntax field merge, and
+    // `Option::`/`Result::`-qualified match patterns were fixed under
+    // RES-3994; the `CallMethod` built-in-container-fallback / closure
+    // slice was fixed alongside `StringBuilder` methods in PR #4059) —
+    // #4017 is now fully closed. Refs #3933 · B-E3.
     // RES-3995 fixed the VM's `live { }` retry-loop execution context
     // (`live_retries()`, backoff, timeout, invariants, and the retry
     // loop itself all now work under `--vm`) — `live_blocks.rz`,
