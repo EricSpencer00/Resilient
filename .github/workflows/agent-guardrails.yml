@@ -80,3 +80,15 @@ jobs:
           print("**Note:** These guardrails are *advisory* and do not block auto-merge.")
           PYEOF
           gh pr comment "$PR_NUMBER" --body-file /tmp/body.md || true
+
+  agent-script-tests:
+    name: agent-scripts self-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # RES-3931: guards the file-claims.json JSON-aware merge in
+      # auto-resolve-extensions.sh against regressing to a textual concat
+      # that ships invalid JSON. Hermetic (temp dirs only) — hard failure.
+      - name: Run agent-scripts self-tests
+        run: bash agent-scripts/test-json-merge.sh
