@@ -276,6 +276,21 @@ pub enum Op {
     ///
     /// Emitted for `expr?` (`Node::TryExpression`) nodes.
     TryUnwrap,
+    /// RES-3993: pop two values off the stack (`right` then `left`, the
+    /// usual left-then-right push order) and evaluate `??`.
+    ///
+    /// - `left = Option(Some(v))` → push `*v`, discard `right`.
+    /// - `left = Option(None)` → push `right`.
+    /// - Any other `left` type → `VmError::TypeMismatch`.
+    ///
+    /// Mirrors `Interpreter::eval_infix_expression`'s `"??"` arm exactly:
+    /// both operands are compiled (and therefore evaluated) unconditionally
+    /// before this op runs, so there is no VM-level short-circuit of
+    /// `right`'s side effects — same as the tree-walker, which evaluates
+    /// both sides of every `InfixExpression` before dispatching on the
+    /// operator. Emitted for `a ?? b` (`Node::InfixExpression` with
+    /// `operator == "??"`).
+    Coalesce,
     /// RES-2528: normalize an iterable for `for-in` loops. Pop TOS:
     ///   - `Array` / `String` → push back unchanged (LoadIndex handles both).
     ///   - `Map` → convert to sorted keys array, push that instead.

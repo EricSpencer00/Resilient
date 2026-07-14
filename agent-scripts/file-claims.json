@@ -145,16 +145,16 @@
       "claimed_at": "2026-07-14T13:45:53Z"
     },
     "resilient/src/compiler.rs": {
-      "branch": "res-3993-vm-break-return",
-      "claimed_at": "2026-07-14T15:29:39Z"
+      "branch": "res-3993-vm-null-coalescing",
+      "claimed_at": "2026-07-14T15:45:59Z"
     },
     "resilient/src/vm.rs": {
-      "branch": "res-3993-vm-break-return",
-      "claimed_at": "2026-07-14T15:29:39Z"
+      "branch": "res-3993-vm-null-coalescing",
+      "claimed_at": "2026-07-14T15:45:59Z"
     },
     "resilient/src/bytecode.rs": {
-      "branch": "res-3993-vm-break-return",
-      "claimed_at": "2026-07-14T15:29:39Z"
+      "branch": "res-3993-vm-null-coalescing",
+      "claimed_at": "2026-07-14T15:45:59Z"
     }
   }
 }

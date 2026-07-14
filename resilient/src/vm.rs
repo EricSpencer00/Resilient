@@ -1730,6 +1730,24 @@ fn run_dispatch_loop(
                     }
                 }
             }
+            // RES-3993: `a ?? b` — Option coalescing. Both operands are
+            // already evaluated by the time this op runs (the compiler
+            // emits `left`'s bytecode then `right`'s, matching the
+            // tree-walker's eager evaluation of both `InfixExpression`
+            // operands), so this just picks the surviving value.
+            Op::Coalesce => {
+                let right = stack.pop().ok_or(VmError::EmptyStack)?;
+                let left = stack.pop().ok_or(VmError::EmptyStack)?;
+                match left {
+                    Value::Option(Some(inner)) => stack.push(*inner),
+                    Value::Option(None) => stack.push(right),
+                    _ => {
+                        return Err(VmError::TypeMismatch(
+                            "`??` operator requires an Option on the left",
+                        ));
+                    }
+                }
+            }
             Op::IterPrepare => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
                 stack.push(iter_prepare_value(v)?);
@@ -2705,6 +2723,7 @@ fn op_to_index(op: Op) -> usize {
         Op::MakeTuple { .. } => OP_KIND_MAKE_TUPLE,
         Op::CallClosure { .. } => OP_KIND_CALL_CLOSURE,
         Op::TryUnwrap => OP_KIND_TRY_UNWRAP,
+        Op::Coalesce => OP_KIND_COALESCE,
         Op::IterPrepare => OP_KIND_ITER_PREPARE,
         Op::LoadGlobal(_) => OP_KIND_LOAD_GLOBAL,
         Op::StoreGlobal(_) => OP_KIND_STORE_GLOBAL,
@@ -2770,7 +2789,9 @@ const OP_KIND_LOAD_STATIC: usize = 58;
 /// Direct engine (see its doc comment) — this handler exists for
 /// dispatch-table completeness, not because it's reachable today.
 const OP_KIND_CONTRACT_VIOLATION: usize = 59;
-const HANDLER_TABLE_LEN: usize = 60;
+/// RES-3993: `??` null-coalescing operator.
+const OP_KIND_COALESCE: usize = 60;
+const HANDLER_TABLE_LEN: usize = 61;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2820,6 +2841,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_MAKE_TUPLE] = h_make_tuple;
     table[OP_KIND_CALL_CLOSURE] = h_call_closure;
     table[OP_KIND_TRY_UNWRAP] = h_try_unwrap;
+    table[OP_KIND_COALESCE] = h_coalesce;
     table[OP_KIND_ITER_PREPARE] = h_iter_prepare;
     table[OP_KIND_LOAD_GLOBAL] = h_load_global;
     table[OP_KIND_STORE_GLOBAL] = h_store_global;
@@ -4109,6 +4131,30 @@ fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         }
         _ => Err(VmError::TypeMismatch(
             "TryUnwrap: expected Result or Option",
+        )),
+    }
+}
+
+// RES-3993: `??` handler for the direct-threaded path. Mirrors the
+// run_inner Op::Coalesce arm exactly.
+#[inline(never)]
+fn h_coalesce(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    if !matches!(op, Op::Coalesce) {
+        return Err(VmError::Unsupported("h_coalesce: wrong op"));
+    }
+    let right = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let left = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match left {
+        Value::Option(Some(inner)) => {
+            state.stack.push(*inner);
+            Ok(Step::Continue)
+        }
+        Value::Option(None) => {
+            state.stack.push(right);
+            Ok(Step::Continue)
+        }
+        _ => Err(VmError::TypeMismatch(
+            "`??` operator requires an Option on the left",
         )),
     }
 }
