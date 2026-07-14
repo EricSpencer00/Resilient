@@ -1,0 +1,25 @@
+// Conformance case: Stable "Integer and float arithmetic operators" +
+// "Int (i64)" primitive type (STABILITY.md § Feature Stability › Stable).
+//
+// Exercises `+ - * / % == != < <= > >=` on Int and prints `type_of` next
+// to each value so a backend that silently changes the *type* of a
+// result (not just its value) is caught too — see RES-3889 for the class
+// of bug this guards against.
+fn main() {
+    let a = 17;
+    let b = 5;
+    println(a + b);
+    println(a - b);
+    println(a * b);
+    println(a / b);
+    println(a % b);
+    println(a == b);
+    println(a != b);
+    println(a < b);
+    println(a <= b);
+    println(a > b);
+    println(a >= b);
+    println(type_of(a + b));
+    println(type_of(a == b));
+}
+main();

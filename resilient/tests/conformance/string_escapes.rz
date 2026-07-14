@@ -1,0 +1,17 @@
+// Conformance case: Stable "String" primitive type + the `\n`, `\t`,
+// `\\`, `\"` escapes from "String/byte literal escape syntax"
+// (STABILITY.md § Feature Stability › Stable).
+//
+// NOTE: `\xNN` / `\u{NNNN}` are listed in the same STABILITY.md bullet
+// but are only decoded by the byte-literal (`b"..."`) path today, not
+// plain string literals — both backends agree on that (no parity gap),
+// so this case sticks to the escapes plain strings actually support.
+// See the doc/reality gap noted in docs/CONFORMANCE.md.
+fn main() {
+    println("line1\nline2");
+    println("a\tb");
+    println("back\\slash");
+    println("quote\"inside");
+    println(type_of("hi"));
+}
+main();

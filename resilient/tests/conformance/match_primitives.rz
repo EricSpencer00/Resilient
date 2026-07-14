@@ -1,0 +1,28 @@
+// Conformance case: Stable "Core syntax: match" + "Basic control flow:
+// match expressions on primitives" (STABILITY.md § Feature Stability ›
+// Stable). Note: match on structs/enums is NOT covered here — only
+// primitives are listed Stable.
+fn describe(int n) -> string {
+    return match n {
+        0 => "zero",
+        1 => "one",
+        2 => "two",
+        _ => "many",
+    };
+}
+
+fn main() {
+    let mut i = 0;
+    while i < 4 {
+        println(describe(i));
+        i = i + 1;
+    }
+    // match on a string primitive
+    let s = "b";
+    match s {
+        "a" => println("first"),
+        "b" => println("second"),
+        _ => println("other"),
+    }
+}
+main();
