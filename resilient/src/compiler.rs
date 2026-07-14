@@ -358,6 +358,34 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     #[cfg(not(feature = "ffi"))]
     let ffi_index: HashMap<String, u16> = HashMap::new();
 
+    // RES-3993: trait name → default method bodies (method name, param
+    // names incl. `self`, body), pre-scanned the same way ENUM_INDEX /
+    // STRUCT_FIELD_INDEX are below. Mirrors the tree-walker's
+    // `Node::TraitDecl` eval arm (`self.trait_method_defaults`), which
+    // registers every trait method carrying a default body so a later
+    // `ImplBlock` that doesn't override it can inject the default under
+    // the impl's own `<Struct>$<method>` mangled name. The bytecode
+    // compiler needs the same lookup available *before* fn_index's
+    // pre-pass below, since a non-overriding `ImplBlock` must reserve a
+    // fn_index/functions slot for the synthesized default just like any
+    // other method.
+    let mut trait_defaults: HashMap<String, Vec<(String, Vec<String>, Node)>> = HashMap::new();
+    for spanned in stmts {
+        if let Node::TraitDecl { name, methods, .. } = &spanned.node {
+            let defaults: Vec<(String, Vec<String>, Node)> = methods
+                .iter()
+                .filter_map(|m| {
+                    m.default_body
+                        .as_ref()
+                        .map(|body| (m.name.clone(), m.params.clone(), (**body).clone()))
+                })
+                .collect();
+            if !defaults.is_empty() {
+                trait_defaults.insert(name.clone(), defaults);
+            }
+        }
+    }
+
     // RES-1461: pre-size `fn_index` and `functions` to the actual
     // top-level Function count. The previous shape used
     // `HashMap::new()` / `Vec::new()` and grew them entry-by-entry,
@@ -367,11 +395,55 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     // statements, same shape as the loop below). Mirrors RES-1365's
     // struct-fields pre-size pattern and RES-1399's actor
     // resolved_fields pre-size.
+    //
+    // RES-3993: an `ImplBlock` also contributes one slot per
+    // non-overridden trait default it inherits — undercounting here
+    // would leave `functions` too short for the synthesized defaults
+    // pass 1/pass 2 (below) register/compile, panicking on the
+    // `functions[top_idx] = ..` write.
     let fn_count = stmts
         .iter()
         .map(|s| match &s.node {
             Node::Function { .. } => 1,
-            Node::ImplBlock { methods, .. } => methods
+            Node::ImplBlock {
+                methods,
+                struct_name,
+                trait_name,
+                ..
+            } => {
+                let explicit = methods
+                    .iter()
+                    .filter(|m| matches!(m, Node::Function { .. }))
+                    .count();
+                let inherited = trait_name
+                    .as_ref()
+                    .and_then(|t| trait_defaults.get(t))
+                    .map(|defaults| {
+                        let overridden: std::collections::HashSet<&str> = methods
+                            .iter()
+                            .filter_map(|m| {
+                                if let Node::Function { name, .. } = m {
+                                    name.strip_prefix(&format!("{struct_name}$"))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        defaults
+                            .iter()
+                            .filter(|(mname, ..)| !overridden.contains(mname.as_str()))
+                            .count()
+                    })
+                    .unwrap_or(0);
+                explicit + inherited
+            }
+            // RES-3993: `mod name { fn f() {..} }` — see the matching
+            // fn_index/pass-2 arms below. Only directly-nested `fn`s are
+            // counted; a `mod` containing an `ImplBlock` is rare enough
+            // (no example exercises it) that it's left for a follow-up
+            // rather than duplicating the trait-default machinery above
+            // inside module scope too.
+            Node::ModuleDecl { body, .. } => body
                 .iter()
                 .filter(|m| matches!(m, Node::Function { .. }))
                 .count(),
@@ -396,7 +468,14 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 fn_index.insert(name.clone(), next_fn_idx);
                 next_fn_idx += 1;
             }
-            Node::ImplBlock { methods, .. } => {
+            Node::ImplBlock {
+                methods,
+                struct_name,
+                trait_name,
+                ..
+            } => {
+                let mut overridden: std::collections::HashSet<&str> =
+                    std::collections::HashSet::new();
                 for m in methods {
                     if let Node::Function {
                         name, parameters, ..
@@ -408,7 +487,61 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                         if next_fn_idx == u16::MAX {
                             return Err(CompileError::Unsupported("program has > 65535 functions"));
                         }
+                        if let Some(bare) = name.strip_prefix(&format!("{struct_name}$")) {
+                            overridden.insert(bare);
+                        }
                         fn_index.insert(name.clone(), next_fn_idx);
+                        next_fn_idx += 1;
+                    }
+                }
+                // RES-3993: reserve a fn_index slot for every trait
+                // default this impl block doesn't override — see
+                // `trait_defaults` doc comment above. Pass 2 (below)
+                // must synthesize+compile these in the exact same
+                // per-ImplBlock order so `own_fn_idx` (assigned by
+                // `top_idx`, which increments once per `compile_fn_body`
+                // call) lines up with the index reserved here.
+                if let Some(trait_nm) = trait_name
+                    && let Some(defaults) = trait_defaults.get(trait_nm)
+                {
+                    for (method_name, _params, _body) in defaults {
+                        if overridden.contains(method_name.as_str()) {
+                            continue;
+                        }
+                        if next_fn_idx == u16::MAX {
+                            return Err(CompileError::Unsupported("program has > 65535 functions"));
+                        }
+                        fn_index.insert(format!("{struct_name}${method_name}"), next_fn_idx);
+                        next_fn_idx += 1;
+                    }
+                }
+            }
+            // RES-3993: `mod name { fn f(..) {..} }` — the tree-walker
+            // (`crate::modules::eval_module`) registers every directly
+            // nested `fn` under the prefixed key `"<mod>::<fn>"`, and the
+            // parser already collapses a `math::add(..)` call site into
+            // `Node::Identifier { name: "math::add" }` — so registering
+            // fn_index under that same prefixed key is enough to make
+            // `math::add(3, 4)` resolve through the ordinary
+            // `fn_index.get(callee_name)` call path with no further
+            // compiler changes.
+            Node::ModuleDecl {
+                name: mod_name,
+                body,
+                ..
+            } => {
+                for m in body {
+                    if let Node::Function {
+                        name, parameters, ..
+                    } = m
+                    {
+                        if parameters.len() > u8::MAX as usize {
+                            return Err(CompileError::Unsupported("fn with >255 params"));
+                        }
+                        if next_fn_idx == u16::MAX {
+                            return Err(CompileError::Unsupported("program has > 65535 functions"));
+                        }
+                        fn_index.insert(format!("{mod_name}::{name}"), next_fn_idx);
                         next_fn_idx += 1;
                     }
                 }
@@ -576,7 +709,14 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     &mut next_fn_idx,
                 )?;
             }
-            Node::ImplBlock { methods, .. } => {
+            Node::ImplBlock {
+                methods,
+                struct_name,
+                trait_name,
+                ..
+            } => {
+                let mut overridden: std::collections::HashSet<&str> =
+                    std::collections::HashSet::new();
                 for m in methods {
                     if let Node::Function {
                         name,
@@ -587,9 +727,77 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                         ..
                     } = m
                     {
+                        if let Some(bare) = name.strip_prefix(&format!("{struct_name}$")) {
+                            overridden.insert(bare);
+                        }
                         let line = node_line(m).unwrap_or(spanned.span.start.line as u32);
                         compile_fn_body(
                             name,
+                            parameters,
+                            body,
+                            line,
+                            Box::default(),
+                            ensures,
+                            recovers_to,
+                            &mut functions,
+                            &mut next_fn_idx,
+                        )?;
+                    }
+                }
+                // RES-3993: synthesize+compile every non-overridden
+                // trait default — see the matching fn_index reservation
+                // (pass 1, above) and the `trait_defaults` doc comment.
+                // Iterates the identical `trait_defaults[trait_nm]`
+                // sequence with the identical `overridden` filter so
+                // `top_idx` advances in lockstep with the slots pass 1
+                // reserved.
+                if let Some(trait_nm) = trait_name
+                    && let Some(defaults) = trait_defaults.get(trait_nm)
+                {
+                    for (method_name, params, body) in defaults {
+                        if overridden.contains(method_name.as_str()) {
+                            continue;
+                        }
+                        let mangled = format!("{struct_name}${method_name}");
+                        let param_pairs: Vec<(String, String)> =
+                            params.iter().map(|p| (String::new(), p.clone())).collect();
+                        let line = node_line(body).unwrap_or(spanned.span.start.line as u32);
+                        compile_fn_body(
+                            &mangled,
+                            &param_pairs,
+                            body,
+                            line,
+                            Box::default(),
+                            &[],
+                            &None,
+                            &mut functions,
+                            &mut next_fn_idx,
+                        )?;
+                    }
+                }
+            }
+            // RES-3993: compile each nested `mod` function under its
+            // `"<mod>::<fn>"` mangled name — see the matching fn_index
+            // reservation (pass 1, above) for the full rationale.
+            Node::ModuleDecl {
+                name: mod_name,
+                body,
+                ..
+            } => {
+                for m in body {
+                    if let Node::Function {
+                        name,
+                        parameters,
+                        body,
+                        ensures,
+                        recovers_to,
+                        ..
+                    } = m
+                    {
+                        let mangled = format!("{mod_name}::{name}");
+                        let line = node_line(m).unwrap_or(spanned.span.start.line as u32);
+                        compile_fn_body(
+                            &mangled,
                             parameters,
                             body,
                             line,
@@ -1821,6 +2029,27 @@ fn tuple_enum_constructor_const(
         arity,
     };
     Ok(Some(chunk.add_constant(val)?))
+}
+
+/// RES-3993: if `name` is a declared tuple struct (`struct Point(int,
+/// int);`), return its positional field names (`["0", "1", ...]`) in
+/// order. `STRUCT_FIELD_INDEX` (pre-scanned before pass 1, see its doc
+/// comment) already stores every struct's declared field names —
+/// including tuple structs, whose fields the parser names consecutive
+/// decimal integers — so detecting one is the same "all names are
+/// `0..field_count`" check `crate::tuple_struct::is_tuple_struct` uses
+/// on the (type, name) pairs available at `StructDecl` eval time; here
+/// only the names survive into `STRUCT_FIELD_INDEX`; but the tuple-struct
+/// property is a name-shape property, so checking names alone is
+/// sufficient and doesn't need the field types.
+fn tuple_struct_field_names(name: &str) -> Option<Vec<String>> {
+    STRUCT_FIELD_INDEX.with(|si| {
+        si.borrow().get(name).and_then(|fields| {
+            let is_tuple =
+                !fields.is_empty() && fields.iter().enumerate().all(|(i, f)| f == &i.to_string());
+            is_tuple.then(|| fields.clone())
+        })
+    })
 }
 
 fn emit_unit_enum_variants(
@@ -3648,6 +3877,32 @@ fn compile_expr(
                 // converts it into the corresponding `EnumVariant`, mirroring
                 // the interpreter's first-class-constructor path.
                 chunk.emit(Op::Const(const_idx), line);
+            } else if let Some(&idx) = fn_index.get(name) {
+                // RES-3993: bare reference to a named top-level (or
+                // impl-block) function used as a first-class value —
+                // `let f = pick(true)` returning `double`, `apply(double,
+                // 5)` passing it as an argument, a `fn(T) -> T` typed
+                // parameter bound to a named function, etc.
+                // `CallExpression` already special-cases an `Identifier`
+                // *callee* to call `fn_index[name]` directly, but a plain
+                // identifier in expression position (not the callee of a
+                // call) reached this arm and fell through to
+                // `UnknownIdentifier` because only locals, builtins, and
+                // enum constructors were considered. Named top-level
+                // functions capture nothing (they can only see other
+                // globals, which their own body reads via
+                // `LoadGlobal`/`LoadStatic`, not upvalues), so wrapping
+                // `fn_index[name]` in a zero-upvalue closure is a
+                // faithful bytecode analogue of the tree-walker's
+                // `Value::Function` — same callable identity, no captured
+                // environment to carry.
+                chunk.emit(
+                    Op::MakeClosure {
+                        fn_idx: idx,
+                        upvalue_count: 0,
+                    },
+                    line,
+                );
             } else {
                 return Err(CompileError::UnknownIdentifier(name.clone()));
             }
@@ -4074,8 +4329,20 @@ fn compile_expr(
             // emitting `Op::CallBuiltin { name_const, arity }`. Limit
             // arity to u8 so the opcode stays Copy + 4 bytes; calls
             // with >255 args are rejected before any code is emitted.
+            //
+            // RES-3993: `array_none` isn't in `lookup_builtin`'s static
+            // table — its tree-walker implementation needs
+            // `&mut Interpreter` to invoke the caller's predicate
+            // closure, so it's special-cased directly in the
+            // interpreter's `CallExpression` eval instead of going
+            // through `Value::Builtin`. The VM's `Op::CallBuiltin`
+            // dispatch has a matching runtime special case
+            // (`vm_array_none_builtin`); route the call through the
+            // same op here so it reaches that handler instead of
+            // falling all the way to `UnknownFunction`.
             if crate::lookup_builtin(callee_name).is_some()
                 || crate::stdlib::is_stdlib_function(callee_name)
+                || callee_name == "array_none"
             {
                 if arguments.len() > u8::MAX as usize {
                     return Err(CompileError::Unsupported("builtin call with > 255 args"));
@@ -4137,6 +4404,46 @@ fn compile_expr(
                     );
                     return Ok(());
                 }
+            }
+            // RES-3993: tuple-struct named constructor — `Point(0, 0)`
+            // for `struct Point(int, int);`. The tree-walker registers a
+            // synthetic `Value::Function` under the struct's own name at
+            // `StructDecl` eval time (`crate::tuple_struct::make_constructor`)
+            // whose body is just a `StructLiteral` with positional fields
+            // `"0"`, `"1"`, ... bound to the call arguments — there's no
+            // fn_index slot to route through here, so emit that same
+            // `StructLiteral` construction directly instead of trying to
+            // manufacture a callable.
+            if let Some(field_names) = tuple_struct_field_names(callee_name) {
+                if arguments.len() != field_names.len() {
+                    return Err(CompileError::Unsupported(
+                        "tuple struct constructor called with wrong argument count",
+                    ));
+                }
+                for (field_name, arg) in field_names.iter().zip(arguments) {
+                    let fname_idx = chunk.add_string_constant(field_name)?;
+                    chunk.emit(Op::Const(fname_idx), line);
+                    compile_expr(
+                        arg,
+                        chunk,
+                        locals,
+                        next_local,
+                        fn_index,
+                        ffi_index,
+                        fns,
+                        next_fn_idx,
+                        line,
+                    )?;
+                }
+                let name_const = chunk.add_string_constant(callee_name)?;
+                chunk.emit(
+                    Op::StructLiteral {
+                        name_const,
+                        field_count: field_names.len() as u16,
+                    },
+                    line,
+                );
+                return Ok(());
             }
             Err(CompileError::UnknownFunction(callee_name.to_string()))
         }

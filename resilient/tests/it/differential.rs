@@ -152,45 +152,126 @@ fn compare_outputs(label_a: &str, a: &Run, label_b: &str, b: &Run) -> Result<(),
 /// diverges; removing an entry (once its ticket is fixed) is how the
 /// gap shrinks. Do not add an entry without a comment + ticket ref.
 const UNSUPPORTED_BY_VM: &[&str] = &[
-    // RES-3992: VM bytecode compiler "unknown identifier" / "unknown function" —
-    // closures/consts captured across scopes, and static/namespaced/tuple-
-    // struct-constructor calls the compiler doesn't resolve to a callable.
+    // RES-3992 (closed): VM bytecode compiler "unknown identifier" /
+    // "unknown function" — closures/consts captured across scopes, and
+    // static/namespaced/tuple-struct-constructor calls the compiler
+    // didn't resolve to a callable. #3992 itself is CLOSED; everything
+    // below is a Track B-E3 VM-completeness follow-up, not that ticket.
     //
     // The top-level-`const` family (`const_eval.rz`, `const_eval_ext.rz`,
-    // `static_assert.rz`) is fixed: `compiler::compile` now runs a
+    // `static_assert.rz`) was fixed under #3992: `compiler::compile` runs a
     // `resolve_top_level_consts` + `inline_consts` pre-pass that inlines
     // every resolved `const` reference as a literal before compilation,
     // mirroring `Interpreter::const_eval_program` / `eval_const_expr` (the
-    // tree-walker's canonical const-resolution oracle) — so these three no
-    // longer belong on this list.
+    // tree-walker's canonical const-resolution oracle).
     //
-    // The remaining entries are a distinct root cause this pre-pass does
-    // not touch: fn-valued locals/closures captured across a function or
-    // actor-spawn boundary (`actor_*`, `effect_polymorphism.rz`,
-    // `first_class_fn_*.rz`, `generic_fn_type_params.rz`,
-    // `iterator_protocol.rz`, `showcase_actors.rz` — all fail on a plain
-    // `unknown identifier`, not a const), and static/namespaced/tuple-
-    // struct-constructor calls the compiler doesn't lower to a callable
-    // (`default_method.rz` — default trait-method dispatch,
-    // `module_namespaces.rz` — `math::add`, `pain_points_hardening.rz` —
-    // `array_none`, `tuple_struct.rz` — tuple-struct constructor call,
-    // `error_stack_traces.rz` — `stacktrace`). Both need call-site lowering
-    // changes in `compiler.rs`'s `CallExpression`/`Identifier` compilation,
-    // not an AST pre-pass — left for a follow-up PR under this same ticket.
+    // RES-3993 (this PR) re-triaged and cleared the rest of the
+    // "unknown identifier"/"unknown function" family:
+    //
+    // A bare reference to a named top-level (or impl-block) function in
+    // expression position — `let f = pick(true)` returning `double`,
+    // `apply(double, 5)` passing it as an argument, a `fn(T) -> T` typed
+    // parameter bound to a named function — now compiles:
+    // `compile_expr`'s `Node::Identifier` arm gained a `fn_index`
+    // fallback that wraps the callee in a zero-upvalue `Op::MakeClosure`,
+    // the bytecode analogue of the tree-walker's captureless top-level
+    // `Value::Function` — `effect_polymorphism.rz`, `first_class_fn_pass.rz`,
+    // `first_class_fn_return.rz`, and `generic_fn_type_params.rz` no
+    // longer belong here.
+    //
+    // Trait default-method dispatch (`greet_loudly` not overridden by
+    // `Alice`'s impl) now compiles: the compiler pre-scans
+    // `Node::TraitDecl` default bodies and, for every `ImplBlock` that
+    // doesn't override a given default, synthesizes and compiles a
+    // `<Struct>$<method>` function under the impl's own mangled name —
+    // mirrors the tree-walker's `ImplBlock` eval arm, which injects the
+    // same `Value::Function` into `self.env` — `default_method.rz` no
+    // longer belongs here.
+    //
+    // Tuple-struct constructor calls (`Point(0, 0)` for `struct
+    // Point(int, int);`) now compile: `CallExpression`'s callee-name
+    // dispatch recognizes a declared tuple struct (via the same
+    // `STRUCT_FIELD_INDEX` pre-scan the `{ ..base, f: v }` struct-update
+    // syntax uses) and emits the equivalent `Op::StructLiteral`
+    // construction directly, and `.0`/`.1` positional access on the
+    // resulting `Value::Struct` (`Node::TupleIndex`, which always
+    // compiled to `Op::LoadIndex`) now falls back to the `GetField`
+    // resolver when the indexed value isn't a real
+    // `Value::Tuple`/`Value::Array` — `tuple_struct.rz` no longer
+    // belongs here.
+    //
+    // Namespaced module-function calls (`math::add(3, 4)` for `mod math
+    // { fn add(..) {..} }`) now compile: fn_index's pre-pass registers
+    // every directly-nested `fn` under its `"<mod>::<fn>"` mangled name
+    // (the same key the parser already produces for the call-site
+    // identifier), so no further `CallExpression` change was needed —
+    // `module_namespaces.rz` no longer belongs here.
+    //
+    // `array_none(arr, predicate)` — a free function whose tree-walker
+    // implementation needs `&mut Interpreter` to invoke the predicate
+    // closure, so it isn't in the generic `BuiltinFn` table
+    // `Op::CallBuiltin` normally dispatches through — now compiles and
+    // runs: the compiler routes the call through `Op::CallBuiltin` (an
+    // explicit name check alongside the generic-table lookup) and the
+    // VM special-cases the name before the generic dispatch, invoking
+    // the predicate via `vm_call_closure_value` (the same re-entrant
+    // call primitive the `.any()`/`.all()` array methods use) —
+    // `pain_points_hardening.rz` no longer belongs here.
+    //
+    // The remaining six are distinct, genuinely-deeper subsystem gaps —
+    // deferred rather than forced into this PR:
+    //
+    // `actor_deadlock.rz`, `actor_ping_pong.rz`, `actor_spawn_send.rz`,
+    // and `showcase_actors.rz` now get *past* the compile step (the
+    // `Node::Identifier`-as-value fix above resolves the actor-body
+    // function reference) but fail at the `spawn(fn)` builtin: it only
+    // accepts a tree-walker `Value::Function`
+    // (`spawn: expected a function argument, got Closure(..)`).
+    // `actor_runtime::actor_spawn` stores the raw `Value` in
+    // `ACTOR_FN_REGISTRY`, and the scheduler later runs it through the
+    // interpreter's `apply_function`/`Environment` machinery — there is
+    // no VM-side actor-body execution path at all. Needs: `spawn` to
+    // accept `Value::Closure`, plus a real "run this closure as an actor
+    // body, driven by the VM's own dispatch loop" scheduler integration
+    // — a new subsystem, not a call-site lowering fix.
+    //
+    // `error_stack_traces.rz` calls `stacktrace()`, which needs a live
+    // call-frame-name + call-site-span stack to introspect. The VM's
+    // `CallFrame` (`vm.rs`) carries only `chunk_idx`/`pc`/locals — no
+    // function name and no column info (`Chunk::line_info` is
+    // line-only) — but the expected output format is `"<fn> at
+    // <file>:<line>:<column>"`, so even the tree-walker's `StackFrame`
+    // shape can't be reconstructed from what the VM tracks today. Needs
+    // a new call-stack introspection subsystem (frame names + call-site
+    // column tracking through every `Op::Call`/`CallClosure`/
+    // `CallMethod`/`CallForeign` site, in both dispatch engines) before
+    // `stacktrace()` can be implemented, not a builtin-dispatch fix.
+    //
+    // `iterator_protocol.rz` declares a *named* nested function (`fn
+    // next() { .. }` as a statement inside `make_counter`'s body, not
+    // `let next = fn() { .. };`) that captures and mutates enclosing
+    // locals (`count`, `max`) and is returned as a first-class value.
+    // `compiler.rs`'s `compile_nested_fn` (the `Node::Function`-as-
+    // statement compile path) already exists and handles the
+    // self-recursion case, but unconditionally emits
+    // `Op::MakeClosure { upvalue_count: 0, .. }` — it never runs the
+    // free-variable capture analysis (`collect_free_vars` plus the
+    // `Value::Cell`-boxing dance) that `Node::FunctionLiteral`'s sibling
+    // compile arm uses for anonymous closures, so any enclosing-scope
+    // reference inside a named nested fn hits `UnknownIdentifier`.
+    // Fixing this properly means extracting that closure-capture/
+    // upvalue-boxing block out of the `FunctionLiteral` arm into a
+    // shared helper both call sites can use — real, non-mechanical
+    // refactoring on a hot, already-well-tested path, not a contained
+    // fix.
+    //
+    // All six: Track B-E3 VM-completeness follow-ups.
     "actor_deadlock.rz",
     "actor_ping_pong.rz",
     "actor_spawn_send.rz",
-    "default_method.rz",
-    "effect_polymorphism.rz",
     "error_stack_traces.rz",
-    "first_class_fn_pass.rz",
-    "first_class_fn_return.rz",
-    "generic_fn_type_params.rz",
     "iterator_protocol.rz",
-    "module_namespaces.rz",
-    "pain_points_hardening.rz",
     "showcase_actors.rz",
-    "tuple_struct.rz",
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
     // <other> catch-all).
@@ -296,7 +377,9 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // per-witness environment binding, short-circuit jump-out on the first
     // false/true witness, and range-vs-iterable dispatch) or a call into a
     // reusable "run this compiled body once per witness" primitive that
-    // doesn't exist yet. Follow-up ticket needed.
+    // doesn't exist yet. Tracked by #4060 (quantifier + defer VM
+    // lowering) — re-confirmed still diverging under RES-3993's
+    // re-triage; not attempted here, left for #4060.
     //
     // `defer_stmt.rz` uses `defer <expr>;` (`Node::DeferStatement`), which
     // likewise has no bytecode-compile arm (`<other>` catch-all). The
@@ -309,7 +392,8 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // `CallFrame` to carry a per-frame deferred-bytecode list and every exit
     // path (`Op::Return`, `Op::ReturnFromCall`, and the `TryUnwrap`/
     // `ContractViolation` early-return paths) to drain it, in both dispatch
-    // engines. Follow-up ticket needed.
+    // engines. Tracked by #4060 — re-confirmed still diverging under
+    // RES-3993's re-triage; not attempted here, left for #4060.
     "array_contains.rz",
     "array_sorted_invariant.rz",
     "defer_stmt.rz",
