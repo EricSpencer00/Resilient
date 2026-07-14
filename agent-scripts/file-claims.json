@@ -92,25 +92,13 @@
       "branch": "res-4014-z3-overflow",
       "claimed_at": "2026-07-14T04:21:41Z"
     },
-    "resilient/tests/it/differential.rs": {
-      "branch": "res-3994-denylist-comment-retarget",
-      "claimed_at": "2026-07-14T05:06:11Z"
-    },
-    "resilient/tests/it/conformance.rs": {
-      "branch": "res-4023-conformance-expand",
-      "claimed_at": "2026-07-14T05:45:20Z"
-    },
-    "docs/CONFORMANCE.md": {
-      "branch": "res-4023-conformance-expand",
-      "claimed_at": "2026-07-14T05:45:20Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-3991-vm-trailing-autoprint",
-      "claimed_at": "2026-07-14T05:39:59Z"
+    "resilient/src/compiler.rs": {
+      "branch": "res-4024-vm-unsafe-block",
+      "claimed_at": "2026-07-14T06:30:44Z"
     },
     "resilient/src/vm.rs": {
-      "branch": "res-3991-vm-trailing-autoprint",
-      "claimed_at": "2026-07-14T05:39:59Z"
+      "branch": "res-4024-vm-unsafe-block",
+      "claimed_at": "2026-07-14T06:30:44Z"
     },
     "resilient/src/contract_certificate.rs": {
       "branch": "res-4028-cert-hardening",
@@ -131,6 +119,14 @@
     "docs/HOWTO_PROVABLY_CORRECT_AI_CODE.md": {
       "branch": "res-4028-cert-hardening",
       "claimed_at": "2026-07-14T06:13:56Z"
+    },
+    "resilient/tests/it/conformance.rs": {
+      "branch": "res-4024-vm-unsafe-block",
+      "claimed_at": "2026-07-14T06:30:44Z"
+    },
+    "resilient/tests/it/differential.rs": {
+      "branch": "res-4024-vm-unsafe-block",
+      "claimed_at": "2026-07-14T06:30:47Z"
     }
   }
 }
