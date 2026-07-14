@@ -1,0 +1,22 @@
+// Conformance case: Stable "Core syntax: let" (STABILITY.md § Feature
+// Stability › Stable). Exercises `let` re-binding (shadowing, including
+// a type change across shadows), `let mut` + reassignment, and that a
+// shadow introduced inside a nested `if` block does not leak back out.
+fn main() {
+    let x = 5;
+    println(x);
+    let x = x + 1;
+    println(x);
+    let x = "now a string";
+    println(x);
+
+    let mut y = 10;
+    y = y + 5;
+    println(y);
+    if true {
+        let y = 999;
+        println(y);
+    }
+    println(y);
+}
+main();

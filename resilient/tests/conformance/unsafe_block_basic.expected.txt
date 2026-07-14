@@ -1,0 +1,3 @@
+inside unsafe block
+42
+Program executed successfully

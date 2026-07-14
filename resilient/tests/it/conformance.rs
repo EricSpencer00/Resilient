@@ -163,6 +163,58 @@ const CASES: &[&str] = &[
     // Stable: "Bool" and "Bytes" primitive types, including the `\xNN`
     // byte-literal escape (which *is* decoded on the `b"..."` path).
     "bool_bytes_types",
+    // RES-4023 (F-E1 content expansion): deeper coverage of Stable
+    // bullets the eight seed cases above only touch once each.
+    //
+    // Stable: core syntax `let` — shadowing (including a type change
+    // across shadows), `let mut` + reassignment, block-scoped shadows.
+    "let_bindings_and_shadowing",
+    // Stable: core syntax `if` / `else` — nested `if`, and `if` used as
+    // a statement with no `else` branch.
+    "if_else_nesting_and_statement_form",
+    // Stable: core syntax `while` + while loops — `break` / `continue`
+    // as intrinsic loop-control behavior.
+    "while_break_continue",
+    // Stable: core syntax `match` + match expressions on primitives —
+    // guarded arms and match on the Bool primitive.
+    "match_guards_and_bool",
+    // Stable: "Bool" primitive type — `&&` / `||` / `!` truth tables
+    // and short-circuit evaluation.
+    "logical_operators",
+    // Stable: "Integer ... arithmetic operators" + "Int (i64)" — signed
+    // `/` and `%` edge cases (truncating-toward-zero semantics).
+    "int_division_modulo_edge_cases",
+    // Stable: "... float arithmetic operators" + "Float (f64)" — IEEE
+    // 754 precision (`0.1 + 0.2 != 0.3`) and comparison operators.
+    "float_comparison_precision",
+    // Stable: "String" primitive type — full `==`/`!=`/`<`/`<=`/`>`/`>=`
+    // lexicographic comparison family.
+    "string_comparison_ops",
+    // Stable: "Bytes" primitive type — mixed `\xNN` + shared escapes in
+    // one `b"..."` literal, empty-bytes, `bytes_len`/`byte_at`.
+    "bytes_ops_and_escapes",
+    // Stable: "Core syntax: fn, return" + function call syntax — mutual
+    // recursion between two independently declared functions.
+    "function_mutual_recursion",
+    // Stable: "Function call syntax and the `fn name(type arg, ...)`
+    // declaration form" — a signature mixing Int/Float/Bool/String.
+    "function_multi_param_types",
+    // Stable: "String/byte literal escape syntax" — empty string, a
+    // literal backslash immediately followed by an escape, `len()`.
+    "string_escape_edge_cases",
+    // Stable: the compile-time-gated MMIO-wrapper block keyword (see
+    // STABILITY.md's matching Stable bullet, and this case's own `.rz`
+    // source for the literal syntax) — ordinary statements inside the
+    // block execute like they would outside it. See
+    // `VM_BACKEND_EXCEPTIONS` (#4024): `--vm` currently drops the block
+    // body entirely.
+    "unsafe_block_basic",
+    // Stable: "Region annotation syntax" — `region NAME;`, `&[R] T`,
+    // `&mut[R] T`, distinct-region acceptance path.
+    "region_annotations",
+    // Stable: "Region-polymorphic function syntax" — `fn f<R, S>(...)`
+    // called with call-site regions that instantiate R and S distinctly.
+    "region_polymorphic_functions",
 ];
 
 /// RES-3983 / RES-4019: cases where `jit_backend.rs` is known not to
@@ -217,7 +269,102 @@ const JIT_BACKEND_EXCEPTIONS: &[(&str, &str)] = &[
         "bool_bytes_types",
         "Bytes values and println()/type_of() calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
     ),
+    // RES-4023 (F-E1 content expansion): every new case below also uses
+    // println()/fn main(){...} main(); (a CallExpression, one of the
+    // constructs has_disqualifying_construct() rejects outright), so
+    // none natively lower today either. Reasons name the specific
+    // additional disqualifying construct or value type each case adds
+    // on top of that shared gap.
+    (
+        "let_bindings_and_shadowing",
+        "a `let` shadow changes value type to String mid-function, and uses println() — String values and builtin calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
+    (
+        "if_else_nesting_and_statement_form",
+        "uses println() and fn main(){...} main(); — jit_backend.rs has no builtin-call lowering",
+    ),
+    (
+        "while_break_continue",
+        "uses while/break/continue — jit_backend.rs's has_disqualifying_construct() rejects Node::WhileStatement",
+    ),
+    (
+        "match_guards_and_bool",
+        "uses match (with guards) — jit_backend.rs's has_disqualifying_construct() rejects Node::Match",
+    ),
+    (
+        "logical_operators",
+        "Bool values and println() calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
+    (
+        "int_division_modulo_edge_cases",
+        "uses println() — jit_backend.rs has no builtin-call lowering",
+    ),
+    (
+        "float_comparison_precision",
+        "Float values and println() calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
+    (
+        "string_comparison_ops",
+        "String values are entirely outside jit_backend.rs's i64-only value model",
+    ),
+    (
+        "bytes_ops_and_escapes",
+        "Bytes values and println()/bytes_len()/byte_at()/type_of() calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
+    (
+        "function_mutual_recursion",
+        "Bool return values and println() calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
+    (
+        "function_multi_param_types",
+        "Float/Bool/String parameter types and println() calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
+    (
+        "string_escape_edge_cases",
+        "String values and println()/len() calls are outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
+    (
+        "unsafe_block_basic",
+        "uses the MMIO-wrapper block keyword (see this case's .rz source) and println() — outside jit_backend.rs's i64-only, builtin-call-free subset (no native lowering exists for that wrapper or the volatile intrinsics it gates)",
+    ),
+    (
+        "region_annotations",
+        "uses region-annotated reference parameters (`&mut[R] T` / `&[R] T`) and println() — jit_backend.rs's i64-only ABI has no lowering for reference/region parameter types",
+    ),
+    (
+        "region_polymorphic_functions",
+        "uses region-polymorphic generics (`fn f<R, S>(...)`) with reference parameters, plus println() — outside jit_backend.rs's i64-only, builtin-call-free subset",
+    ),
 ];
+
+/// RES-4023 (F-E1): cases where `--vm` is known to diverge from the
+/// tree-walker oracle on genuinely Stable surface. Each row names the
+/// filed bug so this reads as documentation, not a silent skip — see
+/// the module-level "Growing this suite" note and
+/// `docs/CONFORMANCE.md` for the same convention already established
+/// for [`JIT_BACKEND_EXCEPTIONS`].
+///
+/// Today this table has exactly one row: `--vm` drops the entire body
+/// of the MMIO-wrapper block (see `unsafe_block_basic.rz` for its
+/// literal syntax) instead of executing its statements (confirmed
+/// independently against `resilient/examples/unsafe_block_smoke.rz`,
+/// which is not part of this suite). Filed as
+/// [#4024](https://github.com/EricSpencer00/Resilient/issues/4024) — a
+/// real backend-parity bug on Stable surface, fixed by editing
+/// `resilient/src/vm.rs` / `resilient/src/compiler.rs`, which is
+/// outside this ticket's file-ownership scope (conformance-suite
+/// content only). Since `--jit`'s fallback path (`run_via_vm`) reuses
+/// the VM, every stem here also has to be excluded from the `--jit`
+/// parity assertion — the JIT can't produce a *more* correct answer
+/// than the backend its fallback delegates to.
+///
+/// Invariant: every stem here must also appear in [`CASES`]. As #4024
+/// is fixed, remove the row here (the case then falls back to the
+/// normal, unconditional `--vm`/`--jit` parity assertions).
+const VM_BACKEND_EXCEPTIONS: &[(&str, &str)] = &[(
+    "unsafe_block_basic",
+    "#4024: --vm drops the body of the MMIO-wrapper block (see unsafe_block_basic.rz) instead of executing it (prints `0` where the tree-walker prints the block's real output)",
+)];
 
 #[test]
 fn conformance_cases_exist_on_disk() {
@@ -278,9 +425,17 @@ fn interpreter_matches_golden_for_every_case() {
 fn interpreter_and_vm_agree_on_every_conformance_case() {
     // The core F-E1 assertion: tree-walker and `--vm` must produce
     // byte-identical (post-normalization) stdout and the same exit
-    // code for every case seeded from STABILITY.md's Stable list.
+    // code for every case seeded from STABILITY.md's Stable list —
+    // except the documented, individually-ticketed rows in
+    // [`VM_BACKEND_EXCEPTIONS`] (see
+    // [`vm_backend_exceptions_reproduce_their_documented_divergence`]
+    // for the assertion that covers those instead).
+    let vm_exception_stems: Vec<&str> = VM_BACKEND_EXCEPTIONS.iter().map(|(s, _)| *s).collect();
     let mut failures = Vec::new();
     for stem in CASES {
+        if vm_exception_stems.contains(stem) {
+            continue;
+        }
         let interp = run_interpreter(stem);
         let vm = run_vm(stem);
         let (i, v) = (normalize(&interp.stdout), normalize(&vm.stdout));
@@ -297,6 +452,47 @@ fn interpreter_and_vm_agree_on_every_conformance_case() {
         failures.len(),
         failures.join("\n\n")
     );
+}
+
+#[test]
+fn vm_backend_exceptions_cover_every_documented_divergence() {
+    // Mirrors `jit_backend_exceptions_cover_every_case`'s discipline for
+    // the (much smaller, hopefully-empty-over-time) VM-divergence table:
+    // every stem referenced there must still be a real case, so a future
+    // cleanup that renames/removes a case can't leave a stale row behind.
+    for (stem, _) in VM_BACKEND_EXCEPTIONS {
+        assert!(
+            CASES.contains(stem),
+            "VM_BACKEND_EXCEPTIONS references `{stem}` which isn't in CASES — stale entry"
+        );
+    }
+}
+
+#[test]
+fn vm_backend_exceptions_reproduce_their_documented_divergence() {
+    // Pins the *current, known-buggy* `--vm` behavior for each
+    // documented exception so a silent regression (the divergence
+    // getting worse, or the VM crashing instead of just being wrong)
+    // is still caught, while a genuine fix (the row's ticket landing)
+    // is expected to fail this test — at which point the row should be
+    // deleted from `VM_BACKEND_EXCEPTIONS`, not have its assertion
+    // loosened. See #4024 for the tracked fix.
+    for (stem, reason) in VM_BACKEND_EXCEPTIONS {
+        let interp = run_interpreter(stem);
+        let vm = run_vm(stem);
+        let (i, v) = (normalize(&interp.stdout), normalize(&vm.stdout));
+        assert_ne!(
+            i, v,
+            "--- {stem} ({reason}) ---\n`--vm` now matches the tree-walker — the documented \
+             divergence appears fixed. Remove this row from VM_BACKEND_EXCEPTIONS instead of \
+             leaving it stale, and let this case rejoin the unconditional parity assertions."
+        );
+        assert_eq!(
+            vm.code,
+            Some(0),
+            "{stem}: --vm must still exit 0 (wrong-but-running), not crash, for this documented exception"
+        );
+    }
 }
 
 #[test]
@@ -344,8 +540,17 @@ fn jit_backend_exceptions_fall_back_to_vm_and_match_interpreter() {
     // subset so the `reason` column stays load-bearing documentation
     // instead of dead prose. A silent-wrong-answer or panic regression
     // still turns this test red.
+    //
+    // RES-4023: stems in `VM_BACKEND_EXCEPTIONS` are skipped here too —
+    // see `vm_backend_exceptions_reproduce_their_documented_divergence`
+    // for the assertion that covers the fallback's known-wrong output
+    // for those instead.
+    let vm_exception_stems: Vec<&str> = VM_BACKEND_EXCEPTIONS.iter().map(|(s, _)| *s).collect();
     let mut failures = Vec::new();
     for (stem, reason) in JIT_BACKEND_EXCEPTIONS {
+        if vm_exception_stems.contains(stem) {
+            continue;
+        }
         let expected = std::fs::read_to_string(expected_path(stem))
             .unwrap_or_else(|e| panic!("reading expected file for {stem}: {e}"));
         let jit = run_jit(stem);
@@ -382,8 +587,18 @@ fn interpreter_and_jit_agree_on_every_conformance_case() {
     // per-case `--jit` assertion is needed as B-E4 grows native
     // coverage, since this test already treats native success and
     // fallback success as equally correct.
+    //
+    // RES-4023: stems in `VM_BACKEND_EXCEPTIONS` are skipped here too —
+    // every case in this suite fails native lowering (see
+    // `JIT_BACKEND_EXCEPTIONS`), so `--jit` always takes the VM-fallback
+    // path here, which means it inherits the VM's documented bug rather
+    // than producing a different, more-correct answer.
+    let vm_exception_stems: Vec<&str> = VM_BACKEND_EXCEPTIONS.iter().map(|(s, _)| *s).collect();
     let mut failures = Vec::new();
     for stem in CASES {
+        if vm_exception_stems.contains(stem) {
+            continue;
+        }
         let interp = run_interpreter(stem);
         let jit = run_jit(stem);
         let (i, j) = (normalize(&interp.stdout), normalize(&jit.stdout));

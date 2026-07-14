@@ -1,0 +1,7 @@
+5
+6
+now a string
+15
+999
+15
+Program executed successfully

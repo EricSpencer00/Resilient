@@ -1,0 +1,26 @@
+// Conformance case: Stable "Region-polymorphic function syntax"
+// (STABILITY.md § Feature Stability › Stable) — `fn f<R, S>(...)` with
+// region type parameters in angle brackets, call-site substitution, and
+// the aliasing check (two callee region params resolving to the same
+// mutable region is a compile-time error). This case pins the accepted
+// path: a region-polymorphic function called from a caller whose own
+// concrete region parameters instantiate `R` and `S` with two distinct
+// regions. The rejection path (calling with the same region for both
+// `R` and `S`) is a *negative* test — see
+// `resilient/examples/region_poly_call.rz`, which is expected to fail
+// to compile — so it isn't a `--vm`/`--jit` success-path case here.
+region A;
+region B;
+
+fn update<R, S>(&mut[R] int a, &mut[S] int b) {
+    println("update accepted");
+}
+
+fn caller(&mut[A] int a, &mut[B] int b) {
+    update(a, b);
+}
+
+fn main() {
+    caller(1, 2);
+}
+main();

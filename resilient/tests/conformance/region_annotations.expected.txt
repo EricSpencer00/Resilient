@@ -1,0 +1,3 @@
+swap_buffers accepted - distinct regions A vs B
+read_and_write accepted - shared A, mutable B
+Program executed successfully

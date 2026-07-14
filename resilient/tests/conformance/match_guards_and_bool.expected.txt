@@ -1,0 +1,7 @@
+negative
+zero
+small
+large
+was true
+was false
+Program executed successfully

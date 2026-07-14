@@ -1,0 +1,16 @@
+// Conformance case: Stable "String/byte literal escape syntax"
+// (STABILITY.md § Feature Stability › Stable). Complements
+// `string_escapes.rz` with the empty-string literal, an escape as the
+// very first character of a `println` argument (no leading text), a
+// literal backslash immediately followed by a decoded escape, and
+// `len()` on a string containing every shared escape in one literal.
+fn main() {
+    println("");
+    println("just backslash: \\");
+    println("mixed: \n\t\\\"end");
+    println("no escapes here");
+    let s = "a\nb\tc\\d\"e";
+    println(len(s));
+    println("tab\tthen\ttab");
+}
+main();

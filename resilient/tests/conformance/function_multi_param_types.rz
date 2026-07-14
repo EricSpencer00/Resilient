@@ -1,0 +1,33 @@
+// Conformance case: Stable "Function call syntax and the
+// `fn name(type arg, ...)` declaration form" (STABILITY.md § Feature
+// Stability › Stable). `functions_calls.rz` only uses `int` params;
+// this case pins the declaration form across a mix of Int, Float, Bool,
+// and String parameters in a single signature, plus a function whose
+// body branches on a Bool parameter.
+fn describe(int count, float ratio, bool active, string label) -> string {
+    if active {
+        return label;
+    }
+    return "inactive";
+}
+
+fn combine(int a, int b, int c) -> int {
+    return a + b * c;
+}
+
+fn approx_equal(float a, float b, float epsilon) -> bool {
+    let diff = a - b;
+    if diff < 0.0 {
+        return (0.0 - diff) < epsilon;
+    }
+    return diff < epsilon;
+}
+
+fn main() {
+    println(describe(3, 1.5, true, "on"));
+    println(describe(3, 1.5, false, "on"));
+    println(combine(1, 2, 3));
+    println(approx_equal(1.0001, 1.0002, 0.001));
+    println(approx_equal(1.0, 2.0, 0.001));
+}
+main();

@@ -1,0 +1,8 @@
+
+just backslash: \
+mixed: 
+	\"end
+no escapes here
+9
+tab	then	tab
+Program executed successfully

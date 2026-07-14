@@ -96,37 +96,13 @@
       "branch": "res-3994-denylist-comment-retarget",
       "claimed_at": "2026-07-14T05:06:11Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-4005-vm-block-scope",
-      "claimed_at": "2026-07-14T05:12:23Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-4005-vm-block-scope",
-      "claimed_at": "2026-07-14T05:12:23Z"
-    },
-    "resilient/src/jit_backend.rs": {
-      "branch": "res-4019-jit-vm-fallback",
-      "claimed_at": "2026-07-14T05:16:50Z"
-    },
-    "docs/BACKENDS.md": {
-      "branch": "res-4019-jit-vm-fallback",
-      "claimed_at": "2026-07-14T05:16:50Z"
-    },
     "resilient/tests/it/conformance.rs": {
-      "branch": "res-4019-jit-vm-fallback",
-      "claimed_at": "2026-07-14T05:16:50Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-4019-jit-vm-fallback",
-      "claimed_at": "2026-07-14T05:16:54Z"
+      "branch": "res-4023-conformance-expand",
+      "claimed_at": "2026-07-14T05:45:20Z"
     },
     "docs/CONFORMANCE.md": {
-      "branch": "res-4019-jit-vm-fallback",
-      "claimed_at": "2026-07-14T05:20:41Z"
-    },
-    "resilient/tests/it/jit_run_path_copy_smoke.rs": {
-      "branch": "res-4019-jit-vm-fallback",
-      "claimed_at": "2026-07-14T05:26:15Z"
+      "branch": "res-4023-conformance-expand",
+      "claimed_at": "2026-07-14T05:45:20Z"
     }
   }
 }

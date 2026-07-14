@@ -1,0 +1,21 @@
+// Conformance case: Stable "Integer and float arithmetic operators" +
+// "Float (f64)" primitive type (STABILITY.md § Feature Stability ›
+// Stable). Complements `float_arithmetic.rz` with IEEE 754 precision
+// behavior that a backend using a different float representation (or a
+// naive f32 cast somewhere in a lowering path) would visibly break:
+// `0.1 + 0.2 != 0.3` exactly, plus comparison operators across several
+// magnitudes.
+fn main() {
+    let a = 0.1 + 0.2;
+    println(a);
+    println(a == 0.3);
+    let b = 1.0;
+    let c = 1.0;
+    println(b == c);
+    println(3.5 < 3.5);
+    println(3.5 <= 3.5);
+    println(3.5 > 2.5);
+    println(-2.5 < 0.0);
+    println(2.0 * 3.0 - 1.0);
+}
+main();

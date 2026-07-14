@@ -1,0 +1,18 @@
+// Conformance case: Stable "String" primitive type (STABILITY.md §
+// Feature Stability › Stable). `==`/`!=` are covered by
+// `string_escapes.rz` only incidentally; this case pins the full
+// comparison family (`==`, `!=`, `<`, `<=`, `>`, `>=`) on String,
+// including lexicographic (not length-based) ordering and the
+// empty-string edge case.
+fn main() {
+    println("abc" < "abd");
+    println("abc" < "ab");
+    println("abc" <= "abc");
+    println("abc" > "abb");
+    println("abc" >= "abc");
+    println("apple" == "apple");
+    println("apple" != "orange");
+    println("" == "");
+    println("a" < "b");
+}
+main();
