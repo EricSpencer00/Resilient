@@ -28,14 +28,6 @@
       "branch": "res-3394-atomic-duplicate-registrations",
       "claimed_at": "2026-07-13T19:37:59Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3920-vm-block-match-arm",
-      "claimed_at": "2026-07-13T21:41:26Z"
-    },
-    "resilient/tests/it/differential.rs": {
-      "branch": "res-3920-vm-block-match-arm",
-      "claimed_at": "2026-07-13T21:41:26Z"
-    },
     ".github/workflows/agent-auto-merge.yml": {
       "branch": "res-3913-autoclose-linked-issues",
       "claimed_at": "2026-07-13T22:07:55Z"
@@ -67,6 +59,14 @@
     "fuzz/fuzz_targets/contracts.rs": {
       "branch": "res-3779-3780-completion",
       "claimed_at": "2026-07-13T22:35:15Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-3915-vm-enum-variants",
+      "claimed_at": "2026-07-14T01:17:57Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3915-vm-enum-variants",
+      "claimed_at": "2026-07-14T01:17:57Z"
     }
   }
 }

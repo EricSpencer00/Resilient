@@ -691,3 +691,56 @@ fn interpreter_and_vm_agree_on_block_match_arms() {
         failures.join("")
     );
 }
+
+/// RES-3915: tuple-payload enum variant *constructors* used as first-class
+/// function values (`Color::Rgb` passed to a higher-order function, stored
+/// in a local, then invoked, or handed to `type_of`) must behave identically
+/// on both backends. Before the fix the VM's bytecode compiler raised
+/// `unknown identifier: Color::Rgb` for a bare payload-variant reference in
+/// expression position, so even the shipped `enum_ctors.rz` example produced
+/// no output under `--vm`. The `type_of` cases pin the *value type* (both
+/// backends must report `"function"` for a constructor value), guarding
+/// against the type-only divergence class from RES-3889.
+#[test]
+fn interpreter_and_vm_agree_on_enum_constructor_values() {
+    let programs = [
+        (
+            "ctor_passed_to_hof",
+            "enum E { W(int32) } fn apply(f: fn(int32) -> E, x: int32) -> E { return f(x); } fn main() { let r = apply(E::W, 7); match r { E::W(v) => println(v) } } main();",
+        ),
+        (
+            "ctor_stored_in_local",
+            "enum E { W(int32) } fn main() { let mk = E::W; let r = mk(42); match r { E::W(v) => println(v) } } main();",
+        ),
+        (
+            "ctor_two_arg",
+            "enum P { Both(int32, int32) } fn main() { let mk = P::Both; let r = mk(3, 4); match r { P::Both(a, b) => println(a * b) } } main();",
+        ),
+        (
+            "ctor_type_of_is_function",
+            "enum E { W(int32) } fn main() { println(type_of(E::W)); } main();",
+        ),
+        (
+            "ctor_result_type_of_is_variant",
+            "enum E { W(int32) } fn main() { let mk = E::W; println(type_of(mk(1))); } main();",
+        ),
+        (
+            "ctor_shipped_example_shape",
+            "enum Color { Rgb(int32), Grayscale(int32), Transparent } fn wrap(f: fn(int32) -> Color, x: int32) -> Color { return f(x); } fn main() { let c1 = wrap(Color::Rgb, 255); match c1 { Color::Rgb(v) => println(v), Color::Grayscale(v) => println(v), Color::Transparent => println(\"t\") } let mk = Color::Grayscale; let c2 = mk(128); match c2 { Color::Rgb(v) => println(v), Color::Grayscale(v) => println(v), Color::Transparent => println(\"t\") } println(type_of(Color::Rgb)); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} enum-constructor-value case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
