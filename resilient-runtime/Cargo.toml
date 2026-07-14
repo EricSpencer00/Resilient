@@ -35,6 +35,15 @@ ffi-static = []
 ffi-static-64 = ["ffi-static"]
 ffi-static-256 = ["ffi-static"]
 ffi-static-1024 = ["ffi-static"]
+# RES-3987 (D-E1): no_std, zero-heap bytecode VM skeleton for the
+# Int/Bool/Float opcode subset (arithmetic, comparisons, jumps,
+# local load/store, push-const, return). Self-contained — its own
+# `Instr`/`Value`, not an import of the host `resilient` crate's
+# bytecode VM. See `docs/EMBEDDED_PIPELINE.md` for the opcode
+# portability audit and the `vm-alloc` follow-up that will add
+# String/collection support once resilient-runtime::Value grows
+# those variants.
+vm = []
 
 [dependencies]
 embedded-alloc = { version = "0.5", optional = true }

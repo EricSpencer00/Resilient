@@ -95,6 +95,13 @@ pub mod timer;
 // ARM-specific inline asm; host builds use no-op stubs so tests pass.
 pub mod interrupt;
 
+// RES-3987 (D-E1): no_std, zero-heap bytecode VM skeleton for the
+// Int/Bool/Float opcode subset audited in
+// `docs/EMBEDDED_PIPELINE.md`. Opt-in — the default feature set
+// stays exactly what it was before this module existed.
+#[cfg(feature = "vm")]
+pub mod vm;
+
 #[cfg(feature = "alloc")]
 use alloc::string::String;
 
