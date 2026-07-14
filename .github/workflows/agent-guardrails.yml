@@ -92,3 +92,10 @@ jobs:
       # that ships invalid JSON. Hermetic (temp dirs only) — hard failure.
       - name: Run agent-scripts self-tests
         run: bash agent-scripts/test-json-merge.sh
+
+      # RES-4021: guards ready-or-bail.sh's auto-`Closes #N` heuristic
+      # against regressing to auto-closing a tracker/umbrella issue (e.g.
+      # #3933) instead of the child PR's own issue. Hermetic (no gh calls
+      # for the denylist path) — hard failure.
+      - name: Run ready-or-bail Closes-heuristic self-tests
+        run: bash agent-scripts/test-ready-or-bail-closes.sh
