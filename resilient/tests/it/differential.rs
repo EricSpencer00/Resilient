@@ -238,19 +238,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "array_method_chains.rz",
     "mutual_tco.rz",
     "string_builder.rz",
-    // RES-4000: `compiler.rs` lowers a `lo..hi` range *literal* straight to
-    // an eagerly-materialized `array_range(...)` array at compile time (see
-    // `Node::Range` in `compile_expr`), so the VM never has a first-class
-    // `Value::Range` to hand `contains()`/`to_string()`; the interpreter
-    // keeps ranges lazy (`Value::Range`). `type_of(1..5)` already reports
-    // `"array"` under `--vm` vs `"range"` on the interpreter (caught by
-    // `interpreter_and_vm_agree_on_value_types`); `range_values.rz` hits the
-    // same root cause via `contains(range, x)`, which has no `(Array, T)`
-    // overload. Fixing needs a real `Value::Range` representation threaded
-    // through `for`-loop compilation, `len()`, `contains()`, and
-    // `to_string()` uniformly — a distinct, larger change from the
-    // `CallMethod`/struct/`Add` fixes above.
-    "range_values.rz",
     // RES-3995: VM has no `live { }` retry-loop execution context — `live_retries()`
     // fails outside a live block, and the retry mechanism itself asserts on
     // the first failing attempt instead of retrying.
@@ -465,11 +452,12 @@ fn run_typed(expr_src: &str, tag: &str, vm: bool) -> Run {
 /// stays green and keeps testing the *type* channel rather than
 /// re-discovering an already-catalogued execution gap.
 ///
-/// `Range` is deliberately **not** included here: `type_of(1..5)`
-/// reports `"range"` on the interpreter and `"array"` under `--vm` —
-/// a real divergence caught by exactly this mechanism, tracked under
-/// RES-4000 rather than asserted on here (asserting on it would just
-/// make this test red instead of documenting the gap).
+/// `Range` (RES-4000, fixed): `type_of(1..5)` used to report `"range"`
+/// on the interpreter and `"array"` under `--vm`, because the VM
+/// compiler lowered `Node::Range` straight to `array_range(lo, hi)`
+/// instead of a first-class `Value::Range`. Fixed by lowering to the
+/// VM-internal `__range(lo, hi, inclusive)` builtin (`compiler.rs`),
+/// which constructs a `Value::Range` directly — now included below.
 #[test]
 fn interpreter_and_vm_agree_on_value_types() {
     let probes = [
@@ -484,6 +472,8 @@ fn interpreter_and_vm_agree_on_value_types() {
         ("bytes", r#"b"AB""#),
         ("tuple", "(1, 2)"),
         ("function_closure", "fn(int x) { return x; }"),
+        ("range", "1..5"),
+        ("range_inclusive", "1..=5"),
     ];
     let mut failures: Vec<String> = Vec::new();
     for (tag, expr) in probes {
