@@ -71,6 +71,18 @@
     ".github/workflows/release-file-claims.yml": {
       "branch": "res-3901-release-file-claims-push",
       "claimed_at": "2026-07-14T01:28:40Z"
+    },
+    "resilient/src/contract_verify.rs": {
+      "branch": "res-3969-body-aware-ensures",
+      "claimed_at": "2026-07-14T01:18:30Z"
+    },
+    "resilient/src/symbolic_eval.rs": {
+      "branch": "res-3969-body-aware-ensures",
+      "claimed_at": "2026-07-14T01:18:30Z"
+    },
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-3969-body-aware-ensures",
+      "claimed_at": "2026-07-14T01:31:53Z"
     }
   }
 }

@@ -28,7 +28,37 @@
 
 #![allow(dead_code)]
 
+mod symbolic_eval;
+
 use crate::Node;
+use symbolic_eval::ResultModel;
+
+/// Whether an `ensures` verdict was established against the function's
+/// actual implementation or only against the clause text.
+///
+/// RES-3969: the free-variable `ensures` proof leaves `result`
+/// unconstrained, so a clause like `result >= x` proves for *some*
+/// `result` regardless of what the body returns — a wrong `max` that
+/// returns `x` verifies identically to a correct one. `Implementation`
+/// marks a verdict where the body's return expression was substituted
+/// for `result` (via [`symbolic_eval`]), so the obligation is grounded
+/// in what the function actually computes. `ClauseOnly` marks the
+/// free-variable fallback used for `requires`/inferred clauses and for
+/// `ensures` on bodies outside the modelled subset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProofBasis {
+    Implementation,
+    ClauseOnly,
+}
+
+impl ProofBasis {
+    pub fn label(self) -> &'static str {
+        match self {
+            ProofBasis::Implementation => "implementation",
+            ProofBasis::ClauseOnly => "clause-only",
+        }
+    }
+}
 
 /// Which contract surface a verdict refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +104,11 @@ pub struct ClauseVerdict {
     /// Source-ish rendering of the clause (`b != 0`).
     pub clause: String,
     pub verdict: Verdict,
+    /// RES-3969: for `ensures` clauses, whether the verdict was proven
+    /// against the substituted function body (`Implementation`) or the
+    /// free-variable clause text (`ClauseOnly`). Always `ClauseOnly`
+    /// for `requires` and inferred clauses.
+    pub basis: ProofBasis,
 }
 
 /// Route every contract clause in `program` through the prover.
@@ -92,6 +127,7 @@ pub fn verify_program(program: &Node) -> Vec<ClauseVerdict> {
             name,
             requires,
             ensures,
+            body,
             ..
         } = &s.node
         else {
@@ -103,14 +139,17 @@ pub fn verify_program(program: &Node) -> Vec<ClauseVerdict> {
                 kind: ClauseKind::Requires,
                 clause: render_expr(r),
                 verdict: prove_clause(r, &[]),
+                basis: ProofBasis::ClauseOnly,
             });
         }
         for e in ensures {
+            let (verdict, basis) = prove_ensures(e, requires, body);
             out.push(ClauseVerdict {
                 function_name: name.clone(),
                 kind: ClauseKind::Ensures,
                 clause: render_expr(e),
-                verdict: prove_clause(e, requires),
+                verdict,
+                basis,
             });
         }
         if let Some(inf) = inferred.iter().find(|i| &i.function_name == name) {
@@ -128,6 +167,7 @@ pub fn verify_program(program: &Node) -> Vec<ClauseVerdict> {
                         kind,
                         clause: c.clone(),
                         verdict,
+                        basis: ProofBasis::ClauseOnly,
                     });
                 }
             }
@@ -189,6 +229,75 @@ pub fn format_report(verdicts: &[ClauseVerdict]) -> String {
     s
 }
 
+/// RES-3969: prove an `ensures` clause against the function body.
+///
+/// When the clause constrains `result` and the body is in the
+/// [`symbolic_eval`] subset, the body's return expression is
+/// substituted for `result` and the *grounded* obligation is proven —
+/// `Implementation` basis. For a branching body, each branch is proven
+/// under its path condition (asserted through the axiom channel) and
+/// the results combined: every reachable branch must discharge the
+/// clause. Otherwise the free-variable clause text is proven directly —
+/// `ClauseOnly` basis — exactly the pre-RES-3969 behaviour, retained as
+/// an explicit, labeled fallback for out-of-subset bodies.
+fn prove_ensures(clause: &Node, requires: &[Node], body: &Node) -> (Verdict, ProofBasis) {
+    if symbolic_eval::mentions_result(clause)
+        && let Some(model) = symbolic_eval::model_body(body)
+    {
+        let verdict = match model {
+            ResultModel::Straight { ret } => {
+                let obligation = symbolic_eval::substitute_result(clause, &ret);
+                prove_obligation(&obligation, requires)
+            }
+            ResultModel::Branch {
+                condition,
+                then_ret,
+                else_ret,
+            } => {
+                let then_obligation = symbolic_eval::substitute_result(clause, &then_ret);
+                let mut then_axioms = requires.to_vec();
+                then_axioms.push((*condition).clone());
+                let then_verdict = prove_obligation(&then_obligation, &then_axioms);
+
+                let else_obligation = symbolic_eval::substitute_result(clause, &else_ret);
+                let mut else_axioms = requires.to_vec();
+                else_axioms.push(symbolic_eval::negate(&condition));
+                let else_verdict = prove_obligation(&else_obligation, &else_axioms);
+
+                combine_branch_verdicts(then_verdict, else_verdict)
+            }
+        };
+        return (verdict, ProofBasis::Implementation);
+    }
+    (prove_clause(clause, requires), ProofBasis::ClauseOnly)
+}
+
+/// Combine the two per-branch verdicts of an `if/else` case split: the
+/// clause holds for the whole function only if it holds on *both*
+/// reachable branches. A refutation on either branch refutes the
+/// clause; anything short of two proofs is `Unknown`.
+fn combine_branch_verdicts(then_v: Verdict, else_v: Verdict) -> Verdict {
+    match (then_v, else_v) {
+        (Verdict::Fail { counterexample }, _) | (_, Verdict::Fail { counterexample }) => {
+            Verdict::Fail { counterexample }
+        }
+        (Verdict::Pass { certificate: a }, Verdict::Pass { certificate: b }) => Verdict::Pass {
+            certificate: merge_certificates(a, b),
+        },
+        _ => Verdict::Unknown,
+    }
+}
+
+fn merge_certificates(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(format!(
+            "; RES-3969 branch case-split\n; then-branch:\n{a}\n; else-branch:\n{b}"
+        )),
+        (Some(c), None) | (None, Some(c)) => Some(c),
+        (None, None) => None,
+    }
+}
+
 /// Per-clause Z3 timeout. Contract clauses are small (a handful of
 /// LIA atoms), so anything Z3 can decide it decides in well under a
 /// second; the cap only bounds pathological inputs.
@@ -214,6 +323,49 @@ fn prove_clause(expr: &Node, axioms: &[Node]) -> Verdict {
 
 #[cfg(not(feature = "z3"))]
 fn prove_clause(_expr: &Node, _axioms: &[Node]) -> Verdict {
+    Verdict::Unknown
+}
+
+/// RES-3969: prove a *grounded* `ensures` obligation — one where the
+/// body's return expression has already been substituted for `result`,
+/// so `expr` is a closed formula over the parameters.
+///
+/// Unlike [`prove_clause`], which only refutes a clause that is a
+/// standalone contradiction, this uses **validity** semantics suited to
+/// partial-correctness postconditions: the obligation must hold for
+/// *every* input admitted by the preconditions. A model of
+/// `axioms ∧ ¬obligation` is therefore a concrete input that satisfies
+/// the preconditions yet violates the postcondition — a genuine
+/// refutation (`Fail` with counterexample), not an "undecided". The
+/// solver already extracts exactly that model on the tautology check;
+/// we only reach for it when the negation was genuinely satisfiable
+/// (`!timed_out` and a counterexample was produced), so an untranslated
+/// obligation or a solver timeout still degrades to `Unknown`.
+///
+/// This validity reading is sound *only because* `result` has been
+/// pinned to the body: the caller uses [`prove_clause`] for the
+/// free-variable fallback, where an unconstrained `result` must not be
+/// reported as refuted.
+#[cfg(feature = "z3")]
+fn prove_obligation(expr: &Node, axioms: &[Node]) -> Verdict {
+    let (verdict, cert, cx, timed_out) = crate::verifier_z3::prove_with_axioms_and_timeout(
+        expr,
+        &std::collections::HashMap::new(),
+        axioms,
+        CLAUSE_TIMEOUT_MS,
+    );
+    match verdict {
+        Some(true) => Verdict::Pass {
+            certificate: cert.map(|c| c.smt2),
+        },
+        Some(false) => Verdict::Fail { counterexample: cx },
+        None if !timed_out && cx.is_some() => Verdict::Fail { counterexample: cx },
+        None => Verdict::Unknown,
+    }
+}
+
+#[cfg(not(feature = "z3"))]
+fn prove_obligation(_expr: &Node, _axioms: &[Node]) -> Verdict {
     Verdict::Unknown
 }
 
@@ -350,6 +502,7 @@ mod tests {
                 verdict: Verdict::Pass {
                     certificate: Some("(check-sat)".into()),
                 },
+                basis: ProofBasis::ClauseOnly,
             },
             ClauseVerdict {
                 function_name: "f".into(),
@@ -358,12 +511,14 @@ mod tests {
                 verdict: Verdict::Fail {
                     counterexample: Some("x = 1".into()),
                 },
+                basis: ProofBasis::Implementation,
             },
             ClauseVerdict {
                 function_name: "g".into(),
                 kind: ClauseKind::InferredRequires,
                 clause: "b != 0".into(),
                 verdict: Verdict::Unknown,
+                basis: ProofBasis::ClauseOnly,
             },
         ];
         let report = format_report(&verdicts);
@@ -477,5 +632,153 @@ mod tests {
             let v = verdict_for(&verdicts, "divide", ClauseKind::InferredRequires);
             assert_eq!(v.verdict, Verdict::Unknown);
         }
+
+        // RES-3969: THE regression that proves body-aware `ensures`.
+        // A wrong `max` that returns `x` unconditionally must now be
+        // REFUTED against `ensures result >= x && result >= y`, because
+        // substituting the body gives `x >= x && x >= y`, which fails
+        // for `y > x`. Under the pre-RES-3969 free-variable proof this
+        // clause was merely satisfiable (`Unknown`) and a wrong `max`
+        // was indistinguishable from a correct one.
+        #[test]
+        fn wrong_max_returning_x_is_refuted() {
+            let src = r#"
+                fn max(int x, int y) -> int
+                    ensures result >= x && result >= y
+                { return x; }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "max", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Fail { .. }),
+                "wrong max must FAIL its ensures, got {:?}",
+                v.verdict
+            );
+            assert_eq!(v.basis, ProofBasis::Implementation);
+        }
+
+        // The correct `if/else` `max` must PASS the same clause: each
+        // branch discharges the obligation under its path condition.
+        #[test]
+        fn correct_max_if_else_passes() {
+            let src = r#"
+                fn max(int x, int y) -> int
+                    ensures result >= x && result >= y
+                { if x >= y { return x; } else { return y; } }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "max", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Pass { .. }),
+                "correct max must PASS its ensures, got {:?}",
+                v.verdict
+            );
+            assert_eq!(v.basis, ProofBasis::Implementation);
+        }
+
+        // The `if C { return T; } return F;` fall-through shape models
+        // identically to explicit `if/else`.
+        #[test]
+        fn correct_max_fallthrough_passes() {
+            let src = r#"
+                fn max(int x, int y) -> int
+                    ensures result >= x && result >= y
+                { if x >= y { return x; } return y; }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "max", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Pass { .. }),
+                "correct fall-through max must PASS, got {:?}",
+                v.verdict
+            );
+        }
+
+        // A straight-line body whose return genuinely satisfies the
+        // clause passes on the implementation basis: `identity` returns
+        // `x`, and `ensures result == x` substitutes to `x == x`.
+        #[test]
+        fn straight_line_return_satisfying_clause_passes() {
+            let src = r#"
+                fn identity(int x) -> int
+                    ensures result == x
+                { return x; }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "identity", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Pass { .. }),
+                "identity must PASS ensures result == x, got {:?}",
+                v.verdict
+            );
+            assert_eq!(v.basis, ProofBasis::Implementation);
+        }
+
+        // Sanity: a straight-line return that violates the clause is
+        // refuted, not merely Unknown. `wrong_abs` returns `x` but
+        // claims `result >= 0`.
+        #[test]
+        fn straight_line_return_violating_clause_is_refuted() {
+            let src = r#"
+                fn wrong_abs(int x) -> int
+                    ensures result >= 0
+                { return x; }
+            "#;
+            let (prog, _) = parse(src);
+            let verdicts = verify_program(&prog);
+            let v = verdict_for(&verdicts, "wrong_abs", ClauseKind::Ensures);
+            assert!(
+                matches!(v.verdict, Verdict::Fail { .. }),
+                "wrong_abs must FAIL ensures result >= 0, got {:?}",
+                v.verdict
+            );
+        }
+    }
+
+    // RES-3969: basis routing is independent of z3 — it reflects
+    // whether the body was in the substitution subset, not whether the
+    // solver was linked. These run in every build configuration.
+    #[test]
+    fn ensures_basis_is_implementation_for_straight_line_body() {
+        let src = "fn f(int x) -> int ensures result >= 0 { return x; }";
+        let (prog, _) = parse(src);
+        let v = verify_program(&prog);
+        let e = v
+            .iter()
+            .find(|c| c.kind == ClauseKind::Ensures)
+            .expect("ensures verdict");
+        assert_eq!(e.basis, ProofBasis::Implementation);
+    }
+
+    #[test]
+    fn ensures_basis_is_clause_only_for_out_of_subset_body() {
+        // Multi-statement body with a `let` — outside the modelled
+        // subset — falls back to the free-variable clause-only path.
+        let src = "fn f(int x) -> int ensures result >= 0 { let t = x + 1; return t; }";
+        let (prog, _) = parse(src);
+        let v = verify_program(&prog);
+        let e = v
+            .iter()
+            .find(|c| c.kind == ClauseKind::Ensures)
+            .expect("ensures verdict");
+        assert_eq!(e.basis, ProofBasis::ClauseOnly);
+    }
+
+    #[test]
+    fn ensures_not_mentioning_result_stays_clause_only() {
+        // `ensures x >= 0` doesn't constrain the return value, so
+        // substitution is a no-op and we keep the clause-only label.
+        let src = "fn f(int x) -> int requires x >= 0 ensures x >= 0 { return x; }";
+        let (prog, _) = parse(src);
+        let v = verify_program(&prog);
+        let e = v
+            .iter()
+            .find(|c| c.kind == ClauseKind::Ensures)
+            .expect("ensures verdict");
+        assert_eq!(e.basis, ProofBasis::ClauseOnly);
     }
 }

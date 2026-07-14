@@ -486,6 +486,24 @@ pub fn prove_with_axioms_and_timeout(
         timeout_ms.hash(&mut h);
         h.finish()
     };
+    // RES-3969: consult the thread-local verdict cache *before* the
+    // persistent proven-set short-circuit. The verdict cache retains
+    // the proof certificate / counterexample; the persistent path
+    // drops them (see below). Checking the richer cache first makes a
+    // repeated prove of the same obligation return byte-identical
+    // output — a certificate emitted on the first call is emitted on
+    // every subsequent call — which the contract-certificate
+    // determinism invariant depends on. Both lookups are O(1); the
+    // persistent RwLock still catches keys proven in a *prior process*
+    // that never entered this thread's cache.
+    if let Some(cached) = Z3_VERDICT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        Z3_CACHE_STATS.with(|s| {
+            let mut v = s.get();
+            v.verdict_hits += 1;
+            s.set(v);
+        });
+        return cached;
+    }
     // RES-1657: persistent proven-set short-circuit. If this key
     // was proven `Some(true)` in any prior invocation that called
     // `load_persistent_proven`, return immediately. Cert/cx are
@@ -499,14 +517,6 @@ pub fn prove_with_axioms_and_timeout(
             s.set(v);
         });
         return (Some(true), None, None, false);
-    }
-    if let Some(cached) = Z3_VERDICT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
-        Z3_CACHE_STATS.with(|s| {
-            let mut v = s.get();
-            v.verdict_hits += 1;
-            s.set(v);
-        });
-        return cached;
     }
     Z3_CACHE_STATS.with(|s| {
         let mut v = s.get();
