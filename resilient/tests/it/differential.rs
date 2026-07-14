@@ -152,107 +152,6 @@ fn compare_outputs(label_a: &str, a: &Run, label_b: &str, b: &Run) -> Result<(),
 /// diverges; removing an entry (once its ticket is fixed) is how the
 /// gap shrinks. Do not add an entry without a comment + ticket ref.
 const UNSUPPORTED_BY_VM: &[&str] = &[
-    // RES-3991: `--vm` auto-prints the trailing top-level non-Void return value;
-    // the interpreter discards it (the `use_vm` branch of `execute_file` in
-    // `lib.rs` prints `result` when non-`Void`; the tree-walker branch never
-    // does). One extra trailing numeric line under `--vm`.
-    "acos.rz",
-    "acosh.rz",
-    "alignment_helpers.rz",
-    "array_argminmax.rz",
-    "array_binary_search.rz",
-    "array_chunking.rz",
-    "array_cumulative.rz",
-    "array_polymorphic_pos.rz",
-    "array_set_helpers.rz",
-    "array_slicing.rz",
-    "array_sort_extra.rz",
-    "array_stats.rz",
-    "as_cast.rz",
-    "asin.rz",
-    "asinh.rz",
-    "assoc_type_device_driver.rz",
-    "assoc_type_simple.rz",
-    "atan.rz",
-    "atanh.rz",
-    "bit_counting.rz",
-    "bit_manipulation.rz",
-    "break_continue.rz",
-    "builtin_methods.rz",
-    "bytes_and_or_not.rz",
-    "bytes_concat.rz",
-    "bytes_conversions.rz",
-    "bytes_eq.rz",
-    "bytes_fill_reverse.rz",
-    "bytes_helpers.rz",
-    "bytes_slicing.rz",
-    "bytes_xor.rz",
-    "cbrt.rz",
-    "cfg_attr_demo.rz",
-    "cluster_single_leader_bad.rz",
-    "cluster_single_leader_ok.rz",
-    "compound_assignment.rz",
-    "compound_lvalue.rz",
-    "copysign.rz",
-    "cosh.rz",
-    "embedded_uart_driver.rz",
-    "enum_payload_exhaust_missing.rz",
-    "exp2.rz",
-    "first_class_fn_anon.rz",
-    "float_classify.rz",
-    "for_tuple_binding.rz",
-    "hash_builtins.rz",
-    "hashmap_len.rz",
-    "hashmap_values.rz",
-    "hypot.rz",
-    "if_expression.rz",
-    "int_rotate.rz",
-    "interactive_greeter.rz",
-    "is_ascii_family.rz",
-    "iter_helpers.rz",
-    "linear_closure_capture_error.rz",
-    "linear_closure_demo.rz",
-    "linear_demo.rz",
-    "linear_double_use.rz",
-    "linear_effect_io_accepted.rz",
-    "log10.rz",
-    "log2.rz",
-    "loop_keyword.rz",
-    "map_contains_key.rz",
-    "map_entries_merge.rz",
-    "map_values.rz",
-    "match_struct_nonexhaustive.rz",
-    "negative_indices.rz",
-    "operator_overload.rz",
-    "pipe_operator.rz",
-    "polymorphic_types.rz",
-    "precision_math.rz",
-    "pure_effect_demo.rz",
-    "range_patterns.rz",
-    "result_patterns.rz",
-    "rounding.rz",
-    "scientific_notation.rz",
-    "set_difference.rz",
-    "set_intersection.rz",
-    "set_is_disjoint.rz",
-    "set_is_subset.rz",
-    "set_is_superset.rz",
-    "set_result_option.rz",
-    "set_symmetric_difference.rz",
-    "set_union.rz",
-    "sinh.rz",
-    "state_topology.rz",
-    "string_array_misc.rz",
-    "string_repetition.rz",
-    "string_slicing.rz",
-    "sum_types_constructor.rz",
-    "sum_types_match.rz",
-    "tanh.rz",
-    "to_degrees.rz",
-    "to_radians.rz",
-    "tuple_pattern.rz",
-    "underscore_numerics.rz",
-    "unix_time.rz",
     // RES-3992: VM bytecode compiler "unknown identifier" / "unknown function" —
     // closures/consts captured across scopes, and static/namespaced/tuple-
     // struct-constructor calls the compiler doesn't resolve to a callable.
@@ -393,9 +292,12 @@ fn at_least_four_hundred_examples_are_covered_by_default() {
     // quietly regress to "denylist everything." Pin the covered
     // (non-denylisted) count so a future change can't silently gut
     // coverage back down to an allowlist-sized handful. As of RES-3990
-    // this is 412 of 581 examples (169 denylisted); the threshold below
-    // is a conservative floor, not the exact figure, so unrelated
-    // example-corpus growth doesn't make this test flaky.
+    // this was 412 of 581 examples (169 denylisted); RES-3991 (B-E3)
+    // fixed the VM's spurious trailing top-level auto-print and removed
+    // its 97-entry denylist block, so coverage is now 528 of 581 (53
+    // denylisted). The threshold below is a conservative floor, not the
+    // exact figure, so unrelated example-corpus growth doesn't make this
+    // test flaky.
     let denylist: std::collections::HashSet<&str> = UNSUPPORTED_BY_VM.iter().copied().collect();
     let covered = discover_examples()
         .iter()
@@ -1523,5 +1425,103 @@ fn interpreter_and_vm_agree_on_res4005_block_scope_shadowing() {
         "{} RES-4005 block-scope shadowing case(s) diverged between backends:{}",
         failures.len(),
         failures.join("")
+    );
+}
+
+/// RES-3991 (B-E3) regression: `run_via_vm` (the `--vm` driver in
+/// `lib.rs`) used to `println!("{}", result)` whenever the bytecode
+/// VM's top-level `Ok` value was non-`Void` — a leftover meant to
+/// "mirror the tree walker's behavior for non-Void results" that in
+/// fact mirrored nothing, since the tree-walker branch of
+/// `execute_file` always discards `interpreter.eval(&program)`'s `Ok`
+/// value unconditionally. Any program whose trailing top-level
+/// statement evaluated to a non-`Void` value (most commonly a call
+/// like `main(0);` to a function with a non-void return type) printed
+/// one spurious extra line under `--vm` that never appeared under the
+/// interpreter. This was the single largest differential-testing
+/// divergence family (97 of the `UNSUPPORTED_BY_VM` entries).
+///
+/// Covers: int/string/struct/Option-returning trailing top-level calls
+/// (the `main(0);`-shaped repro), a bare non-`;`-terminated top-level
+/// literal (RES-3997's "trailing bare expression" shape, but at top
+/// level rather than inside a function body), and the Void-suppression
+/// case — a trailing top-level `println(...)` (which itself returns
+/// `Void`) must print its argument exactly once, never twice.
+#[test]
+fn interpreter_and_vm_agree_on_trailing_top_level_expression_values() {
+    let programs = [
+        (
+            "trailing_call_returns_int",
+            "fn main(int _d) { println(\"ran\"); return 42; } main(0);",
+        ),
+        (
+            "trailing_call_returns_string",
+            "fn greeting() -> string { println(\"ran\"); return \"hi\"; } greeting();",
+        ),
+        (
+            "trailing_call_returns_struct",
+            "struct Point { int x, int y, } \
+             fn make_point() -> Point { println(\"ran\"); return new Point { x: 1, y: 2 }; } \
+             make_point();",
+        ),
+        (
+            "trailing_call_returns_option",
+            "fn maybe() -> Option<int> { println(\"ran\"); return Some(5); } maybe();",
+        ),
+        (
+            "trailing_bare_top_level_literal_no_semicolon",
+            "let x = 40 + 2;\nprintln(\"ran\");\nx",
+        ),
+        (
+            "trailing_top_level_println_not_double_printed",
+            "println(1 + 1);",
+        ),
+        (
+            "trailing_top_level_bare_call_no_semicolon",
+            "fn answer() -> int { return 42; }\nprintln(\"ran\");\nanswer()",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} trailing top-level expression case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+
+    // Pin the exact previous bug shape too, not just backend parity — a
+    // regression that made *both* backends print the extra line would
+    // still pass the parity check above. `--vm` must print "ran" then
+    // the driver's own trailer line, never a spurious trailing "42" in
+    // between (the old bug printed `ran\n42\nProgram executed
+    // successfully\n`).
+    let vm = run_src(
+        "fn main(int _d) { println(\"ran\"); return 42; } main(0);",
+        "res3991_pinned_no_extra_line",
+        true,
+    );
+    assert_eq!(
+        vm.stdout, "ran\nProgram executed successfully\n",
+        "--vm must not auto-print the trailing top-level call's non-Void \
+         return value: {:?}",
+        vm.stdout
+    );
+
+    // Void-suppression: a trailing top-level `println(...)` call (whose
+    // own return value is `Void`) must appear exactly once in stdout,
+    // never doubled by a spurious auto-print of the `Void` result.
+    let vm_void = run_src("println(1 + 1);", "res3991_void_not_double_printed", true);
+    assert_eq!(
+        vm_void.stdout, "2\nProgram executed successfully\n",
+        "--vm must print the trailing println's output exactly once, not \
+         double-print it: {:?}",
+        vm_void.stdout
     );
 }

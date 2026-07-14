@@ -103,6 +103,14 @@
     "docs/CONFORMANCE.md": {
       "branch": "res-4023-conformance-expand",
       "claimed_at": "2026-07-14T05:45:20Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-3991-vm-trailing-autoprint",
+      "claimed_at": "2026-07-14T05:39:59Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3991-vm-trailing-autoprint",
+      "claimed_at": "2026-07-14T05:39:59Z"
     }
   }
 }

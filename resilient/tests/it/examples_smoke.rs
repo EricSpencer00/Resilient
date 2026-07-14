@@ -118,12 +118,17 @@ fn bytecode_vm_runs_arithmetic_and_let() {
     // instead of the tree-walking interpreter. The same result is
     // printed; this proves the foundation pipeline (compile + run)
     // works end-to-end for the subset the FOUNDATION ticket covers.
+    //
+    // RES-3991: the program must `println` the value it wants
+    // observed — the driver no longer auto-prints a trailing
+    // top-level expression's value (that was a `--vm`-only bug; the
+    // tree-walker, the oracle, never did this either).
     use std::io::Write;
     let tmp = std::env::temp_dir().join(format!("res_076_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "let x = 2 + 3 * 4;").unwrap();
-        writeln!(f, "return x;").unwrap();
+        writeln!(f, "println(x);").unwrap();
     }
     let output = Command::new(bin())
         .arg("--vm")
@@ -149,12 +154,15 @@ fn bytecode_vm_runs_fn_call() {
     // RES-081: --vm runs a program that declares a fn and calls it.
     // Foundation only covers calls without branching — that's fine
     // for this smoke test; `sq(7) = 49` doesn't need control flow.
+    //
+    // RES-3991: `println` the result explicitly — the driver no
+    // longer auto-prints a trailing top-level call's return value.
     use std::io::Write;
     let tmp = std::env::temp_dir().join(format!("res_081_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "fn sq(int n) {{ return n * n; }}").unwrap();
-        writeln!(f, "sq(7);").unwrap();
+        writeln!(f, "println(sq(7));").unwrap();
     }
     let output = Command::new(bin())
         .arg("--vm")
@@ -448,6 +456,9 @@ fn bytecode_vm_runs_recursive_fib() {
     // --vm. This is the capstone smoke test that exercises Call +
     // ReturnFromCall + JumpIfFalse + back-patched forward/backward
     // offsets + comparison ops + recursion, all in one program.
+    //
+    // RES-3991: `println` the result explicitly — the driver no
+    // longer auto-prints a trailing top-level call's return value.
     use std::io::Write;
     let tmp = std::env::temp_dir().join(format!("res_083_smoke_{}.rs", std::process::id()));
     {
@@ -456,7 +467,7 @@ fn bytecode_vm_runs_recursive_fib() {
         writeln!(f, "    if n <= 1 {{ return n; }}").unwrap();
         writeln!(f, "    return fib(n - 1) + fib(n - 2);").unwrap();
         writeln!(f, "}}").unwrap();
-        writeln!(f, "fib(10);").unwrap();
+        writeln!(f, "println(fib(10));").unwrap();
     }
     let output = Command::new(bin())
         .arg("--vm")
