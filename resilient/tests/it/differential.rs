@@ -210,13 +210,25 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // into their respective statement dispatchers — `edge_if_let_pattern.rz`,
     // `edge_while_let.rz`, `if_let.rz`, `while_let.rz` no longer belong here.
     //
+    // `break_with_value.rz` and `match_block_arms.rz` are fixed: `loop {
+    // ...; break <expr>; }` used in expression position now has a value
+    // channel — `compile_expr` gained a `WhileStatement` arm
+    // (`compile_while_expr`) that always leaves exactly one value on the
+    // stack (`Void` on a plain `break;`/condition-false exit, or the
+    // `break <expr>` value via a new `LoopState::value_mode` /
+    // `break_value_patches` pair that `Node::BreakWith` — now handled in
+    // both `compile_stmt` and `compile_stmt_in_fn` — consults to decide
+    // whether to leave its value on the stack or evaluate-and-discard it
+    // like an ordinary statement-position `break`). Separately,
+    // `compile_block_as_expr` gained a `ReturnStatement` arm for its
+    // trailing statement (previously only `ExpressionStatement` was
+    // handled there, so `return` as a block-bodied match arm's last
+    // statement fell through to `Unsupported("ReturnStatement")`) —
+    // delegates to `compile_stmt_in_fn`, which already lowers `return` to
+    // `<value>; Op::ReturnFromCall`.
+    //
     // The remaining entries are distinct root causes this fix does not
-    // touch: `break_with_value.rz` needs a `loop`-as-expression value
-    // channel for `WhileStatement` in expression position (`break <expr>`
-    // via `Node::BreakWith`); `match_block_arms.rz` needs `ReturnStatement`
-    // support inside a match arm's block when the match itself is compiled
-    // in *expression* position (`compile_block_as_expr` doesn't handle
-    // `return`); `comprehension_demo.rz`/`edge_closure_capture.rz` need
+    // touch: `comprehension_demo.rz`/`edge_closure_capture.rz` need
     // indirect-call support for non-identifier callees; `null_coalescing_
     // operator.rz`/`option_find.rz` need the `??` operator (and, for
     // `option_find.rz`, an `Option`-returning fn declared with an `int`
@@ -230,11 +242,9 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "array_contains.rz",
     "array_sorted_invariant.rz",
     "bench_simple.rz",
-    "break_with_value.rz",
     "comprehension_demo.rz",
     "defer_stmt.rz",
     "edge_closure_capture.rz",
-    "match_block_arms.rz",
     "null_coalescing_operator.rz",
     "option_find.rz",
     "optional_chaining.rz",

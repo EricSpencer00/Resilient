@@ -140,21 +140,21 @@
       "branch": "res-4012-unify-exhaustiveness",
       "claimed_at": "2026-07-14T10:39:37Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-4041-vm-postconditions",
-      "claimed_at": "2026-07-14T11:01:38Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-4041-vm-postconditions",
-      "claimed_at": "2026-07-14T11:01:38Z"
-    },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-4041-vm-postconditions",
-      "claimed_at": "2026-07-14T11:01:38Z"
-    },
     "docs/ROADMAP_PHASE2.md": {
       "branch": "res-3933-phase2-roadmap",
       "claimed_at": "2026-07-14T13:45:53Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-3993-vm-break-return",
+      "claimed_at": "2026-07-14T15:29:39Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-3993-vm-break-return",
+      "claimed_at": "2026-07-14T15:29:39Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-3993-vm-break-return",
+      "claimed_at": "2026-07-14T15:29:39Z"
     }
   }
 }
