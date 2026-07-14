@@ -1,0 +1,14 @@
+22
+12
+85
+3
+2
+false
+true
+false
+false
+true
+true
+int
+bool
+Program executed successfully

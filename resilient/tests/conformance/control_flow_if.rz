@@ -1,0 +1,22 @@
+// Conformance case: Stable "Core syntax: if / else" + "Basic control
+// flow: expression-level if" (STABILITY.md § Feature Stability › Stable).
+fn classify(int x) -> string {
+    if x < 0 {
+        return "negative";
+    } else if x == 0 {
+        return "zero";
+    } else {
+        return "positive";
+    }
+}
+
+fn main() {
+    println(classify(-3));
+    println(classify(0));
+    println(classify(7));
+    // expression-level if
+    let x = 4;
+    let label = if x > 0 { "pos" } else { "nonpos" };
+    println(label);
+}
+main();

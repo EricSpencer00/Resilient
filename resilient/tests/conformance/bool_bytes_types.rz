@@ -1,0 +1,19 @@
+// Conformance case: Stable "Bool" and "Bytes" primitive types
+// (STABILITY.md § Feature Stability › Stable), including the `\xNN`
+// byte-literal escape syntax that is part of the same Stable bullet.
+fn main() {
+    let t = true;
+    let f = false;
+    println(t);
+    println(f);
+    println(t == f);
+    println(t != f);
+    println(type_of(t));
+
+    let raw = b"\x00\xFF\x41";
+    println(bytes_len(raw));
+    println(byte_at(raw, 1));
+    println(byte_at(raw, 2));
+    println(type_of(raw));
+}
+main();

@@ -103,6 +103,18 @@
     "resilient/src/vm.rs": {
       "branch": "res-3914-vm-mutable-upvalues",
       "claimed_at": "2026-07-14T01:39:50Z"
+    },
+    "resilient/tests/it/main.rs": {
+      "branch": "res-3983-conformance-scaffold",
+      "claimed_at": "2026-07-14T02:26:15Z"
+    },
+    ".github/workflows/ci.yml": {
+      "branch": "res-3983-conformance-scaffold",
+      "claimed_at": "2026-07-14T02:26:15Z"
+    },
+    "resilient/tests/it/conformance.rs": {
+      "branch": "res-3983-conformance-scaffold",
+      "claimed_at": "2026-07-14T02:26:15Z"
     }
   }
 }

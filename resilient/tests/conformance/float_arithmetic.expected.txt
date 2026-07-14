@@ -1,0 +1,11 @@
+13
+8
+26.25
+4.2
+false
+true
+false
+true
+float
+bool
+Program executed successfully

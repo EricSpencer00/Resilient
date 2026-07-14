@@ -1,0 +1,26 @@
+// Conformance case: Stable "Core syntax: fn, return" + "Function call
+// syntax and the `fn name(type arg, ...)` declaration form"
+// (STABILITY.md § Feature Stability › Stable).
+fn add(int a, int b) -> int {
+    return a + b;
+}
+
+fn fact(int n) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * fact(n - 1);
+}
+
+fn no_return_value() {
+    println("side-effect-only");
+}
+
+fn main() {
+    println(add(3, 4));
+    println(fact(5));
+    no_return_value();
+    // nested call expression
+    println(add(add(1, 2), add(3, 4)));
+}
+main();
