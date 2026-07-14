@@ -1369,6 +1369,24 @@ fn compile_stmt(
             loop_stack,
             false,
         ),
+        // RES-3993: `if let` / `while let` desugar to a bare `Node::Match`
+        // statement (see `compile_match_stmt`'s doc comment) — route it
+        // the same way `IfStatement`/`WhileStatement` are routed above.
+        Node::Match {
+            scrutinee, arms, ..
+        } => compile_match_stmt(
+            scrutinee,
+            arms,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -2336,6 +2354,24 @@ fn compile_stmt_in_fn(
             true,
         ),
         Node::Extern { .. } => Err(CompileError::Unsupported("nested extern decl")),
+        // RES-3993: same `if let`/`while let` desugar-target fix as the
+        // top-level `compile_stmt` arm above, routed through the in-fn
+        // variant so `return` inside an arm emits `ReturnFromCall`.
+        Node::Match {
+            scrutinee, arms, ..
+        } => compile_match_stmt_in_fn(
+            scrutinee,
+            arms,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -4908,6 +4944,227 @@ fn compile_match_expr(
     Ok(())
 }
 
+/// RES-3993: `Match` used as a statement rather than an expression —
+/// the lowering target for `if let` (RES-908) and `while let` (RES-914),
+/// which the parser desugars to a bare `Node::Match` inside a `Block`
+/// (see `parse_if_let_statement` / `parse_while_let_statement`). Neither
+/// `compile_stmt` nor `compile_stmt_in_fn` had a `Match` arm before this,
+/// so every if-let/while-let fell through to the generic
+/// `Unsupported("Match")` catch-all.
+///
+/// Mirrors `compile_match_expr`'s pattern-check/guard machinery, but
+/// compiles each arm body with `compile_stmt` (so `return`/`break`/
+/// `continue`/assignment/nested-`let` inside an arm behave exactly like
+/// any other statement block) instead of `compile_expr`, and does not
+/// leave a fallthrough value on the operand stack — a statement-position
+/// match's result is never consumed, unlike `compile_match_expr`'s
+/// `Value::Void` fallback.
+#[allow(clippy::too_many_arguments)]
+fn compile_match_stmt(
+    scrutinee: &Node,
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    loop_stack: &mut Vec<LoopState>,
+) -> Result<(), CompileError> {
+    compile_expr(
+        scrutinee,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    if *next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let scrutinee_slot = *next_local;
+    *next_local += 1;
+    chunk.emit(Op::StoreLocal(scrutinee_slot), line);
+
+    let mut after_match_patches: Vec<usize> = Vec::with_capacity(arms.len());
+
+    for (pattern, guard, body) in arms {
+        let mut arm_locals = locals.clone();
+        let next_local_snap = *next_local;
+
+        let mut next_arm_patches: Vec<usize> = Vec::new();
+        compile_pattern_check(
+            pattern,
+            scrutinee_slot,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            &mut next_arm_patches,
+        )?;
+
+        if let Some(guard_expr) = guard {
+            compile_expr(
+                guard_expr,
+                chunk,
+                &mut arm_locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+
+        compile_stmt(
+            body,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+
+        let after_p = chunk.emit(Op::Jump(0), line);
+        after_match_patches.push(after_p);
+
+        let next_arm_pc = chunk.code.len();
+        for p in next_arm_patches {
+            chunk.patch_jump(p, next_arm_pc)?;
+        }
+
+        // Reclaim temp slots used by this arm's bindings.
+        *next_local = next_local_snap;
+    }
+
+    let after_match_pc = chunk.code.len();
+    for p in after_match_patches {
+        chunk.patch_jump(p, after_match_pc)?;
+    }
+    Ok(())
+}
+
+/// Same as [`compile_match_stmt`] but routes arm bodies through
+/// `compile_stmt_in_fn` so `return` inside an arm emits `ReturnFromCall`
+/// (matching how `compile_control_flow_in_fn` mirrors `compile_control_flow`
+/// for `if`/`while`/`for`/block statements inside a function body).
+#[allow(clippy::too_many_arguments)]
+fn compile_match_stmt_in_fn(
+    scrutinee: &Node,
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    loop_stack: &mut Vec<LoopState>,
+) -> Result<(), CompileError> {
+    compile_expr(
+        scrutinee,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    if *next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let scrutinee_slot = *next_local;
+    *next_local += 1;
+    chunk.emit(Op::StoreLocal(scrutinee_slot), line);
+
+    let mut after_match_patches: Vec<usize> = Vec::with_capacity(arms.len());
+
+    for (pattern, guard, body) in arms {
+        let mut arm_locals = locals.clone();
+        let next_local_snap = *next_local;
+
+        let mut next_arm_patches: Vec<usize> = Vec::new();
+        compile_pattern_check(
+            pattern,
+            scrutinee_slot,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            &mut next_arm_patches,
+        )?;
+
+        if let Some(guard_expr) = guard {
+            compile_expr(
+                guard_expr,
+                chunk,
+                &mut arm_locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+
+        compile_stmt_in_fn(
+            body,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+
+        let after_p = chunk.emit(Op::Jump(0), line);
+        after_match_patches.push(after_p);
+
+        let next_arm_pc = chunk.code.len();
+        for p in next_arm_patches {
+            chunk.patch_jump(p, next_arm_pc)?;
+        }
+
+        // Reclaim temp slots used by this arm's bindings.
+        *next_local = next_local_snap;
+    }
+
+    let after_match_pc = chunk.code.len();
+    for p in after_match_patches {
+        chunk.patch_jump(p, after_match_pc)?;
+    }
+    Ok(())
+}
+
 /// RES-3994: extract the single inner sub-pattern from an
 /// `EnumPatternPayload` for `Option`/`Result` bridging in
 /// `compile_pattern_check`'s `Pattern::EnumVariant` arm. `Option::Some(v)`
@@ -6711,6 +6968,104 @@ sum;
         match vm_ok(src) {
             Value::Int(12) => {}
             other => panic!("expected Int(12), got {:?}", other),
+        }
+    }
+
+    // ── RES-3993: `if let` / `while let` desugar to a statement-position
+    // `Match` — see `compile_match_stmt`'s doc comment. Before this fix,
+    // every one of these compiled to `CompileError::Unsupported("Match")`.
+
+    #[test]
+    fn res3993_if_let_top_level_binds_pattern_and_runs_matching_arm() {
+        let src = r#"
+let x = 0;
+if let 0 = x {
+    x = 100;
+} else {
+    x = 1;
+}
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(100) => {}
+            other => panic!("expected Int(100), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_if_let_top_level_falls_through_to_else_on_no_match() {
+        let src = r#"
+let x = 7;
+if let 0 = x {
+    x = 100;
+} else {
+    x = 1;
+}
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_if_let_in_fn_body_returns_from_matching_arm() {
+        let src = r#"
+fn classify(int n) -> string {
+    if let 0 = n {
+        return "zero";
+    }
+    return "other";
+}
+classify(0);
+"#;
+        match vm_ok(src) {
+            Value::String(s) => assert_eq!(s, "zero"),
+            other => panic!("expected String(\"zero\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_while_let_top_level_drains_matching_pattern_then_breaks() {
+        // Mirrors examples/while_let.rz's "literal-pattern drain" case:
+        // the loop body only runs while the scrutinee equals the
+        // literal pattern; the wildcard fallthrough arm breaks.
+        let src = r#"
+let counter = 3;
+let runs = 0;
+while let 3 = counter {
+    runs = runs + 1;
+    counter = counter - 1;
+}
+runs;
+"#;
+        match vm_ok(src) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_while_let_in_fn_body_with_identifier_pattern_and_break() {
+        let src = r#"
+fn drain_to(int limit) -> int {
+    let i = 0;
+    let last = 0;
+    while let n = i {
+        last = n;
+        if n >= limit {
+            break;
+        }
+        i = i + 1;
+    }
+    return last;
+}
+drain_to(4);
+"#;
+        match vm_ok(src) {
+            Value::Int(4) => {}
+            other => panic!("expected Int(4), got {:?}", other),
         }
     }
 
