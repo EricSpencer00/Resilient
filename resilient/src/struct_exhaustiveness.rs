@@ -16,6 +16,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use std::collections::HashMap;
 
 // RES-2224: borrow `function` as `&'a str` from the program AST.
 // The walker already had `fn_name: &str`, so the per-warning
@@ -55,20 +56,137 @@ fn struct_arm_is_unguarded_catch_all(
     }
 }
 
+/// Build a map of `struct_name → declared (type, field_name) pairs, in
+/// declaration order` for all top-level `Node::StructDecl` nodes. Used
+/// to attempt bool-domain truth-table exhaustiveness (see
+/// [`bool_fields_exhaustively_covered`]) — the only place this module
+/// needs to know a struct's actual field types rather than just its
+/// per-arm pattern shape.
+fn collect_struct_field_types(program: &Node) -> HashMap<&str, &Vec<(String, String)>> {
+    let mut map = HashMap::new();
+    let Node::Program(stmts) = program else {
+        return map;
+    };
+    for s in stmts {
+        if let Node::StructDecl { name, fields, .. } = &s.node {
+            map.insert(name.as_str(), fields);
+        }
+    }
+    map
+}
+
+fn is_bool_type_name(ty: &str) -> bool {
+    matches!(ty, "bool" | "Bool" | "boolean")
+}
+
+/// RES-3934: does every combination of the struct's declared bool fields
+/// get covered by some *unguarded* arm? This implements the coverage the
+/// module doc comment already promised ("bool fields ... must cover both
+/// true and false") but that the original implementation never actually
+/// computed — it only ever checked for an explicit catch-all arm, which
+/// made a fully bool-exhaustive match like
+/// `Flag { on: true } => .., Flag { on: false } => ..` report a false
+/// non-exhaustiveness warning.
+///
+/// Returns `false` (meaning: fall back to requiring an explicit
+/// catch-all, the pre-existing behavior) whenever:
+/// - the struct's fields aren't known, or any declared field isn't bool
+///   (int/string/nested-struct literal coverage is a materially larger
+///   analysis and stays out of scope — the existing catch-all
+///   requirement already handles it correctly by being conservative);
+/// - any arm's pattern doesn't reduce to "bool literal or wildcard/
+///   identifier per declared field" (e.g. a nested struct sub-pattern).
+///
+/// Guarded arms are skipped entirely rather than treated as covering
+/// anything — a guard may fail at runtime, so it can never be relied on
+/// for static coverage.
+fn bool_fields_exhaustively_covered(
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    struct_decls: &HashMap<&str, &Vec<(String, String)>>,
+) -> bool {
+    let struct_name = match arms.first() {
+        Some((crate::Pattern::Struct { struct_name, .. }, _, _)) => struct_name.as_str(),
+        _ => return false,
+    };
+    let Some(decl_fields) = struct_decls.get(struct_name) else {
+        return false;
+    };
+    if decl_fields.is_empty() || !decl_fields.iter().all(|(ty, _)| is_bool_type_name(ty)) {
+        return false;
+    }
+
+    let mut rows: Vec<Vec<Option<bool>>> = Vec::new();
+    for (pattern, guard, _) in arms {
+        if guard.is_some() {
+            continue;
+        }
+        let crate::Pattern::Struct {
+            struct_name: sn,
+            fields,
+            has_rest,
+        } = pattern
+        else {
+            return false;
+        };
+        if sn != struct_name || *has_rest {
+            return false;
+        }
+        let mut row = Vec::with_capacity(decl_fields.len());
+        for (_, fname) in decl_fields.iter() {
+            let Some((_, sub)) = fields.iter().find(|(n, _)| n == fname) else {
+                return false;
+            };
+            match sub.as_ref() {
+                crate::Pattern::Literal(Node::BooleanLiteral { value, .. }) => {
+                    row.push(Some(*value))
+                }
+                p if is_irrefutable_sub_pattern(p) => row.push(None),
+                _ => return false,
+            }
+        }
+        rows.push(row);
+    }
+
+    covers_bool_domain(&rows, 0, decl_fields.len())
+}
+
+/// Recursively splits on each field's boolean domain (`true`/`false`)
+/// and verifies some row remains that matches every combination.
+/// `None` entries are wildcards — they match either value.
+fn covers_bool_domain(rows: &[Vec<Option<bool>>], field_idx: usize, num_fields: usize) -> bool {
+    if field_idx == num_fields {
+        return !rows.is_empty();
+    }
+    [true, false].iter().all(|&want| {
+        let filtered: Vec<Vec<Option<bool>>> = rows
+            .iter()
+            .filter(|r| r[field_idx].is_none() || r[field_idx] == Some(want))
+            .cloned()
+            .collect();
+        covers_bool_domain(&filtered, field_idx + 1, num_fields)
+    })
+}
+
 pub fn analyze<'a>(program: &'a Node) -> Vec<ExhaustivenessWarning<'a>> {
     let mut out = Vec::new();
     let Node::Program(stmts) = program else {
         return out;
     };
+    let struct_decls = collect_struct_field_types(program);
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
-            walk(body, name.as_str(), &mut out);
+            walk(body, name.as_str(), &struct_decls, &mut out);
         }
     }
     out
 }
 
-fn walk<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<ExhaustivenessWarning<'a>>) {
+fn walk<'a>(
+    node: &'a Node,
+    fn_name: &'a str,
+    struct_decls: &HashMap<&str, &Vec<(String, String)>>,
+    out: &mut Vec<ExhaustivenessWarning<'a>>,
+) {
     match node {
         Node::Match { arms, .. } => {
             let all_struct = arms
@@ -77,7 +195,11 @@ fn walk<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<ExhaustivenessWarnin
             let has_cover = arms
                 .iter()
                 .any(|(p, g, _)| struct_arm_is_unguarded_catch_all(p, g));
-            if all_struct && !arms.is_empty() && !has_cover {
+            if all_struct
+                && !arms.is_empty()
+                && !has_cover
+                && !bool_fields_exhaustively_covered(arms, struct_decls)
+            {
                 out.push(ExhaustivenessWarning {
                     function: fn_name,
                     message: "Non-exhaustive match on struct — add a wildcard arm \
@@ -85,29 +207,29 @@ fn walk<'a>(node: &'a Node, fn_name: &'a str, out: &mut Vec<ExhaustivenessWarnin
                 });
             }
             for (_, _, body) in arms {
-                walk(body, fn_name, out);
+                walk(body, fn_name, struct_decls, out);
             }
         }
         Node::Block { stmts, .. } => {
             for s in stmts {
-                walk(s, fn_name, out);
+                walk(s, fn_name, struct_decls, out);
             }
         }
-        Node::ExpressionStatement { expr, .. } => walk(expr, fn_name, out),
-        Node::LetStatement { value, .. } => walk(value, fn_name, out),
-        Node::ReturnStatement { value: Some(v), .. } => walk(v, fn_name, out),
+        Node::ExpressionStatement { expr, .. } => walk(expr, fn_name, struct_decls, out),
+        Node::LetStatement { value, .. } => walk(value, fn_name, struct_decls, out),
+        Node::ReturnStatement { value: Some(v), .. } => walk(v, fn_name, struct_decls, out),
         Node::IfStatement {
             consequence,
             alternative,
             ..
         } => {
-            walk(consequence, fn_name, out);
+            walk(consequence, fn_name, struct_decls, out);
             if let Some(a) = alternative {
-                walk(a, fn_name, out);
+                walk(a, fn_name, struct_decls, out);
             }
         }
         Node::WhileStatement { body, .. } | Node::ForInStatement { body, .. } => {
-            walk(body, fn_name, out);
+            walk(body, fn_name, struct_decls, out);
         }
         _ => {}
     }
@@ -259,5 +381,215 @@ fn handle(Event e) -> int {
 "#;
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test.rz").is_ok());
+    }
+
+    // RES-3934: adversarial corpus — bool-domain truth-table coverage,
+    // guard interaction, and struct+enum-payload combinations.
+
+    /// Bug fix: `struct_arm_is_unguarded_catch_all` never implemented
+    /// the bool truth-table coverage this module's own doc comment
+    /// promises ("bool fields ... must cover both true and false") — it
+    /// only ever checked for an explicit catch-all arm. A single-bool-field
+    /// struct matched on both `true` and `false` is genuinely exhaustive
+    /// and must not warn.
+    #[test]
+    fn single_bool_field_true_and_false_covers_all_no_warning() {
+        let src = r#"
+struct Flag { bool on }
+fn f(Flag flag) -> int {
+    return match flag {
+        Flag { on: true } => 1,
+        Flag { on: false } => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            warnings.is_empty(),
+            "true+false covers the whole bool domain — expected no warning; got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn single_bool_field_only_true_still_warns() {
+        let src = r#"
+struct Flag { bool on }
+fn f(Flag flag) -> int {
+    return match flag {
+        Flag { on: true } => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            !warnings.is_empty(),
+            "only `true` is covered — `false` is missing, expected a warning"
+        );
+    }
+
+    /// Two independent bool fields — all four combinations covered by
+    /// four literal arms is exhaustive, even though no single arm is a
+    /// catch-all and no arm has a wildcard/identifier sub-pattern.
+    #[test]
+    fn two_bool_fields_full_cartesian_coverage_no_warning() {
+        let src = r#"
+struct Toggle { bool a, bool b }
+fn f(Toggle t) -> int {
+    return match t {
+        Toggle { a: true, b: true } => 0,
+        Toggle { a: true, b: false } => 1,
+        Toggle { a: false, b: true } => 2,
+        Toggle { a: false, b: false } => 3,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            warnings.is_empty(),
+            "all four (a, b) combinations covered — expected no warning; got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn two_bool_fields_missing_one_combination_still_warns() {
+        let src = r#"
+struct Toggle { bool a, bool b }
+fn f(Toggle t) -> int {
+    return match t {
+        Toggle { a: true, b: true } => 0,
+        Toggle { a: true, b: false } => 1,
+        Toggle { a: false, b: true } => 2,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            !warnings.is_empty(),
+            "(a: false, b: false) is never covered — expected a warning"
+        );
+    }
+
+    /// A wildcard sub-pattern for one field, covering both bool values
+    /// for that field, combined with explicit coverage of the other
+    /// field, is exhaustive without every combination being spelled out.
+    #[test]
+    fn bool_field_wildcard_sub_pattern_covers_that_fields_domain() {
+        let src = r#"
+struct Toggle { bool a, bool b }
+fn f(Toggle t) -> int {
+    return match t {
+        Toggle { a: true, b } => 0,
+        Toggle { a: false, b } => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            warnings.is_empty(),
+            "`b` wildcarded in both arms, `a` covers true+false — expected no warning; got: {:?}",
+            warnings
+        );
+    }
+
+    /// Guarded arms must never count toward bool coverage — a guard can
+    /// fail at runtime, so a match relying solely on a guarded arm for
+    /// `on: false` is genuinely still non-exhaustive.
+    #[test]
+    fn guarded_bool_arm_does_not_count_toward_coverage() {
+        let src = r#"
+struct Flag { bool on }
+fn f(Flag flag, bool extra) -> int {
+    return match flag {
+        Flag { on: true } => 1,
+        Flag { on: false } if extra => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            !warnings.is_empty(),
+            "the only `false` arm is guarded — must still warn as non-exhaustive; got: {:?}",
+            warnings
+        );
+    }
+
+    /// A struct with a non-bool field falls back to the pre-existing
+    /// catch-all requirement — literal int coverage is out of scope for
+    /// the truth-table optimization (an unbounded domain can't be proven
+    /// complete from a finite set of literals in general).
+    #[test]
+    fn mixed_bool_and_int_field_falls_back_to_catch_all_requirement() {
+        let src = r#"
+struct Reading { bool valid, int value }
+fn f(Reading r) -> int {
+    return match r {
+        Reading { valid: true, value: 0 } => 0,
+        Reading { valid: false, value: 0 } => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            !warnings.is_empty(),
+            "int field can't be proven exhaustive from two literals — expected a warning; got: {:?}",
+            warnings
+        );
+    }
+
+    /// The mixed-field case is still satisfiable via the pre-existing
+    /// catch-all path (unaffected by the bool truth-table addition).
+    #[test]
+    fn mixed_bool_and_int_field_with_catch_all_arm_no_warning() {
+        let src = r#"
+struct Reading { bool valid, int value }
+fn f(Reading r) -> int {
+    return match r {
+        Reading { valid: true, value: 0 } => 0,
+        Reading { .. } => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            warnings.is_empty(),
+            "catch-all arm still suppresses the warning; got: {:?}",
+            warnings
+        );
+    }
+
+    /// Struct-pattern + enum-payload combination: a struct that also
+    /// appears as an enum variant's payload type must not confuse this
+    /// module's per-struct bool-domain analysis — it only ever looks at
+    /// the struct pattern's own fields, never at any enclosing enum
+    /// context.
+    #[test]
+    fn bool_struct_nested_inside_enum_payload_still_analyzed_correctly() {
+        let src = r#"
+struct Flag { bool on }
+enum Wrapped { Has(Flag) }
+fn describe(Flag flag) -> int {
+    return match flag {
+        Flag { on: true } => 1,
+        Flag { on: false } => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let warnings = analyze(&prog);
+        assert!(
+            warnings.is_empty(),
+            "unrelated enum wrapping the same struct type must not affect analysis; got: {:?}",
+            warnings
+        );
     }
 }
