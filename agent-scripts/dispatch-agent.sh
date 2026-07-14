@@ -154,15 +154,14 @@ fi
 git -C "$PRIMARY_ROOT" fetch origin main >/dev/null 2>&1
 git -C "$PRIMARY_ROOT" worktree add -b "$BRANCH" "$WORKTREE" origin/main
 
-# Open a draft PR so the ticket shows as claimed. File claims, when known,
-# live in the claim commit so CI and sibling agents can inspect them.
+# Open a draft PR so the ticket shows as claimed. RES-3976: file claims,
+# when known, are registered directly on the dedicated `agent-claims` ref
+# (see claims-ref.sh) — never committed onto this branch, so they never
+# show up in the PR's diff.
 if [ ${#CLAIM_FILES[@]} -gt 0 ]; then
   (cd "$WORKTREE" && bash "$SCRIPT_DIR/claim-files.sh" "$BRANCH" "${CLAIM_FILES[@]}") >/dev/null
-  git -C "$WORKTREE" add agent-scripts/file-claims.json
-  git -C "$WORKTREE" commit -m "res-${ISSUE}: claim ticket — ${TITLE}" >/dev/null
-else
-  git -C "$WORKTREE" commit --allow-empty -m "res-${ISSUE}: claim ticket — ${TITLE}" >/dev/null
 fi
+git -C "$WORKTREE" commit --allow-empty -m "res-${ISSUE}: claim ticket — ${TITLE}" >/dev/null
 git -C "$WORKTREE" push -u origin "$BRANCH" >/dev/null 2>&1
 
 CLAIM_BLOCK="(none inferred from issue)"

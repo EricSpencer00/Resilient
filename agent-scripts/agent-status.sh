@@ -15,6 +15,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/claims-ref.sh"
+
 WANT_JSON=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,7 +35,12 @@ dim()  { printf '\033[2m%s\033[0m\n' "$1"; }
 
 PRS_JSON="$(gh pr list --state open --limit 100 \
   --json number,title,headRefName,baseRefName,isDraft,author,updatedAt,body 2>/dev/null || echo '[]')"
-CLAIMS_FILE="$PRIMARY_ROOT/agent-scripts/file-claims.json"
+# RES-3976: claims live on the dedicated `agent-claims` ref, not a file in
+# this checkout — fetch it fresh so status always reflects the latest
+# cross-agent state, regardless of what branch PRIMARY_ROOT happens to be on.
+CLAIMS_FILE="$(mktemp)"
+trap 'rm -f "$CLAIMS_FILE"' EXIT
+(cd "$PRIMARY_ROOT" && claims_fetch_base "$CLAIMS_FILE")
 WORKTREES_RAW="$(git -C "$PRIMARY_ROOT" worktree list --porcelain)"
 WORKTREES_JSON="$(WORKTREES_RAW="$WORKTREES_RAW" python3 <<'PYEOF'
 import json

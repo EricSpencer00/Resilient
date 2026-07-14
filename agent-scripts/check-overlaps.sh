@@ -16,11 +16,18 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CLAIMS_FILE="$REPO_ROOT/agent-scripts/file-claims.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/claims-ref.sh"
 
-if [ ! -f "$CLAIMS_FILE" ]; then
-  echo '{"claims":{}}' > "$CLAIMS_FILE"
-fi
+cd "$REPO_ROOT"
+
+# RES-3976: claims live on the dedicated `agent-claims` ref, not a file
+# committed on this branch — fetch it fresh (read-only) rather than reading
+# a local copy that may be stale or absent on a brand-new branch.
+CLAIMS_FILE="$(mktemp)"
+trap 'rm -f "$CLAIMS_FILE"' EXIT
+claims_fetch_base "$CLAIMS_FILE"
 
 FILES_TO_CHECK=()
 CHECK_MODE="files"

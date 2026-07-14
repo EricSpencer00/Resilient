@@ -7,6 +7,15 @@
 # before modifying any core files. The claim prevents other agents
 # from being dispatched to the same files.
 #
+# RES-3976: claims live on the dedicated `agent-claims` ref (see
+# claims-ref.sh), not in a commit on the caller's feature branch. This
+# script never touches the working tree or git history of the branch it's
+# invoked from — it only fetches/pushes the claims ref directly. That
+# keeps `agent-scripts/file-claims.json` out of every feature-branch PR
+# diff, so merges to `main` can no longer stale other open PRs on that
+# file (the old failure mode: every merge rewrote the file, so every other
+# open PR that also carried a commit touching it went `MERGE: DIRTY`).
+#
 # RES-2670: as a side-effect, every claim sweeps the file for stale
 # entries whose branch no longer exists on `origin`. The local sweep
 # here is the primary cleanup mechanism — the merge-time
@@ -16,7 +25,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CLAIMS_FILE="$REPO_ROOT/agent-scripts/file-claims.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/claims-ref.sh"
+
 BRANCH="${1:-}"
 
 if [ -z "$BRANCH" ]; then
@@ -32,10 +44,7 @@ if [ ${#FILES[@]} -eq 0 ]; then
   exit 1
 fi
 
-# Ensure claims file exists
-if [ ! -f "$CLAIMS_FILE" ]; then
-  echo '{"claims":{}}' > "$CLAIMS_FILE"
-fi
+cd "$REPO_ROOT"
 
 # RES-2670: list every branch currently on the remote so the sweep
 # below can decide which claims are stale. Cache it in a temp file
@@ -45,7 +54,7 @@ fi
 # deleting live claims.
 REMOTE_BRANCHES_FILE="$(mktemp)"
 trap 'rm -f "$REMOTE_BRANCHES_FILE"' EXIT
-if git ls-remote --heads origin 2>/dev/null \
+if git ls-remote --heads "$(claims_remote_name)" 2>/dev/null \
   | awk '{print $2}' | sed 's|^refs/heads/||' \
   > "$REMOTE_BRANCHES_FILE"; then
   SWEEP_OK=1
@@ -55,7 +64,9 @@ fi
 
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-python3 - "$CLAIMS_FILE" "$BRANCH" "$TIMESTAMP" "$REMOTE_BRANCHES_FILE" "$SWEEP_OK" "${FILES[@]}" <<'PYEOF'
+edit_claims() {
+  local claims_file="$1"
+  python3 - "$claims_file" "$BRANCH" "$TIMESTAMP" "$REMOTE_BRANCHES_FILE" "$SWEEP_OK" "${FILES[@]}" <<'PYEOF'
 import sys, json
 
 claims_file, branch, timestamp, remote_file, sweep_ok = sys.argv[1:6]
@@ -100,11 +111,18 @@ for file in files:
 with open(claims_file, "w") as f:
     json.dump(data, f, indent=2)
 
+summary_lines = []
 if swept:
-    print(f"Swept {len(swept)} stale claim(s):")
+    summary_lines.append(f"Swept {len(swept)} stale claim(s):")
     for path in swept:
-        print(f"  {path}")
-print(f"Claimed {len(files)} file(s) for {branch}:")
+        summary_lines.append(f"  {path}")
+summary_lines.append(f"Claimed {len(files)} file(s) for {branch}:")
 for f in files:
-    print(f"  {f}")
+    summary_lines.append(f"  {f}")
+
+with open(claims_file + ".summary", "w") as f:
+    f.write("\n".join(summary_lines) + "\n")
 PYEOF
+}
+
+claims_apply_with_retry edit_claims "claim: ${BRANCH} (${#FILES[@]} file(s))"

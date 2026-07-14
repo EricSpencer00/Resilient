@@ -86,11 +86,16 @@ else
         # RES-929: lib.rs is the real extension-block file (1.8 MB);
         # main.rs is a 463-byte binary entry that doesn't see overlaps.
         # Keep main.rs allowlisted for legacy paths; lib.rs is primary.
+        #
+        # RES-3976: agent-scripts/file-claims.json used to be here too —
+        # it no longer needs a rebase-conflict path because claims live on
+        # the dedicated `agent-claims` ref (see claims-ref.sh) and are
+        # never committed onto a feature branch, so this file can't appear
+        # in a rebase conflict anymore.
         "resilient/src/lib.rs"
         "resilient/src/main.rs"
         "resilient/src/typechecker.rs"
         "resilient/src/lexer_logos.rs"
-        "agent-scripts/file-claims.json"
     )
 
     for f in $unresolved; do
