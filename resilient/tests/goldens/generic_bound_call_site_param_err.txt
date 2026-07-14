@@ -1,0 +1,6 @@
+exit=1
+<tmp>.rz:4:43: type `Rock` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Rock` and required methods are missing)
+<tmp>.rz:4:43: type `Rock` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Rock` and required methods are missing)
+error: type `Rock` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Rock` and required methods are missing)
+   fn wrapper(Rock r) -> int { return render(r); }
+                                             ^

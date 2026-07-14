@@ -124,29 +124,9 @@
       "branch": "res-3987-qemu-ci",
       "claimed_at": "2026-07-14T08:47:19Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3995-vm-live-block",
-      "claimed_at": "2026-07-14T09:40:19Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-3995-vm-live-block",
-      "claimed_at": "2026-07-14T09:40:19Z"
-    },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-3995-vm-live-block",
-      "claimed_at": "2026-07-14T09:40:19Z"
-    },
-    "resilient/src/dce.rs": {
-      "branch": "res-3995-vm-live-block",
-      "claimed_at": "2026-07-14T09:40:19Z"
-    },
-    "resilient/src/disasm.rs": {
-      "branch": "res-3995-vm-live-block",
-      "claimed_at": "2026-07-14T09:40:19Z"
-    },
-    "resilient/src/peephole.rs": {
-      "branch": "res-3995-vm-live-block",
-      "claimed_at": "2026-07-14T09:42:55Z"
+    "resilient/src/traits.rs": {
+      "branch": "res-4048-trait-bound-enforcement",
+      "claimed_at": "2026-07-14T09:50:50Z"
     }
   }
 }
