@@ -1,30 +1,45 @@
-//! RES-309: differential testing — interpreter vs VM (vs JIT).
+//! RES-309 / RES-3990: differential testing — interpreter vs VM (vs JIT).
 //!
 //! The interpreter, bytecode VM, and JIT are three independent execution
 //! engines. A divergence — a program that prints `42` on one and `0` on
 //! another — can hide silently for months without a test that runs the
 //! same source through more than one backend. This file is that test.
 //!
-//! ## What's covered today
+//! ## Denylist model (RES-3990, B-E2)
 //!
-//! - **Tree walker** (default driver) vs **bytecode VM** (`--vm`) for a
-//!   curated list of `examples/*.rz` programs.
-//! - The list is explicit and additive — see [`SHARED_EXAMPLES`] below.
-//!   We do NOT iterate every example because some intentionally exercise
-//!   tree-walker-only language features (string + int coercion, indirect
-//!   calls, closures, list comprehensions, nested mutation). Those would
-//!   produce a noisy red signal that obscures the real divergences this
-//!   harness is here to catch.
+//! Every `examples/*.rz` file is run through **both** the tree walker
+//! (default driver, the oracle) and the bytecode VM (`--vm`) by
+//! default — see [`interpreter_and_vm_agree_on_all_examples`]. This
+//! used to be an opt-in allowlist (`SHARED_EXAMPLES`); it is now an
+//! opt-out denylist ([`UNSUPPORTED_BY_VM`]) so that:
+//!
+//! - **New examples are covered automatically.** Nobody has to
+//!   remember to add a new `.rz` file to a curated list for it to be
+//!   differential-tested.
+//! - **The VM-parity gap is visible.** [`UNSUPPORTED_BY_VM`] is a
+//!   catalogued, ticket-referenced list of every currently-known
+//!   divergence. Every entry is a bug (tracked under one of RES-3991
+//!   through RES-3998) or a semantics gap, not a shrug. As the VM
+//!   gains coverage, entries come out and the list shrinks — that's
+//!   the point.
+//!
+//! Do **not** add an example to [`UNSUPPORTED_BY_VM`] to silence a
+//! failure without filing (or referencing) a ticket for *why* it
+//! diverges. If you fix a divergence, remove the entry in the same PR.
 //!
 //! ## What's not covered yet (deliberate)
 //!
-//! - The JIT backend (`--features jit`) is **out of scope for this PR**.
-//!   The JIT lowering only supports a small i64-only subset (no
+//! - The JIT backend (`--features jit`) is **out of scope for this
+//!   file**. The JIT lowering only supports a small i64-only subset (no
 //!   strings, no structs, no actors, no Z3-discharged contracts) so
-//!   running it against the same example list would force every program
-//!   through the "skip — unimplemented JIT node" path. See follow-up
-//!   ticket: a JIT-only differential pass once the lowering covers
-//!   enough surface to be meaningful.
+//!   running it against the full example corpus would force every
+//!   program through the "skip — unimplemented JIT node" path. See
+//!   follow-up ticket: a JIT-only differential pass once the lowering
+//!   covers enough surface to be meaningful.
+//! - A CI "shrink-ratchet" check that fails if [`UNSUPPORTED_BY_VM`]
+//!   grows without a matching ticket, and an aggregate
+//!   unsupported-construct-kind coverage artifact, are noted as
+//!   follow-up work in RES-3990 — not implemented here.
 //!
 //! ## Why we strip stderr
 //!
@@ -34,6 +49,19 @@
 //! the differential check compares **stdout exactly** and **exit code
 //! exactly** — stderr is informational only.
 //!
+//! ## Value-type assertions (RES-3990, B-E2)
+//!
+//! Byte-identical stdout is not sufficient — RES-3889 was a divergence
+//! where both backends printed the same bytes but disagreed on the
+//! underlying *value type* (`Char` vs. a one-character `String`), which
+//! only became externally visible via a follow-on comparison
+//! (`s[i] == 'c'`). [`run_typed`] extends the comparison surface by
+//! wrapping a probe expression in `println(type_of(<expr>))` and
+//! diffing that string across backends *in addition to* the plain
+//! value output, so a type-only divergence fails even when the printed
+//! *value* representation happens to match. See
+//! [`interpreter_and_vm_agree_on_value_types`].
+//!
 //! ## Catching divergence in the framework itself
 //!
 //! [`compare_outputs`] is the comparison primitive. We unit-test it
@@ -42,6 +70,7 @@
 //! ignoring exit codes) is caught even if no example happens to
 //! diverge between backends.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -116,67 +145,288 @@ fn compare_outputs(label_a: &str, a: &Run, label_b: &str, b: &Run) -> Result<(),
     Err(msg)
 }
 
-/// Curated list of examples that the bytecode VM has been verified to
-/// support (as of RES-309). Each entry must produce identical stdout
-/// and the same exit code on the tree walker and the VM.
-///
-/// **Adding to this list** — pick any `examples/*.rz` whose feature
-/// set is supported by the VM bytecode compiler. The VM rejects
-/// `Const` declarations, `string + int` coercion, indirect calls,
-/// nested-index assignment, and a handful of other tree-walker-only
-/// constructs with `bytecode compile: unsupported construct: ...`.
-/// Programs that hit those will fail this differential check; either
-/// they belong here or they don't.
-const SHARED_EXAMPLES: &[&str] = &[
-    "hello.rz",
-    "int_math.rz",
-    "pinned_int_types.rz",
-    "array_bounds_proven.rz",
-    "array_bounds_runtime.rz",
-    "fault_model_demo.rz",
-    "clock_builtin.rz",
-    "cert_demo.rz",
-    "recovers_to_ok.rz",
-    "region_distinct_ok.rz",
-    "shebang_demo.rz",
-    "actor_eventually_drain.rz",
-    "vm_stdlib_math.rz",
-    // RES-3889: string subscript `s[i]` must yield a `Char` (not a
-    // single-char string) on both backends so `s[i] == 'c'` and
-    // `"x" + s[i]` agree.
-    "string_subscript_char.rz",
+/// RES-3990: denylist of `examples/*.rz` files the bytecode VM does not
+/// yet execute identically to the tree walker. Every entry is grouped
+/// under the ticket that catalogs its root cause — see the module-level
+/// docs above. An example belongs here if and only if it currently
+/// diverges; removing an entry (once its ticket is fixed) is how the
+/// gap shrinks. Do not add an entry without a comment + ticket ref.
+const UNSUPPORTED_BY_VM: &[&str] = &[
+    // RES-3991: `--vm` auto-prints the trailing top-level non-Void return value;
+    // the interpreter discards it (the `use_vm` branch of `execute_file` in
+    // `lib.rs` prints `result` when non-`Void`; the tree-walker branch never
+    // does). One extra trailing numeric line under `--vm`.
+    "acos.rz",
+    "acosh.rz",
+    "alignment_helpers.rz",
+    "array_argminmax.rz",
+    "array_binary_search.rz",
+    "array_chunking.rz",
+    "array_cumulative.rz",
+    "array_polymorphic_pos.rz",
+    "array_set_helpers.rz",
+    "array_slicing.rz",
+    "array_sort_extra.rz",
+    "array_stats.rz",
+    "as_cast.rz",
+    "asin.rz",
+    "asinh.rz",
+    "assoc_type_device_driver.rz",
+    "assoc_type_simple.rz",
+    "atan.rz",
+    "atanh.rz",
+    "bit_counting.rz",
+    "bit_manipulation.rz",
+    "break_continue.rz",
+    "builtin_methods.rz",
+    "bytes_and_or_not.rz",
+    "bytes_concat.rz",
+    "bytes_conversions.rz",
+    "bytes_eq.rz",
+    "bytes_fill_reverse.rz",
+    "bytes_helpers.rz",
+    "bytes_slicing.rz",
+    "bytes_xor.rz",
+    "cbrt.rz",
+    "cfg_attr_demo.rz",
+    "cluster_single_leader_bad.rz",
+    "cluster_single_leader_ok.rz",
+    "compound_assignment.rz",
+    "compound_lvalue.rz",
+    "copysign.rz",
+    "cosh.rz",
+    "embedded_uart_driver.rz",
+    "enum_payload_exhaust_missing.rz",
+    "exp2.rz",
+    "first_class_fn_anon.rz",
+    "float_classify.rz",
+    "for_tuple_binding.rz",
+    "hash_builtins.rz",
+    "hashmap_len.rz",
+    "hashmap_values.rz",
+    "hypot.rz",
+    "if_expression.rz",
+    "int_rotate.rz",
+    "interactive_greeter.rz",
+    "is_ascii_family.rz",
+    "iter_helpers.rz",
+    "linear_closure_capture_error.rz",
+    "linear_closure_demo.rz",
+    "linear_demo.rz",
+    "linear_double_use.rz",
+    "linear_effect_io_accepted.rz",
+    "log10.rz",
+    "log2.rz",
+    "loop_keyword.rz",
+    "map_contains_key.rz",
+    "map_entries_merge.rz",
+    "map_values.rz",
+    "match_struct_nonexhaustive.rz",
+    "negative_indices.rz",
+    "pipe_operator.rz",
+    "polymorphic_types.rz",
+    "precision_math.rz",
+    "pure_effect_demo.rz",
+    "range_patterns.rz",
+    "result_patterns.rz",
+    "rounding.rz",
+    "scientific_notation.rz",
+    "set_difference.rz",
+    "set_intersection.rz",
+    "set_is_disjoint.rz",
+    "set_is_subset.rz",
+    "set_is_superset.rz",
+    "set_result_option.rz",
+    "set_symmetric_difference.rz",
+    "set_union.rz",
+    "sinh.rz",
+    "state_topology.rz",
+    "string_array_misc.rz",
+    "string_repetition.rz",
+    "string_slicing.rz",
+    "sum_types_constructor.rz",
+    "sum_types_match.rz",
+    "tanh.rz",
+    "to_degrees.rz",
+    "to_radians.rz",
+    "tuple_pattern.rz",
+    "underscore_numerics.rz",
+    "unix_time.rz",
+    // RES-3992: VM bytecode compiler "unknown identifier" / "unknown function" —
+    // closures/consts captured across scopes, and static/namespaced/tuple-
+    // struct-constructor calls the compiler doesn't resolve to a callable.
+    "actor_deadlock.rz",
+    "actor_ping_pong.rz",
+    "actor_spawn_send.rz",
+    "const_eval.rz",
+    "const_eval_ext.rz",
+    "default_method.rz",
+    "effect_polymorphism.rz",
+    "error_stack_traces.rz",
+    "first_class_fn_pass.rz",
+    "first_class_fn_return.rz",
+    "generic_fn_type_params.rz",
+    "iterator_protocol.rz",
+    "module_namespaces.rz",
+    "pain_points_hardening.rz",
+    "showcase_actors.rz",
+    "static_assert.rz",
+    "tuple_struct.rz",
+    // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
+    // ReturnStatement, indirect calls, non-arithmetic operators, and an
+    // <other> catch-all), plus the capability-gated volatile-MMIO block
+    // (see `unsafe_block_smoke.rz`) whose statements the VM silently drops.
+    "array_contains.rz",
+    "array_sorted_invariant.rz",
+    "bench_simple.rz",
+    "break_with_value.rz",
+    "comprehension_demo.rz",
+    "defer_stmt.rz",
+    "edge_closure_capture.rz",
+    "edge_if_let_pattern.rz",
+    "edge_while_let.rz",
+    "if_let.rz",
+    "match_block_arms.rz",
+    "null_coalescing_operator.rz",
+    "option_find.rz",
+    "optional_chaining.rz",
+    "quantifier_assert.rz",
+    "quantifier_exists.rz",
+    "quantifier_forall.rz",
+    "showcase_quantifiers.rz",
+    "unsafe_block_smoke.rz",
+    "while_let.rz",
+    // RES-3994: VM runtime type-mismatch: CallMethod receiver-shape gaps, struct-
+    // update/field-lookup mismatches, `impl Add` operator-overload not
+    // consulted by `Op::Add`, plus misc completeness (no TCO for mutual
+    // recursion, `contains()` missing an (Array, T) overload).
+    "array_functional.rz",
+    "array_method_chains.rz",
+    "display_trait.rz",
+    "error_chaining.rz",
+    "error_handling_patterns.rz",
+    "mutual_tco.rz",
+    "operator_overload.rz",
+    "option_enum_roundtrip.rz",
+    "primitive_impl.rz",
+    "range_values.rz",
+    "string_builder.rz",
+    "struct_update_syntax.rz",
+    "struct_update_trailing.rz",
+    "transaction_commit.rz",
+    // RES-3995: VM has no `live { }` retry-loop execution context — `live_retries()`
+    // fails outside a live block, and the retry mechanism itself asserts on
+    // the first failing attempt instead of retrying.
+    "live_blocks.rz",
+    "live_retry_log.rz",
+    "self_healing.rz",
+    "showcase_live_invariant.rz",
+    "telemetry_demo.rz",
+    "thermal_safety_cutoff.rz",
+    // RES-3996: VM doesn't enforce `assume(false)` / panic-recovery dead-code
+    // runtime checks — the interpreter exits non-zero before reaching "dead"
+    // code; `--vm` runs straight through it.
+    "assume_debug.rz",
+    "assume_false_dead_code.rz",
+    "assume_literal_false.rz",
+    "assume_violated.rz",
+    "recovers_to_fail.rz",
+    // RES-3997: VM silently computes a *different* value (not an error) — a bare
+    // statement-expression call's return value isn't popped off the VM's eval
+    // stack and leaks into the next arithmetic op. Deterministic across runs
+    // (not fault-injection nondeterminism); see `lock_ordering.rz` for the
+    // isolated repro.
+    "audit_log_required.rz",
+    "bounded_blocking.rz",
+    "degraded_mode.rz",
+    "lock_ordering.rz",
+    "priority_inheritance.rz",
+    "res1111_block_scope.rz",
+    "secret_erasure.rz",
+    // RES-3998: VM equality (`==`) silently evaluates to `false` for equal Option /
+    // Result / Set values (no error — the if/else just takes the wrong
+    // branch), so the expected output line is silently missing.
+    "char_equality_in_compounds.rz",
+    "compound_equality.rz",
+    "option_equality.rz",
+    "result_equality.rz",
 ];
 
+/// Every `examples/*.rz` file, sorted, read fresh from disk each run so
+/// new examples are covered without touching this file.
+fn discover_examples() -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir("examples")
+        .expect("examples/ directory must exist")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".rz"))
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
-fn shared_examples_exist() {
-    // Cheap pre-flight: if someone deletes an example from disk the
-    // outer differential test will fail with a less obvious "spawn
-    // succeeded but output is empty" error. Surface the cause early.
-    for example in SHARED_EXAMPLES {
+fn unsupported_by_vm_entries_reference_real_files_with_no_duplicates() {
+    // Cheap pre-flight: a stale denylist entry (file renamed/deleted) or
+    // an accidental duplicate silently shrinks the effective denylist
+    // size without anyone noticing. Surface both here instead of via a
+    // confusing downstream failure.
+    let mut seen = std::collections::HashSet::new();
+    for example in UNSUPPORTED_BY_VM {
         let path = format!("examples/{example}");
         assert!(
             Path::new(&path).exists(),
-            "SHARED_EXAMPLES references missing file: {path}"
+            "UNSUPPORTED_BY_VM references missing file: {path}"
+        );
+        assert!(
+            seen.insert(*example),
+            "UNSUPPORTED_BY_VM lists {example} more than once"
         );
     }
 }
 
 #[test]
-fn at_least_ten_shared_examples_are_pinned() {
-    // RES-309 acceptance criterion: "at least ten existing examples
-    // are covered by the differential run." Pin it as a test so a
-    // future code-cleanup can't silently shrink the matrix.
+fn at_least_four_hundred_examples_are_covered_by_default() {
+    // RES-3990 acceptance criterion: inverting to a denylist must not
+    // quietly regress to "denylist everything." Pin the covered
+    // (non-denylisted) count so a future change can't silently gut
+    // coverage back down to an allowlist-sized handful. As of RES-3990
+    // this is 412 of 581 examples (169 denylisted); the threshold below
+    // is a conservative floor, not the exact figure, so unrelated
+    // example-corpus growth doesn't make this test flaky.
+    let denylist: std::collections::HashSet<&str> = UNSUPPORTED_BY_VM.iter().copied().collect();
+    let covered = discover_examples()
+        .iter()
+        .filter(|name| !denylist.contains(name.as_str()))
+        .count();
     assert!(
-        SHARED_EXAMPLES.len() >= 10,
-        "differential matrix has only {} entries — RES-309 requires \u{2265} 10",
-        SHARED_EXAMPLES.len()
+        covered >= 400,
+        "only {covered} examples covered by default (denylist has {} entries) — \
+         RES-3990 requires \u{2265} 400",
+        UNSUPPORTED_BY_VM.len()
     );
 }
 
 #[test]
-fn interpreter_and_vm_agree_on_shared_examples() {
+fn interpreter_and_vm_agree_on_all_examples() {
+    // RES-3990: the inverted differential sweep. Every discovered
+    // example runs through both backends unless denylisted; a failure
+    // here means either a genuinely new divergence (fix it, or add a
+    // denylist entry with a ticket ref) or a regression in an area
+    // that was previously fixed.
+    let denylist: std::collections::HashSet<&str> = UNSUPPORTED_BY_VM.iter().copied().collect();
+    let examples = discover_examples();
+    assert!(
+        !examples.is_empty(),
+        "discovered zero examples — examples/ directory misconfigured?"
+    );
     let mut failures: Vec<String> = Vec::new();
-    for example in SHARED_EXAMPLES {
+    let mut covered = 0usize;
+    for example in &examples {
+        if denylist.contains(example.as_str()) {
+            continue;
+        }
+        covered += 1;
         let interp = run_interpreter(example);
         let vm = run_vm(example);
         if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
@@ -185,7 +435,8 @@ fn interpreter_and_vm_agree_on_shared_examples() {
     }
     assert!(
         failures.is_empty(),
-        "{} backend(s) diverged:{}",
+        "{} of {covered} covered example(s) diverged (see UNSUPPORTED_BY_VM \
+         if this is a known, ticketed gap that needs a denylist entry):{}",
         failures.len(),
         failures.join("")
     );
@@ -266,6 +517,96 @@ fn run_src(src: &str, tag: &str, vm: bool) -> Run {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         code: output.status.code(),
     }
+}
+
+/// RES-3990 (B-E2): probe the *runtime type* of a value-producing snippet
+/// via the language's own `type_of()` builtin, on one backend. Wraps
+/// `expr_src` (an expression, not a full program) in a minimal program
+/// that prints `type_of(<expr_src>)`, so a test can pin the type tag
+/// independently of whatever the value's *display* representation looks
+/// like. This is the mechanism behind
+/// [`interpreter_and_vm_agree_on_value_types`]: two backends that print
+/// byte-identical stdout for a value can still disagree on its
+/// underlying type (the RES-3889 class of bug), and `compare_outputs`
+/// alone — which only ever sees `println!`-style display text — cannot
+/// distinguish that from a real match.
+fn run_typed(expr_src: &str, tag: &str, vm: bool) -> Run {
+    let program = format!("println(type_of({expr_src}));");
+    run_src(&program, tag, vm)
+}
+
+/// RES-3990 (B-E2): interpreter and VM must agree on the *value type*
+/// `type_of()` reports for a representative value of every primitive
+/// and compound kind, not merely on printed stdout bytes. Each entry is
+/// an expression (not a statement) safely evaluable at top level on
+/// both backends today; a name that would hit one of the
+/// [`UNSUPPORTED_BY_VM`] gaps is deliberately excluded so this test
+/// stays green and keeps testing the *type* channel rather than
+/// re-discovering an already-catalogued execution gap.
+///
+/// `Range` is deliberately **not** included here: `type_of(1..5)`
+/// reports `"range"` on the interpreter and `"array"` under `--vm` —
+/// a real divergence caught by exactly this mechanism, tracked under
+/// RES-4000 rather than asserted on here (asserting on it would just
+/// make this test red instead of documenting the gap).
+#[test]
+fn interpreter_and_vm_agree_on_value_types() {
+    let probes = [
+        ("int", "5"),
+        ("float", "5.0"),
+        ("bool", "true"),
+        ("string", r#""hi""#),
+        ("char", r#""ab"[0]"#),
+        ("array", "[1, 2, 3]"),
+        ("map", "map_new()"),
+        ("set", "set_new()"),
+        ("bytes", r#"b"AB""#),
+        ("tuple", "(1, 2)"),
+        ("function_closure", "fn(int x) { return x; }"),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, expr) in probes {
+        let interp = run_typed(expr, tag, false);
+        let vm = run_typed(expr, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- type_of({expr}) [{tag}] ---\n{diff}"));
+        }
+    }
+    // Multi-statement probes (Option/Result/struct/enum construction need
+    // a `let` binding first) run through the general-purpose `run_src`
+    // rather than the single-expression `run_typed` wrapper.
+    let statement_probes = [
+        (
+            "option",
+            "let x: Option<int> = Some(5); println(type_of(x));",
+        ),
+        (
+            "result",
+            "let x: Result<int, string> = Ok(5); println(type_of(x));",
+        ),
+        (
+            "struct",
+            "struct P { int x, } let p = new P { x: 1 }; println(type_of(p));",
+        ),
+        ("enum_bare", "enum E { A, B(int) } println(type_of(E::A));"),
+        (
+            "enum_payload",
+            "enum E { A, B(int) } println(type_of(E::B(1)));",
+        ),
+    ];
+    for (tag, src) in statement_probes {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} value-type probe(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
 }
 
 /// RES-3891: cross-kind `==` / `!=` must behave identically on both
