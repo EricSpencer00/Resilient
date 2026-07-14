@@ -119,6 +119,14 @@
     "resilient/src/lib.rs": {
       "branch": "res-4019-jit-vm-fallback",
       "claimed_at": "2026-07-14T05:16:54Z"
+    },
+    "docs/CONFORMANCE.md": {
+      "branch": "res-4019-jit-vm-fallback",
+      "claimed_at": "2026-07-14T05:20:41Z"
+    },
+    "resilient/tests/it/jit_run_path_copy_smoke.rs": {
+      "branch": "res-4019-jit-vm-fallback",
+      "claimed_at": "2026-07-14T05:26:15Z"
     }
   }
 }

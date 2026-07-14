@@ -30299,6 +30299,67 @@ fn check_vibe_gate(
     if passed { 0 } else { 2 }
 }
 
+/// RES-4019 (B-E4): compile-and-run `program` on the bytecode VM,
+/// print the result the same way `--vm` always has, and write the
+/// incremental-compile cache entry on success. Shared by the `--vm`
+/// dispatch path and by `--jit`'s fallback wrapper — the latter
+/// retries here whenever `JitError::is_precompile()` reports the JIT
+/// bailed out before any native code executed, so this must stay
+/// byte-for-byte the same VM invocation `--vm` uses directly.
+fn run_via_vm(
+    program: &Node,
+    filename: &str,
+    contents: &str,
+    no_cache: bool,
+    cache_dir: &Path,
+    source_hash: &str,
+) -> RResult<()> {
+    // RES-076 + RES-081: bytecode VM path. Compile the AST into
+    // a Program (main chunk + function table), run it, print the
+    // resulting value (mirroring the tree walker's behavior for
+    // non-Void results).
+    // RES-405 PR 3: lower generic functions to monomorphic specializations
+    // before handing the AST to the bytecode compiler.
+    let program = monomorph::lower(program);
+    // RES-2605: devirtualize statically-known trait method calls after
+    // monomorphization so specialized clones get direct-call rewrites too.
+    let program = devirtualize::lower(&program);
+    let prog = compiler::compile(&program).map_err(|e| format!("VM compile error: {}", e))?;
+    let result = vm::run(&prog).map_err(|e| {
+        // RES-095: mirror the typechecker's `<file>:<line>:` shape
+        // so VM runtime errors are editor-clickable when the
+        // wrapper carries a source line. Other variants fall back
+        // to the bare Display form.
+        //
+        // RES-117: `AtLine` carries line but not column — treat
+        // as column 1 for the caret renderer. The caret still
+        // points at the offending line; precise column info
+        // would need RES-091 to upgrade from line-only to a
+        // full Span (tracked there, not here).
+        if let vm::VmError::AtLine { line, kind } = &e {
+            let header = format!("{}:{}: VM runtime error: {}", filename, line, kind);
+            let caret = diag::format_diagnostic_from_line_col(
+                contents,
+                *line as usize,
+                1,
+                "VM runtime error",
+                &kind.to_string(),
+            );
+            format!("{}\n{}", header, caret)
+        } else {
+            format!("VM runtime error: {}", e)
+        }
+    })?;
+    if !matches!(result, Value::Void) {
+        println!("{}", result);
+    }
+    // RES-355: write cache entry on VM success.
+    if !no_cache {
+        cache::write_entry(cache_dir, source_hash);
+    }
+    Ok(())
+}
+
 // Execute a Resilient source file
 #[allow(clippy::too_many_arguments)] // CLI glue fn — all args come from flags
 fn execute_file(
@@ -30673,22 +30734,51 @@ fn execute_file(
 
     if use_jit {
         // RES-072 / RES-096: Cranelift JIT path for the supported
-        // tree-walker subset. Unsupported AST shapes surface cleanly
-        // through the same `<file>: ...` shape as the VM (RES-095)
-        // so callers can fall back without a panic or opaque message.
+        // tree-walker subset.
+        //
+        // RES-4019 (B-E4): a JIT error that's detectable before any
+        // native code executes (`JitError::is_precompile()` —
+        // unsupported construct, missing top-level `return`, or
+        // module/link/ISA setup failure) transparently falls back to
+        // the VM instead of surfacing a hard error, since nothing has
+        // run yet and a retry can't duplicate side effects. Errors
+        // that surface *after* the compiled function has already been
+        // invoked (array-bounds abort, etc.) still propagate as a
+        // hard error — the program may already have produced output,
+        // so silently re-running it on another backend would
+        // duplicate that output instead of reproducing it.
         #[cfg(feature = "jit")]
         {
             // RES-405 PR 3: monomorphize before JIT compilation.
-            let program = monomorph::lower(&program);
+            let jit_program = monomorph::lower(&program);
             // RES-2605: devirtualize after monomorphization.
-            let program = devirtualize::lower(&program);
-            let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
-            println!("{}", result);
-            // RES-355: write cache entry on JIT success.
-            if !no_cache {
-                cache::write_entry(&cache_dir, &source_hash);
+            let jit_program = devirtualize::lower(&jit_program);
+            match jit_backend::run(&jit_program) {
+                Ok(result) => {
+                    println!("{}", result);
+                    // RES-355: write cache entry on JIT success.
+                    if !no_cache {
+                        cache::write_entry(&cache_dir, &source_hash);
+                    }
+                    return Ok(());
+                }
+                Err(e) if e.is_precompile() => {
+                    if verbose_invariants {
+                        eprintln!("note: --jit fell back to the VM for {}: {}", filename, e);
+                    }
+                    return run_via_vm(
+                        &program,
+                        filename,
+                        &contents,
+                        no_cache,
+                        &cache_dir,
+                        &source_hash,
+                    );
+                }
+                Err(e) => {
+                    return Err(format!("{}: {}", filename, e));
+                }
             }
-            return Ok(());
         }
         #[cfg(not(feature = "jit"))]
         {
@@ -30697,50 +30787,15 @@ fn execute_file(
     }
 
     if use_vm {
-        // RES-076 + RES-081: bytecode VM path. Compile the AST into
-        // a Program (main chunk + function table), run it, print the
-        // resulting value (mirroring the tree walker's behavior for
-        // non-Void results).
-        // RES-405 PR 3: lower generic functions to monomorphic specializations
-        // before handing the AST to the bytecode compiler.
-        let program = monomorph::lower(&program);
-        // RES-2605: devirtualize statically-known trait method calls after
-        // monomorphization so specialized clones get direct-call rewrites too.
-        let program = devirtualize::lower(&program);
-        let prog = compiler::compile(&program).map_err(|e| format!("VM compile error: {}", e))?;
-        let result = vm::run(&prog).map_err(|e| {
-            // RES-095: mirror the typechecker's `<file>:<line>:` shape
-            // so VM runtime errors are editor-clickable when the
-            // wrapper carries a source line. Other variants fall back
-            // to the bare Display form.
-            //
-            // RES-117: `AtLine` carries line but not column — treat
-            // as column 1 for the caret renderer. The caret still
-            // points at the offending line; precise column info
-            // would need RES-091 to upgrade from line-only to a
-            // full Span (tracked there, not here).
-            if let vm::VmError::AtLine { line, kind } = &e {
-                let header = format!("{}:{}: VM runtime error: {}", filename, line, kind);
-                let caret = diag::format_diagnostic_from_line_col(
-                    &contents,
-                    *line as usize,
-                    1,
-                    "VM runtime error",
-                    &kind.to_string(),
-                );
-                format!("{}\n{}", header, caret)
-            } else {
-                format!("VM runtime error: {}", e)
-            }
-        })?;
-        if !matches!(result, Value::Void) {
-            println!("{}", result);
-        }
-        // RES-355: write cache entry on VM success.
-        if !no_cache {
-            cache::write_entry(&cache_dir, &source_hash);
-        }
-        return Ok(());
+        // RES-076 + RES-081: bytecode VM path.
+        return run_via_vm(
+            &program,
+            filename,
+            &contents,
+            no_cache,
+            &cache_dir,
+            &source_hash,
+        );
     }
 
     let basename = Path::new(filename)

@@ -43,40 +43,59 @@ For every case in `CASES` (see `conformance.rs`):
 2. **Tree-walker and `--vm` produce identical stdout and the same exit
    code.** This is the core F-E1 assertion for the two backends that
    fully support the Stable surface today.
-3. **`--jit`, when the case is a documented exception (see below), fails
-   in the specific "clean refusal" way** — non-zero exit plus a
-   `jit: ...` diagnostic on stderr — rather than silently succeeding with
-   different output or panicking. This assertion only runs under
-   `--features jit` (mirroring the existing `#[cfg(feature = "jit")]`
-   tests in `examples_smoke.rs`), since the default CI build doesn't
-   compile the JIT at all.
+3. **`--jit` and the tree-walker produce identical stdout and the same
+   exit code, for every seeded case — including every case where
+   `jit_backend.rs` cannot natively lower the program at all.** Since
+   [RES-4019](https://github.com/EricSpencer00/Resilient/issues/4019)
+   (track **B-E4**), the `--jit` CLI dispatch site transparently falls
+   back to the VM whenever the JIT bails out with a
+   `JitError::is_precompile()` error — i.e. before any native code has
+   executed, so the retry can't duplicate side effects — instead of
+   surfacing a hard error. This assertion only runs under `--features
+   jit` (mirroring the existing `#[cfg(feature = "jit")]` tests in
+   `examples_smoke.rs`), since the default CI build doesn't compile the
+   JIT at all.
 
 ## The `BACKEND_EXCEPTIONS` table
 
 `conformance.rs` keeps two parallel tables:
 
 - `CASES` — the seeded case stems.
-- `JIT_BACKEND_EXCEPTIONS` — `(stem, reason)` rows for every case `--jit`
-  cannot run today.
+- `JIT_BACKEND_EXCEPTIONS` — `(stem, reason)` rows documenting every case
+  `jit_backend.rs` cannot **natively lower** today.
 
 A test (`jit_backend_exceptions_cover_every_case`) enforces that the two
-lists describe exactly the same set of stems: every case is either
-provably JIT-parity-tested or explicitly, individually excused with a
-stated reason. Nothing is silently skipped.
+lists describe exactly the same set of stems: every case's native-JIT
+status is either provably exercised or explicitly, individually
+documented with a stated reason. Nothing is silently skipped.
 
-**Today every seeded case is a JIT exception.** All eight cases use
-`println`/`type_of` for observable output and the `fn main() { ... }
-main();` idiom; `resilient/src/jit_backend.rs` supports neither — it
-lowers a narrow, `i64`-only subset (arithmetic, comparisons, `if`/`else`,
-`let`, direct function calls) that requires a top-level `return` and has
-no builtin-call lowering at all, and its `has_disqualifying_construct`
-check explicitly rejects `while`, `match`, array literals, and indexing.
-This is not a testing gap — it is the accurately-recorded shape of the
-JIT today. Growing JIT support is tracked under
+**Today every seeded case is a native-JIT exception, but all of them pass
+`--jit` anyway.** All eight cases use `println`/`type_of` for observable
+output and the `fn main() { ... } main();` idiom; `resilient/src/jit_backend.rs`
+supports neither natively — it lowers a narrow, `i64`-only subset
+(arithmetic, comparisons, `if`/`else`, `let`, direct function calls) that
+requires a top-level `return` and has no builtin-call lowering at all for
+non-`i64` types, and its `has_disqualifying_construct` check explicitly
+rejects `while`, `match`, array literals, and indexing from the
+trivial-leaf inliner. That narrow native subset is not a testing gap — it
+is the accurately-recorded shape of `jit_backend.rs` today, tracked under
 [#3933](https://github.com/EricSpencer00/Resilient/issues/3933) (track
-**B-E4**, "JIT completeness + honest feature matrix"). As B-E4 lands
-support for a construct, move the corresponding case out of
-`JIT_BACKEND_EXCEPTIONS` and add a real `--jit` parity assertion for it.
+**B-E4**, "JIT completeness + honest feature matrix").
+
+What changed with B-E4's first PR ([RES-4019](https://github.com/EricSpencer00/Resilient/issues/4019)):
+the `--jit` CLI dispatch no longer hard-fails when `jit_backend.rs`
+returns one of these documented native-lowering gaps — it transparently
+retries the same program on the VM (see `JitError::is_precompile()` and
+`run_via_vm` in `resilient/src/lib.rs`) and the run succeeds with output
+identical to the tree-walker's. So every stem in `JIT_BACKEND_EXCEPTIONS`
+is simultaneously: (a) a documented native-lowering gap, and (b) covered
+by the `interpreter_and_jit_agree_on_every_conformance_case` parity
+assertion, because the CLI-visible behavior of `--jit` is now correct
+even where the native compiler bails. As B-E4 lands real native lowering
+for a construct, move the corresponding case out of
+`JIT_BACKEND_EXCEPTIONS` — the parity assertion doesn't need to change
+either way, since it already covers the fallback and native-success paths
+identically.
 
 ## A known doc/reality gap this suite surfaced
 
@@ -117,20 +136,20 @@ a test-only conformance scaffold.
    Read it back before committing — the golden file is truth, not a
    rubber stamp.
 3. Add `"<stem>"` to `CASES` in `resilient/tests/it/conformance.rs`.
-4. Try `--jit`:
+4. Try `--jit` (as of RES-4019 this should now succeed on every case via
+   the VM fallback, even ones `jit_backend.rs` can't natively lower):
    ```bash
    cargo build --manifest-path resilient/Cargo.toml --locked --features jit
    resilient/target/debug/rz --jit resilient/tests/conformance/<stem>.rz
    ```
-   If it runs and produces the same value (JIT programs print only a
-   bare `i64`, using the top-level `return` idiom rather than `println`,
-   so this will usually mean writing a **second**, JIT-dialect source
-   file rather than reusing `<stem>.rz` — that's fine, follow the
-   `bytecode_jit_runs_*` pattern in `examples_smoke.rs`), add a real
-   `--jit` parity assertion. If it fails, add a
-   `(stem, reason)` row to `JIT_BACKEND_EXCEPTIONS` explaining *why*
-   (which disqualifying construct, or which value type is out of the
-   JIT's `i64`-only model).
+   `interpreter_and_jit_agree_on_every_conformance_case` already asserts
+   parity for every stem in `CASES`, so you don't need a bespoke
+   assertion just to cover the new case. Only touch
+   `JIT_BACKEND_EXCEPTIONS` if you want to document *why* native
+   `jit_backend.rs` lowering can't handle the new case yet (which
+   disqualifying construct, or which value type is out of the JIT's
+   `i64`-only model) — that table is documentation of the native-lowering
+   gap, not a gate on whether `--jit` produces correct output.
 5. Run `cargo test --locked --test it conformance` (and, if you touched
    the JIT-exception table, also `--features jit`) before pushing.
 
