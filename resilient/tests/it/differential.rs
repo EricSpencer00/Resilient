@@ -227,13 +227,29 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // delegates to `compile_stmt_in_fn`, which already lowers `return` to
     // `<value>; Op::ReturnFromCall`.
     //
+    // `null_coalescing_operator.rz` is fixed: `Node::InfixExpression` with
+    // `operator == "??"` fell through to the generic infix arm's
+    // arithmetic-op match and hit `Unsupported("non-arithmetic operator")`
+    // — the tree-walker's `eval_infix_expression` handles `??` as a special
+    // case *before* that dispatch (`Value::Option(Some(v))` → `v`,
+    // `Value::Option(None)` → the right-hand default), and, notably,
+    // evaluates both operands unconditionally rather than short-circuiting.
+    // `compile_expr` gained a dedicated `"??"` arm (compiles `left` then
+    // `right`, same eager-evaluation order as the tree-walker) that emits a
+    // new `Op::Coalesce`, implemented in both the `run_inner` match engine
+    // and the `run_direct` table-dispatch engine (`h_coalesce`).
+    //
     // The remaining entries are distinct root causes this fix does not
     // touch: `comprehension_demo.rz`/`edge_closure_capture.rz` need
-    // indirect-call support for non-identifier callees; `null_coalescing_
-    // operator.rz`/`option_find.rz` need the `??` operator (and, for
-    // `option_find.rz`, an `Option`-returning fn declared with an `int`
-    // return type — a pre-existing typechecker gap unrelated to the VM);
-    // and `array_contains.rz`, `array_sorted_invariant.rz`, `bench_simple.rz`,
+    // indirect-call support for non-identifier callees; `option_find.rz`
+    // still fails — even with `??` now supported — because `Op::CallMethod`'s
+    // built-in fallback (`vm_call_builtin_method`) has no dispatch for
+    // `Option`'s instance methods (`.is_some()`, `.is_none()`, `.unwrap()`,
+    // `.unwrap_or(d)`), which the tree-walker handles directly in
+    // `eval_method_call`. (There's also a pre-existing typechecker warning
+    // on this file — an `Option`-returning fn declared with an `int` return
+    // type — but that's non-fatal in both backends and not the blocker.)
+    // And `array_contains.rz`, `array_sorted_invariant.rz`, `bench_simple.rz`,
     // `defer_stmt.rz`, `optional_chaining.rz`, `quantifier_assert.rz`,
     // `quantifier_exists.rz`, `quantifier_forall.rz`, `showcase_quantifiers.rz`
     // are still an untriaged `<other>` catch-all (each needs the
@@ -245,7 +261,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "comprehension_demo.rz",
     "defer_stmt.rz",
     "edge_closure_capture.rz",
-    "null_coalescing_operator.rz",
     "option_find.rz",
     "optional_chaining.rz",
     "quantifier_assert.rz",

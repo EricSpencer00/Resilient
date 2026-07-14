@@ -3758,6 +3758,44 @@ fn compile_expr(
             chunk.patch_jump(jmp_end, end)?;
             Ok(())
         }
+        // RES-3993: `??` — Option coalescing. Unlike `&&`/`||`, the
+        // interpreter's `eval_infix_expression` does *not* short-circuit
+        // `??`: `Node::InfixExpression`'s generic eval path evaluates both
+        // `left` and `right` before dispatching on the operator, so
+        // `right`'s side effects always run even when `left` is `Some`.
+        // Mirror that exactly here — compile both operands unconditionally,
+        // then let `Op::Coalesce` pick which value survives.
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } if *operator == "??" => {
+            compile_expr(
+                left,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                right,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(Op::Coalesce, line);
+            Ok(())
+        }
         Node::InfixExpression {
             left,
             operator,
