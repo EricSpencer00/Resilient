@@ -18,9 +18,10 @@
 # required check — branch-protection can opt in separately. The
 # workflow's `fail-fast: false` on its single job keeps PRs
 # mergeable while the signal is noisy (hosted-runner variance). The
-# extended comparison is advisory for the same reason and by the
-# same mechanism (a dedicated final step turns a regression into a
-# failed — but non-required — check).
+# extended comparison is advisory for the same reason: the "Compare
+# vs baselines" step still exits non-zero when either comparison
+# regresses (so the job goes red — visible signal), it's just never
+# added to required-status-checks, so it can't block auto-merge.
 
 name: perf-gate
 
@@ -107,22 +108,25 @@ jobs:
           echo "Fresh extended results:"
           cat /tmp/fresh-extended.json
 
-      - name: Compare fib vs baseline
-        id: compare_fib
-        continue-on-error: true
+      # Both comparisons always run (neither can short-circuit the
+      # other), and their combined pass/fail is this step's own exit
+      # code — same "capture rc, still build the PR-comment body,
+      # exit $rc at the end" shape the original single-benchmark
+      # version of this step used, just over two scripts instead of
+      # one. The job still goes red on a regression (visible, non-
+      # required signal); nothing here suppresses that failure.
+      - name: Compare vs baselines
+        id: compare
         run: |
-          ./scripts/compare_perf.sh benchmarks/baseline/fib.json /tmp/fresh-fib.json | tee /tmp/compare-fib.md
-
-      - name: Compare extended vs baseline
-        id: compare_extended
-        continue-on-error: true
-        run: |
-          ./benchmarks/extended/compare.sh benchmarks/baseline/extended.json /tmp/fresh-extended.json | tee /tmp/compare-extended.md
-
-      - name: Build PR comment body
-        id: comment
-        if: always()
-        run: |
+          set +e
+          ./scripts/compare_perf.sh benchmarks/baseline/fib.json /tmp/fresh-fib.json > /tmp/compare-fib.md
+          rc_fib=$?
+          ./benchmarks/extended/compare.sh benchmarks/baseline/extended.json /tmp/fresh-extended.json > /tmp/compare-extended.md
+          rc_extended=$?
+          # Echo both tables so the workflow log shows them too.
+          cat /tmp/compare-fib.md
+          cat /tmp/compare-extended.md
+          # Stash for the PR-comment step.
           {
               echo 'body<<EOT'
               echo "### fib(25) perf-gate"
@@ -138,12 +142,16 @@ jobs:
               echo "Baseline: \`benchmarks/baseline/extended.json\` — regenerate with \`benchmarks/extended/run.sh\` and review the deltas before committing."
               echo "EOT"
           } >> "$GITHUB_OUTPUT"
+          if [[ $rc_fib -ne 0 || $rc_extended -ne 0 ]]; then
+            exit 1
+          fi
+          exit 0
 
       - name: Post / update PR comment
         if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         env:
-          COMMENT_BODY: ${{ steps.comment.outputs.body }}
+          COMMENT_BODY: ${{ steps.compare.outputs.body }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -168,12 +176,3 @@ jobs:
                 owner, repo, issue_number, body,
               });
             }
-
-      # Advisory, not required: this failure surfaces as a red check
-      # on the PR (visible signal) but perf-gate is not in the
-      # required-status-checks set, so it never blocks auto-merge.
-      - name: Fail if any benchmark regressed
-        if: steps.compare_fib.outcome == 'failure' || steps.compare_extended.outcome == 'failure'
-        run: |
-          echo "One or more perf-gate comparisons exceeded their threshold — see the job log / PR comment above." >&2
-          exit 1
