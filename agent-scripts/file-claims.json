@@ -119,6 +119,10 @@
     "resilient/tests/it/differential.rs": {
       "branch": "res-3990-differential-denylist",
       "claimed_at": "2026-07-14T03:03:48Z"
+    },
+    "docs/debugger.md": {
+      "branch": "res-ee6-debugger-docs",
+      "claimed_at": "2026-07-14T03:21:30Z"
     }
   }
 }
