@@ -319,6 +319,30 @@ pub enum Op {
     /// pops, producing a deterministically-wrong (but not erroring)
     /// value instead of a clean divergence.
     Pop,
+    /// RES-4046: push `Bool(true)` if the CURRENT function's
+    /// function-scoped `static let` slot `idx` has already been
+    /// initialized on some earlier call, else push `Bool(false)` and
+    /// mark it initialized right away (before the guarded initializer
+    /// below runs) — mirrors the tree-walking interpreter's
+    /// `self.statics` presence check in `eval(Node::StaticLet)`, but
+    /// marks eagerly rather than after evaluating the initializer so a
+    /// self-referential initializer can't infinitely recurse. Compiled
+    /// as: `PushStaticInitialized(idx); JumpIfTrue(skip); <init-expr>;
+    /// StoreStatic(idx); skip:`. Persists in the VM's per-function
+    /// statics table, which — unlike `locals` — lives for the whole
+    /// program run rather than being reset every call.
+    PushStaticInitialized(u16),
+    /// RES-4046: pop TOS and store into the CURRENT function's
+    /// persistent static-storage slot `idx`. Unlike `StoreLocal`, this
+    /// value survives across separate calls to the function.
+    StoreStatic(u16),
+    /// RES-4046: push the CURRENT function's persistent static-storage
+    /// slot `idx` onto the operand stack. Companion to `StoreStatic`;
+    /// the compiler only ever emits a bare `LoadStatic` for reads/
+    /// writes of a `static let` binding, which always run after that
+    /// declaration's guarded init sequence has executed at least once
+    /// (this call or an earlier one).
+    LoadStatic(u16),
 }
 
 /// RES-2544: one catch arm in a try-catch handler table.

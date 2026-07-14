@@ -608,6 +608,14 @@ fn run_inner(
     // frames push, so this is a starting capacity that absorbs the
     // common case without rehash churn.
     let mut locals: Vec<Value> = Vec::with_capacity(32);
+    // RES-4046: per-function persistent storage for `static let`
+    // bindings declared inside a `fn` body, indexed `[chunk_idx][slot]`
+    // — unlike `locals`, this lives for the whole program run rather
+    // than being reset every call, so a static's value survives across
+    // separate invocations of the same function. `statics_init` tracks
+    // which slots have already run their one-time initializer.
+    let mut statics: Vec<Vec<Value>> = Vec::new();
+    let mut statics_init: Vec<Vec<bool>> = Vec::new();
     let mut frames: Vec<CallFrame> = Vec::with_capacity(16);
     frames.push(CallFrame {
         chunk_idx: usize::MAX, // main
@@ -624,6 +632,8 @@ fn run_inner(
         &mut locals,
         &mut frames,
         &mut try_stack,
+        &mut statics,
+        &mut statics_init,
         overflow_mode,
         last_pc,
         None,
@@ -655,6 +665,8 @@ fn run_dispatch_loop(
     locals: &mut Vec<Value>,
     frames: &mut Vec<CallFrame>,
     try_stack: &mut Vec<TryFrame>,
+    statics: &mut Vec<Vec<Value>>,
+    statics_init: &mut Vec<Vec<bool>>,
     overflow_mode: OverflowMode,
     last_pc: &mut (usize, usize),
     tracked: Option<LiveTrack>,
@@ -1586,6 +1598,64 @@ fn run_dispatch_loop(
                 }
                 locals[abs] = v;
             }
+            // RES-4046: function-scoped `static let` — see the doc
+            // comments on `Op::PushStaticInitialized` / `StoreStatic` /
+            // `LoadStatic` in bytecode.rs. `statics`/`statics_init` are
+            // declared once in `run_inner` and threaded through every
+            // (possibly recursive, for `live` blocks) `run_dispatch_loop`
+            // call, so they persist for the whole program run instead
+            // of resetting per call like `locals` does.
+            Op::PushStaticInitialized(idx) => {
+                let chunk_idx = frames[frame_idx].chunk_idx;
+                if chunk_idx == usize::MAX {
+                    // The compiler never emits this at program scope —
+                    // top-level `static let` compiles as a plain local
+                    // (trivially "persistent": top-level code runs once).
+                    return Err(VmError::Unsupported(
+                        "static let initializer guard at program scope",
+                    ));
+                }
+                if statics_init.len() <= chunk_idx {
+                    statics_init.resize_with(chunk_idx + 1, Vec::new);
+                }
+                let flags = &mut statics_init[chunk_idx];
+                let abs = idx as usize;
+                if flags.len() <= abs {
+                    flags.resize(abs + 1, false);
+                }
+                let already_initialized = flags[abs];
+                flags[abs] = true;
+                stack.push(Value::Bool(already_initialized));
+            }
+            Op::StoreStatic(idx) => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let chunk_idx = frames[frame_idx].chunk_idx;
+                if chunk_idx == usize::MAX {
+                    return Err(VmError::Unsupported("static let store at program scope"));
+                }
+                if statics.len() <= chunk_idx {
+                    statics.resize_with(chunk_idx + 1, Vec::new);
+                }
+                let slots = &mut statics[chunk_idx];
+                let abs = idx as usize;
+                if slots.len() <= abs {
+                    slots.resize(abs + 1, Value::Void);
+                }
+                slots[abs] = v;
+            }
+            Op::LoadStatic(idx) => {
+                let chunk_idx = frames[frame_idx].chunk_idx;
+                if chunk_idx == usize::MAX {
+                    return Err(VmError::Unsupported("static let load at program scope"));
+                }
+                let abs = idx as usize;
+                let v = statics
+                    .get(chunk_idx)
+                    .and_then(|slots| slots.get(abs))
+                    .cloned()
+                    .unwrap_or(Value::Void);
+                stack.push(v);
+            }
             Op::EnterTry(handler_idx) => {
                 try_stack.push(TryFrame {
                     handler_table_idx: handler_idx,
@@ -1628,6 +1698,8 @@ fn run_dispatch_loop(
                         locals,
                         frames,
                         try_stack,
+                        statics,
+                        statics_init,
                         overflow_mode,
                         last_pc,
                         Some(LiveTrack {
@@ -2479,6 +2551,9 @@ fn op_to_index(op: Op) -> usize {
         Op::AssumeFail => OP_KIND_ASSUME_FAIL,
         Op::EnterLive(_) => OP_KIND_ENTER_LIVE,
         Op::ExitLive => OP_KIND_EXIT_LIVE,
+        Op::PushStaticInitialized(_) => OP_KIND_PUSH_STATIC_INITIALIZED,
+        Op::StoreStatic(_) => OP_KIND_STORE_STATIC,
+        Op::LoadStatic(_) => OP_KIND_LOAD_STATIC,
     }
 }
 
@@ -2512,7 +2587,18 @@ const OP_KIND_ASSUME_FAIL: usize = 53;
 /// port the retry-loop recursion to `run_direct`.
 const OP_KIND_ENTER_LIVE: usize = 54;
 const OP_KIND_EXIT_LIVE: usize = 55;
-const HANDLER_TABLE_LEN: usize = 56;
+/// RES-4046: function-scoped `static let` persistence is only
+/// implemented by the Match dispatch engine (`run_inner`) — it needs
+/// the `statics`/`statics_init` tables threaded through
+/// `run_dispatch_loop`, which `run_direct` doesn't share. The Direct
+/// engine surfaces a clean `VmError::Unsupported` via
+/// `h_static_unsupported` instead of silently resetting the static on
+/// every call (this ticket's original bug). Follow-up: port the
+/// statics tables to `VmState` so `run_direct` gets full parity.
+const OP_KIND_PUSH_STATIC_INITIALIZED: usize = 56;
+const OP_KIND_STORE_STATIC: usize = 57;
+const OP_KIND_LOAD_STATIC: usize = 58;
+const HANDLER_TABLE_LEN: usize = 59;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2574,6 +2660,9 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_ASSUME_FAIL] = h_assume_fail;
     table[OP_KIND_ENTER_LIVE] = h_live_unsupported;
     table[OP_KIND_EXIT_LIVE] = h_live_unsupported;
+    table[OP_KIND_PUSH_STATIC_INITIALIZED] = h_static_unsupported;
+    table[OP_KIND_STORE_STATIC] = h_static_unsupported;
+    table[OP_KIND_LOAD_STATIC] = h_static_unsupported;
     table
 };
 
@@ -2586,6 +2675,17 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
 fn h_live_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     Err(VmError::Unsupported(
         "live block (RESILIENT_DISPATCH=direct doesn't implement RES-3995 retry semantics yet)",
+    ))
+}
+
+/// RES-4046: `run_direct` doesn't implement function-scoped `static
+/// let` persistence yet — see the `OP_KIND_PUSH_STATIC_INITIALIZED`
+/// doc comment. Surface a clean error instead of silently resetting
+/// the static's value on every call (the bug this ticket fixes).
+#[inline(never)]
+fn h_static_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported(
+        "static let (RESILIENT_DISPATCH=direct doesn't implement RES-4046 persistence yet)",
     ))
 }
 

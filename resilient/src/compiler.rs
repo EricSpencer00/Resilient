@@ -94,25 +94,45 @@ const GLOBAL_FLAG: u16 = 0x8000;
 /// `StoreGlobal` already address one shared slot directly.
 const BOXED_FLAG: u16 = 0x4000;
 
-/// RES-3914: mask off both `GLOBAL_FLAG` and `BOXED_FLAG`, leaving the
-/// raw frame-relative (or main-frame) slot index.
+/// RES-4046: flag bit marking a slot as a function-scoped `static let`
+/// binding. Like `GLOBAL_FLAG`, this is encoded in the `locals` HashMap
+/// so ordinary identifier reads/writes resolve to `LoadStatic`/
+/// `StoreStatic` without threading a new parameter through the whole
+/// compiler. Backing storage is the VM's per-function statics table,
+/// keyed by the function's own chunk index, so the value persists
+/// across separate calls — unlike a plain local, which lives in the
+/// per-call locals slab and resets every call. Never combined with
+/// `BOXED_FLAG`: statics are never boxed, for the same reason globals
+/// aren't (see `BOXED_FLAG`'s doc comment) — `LoadStatic`/`StoreStatic`
+/// already address one persistent slot directly.
+const STATIC_FLAG: u16 = 0x2000;
+
+/// RES-3914 / RES-4046: mask off `GLOBAL_FLAG`, `BOXED_FLAG`, and
+/// `STATIC_FLAG`, leaving the raw frame-relative (or main-frame, or
+/// static-table) slot index.
 fn raw_slot(slot: u16) -> u16 {
-    slot & !(GLOBAL_FLAG | BOXED_FLAG)
+    slot & !(GLOBAL_FLAG | BOXED_FLAG | STATIC_FLAG)
 }
 
-/// Emit a load instruction for a slot that may be local or global.
+/// Emit a load instruction for a slot that may be local, global, or a
+/// function-scoped static.
 fn local_load_op(slot: u16) -> Op {
     if slot & GLOBAL_FLAG != 0 {
         Op::LoadGlobal(slot & !GLOBAL_FLAG)
+    } else if slot & STATIC_FLAG != 0 {
+        Op::LoadStatic(slot & !STATIC_FLAG)
     } else {
         Op::LoadLocal(slot)
     }
 }
 
-/// Emit a store instruction for a slot that may be local or global.
+/// Emit a store instruction for a slot that may be local, global, or a
+/// function-scoped static.
 fn local_store_op(slot: u16) -> Op {
     if slot & GLOBAL_FLAG != 0 {
         Op::StoreGlobal(slot & !GLOBAL_FLAG)
+    } else if slot & STATIC_FLAG != 0 {
+        Op::StoreStatic(slot & !STATIC_FLAG)
     } else {
         Op::StoreLocal(slot)
     }
@@ -2446,9 +2466,33 @@ fn compile_stmt_in_fn(
             next_fn_idx,
             line,
         ),
-        // RES-384b: `static let NAME = EXPR;` inside a fn body — same
-        // treatment as the top-level arm: compile as a regular local.
+        // RES-4046: `static let NAME = EXPR;` inside a fn body must
+        // persist across separate calls to the function, unlike an
+        // ordinary local (which lives in the per-call locals slab and
+        // resets every call) — matching the tree-walking interpreter's
+        // `self.statics` and top-level `static let` (which is
+        // trivially "persistent" since top-level code runs exactly
+        // once). `idx` is reused as the index into the VM's
+        // per-function statics table (a completely separate storage
+        // class from ordinary locals — see `STATIC_FLAG`), so borrowing
+        // a number from `next_local`'s counter only "wastes" one unused
+        // slot in the per-call locals array; it never collides with a
+        // real local.
+        //
+        // Compiles to a guarded one-time init, mirroring
+        // `compile_assert_like`'s `JumpIfTrue` skip shape:
+        //   PushStaticInitialized(idx); JumpIfTrue(skip);
+        //   <init-expr>; StoreStatic(idx); skip:
         Node::StaticLet { name, value, .. } => {
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let idx = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), idx | STATIC_FLAG);
+
+            chunk.emit(Op::PushStaticInitialized(idx), line);
+            let jt = chunk.emit(Op::JumpIfTrue(0), line);
             compile_expr(
                 value,
                 chunk,
@@ -2460,13 +2504,9 @@ fn compile_stmt_in_fn(
                 next_fn_idx,
                 line,
             )?;
-            if *next_local == u16::MAX {
-                return Err(CompileError::TooManyLocals);
-            }
-            let idx = *next_local;
-            *next_local += 1;
-            locals.insert(name.clone(), idx);
-            chunk.emit(Op::StoreLocal(idx), line);
+            chunk.emit(Op::StoreStatic(idx), line);
+            let past_init = chunk.code.len();
+            chunk.patch_jump(jt, past_init)?;
             Ok(())
         }
         // RES-361: const decl inside fn body — pre-evaluated, no emission.
@@ -4172,8 +4212,14 @@ fn compile_expr(
             // existing cell rather than double-boxing it. Globals are
             // skipped: `LoadGlobal`/`StoreGlobal` already address one
             // shared slot directly, so boxing would only add overhead.
+            // RES-4046: function-scoped statics are skipped for the
+            // same reason (`LoadStatic`/`StoreStatic` already address
+            // one persistent slot) — and *must* be skipped, since the
+            // boxing code below hardcodes `Op::LoadLocal`/`StoreLocal`,
+            // which would misinterpret `STATIC_FLAG`'s bit as part of
+            // an ordinary local index.
             for (outer_slot, name) in &mut captured {
-                if *outer_slot & GLOBAL_FLAG != 0 {
+                if *outer_slot & (GLOBAL_FLAG | STATIC_FLAG) != 0 {
                     continue;
                 }
                 if *outer_slot & BOXED_FLAG == 0 {
@@ -4299,9 +4345,22 @@ fn compile_expr(
             // also increment next_fn_idx, fn_idx may not equal fns.len() by
             // the time we reach here. Use a placeholder-then-overwrite strategy:
             // extend fns to at least fn_idx+1 with placeholders.
+            // RES-4046: a captured static has no valid caller-frame
+            // slot to write back into on return (its backing storage
+            // is the per-function statics table, not `locals`) —
+            // `u16::MAX` is the existing "no write-back target"
+            // sentinel (see `CallFrame::source_slot`'s doc comment);
+            // `write_back_upvalues`'s bounds check already treats an
+            // out-of-range index as a no-op.
             let source_slots: Box<[u16]> = captured
                 .iter()
-                .map(|(s, _)| raw_slot(*s))
+                .map(|(s, _)| {
+                    if *s & STATIC_FLAG != 0 {
+                        u16::MAX
+                    } else {
+                        raw_slot(*s)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .into();
             while fns.len() <= fn_idx as usize {
@@ -4324,16 +4383,22 @@ fn compile_expr(
             };
 
             // Emit: push each captured value onto the stack, then
-            // MakeClosure. Non-global captures were boxed above, so
-            // this always loads the shared `Value::Cell` handle
-            // (never a value snapshot). RES-3914: global captures use
-            // `LoadGlobal` (they were tagged `GLOBAL_FLAG` by
-            // `collect_free_vars` reading the pre-seeded globals in
+            // MakeClosure. Non-global, non-static captures were boxed
+            // above, so this always loads the shared `Value::Cell`
+            // handle (never a value snapshot). RES-3914: global
+            // captures use `LoadGlobal` (they were tagged `GLOBAL_FLAG`
+            // by `collect_free_vars` reading the pre-seeded globals in
             // `locals`) instead of the previous unmasked `LoadLocal`,
-            // which read an out-of-range slot.
+            // which read an out-of-range slot. RES-4046: static
+            // captures use `LoadStatic` the same way — this executes
+            // in the *outer* (declaring) function's own frame, so it
+            // correctly reads that function's persistent static slot
+            // one time to seed the closure's snapshot.
             for (outer_slot, _) in &captured {
                 if *outer_slot & GLOBAL_FLAG != 0 {
                     chunk.emit(Op::LoadGlobal(raw_slot(*outer_slot)), line);
+                } else if *outer_slot & STATIC_FLAG != 0 {
+                    chunk.emit(Op::LoadStatic(raw_slot(*outer_slot)), line);
                 } else {
                     chunk.emit(Op::LoadLocal(raw_slot(*outer_slot)), line);
                 }
@@ -7499,6 +7564,81 @@ outer;
         match vm_ok(src) {
             Value::Int(42) => {}
             other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res4045_return_after_if_ending_in_assert_fail() {
+        // RES-4045: `return EXPR;` immediately following an `if COND {
+        // ...; assert(false, msg); }` (if-branch unconditionally fails,
+        // no `else`) used to compile to bytecode that dropped the
+        // `LoadLocal` for `EXPR` — `ReturnFromCall` popped an empty
+        // operand stack and silently returned `Value::Void`. Root
+        // cause: the peephole optimizer's `Not; JumpIfFalse` ->
+        // `JumpIfTrue` fusion (and its 3 siblings) recorded the wrong
+        // "original PC" for the jump-relink pass, leaving a stale
+        // pre-fold offset in place whenever anything shifted between
+        // the jump and its target.
+        let src = r#"
+fn read_temp_sensor(int nominal) -> int {
+    return nominal;
+}
+fn is_plausible(int x) -> bool {
+    return x != 9999;
+}
+fn safe_read(int nominal) -> int {
+    let reading = read_temp_sensor(nominal);
+    let ok = is_plausible(reading);
+    if !ok {
+        assert(false, "implausible");
+    }
+    return reading;
+}
+safe_read(500);
+"#;
+        match vm_ok(src) {
+            Value::Int(500) => {}
+            other => panic!("expected Int(500), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res4046_function_scoped_static_let_persists_across_calls() {
+        // RES-4046: a function-scoped `static let` used to compile as
+        // an ordinary local — reset to its initializer on every call —
+        // instead of persisting like the tree-walking interpreter's
+        // `self.statics` (and like top-level `static let`, which is
+        // trivially "persistent" since top-level code runs once).
+        let src = r#"
+fn read_random() {
+    static let toggle = false;
+    toggle = !toggle;
+    if toggle {
+        return 0.25;
+    } else {
+        return 0.75;
+    }
+}
+fn three_calls() {
+    let a = read_random();
+    let b = read_random();
+    let c = read_random();
+    return [a, b, c];
+}
+three_calls();
+"#;
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3, "expected 3 elements, got {:?}", v);
+                assert!(
+                    matches!(v[0], Value::Float(f) if f == 0.25)
+                        && matches!(v[1], Value::Float(f) if f == 0.75)
+                        && matches!(v[2], Value::Float(f) if f == 0.25),
+                    "static let must persist (toggle) across separate calls, got {:?}",
+                    v
+                );
+            }
+            other => panic!("expected Array, got {:?}", other),
         }
     }
 

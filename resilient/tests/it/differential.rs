@@ -272,23 +272,12 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // loop itself all now work under `--vm`) — `live_blocks.rz`,
     // `live_retry_log.rz`, `showcase_live_invariant.rz`, and
     // `telemetry_demo.rz` were removed from this list in that PR.
-    // The two entries below still diverge, but for *unrelated*,
-    // independently-filed reasons — neither is a live-block bug:
-    //
-    // - `self_healing.rz`: its `read_random` helper relies on a
-    //   function-scoped `static let toggle` to deterministically
-    //   alternate pass/fail every call. The VM resets that `static
-    //   let` to its initializer on every call instead of persisting
-    //   it (pre-existing bug, unrelated to live blocks — top-level
-    //   `static let` works fine under `--vm`). See #4046.
-    // - `thermal_safety_cutoff.rz`: its `safe_read` function's
-    //   `return reading;` follows an `if !is_plausible(reading) {
-    //   assert(false, ...); }` — the VM drops the `LoadLocal` for the
-    //   return value in exactly this shape (if-branch ending in
-    //   `Op::AssertFail`), silently returning `Void`. Reproduces with
-    //   no live block involved at all (pre-existing bug). See #4045.
-    "self_healing.rz",
-    "thermal_safety_cutoff.rz",
+    // `self_healing.rz` (RES-4046: function-scoped `static let` didn't
+    // persist across calls under `--vm`) and `thermal_safety_cutoff.rz`
+    // (RES-4045: `return EXPR;` after an if-branch ending in
+    // `Op::AssertFail` dropped the `LoadLocal`) were removed from this
+    // list once those independently-filed, non-live-block bugs were
+    // fixed.
     // RES-4041: VM never checks `ensures`/`recovers_to` function-contract
     // postconditions (a much bigger gap than #3996's `assume` fix — it
     // needs a per-call runtime check compiled alongside `ReturnFromCall`,

@@ -270,6 +270,9 @@ fn write_op(
             "MakeEnumNamed type={} variant={} fields={}",
             type_const, variant_const, field_count
         )?,
+        Op::PushStaticInitialized(idx) => write!(out, "PushStaticInitialized {}", idx)?,
+        Op::StoreStatic(idx) => write!(out, "StoreStatic {}", idx)?,
+        Op::LoadStatic(idx) => write!(out, "LoadStatic {}", idx)?,
     }
     Ok(())
 }
