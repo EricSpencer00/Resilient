@@ -6,6 +6,17 @@
 > holds)**. It picks up at **Phase 2 (complete the language)** and runs through
 > **Phase 4 (ship 1.0)**. Child tickets reference `#3933 · <EPIC>`.
 
+> **Status update (2026-07-14):** the **soundness tail (Phase-2 sequencing step 1) is
+> complete** — the "zero silent-wrongness" gate is closed. `#4011` (nested/payload
+> exhaustiveness), `#4017` (VM closures/StringBuilder/TCO), and `#4041` (runtime-contract
+> parity) are merged, and the VM `UNSUPPORTED_BY_VM` denylist was driven 21 → 13 by clearing
+> every mechanically-fixable parity gap (`#4055`/`#4057`/`#4058`/`#4062`). The residual 13
+> entries are *loud* `Unsupported` VM feature-completeness gaps (not silent wrongness) —
+> deep subsystems tracked under `#4060` (quantifier + `defer`) and `#4063` (actor VM
+> execution, call-stack introspection, nested-fn closure capture). Next phase: Track A deep
+> language work and/or the B-E3 VM-completeness follow-ups. See the gate table and sequencing
+> below for details.
+
 ## Where we are (entering Phase 2)
 
 **Done in the swarm:** X1–X5 cross-cutting blockers; body-aware `ensures`; Z3 shipped +
@@ -21,9 +32,9 @@ all F-E3 design docs; ~370 builtins documented.
 | Gate | Status |
 |---|---|
 | Every Stable bullet has a 3-backend conformance test | 🟡 partial — suite exists (23 cases), needs full STABILITY.md coverage (F-E1) |
-| Zero silent-wrongness on the stable surface | 🟢 near-complete — ~4 VM denylist entries + `#4041` runtime-contract parity remain |
+| Zero silent-wrongness on the stable surface | 🟢 **done** — `#4011` nested/payload exhaustiveness (the silent-wrong-value hole) closed; `#4017` VM CallMethod-closure/StringBuilder/TCO closed; `#4041` runtime-contract parity closed; the VM/tree-walker value-parity corpus grew 20 examples this pass. Remaining `UNSUPPORTED_BY_VM` entries are *loud* `Unsupported` compile errors (VM feature-completeness, Track B-E3, tracked `#4060`/`#4063`), **not** silent wrongness. |
 | Default binary delivers core experience (Z3 + LSP) | 🟢 done for the primary target; other release targets tracked in `#3985` |
-| No aspirational docs / nonexistent features | 🟡 mostly — **`#4025`** (`#[interrupt]` documented Stable but unimplemented) still open |
+| No aspirational docs / nonexistent features | 🟢 done — `#4025` resolved (`#[interrupt]` de-Stabled to "Planned", `#4054`) |
 | `.rz` runs on an embedded target under QEMU in CI | 🟢 **done for the scalar subset**; `fn`/calls + interrupts extend it (D-E1 #6) |
 | 10 `RES-350x` design tickets have merged docs | 🟢 done |
 | semver + CHANGELOG + deprecation policy | 🟡 policy doc exists; release automation dry-run pending (F-E6) |
@@ -48,9 +59,12 @@ Most of this contends on `typechecker.rs`/`lib.rs`, so run these **one at a time
 - [ ] Trait-object / `dyn` dispatch: implement, or formally document static-dispatch-only for v1.
 
 ### A-E4 · Pattern-matching exhaustiveness *(cont.)*
-- [ ] **`#4011`** — nested/payload pattern exhaustiveness (`Some(Shape::Circle(r))`-class) is
-      unchecked → silent wrong value at runtime. Needs a decision-tree algorithm, not a hardening pass.
-- [ ] Or-pattern / int-range exhaustiveness for payload enums; guard-clause interaction.
+- [x] **`#4011`** — nested/payload pattern exhaustiveness (`Some(Shape::Circle(r))`-class) — **DONE**
+      (`#4056`): recursive matrix-specialization decision-tree over enum/Option/bool payloads,
+      cycle-safe, conservative (never rejects a previously-accepted match). The silent-wrong-value
+      hole is closed.
+- [ ] Or-pattern / int-range exhaustiveness for payload enums; guard-clause interaction; struct-payload
+      and `Result` `Ok`/`Err` payload recursion (deliberately left opaque by `#4056`).
 
 ### A-E5 · Memory / ownership: region inference
 - [ ] Region/lifetime **inference for unannotated code** (`region_inference::infer` is a documented
@@ -70,13 +84,20 @@ Most of this contends on `typechecker.rs`/`lib.rs`, so run these **one at a time
 ## Track B — Backends *(VM tail; can interleave with A since it's a different file set)*
 
 ### B-E3 · Remaining VM parity gaps *(each is compiler.rs/vm.rs — serialize)*
-- [ ] **`#3993`** leftover — remaining `Unsupported` constructs (`break <expr>`, return-in-match-arm-
-      expression-position, `??` null-coalescing operator, quantifier asserts).
-- [ ] **`#3992`** leftover — static/namespaced/tuple-struct-constructor call-site lowering; fn-valued
-      locals/closures captured across function/actor-spawn boundaries.
-- [ ] **`#4017`** — VM CallMethod closures, StringBuilder write-back, mutual-recursion TCO.
-- [ ] **`#4041`** — VM runtime `ensures`/`recovers_to` postcondition checking (in flight / just landed;
-      verify parity with the interpreter's runtime contract enforcement).
+The **silent-wrongness** portion of this track is closed. The VM/tree-walker `UNSUPPORTED_BY_VM`
+denylist (`resilient/tests/it/differential.rs`) was driven from 21 → 13 this pass; the residual 13
+are all *loud* `Unsupported` compile errors (VM feature-completeness), each needing a deep subsystem,
+tracked under `#4060` and `#4063`.
+- [x] **`#3993`** — mechanical constructs **DONE**: `break <expr>` + return-in-expr-match-arm (`#4055`),
+      `??` null-coalescing (`#4057`), indirect/non-identifier calls + `?.` optional chaining + `bench`
+      (`#4058`). Residual = quantifier + `defer` VM lowering → **`#4060`**.
+- [x] **`#3992`** — leftover call-site lowering **DONE** (`#4062`): static/namespaced (`mod::fn`) calls,
+      tuple-struct constructors + `.0`/`.1`, first-class/bare fn names, generic-fn type params,
+      effect-poly, trait default-method dispatch, `array_none`. Residual = actor VM execution,
+      call-stack introspection, nested-fn closure capture → **`#4063`**.
+- [x] **`#4017`** — VM CallMethod closures + StringBuilder write-back (`#4059`) and mutual-recursion
+      TCO (`#4061`) — **DONE** (issue closed).
+- [x] **`#4041`** — VM runtime `ensures`/`recovers_to` postcondition checking — **DONE** (`#4052`).
 - [ ] Direct-dispatch (`RESILIENT_DISPATCH=direct`) engine parity for `EnterLive`/static/etc. ops
       (currently returns `Unsupported`; not a CI path but should not silently diverge).
 
@@ -156,15 +177,24 @@ Most of this contends on `typechecker.rs`/`lib.rs`, so run these **one at a time
 
 ## Suggested Phase-2 sequencing
 
-1. **Close the soundness tail first** (cheap, high-confidence): finish the VM parity gaps (`#3993`/`#3992`/
-   `#4017`/`#4041`), then the nested-pattern exhaustiveness hole (`#4011`). This finishes the "zero
-   silent-wrongness" gate.
+1. ~~**Close the soundness tail first**~~ — **DONE.** `#4011` nested/payload exhaustiveness (`#4056`),
+   `#4017` VM CallMethod-closure/StringBuilder/TCO (`#4059`/`#4061`), `#4041` runtime-contract parity
+   (`#4052`), and the mechanical `#3993`/`#3992` VM parity gaps (`#4055`/`#4057`/`#4058`/`#4062`) all
+   landed; the "zero silent-wrongness" gate is closed. The residual VM `UNSUPPORTED_BY_VM` entries are
+   *loud* feature-completeness gaps (Track B-E3), tracked under `#4060` (quantifier + `defer`) and
+   `#4063` (actor VM execution, call-stack introspection, nested-fn closure capture).
 2. **Land the two infra fixes** (`#4021`, `#3976`) in a quiet window — they tax every future swarm.
-3. **Resolve the two maintainer decisions** (E-E3, `#4025`) — they unblock the "honest docs" + marketplace gates.
+3. ~~**Resolve the maintainer decisions**~~ — `#4025` **DONE** (`#[interrupt]` de-Stabled, `#4054`).
+   E-E3 (vsce republish) remains a maintainer-only external action.
 4. **Then the deep language work** (A-E3 → A-E5 → A-E7), serialized on `typechecker.rs`, one epic per PR-chain.
 5. **Extend embedded** (D-E1 `fn` support → D-E2 board app) to widen the on-device story past scalars.
 6. **Ship prep** (F-E1 full conformance → F-E6 release dry-run → tag `v1.0.0-rc`).
 
+**Next phase after the soundness tail:** Track A deep language work (A-E3 associated types/trait objects
+→ A-E5 region inference → A-E7 effect polymorphism) and/or the B-E3 VM-completeness follow-ups
+(`#4060`, `#4063`).
+
 ## Open follow-up issues (as of this writing)
-`#4025`, `#4021`, `#4017`, `#4011`, `#3993`, `#3985`, `#3977`, `#3976` — plus `#3930` (TLA+ Phase B,
-tooling-blocked) and the `#3987` D-E1 chain remainder.
+`#4021`, `#3985`, `#3977`, `#3976`, `#4060`, `#4063` — plus `#3930` (TLA+ Phase B, tooling-blocked)
+and the `#3987` D-E1 chain remainder. *(Closed this pass: `#4011`, `#4017`; `#4025` resolved via
+`#4054`; `#3993`/`#3992` VM-parity leftovers cleared or re-homed to `#4060`/`#4063`.)*
