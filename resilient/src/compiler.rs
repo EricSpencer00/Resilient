@@ -232,6 +232,31 @@ fn prescan_stmt_slots(node: &Node, globals: &mut HashMap<String, u16>, slot: &mu
 /// unreachable and harmless; otherwise it terminates the VM with
 /// `Value::Void`.
 pub fn compile(program: &Node) -> Result<Program, CompileError> {
+    // RES-3992: the tree-walker resolves top-level `const NAME = expr;`
+    // declarations into a `self.consts` table that every identifier
+    // lookup checks *before* locals (`Interpreter::eval_program` /
+    // `Node::Identifier` in `eval`). The bytecode compiler has no
+    // equivalent runtime-const scope — a `Node::Const` compiles to a
+    // no-op (see `compile_stmt` / `compile_stmt_in_fn` below) and
+    // every later reference to the const's name fell through to
+    // `CompileError::UnknownIdentifier`. Inline resolved consts as
+    // literals throughout the AST before compiling so the const's
+    // *name* never needs runtime resolution — matches the tree-walker
+    // output for every example in the differential corpus that only
+    // uses consts in literal-foldable positions.
+    let inlined;
+    let program: &Node = match program {
+        Node::Program(stmts) => {
+            let resolved = resolve_top_level_consts(stmts);
+            if resolved.is_empty() {
+                program
+            } else {
+                inlined = inline_consts(program, &resolved);
+                &inlined
+            }
+        }
+        _ => program,
+    };
     let stmts = match program {
         Node::Program(s) => s,
         _ => return Err(CompileError::Unsupported("non-Program root")),
@@ -578,6 +603,300 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     crate::inline::optimize_if_enabled(&mut prog)
         .map_err(|_| CompileError::InternalError("inliner failed"))?;
     Ok(prog)
+}
+
+/// RES-3992: resolve every top-level `const NAME = expr;` declaration
+/// into its literal `Value`, mirroring `Interpreter::const_eval_program`
+/// (the tree-walker's canonical const-resolution pre-pass — see RES-361).
+/// Reuses `Interpreter::eval_const_expr` directly so the bytecode
+/// compiler can never diverge from the tree-walker's notion of what a
+/// "compile-time constant" is.
+///
+/// A const whose value expression isn't foldable (circular reference,
+/// non-constant sub-expression) is silently left out of the returned
+/// map rather than erroring here — `static_assert::check` in the shared
+/// typechecker pass already surfaces that as a diagnostic before either
+/// backend runs, so skipping it just means a later reference to that
+/// name falls through to the pre-existing `UnknownIdentifier` error
+/// instead of this pre-pass raising a second, redundant one.
+fn resolve_top_level_consts(stmts: &[crate::span::Spanned<Node>]) -> HashMap<String, Value> {
+    let mut resolved: HashMap<String, Value> = HashMap::new();
+    for stmt in stmts {
+        let Node::Const { name, value, .. } = &stmt.node else {
+            continue;
+        };
+        let mut evaluating = vec![name.clone()];
+        if let Ok(v) = crate::Interpreter::eval_const_expr(value, &resolved, &mut evaluating) {
+            resolved.insert(name.clone(), v);
+        }
+    }
+    resolved
+}
+
+/// RES-3992: convert a resolved const `Value` back into the literal AST
+/// node the bytecode compiler already knows how to emit a `Op::Const`
+/// for. Consts only ever resolve to one of these scalar shapes — see
+/// the allowed-subexpression list on `Interpreter::eval_const_expr` —
+/// so `None` here is unreachable in practice, but is handled instead of
+/// unwrapped to keep this pass a no-op on any future const value shape
+/// rather than a panic.
+fn const_value_to_literal(value: &Value, span: crate::span::Span) -> Option<Node> {
+    match value {
+        Value::Int(v) => Some(Node::IntegerLiteral { value: *v, span }),
+        Value::Float(v) => Some(Node::FloatLiteral { value: *v, span }),
+        Value::Bool(v) => Some(Node::BooleanLiteral { value: *v, span }),
+        Value::String(s) => Some(Node::StringLiteral {
+            value: s.clone(),
+            span,
+        }),
+        Value::Char(c) => Some(Node::CharLiteral { value: *c, span }),
+        _ => None,
+    }
+}
+
+/// RES-3992: rewrite every `Node::Identifier` that names a resolved
+/// top-level const into its literal value, everywhere in the AST. This
+/// mirrors the tree-walker's `Node::Identifier` eval arm, which checks
+/// `self.consts` *before* the local environment (RES-361) — so a const
+/// reference is inlined here unconditionally, without tracking local
+/// shadowing, to stay byte-for-byte consistent with that oracle.
+///
+/// Structural coverage follows the same partial-recursion shape as
+/// `devirtualize::rewrite_node`: every statement/expression kind that
+/// can plausibly carry a const reference in the differential corpus is
+/// handled explicitly; declaration-only forms (struct/enum/trait decls,
+/// `use`, etc.) that can never contain one pass through unchanged via
+/// the catch-all.
+fn inline_consts(node: &Node, resolved: &HashMap<String, Value>) -> Node {
+    match node {
+        Node::Identifier { name, span } => resolved
+            .get(name)
+            .and_then(|v| const_value_to_literal(v, *span))
+            .unwrap_or_else(|| node.clone()),
+        Node::Program(stmts) => Node::Program(
+            stmts
+                .iter()
+                .map(|s| crate::span::Spanned::new(inline_consts(&s.node, resolved), s.span))
+                .collect(),
+        ),
+        Node::Function {
+            name,
+            parameters,
+            defaults,
+            body,
+            requires,
+            ensures,
+            return_type,
+            span,
+            pure,
+            effects,
+            type_params,
+            type_param_bounds,
+            fails,
+            recovers_to,
+            is_pub,
+        } => Node::Function {
+            name: name.clone(),
+            parameters: parameters.clone(),
+            defaults: defaults.clone(),
+            body: Box::new(inline_consts(body, resolved)),
+            requires: requires
+                .iter()
+                .map(|r| inline_consts(r, resolved))
+                .collect(),
+            ensures: ensures.iter().map(|e| inline_consts(e, resolved)).collect(),
+            return_type: return_type.clone(),
+            span: *span,
+            pure: *pure,
+            effects: *effects,
+            type_params: type_params.clone(),
+            type_param_bounds: type_param_bounds.clone(),
+            fails: fails.clone(),
+            recovers_to: recovers_to
+                .as_ref()
+                .map(|r| Box::new(inline_consts(r, resolved))),
+            is_pub: *is_pub,
+        },
+        Node::Block { stmts, span } => Node::Block {
+            stmts: stmts.iter().map(|s| inline_consts(s, resolved)).collect(),
+            span: *span,
+        },
+        Node::LetStatement {
+            name,
+            value,
+            type_annot,
+            span,
+        } => Node::LetStatement {
+            name: name.clone(),
+            value: Box::new(inline_consts(value, resolved)),
+            type_annot: type_annot.clone(),
+            span: *span,
+        },
+        Node::ExpressionStatement { expr, span } => Node::ExpressionStatement {
+            expr: Box::new(inline_consts(expr, resolved)),
+            span: *span,
+        },
+        Node::ReturnStatement { value, span } => Node::ReturnStatement {
+            value: value.as_ref().map(|v| Box::new(inline_consts(v, resolved))),
+            span: *span,
+        },
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            span,
+        } => Node::IfStatement {
+            condition: Box::new(inline_consts(condition, resolved)),
+            consequence: Box::new(inline_consts(consequence, resolved)),
+            alternative: alternative
+                .as_ref()
+                .map(|a| Box::new(inline_consts(a, resolved))),
+            span: *span,
+        },
+        Node::WhileStatement {
+            condition,
+            body,
+            invariants,
+            span,
+            label,
+        } => Node::WhileStatement {
+            condition: Box::new(inline_consts(condition, resolved)),
+            body: Box::new(inline_consts(body, resolved)),
+            invariants: invariants
+                .iter()
+                .map(|i| inline_consts(i, resolved))
+                .collect(),
+            span: *span,
+            label: label.clone(),
+        },
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            invariants,
+            span,
+            label,
+        } => Node::ForInStatement {
+            name: name.clone(),
+            iterable: Box::new(inline_consts(iterable, resolved)),
+            body: Box::new(inline_consts(body, resolved)),
+            invariants: invariants
+                .iter()
+                .map(|i| inline_consts(i, resolved))
+                .collect(),
+            span: *span,
+            label: label.clone(),
+        },
+        Node::Assignment { name, value, span } => Node::Assignment {
+            name: name.clone(),
+            value: Box::new(inline_consts(value, resolved)),
+            span: *span,
+        },
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            span,
+        } => Node::InfixExpression {
+            left: Box::new(inline_consts(left, resolved)),
+            operator,
+            right: Box::new(inline_consts(right, resolved)),
+            span: *span,
+        },
+        Node::PrefixExpression {
+            operator,
+            right,
+            span,
+        } => Node::PrefixExpression {
+            operator,
+            right: Box::new(inline_consts(right, resolved)),
+            span: *span,
+        },
+        Node::CallExpression {
+            function,
+            arguments,
+            span,
+        } => Node::CallExpression {
+            function: Box::new(inline_consts(function, resolved)),
+            arguments: arguments
+                .iter()
+                .map(|a| inline_consts(a, resolved))
+                .collect(),
+            span: *span,
+        },
+        Node::ArrayLiteral { items, span } => Node::ArrayLiteral {
+            items: items.iter().map(|i| inline_consts(i, resolved)).collect(),
+            span: *span,
+        },
+        Node::TupleLiteral { items, span } => Node::TupleLiteral {
+            items: items.iter().map(|i| inline_consts(i, resolved)).collect(),
+            span: *span,
+        },
+        Node::IndexExpression {
+            target,
+            index,
+            span,
+        } => Node::IndexExpression {
+            target: Box::new(inline_consts(target, resolved)),
+            index: Box::new(inline_consts(index, resolved)),
+            span: *span,
+        },
+        Node::FieldAccess {
+            target,
+            field,
+            span,
+        } => Node::FieldAccess {
+            target: Box::new(inline_consts(target, resolved)),
+            field: field.clone(),
+            span: *span,
+        },
+        Node::StructLiteral {
+            name,
+            fields,
+            base,
+            span,
+        } => Node::StructLiteral {
+            name: name.clone(),
+            fields: fields
+                .iter()
+                .map(|(k, v)| (k.clone(), inline_consts(v, resolved)))
+                .collect(),
+            base: base.as_ref().map(|b| Box::new(inline_consts(b, resolved))),
+            span: *span,
+        },
+        Node::ImplBlock {
+            trait_name,
+            struct_name,
+            methods,
+            span,
+            associated_type_impls,
+        } => Node::ImplBlock {
+            trait_name: trait_name.clone(),
+            struct_name: struct_name.clone(),
+            methods: methods.iter().map(|m| inline_consts(m, resolved)).collect(),
+            span: *span,
+            associated_type_impls: associated_type_impls.clone(),
+        },
+        Node::Match {
+            scrutinee,
+            arms,
+            span,
+        } => Node::Match {
+            scrutinee: Box::new(inline_consts(scrutinee, resolved)),
+            arms: arms
+                .iter()
+                .map(|(pat, guard, body)| {
+                    (
+                        pat.clone(),
+                        guard.as_ref().map(|g| inline_consts(g, resolved)),
+                        inline_consts(body, resolved),
+                    )
+                })
+                .collect(),
+            span: *span,
+        },
+        other => other.clone(),
+    }
 }
 
 /// RES-3914: compile `name = value;`, shared by `compile_stmt` (main
