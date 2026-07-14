@@ -16,8 +16,18 @@ cargo-fuzz = true
 # enabled compiler. Enable with:
 #
 #   cargo +nightly fuzz run jit --features jit
+#
+# RES-4039 (C-E6): opt-in Z3-translation fuzz target. Same shape as
+# `jit` above — the `z3_translate` harness shells out to a `rz`
+# binary that must itself be built with `--features z3`, so gating
+# the `[[bin]]` behind the fuzz crate's own `z3` feature keeps the
+# default fuzz build from advertising a target that only exercises
+# `verifier_z3` code against a z3-enabled compiler. Enable with:
+#
+#   cargo +nightly fuzz run z3_translate --features z3
 default = []
 jit = []
+z3 = []
 
 [dependencies]
 # RES-201: `libfuzzer-sys` wraps libFuzzer so we can write the
@@ -75,3 +85,17 @@ test = false
 doc = false
 bench = false
 required-features = ["jit"]
+
+# RES-4039 (C-E6): Z3-translation-layer fuzz target. Routes fuzzed /
+# seeded contract source through the typechecker on a `--features z3`
+# `rz` build, so `requires`/`ensures`/`#[noninterference(...)]`/region-
+# disjointness obligations reach `verifier_z3`'s `prove_*` entry
+# points for real. Gated on the fuzz crate's own `z3` feature, same
+# reasoning as `jit` above.
+[[bin]]
+name = "z3_translate"
+path = "fuzz_targets/z3_translate.rs"
+test = false
+doc = false
+bench = false
+required-features = ["z3"]
