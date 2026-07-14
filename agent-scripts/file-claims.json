@@ -92,14 +92,6 @@
       "branch": "res-4014-z3-overflow",
       "claimed_at": "2026-07-14T04:21:41Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-4024-vm-unsafe-block",
-      "claimed_at": "2026-07-14T06:30:44Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-4024-vm-unsafe-block",
-      "claimed_at": "2026-07-14T06:30:44Z"
-    },
     "resilient/src/contract_certificate.rs": {
       "branch": "res-4028-cert-hardening",
       "claimed_at": "2026-07-14T06:13:56Z"
@@ -119,14 +111,6 @@
     "docs/HOWTO_PROVABLY_CORRECT_AI_CODE.md": {
       "branch": "res-4028-cert-hardening",
       "claimed_at": "2026-07-14T06:13:56Z"
-    },
-    "resilient/tests/it/conformance.rs": {
-      "branch": "res-4024-vm-unsafe-block",
-      "claimed_at": "2026-07-14T06:30:44Z"
-    },
-    "resilient/tests/it/differential.rs": {
-      "branch": "res-4024-vm-unsafe-block",
-      "claimed_at": "2026-07-14T06:30:47Z"
     },
     "resilient/src/lib.rs": {
       "branch": "res-4032-fmt-check",
