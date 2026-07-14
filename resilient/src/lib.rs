@@ -30299,10 +30299,9 @@ fn check_vibe_gate(
     if passed { 0 } else { 2 }
 }
 
-/// RES-4019 (B-E4): compile-and-run `program` on the bytecode VM,
-/// print the result the same way `--vm` always has, and write the
-/// incremental-compile cache entry on success. Shared by the `--vm`
-/// dispatch path and by `--jit`'s fallback wrapper — the latter
+/// RES-4019 (B-E4): compile-and-run `program` on the bytecode VM and
+/// write the incremental-compile cache entry on success. Shared by the
+/// `--vm` dispatch path and by `--jit`'s fallback wrapper — the latter
 /// retries here whenever `JitError::is_precompile()` reports the JIT
 /// bailed out before any native code executed, so this must stay
 /// byte-for-byte the same VM invocation `--vm` uses directly.
@@ -30315,9 +30314,7 @@ fn run_via_vm(
     source_hash: &str,
 ) -> RResult<()> {
     // RES-076 + RES-081: bytecode VM path. Compile the AST into
-    // a Program (main chunk + function table), run it, print the
-    // resulting value (mirroring the tree walker's behavior for
-    // non-Void results).
+    // a Program (main chunk + function table) and run it.
     // RES-405 PR 3: lower generic functions to monomorphic specializations
     // before handing the AST to the bytecode compiler.
     let program = monomorph::lower(program);
@@ -30325,7 +30322,12 @@ fn run_via_vm(
     // monomorphization so specialized clones get direct-call rewrites too.
     let program = devirtualize::lower(&program);
     let prog = compiler::compile(&program).map_err(|e| format!("VM compile error: {}", e))?;
-    let result = vm::run(&prog).map_err(|e| {
+    // RES-3991: the trailing top-level expression's value is intentionally
+    // discarded here, matching the tree-walker (the differential oracle),
+    // which never auto-prints `interpreter.eval(&program)`'s Ok value.
+    // Printing it here caused a spurious extra output line on every
+    // program whose last top-level statement was a non-Void expression.
+    vm::run(&prog).map_err(|e| {
         // RES-095: mirror the typechecker's `<file>:<line>:` shape
         // so VM runtime errors are editor-clickable when the
         // wrapper carries a source line. Other variants fall back
@@ -30350,9 +30352,6 @@ fn run_via_vm(
             format!("VM runtime error: {}", e)
         }
     })?;
-    if !matches!(result, Value::Void) {
-        println!("{}", result);
-    }
     // RES-355: write cache entry on VM success.
     if !no_cache {
         cache::write_entry(cache_dir, source_hash);
