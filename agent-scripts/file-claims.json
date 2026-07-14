@@ -64,14 +64,6 @@
       "branch": "res-3510-stability-failure-module-design",
       "claimed_at": "2026-07-14T01:47:27Z"
     },
-    ".github/workflows/fuzz.yml": {
-      "branch": "res-fe4-fuzz-perf-ci",
-      "claimed_at": "2026-07-14T02:55:50Z"
-    },
-    ".github/workflows/perf_gate.yml": {
-      "branch": "res-fe4-fuzz-perf-ci",
-      "claimed_at": "2026-07-14T02:55:50Z"
-    },
     "benchmarks/baseline/extended.json": {
       "branch": "res-fe4-perf-baseline-fix",
       "claimed_at": "2026-07-14T03:07:13Z"
@@ -120,21 +112,13 @@
       "branch": "res-3987-runtime-vm-skeleton",
       "claimed_at": "2026-07-14T06:31:43Z"
     },
-    "resilient-runtime/src/vm.rs": {
-      "branch": "res-3987-runtime-bytecode-serde",
-      "claimed_at": "2026-07-14T07:16:29Z"
-    },
     "docs/EMBEDDED_PIPELINE.md": {
       "branch": "res-3987-rz-build-subcommand",
       "claimed_at": "2026-07-14T07:45:06Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3993-vm-unsupported-constructs",
-      "claimed_at": "2026-07-14T08:04:14Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-3993-vm-unsupported-constructs",
-      "claimed_at": "2026-07-14T08:04:14Z"
+    "resilient-runtime/src/vm.rs": {
+      "branch": "res-3987-runtime-loader",
+      "claimed_at": "2026-07-14T08:25:39Z"
     }
   }
 }
