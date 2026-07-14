@@ -341,13 +341,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // now fixed) — this is what's left once that fix exposed the real,
     // separate root cause.
     "res1111_block_scope.rz",
-    // RES-3998: VM equality (`==`) silently evaluates to `false` for equal Option /
-    // Result / Set values (no error — the if/else just takes the wrong
-    // branch), so the expected output line is silently missing.
-    "char_equality_in_compounds.rz",
-    "compound_equality.rz",
-    "option_equality.rz",
-    "result_equality.rz",
 ];
 
 /// Every `examples/*.rz` file, sorted, read fresh from disk each run so
@@ -1280,5 +1273,98 @@ fn interpreter_and_vm_agree_on_discarded_statement_expression_values() {
         "--vm must print 10 (amount * 2), not a value contaminated by a \
          discarded statement-expression's leaked return value: {:?}",
         vm.stdout
+    );
+}
+
+/// RES-3998: `==` / `!=` on `Option`/`Result`/`Set` values must agree
+/// between backends. `vm_values_eq` had no arms for these three `Value`
+/// variants, so they fell through to the catch-all `_ => false` — not an
+/// error, just the wrong branch of the `if`/`else` silently taken. Unlike
+/// RES-3891 (cross-*kind* comparisons, which must both error) this is a
+/// same-kind comparison that must both succeed and *agree on the boolean*,
+/// so every case here checks both the `true` and `false` side of `==`
+/// and `!=` to catch a fix that only patches one direction.
+#[test]
+fn interpreter_and_vm_agree_on_option_result_set_equality() {
+    let programs = [
+        (
+            "option_some_eq_true",
+            "if Some(5) == Some(5) { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "option_some_eq_false",
+            "if Some(5) == Some(6) { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "option_none_eq_true",
+            "if None == None { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "option_some_neq_none",
+            "if Some(5) != None { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+        (
+            "option_some_neq_true",
+            "if Some(5) != Some(6) { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+        (
+            "option_some_neq_false",
+            "if Some(5) != Some(5) { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+        (
+            "result_ok_eq_true",
+            "if Ok(5) == Ok(5) { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "result_ok_eq_false",
+            "if Ok(5) == Ok(6) { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "result_err_eq_true",
+            "if Err(\"fail\") == Err(\"fail\") { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "result_ok_neq_err",
+            "if Ok(5) != Err(\"fail\") { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+        (
+            "result_ok_neq_true",
+            "if Ok(5) != Ok(6) { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+        (
+            "result_ok_neq_false",
+            "if Ok(5) != Ok(5) { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+        (
+            "set_eq_true",
+            "let s1 = #{1, 2, 3}; let s2 = #{1, 2, 3}; if s1 == s2 { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "set_eq_false",
+            "let s1 = #{1, 2, 3}; let s2 = #{1, 2, 4}; if s1 == s2 { println(\"eq\"); } else { println(\"ne\"); }",
+        ),
+        (
+            "set_neq_true",
+            "let s1 = #{1, 2, 3}; let s2 = #{1, 2, 4}; if s1 != s2 { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+        (
+            "set_neq_false",
+            "let s1 = #{1, 2, 3}; let s2 = #{1, 2, 3}; if s1 != s2 { println(\"ne\"); } else { println(\"eq\"); }",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, expr) in programs {
+        let src = format!("fn main() {{ {expr} }} main();");
+        let interp = run_src(&src, tag, false);
+        let vm = run_src(&src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} Option/Result/Set equality case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
     );
 }

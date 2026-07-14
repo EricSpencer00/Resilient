@@ -1761,6 +1761,31 @@ fn vm_values_eq(a: &Value, b: &Value) -> bool {
                     .iter()
                     .all(|(k, lv)| rm.get(k).is_some_and(|rv| vm_values_eq(lv, rv)))
         }
+        // RES-3998: Set equality — mirrors the interpreter's `values_strict_eq`
+        // `Value::Set` arm. `MapKey` is `Eq`/`Hash`, so `HashSet::eq` (set
+        // membership, order-independent) is exactly what the interpreter does.
+        (Value::Set(ls), Value::Set(rs)) => ls == rs,
+        // RES-3998: Option equality — mirrors the interpreter's recursive
+        // `Value::Option` arm (RES-2723). Without this, `Some(5) == Some(5)`
+        // and `None == None` fell through to `_ => false` under `--vm`.
+        (Value::Option(l), Value::Option(r)) => match (l.as_deref(), r.as_deref()) {
+            (None, None) => true,
+            (Some(lv), Some(rv)) => vm_values_eq(lv, rv),
+            _ => false,
+        },
+        // RES-3998: Result equality — mirrors the interpreter's recursive
+        // `Value::Result` arm (RES-2726). `Ok(x) == Ok(y)` iff `x == y`;
+        // an `ok` mismatch (Ok vs Err) is unequal.
+        (
+            Value::Result {
+                ok: lok,
+                payload: lp,
+            },
+            Value::Result {
+                ok: rok,
+                payload: rp,
+            },
+        ) => lok == rok && vm_values_eq(lp, rp),
         // RES-3916: enum-variant equality — same type, same variant, same
         // payload — mirroring the interpreter's `values_strict_eq`
         // EnumVariant arm. Without this, two equal variants (e.g. bare
