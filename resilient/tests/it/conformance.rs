@@ -133,15 +133,16 @@ fn normalize(s: &str) -> String {
 /// Stable list. Each stem must have a sibling `.rz` and `.expected.txt`
 /// under `tests/conformance/`.
 ///
-/// Deliberately narrow for this scaffold PR — see `#3983` for the
-/// tracking issue that absorbs the ~69-issue per-feature conformance
-/// cluster (RES-3387–3483 and friends) as follow-up cases grow this
-/// list toward full Stable-surface coverage. Left out of this first
-/// slice: the volatile-MMIO wrapper block keyword (see STABILITY.md's
-/// bullet on that gated block form), `#[interrupt(...)]`, region
-/// annotations, and region-polymorphic functions — those need
-/// hardware-shaped harnesses (or at least a `resilient-runtime-cortex-m-demo`-
-/// style host stub) that's a separate follow-up, not a `.rz` + `--vm` case.
+/// See `#3983` for the tracking issue that absorbs the ~69-issue
+/// per-feature conformance cluster (RES-3387–3483 and friends) as
+/// follow-up cases grow this list toward full Stable-surface coverage.
+/// The MMIO-wrapper block keyword, region annotations, and
+/// region-polymorphic functions are covered below (RES-4023 host-tested
+/// them — they need no hardware harness). The one Stable-surface bullet
+/// still uncovered was `#[interrupt(...)]`; that attribute is not
+/// implemented (the parser rejects it) and was de-listed from Stable to
+/// "Planned" in STABILITY.md, tracked by RES-4025 — so there is nothing
+/// to pin a conformance case to until it lands.
 const CASES: &[&str] = &[
     // Stable: "Int (i64)" primitive type + arithmetic/comparison operators.
     "int_arithmetic",

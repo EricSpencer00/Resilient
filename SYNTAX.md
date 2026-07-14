@@ -1232,20 +1232,28 @@ Resilient provides `unsafe { ... }` blocks as the required wrapper for volatile 
 
 The eight volatile intrinsics — `volatile_read_u8`, `volatile_read_u16`, `volatile_read_u32`, `volatile_read_u64`, `volatile_write_u8`, `volatile_write_u16`, `volatile_write_u32`, `volatile_write_u64` — accept an address (as `int`, i.e., i64) and a value (also `int`). The runtime checks that the address fits in `usize` before the access. Inside `unsafe`, formal contracts (`@requires` / `@ensures` annotations) are inert — the compiler ignores them, treating the code as trusted by virtue of being explicitly marked `unsafe`. The programmer asserts correctness by writing `unsafe`; Z3 does not reason over unsafe blocks.
 
-The `#[interrupt(name = "STRING")]` attribute registers a zero-parameter, unit-return function as an interrupt service routine (ISR) for a named interrupt vector. The compiler lowers this to an external symbol named `__resilient_isr_<NAME>` marked `extern "C"` and `no_mangle`, which the target's runtime crate (e.g., `resilient-runtime-cortex-m-demo`) links to a vector table entry via weak alias. ISR functions carry an implicit `isr` effect — calling them from non-ISR context is a compile-time error. Only the `name` attribute key is supported in V1; other keys are a compile-time error.
+> **Status: planned, not yet implemented (RES-4025).** The `#[interrupt]`
+> attribute described below is the *intended* design. The compiler does not
+> accept it today — the parser rejects `#[interrupt]` (only `#[cfg(...)]` is
+> recognized), and no ISR lowering or vector table exists. See the "Planned
+> (not yet implemented)" section of [STABILITY.md](STABILITY.md). The example
+> below will not compile until the feature lands.
+
+The planned `#[interrupt(name = "STRING")]` attribute registers a zero-parameter, unit-return function as an interrupt service routine (ISR) for a named interrupt vector. The compiler is intended to lower this to an external symbol named `__resilient_isr_<NAME>` marked `extern "C"` and `no_mangle`, which the target's runtime crate (e.g., `resilient-runtime-cortex-m-demo`) links to a vector table entry via weak alias. ISR functions would carry an implicit `isr` effect — calling them from non-ISR context would be a compile-time error. Only the `name` attribute key is planned for V1; other keys would be a compile-time error.
 
 ```resilient
 unsafe fn write_led_on() {
     volatile_write_u32(0x4001_0C14, 1);
 }
 
+// Planned syntax — does not compile yet (RES-4025):
 #[interrupt(name = "SysTick")]
 fn tick_handler() {
     unsafe { volatile_write_u32(0x4001_0C14, 0); }
 }
 ```
 
-Use `unsafe` and volatile intrinsics when you need to directly manipulate hardware registers (GPIO, timers, peripherals) on an embedded target. The `#[interrupt]` attribute is the entry point for ISR handlers that respond to hardware events; it ensures the handler is discoverable by the runtime's vector table without requiring manual symbol registration.
+Use `unsafe` and volatile intrinsics when you need to directly manipulate hardware registers (GPIO, timers, peripherals) on an embedded target — these are implemented and stable today. The `#[interrupt]` attribute is the planned entry point for ISR handlers that respond to hardware events; once implemented, it will make the handler discoverable by the runtime's vector table without requiring manual symbol registration.
 
 ## Region Annotations and the Borrow Checker
 
