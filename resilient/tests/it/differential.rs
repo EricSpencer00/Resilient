@@ -352,16 +352,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "assume_literal_false.rz",
     "assume_violated.rz",
     "recovers_to_fail.rz",
-    // RES-4005: VM bytecode compiler leaks an inner-block `let` shadowing
-    // binding into the outer scope — `compile_control_flow_in_fn`'s
-    // `Node::Block` arm shares the same `locals` map with the enclosing
-    // scope instead of cloning it (unlike `compile_block_as_expr`), so a
-    // shadowing `let x = ...` inside an `if`/`while`/`for` body permanently
-    // overwrites the outer `x` binding for the rest of compilation.
-    // Previously miscategorized under RES-3997 (a distinct stack-leak bug,
-    // now fixed) — this is what's left once that fix exposed the real,
-    // separate root cause.
-    "res1111_block_scope.rz",
 ];
 
 /// Every `examples/*.rz` file, sorted, read fresh from disk each run so
@@ -1459,6 +1449,78 @@ fn interpreter_and_vm_agree_on_option_result_set_equality() {
     assert!(
         failures.is_empty(),
         "{} Option/Result/Set equality case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
+
+/// RES-4005: block-scope `let` shadowing must be confined to the block
+/// on both backends. `compile_control_flow_in_fn`'s (and its top-level
+/// twin `compile_control_flow`'s) `Node::Block` arm used to share the
+/// caller's `locals` map directly instead of cloning it the way
+/// `compile_block_as_expr` does — so a shadowing `let x = ...` inside an
+/// `if` / `while` / `for` body permanently overwrote the outer `x`
+/// binding's slot for the rest of compilation under `--vm`, while the
+/// interpreter (the oracle) correctly restored the outer binding once
+/// the block exited. Covers: simple `if` shadowing (function body and
+/// top-level/script scope), `while`-body shadowing, `for`-body
+/// shadowing, and multi-level nested-block shadowing.
+#[test]
+fn interpreter_and_vm_agree_on_res4005_block_scope_shadowing() {
+    let programs = [
+        (
+            "if_shadow_in_fn",
+            "fn main() { let x = 1; if true { let x = 99; println(x); } println(x); } main();",
+        ),
+        (
+            "if_shadow_top_level",
+            "let x = 1; if true { let x = 99; println(x); } println(x);",
+        ),
+        (
+            "if_else_shadow_both_branches",
+            "fn main() { let x = 1; if false { let x = 2; println(x); } else { let x = 3; println(x); } println(x); } main();",
+        ),
+        (
+            "while_body_shadow",
+            "fn main() { let mut i = 0; let x = 1; while i < 3 { let x = i + 100; println(x); i = i + 1; } println(x); } main();",
+        ),
+        (
+            "for_body_shadow",
+            "fn main() { let x = 1; let arr = [10, 20, 30]; for v in arr { let x = v + 1000; println(x); } println(x); } main();",
+        ),
+        (
+            "nested_block_shadow_three_levels",
+            "fn main() { let x = 1; if true { let x = 2; if true { let x = 3; println(x); } println(x); } println(x); } main();",
+        ),
+        (
+            "shadow_then_reassign_outer_unaffected",
+            "fn main() { let x = 1; let mut counter = 0; if true { let x = 2; counter = counter + x; } println(x); println(counter); } main();",
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    // RES-3990 (B-E2): also pin the *value type* of the surviving outer
+    // binding after a shadowing block exits — a byte-identical `println`
+    // could still mask a type-tag divergence on the restored slot. The
+    // inner shadowing `let` binds a `string`; if the outer `int` slot
+    // were clobbered (the RES-4005 bug), `type_of(x)` after the block
+    // would report `"string"` instead of `"int"`.
+    let type_program =
+        "fn main() { let x = 1; if true { let x = \"shadow\"; } println(type_of(x)); } main();";
+    let type_interp = run_src(type_program, "res4005_outer_type_interp", false);
+    let type_vm = run_src(type_program, "res4005_outer_type_vm", true);
+    if let Err(diff) = compare_outputs("interpreter", &type_interp, "vm", &type_vm) {
+        failures.push(format!("\n--- outer_binding_type_after_shadow ---\n{diff}"));
+    }
+    assert!(
+        failures.is_empty(),
+        "{} RES-4005 block-scope shadowing case(s) diverged between backends:{}",
         failures.len(),
         failures.join("")
     );
