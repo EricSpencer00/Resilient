@@ -1,0 +1,36 @@
+[package]
+name = "resilient-runtime-loader-demo"
+version = "0.1.0"
+edition = "2024"
+description = "RES-3987 (D-E1): thin no_std loader binary — embeds a committed `.rzbc` blob, decodes + runs it via `resilient_runtime::vm::loader::load_and_run`, and reports the result over semihosting. The QEMU-runnable target that #3987's item 4 (Cortex-M QEMU CI job) exercises."
+authors = ["Eric Spencer"]
+
+[workspace]
+
+# Binary target: the default `src/main.rs` entry point.
+[[bin]]
+name = "resilient-runtime-loader-demo"
+path = "src/main.rs"
+
+# Mirrors resilient-runtime-cortex-m-demo's release profile: this is
+# a size- and correctness-sensitive embedded binary, not a
+# development build.
+[profile.release]
+opt-level = "z"
+panic = "abort"
+lto = true
+codegen-units = 1
+
+# Host-target deps intentionally empty — this crate is
+# thumbv7em-none-eabihf-only, pinned via `.cargo/config.toml`.
+[target.thumbv7em-none-eabihf.dependencies]
+# `critical-section-single-core` mirrors resilient-runtime-cortex-m-demo:
+# a simple cortex-m critical-section impl for a single-core M4F part.
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+# Reports the VM result via `hprintln!` + `debug::exit(..)` — the
+# exact "no serial-port scraping needed" contract
+# `docs/EMBEDDED_PIPELINE.md` section 4 describes for the QEMU CI
+# job this binary is built for.
+cortex-m-semihosting = "0.5"
+resilient-runtime = { path = "../resilient-runtime", features = ["vm"] }

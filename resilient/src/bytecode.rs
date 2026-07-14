@@ -244,6 +244,15 @@ pub enum Op {
     /// a preceding `Const` instruction; the JumpIfTrue before it skips
     /// the fail sequence entirely when the condition holds.
     AssertFail,
+    /// RES-3996: pop a `Value::String` message from the operand stack and
+    /// return `VmError::AssumeViolated(msg)`. Emitted by the bytecode
+    /// compiler for `assume(cond[, msg]);` when the condition evaluates to
+    /// false at runtime — same lowering shape as `AssertFail` (a preceding
+    /// `Const` pushes the message, guarded by a `JumpIfTrue` that skips the
+    /// fail sequence when the condition holds), kept as a distinct opcode
+    /// so the runtime diagnostic says "ASSUME VIOLATED" rather than
+    /// "ASSERTION ERROR", matching the tree-walker's `eval_assume`.
+    AssumeFail,
     /// RES-3894: pop TOS and require it to be a `Value::Bool`, pushing it back
     /// unchanged. Returns `VmError::TypeMismatch` otherwise. Emitted by the
     /// bytecode compiler for each operand of `&&` / `||` so the VM rejects
@@ -288,6 +297,19 @@ pub enum Op {
     /// RES-2544: exit a try-catch block (normal completion of try body).
     /// Pops the topmost try-handler frame from the handler stack.
     ExitTry,
+    /// RES-3995: enter a `live { ... }` retry block. `handler_table`
+    /// indexes the chunk's `live_handlers` side table, which carries
+    /// the retry budget, backoff policy, and timeout for this block
+    /// plus the `body_start_pc` to jump back to on a retry. The Match
+    /// dispatch engine (`vm::run_inner`) implements the actual
+    /// retry-loop semantics by recursively re-running the body between
+    /// this op and the matching `ExitLive`; the Direct (table-dispatch)
+    /// engine does not implement live blocks yet (RES-3995 follow-up)
+    /// and surfaces a clean `VmError::Unsupported` instead.
+    EnterLive(u16),
+    /// RES-3995: exit a `live { ... }` block (normal completion —
+    /// the body ran and any invariants held on this attempt).
+    ExitLive,
     /// RES-3997: pop TOS and discard it. Emitted after any
     /// expression-statement whose value is not bound (`let`), returned,
     /// or consumed as an operand — e.g. `lock(mutex_a);` as a bare
@@ -297,6 +319,50 @@ pub enum Op {
     /// pops, producing a deterministically-wrong (but not erroring)
     /// value instead of a clean divergence.
     Pop,
+    /// RES-4046: push `Bool(true)` if the CURRENT function's
+    /// function-scoped `static let` slot `idx` has already been
+    /// initialized on some earlier call, else push `Bool(false)` and
+    /// mark it initialized right away (before the guarded initializer
+    /// below runs) — mirrors the tree-walking interpreter's
+    /// `self.statics` presence check in `eval(Node::StaticLet)`, but
+    /// marks eagerly rather than after evaluating the initializer so a
+    /// self-referential initializer can't infinitely recurse. Compiled
+    /// as: `PushStaticInitialized(idx); JumpIfTrue(skip); <init-expr>;
+    /// StoreStatic(idx); skip:`. Persists in the VM's per-function
+    /// statics table, which — unlike `locals` — lives for the whole
+    /// program run rather than being reset every call.
+    PushStaticInitialized(u16),
+    /// RES-4046: pop TOS and store into the CURRENT function's
+    /// persistent static-storage slot `idx`. Unlike `StoreLocal`, this
+    /// value survives across separate calls to the function.
+    StoreStatic(u16),
+    /// RES-4046: push the CURRENT function's persistent static-storage
+    /// slot `idx` onto the operand stack. Companion to `StoreStatic`;
+    /// the compiler only ever emits a bare `LoadStatic` for reads/
+    /// writes of a `static let` binding, which always run after that
+    /// declaration's guarded init sequence has executed at least once
+    /// (this call or an earlier one).
+    LoadStatic(u16),
+    /// RES-4041: pop TOS (the function's return value, bound to the
+    /// synthesized postcheck function's `result` parameter — see
+    /// `compiler::build_postcheck_function`) and raise a
+    /// `VmError::ContractViolation` whose message matches the
+    /// tree-walking interpreter's `ensures`/`recovers_to` diagnostic
+    /// (`lib.rs`'s post-body check in the `Value::Function` call arm):
+    /// `Contract violation in fn {name}: ensures {clause} failed
+    /// (result = {value})` for `is_recovers_to == false`, or the
+    /// `recovers_to ... final-state counterexample: result = {value}`
+    /// wording otherwise. `name_const`/`clause_const` index into the
+    /// chunk's constant pool (both `Value::String`, baked in at
+    /// compile time since the function name and clause text are
+    /// static). Guarded by a preceding `JumpIfTrue` that skips this
+    /// sequence when the clause holds — same shape as `AssertFail`/
+    /// `AssumeFail`.
+    ContractViolation {
+        name_const: u16,
+        clause_const: u16,
+        is_recovers_to: bool,
+    },
 }
 
 /// RES-2544: one catch arm in a try-catch handler table.
@@ -311,6 +377,34 @@ pub struct CatchArm {
 #[derive(Debug, Clone)]
 pub struct TryHandlerEntry {
     pub arms: Vec<CatchArm>,
+}
+
+/// RES-3995: `live { ... }` handler table entry. Stored in
+/// `Chunk::live_handlers` and referenced by `Op::EnterLive(idx)`.
+/// Every field is compile-time-known (parsed from the `live` clause),
+/// so a `Copy` struct is cheap to snapshot per retry attempt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveHandlerEntry {
+    /// PC of the first instruction of the block body — i.e. the PC
+    /// right after this `EnterLive`. Patched in once via
+    /// `Chunk::set_live_handler_body_start` right after the op is
+    /// emitted (mirrors `patch_try_handler`, but there's only ever one
+    /// "arm" to fill in for a live block).
+    pub body_start_pc: usize,
+    /// Total number of body attempts before the block gives up and
+    /// propagates the last error. Mirrors the tree-walker's
+    /// `DEFAULT_LIVE_MAX_RETRIES` / `retries(N)` semantics exactly:
+    /// exhaustion fires once the retry counter reaches this value.
+    pub max_retries: u32,
+    /// `live backoff(...) { }` policy, if any. `None` means zero-sleep
+    /// retries (the historical default).
+    pub backoff: Option<crate::BackoffConfig>,
+    /// Schedule shape for `backoff` (exponential vs linear). Only
+    /// meaningful when `backoff` is `Some`.
+    pub backoff_kind: crate::BackoffKind,
+    /// `live within <duration> { }` wall-clock budget in nanoseconds,
+    /// if any.
+    pub timeout_ns: Option<u64>,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
@@ -351,6 +445,8 @@ pub struct Chunk {
     pub(crate) string_idx: HashMap<String, u16>,
     /// RES-2544: try-catch handler table. `EnterTry(idx)` indexes this.
     pub try_handlers: Vec<TryHandlerEntry>,
+    /// RES-3995: live-block handler table. `EnterLive(idx)` indexes this.
+    pub live_handlers: Vec<LiveHandlerEntry>,
 }
 
 /// RES-081: a compiled function. Parameters occupy the first `arity`
@@ -371,6 +467,14 @@ pub struct Function {
     /// called inside a `try` block, the VM injects a checked failure
     /// for the first variant instead of running the body.
     pub fails: Box<[String]>,
+    /// RES-4041: index into `Program::functions` of the synthesized
+    /// postcondition-check function for this fn's `ensures`/
+    /// `recovers_to` clauses (see `compiler::build_postcheck_function`),
+    /// or `None` when the fn declares neither. `vm::run_dispatch_loop`
+    /// calls it automatically on every `Op::ReturnFromCall`, passing
+    /// this fn's own parameters plus the return value — exactly
+    /// mirroring the tree-walking interpreter's post-body check.
+    pub postcheck: Option<u16>,
 }
 
 /// RES-081: top-level compile output. `main` is the entrypoint
@@ -428,6 +532,7 @@ impl Chunk {
             void_idx: None,
             string_idx: HashMap::with_capacity(cap / 4),
             try_handlers: Vec::new(),
+            live_handlers: Vec::new(),
         }
     }
 
@@ -573,6 +678,25 @@ impl Chunk {
     /// has been compiled and its start PC is known.
     pub fn patch_try_handler(&mut self, table_idx: u16, arm_idx: usize, handler_pc: usize) {
         self.try_handlers[table_idx as usize].arms[arm_idx].handler_pc = handler_pc;
+    }
+
+    /// RES-3995: register a `live { ... }` handler table entry. Returns
+    /// the index for `Op::EnterLive(idx)`. `body_start_pc` is set to 0
+    /// initially and must be patched via `set_live_handler_body_start`
+    /// once the op has been emitted and the body's start PC is known.
+    pub fn add_live_handler(&mut self, entry: LiveHandlerEntry) -> Result<u16, CompileError> {
+        let idx = self.live_handlers.len();
+        if idx > u16::MAX as usize {
+            return Err(CompileError::InternalError("too many live blocks"));
+        }
+        self.live_handlers.push(entry);
+        Ok(idx as u16)
+    }
+
+    /// RES-3995: patch a live-block handler's `body_start_pc` after the
+    /// `EnterLive` op has been emitted.
+    pub fn set_live_handler_body_start(&mut self, table_idx: u16, body_start_pc: usize) {
+        self.live_handlers[table_idx as usize].body_start_pc = body_start_pc;
     }
 }
 

@@ -11,7 +11,7 @@
 
 #![allow(dead_code)]
 
-use crate::bytecode::{CatchArm, Chunk, CompileError, Function, Op, Program};
+use crate::bytecode::{CatchArm, Chunk, CompileError, Function, LiveHandlerEntry, Op, Program};
 use crate::{Node, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -94,25 +94,45 @@ const GLOBAL_FLAG: u16 = 0x8000;
 /// `StoreGlobal` already address one shared slot directly.
 const BOXED_FLAG: u16 = 0x4000;
 
-/// RES-3914: mask off both `GLOBAL_FLAG` and `BOXED_FLAG`, leaving the
-/// raw frame-relative (or main-frame) slot index.
+/// RES-4046: flag bit marking a slot as a function-scoped `static let`
+/// binding. Like `GLOBAL_FLAG`, this is encoded in the `locals` HashMap
+/// so ordinary identifier reads/writes resolve to `LoadStatic`/
+/// `StoreStatic` without threading a new parameter through the whole
+/// compiler. Backing storage is the VM's per-function statics table,
+/// keyed by the function's own chunk index, so the value persists
+/// across separate calls — unlike a plain local, which lives in the
+/// per-call locals slab and resets every call. Never combined with
+/// `BOXED_FLAG`: statics are never boxed, for the same reason globals
+/// aren't (see `BOXED_FLAG`'s doc comment) — `LoadStatic`/`StoreStatic`
+/// already address one persistent slot directly.
+const STATIC_FLAG: u16 = 0x2000;
+
+/// RES-3914 / RES-4046: mask off `GLOBAL_FLAG`, `BOXED_FLAG`, and
+/// `STATIC_FLAG`, leaving the raw frame-relative (or main-frame, or
+/// static-table) slot index.
 fn raw_slot(slot: u16) -> u16 {
-    slot & !(GLOBAL_FLAG | BOXED_FLAG)
+    slot & !(GLOBAL_FLAG | BOXED_FLAG | STATIC_FLAG)
 }
 
-/// Emit a load instruction for a slot that may be local or global.
+/// Emit a load instruction for a slot that may be local, global, or a
+/// function-scoped static.
 fn local_load_op(slot: u16) -> Op {
     if slot & GLOBAL_FLAG != 0 {
         Op::LoadGlobal(slot & !GLOBAL_FLAG)
+    } else if slot & STATIC_FLAG != 0 {
+        Op::LoadStatic(slot & !STATIC_FLAG)
     } else {
         Op::LoadLocal(slot)
     }
 }
 
-/// Emit a store instruction for a slot that may be local or global.
+/// Emit a store instruction for a slot that may be local, global, or a
+/// function-scoped static.
 fn local_store_op(slot: u16) -> Op {
     if slot & GLOBAL_FLAG != 0 {
         Op::StoreGlobal(slot & !GLOBAL_FLAG)
+    } else if slot & STATIC_FLAG != 0 {
+        Op::StoreStatic(slot & !STATIC_FLAG)
     } else {
         Op::StoreLocal(slot)
     }
@@ -423,6 +443,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         local_count: 0,
         upvalue_source_slots: Box::default(),
         fails: Box::default(),
+        postcheck: None,
     };
     for _ in 0..fn_count {
         functions.push(placeholder());
@@ -433,6 +454,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                                body: &Node,
                                fn_line: u32,
                                fails: Box<[String]>,
+                               ensures: &[Node],
+                               recovers_to: &Option<Box<Node>>,
                                functions: &mut Vec<Function>,
                                next_fn_idx: &mut u16|
      -> Result<(), CompileError> {
@@ -471,6 +494,23 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         crate::peephole::optimize(&mut chunk)
             .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
         crate::dce::eliminate(&mut chunk);
+        // RES-4041: synthesize the postcondition-check function (if any)
+        // *before* recording this fn's own entry — the postcheck may
+        // itself push nested functions onto `functions` (e.g. a clause
+        // calling another fn), and this fn's own slot (`top_idx`) is
+        // already reserved regardless of how many entries get appended
+        // after it.
+        let postcheck = build_postcheck_function(
+            name,
+            parameters,
+            ensures,
+            recovers_to,
+            &fn_index,
+            &ffi_index,
+            functions,
+            next_fn_idx,
+            fn_line,
+        )?;
         functions[top_idx] = Function {
             name: name.to_string(),
             arity,
@@ -478,6 +518,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             local_count: next_local,
             upvalue_source_slots: Box::default(),
             fails,
+            postcheck,
         };
         top_idx += 1;
         Ok(())
@@ -489,6 +530,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 parameters,
                 body,
                 fails,
+                ensures,
+                recovers_to,
                 ..
             } => {
                 compile_fn_body(
@@ -497,6 +540,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     body,
                     spanned.span.start.line as u32,
                     fails.clone().into_boxed_slice(),
+                    ensures,
+                    recovers_to,
                     &mut functions,
                     &mut next_fn_idx,
                 )?;
@@ -507,6 +552,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                         name,
                         parameters,
                         body,
+                        ensures,
+                        recovers_to,
                         ..
                     } = m
                     {
@@ -517,6 +564,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                             body,
                             line,
                             Box::default(),
+                            ensures,
+                            recovers_to,
                             &mut functions,
                             &mut next_fn_idx,
                         )?;
@@ -1237,11 +1286,15 @@ fn compile_stmt(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             ..
         } => compile_nested_fn(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             chunk,
             locals,
             next_local,
@@ -1301,11 +1354,25 @@ fn compile_stmt(
         Node::Const { .. } => Ok(()),
         // RES-2660: static_assert is evaluated at compile time. No-op in codegen.
         Node::StaticAssert { .. } => Ok(()),
-        // RES-139: `live { body }` — compile the body once.
-        // Retry / backoff / invariant semantics are verification-only and
-        // are not emitted in the bytecode backend.
-        Node::LiveBlock { body, .. } => compile_stmt(
+        // RES-3995: `live { body }` — full retry/backoff/invariant/timeout
+        // semantics, matching the tree-walker's `eval_live_block`. See
+        // `compile_live_block` for the bytecode shape and `vm::run_inner`
+        // for the retry-loop execution.
+        Node::LiveBlock {
             body,
+            invariants,
+            backoff,
+            backoff_kind,
+            timeout,
+            max_retries,
+            ..
+        } => compile_live_block(
+            body,
+            invariants,
+            backoff,
+            *backoff_kind,
+            timeout,
+            *max_retries,
             chunk,
             locals,
             next_local,
@@ -1315,6 +1382,7 @@ fn compile_stmt(
             next_fn_idx,
             line,
             loop_stack,
+            false,
         ),
         // RES-4024: the MMIO-wrapper block keyword lifts the typechecker's
         // capability gate on volatile MMIO intrinsics but is otherwise
@@ -1336,8 +1404,26 @@ fn compile_stmt(
             line,
             loop_stack,
         ),
-        // Verification-only constructs: emit nothing at runtime.
-        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // RES-3996: `assume(cond[, msg]);` halts at runtime like `assert`
+        // when the condition is false (see `compile_assume`). Previously
+        // grouped with the declaration-only no-op arm below, which
+        // silently dropped the runtime check under `--vm`.
+        Node::Assume {
+            condition, message, ..
+        } => compile_assume(
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // Verification-only construct: emit nothing at runtime.
+        Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
         // All type information is handled at parse/typecheck time.
         Node::EnumDecl { name, variants, .. } => {
@@ -1368,6 +1454,24 @@ fn compile_stmt(
             line,
             loop_stack,
             false,
+        ),
+        // RES-3993: `if let` / `while let` desugar to a bare `Node::Match`
+        // statement (see `compile_match_stmt`'s doc comment) — route it
+        // the same way `IfStatement`/`WhileStatement` are routed above.
+        Node::Match {
+            scrutinee, arms, ..
+        } => compile_match_stmt(
+            scrutinee,
+            arms,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
         ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -1474,6 +1578,105 @@ fn compile_try_catch(
     for jmp in end_jumps {
         chunk.patch_jump(jmp, end_pc)?;
     }
+    Ok(())
+}
+
+/// RES-3995: `live { ... }` / `live invariant EXPR { ... }` lowering.
+///
+/// Emits `EnterLive(handler_idx)`, then the body, then each invariant
+/// clause as an `assert`-shaped check (a false invariant fails exactly
+/// like a body-level error), then `ExitLive`. The retry/backoff/
+/// timeout/invariant *semantics* all live in `vm::run_inner`, which
+/// recursively re-runs the bytecode between `EnterLive` and `ExitLive`
+/// on any error until the block's retry budget is exhausted — mirrors
+/// the tree-walker's `eval_live_block` exactly (same retry-count
+/// arithmetic, same env-snapshot-and-restore-on-retry behavior). This
+/// function only emits the *static* bytecode shape; it does not know
+/// or care how many times the VM ends up executing it.
+#[allow(clippy::too_many_arguments)]
+fn compile_live_block(
+    body: &Node,
+    invariants: &[Node],
+    backoff: &Option<crate::BackoffConfig>,
+    backoff_kind: crate::BackoffKind,
+    timeout: &Option<Box<Node>>,
+    max_retries: Option<u32>,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    loop_stack: &mut Vec<LoopState>,
+    in_fn: bool,
+) -> Result<(), CompileError> {
+    // RES-142: unpack the `within <duration>` clause into a flat `u64`
+    // ns budget — mirrors the tree-walker's `Node::LiveBlock` eval arm.
+    let timeout_ns = timeout.as_ref().and_then(|n| match n.as_ref() {
+        Node::DurationLiteral { nanos, .. } => Some(*nanos),
+        _ => None,
+    });
+    let handler_idx = chunk.add_live_handler(LiveHandlerEntry {
+        body_start_pc: 0,
+        max_retries: max_retries.unwrap_or(crate::DEFAULT_LIVE_MAX_RETRIES),
+        backoff: *backoff,
+        backoff_kind,
+        timeout_ns,
+    })?;
+    let enter_pc = chunk.emit(Op::EnterLive(handler_idx), line);
+    chunk.set_live_handler_body_start(handler_idx, enter_pc + 1);
+
+    if in_fn {
+        compile_stmt_in_fn(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+    } else {
+        compile_stmt(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+    }
+
+    // RES-036: a failing invariant retries exactly like a body error —
+    // lower each clause as a plain assert positioned after the body,
+    // still between EnterLive/ExitLive so the retry-catch mechanism in
+    // the VM sees it the same way it sees any other runtime error.
+    for inv in invariants {
+        let inv_line = node_line(inv).unwrap_or(line);
+        compile_assert(
+            inv,
+            &None,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            inv_line,
+        )?;
+    }
+
+    chunk.emit(Op::ExitLive, line);
     Ok(())
 }
 
@@ -1592,6 +1795,76 @@ fn compile_assert(
     next_fn_idx: &mut u16,
     line: u32,
 ) -> Result<(), CompileError> {
+    compile_assert_like(
+        condition,
+        message,
+        Op::AssertFail,
+        "assertion failed",
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )
+}
+
+/// RES-3996: `assume(cond[, msg]);` — same runtime shape as `assert`
+/// (halt immediately when the condition is false, dead code after it
+/// never executes) but lowered to the dedicated `AssumeFail` opcode so
+/// the VM's diagnostic reads "ASSUME VIOLATED" like the tree-walker's
+/// `eval_assume`, instead of being silently dropped as a no-op (the
+/// bug this ticket fixes — see `UNSUPPORTED_BY_VM` in differential.rs).
+#[allow(clippy::too_many_arguments)]
+fn compile_assume(
+    condition: &Node,
+    message: &Option<Box<Node>>,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_assert_like(
+        condition,
+        message,
+        Op::AssumeFail,
+        "assumption failed",
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )
+}
+
+/// Shared lowering for `assert`/`assume`: evaluate `condition`, and if
+/// falsy, push the failure message and emit `fail_op` (which halts the
+/// VM unconditionally — see `dce.rs`'s terminator list). `default_msg`
+/// is pushed when no explicit message expression is given.
+#[allow(clippy::too_many_arguments)]
+fn compile_assert_like(
+    condition: &Node,
+    message: &Option<Box<Node>>,
+    fail_op: Op,
+    default_msg: &str,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
     compile_expr(
         condition,
         chunk,
@@ -1633,10 +1906,10 @@ fn compile_assert(
             }
         }
     } else {
-        let msg_idx = chunk.add_string_constant("assertion failed")?;
+        let msg_idx = chunk.add_string_constant(default_msg)?;
         chunk.emit(Op::Const(msg_idx), line);
     }
-    chunk.emit(Op::AssertFail, line);
+    chunk.emit(fail_op, line);
     let past_fail = chunk.code.len();
     chunk.patch_jump(jt, past_fail)?;
     Ok(())
@@ -1874,6 +2147,8 @@ fn compile_nested_fn(
     name: &str,
     parameters: &[(String, String)],
     body: &Node,
+    ensures: &[Node],
+    recovers_to: &Option<Box<Node>>,
     outer_chunk: &mut Chunk,
     outer_locals: &mut HashMap<String, u16>,
     outer_next_local: &mut u16,
@@ -1906,6 +2181,7 @@ fn compile_nested_fn(
         local_count: 0,
         upvalue_source_slots: Box::default(),
         fails: Box::default(),
+        postcheck: None,
     });
     let mut inner_fn_index = fn_index.clone();
     inner_fn_index.insert(name.to_string(), fn_idx);
@@ -1931,6 +2207,20 @@ fn compile_nested_fn(
     crate::peephole::optimize(&mut chunk)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
     crate::dce::eliminate(&mut chunk);
+    // RES-4041: see the matching comment in the top-level `compile_fn_body`
+    // closure — synthesize the postcheck fn (if any) before recording this
+    // fn's own entry.
+    let postcheck = build_postcheck_function(
+        name,
+        parameters,
+        ensures,
+        recovers_to,
+        &inner_fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
     fns[fn_idx as usize] = Function {
         name: name.to_string(),
         arity,
@@ -1938,6 +2228,7 @@ fn compile_nested_fn(
         local_count: next_local,
         upvalue_source_slots: Box::default(),
         fails: Box::default(),
+        postcheck,
     };
     outer_chunk.emit(
         Op::MakeClosure {
@@ -1953,6 +2244,166 @@ fn compile_nested_fn(
     *outer_next_local += 1;
     outer_locals.insert(name.to_string(), slot);
     outer_chunk.emit(Op::StoreLocal(slot), line);
+    Ok(())
+}
+
+/// RES-4041: synthesize a standalone bytecode `Function` that evaluates
+/// `name`'s `ensures`/`recovers_to` postconditions, given its own
+/// parameters plus the return value. `vm::run_dispatch_loop` calls the
+/// result automatically on every `Op::ReturnFromCall` for `name` (see
+/// the `Function::postcheck` doc comment in `bytecode.rs`) — mirroring
+/// the tree-walking interpreter's post-body check (`lib.rs`, the
+/// `ensures`/`recovers_to` block in the `Value::Function` call-
+/// evaluation arm): bind `result` to the return value, evaluate each
+/// `ensures` clause in declaration order, then the optional
+/// `recovers_to` clause, and raise a `Contract violation in fn {name}:
+/// ...` error on the first falsy one.
+///
+/// Returns `Ok(None)` when `name` declares neither clause — the common
+/// case, and free of any runtime cost.
+///
+/// Scope (RES-4041): a clause may reference `name`'s own parameters and
+/// `result` only — exactly what every `ensures`/`recovers_to` clause in
+/// `examples/*.rz` does. A clause referencing an outer `let`-bound
+/// local from the function body (not a parameter) fails to compile
+/// here with `CompileError::UnknownIdentifier` — a loud, honest
+/// compile-time failure rather than a silent runtime divergence from
+/// the interpreter. Full free-variable capture (mirroring
+/// `collect_free_vars`'s closure-upvalue handling) is a follow-up if
+/// that shape is ever exercised.
+#[allow(clippy::too_many_arguments)]
+fn build_postcheck_function(
+    name: &str,
+    parameters: &[(String, String)],
+    ensures: &[Node],
+    recovers_to: &Option<Box<Node>>,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<Option<u16>, CompileError> {
+    if ensures.is_empty() && recovers_to.is_none() {
+        return Ok(None);
+    }
+    if parameters.len() >= u8::MAX as usize {
+        return Err(CompileError::Unsupported("fn with >255 params"));
+    }
+    let arity = parameters.len() as u8 + 1;
+    let mut chunk = Chunk::with_capacity(32);
+    let mut locals: HashMap<String, u16> = HashMap::with_capacity(parameters.len() + 2);
+    let mut next_local: u16 = 0;
+    for (_type_name, pname) in parameters {
+        locals.insert(pname.clone(), next_local);
+        next_local += 1;
+    }
+    // RES-035/RES-392: `result` is bound alongside the parameters,
+    // exactly like the interpreter binds it into the same call
+    // environment the parameters already live in.
+    locals.insert("result".to_string(), next_local);
+    let result_slot = next_local;
+    next_local += 1;
+
+    let name_const = chunk.add_string_constant(name)?;
+    for clause in ensures {
+        compile_contract_clause(
+            clause,
+            false,
+            name_const,
+            &mut chunk,
+            &mut locals,
+            &mut next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+    }
+    if let Some(rec) = recovers_to {
+        compile_contract_clause(
+            rec,
+            true,
+            name_const,
+            &mut chunk,
+            &mut locals,
+            &mut next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+    }
+    // Every clause held — return the (unused) result value so this
+    // function's own `ReturnFromCall` has something to pop.
+    chunk.emit(Op::LoadLocal(result_slot), line);
+    chunk.emit(Op::ReturnFromCall, line);
+
+    crate::const_fold::optimize_if_enabled(&mut chunk)
+        .map_err(|_| CompileError::InternalError("constant folder failed"))?;
+    crate::peephole::optimize(&mut chunk)
+        .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
+    crate::dce::eliminate(&mut chunk);
+
+    let fn_idx = fns.len() as u16;
+    fns.push(Function {
+        name: format!("{name}$postcheck"),
+        arity,
+        chunk,
+        local_count: next_local,
+        upvalue_source_slots: Box::default(),
+        fails: Box::default(),
+        postcheck: None,
+    });
+    Ok(Some(fn_idx))
+}
+
+/// RES-4041: compile one `ensures`/`recovers_to` clause inside a
+/// synthesized postcheck function (see `build_postcheck_function`).
+/// Evaluates `clause`, and if falsy, loads `result` (already bound as
+/// an ordinary local — see the caller) and raises
+/// `Op::ContractViolation` — the same JumpIfTrue-guarded shape as
+/// `compile_assert_like`.
+#[allow(clippy::too_many_arguments)]
+fn compile_contract_clause(
+    clause: &Node,
+    is_recovers_to: bool,
+    name_const: u16,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    compile_expr(
+        clause,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    let jt = chunk.emit(Op::JumpIfTrue(0), line);
+    let result_slot = locals["result"];
+    chunk.emit(Op::LoadLocal(result_slot), line);
+    let clause_const = chunk.add_string_constant(&crate::format_contract_expr(clause))?;
+    chunk.emit(
+        Op::ContractViolation {
+            name_const,
+            clause_const,
+            is_recovers_to,
+        },
+        line,
+    );
+    let past_fail = chunk.code.len();
+    chunk.patch_jump(jt, past_fail)?;
     Ok(())
 }
 
@@ -2226,9 +2677,33 @@ fn compile_stmt_in_fn(
             next_fn_idx,
             line,
         ),
-        // RES-384b: `static let NAME = EXPR;` inside a fn body — same
-        // treatment as the top-level arm: compile as a regular local.
+        // RES-4046: `static let NAME = EXPR;` inside a fn body must
+        // persist across separate calls to the function, unlike an
+        // ordinary local (which lives in the per-call locals slab and
+        // resets every call) — matching the tree-walking interpreter's
+        // `self.statics` and top-level `static let` (which is
+        // trivially "persistent" since top-level code runs exactly
+        // once). `idx` is reused as the index into the VM's
+        // per-function statics table (a completely separate storage
+        // class from ordinary locals — see `STATIC_FLAG`), so borrowing
+        // a number from `next_local`'s counter only "wastes" one unused
+        // slot in the per-call locals array; it never collides with a
+        // real local.
+        //
+        // Compiles to a guarded one-time init, mirroring
+        // `compile_assert_like`'s `JumpIfTrue` skip shape:
+        //   PushStaticInitialized(idx); JumpIfTrue(skip);
+        //   <init-expr>; StoreStatic(idx); skip:
         Node::StaticLet { name, value, .. } => {
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let idx = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), idx | STATIC_FLAG);
+
+            chunk.emit(Op::PushStaticInitialized(idx), line);
+            let jt = chunk.emit(Op::JumpIfTrue(0), line);
             compile_expr(
                 value,
                 chunk,
@@ -2240,22 +2715,31 @@ fn compile_stmt_in_fn(
                 next_fn_idx,
                 line,
             )?;
-            if *next_local == u16::MAX {
-                return Err(CompileError::TooManyLocals);
-            }
-            let idx = *next_local;
-            *next_local += 1;
-            locals.insert(name.clone(), idx);
-            chunk.emit(Op::StoreLocal(idx), line);
+            chunk.emit(Op::StoreStatic(idx), line);
+            let past_init = chunk.code.len();
+            chunk.patch_jump(jt, past_init)?;
             Ok(())
         }
         // RES-361: const decl inside fn body — pre-evaluated, no emission.
         Node::Const { .. } => Ok(()),
         // RES-2660: static_assert — compile-time only, no emission.
         Node::StaticAssert { .. } => Ok(()),
-        // RES-139: `live { body }` inside fn body — compile body once.
-        Node::LiveBlock { body, .. } => compile_stmt_in_fn(
+        // RES-3995: `live { body }` inside fn body — see `compile_live_block`.
+        Node::LiveBlock {
             body,
+            invariants,
+            backoff,
+            backoff_kind,
+            timeout,
+            max_retries,
+            ..
+        } => compile_live_block(
+            body,
+            invariants,
+            backoff,
+            *backoff_kind,
+            timeout,
+            *max_retries,
             chunk,
             locals,
             next_local,
@@ -2265,6 +2749,7 @@ fn compile_stmt_in_fn(
             next_fn_idx,
             line,
             loop_stack,
+            true,
         ),
         // RES-4024: the MMIO-wrapper block keyword inside fn body —
         // compile the body exactly like `LiveBlock`. See the matching
@@ -2283,8 +2768,26 @@ fn compile_stmt_in_fn(
             line,
             loop_stack,
         ),
-        // Verification-only constructs: emit nothing at runtime.
-        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
+        // RES-3996: `assume(cond[, msg]);` halts at runtime like `assert`
+        // when the condition is false (see `compile_assume`). Previously
+        // grouped with the declaration-only no-op arm below, which
+        // silently dropped the runtime check under `--vm`.
+        Node::Assume {
+            condition, message, ..
+        } => compile_assume(
+            condition,
+            message,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
+        // Verification-only construct: emit nothing at runtime.
+        Node::InvariantStatement { .. } => Ok(()),
         // Type-level / declaration-only constructs: no runtime bytecode.
         Node::EnumDecl { name, variants, .. } => {
             emit_unit_enum_variants(name, variants, chunk, locals, next_local, line)
@@ -2307,11 +2810,15 @@ fn compile_stmt_in_fn(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             ..
         } => compile_nested_fn(
             name,
             parameters,
             body,
+            ensures,
+            recovers_to,
             chunk,
             locals,
             next_local,
@@ -2336,6 +2843,24 @@ fn compile_stmt_in_fn(
             true,
         ),
         Node::Extern { .. } => Err(CompileError::Unsupported("nested extern decl")),
+        // RES-3993: same `if let`/`while let` desugar-target fix as the
+        // top-level `compile_stmt` arm above, routed through the in-fn
+        // variant so `return` inside an arm emits `ReturnFromCall`.
+        Node::Match {
+            scrutinee, arms, ..
+        } => compile_match_stmt_in_fn(
+            scrutinee,
+            arms,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -3902,8 +4427,14 @@ fn compile_expr(
             // existing cell rather than double-boxing it. Globals are
             // skipped: `LoadGlobal`/`StoreGlobal` already address one
             // shared slot directly, so boxing would only add overhead.
+            // RES-4046: function-scoped statics are skipped for the
+            // same reason (`LoadStatic`/`StoreStatic` already address
+            // one persistent slot) — and *must* be skipped, since the
+            // boxing code below hardcodes `Op::LoadLocal`/`StoreLocal`,
+            // which would misinterpret `STATIC_FLAG`'s bit as part of
+            // an ordinary local index.
             for (outer_slot, name) in &mut captured {
-                if *outer_slot & GLOBAL_FLAG != 0 {
+                if *outer_slot & (GLOBAL_FLAG | STATIC_FLAG) != 0 {
                     continue;
                 }
                 if *outer_slot & BOXED_FLAG == 0 {
@@ -4029,9 +4560,22 @@ fn compile_expr(
             // also increment next_fn_idx, fn_idx may not equal fns.len() by
             // the time we reach here. Use a placeholder-then-overwrite strategy:
             // extend fns to at least fn_idx+1 with placeholders.
+            // RES-4046: a captured static has no valid caller-frame
+            // slot to write back into on return (its backing storage
+            // is the per-function statics table, not `locals`) —
+            // `u16::MAX` is the existing "no write-back target"
+            // sentinel (see `CallFrame::source_slot`'s doc comment);
+            // `write_back_upvalues`'s bounds check already treats an
+            // out-of-range index as a no-op.
             let source_slots: Box<[u16]> = captured
                 .iter()
-                .map(|(s, _)| raw_slot(*s))
+                .map(|(s, _)| {
+                    if *s & STATIC_FLAG != 0 {
+                        u16::MAX
+                    } else {
+                        raw_slot(*s)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .into();
             while fns.len() <= fn_idx as usize {
@@ -4042,6 +4586,7 @@ fn compile_expr(
                     local_count: 0,
                     upvalue_source_slots: Box::default(),
                     fails: Box::default(),
+                    postcheck: None,
                 });
             }
             fns[fn_idx as usize] = Function {
@@ -4051,19 +4596,26 @@ fn compile_expr(
                 local_count,
                 upvalue_source_slots: source_slots,
                 fails: Box::default(),
+                postcheck: None,
             };
 
             // Emit: push each captured value onto the stack, then
-            // MakeClosure. Non-global captures were boxed above, so
-            // this always loads the shared `Value::Cell` handle
-            // (never a value snapshot). RES-3914: global captures use
-            // `LoadGlobal` (they were tagged `GLOBAL_FLAG` by
-            // `collect_free_vars` reading the pre-seeded globals in
+            // MakeClosure. Non-global, non-static captures were boxed
+            // above, so this always loads the shared `Value::Cell`
+            // handle (never a value snapshot). RES-3914: global
+            // captures use `LoadGlobal` (they were tagged `GLOBAL_FLAG`
+            // by `collect_free_vars` reading the pre-seeded globals in
             // `locals`) instead of the previous unmasked `LoadLocal`,
-            // which read an out-of-range slot.
+            // which read an out-of-range slot. RES-4046: static
+            // captures use `LoadStatic` the same way — this executes
+            // in the *outer* (declaring) function's own frame, so it
+            // correctly reads that function's persistent static slot
+            // one time to seed the closure's snapshot.
             for (outer_slot, _) in &captured {
                 if *outer_slot & GLOBAL_FLAG != 0 {
                     chunk.emit(Op::LoadGlobal(raw_slot(*outer_slot)), line);
+                } else if *outer_slot & STATIC_FLAG != 0 {
+                    chunk.emit(Op::LoadStatic(raw_slot(*outer_slot)), line);
                 } else {
                     chunk.emit(Op::LoadLocal(raw_slot(*outer_slot)), line);
                 }
@@ -4900,6 +5452,227 @@ fn compile_match_expr(
     // Fallthrough (no arm matched) → Void.
     let void_idx = chunk.add_constant(Value::Void)?;
     chunk.emit(Op::Const(void_idx), line);
+
+    let after_match_pc = chunk.code.len();
+    for p in after_match_patches {
+        chunk.patch_jump(p, after_match_pc)?;
+    }
+    Ok(())
+}
+
+/// RES-3993: `Match` used as a statement rather than an expression —
+/// the lowering target for `if let` (RES-908) and `while let` (RES-914),
+/// which the parser desugars to a bare `Node::Match` inside a `Block`
+/// (see `parse_if_let_statement` / `parse_while_let_statement`). Neither
+/// `compile_stmt` nor `compile_stmt_in_fn` had a `Match` arm before this,
+/// so every if-let/while-let fell through to the generic
+/// `Unsupported("Match")` catch-all.
+///
+/// Mirrors `compile_match_expr`'s pattern-check/guard machinery, but
+/// compiles each arm body with `compile_stmt` (so `return`/`break`/
+/// `continue`/assignment/nested-`let` inside an arm behave exactly like
+/// any other statement block) instead of `compile_expr`, and does not
+/// leave a fallthrough value on the operand stack — a statement-position
+/// match's result is never consumed, unlike `compile_match_expr`'s
+/// `Value::Void` fallback.
+#[allow(clippy::too_many_arguments)]
+fn compile_match_stmt(
+    scrutinee: &Node,
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    loop_stack: &mut Vec<LoopState>,
+) -> Result<(), CompileError> {
+    compile_expr(
+        scrutinee,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    if *next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let scrutinee_slot = *next_local;
+    *next_local += 1;
+    chunk.emit(Op::StoreLocal(scrutinee_slot), line);
+
+    let mut after_match_patches: Vec<usize> = Vec::with_capacity(arms.len());
+
+    for (pattern, guard, body) in arms {
+        let mut arm_locals = locals.clone();
+        let next_local_snap = *next_local;
+
+        let mut next_arm_patches: Vec<usize> = Vec::new();
+        compile_pattern_check(
+            pattern,
+            scrutinee_slot,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            &mut next_arm_patches,
+        )?;
+
+        if let Some(guard_expr) = guard {
+            compile_expr(
+                guard_expr,
+                chunk,
+                &mut arm_locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+
+        compile_stmt(
+            body,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+
+        let after_p = chunk.emit(Op::Jump(0), line);
+        after_match_patches.push(after_p);
+
+        let next_arm_pc = chunk.code.len();
+        for p in next_arm_patches {
+            chunk.patch_jump(p, next_arm_pc)?;
+        }
+
+        // Reclaim temp slots used by this arm's bindings.
+        *next_local = next_local_snap;
+    }
+
+    let after_match_pc = chunk.code.len();
+    for p in after_match_patches {
+        chunk.patch_jump(p, after_match_pc)?;
+    }
+    Ok(())
+}
+
+/// Same as [`compile_match_stmt`] but routes arm bodies through
+/// `compile_stmt_in_fn` so `return` inside an arm emits `ReturnFromCall`
+/// (matching how `compile_control_flow_in_fn` mirrors `compile_control_flow`
+/// for `if`/`while`/`for`/block statements inside a function body).
+#[allow(clippy::too_many_arguments)]
+fn compile_match_stmt_in_fn(
+    scrutinee: &Node,
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+    loop_stack: &mut Vec<LoopState>,
+) -> Result<(), CompileError> {
+    compile_expr(
+        scrutinee,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    if *next_local == u16::MAX {
+        return Err(CompileError::TooManyLocals);
+    }
+    let scrutinee_slot = *next_local;
+    *next_local += 1;
+    chunk.emit(Op::StoreLocal(scrutinee_slot), line);
+
+    let mut after_match_patches: Vec<usize> = Vec::with_capacity(arms.len());
+
+    for (pattern, guard, body) in arms {
+        let mut arm_locals = locals.clone();
+        let next_local_snap = *next_local;
+
+        let mut next_arm_patches: Vec<usize> = Vec::new();
+        compile_pattern_check(
+            pattern,
+            scrutinee_slot,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            &mut next_arm_patches,
+        )?;
+
+        if let Some(guard_expr) = guard {
+            compile_expr(
+                guard_expr,
+                chunk,
+                &mut arm_locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let p = chunk.emit(Op::JumpIfFalse(0), line);
+            next_arm_patches.push(p);
+        }
+
+        compile_stmt_in_fn(
+            body,
+            chunk,
+            &mut arm_locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_stack,
+        )?;
+
+        let after_p = chunk.emit(Op::Jump(0), line);
+        after_match_patches.push(after_p);
+
+        let next_arm_pc = chunk.code.len();
+        for p in next_arm_patches {
+            chunk.patch_jump(p, next_arm_pc)?;
+        }
+
+        // Reclaim temp slots used by this arm's bindings.
+        *next_local = next_local_snap;
+    }
 
     let after_match_pc = chunk.code.len();
     for p in after_match_patches {
@@ -6714,6 +7487,104 @@ sum;
         }
     }
 
+    // ── RES-3993: `if let` / `while let` desugar to a statement-position
+    // `Match` — see `compile_match_stmt`'s doc comment. Before this fix,
+    // every one of these compiled to `CompileError::Unsupported("Match")`.
+
+    #[test]
+    fn res3993_if_let_top_level_binds_pattern_and_runs_matching_arm() {
+        let src = r#"
+let x = 0;
+if let 0 = x {
+    x = 100;
+} else {
+    x = 1;
+}
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(100) => {}
+            other => panic!("expected Int(100), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_if_let_top_level_falls_through_to_else_on_no_match() {
+        let src = r#"
+let x = 7;
+if let 0 = x {
+    x = 100;
+} else {
+    x = 1;
+}
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_if_let_in_fn_body_returns_from_matching_arm() {
+        let src = r#"
+fn classify(int n) -> string {
+    if let 0 = n {
+        return "zero";
+    }
+    return "other";
+}
+classify(0);
+"#;
+        match vm_ok(src) {
+            Value::String(s) => assert_eq!(s, "zero"),
+            other => panic!("expected String(\"zero\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_while_let_top_level_drains_matching_pattern_then_breaks() {
+        // Mirrors examples/while_let.rz's "literal-pattern drain" case:
+        // the loop body only runs while the scrutinee equals the
+        // literal pattern; the wildcard fallthrough arm breaks.
+        let src = r#"
+let counter = 3;
+let runs = 0;
+while let 3 = counter {
+    runs = runs + 1;
+    counter = counter - 1;
+}
+runs;
+"#;
+        match vm_ok(src) {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res3993_while_let_in_fn_body_with_identifier_pattern_and_break() {
+        let src = r#"
+fn drain_to(int limit) -> int {
+    let i = 0;
+    let last = 0;
+    while let n = i {
+        last = n;
+        if n >= limit {
+            break;
+        }
+        i = i + 1;
+    }
+    return last;
+}
+drain_to(4);
+"#;
+        match vm_ok(src) {
+            Value::Int(4) => {}
+            other => panic!("expected Int(4), got {:?}", other),
+        }
+    }
+
     #[test]
     fn assert_passes_when_condition_true() {
         let src = r#"
@@ -6910,6 +7781,81 @@ outer;
         match vm_ok(src) {
             Value::Int(42) => {}
             other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res4045_return_after_if_ending_in_assert_fail() {
+        // RES-4045: `return EXPR;` immediately following an `if COND {
+        // ...; assert(false, msg); }` (if-branch unconditionally fails,
+        // no `else`) used to compile to bytecode that dropped the
+        // `LoadLocal` for `EXPR` — `ReturnFromCall` popped an empty
+        // operand stack and silently returned `Value::Void`. Root
+        // cause: the peephole optimizer's `Not; JumpIfFalse` ->
+        // `JumpIfTrue` fusion (and its 3 siblings) recorded the wrong
+        // "original PC" for the jump-relink pass, leaving a stale
+        // pre-fold offset in place whenever anything shifted between
+        // the jump and its target.
+        let src = r#"
+fn read_temp_sensor(int nominal) -> int {
+    return nominal;
+}
+fn is_plausible(int x) -> bool {
+    return x != 9999;
+}
+fn safe_read(int nominal) -> int {
+    let reading = read_temp_sensor(nominal);
+    let ok = is_plausible(reading);
+    if !ok {
+        assert(false, "implausible");
+    }
+    return reading;
+}
+safe_read(500);
+"#;
+        match vm_ok(src) {
+            Value::Int(500) => {}
+            other => panic!("expected Int(500), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res4046_function_scoped_static_let_persists_across_calls() {
+        // RES-4046: a function-scoped `static let` used to compile as
+        // an ordinary local — reset to its initializer on every call —
+        // instead of persisting like the tree-walking interpreter's
+        // `self.statics` (and like top-level `static let`, which is
+        // trivially "persistent" since top-level code runs once).
+        let src = r#"
+fn read_random() {
+    static let toggle = false;
+    toggle = !toggle;
+    if toggle {
+        return 0.25;
+    } else {
+        return 0.75;
+    }
+}
+fn three_calls() {
+    let a = read_random();
+    let b = read_random();
+    let c = read_random();
+    return [a, b, c];
+}
+three_calls();
+"#;
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3, "expected 3 elements, got {:?}", v);
+                assert!(
+                    matches!(v[0], Value::Float(f) if f == 0.25)
+                        && matches!(v[1], Value::Float(f) if f == 0.75)
+                        && matches!(v[2], Value::Float(f) if f == 0.25),
+                    "static let must persist (toggle) across separate calls, got {:?}",
+                    v
+                );
+            }
+            other => panic!("expected Array, got {:?}", other),
         }
     }
 

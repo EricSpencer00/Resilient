@@ -8424,14 +8424,28 @@ impl TypeChecker {
                             // really an enum scrutinee. Check that
                             // every declared variant is covered.
                             if let Some(variants) = self.enum_decls.get(&sname).cloned() {
+                                // RES-4012: flatten `Or` patterns via the
+                                // canonical `enum_exhaustiveness` helper
+                                // instead of a local `filter_map` that
+                                // silently dropped `Or` branches (the
+                                // RES-3934 bug this inline gate still had
+                                // even after that fix landed in the
+                                // module). Guard filtering matches the
+                                // pre-existing behavior here: only
+                                // unguarded arms contribute coverage.
                                 let covered: HashSet<&str> = arms
                                     .iter()
                                     .filter(|(_, g, _)| g.is_none())
-                                    .filter_map(|(p, _, _)| match p {
-                                        Pattern::EnumVariant { variant_name, .. } => {
-                                            Some(variant_name.as_str())
-                                        }
-                                        _ => None,
+                                    .flat_map(|(p, _, _)| {
+                                        let mut leaves: Vec<(&str, &str)> = Vec::new();
+                                        crate::enum_exhaustiveness::collect_variant_leaves(
+                                            p,
+                                            &mut leaves,
+                                        );
+                                        leaves
+                                            .into_iter()
+                                            .filter(|(tn, _)| *tn == sname)
+                                            .map(|(_, v)| v)
                                     })
                                     .collect();
                                 let missing: Vec<&str> = variants
@@ -8451,10 +8465,33 @@ impl TypeChecker {
                                     ));
                                 }
                             } else {
-                                return Err(format!(
-                                    "Non-exhaustive match on struct `{}`: add `{} {{ .. }}`, `_`, or an identifier arm that covers every field",
-                                    sname, sname
-                                ));
+                                // RES-4012: before falling back to the
+                                // catch-all-required error, ask the
+                                // canonical `struct_exhaustiveness` bool
+                                // truth-table check whether every
+                                // combination of the struct's declared
+                                // bool fields is covered across ALL arms
+                                // (unioned) — the RES-3934 fix for that
+                                // exact gap, reused here instead of
+                                // reimplemented, so this inline gate no
+                                // longer hard-rejects a genuinely
+                                // exhaustive `{ on: true } / { on: false }`
+                                // struct match.
+                                let bool_exhaustive = self
+                                    .struct_fields
+                                    .get(&sname)
+                                    .map(|decl| {
+                                        crate::struct_exhaustiveness::bool_fields_exhaustively_covered_typed(
+                                            arms, decl,
+                                        )
+                                    })
+                                    .unwrap_or(false);
+                                if !bool_exhaustive {
+                                    return Err(format!(
+                                        "Non-exhaustive match on struct `{}`: add `{} {{ .. }}`, `_`, or an identifier arm that covers every field",
+                                        sname, sname
+                                    ));
+                                }
                             }
                         }
                         Type::Result => {
@@ -17980,5 +18017,178 @@ mod res3923_array_element_type {
     #[test]
     fn methods_resolve_on_tracked_arrays() {
         check_ok("fn main() { let xs = [1, 2, 3]; let n: int = xs.len(); }\nmain();\n");
+    }
+}
+
+/// RES-4012: end-to-end proof that `check_node`'s inline `Node::Match`
+/// exhaustiveness gate — which runs *before* the `enum_exhaustiveness.rs`
+/// / `struct_exhaustiveness.rs` extension passes and used to carry its
+/// own, separately-buggy or-pattern and bool-field-struct logic — now
+/// delegates to the same canonical helpers RES-3934 fixed
+/// (`enum_exhaustiveness::collect_variant_leaves` and
+/// `struct_exhaustiveness::bool_fields_exhaustively_covered_typed`), so
+/// the two programs #4013 documented as still-rejected end-to-end are
+/// accepted, while genuinely non-exhaustive variants of the same shapes
+/// still correctly error.
+#[cfg(test)]
+mod res4012_unify_exhaustiveness {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    // The exact program from issue #4012 / #4013: an or-pattern that
+    // unions coverage of two enum variants, plus a third arm for the
+    // remaining variant, is genuinely exhaustive. The inline gate used
+    // to bail on the `Or` pattern (silently dropping it from the
+    // covered set) and reject this as non-exhaustive.
+    #[test]
+    fn or_pattern_covering_two_variants_plus_remaining_arm_is_accepted() {
+        check_ok(
+            "enum Color { Red, Green, Blue }\n\
+             fn describe(Color c) -> int {\n\
+             return match c {\n\
+             Color::Red | Color::Green => 0,\n\
+             Color::Blue => 1,\n\
+             };\n\
+             }\n",
+        );
+    }
+
+    // The mirror case: the or-pattern only covers two of the three
+    // variants and there is no further arm — this must still be
+    // rejected, naming the actually-missing variant.
+    #[test]
+    fn or_pattern_covering_two_variants_with_third_missing_still_errors() {
+        check_err(
+            "enum Color { Red, Green, Blue }\n\
+             fn describe(Color c) -> int {\n\
+             return match c {\n\
+             Color::Red | Color::Green => 0,\n\
+             };\n\
+             }\n",
+            "Color::Blue",
+        );
+    }
+
+    // The exact program from issue #4012 / #4013: a single bool field
+    // struct matched on both `true` and `false` across two arms is
+    // genuinely exhaustive via the bool truth table, even though
+    // neither arm alone is a catch-all. The inline gate used to hard
+    // -reject any struct match without a single-arm catch-all.
+    #[test]
+    fn bool_field_struct_true_and_false_arms_is_accepted() {
+        check_ok(
+            "struct Flag { bool on }\n\
+             fn f(Flag flag) -> int {\n\
+             return match flag {\n\
+             Flag { on: true } => 1,\n\
+             Flag { on: false } => 0,\n\
+             };\n\
+             }\n",
+        );
+    }
+
+    // Only `true` is covered — `false` is genuinely missing and must
+    // still be rejected.
+    #[test]
+    fn bool_field_struct_only_true_arm_still_errors() {
+        check_err(
+            "struct Flag { bool on }\n\
+             fn f(Flag flag) -> int {\n\
+             return match flag {\n\
+             Flag { on: true } => 1,\n\
+             };\n\
+             }\n",
+            "Non-exhaustive match on struct `Flag`",
+        );
+    }
+
+    // Two independent bool fields, all four combinations covered by
+    // four literal arms — exhaustive via the cartesian truth table even
+    // though no single arm is a catch-all.
+    #[test]
+    fn two_bool_fields_full_cartesian_coverage_is_accepted() {
+        check_ok(
+            "struct Toggle { bool a, bool b }\n\
+             fn f(Toggle t) -> int {\n\
+             return match t {\n\
+             Toggle { a: true, b: true } => 0,\n\
+             Toggle { a: true, b: false } => 1,\n\
+             Toggle { a: false, b: true } => 2,\n\
+             Toggle { a: false, b: false } => 3,\n\
+             };\n\
+             }\n",
+        );
+    }
+
+    // One of the four (a, b) combinations is never covered — must
+    // still be rejected.
+    #[test]
+    fn two_bool_fields_missing_one_combination_still_errors() {
+        check_err(
+            "struct Toggle { bool a, bool b }\n\
+             fn f(Toggle t) -> int {\n\
+             return match t {\n\
+             Toggle { a: true, b: true } => 0,\n\
+             Toggle { a: true, b: false } => 1,\n\
+             Toggle { a: false, b: true } => 2,\n\
+             };\n\
+             }\n",
+            "Non-exhaustive match on struct `Toggle`",
+        );
+    }
+
+    // A struct with a non-bool field can't be proven exhaustive from a
+    // finite set of literals — the catch-all requirement must still
+    // apply (unchanged fallback behavior).
+    #[test]
+    fn mixed_bool_and_int_field_without_catch_all_still_errors() {
+        check_err(
+            "struct Reading { bool valid, int value }\n\
+             fn f(Reading r) -> int {\n\
+             return match r {\n\
+             Reading { valid: true, value: 0 } => 0,\n\
+             Reading { valid: false, value: 0 } => 1,\n\
+             };\n\
+             }\n",
+            "Non-exhaustive match on struct `Reading`",
+        );
+    }
+
+    // A guarded arm must never count toward bool coverage — a guard
+    // can fail at runtime, so relying solely on it for `on: false`
+    // leaves the match genuinely non-exhaustive.
+    #[test]
+    fn guarded_bool_arm_does_not_count_toward_coverage() {
+        check_err(
+            "struct Flag { bool on }\n\
+             fn f(Flag flag, bool extra) -> int {\n\
+             return match flag {\n\
+             Flag { on: true } => 1,\n\
+             Flag { on: false } if extra => 0,\n\
+             };\n\
+             }\n",
+            "Non-exhaustive match on struct `Flag`",
+        );
     }
 }

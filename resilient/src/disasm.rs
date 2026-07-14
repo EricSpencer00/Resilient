@@ -225,6 +225,7 @@ fn write_op(
         Op::Shl => write!(out, "Shl")?,
         Op::Shr => write!(out, "Shr")?,
         Op::AssertFail => write!(out, "AssertFail")?,
+        Op::AssumeFail => write!(out, "AssumeFail")?,
         Op::AssertBool => write!(out, "AssertBool")?,
         Op::Pop => write!(out, "Pop")?,
         Op::MakeTuple { len } => write!(out, "MakeTuple {}", len)?,
@@ -249,6 +250,8 @@ fn write_op(
         } => write!(out, "CallMethod method={} arity={}", method_const, arity)?,
         Op::EnterTry(idx) => write!(out, "EnterTry handler_table={}", idx)?,
         Op::ExitTry => write!(out, "ExitTry")?,
+        Op::EnterLive(idx) => write!(out, "EnterLive handler_table={}", idx)?,
+        Op::ExitLive => write!(out, "ExitLive")?,
         Op::MakeEnumTuple {
             type_const,
             variant_const,
@@ -266,6 +269,18 @@ fn write_op(
             out,
             "MakeEnumNamed type={} variant={} fields={}",
             type_const, variant_const, field_count
+        )?,
+        Op::PushStaticInitialized(idx) => write!(out, "PushStaticInitialized {}", idx)?,
+        Op::StoreStatic(idx) => write!(out, "StoreStatic {}", idx)?,
+        Op::LoadStatic(idx) => write!(out, "LoadStatic {}", idx)?,
+        Op::ContractViolation {
+            name_const,
+            clause_const,
+            is_recovers_to,
+        } => write!(
+            out,
+            "ContractViolation name={} clause={} recovers_to={}",
+            name_const, clause_const, is_recovers_to
         )?,
     }
     Ok(())
@@ -356,6 +371,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -385,6 +401,7 @@ mod tests {
                     local_count: 1,
                     upvalue_source_slots: Box::default(),
                     fails: Box::default(),
+                    postcheck: None,
                 },
                 Function {
                     name: "beta".to_string(),
@@ -393,6 +410,7 @@ mod tests {
                     local_count: 2,
                     upvalue_source_slots: Box::default(),
                     fails: Box::default(),
+                    postcheck: None,
                 },
             ],
             #[cfg(feature = "ffi")]
@@ -448,6 +466,7 @@ mod tests {
                 local_count: 1,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
@@ -527,6 +546,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
             }],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),

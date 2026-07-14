@@ -1,0 +1,47 @@
+// RES-4048 (A-E2): trait-bound satisfaction at generic call sites, for
+// argument forms beyond a direct struct-literal — a call-expression
+// result with a concrete return type, and a plainly-typed parameter
+// forwarded straight through. Both now resolve to a concrete type at
+// the call site and are checked against the declared `<T: Trait>`
+// bound, matching the existing struct-literal-argument behavior.
+
+trait Drawable {
+    fn draw(self) -> int;
+}
+
+struct Circle {
+    int radius,
+}
+
+impl Drawable for Circle {
+    fn draw(self) -> int {
+        println("Drawing circle");
+        return self.radius;
+    }
+}
+
+fn render<T: Drawable>(T shape) -> int {
+    return shape.draw();
+}
+
+fn make_circle() -> Circle {
+    return new Circle { radius: 4 };
+}
+
+// A plainly-typed parameter forwarded straight through to a bounded
+// generic call — the bound is checked against `Circle` even though
+// `c` is neither a fresh struct literal nor a `let`-bound name here.
+fn render_param(Circle c) -> int {
+    return render(c);
+}
+
+fn main(int dummy) {
+    // The argument is a call-expression (`make_circle()`), not a
+    // struct literal — resolved via `make_circle`'s declared return
+    // type and checked against the `Drawable` bound.
+    println(render(make_circle()));
+    println(render_param(new Circle { radius: 9 }));
+    return 0;
+}
+
+main(0);

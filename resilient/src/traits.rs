@@ -732,8 +732,32 @@ fn walk_call_sites_with_bindings(
             }
             bindings.pop();
         }
-        Node::Function { body, .. } => {
-            bindings.push(HashMap::new());
+        Node::Function {
+            parameters,
+            type_params,
+            body,
+            ..
+        } => {
+            // RES-4048: seed the fn's own scope with any parameter
+            // whose declared type is a concrete (non-generic) simple
+            // identifier, so a bound violation is still caught when
+            // the caller only has the value via a plainly-typed
+            // parameter rather than a fresh struct literal — e.g.
+            // `fn wrapper(Bad b) -> int { return needs_drawable(b); }`.
+            // Params typed with one of this fn's own `type_params`
+            // stay unresolved (correctly deferred — the fn body is
+            // itself polymorphic over that name).
+            let tp_set: HashSet<&str> = type_params.iter().map(String::as_str).collect();
+            let mut scope = HashMap::with_capacity(parameters.len());
+            for (ptype, pname) in parameters {
+                if tp_set.contains(ptype.as_str()) {
+                    continue;
+                }
+                if let Some(simple) = simple_type_name(ptype) {
+                    scope.insert(pname.clone(), simple);
+                }
+            }
+            bindings.push(scope);
             walk_call_sites_with_bindings(body, ctx, bindings)?;
             bindings.pop();
         }
@@ -747,7 +771,7 @@ fn walk_call_sites_with_bindings(
         }
         Node::LetStatement { name, value, .. } => {
             walk_call_sites_with_bindings(value, ctx, bindings)?;
-            if let Some(concrete_type) = resolve_concrete_type(value, bindings) {
+            if let Some(concrete_type) = resolve_concrete_type(value, bindings, ctx.fns_by_name) {
                 bindings
                     .last_mut()
                     .expect("call-site binding scope should exist")
@@ -756,7 +780,7 @@ fn walk_call_sites_with_bindings(
         }
         Node::Assignment { name, value, .. } => {
             walk_call_sites_with_bindings(value, ctx, bindings)?;
-            if let Some(concrete_type) = resolve_concrete_type(value, bindings) {
+            if let Some(concrete_type) = resolve_concrete_type(value, bindings, ctx.fns_by_name) {
                 if let Some(scope) = bindings
                     .iter_mut()
                     .rev()
@@ -844,7 +868,7 @@ fn walk_call_sites_with_bindings(
                         Some(a) => a,
                         None => continue,
                     };
-                    let concrete_type = resolve_concrete_type(arg, bindings);
+                    let concrete_type = resolve_concrete_type(arg, bindings, ctx.fns_by_name);
                     if let Some(ct) = concrete_type {
                         for bound in bounds {
                             // RES-2695: projection bound like "I::Item:Display"
@@ -932,15 +956,64 @@ fn walk_call_sites_with_bindings(
     Ok(())
 }
 
-fn resolve_concrete_type(node: &Node, bindings: &[HashMap<String, String>]) -> Option<String> {
+fn resolve_concrete_type(
+    node: &Node,
+    bindings: &[HashMap<String, String>],
+    fns_by_name: &HashMap<&str, &Node>,
+) -> Option<String> {
     match node {
         Node::StructLiteral { name, .. } => Some(name.clone()),
         Node::Identifier { name, .. } => bindings
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).cloned()),
+        // RES-4048: an argument that is itself a call to a fn with a
+        // known, concrete (non-generic) return-type annotation — e.g.
+        // `needs_drawable(make_bad())` where `fn make_bad() -> Bad`.
+        // Previously this form skipped bound-checking entirely and
+        // the unsatisfied bound only surfaced as a confusing runtime
+        // "no such field" error deep inside the generic body.
+        Node::CallExpression { function, .. } => {
+            let callee_name = match function.as_ref() {
+                Node::Identifier { name, .. } => name.as_str(),
+                _ => return None,
+            };
+            let callee = fns_by_name.get(callee_name)?;
+            let (return_type, callee_type_params) = match callee {
+                Node::Function {
+                    return_type,
+                    type_params,
+                    ..
+                } => (return_type.as_deref()?, type_params.as_slice()),
+                _ => return None,
+            };
+            // If the callee's own return type is one of *its* type
+            // parameters, the result isn't concrete from here — bail.
+            if callee_type_params
+                .iter()
+                .any(|tp| tp.as_str() == return_type)
+            {
+                return None;
+            }
+            simple_type_name(return_type)
+        }
         _ => None,
     }
+}
+
+/// True concrete-type annotations we're willing to reason about here
+/// are bare identifiers (`Bad`, `int`, `Circle`) — optionally prefixed
+/// with `linear ` (RES-385). Anything else (references `&T`, fixed
+/// arrays `[T; N]`, parameterised types `Foo<T>`) is left unresolved;
+/// those forms need real structural typing to compare, which is out
+/// of scope for this dynamic-interpreter-era check (matches the
+/// existing struct-literal-only philosophy documented above).
+fn simple_type_name(annotation: &str) -> Option<String> {
+    let stripped = annotation.strip_prefix("linear ").unwrap_or(annotation);
+    if stripped.is_empty() || stripped.contains(['<', '[', '&', ' ']) {
+        return None;
+    }
+    Some(stripped.to_string())
 }
 
 fn trait_satisfied_structurally(
@@ -1161,6 +1234,86 @@ mod tests {
         assert!(err.contains("does not satisfy bound"), "got: {err}");
         assert!(err.contains("Tag"), "got: {err}");
         assert!(err.contains("S"), "got: {err}");
+    }
+
+    // RES-4048 (A-E2): the two argument forms that previously skipped
+    // bound-checking entirely because `resolve_concrete_type` only
+    // recognized struct literals and `let`-bound identifiers.
+
+    #[test]
+    fn generic_call_with_call_expr_arg_and_satisfied_bound_passes() {
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             struct S { int x, }\n\
+             impl Tag for S { fn tag(self) -> string { return \"s\"; } }\n\
+             fn announce<T: Tag>(T item) -> string { return \"x\"; }\n\
+             fn make_s() -> S { return new S { x: 1 }; }\n\
+             fn main(int dummy) { announce(make_s()); } main();",
+        );
+        check(&prog, "test.rz").expect("bound should be satisfied via call-expr return type");
+    }
+
+    #[test]
+    fn generic_call_with_call_expr_arg_and_unsatisfied_bound_errors() {
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             struct S { int x, }\n\
+             fn announce<T: Tag>(T item) -> string { return \"x\"; }\n\
+             fn make_s() -> S { return new S { x: 1 }; }\n\
+             fn main(int dummy) { announce(make_s()); } main();",
+        );
+        let err = check(&prog, "test.rz")
+            .expect_err("call-expr argument's return type should still be checked");
+        assert!(err.contains("does not satisfy bound"), "got: {err}");
+        assert!(err.contains("Tag"), "got: {err}");
+        assert!(err.contains("S"), "got: {err}");
+    }
+
+    #[test]
+    fn generic_call_with_forwarded_param_and_satisfied_bound_passes() {
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             struct S { int x, }\n\
+             impl Tag for S { fn tag(self) -> string { return \"s\"; } }\n\
+             fn announce<T: Tag>(T item) -> string { return \"x\"; }\n\
+             fn wrapper(S s) -> string { return announce(s); }\n\
+             fn main(int dummy) { wrapper(new S { x: 1 }); } main();",
+        );
+        check(&prog, "test.rz").expect("bound should be satisfied via forwarded param type");
+    }
+
+    #[test]
+    fn generic_call_with_forwarded_param_and_unsatisfied_bound_errors() {
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             struct S { int x, }\n\
+             fn announce<T: Tag>(T item) -> string { return \"x\"; }\n\
+             fn wrapper(S s) -> string { return announce(s); }\n\
+             fn main(int dummy) { wrapper(new S { x: 1 }); } main();",
+        );
+        let err = check(&prog, "test.rz")
+            .expect_err("forwarded param's declared type should still be checked");
+        assert!(err.contains("does not satisfy bound"), "got: {err}");
+        assert!(err.contains("Tag"), "got: {err}");
+        assert!(err.contains("S"), "got: {err}");
+    }
+
+    #[test]
+    fn generic_call_with_forwarded_generic_param_stays_unresolved() {
+        // `U` is itself a generic type parameter on `wrapper` — the
+        // concrete type isn't known at this call site, so this must
+        // NOT be treated as a (vacuously unsatisfied) concrete-type
+        // check. Conservative: no diagnostic here (deferred to a
+        // follow-up that tracks bound propagation across nested
+        // generic calls).
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             fn announce<T: Tag>(T item) -> string { return \"x\"; }\n\
+             fn wrapper<U>(U item) -> string { return announce(item); }\n\
+             fn main(int dummy) {} main();",
+        );
+        check(&prog, "test.rz")
+            .expect("unresolved generic-typed param must not be rejected as concrete");
     }
 
     #[test]

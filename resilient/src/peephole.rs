@@ -211,7 +211,14 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_not_jif_to_jit(chunk, i, &targets) {
             new_code.push(Op::JumpIfTrue(off));
             new_line_info.push(chunk.line_info[i]);
-            new_to_old.push(i);
+            // RES-4045: the surviving jump's ORIGINAL op lived at `i + 1`
+            // (the `JumpIfFalse`), not `i` (the `Not`). `orig_targets` is
+            // indexed by old PC and only `Some` for jump ops, so mapping
+            // to `i` made the relink loop below bail out (`Not` isn't a
+            // jump) and leave the stale pre-fold offset in place —
+            // silently mis-targeting the jump whenever any instruction
+            // count changed between the old jump and its target.
+            new_to_old.push(i + 1);
             optimized_any = true;
             i += 2;
             continue;
@@ -332,7 +339,9 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_not_jit_to_jif(chunk, i, &targets) {
             new_code.push(Op::JumpIfFalse(off));
             new_line_info.push(chunk.line_info[i]);
-            new_to_old.push(i);
+            // RES-4045: see Rule 4's comment — map to the original jump's
+            // PC (`i + 1`, the `JumpIfTrue`), not the `Not` at `i`.
+            new_to_old.push(i + 1);
             optimized_any = true;
             i += 2;
             continue;
@@ -350,7 +359,9 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_const_branch_always(chunk, i, &targets, true, Op::JumpIfTrue(0)) {
             new_code.push(Op::Jump(off));
             new_line_info.push(chunk.line_info[i]);
-            new_to_old.push(i);
+            // RES-4045: see Rule 4's comment — map to the original jump's
+            // PC (`i + 1`, the `JumpIfTrue`), not the `Const` at `i`.
+            new_to_old.push(i + 1);
             optimized_any = true;
             i += 2;
             continue;
@@ -360,7 +371,9 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_const_branch_always(chunk, i, &targets, false, Op::JumpIfFalse(0)) {
             new_code.push(Op::Jump(off));
             new_line_info.push(chunk.line_info[i]);
-            new_to_old.push(i);
+            // RES-4045: see Rule 4's comment — map to the original jump's
+            // PC (`i + 1`, the `JumpIfFalse`), not the `Const` at `i`.
+            new_to_old.push(i + 1);
             optimized_any = true;
             i += 2;
             continue;
@@ -444,6 +457,12 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         for arm in &mut entry.arms {
             arm.handler_pc = old_to_new[arm.handler_pc];
         }
+    }
+
+    // RES-3995: remap live_handler `body_start_pc` the same way — see
+    // the matching fix in `dce.rs`'s `remove_unreachable`.
+    for entry in &mut chunk.live_handlers {
+        entry.body_start_pc = old_to_new[entry.body_start_pc];
     }
 
     chunk.code = new_code;
@@ -1939,42 +1958,58 @@ mod tests {
 
     #[test]
     fn rule20_const_true_jit_becomes_jump() {
-        // Const(true); JumpIfTrue(3); ... → Jump(3); ...
+        // Const(true); JumpIfTrue(1); Return; Return → Jump(?); Return; Return.
         // The branch is always taken when the condition is literal true.
+        // The original target (pc 3, the second Return) must survive
+        // relinking — RES-4045: this fixture used an out-of-bounds
+        // offset that only avoided panicking because the fold's
+        // relink was silently a no-op (a latent bug in the same family
+        // as #4045's `Not; JumpIfFalse` mis-link — see peephole.rs's
+        // `new_to_old.push(i + 1)` fix). A real target now exercises
+        // the relink for real instead of masking it.
         let mut chunk = mk_chunk(
-            &[Op::Const(0), Op::JumpIfTrue(3), Op::Return],
+            &[Op::Const(0), Op::JumpIfTrue(1), Op::Return, Op::Return],
             vec![Value::Bool(true)],
-            &[1, 1, 2],
+            &[1, 1, 2, 2],
         );
         optimize(&mut chunk).unwrap();
-        // After fold: [Jump(?), Return] — 2 ops. Jump's offset must
-        // point to the same target as the original JumpIfTrue.
+        // After fold: [Jump(?), Return, Return] — 3 ops. Jump's offset
+        // must point to the same target as the original JumpIfTrue
+        // (the second Return, now at index 2).
         assert_eq!(
             chunk.code.len(),
-            2,
-            "expected Jump + Return; got {:?}",
+            3,
+            "expected Jump + Return + Return; got {:?}",
             chunk.code
         );
-        assert!(matches!(chunk.code[0], Op::Jump(_)));
+        assert_eq!(
+            chunk.code[0],
+            Op::Jump(1),
+            "Jump must retarget to the second Return after the Const+JumpIfTrue \
+             collapse shifts everything down by one"
+        );
         assert!(matches!(chunk.code[1], Op::Return));
+        assert!(matches!(chunk.code[2], Op::Return));
     }
 
     #[test]
     fn rule21_const_false_jif_becomes_jump() {
-        // Const(false); JumpIfFalse(3); ... → Jump(3); ...
+        // Const(false); JumpIfFalse(1); Return; Return → Jump(?); Return; Return.
+        // See rule20's comment: the target must be in-bounds so the
+        // relink is actually exercised (RES-4045).
         let mut chunk = mk_chunk(
-            &[Op::Const(0), Op::JumpIfFalse(3), Op::Return],
+            &[Op::Const(0), Op::JumpIfFalse(1), Op::Return, Op::Return],
             vec![Value::Bool(false)],
-            &[1, 1, 2],
+            &[1, 1, 2, 2],
         );
         optimize(&mut chunk).unwrap();
         assert_eq!(
             chunk.code.len(),
-            2,
-            "expected Jump + Return; got {:?}",
+            3,
+            "expected Jump + Return + Return; got {:?}",
             chunk.code
         );
-        assert!(matches!(chunk.code[0], Op::Jump(_)));
+        assert_eq!(chunk.code[0], Op::Jump(1));
     }
 
     #[test]

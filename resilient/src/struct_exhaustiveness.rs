@@ -114,6 +114,34 @@ fn bool_fields_exhaustively_covered(
     if decl_fields.is_empty() || !decl_fields.iter().all(|(ty, _)| is_bool_type_name(ty)) {
         return false;
     }
+    let field_names: Vec<&str> = decl_fields
+        .iter()
+        .map(|(_, fname)| fname.as_str())
+        .collect();
+    bool_fields_exhaustively_covered_by_names(arms, &field_names)
+}
+
+/// RES-4012: the actual bool-domain truth-table row-builder + coverage
+/// check, parameterized only by the struct's declared bool field names
+/// (in declaration order, already confirmed all-bool by the caller).
+/// Shared by both [`bool_fields_exhaustively_covered`] (whole-program
+/// `analyze()` pass, which discovers field types from `Node::StructDecl`'s
+/// textual type names) and [`bool_fields_exhaustively_covered_typed`]
+/// (typechecker.rs's inline `check_node` exhaustiveness gate, which
+/// already has `Type::Bool`-checked fields from its own `struct_fields`
+/// table) — neither caller can drift from the other on the algorithm
+/// itself since both funnel through this one function.
+fn bool_fields_exhaustively_covered_by_names(
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    field_names: &[&str],
+) -> bool {
+    if field_names.is_empty() {
+        return false;
+    }
+    let struct_name = match arms.first() {
+        Some((crate::Pattern::Struct { struct_name, .. }, _, _)) => struct_name.as_str(),
+        _ => return false,
+    };
 
     let mut rows: Vec<Vec<Option<bool>>> = Vec::new();
     for (pattern, guard, _) in arms {
@@ -131,8 +159,8 @@ fn bool_fields_exhaustively_covered(
         if sn != struct_name || *has_rest {
             return false;
         }
-        let mut row = Vec::with_capacity(decl_fields.len());
-        for (_, fname) in decl_fields.iter() {
+        let mut row = Vec::with_capacity(field_names.len());
+        for fname in field_names {
             let Some((_, sub)) = fields.iter().find(|(n, _)| n == fname) else {
                 return false;
             };
@@ -147,7 +175,34 @@ fn bool_fields_exhaustively_covered(
         rows.push(row);
     }
 
-    covers_bool_domain(&rows, 0, decl_fields.len())
+    covers_bool_domain(&rows, 0, field_names.len())
+}
+
+/// RES-4012: `Type`-driven twin of [`bool_fields_exhaustively_covered`],
+/// `pub(crate)` so `typechecker.rs`'s inline exhaustiveness gate can reuse
+/// the exact same truth-table algorithm (via
+/// [`bool_fields_exhaustively_covered_by_names`]) instead of maintaining a
+/// second implementation with its own bug profile. Takes the
+/// typechecker's own `(field_name, Type)` declaration list — the shape
+/// already available from `self.struct_fields` — rather than re-deriving
+/// field types from AST text the way `analyze()`'s whole-program pass
+/// does.
+pub(crate) fn bool_fields_exhaustively_covered_typed(
+    arms: &[(crate::Pattern, Option<Node>, Node)],
+    decl_fields: &[(String, crate::typechecker::Type)],
+) -> bool {
+    if decl_fields.is_empty()
+        || !decl_fields
+            .iter()
+            .all(|(_, ty)| matches!(ty, crate::typechecker::Type::Bool))
+    {
+        return false;
+    }
+    let field_names: Vec<&str> = decl_fields
+        .iter()
+        .map(|(fname, _)| fname.as_str())
+        .collect();
+    bool_fields_exhaustively_covered_by_names(arms, &field_names)
 }
 
 /// Recursively splits on each field's boolean domain (`true`/`false`)

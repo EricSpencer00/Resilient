@@ -101,6 +101,7 @@ mod fmt_help_smoke;
 mod free_vars_docs_copy_smoke;
 mod fuzz_docs_cli_names_smoke;
 mod fuzz_docs_library_surface_smoke;
+mod generic_bound_call_site_golden;
 mod global_help_word_copy_smoke;
 mod global_subcommand_help_copy_smoke;
 mod help_layout_smoke;

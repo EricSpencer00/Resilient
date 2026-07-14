@@ -82,10 +82,21 @@ fn remove_unreachable(chunk: &mut Chunk) {
         }
         // Fall-through: everything except unconditional terminators.
         // RES-2514: TailCall and AssertFail are also terminators that
-        // never fall through to the next instruction.
+        // never fall through to the next instruction. RES-3996:
+        // AssumeFail is the same shape as AssertFail. RES-4041:
+        // ContractViolation is the same shape too — it always returns
+        // an `Err`, so any code after it in the same basic block is
+        // reachable only via the preceding `JumpIfTrue`'s guard, never
+        // by falling through.
         let falls_through = !matches!(
             op,
-            Op::Return | Op::ReturnFromCall | Op::Jump(_) | Op::TailCall(_) | Op::AssertFail
+            Op::Return
+                | Op::ReturnFromCall
+                | Op::Jump(_)
+                | Op::TailCall(_)
+                | Op::AssertFail
+                | Op::AssumeFail
+                | Op::ContractViolation { .. }
         );
         let next_pc = pc + 1;
         if falls_through && next_pc < n && !reachable[next_pc] {
@@ -154,6 +165,15 @@ fn remove_unreachable(chunk: &mut Chunk) {
         for arm in &mut entry.arms {
             arm.handler_pc = old_to_new[arm.handler_pc];
         }
+    }
+
+    // RES-3995: remap live_handler `body_start_pc` the same way — it's
+    // a raw stored PC (not an `Op::Jump` offset), so it needs the same
+    // `old_to_new` translation as `try_handlers` above or a retry would
+    // jump to the wrong instruction after dead code earlier in the
+    // chunk gets removed.
+    for entry in &mut chunk.live_handlers {
+        entry.body_start_pc = old_to_new[entry.body_start_pc];
     }
 
     chunk.code = new_code;

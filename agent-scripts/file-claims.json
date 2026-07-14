@@ -100,10 +100,6 @@
       "branch": "res-4028-cert-hardening",
       "claimed_at": "2026-07-14T06:13:56Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-3987-rz-build-subcommand",
-      "claimed_at": "2026-07-14T07:45:06Z"
-    },
     "resilient-runtime/Cargo.toml": {
       "branch": "res-3987-runtime-vm-skeleton",
       "claimed_at": "2026-07-14T06:31:43Z"
@@ -113,20 +109,48 @@
       "claimed_at": "2026-07-14T06:31:43Z"
     },
     "resilient-runtime/src/vm.rs": {
-      "branch": "res-3987-runtime-bytecode-serde",
-      "claimed_at": "2026-07-14T07:16:29Z"
+      "branch": "res-3987-runtime-loader",
+      "claimed_at": "2026-07-14T08:25:39Z"
+    },
+    ".github/workflows/embedded-runtime.yml": {
+      "branch": "res-3987-qemu-ci",
+      "claimed_at": "2026-07-14T08:47:19Z"
     },
     "docs/EMBEDDED_PIPELINE.md": {
-      "branch": "res-3987-rz-build-subcommand",
-      "claimed_at": "2026-07-14T07:45:06Z"
+      "branch": "res-3987-qemu-ci",
+      "claimed_at": "2026-07-14T08:47:19Z"
     },
-    ".github/workflows/fuzz.yml": {
-      "branch": "res-4039-fuzz-coverage",
-      "claimed_at": "2026-07-14T08:08:14Z"
+    "resilient-runtime-loader-demo/": {
+      "branch": "res-3987-qemu-ci",
+      "claimed_at": "2026-07-14T08:47:19Z"
     },
-    "fuzz/Cargo.toml": {
-      "branch": "res-4039-fuzz-coverage",
-      "claimed_at": "2026-07-14T08:08:14Z"
+    "resilient/src/traits.rs": {
+      "branch": "res-4048-trait-bound-enforcement",
+      "claimed_at": "2026-07-14T09:50:50Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-4012-unify-exhaustiveness",
+      "claimed_at": "2026-07-14T10:39:37Z"
+    },
+    "resilient/src/enum_exhaustiveness.rs": {
+      "branch": "res-4012-unify-exhaustiveness",
+      "claimed_at": "2026-07-14T10:39:37Z"
+    },
+    "resilient/src/struct_exhaustiveness.rs": {
+      "branch": "res-4012-unify-exhaustiveness",
+      "claimed_at": "2026-07-14T10:39:37Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-4041-vm-postconditions",
+      "claimed_at": "2026-07-14T11:01:38Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-4041-vm-postconditions",
+      "claimed_at": "2026-07-14T11:01:38Z"
+    },
+    "resilient/src/bytecode.rs": {
+      "branch": "res-4041-vm-postconditions",
+      "claimed_at": "2026-07-14T11:01:38Z"
     }
   }
 }

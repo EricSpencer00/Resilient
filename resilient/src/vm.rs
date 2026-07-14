@@ -85,11 +85,23 @@ pub enum VmError {
     /// (the condition was false). Carries the user-supplied or
     /// auto-generated failure message.
     AssertionFailed(String),
+    /// RES-3996: `assume(cond[, msg]);` fired at runtime (the condition
+    /// was false). Carries the user-supplied or auto-generated message.
+    /// Kept distinct from `AssertionFailed` so the diagnostic reads
+    /// "ASSUME VIOLATED" — matching the tree-walker's `eval_assume`.
+    AssumeViolated(String),
     /// RES-169c: `LoadUpvalue(idx)` with `idx` outside the current
     /// frame's upvalue slab.
     UpvalueOutOfBounds(u16),
     /// RES-2544: a function with `fails` was called inside a try block.
     CheckedFailure(String),
+    /// RES-4041: a runtime-checked `ensures`/`recovers_to` postcondition
+    /// clause evaluated falsy. Carries the fully-formatted diagnostic
+    /// (matching the tree-walking interpreter's `Contract violation in
+    /// fn {name}: ensures {clause} failed (result = {value})` / the
+    /// `recovers_to` final-state-counterexample wording) — see
+    /// `Op::ContractViolation`.
+    ContractViolation(String),
 }
 
 impl VmError {
@@ -138,12 +150,16 @@ impl std::fmt::Display for VmError {
             VmError::AssertionFailed(msg) => {
                 write!(f, "ASSERTION ERROR: {}", msg)
             }
+            VmError::AssumeViolated(msg) => {
+                write!(f, "ASSUME VIOLATED: {}", msg)
+            }
             VmError::UpvalueOutOfBounds(idx) => {
                 write!(f, "vm: upvalue index {} out of bounds", idx)
             }
             VmError::CheckedFailure(variant) => {
                 write!(f, "vm: checked failure: {}", variant)
             }
+            VmError::ContractViolation(msg) => write!(f, "{}", msg),
         }
     }
 }
@@ -347,6 +363,39 @@ fn err_at(line_info: &[u32], pc: usize, e: VmError) -> VmError {
 const MAX_CALL_DEPTH: usize = 1024;
 const MAX_STRING_REPEAT: usize = 10_000_000;
 
+/// RES-141 / RES-3995: process-wide live-block telemetry counters for
+/// the VM backend, mirroring the tree-walker's `LIVE_TOTAL_RETRIES` /
+/// `LIVE_TOTAL_EXHAUSTIONS` (lib.rs). Kept as separate VM-local statics
+/// rather than sharing the interpreter's — each `rz` invocation only
+/// ever runs one backend, so a fresh process gives each its own
+/// zeroed counters either way, and this avoids reaching into the
+/// interpreter's private thread-locals from a different module.
+static VM_LIVE_TOTAL_RETRIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static VM_LIVE_TOTAL_EXHAUSTIONS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// RES-359: per-retry sleep for a given backoff config and schedule
+/// kind. Duplicates the tree-walker's private `live_backoff_delay_ms`
+/// (lib.rs) — the math is a few lines of pure arithmetic over the
+/// already-`pub` `BackoffConfig`/`BackoffKind` types, so re-deriving it
+/// here is cheaper and lower-risk than reaching into a private
+/// interpreter helper from a different module. Keep in sync with
+/// lib.rs if the schedule shapes ever change.
+fn vm_live_backoff_delay_ms(
+    cfg: &crate::BackoffConfig,
+    kind: crate::BackoffKind,
+    retries: u32,
+) -> u64 {
+    match kind {
+        crate::BackoffKind::Exponential => cfg.delay_ms(retries),
+        crate::BackoffKind::Linear => {
+            let steps = (retries as u64).saturating_add(1);
+            let want = cfg.base_ms.saturating_mul(steps);
+            want.min(cfg.max_ms)
+        }
+    }
+}
+
 /// RES-081: one active function invocation. `chunk_idx = usize::MAX`
 /// marks the `main` frame; any other value indexes into
 /// `program.functions`.
@@ -422,6 +471,50 @@ fn write_back_upvalues(popped: &CallFrame, caller_base: usize, locals: &mut [Val
     {
         *upvalues = popped.upvalues.clone();
     }
+}
+
+/// RES-4041: build the `Contract violation in fn ...` diagnostic for
+/// `Op::ContractViolation`, matching the tree-walking interpreter's
+/// wording exactly (`lib.rs`'s `ensures`/`recovers_to` post-body check):
+///
+/// - `ensures`: `Contract violation in fn {name}: ensures {clause}
+///   failed (result = {value})`
+/// - `recovers_to`: `Contract violation in fn {name}: recovers_to
+///   {clause} failed — final-state counterexample: result = {value}`
+fn format_contract_violation(
+    chunk: &Chunk,
+    name_const: u16,
+    clause_const: u16,
+    is_recovers_to: bool,
+    result: &Value,
+) -> Result<String, VmError> {
+    let name = match chunk
+        .constants
+        .get(name_const as usize)
+        .ok_or(VmError::ConstantOutOfBounds(name_const))?
+    {
+        Value::String(s) => s.as_str(),
+        _ => return Err(VmError::ConstantOutOfBounds(name_const)),
+    };
+    let clause = match chunk
+        .constants
+        .get(clause_const as usize)
+        .ok_or(VmError::ConstantOutOfBounds(clause_const))?
+    {
+        Value::String(s) => s.as_str(),
+        _ => return Err(VmError::ConstantOutOfBounds(clause_const)),
+    };
+    Ok(if is_recovers_to {
+        format!(
+            "Contract violation in fn {}: recovers_to {} failed — final-state counterexample: result = {}",
+            name, clause, result
+        )
+    } else {
+        format!(
+            "Contract violation in fn {}: ensures {} failed (result = {})",
+            name, clause, result
+        )
+    })
 }
 
 /// RES-2544: active try-catch handler frame. Pushed by `EnterTry`,
@@ -516,6 +609,118 @@ pub fn run_with(
     }
 }
 
+/// RES-3995: which frame a live-block retry loop is tracking inside a
+/// recursive `run_dispatch_loop` call, plus the attempt number the
+/// *next* invocation should expose via `live_retries()`.
+struct LiveTrack {
+    /// Index into `frames` of the call that lexically contains the
+    /// live block. Frames deeper than this belong to calls the body
+    /// makes; once `frames.len()` drops to or below this value, the
+    /// live block's own frame is gone.
+    frame_idx: usize,
+    /// Current attempt number (0 on the first attempt). Stays valid
+    /// for the whole attempt, including any ordinary (non-live) calls
+    /// the body makes — those don't recurse into a new
+    /// `run_dispatch_loop` invocation, so `live_retries()` still
+    /// resolves through this same `LiveTrack`.
+    retry_count: usize,
+}
+
+/// RES-3995: how a (possibly nested) `run_dispatch_loop` invocation
+/// ended.
+enum LoopOutcome {
+    /// The whole program halted (top-level `Op::Return`, or the
+    /// implicit end-of-main fallthrough). Propagates through every
+    /// active live-block retry loop unchanged — the program is
+    /// ending, not just the innermost block.
+    Halted(Value),
+    /// Reached the paired `Op::ExitLive` for the tracked live block:
+    /// this attempt's body ran to completion and any invariants held.
+    ExitedNormally,
+    /// The tracked live block's own enclosing frame returned from
+    /// *inside* the body (an early `return`, e.g.
+    /// `thermal_safety_cutoff.rz`'s `safe_read`). Also a success —
+    /// there's no more of the block left to retry.
+    ReturnedFromFrame(Value),
+}
+
+/// RES-4041: run a synthesized postcheck function (see
+/// `compiler::build_postcheck_function`) to completion as an ordinary,
+/// fully isolated call — its own fresh operand stack, locals slab, and
+/// frame stack, entirely decoupled from whatever call is in progress
+/// in the caller. This reuses `run_dispatch_loop` (the same engine that
+/// runs every other bytecode-compiled expression) instead of a
+/// hand-rolled mini-evaluator, so `ensures`/`recovers_to` clauses get
+/// full expression support — arithmetic, comparisons, even further
+/// calls — for free and with zero risk of drifting from the rest of
+/// the VM's semantics.
+///
+/// `fn_idx` must reference a function whose *only* frame is pushed
+/// here (no enclosing "main" wrapper below it), so its own
+/// `Op::ReturnFromCall` empties `frames` and the call surfaces as
+/// `LoopOutcome::Halted` — see `run_dispatch_loop`'s `frames.is_empty()`
+/// check. `args` must have exactly `functions[fn_idx].arity` entries.
+fn run_postcheck(
+    program: &Program,
+    fn_idx: u16,
+    args: Vec<Value>,
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
+    let func = program
+        .functions
+        .get(fn_idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(fn_idx))?;
+    let mut locals: Vec<Value> = vec![Value::Void; func.local_count as usize];
+    for (i, v) in args.into_iter().enumerate() {
+        if let Some(slot) = locals.get_mut(i) {
+            *slot = v;
+        }
+    }
+    let mut stack: Vec<Value> = Vec::new();
+    let mut frames: Vec<CallFrame> = vec![CallFrame {
+        chunk_idx: fn_idx as usize,
+        pc: 0,
+        locals_base: 0,
+        upvalues: Box::default(),
+        closure_home: None,
+        source_slots: Box::default(),
+    }];
+    let mut try_stack: Vec<TryFrame> = Vec::new();
+    // RES-4046: `statics`/`statics_init` persist a fn's `static let`
+    // bindings across separate calls *within the same run*. A
+    // postcheck's own body never declares one (see
+    // `build_postcheck_function`), and this call is a fully isolated
+    // sub-run anyway (fresh stack/locals/frames) — so fresh, empty
+    // tables here (rather than sharing the enclosing call's) are
+    // consistent with that isolation. The one edge case this doesn't
+    // cover — a clause calling a *user* fn that itself uses
+    // `static let` — resets that fn's statics for the duration of the
+    // clause check only; nothing in `examples/*.rz` exercises it.
+    let mut statics: Vec<Vec<Value>> = Vec::new();
+    let mut statics_init: Vec<Vec<bool>> = Vec::new();
+    let mut last_pc: (usize, usize) = (fn_idx as usize, 0);
+    match run_dispatch_loop(
+        program,
+        &mut stack,
+        &mut locals,
+        &mut frames,
+        &mut try_stack,
+        &mut statics,
+        &mut statics_init,
+        overflow_mode,
+        &mut last_pc,
+        None,
+    )? {
+        LoopOutcome::Halted(v) => Ok(v),
+        // `tracked: None` means only `Halted` is ever produced (see
+        // `run_inner`'s identical top-level invocation) — a single,
+        // untracked frame stack has no other exit path.
+        LoopOutcome::ExitedNormally | LoopOutcome::ReturnedFromFrame(_) => {
+            unreachable!("run_postcheck's untracked frame stack only ever halts")
+        }
+    }
+}
+
 /// RES-091: the original dispatch loop, factored out so `run` can
 /// wrap any returned error with source-line info. `last_pc` is
 /// updated at the top of every iteration so the outer wrapper knows
@@ -532,6 +737,14 @@ fn run_inner(
     // frames push, so this is a starting capacity that absorbs the
     // common case without rehash churn.
     let mut locals: Vec<Value> = Vec::with_capacity(32);
+    // RES-4046: per-function persistent storage for `static let`
+    // bindings declared inside a `fn` body, indexed `[chunk_idx][slot]`
+    // — unlike `locals`, this lives for the whole program run rather
+    // than being reset every call, so a static's value survives across
+    // separate invocations of the same function. `statics_init` tracks
+    // which slots have already run their one-time initializer.
+    let mut statics: Vec<Vec<Value>> = Vec::new();
+    let mut statics_init: Vec<Vec<bool>> = Vec::new();
     let mut frames: Vec<CallFrame> = Vec::with_capacity(16);
     frames.push(CallFrame {
         chunk_idx: usize::MAX, // main
@@ -542,6 +755,56 @@ fn run_inner(
         source_slots: Box::default(),
     });
     let mut try_stack: Vec<TryFrame> = Vec::new();
+    match run_dispatch_loop(
+        program,
+        &mut stack,
+        &mut locals,
+        &mut frames,
+        &mut try_stack,
+        &mut statics,
+        &mut statics_init,
+        overflow_mode,
+        last_pc,
+        None,
+    )? {
+        LoopOutcome::Halted(v) => Ok(v),
+        // The top-level call always passes `tracked: None`, so the
+        // ExitLive/ReturnedFromFrame stop conditions — which only
+        // ever fire when `tracked.is_some()` — can't produce these.
+        LoopOutcome::ExitedNormally | LoopOutcome::ReturnedFromFrame(_) => {
+            unreachable!("top-level run_dispatch_loop only ever produces LoopOutcome::Halted")
+        }
+    }
+}
+
+/// RES-3995: the actual per-op dispatch loop, extracted from the
+/// original `run_inner` so `Op::EnterLive` can recurse into it to run
+/// a live block's body as an independently retryable unit — exactly
+/// like the tree-walker's `eval_live_block` wraps `self.eval(body)` in
+/// a Rust-level retry loop and catches `Err` normally (including
+/// assertion failures deep inside a nested call, not just structured
+/// `fails` errors). `tracked` is `Some` only for a recursive call
+/// running a live block's body; `stack`/`locals`/`frames`/`try_stack`
+/// are shared by `&mut` reference with the caller so a retry can see
+/// (and roll back) whatever the failed attempt mutated.
+#[allow(clippy::too_many_arguments)]
+fn run_dispatch_loop(
+    program: &Program,
+    stack: &mut Vec<Value>,
+    locals: &mut Vec<Value>,
+    frames: &mut Vec<CallFrame>,
+    try_stack: &mut Vec<TryFrame>,
+    statics: &mut Vec<Vec<Value>>,
+    statics_init: &mut Vec<Vec<bool>>,
+    overflow_mode: OverflowMode,
+    last_pc: &mut (usize, usize),
+    tracked: Option<LiveTrack>,
+) -> Result<LoopOutcome, VmError> {
+    // RES-3995: once a frame pop drops `frames.len()` below this, the
+    // tracked live block's own frame is gone — further ops belong to
+    // whoever called it, and this invocation must stop.
+    let target_frames_len = tracked.as_ref().map(|t| t.frame_idx + 1);
+    let live_retry_count = tracked.as_ref().map(|t| t.retry_count);
 
     loop {
         // SAFETY: frames is non-empty for the duration of the main
@@ -566,15 +829,32 @@ fn run_inner(
             // an implicit Return / ReturnFromCall depending on
             // whether we're in main.
             if frames.len() == 1 {
-                return Ok(stack.pop().unwrap_or(Value::Void));
+                return Ok(LoopOutcome::Halted(stack.pop().unwrap_or(Value::Void)));
             }
             // In a fn body: implicit ReturnFromCall with Void.
             let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
             locals.truncate(popped.locals_base);
             stack.push(Value::Void);
+            if let Some(target_len) = target_frames_len
+                && frames.len() < target_len
+            {
+                return Ok(LoopOutcome::ReturnedFromFrame(Value::Void));
+            }
             continue;
         }
         let op = chunk.code[pc];
+        // RES-3995: the tracked live block's own paired `ExitLive` —
+        // only at the exact frame depth the block was entered at
+        // (nested live blocks in the same frame each get their own
+        // recursive `run_dispatch_loop` call, so this always matches
+        // the innermost still-open block first).
+        if let Some(target_len) = target_frames_len
+            && frames.len() == target_len
+            && matches!(op, Op::ExitLive)
+        {
+            frames[frame_idx].pc += 1;
+            return Ok(LoopOutcome::ExitedNormally);
+        }
         frames[frame_idx].pc += 1;
 
         match op {
@@ -817,6 +1097,20 @@ fn run_inner(
                         }
                     }
                     if dispatched {
+                        // RES-3995: rare edge case — a `fails` catch
+                        // dispatch unwound *past* a tracked live
+                        // block's own frame (the handler lives in an
+                        // ancestor of the live block, not inside it).
+                        // The VM state already correctly resumes at
+                        // the handler PC; this invocation just has
+                        // nothing left to track, so stop immediately
+                        // rather than let a stale `target_frames_len`
+                        // misfire on later, unrelated ops.
+                        if let Some(target_len) = target_frames_len
+                            && frames.len() < target_len
+                        {
+                            return Ok(LoopOutcome::ReturnedFromFrame(Value::Void));
+                        }
                         continue;
                     }
                     return Err(VmError::CheckedFailure(variant.clone()));
@@ -855,13 +1149,47 @@ fn run_inner(
                 // semantics.
                 let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                // RES-4041: run `popped`'s `ensures`/`recovers_to`
+                // postcondition checks now, while its own parameters are
+                // still addressable via `popped.locals_base` — mirrors
+                // the tree-walking interpreter, which runs this check
+                // before the call's environment is torn down. A
+                // violation aborts the whole VM run, exactly like the
+                // interpreter's `Contract violation in fn ...` error.
+                if popped.chunk_idx != usize::MAX
+                    && let Some(postcheck_idx) = program.functions[popped.chunk_idx].postcheck
+                {
+                    let arity = program.functions[popped.chunk_idx].arity as usize;
+                    let mut args = Vec::with_capacity(arity + 1);
+                    for i in 0..arity {
+                        args.push(
+                            locals
+                                .get(popped.locals_base + i)
+                                .cloned()
+                                .unwrap_or(Value::Void),
+                        );
+                    }
+                    args.push(ret.clone());
+                    run_postcheck(program, postcheck_idx, args, overflow_mode)?;
+                }
                 if frames.is_empty() {
-                    return Ok(ret);
+                    return Ok(LoopOutcome::Halted(ret));
                 }
                 let caller_base = frames.last().map_or(0, |f| f.locals_base);
-                write_back_upvalues(&popped, caller_base, &mut locals);
+                write_back_upvalues(&popped, caller_base, locals);
                 locals.truncate(popped.locals_base);
-                stack.push(ret);
+                stack.push(ret.clone());
+                // RES-3995: an early `return` from inside a live
+                // block's body pops the block's own enclosing frame
+                // before ever reaching `ExitLive` — see
+                // `thermal_safety_cutoff.rz`'s `safe_read`, whose
+                // whole body is `live invariant true { ...; return
+                // reading; }`. Treat it as the block succeeding.
+                if let Some(target_len) = target_frames_len
+                    && frames.len() < target_len
+                {
+                    return Ok(LoopOutcome::ReturnedFromFrame(ret));
+                }
             }
             // RES-384: self-tail-call. Reuse the current frame
             // instead of pushing a new one — O(1) call-stack depth
@@ -1025,7 +1353,7 @@ fn run_inner(
                 stack.push(Value::Bool(negated));
             }
             Op::Return => {
-                return Ok(stack.pop().unwrap_or(Value::Void));
+                return Ok(LoopOutcome::Halted(stack.pop().unwrap_or(Value::Void)));
             }
             // RES-169a: skeleton dispatch arms. The compiler never
             // emits these until RES-169b lands the MakeClosure /
@@ -1299,10 +1627,31 @@ fn run_inner(
                     });
                     continue;
                 }
-                // Try the non-namespaced builtin table first, then fall
-                // back to stdlib qualified names (e.g. "math::sqrt") so
-                // `use std::math;` works under --vm.
-                let result = if let Some(func) = crate::lookup_builtin(name) {
+                // RES-3995: `live_retries()` / `live_total_retries()` /
+                // `live_total_exhaustions()` read VM-local state
+                // (which live block is active, and process-wide retry
+                // counters) that the shared builtin table has no
+                // access to — it only ever sees `&[Value]`. Intercept
+                // these three names before the generic dispatch below;
+                // everything else falls through unchanged.
+                let result = if name == "live_retries" {
+                    match live_retry_count {
+                        Some(n) => Value::Int(n as i64),
+                        None => {
+                            return Err(VmError::BuiltinCallFailed(
+                                "live_retries() called outside a live block".to_string(),
+                            ));
+                        }
+                    }
+                } else if name == "live_total_retries" {
+                    Value::Int(
+                        VM_LIVE_TOTAL_RETRIES.load(std::sync::atomic::Ordering::Relaxed) as i64,
+                    )
+                } else if name == "live_total_exhaustions" {
+                    Value::Int(
+                        VM_LIVE_TOTAL_EXHAUSTIONS.load(std::sync::atomic::Ordering::Relaxed) as i64,
+                    )
+                } else if let Some(func) = crate::lookup_builtin(name) {
                     func(&args).map_err(VmError::BuiltinCallFailed)?
                 } else if let Some(stdlib_result) =
                     crate::stdlib::call_by_qualified_name(name, &args)
@@ -1351,18 +1700,28 @@ fn run_inner(
                         let ret = Value::Result { ok: false, payload };
                         let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
                         if frames.is_empty() {
-                            return Ok(ret);
+                            return Ok(LoopOutcome::Halted(ret));
                         }
                         locals.truncate(popped.locals_base);
-                        stack.push(ret);
+                        stack.push(ret.clone());
+                        if let Some(target_len) = target_frames_len
+                            && frames.len() < target_len
+                        {
+                            return Ok(LoopOutcome::ReturnedFromFrame(ret));
+                        }
                     }
                     Value::Option(None) => {
                         let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
                         if frames.is_empty() {
-                            return Ok(Value::Option(None));
+                            return Ok(LoopOutcome::Halted(Value::Option(None)));
                         }
                         locals.truncate(popped.locals_base);
                         stack.push(Value::Option(None));
+                        if let Some(target_len) = target_frames_len
+                            && frames.len() < target_len
+                        {
+                            return Ok(LoopOutcome::ReturnedFromFrame(Value::Option(None)));
+                        }
                     }
                     _ => {
                         return Err(VmError::TypeMismatch(
@@ -1391,6 +1750,64 @@ fn run_inner(
                 }
                 locals[abs] = v;
             }
+            // RES-4046: function-scoped `static let` — see the doc
+            // comments on `Op::PushStaticInitialized` / `StoreStatic` /
+            // `LoadStatic` in bytecode.rs. `statics`/`statics_init` are
+            // declared once in `run_inner` and threaded through every
+            // (possibly recursive, for `live` blocks) `run_dispatch_loop`
+            // call, so they persist for the whole program run instead
+            // of resetting per call like `locals` does.
+            Op::PushStaticInitialized(idx) => {
+                let chunk_idx = frames[frame_idx].chunk_idx;
+                if chunk_idx == usize::MAX {
+                    // The compiler never emits this at program scope —
+                    // top-level `static let` compiles as a plain local
+                    // (trivially "persistent": top-level code runs once).
+                    return Err(VmError::Unsupported(
+                        "static let initializer guard at program scope",
+                    ));
+                }
+                if statics_init.len() <= chunk_idx {
+                    statics_init.resize_with(chunk_idx + 1, Vec::new);
+                }
+                let flags = &mut statics_init[chunk_idx];
+                let abs = idx as usize;
+                if flags.len() <= abs {
+                    flags.resize(abs + 1, false);
+                }
+                let already_initialized = flags[abs];
+                flags[abs] = true;
+                stack.push(Value::Bool(already_initialized));
+            }
+            Op::StoreStatic(idx) => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let chunk_idx = frames[frame_idx].chunk_idx;
+                if chunk_idx == usize::MAX {
+                    return Err(VmError::Unsupported("static let store at program scope"));
+                }
+                if statics.len() <= chunk_idx {
+                    statics.resize_with(chunk_idx + 1, Vec::new);
+                }
+                let slots = &mut statics[chunk_idx];
+                let abs = idx as usize;
+                if slots.len() <= abs {
+                    slots.resize(abs + 1, Value::Void);
+                }
+                slots[abs] = v;
+            }
+            Op::LoadStatic(idx) => {
+                let chunk_idx = frames[frame_idx].chunk_idx;
+                if chunk_idx == usize::MAX {
+                    return Err(VmError::Unsupported("static let load at program scope"));
+                }
+                let abs = idx as usize;
+                let v = statics
+                    .get(chunk_idx)
+                    .and_then(|slots| slots.get(abs))
+                    .cloned()
+                    .unwrap_or(Value::Void);
+                stack.push(v);
+            }
             Op::EnterTry(handler_idx) => {
                 try_stack.push(TryFrame {
                     handler_table_idx: handler_idx,
@@ -1401,6 +1818,105 @@ fn run_inner(
             }
             Op::ExitTry => {
                 try_stack.pop();
+            }
+            // RES-3995: `Op::ExitLive` is normally consumed by the
+            // pre-check above (fired from the recursive call this
+            // block's `EnterLive` made). Reaching this arm directly
+            // would mean an `ExitLive` with no matching tracked
+            // `EnterLive` at this frame depth — not reachable from any
+            // program the compiler emits, but a no-op is safer than
+            // an error if it ever is.
+            Op::ExitLive => {}
+            // RES-3995: `live { ... }` retry loop. The body was
+            // compiled inline (same chunk, same locals slab) between
+            // this op and its paired `ExitLive`; each attempt reruns
+            // it via a recursive `run_dispatch_loop` call so any
+            // error — including one raised deep inside a nested call —
+            // is caught with plain Rust `Result` semantics, exactly
+            // like the tree-walker's `eval_live_block`.
+            Op::EnterLive(idx) => {
+                let entry = chunk.live_handlers[idx as usize];
+                let locals_base = frames[frame_idx].locals_base;
+                let locals_snapshot: Vec<Value> = locals[locals_base..].to_vec();
+                let stack_depth = stack.len();
+                let max_retries = entry.max_retries as usize;
+                let start_instant = entry.timeout_ns.map(|_| std::time::Instant::now());
+                let mut retry_count: usize = 0;
+                loop {
+                    frames[frame_idx].pc = entry.body_start_pc;
+                    let outcome = run_dispatch_loop(
+                        program,
+                        stack,
+                        locals,
+                        frames,
+                        try_stack,
+                        statics,
+                        statics_init,
+                        overflow_mode,
+                        last_pc,
+                        Some(LiveTrack {
+                            frame_idx,
+                            retry_count,
+                        }),
+                    );
+                    match outcome {
+                        Ok(LoopOutcome::ExitedNormally) => break,
+                        Ok(LoopOutcome::ReturnedFromFrame(v)) => {
+                            if let Some(target_len) = target_frames_len
+                                && frames.len() < target_len
+                            {
+                                return Ok(LoopOutcome::ReturnedFromFrame(v));
+                            }
+                            break;
+                        }
+                        Ok(LoopOutcome::Halted(v)) => return Ok(LoopOutcome::Halted(v)),
+                        Err(e) => {
+                            // RES-359 + RES-141: same retry-count
+                            // arithmetic as the tree-walker's
+                            // `eval_live_block` — exhaustion fires
+                            // once `retry_count` reaches
+                            // `max_retries`, so `max_retries` is the
+                            // total attempt count, not "initial +
+                            // max_retries".
+                            retry_count += 1;
+                            if retry_count < max_retries {
+                                VM_LIVE_TOTAL_RETRIES
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            let timed_out = match (start_instant, entry.timeout_ns) {
+                                (Some(t0), Some(budget)) => {
+                                    t0.elapsed().as_nanos() >= u128::from(budget)
+                                }
+                                _ => false,
+                            };
+                            if retry_count >= max_retries || timed_out {
+                                VM_LIVE_TOTAL_EXHAUSTIONS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                return Err(e);
+                            }
+                            // RES-050: restore the pre-attempt
+                            // locals/stack/frames snapshot — discards
+                            // both the live block's own mutations and
+                            // any leftover state from nested calls the
+                            // failed attempt made, mirroring the
+                            // tree-walker's env-snapshot restore.
+                            frames.truncate(frame_idx + 1);
+                            locals.truncate(locals_base);
+                            locals.extend(locals_snapshot.iter().cloned());
+                            stack.truncate(stack_depth);
+                            if let Some(cfg) = &entry.backoff {
+                                let ms = vm_live_backoff_delay_ms(
+                                    cfg,
+                                    entry.backoff_kind,
+                                    (retry_count - 1) as u32,
+                                );
+                                if ms > 0 {
+                                    crate::host_clock::sleep_ms(ms);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1638,26 +2154,26 @@ fn run_inner(
                 });
             }
             Op::Band => {
-                let (a, b) = pop_two_ints(&mut stack, "Band")?;
+                let (a, b) = pop_two_ints(stack, "Band")?;
                 stack.push(Value::Int(a & b));
             }
             Op::Bor => {
-                let (a, b) = pop_two_ints(&mut stack, "Bor")?;
+                let (a, b) = pop_two_ints(stack, "Bor")?;
                 stack.push(Value::Int(a | b));
             }
             Op::Bxor => {
-                let (a, b) = pop_two_ints(&mut stack, "Bxor")?;
+                let (a, b) = pop_two_ints(stack, "Bxor")?;
                 stack.push(Value::Int(a ^ b));
             }
             Op::Shl => {
-                let (a, b) = pop_two_ints(&mut stack, "Shl")?;
+                let (a, b) = pop_two_ints(stack, "Shl")?;
                 if !(0..64).contains(&b) {
                     return Err(VmError::ShiftOutOfRange(b));
                 }
                 stack.push(Value::Int(a << b));
             }
             Op::Shr => {
-                let (a, b) = pop_two_ints(&mut stack, "Shr")?;
+                let (a, b) = pop_two_ints(stack, "Shr")?;
                 if !(0..64).contains(&b) {
                     return Err(VmError::ShiftOutOfRange(b));
                 }
@@ -1669,6 +2185,27 @@ fn run_inner(
                     other => format!("assertion failed: {}", other),
                 };
                 return Err(VmError::AssertionFailed(msg));
+            }
+            Op::AssumeFail => {
+                let msg = match stack.pop().ok_or(VmError::EmptyStack)? {
+                    Value::String(s) => s,
+                    other => format!("assumption failed: {}", other),
+                };
+                return Err(VmError::AssumeViolated(msg));
+            }
+            Op::ContractViolation {
+                name_const,
+                clause_const,
+                is_recovers_to,
+            } => {
+                let result = stack.pop().ok_or(VmError::EmptyStack)?;
+                return Err(VmError::ContractViolation(format_contract_violation(
+                    chunk,
+                    name_const,
+                    clause_const,
+                    is_recovers_to,
+                    &result,
+                )?));
             }
             Op::AssertBool => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -2110,7 +2647,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 /// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
 /// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
 /// grow together.
-const OP_KIND_COUNT: usize = 38;
+const OP_KIND_COUNT: usize = 39;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -2177,6 +2714,13 @@ fn op_to_index(op: Op) -> usize {
         Op::ExitTry => OP_KIND_EXIT_TRY,
         Op::AssertBool => OP_KIND_ASSERT_BOOL,
         Op::Pop => OP_KIND_POP,
+        Op::AssumeFail => OP_KIND_ASSUME_FAIL,
+        Op::EnterLive(_) => OP_KIND_ENTER_LIVE,
+        Op::ExitLive => OP_KIND_EXIT_LIVE,
+        Op::PushStaticInitialized(_) => OP_KIND_PUSH_STATIC_INITIALIZED,
+        Op::StoreStatic(_) => OP_KIND_STORE_STATIC,
+        Op::LoadStatic(_) => OP_KIND_LOAD_STATIC,
+        Op::ContractViolation { .. } => OP_KIND_CONTRACT_VIOLATION,
     }
 }
 
@@ -2202,7 +2746,31 @@ const OP_KIND_ENTER_TRY: usize = 49;
 const OP_KIND_EXIT_TRY: usize = 50;
 const OP_KIND_ASSERT_BOOL: usize = 51;
 const OP_KIND_POP: usize = 52;
-const HANDLER_TABLE_LEN: usize = 53;
+const OP_KIND_ASSUME_FAIL: usize = 53;
+/// RES-3995: `EnterLive`/`ExitLive` are only implemented by the Match
+/// dispatch engine (`run_inner`); the Direct (table-dispatch) engine
+/// surfaces a clean `VmError::Unsupported` via `h_live_unsupported`
+/// instead of silently mis-executing the block. Follow-up ticket:
+/// port the retry-loop recursion to `run_direct`.
+const OP_KIND_ENTER_LIVE: usize = 54;
+const OP_KIND_EXIT_LIVE: usize = 55;
+/// RES-4046: function-scoped `static let` persistence is only
+/// implemented by the Match dispatch engine (`run_inner`) — it needs
+/// the `statics`/`statics_init` tables threaded through
+/// `run_dispatch_loop`, which `run_direct` doesn't share. The Direct
+/// engine surfaces a clean `VmError::Unsupported` via
+/// `h_static_unsupported` instead of silently resetting the static on
+/// every call (this ticket's original bug). Follow-up: port the
+/// statics tables to `VmState` so `run_direct` gets full parity.
+const OP_KIND_PUSH_STATIC_INITIALIZED: usize = 56;
+const OP_KIND_STORE_STATIC: usize = 57;
+const OP_KIND_LOAD_STATIC: usize = 58;
+/// RES-4041: only ever reached via a synthesized postcheck function's
+/// own chunk, which `h_return_from_call` refuses to invoke under the
+/// Direct engine (see its doc comment) — this handler exists for
+/// dispatch-table completeness, not because it's reachable today.
+const OP_KIND_CONTRACT_VIOLATION: usize = 59;
+const HANDLER_TABLE_LEN: usize = 60;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2261,8 +2829,38 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_EXIT_TRY] = h_exit_try;
     table[OP_KIND_ASSERT_BOOL] = h_assert_bool;
     table[OP_KIND_POP] = h_pop;
+    table[OP_KIND_ASSUME_FAIL] = h_assume_fail;
+    table[OP_KIND_ENTER_LIVE] = h_live_unsupported;
+    table[OP_KIND_EXIT_LIVE] = h_live_unsupported;
+    table[OP_KIND_PUSH_STATIC_INITIALIZED] = h_static_unsupported;
+    table[OP_KIND_STORE_STATIC] = h_static_unsupported;
+    table[OP_KIND_LOAD_STATIC] = h_static_unsupported;
+    table[OP_KIND_CONTRACT_VIOLATION] = h_contract_violation;
     table
 };
+
+/// RES-3995: `run_direct` doesn't implement live-block retry semantics
+/// yet — see the `OP_KIND_ENTER_LIVE` doc comment. Surface a clean
+/// error instead of silently running the body exactly once (which
+/// would print correct output on the happy path but corrupt retry
+/// counters / skip the retry loop on the failure path).
+#[inline(never)]
+fn h_live_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported(
+        "live block (RESILIENT_DISPATCH=direct doesn't implement RES-3995 retry semantics yet)",
+    ))
+}
+
+/// RES-4046: `run_direct` doesn't implement function-scoped `static
+/// let` persistence yet — see the `OP_KIND_PUSH_STATIC_INITIALIZED`
+/// doc comment. Surface a clean error instead of silently resetting
+/// the static's value on every call (the bug this ticket fixes).
+#[inline(never)]
+fn h_static_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported(
+        "static let (RESILIENT_DISPATCH=direct doesn't implement RES-4046 persistence yet)",
+    ))
+}
 
 /// Direct-threaded entry point. Mirrors `run_inner` byte-for-byte but
 /// dispatches via the handler table. The outer error-wrapping logic
@@ -2667,6 +3265,21 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
 fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let ret = state.stack.pop().unwrap_or(Value::Void);
     let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+    // RES-4041: the Direct (table-dispatch) engine doesn't implement
+    // the postcheck's isolated nested-call recursion yet (same scope
+    // cut as `OP_KIND_ENTER_LIVE`'s live-block retry semantics) —
+    // surface a clean `Unsupported` instead of silently skipping the
+    // check. `--vm`'s default Match engine (`run_inner`) always runs
+    // it; this only matters under `RESILIENT_DISPATCH=direct`.
+    if popped.chunk_idx != usize::MAX
+        && state.program.functions[popped.chunk_idx]
+            .postcheck
+            .is_some()
+    {
+        return Err(VmError::Unsupported(
+            "ensures/recovers_to postcondition check (RESILIENT_DISPATCH=direct doesn't implement RES-4041 postcheck recursion yet)",
+        ));
+    }
     if state.frames.is_empty() {
         return Ok(Step::Halt(ret));
     }
@@ -3399,6 +4012,34 @@ fn h_assert_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     Err(VmError::AssertionFailed(msg))
 }
 
+fn h_assume_fail(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let msg = match state.stack.pop().ok_or(VmError::EmptyStack)? {
+        Value::String(s) => s,
+        other => format!("assumption failed: {}", other),
+    };
+    Err(VmError::AssumeViolated(msg))
+}
+
+fn h_contract_violation(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::ContractViolation {
+        name_const,
+        clause_const,
+        is_recovers_to,
+    } = op
+    else {
+        unreachable!()
+    };
+    let result = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let chunk = state.current_chunk();
+    Err(VmError::ContractViolation(format_contract_violation(
+        chunk,
+        name_const,
+        clause_const,
+        is_recovers_to,
+        &result,
+    )?))
+}
+
 fn h_assert_bool(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
     if !matches!(v, Value::Bool(_)) {
@@ -3780,6 +4421,169 @@ mod tests {
         assert_eq!(err.kind(), &VmError::DivideByZero);
     }
 
+    // --- RES-3995: `live { ... }` retry loop under `--vm` ---
+
+    #[test]
+    fn live_block_retries_until_success_returns_value() {
+        // Mirrors examples/live_retry_log.rz: fails twice, succeeds on
+        // the third attempt, and the block's own value flows out.
+        let src = "\
+            static let fails_left = 2;\n\
+            fn maybe_fail() {\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced fail\");\n\
+                }\n\
+                return 42;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    maybe_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert!(
+            compile_run(src).is_ok(),
+            "expected the block to eventually succeed"
+        );
+    }
+
+    #[test]
+    fn live_retries_reports_attempt_number_across_retries() {
+        // `live_retries()` must read 0, 1, 2 across the three attempts
+        // — same counter arithmetic as the tree-walker's `LiveRetryGuard`.
+        let src = "\
+            static let fails_left = 2;\n\
+            static let seen = 0;\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    seen = live_retries();\n\
+                    if fails_left > 0 {\n\
+                        fails_left = fails_left - 1;\n\
+                        assert(false, \"forced fail\");\n\
+                    }\n\
+                }\n\
+                return seen;\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert_int(compile_run(src).unwrap(), 2);
+    }
+
+    #[test]
+    fn live_retries_outside_live_block_is_clean_error() {
+        let err = compile_run("live_retries();").unwrap_err();
+        let display = err.to_string();
+        assert!(
+            display.contains("live_retries() called outside a live block"),
+            "unexpected error text: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn live_block_invariant_failure_triggers_retry_and_rolls_back_state() {
+        // `live invariant` treats a false invariant exactly like a body
+        // error: retry with the pre-attempt state restored. `count` is
+        // declared OUTSIDE the block (in the enclosing fn), so this
+        // also exercises that the retry rollback covers the enclosing
+        // scope's locals, not just the block's own — mirrors
+        // examples/showcase_live_invariant.rz's rollback requirement.
+        let src = "\
+            fn main(int _d) {\n\
+                let count = 0;\n\
+                live invariant count <= 1 {\n\
+                    count = count + 1;\n\
+                    if live_retries() == 0 {\n\
+                        count = count + 5;\n\
+                    }\n\
+                }\n\
+                return count;\n\
+            }\n\
+            main(0);\n\
+        ";
+        // Attempt 0: count = 0+1+5 = 6, invariant (6 <= 1) fails, retry
+        // (count rolls back to 0). Attempt 1: count = 0+1 = 1, holds.
+        assert_int(compile_run(src).unwrap(), 1);
+    }
+
+    #[test]
+    fn live_block_exhausts_retry_budget_and_propagates_error() {
+        // Always fails — `retries(1)` caps the budget at exactly one
+        // attempt, so the assertion error must propagate rather than
+        // retry forever.
+        let src = "\
+            fn main(int _d) {\n\
+                live retries(1) {\n\
+                    assert(false, \"always fails\");\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let err = compile_run(src).unwrap_err();
+        let display = err.to_string();
+        assert!(
+            display.contains("always fails"),
+            "expected the underlying assertion text to propagate: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn live_block_early_return_from_body_exits_successfully() {
+        // A `return` inside a live block's body (e.g.
+        // examples/thermal_safety_cutoff.rz's `safe_read`) must return
+        // from the enclosing function, not be treated as a failure.
+        let src = "\
+            fn safe_read(int nominal) -> int {\n\
+                live invariant true {\n\
+                    let reading = nominal;\n\
+                    return reading;\n\
+                }\n\
+            }\n\
+            fn main() {\n\
+                return safe_read(500);\n\
+            }\n\
+            main();\n\
+        ";
+        assert_int(compile_run(src).unwrap(), 500);
+    }
+
+    #[test]
+    fn live_block_retries_are_visible_via_live_total_retries() {
+        // RES-141: `VM_LIVE_TOTAL_RETRIES` is a process-wide counter
+        // shared across every test in this binary (mirrors the
+        // tree-walker's own `LIVE_TOTAL_RETRIES` and its test's
+        // before/after-delta pattern) — snapshot before running so
+        // parallel test execution can't make this flaky.
+        use std::sync::atomic::Ordering::Relaxed;
+        let before = VM_LIVE_TOTAL_RETRIES.load(Relaxed);
+        let src = "\
+            static let fails_left = 2;\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    if fails_left > 0 {\n\
+                        fails_left = fails_left - 1;\n\
+                        assert(false, \"forced\");\n\
+                    }\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert!(compile_run(src).is_ok());
+        let after = VM_LIVE_TOTAL_RETRIES.load(Relaxed);
+        // Lower-bound, not exact — other tests running in parallel on
+        // the same process bump this same atomic, inflating the delta
+        // (never deflating it below what this test's own workload
+        // contributes).
+        assert!(
+            after - before >= 2,
+            "expected at least 2 retries counted from this test's own workload, saw delta {}",
+            after - before
+        );
+    }
+
     #[test]
     fn int_plus_string_coerces() {
         let p = const_program(
@@ -3910,6 +4714,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -4217,6 +5022,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]
@@ -5420,6 +6226,7 @@ mod tests {
             local_count: 0,
             upvalue_source_slots: Box::default(),
             fails: Box::default(),
+            postcheck: None,
         };
         let mut main = Chunk::new();
         main.code.push(Op::Call(0));
@@ -5459,6 +6266,7 @@ mod tests {
                 local_count: 0,
                 upvalue_source_slots: Box::default(),
                 fails: Box::default(),
+                postcheck: None,
                 chunk: body,
             }],
             #[cfg(feature = "ffi")]

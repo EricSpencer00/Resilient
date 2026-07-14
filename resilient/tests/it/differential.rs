@@ -194,6 +194,39 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
     // <other> catch-all).
+    //
+    // The `Match`-as-statement family is fixed: `if let`/`while let`
+    // (RES-908/RES-914) desugar to a bare `Node::Match` inside a `Block`
+    // (see `parse_if_let_statement`/`parse_while_let_statement` in
+    // `lib.rs`), but neither `compile_stmt` nor `compile_stmt_in_fn` had a
+    // `Match` arm — every if-let/while-let fell through to the generic
+    // `Unsupported("Match")` catch-all even though `compile_match_expr`
+    // already handled `Match` in *expression* position. Added
+    // `compile_match_stmt`/`compile_match_stmt_in_fn` (mirrors
+    // `compile_match_expr`'s pattern-check/guard machinery, but compiles
+    // arm bodies with `compile_stmt`/`compile_stmt_in_fn` instead of
+    // `compile_expr` so `return`/`break`/`continue` inside an arm work,
+    // and doesn't leave a fallthrough value on the stack) and wired both
+    // into their respective statement dispatchers — `edge_if_let_pattern.rz`,
+    // `edge_while_let.rz`, `if_let.rz`, `while_let.rz` no longer belong here.
+    //
+    // The remaining entries are distinct root causes this fix does not
+    // touch: `break_with_value.rz` needs a `loop`-as-expression value
+    // channel for `WhileStatement` in expression position (`break <expr>`
+    // via `Node::BreakWith`); `match_block_arms.rz` needs `ReturnStatement`
+    // support inside a match arm's block when the match itself is compiled
+    // in *expression* position (`compile_block_as_expr` doesn't handle
+    // `return`); `comprehension_demo.rz`/`edge_closure_capture.rz` need
+    // indirect-call support for non-identifier callees; `null_coalescing_
+    // operator.rz`/`option_find.rz` need the `??` operator (and, for
+    // `option_find.rz`, an `Option`-returning fn declared with an `int`
+    // return type — a pre-existing typechecker gap unrelated to the VM);
+    // and `array_contains.rz`, `array_sorted_invariant.rz`, `bench_simple.rz`,
+    // `defer_stmt.rz`, `optional_chaining.rz`, `quantifier_assert.rz`,
+    // `quantifier_exists.rz`, `quantifier_forall.rz`, `showcase_quantifiers.rz`
+    // are still an untriaged `<other>` catch-all (each needs the
+    // `node_kind` name surfaced per-example — left for a follow-up PR
+    // under this same ticket).
     "array_contains.rz",
     "array_sorted_invariant.rz",
     "bench_simple.rz",
@@ -201,9 +234,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "comprehension_demo.rz",
     "defer_stmt.rz",
     "edge_closure_capture.rz",
-    "edge_if_let_pattern.rz",
-    "edge_while_let.rz",
-    "if_let.rz",
     "match_block_arms.rz",
     "null_coalescing_operator.rz",
     "option_find.rz",
@@ -212,7 +242,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "quantifier_exists.rz",
     "quantifier_forall.rz",
     "showcase_quantifiers.rz",
-    "while_let.rz",
     // RES-4017 (split off from RES-3994; that ticket closed once every
     // sub-case had a home — see PR #4016): `Op::CallMethod`'s built-in-
     // container fallback (`vm_call_builtin_method`) has no path for
@@ -238,23 +267,19 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "array_method_chains.rz",
     "mutual_tco.rz",
     "string_builder.rz",
-    // RES-3995: VM has no `live { }` retry-loop execution context — `live_retries()`
-    // fails outside a live block, and the retry mechanism itself asserts on
-    // the first failing attempt instead of retrying.
-    "live_blocks.rz",
-    "live_retry_log.rz",
-    "self_healing.rz",
-    "showcase_live_invariant.rz",
-    "telemetry_demo.rz",
-    "thermal_safety_cutoff.rz",
-    // RES-3996: VM doesn't enforce `assume(false)` / panic-recovery dead-code
-    // runtime checks — the interpreter exits non-zero before reaching "dead"
-    // code; `--vm` runs straight through it.
-    "assume_debug.rz",
-    "assume_false_dead_code.rz",
-    "assume_literal_false.rz",
-    "assume_violated.rz",
-    "recovers_to_fail.rz",
+    // RES-3995 fixed the VM's `live { }` retry-loop execution context
+    // (`live_retries()`, backoff, timeout, invariants, and the retry
+    // loop itself all now work under `--vm`) — `live_blocks.rz`,
+    // `live_retry_log.rz`, `showcase_live_invariant.rz`, and
+    // `telemetry_demo.rz` were removed from this list in that PR.
+    // `self_healing.rz` (RES-4046: function-scoped `static let` didn't
+    // persist across calls under `--vm`), `thermal_safety_cutoff.rz`
+    // (RES-4045: `return EXPR;` after an if-branch ending in
+    // `Op::AssertFail` dropped the `LoadLocal`), and `recovers_to_fail.rz`
+    // (RES-4041: the VM never checked `ensures`/`recovers_to`
+    // function-contract postconditions at all) were removed from this
+    // list once those independently-filed, non-live-block bugs were
+    // fixed.
 ];
 
 /// Every `examples/*.rz` file, sorted, read fresh from disk each run so
@@ -1665,4 +1690,140 @@ fn interpreter_and_vm_agree_on_unsafe_block_body_execution() {
         failures.len(),
         failures.join("")
     );
+}
+
+#[test]
+fn interpreter_and_vm_agree_on_assume_false_dead_code() {
+    // RES-3996: `compile_stmt`/`compile_stmt_in_fn` used to group
+    // `Node::Assume` with declaration-only nodes that emit no bytecode at
+    // all, so `--vm` silently no-op'd `assume(cond[, msg]);` and ran
+    // straight through code the tree-walker's `eval_assume` treats as
+    // unreachable. Covers both the top-level (`compile_stmt`) and in-fn
+    // (`compile_stmt_in_fn`) lowering paths, a custom failure message,
+    // an `assume` nested inside other control flow, and a passing
+    // `assume` so the fix doesn't regress the true-condition case.
+    let programs = [
+        (
+            "top_level_assume_false_dead_code",
+            "assume(false); println(\"unreachable\");".to_string(),
+        ),
+        (
+            "in_fn_assume_false_dead_code",
+            "fn main() { println(\"before\"); assume(false); println(\"unreachable\"); } main();"
+                .to_string(),
+        ),
+        (
+            "assume_false_with_custom_message",
+            "fn main() { assume(false, \"sensor offline\"); println(\"unreachable\"); } main();"
+                .to_string(),
+        ),
+        (
+            "assume_false_nested_in_if",
+            "fn main() { if true { assume(false); println(\"unreachable\"); } } main();"
+                .to_string(),
+        ),
+        (
+            "assume_true_does_not_halt",
+            "fn main() { assume(1 > 0); println(\"reached\"); } main();".to_string(),
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in &programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} assume(false) case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+}
+
+#[test]
+fn interpreter_and_vm_agree_on_ensures_recovers_to_postconditions() {
+    // RES-4041: the tree-walking interpreter runtime-checks `ensures`/
+    // `recovers_to` function-contract postconditions after a function's
+    // body returns (see `lib.rs`'s post-body check in the
+    // `Value::Function` call-evaluation arm), but the bytecode VM used
+    // to have no equivalent check anywhere — a function whose body
+    // violated a runtime `ensures`/`recovers_to` clause errored under
+    // the interpreter but silently returned normally under `--vm`.
+    // `examples/recovers_to_fail.rz` (covered by
+    // `interpreter_and_vm_agree_on_all_examples` now that it's off
+    // `UNSUPPORTED_BY_VM`) is one fixed instance of this; these cases
+    // pin the fix directly, independent of that example file, and
+    // additionally cover: a satisfied `ensures`, a violated `ensures`
+    // that never touches `recovers_to`, and a nested `fn` (not just a
+    // top-level one) declaring `ensures`.
+    let programs = [
+        (
+            "ensures_satisfied_passes",
+            "fn double_it(int x) -> int ensures result == x * 2 { return x * 2; } \
+             fn main() { println(double_it(5)); } main();"
+                .to_string(),
+        ),
+        (
+            "ensures_violated_halts",
+            "fn broken_double(int x) -> int ensures result == x * 2 { return x * 3; } \
+             fn main() { let v = broken_double(5); println(v); } main();"
+                .to_string(),
+        ),
+        (
+            "recovers_to_satisfied_passes",
+            "fn init_actuator(int id) -> int recovers_to: result == 0; { return 0; } \
+             fn main() { println(init_actuator(1)); } main();"
+                .to_string(),
+        ),
+        (
+            "recovers_to_violated_halts",
+            "fn init_actuator(int id) -> int recovers_to: result == 0; { return 3; } \
+             fn main() { let mode = init_actuator(1); println(mode); } main();"
+                .to_string(),
+        ),
+        (
+            "nested_fn_ensures_violated_halts",
+            "fn main() { \
+                 fn broken_double(int x) -> int ensures result == x * 2 { return x * 3; } \
+                 println(broken_double(5)); \
+             } main();"
+                .to_string(),
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (tag, src) in &programs {
+        let interp = run_src(src, tag, false);
+        let vm = run_src(src, tag, true);
+        if let Err(diff) = compare_outputs("interpreter", &interp, "vm", &vm) {
+            failures.push(format!("\n--- {tag} ---\n{diff}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} ensures/recovers_to case(s) diverged between backends:{}",
+        failures.len(),
+        failures.join("")
+    );
+
+    // The violated cases must actually halt (both backends) — a test
+    // that "agrees" by both backends silently succeeding would defeat
+    // the point.
+    for tag in [
+        "ensures_violated_halts",
+        "recovers_to_violated_halts",
+        "nested_fn_ensures_violated_halts",
+    ] {
+        let (_, src) = programs.iter().find(|(t, _)| *t == tag).unwrap();
+        let vm = run_src(src, tag, true);
+        assert_ne!(
+            vm.code,
+            Some(0),
+            "{tag}: expected --vm to halt on the violated postcondition, got exit {:?} stdout {:?}",
+            vm.code,
+            vm.stdout
+        );
+    }
 }

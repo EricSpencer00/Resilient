@@ -12,14 +12,23 @@ D-E1 — the design doc that unblocks the implementation PR sequence.
 No source changes ship with this doc.
 {: .fs-6 .fw-300 }
 
-**Status (decomposition in section 5): items 1-3 done.** #4031 shipped
-the no_std `Instr`/`Vm` skeleton, #4034 shipped the `.rzbc`
+**Status (decomposition in section 5): items 1-4 done — the 1.0
+embedded gate (a `.rz` program compiles to and runs on an embedded
+target under CI) is now met for the supported scalar subset.** #4031
+shipped the no_std `Instr`/`Vm` skeleton, #4034 shipped the `.rzbc`
 encoder/decoder (`resilient_runtime::vm::serde`), and the `rz build
 --target <TRIPLE>` subcommand (`resilient/src/rzbc_emit.rs` +
 `lib.rs`'s `dispatch_build_subcommand`) now closes the loop end to
 end for the Int/Bool/Float arithmetic/comparison/control-flow/locals
-subset — see section 3.1's "Proposed" column, now real. Items 4-7
-(QEMU CI, `Value::Array`, interrupt lowering) remain open follow-ups.
+subset — see section 3.1's "Proposed" column, now real. #4042 added
+the thin loader binary section 3.3 sketches
+(`resilient-runtime-loader-demo/`, embedding the committed
+`arithmetic_demo.rzbc` fixture), and the `embedded-runtime.yml` CI job
+(section 4, item 4) now actually runs that binary under
+`qemu-system-arm`'s `lm3s6965evb` machine and asserts on both its
+semihosting output and QEMU's process exit status. Item 5 (the
+RISC-V QEMU variant) and items 6-7 (`Value::Array`, interrupt
+lowering) remain open follow-ups.
 
 <details open markdown="block">
   <summary>Table of contents</summary>
@@ -320,12 +329,34 @@ future `Program` evaluator" (`docs/no-std.md`, "What it is" section).
 
 ## 4. QEMU CI plan
 
-`embedded.yml` is explicit today that it runs **build gates, not
-runtime exercises** ("No QEMU runners here... A runtime job would need
-per-target QEMU and is out of scope for this ticket" — comment at the
-top of the file), and `resilient-runtime-cortex-m-demo/README.md`
-says the same for its one hand-written demo. Closing D-E1 for real
-means adding an actual runtime gate:
+**Status: item 2 (Cortex-M path) shipped.** `embedded-runtime.yml`
+(new workflow, `qemu_cortex_m` job) builds
+`resilient-runtime-loader-demo` for `thumbv7em-none-eabihf` via the
+existing `scripts/build_loader_demo.sh`, then runs the ELF under
+`qemu-system-arm -M lm3s6965evb -cpu cortex-m4 -nographic
+-semihosting-config enable=on,target=native -kernel <elf>`
+(`resilient-runtime-loader-demo/run_qemu.sh`, wrapped in a 30s
+`timeout`). The job fails on a QEMU timeout, a non-zero QEMU exit
+status, or semihosting output that doesn't contain the fixture's
+expected `loader ok: Int(21)` string — the same three failure modes
+item 2's design called for. One deviation from the original sketch:
+item 4 below ("golden comparison" via an `.expected.txt` sidecar) is
+simplified to a single hardcoded expected-string check in
+`run_qemu.sh`, since there is exactly one on-device example today (the
+committed `arithmetic_demo.rzbc` fixture, which already has a
+host-side expected-value assertion in `resilient-runtime/src/vm/loader.rs`'s
+test suite) — a sidecar-file convention is worth adopting once a
+second on-device example exists to make the pattern actually reusable.
+Items 3 (RISC-V variant) and 5's multi-example scope-out remain as
+originally planned; see section 5, item 5.
+
+`embedded.yml` was explicit before this landed that it ran **build
+gates, not runtime exercises** ("No QEMU runners here... A runtime job
+would need per-target QEMU and is out of scope for this ticket" —
+comment at the top of the file), and
+`resilient-runtime-cortex-m-demo/README.md` said the same for its one
+hand-written demo. Closing D-E1 for real meant adding an actual
+runtime gate:
 
 1. **New job, `embedded-runtime.yml`** (separate workflow file, so it
    doesn't block on `embedded.yml`'s existing build-only jobs and can
@@ -342,17 +373,23 @@ means adding an actual runtime gate:
    with `riscv-rt` + the equivalent semihosting exit convention
    (`riscv-semihosting`'s `sprintln!`/`syscall::exit()`). Same
    pass/fail contract as the Cortex-M path so the CI step is
-   target-parameterized rather than duplicated.
+   target-parameterized rather than duplicated. Not yet shipped — see
+   section 5, item 5.
 4. **Golden comparison**: each embedded example ships the same
    `<name>.expected.txt` sidecar convention the host corpus already
    uses (`resilient/examples/*.expected.txt`). The CI step captures
    QEMU's semihosting stdout and diffs it against the sidecar —
    reusing the existing golden-file discipline rather than inventing
-   a new one.
+   a new one. Simplified for the single-example case — see the
+   "Status" note above.
 5. **Scope boundary**: this job exercises the `no_std-scalar` VM
    profile only, on 1–2 example programs, until section 1's (b)-class
    opcodes grow real no_std `Value` backing. It is intentionally not
-   a full port of the host example corpus.
+   a full port of the host example corpus. The job also starts as
+   **advisory, not required**: it is not yet in `main`'s
+   required-status-checks list, so it can prove itself flake-free
+   against a brand-new CI dependency (`qemu-system-arm` via apt) for a
+   few cycles before it can block auto-merge.
 
 ---
 
@@ -388,8 +425,16 @@ tickets"):
    nothing to select between yet) and no loader-crate
    scaffold/refresh (section 3.3) — both remain follow-up work once
    more than one `vm_profile` exists to choose from.
-4. **QEMU CI job (Cortex-M).** `embedded-runtime.yml`, per section 4,
-   items 1–2 and 4, for the `lm3s6965evb` + Cortex-M4 case only.
+4. **QEMU CI job (Cortex-M) — DONE.** Landed in two PRs rather than
+   one: #4042 first shipped the loader binary itself
+   (`resilient-runtime-loader-demo/`) as a hand-authored crate rather
+   than an `rz build`-scaffolded template — section 3.3's
+   scaffold-on-demand behavior remains a follow-up, this PR just needed
+   *a* binary to point QEMU at. Then `embedded-runtime.yml`
+   (`qemu_cortex_m` job) added the actual CI wiring: section 4, items
+   1–2 and 4 (simplified per that section's "Status" note), for the
+   `lm3s6965evb` + Cortex-M4 case only. Advisory, not required yet
+   (section 4, item 5).
 5. **QEMU CI job (RISC-V).** Same job, RISC-V variant (section 4,
    item 3). Split from #4 so a flaky QEMU/semihosting setup on one
    architecture doesn't block the other from merging.

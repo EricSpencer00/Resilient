@@ -24,6 +24,10 @@
 #                                            panic=abort, lto=true,
 #                                            codegen-units=1` for the
 #                                            size-gate workflow.
+#   - resilient-runtime-loader-demo/      — RES-3987 (D-E1): on-device
+#                                            `.rzbc` loader binary, same
+#                                            embedded-profile shape as
+#                                            resilient-runtime-cortex-m-demo.
 #   - fuzz/                               — cargo-fuzz convention: its own
 #                                            implicit workspace.
 #
@@ -44,6 +48,7 @@ members = [
 exclude = [
     "playground",
     "resilient-runtime-cortex-m-demo",
+    "resilient-runtime-loader-demo",
     "fuzz",
 ]
 
