@@ -35,6 +35,13 @@ pub struct ExhaustivenessError {
     pub context: String,
     pub enum_name: String,
     pub missing: Vec<String>,
+    /// RES-3934: variant names referenced by match arms that don't
+    /// exist on the declared enum at all — almost always a typo (e.g.
+    /// `Color::Reed` when the declared variant is `Red`). Surfaced as
+    /// a "did you mean" hint in `check()`'s formatted message so the
+    /// missing-variant list doesn't read as a false accusation when the
+    /// user actually did write an arm for it, just misspelled.
+    pub unrecognized: Vec<String>,
 }
 
 /// Build a map of `enum_name → Vec<variant_name>` from all `Node::EnumDecl`
@@ -57,12 +64,44 @@ fn collect_enum_variants<'a>(program: &'a Node) -> HashMap<&'a str, Vec<&'a str>
 }
 
 /// Returns true if the arm's pattern is a catch-all (always matches without
-/// constraining to a specific variant).
+/// constraining to a specific variant). RES-3934: recurses into `Or`
+/// branches — `_ | Color::Red => ...` matches unconditionally (first-match
+/// wins, so if ANY branch is a catch-all the whole arm is), so it must be
+/// treated the same as a bare `_` arm.
 fn is_catch_all(pattern: &crate::Pattern) -> bool {
-    matches!(
-        pattern,
-        crate::Pattern::Wildcard | crate::Pattern::Identifier(_)
-    )
+    match pattern {
+        crate::Pattern::Wildcard | crate::Pattern::Identifier(_) => true,
+        crate::Pattern::Or(branches) => branches.iter().any(is_catch_all),
+        _ => false,
+    }
+}
+
+/// RES-3934: recursively flatten a pattern into the `(enum_name,
+/// variant_name)` pairs it covers. Handles the common case (a single
+/// qualified `EnumVariant`) and `Or` patterns (`Color::Red | Color::Green
+/// => ...`), which union the coverage of their branches.
+///
+/// Returns `false` if any leaf of the pattern isn't a qualified
+/// `EnumVariant` — a bare variant name (`type_name: None`), a mix with a
+/// non-enum pattern, or any other pattern shape. The caller bails
+/// conservatively (no exhaustiveness claim) in that case, exactly as it
+/// did before `Or` patterns were unpacked.
+fn collect_variant_leaves<'p>(
+    pattern: &'p crate::Pattern,
+    out: &mut Vec<(&'p str, &'p str)>,
+) -> bool {
+    match pattern {
+        crate::Pattern::EnumVariant {
+            type_name: Some(tn),
+            variant_name,
+            ..
+        } => {
+            out.push((tn.as_str(), variant_name.as_str()));
+            true
+        }
+        crate::Pattern::Or(branches) => branches.iter().all(|b| collect_variant_leaves(b, out)),
+        _ => false,
+    }
 }
 
 /// Analyze one `Node::Match` expression. Returns an `ExhaustivenessError`
@@ -79,38 +118,32 @@ fn check_match(
         }
     }
 
-    // Collect all EnumVariant type_names referenced in the arms.
-    // If arms mix different enums or non-EnumVariant patterns, skip.
+    // Collect all EnumVariant type_names referenced in the arms — RES-3934:
+    // `Or` patterns are flattened to the union of their branches first, so
+    // `Color::Red | Color::Green => ...` contributes both variant names
+    // instead of causing the whole match to be skipped. If arms mix
+    // different enums or non-EnumVariant patterns, skip.
     let mut enum_name_seen: Option<&str> = None;
     let mut matched_variants: HashSet<&str> = HashSet::new();
 
     for (pat, _guard, _) in arms {
-        match pat {
-            crate::Pattern::EnumVariant {
-                type_name: Some(tn),
-                variant_name,
-                ..
-            } => {
-                if let Some(existing) = enum_name_seen {
-                    if existing != tn.as_str() {
-                        // Multiple different enum type names — bail conservatively.
-                        return None;
-                    }
-                } else {
-                    enum_name_seen = Some(tn.as_str());
+        let mut leaves: Vec<(&str, &str)> = Vec::new();
+        if !collect_variant_leaves(pat, &mut leaves) {
+            // Bare variant name, non-EnumVariant pattern, or an `Or`
+            // branch that isn't a qualified EnumVariant — bail
+            // conservatively, same as before RES-3934.
+            return None;
+        }
+        for (tn, variant_name) in leaves {
+            if let Some(existing) = enum_name_seen {
+                if existing != tn {
+                    // Multiple different enum type names — bail conservatively.
+                    return None;
                 }
-                matched_variants.insert(variant_name.as_str());
+            } else {
+                enum_name_seen = Some(tn);
             }
-            crate::Pattern::EnumVariant {
-                type_name: None, ..
-            } => {
-                // Bare variant name without enum prefix — can't attribute to an enum.
-                return None;
-            }
-            _ => {
-                // Non-EnumVariant pattern mixed in — bail conservatively.
-                return None;
-            }
+            matched_variants.insert(variant_name);
         }
     }
 
@@ -123,6 +156,16 @@ fn check_match(
         .map(|v| v.to_string())
         .collect();
 
+    // RES-3934: variant names the arms reference that aren't declared on
+    // this enum at all — surfaced as "did you mean" hints in `check()`.
+    let declared_set: HashSet<&str> = declared.iter().copied().collect();
+    let mut unrecognized: Vec<String> = matched_variants
+        .iter()
+        .filter(|v| !declared_set.contains(*v))
+        .map(|v| v.to_string())
+        .collect();
+    unrecognized.sort();
+
     if missing.is_empty() {
         return None;
     }
@@ -131,6 +174,7 @@ fn check_match(
         context: context.to_string(),
         enum_name: enum_name.to_string(),
         missing,
+        unrecognized,
     })
 }
 
@@ -199,12 +243,25 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     let e = &errs[0];
+    // RES-3934: if any arm pattern named a variant that isn't declared on
+    // this enum at all, it's very likely the *actual* reason a "missing"
+    // variant shows up — the user did write an arm for it, just misspelled
+    // the name. Surface a "did you mean" hint per unrecognized name,
+    // matched against the variants this error already lists as missing.
+    let hint: String = e
+        .unrecognized
+        .iter()
+        .map(|u| crate::did_you_mean::hint_from(u, e.missing.iter().map(String::as_str)))
+        .filter(|h| !h.is_empty())
+        .collect::<Vec<_>>()
+        .join("");
     Err(format!(
-        "{}: error: non-exhaustive match on enum `{}` in `{}`: missing variant(s): {}",
+        "{}: error: non-exhaustive match on enum `{}` in `{}`: missing variant(s): {}{}",
         source_path,
         e.enum_name,
         e.context,
-        e.missing.join(", ")
+        e.missing.join(", "),
+        hint
     ))
 }
 
@@ -580,6 +637,317 @@ fn eval(Expr e) -> int {
         assert!(
             msg.contains("Neg"),
             "error must name missing variant 'Neg': {msg}"
+        );
+    }
+
+    // RES-3934: adversarial corpus — or-patterns, guard interaction,
+    // range/struct payloads, and nested-pattern completeness.
+
+    /// Bug fix: an or-pattern arm (`Color::Red | Color::Green => ...`)
+    /// used to make `check_match` bail conservatively (treated as a
+    /// non-EnumVariant pattern), so a match that was ACTUALLY exhaustive
+    /// via an or-pattern reported no error only by accident — and the
+    /// mirror case (a genuinely non-exhaustive or-pattern match) also
+    /// silently passed. RES-3934 flattens `Or` into its branches so
+    /// coverage is unioned correctly in both directions.
+    #[test]
+    fn or_pattern_covering_two_variants_is_exhaustive() {
+        let src = r#"
+enum Color { Red, Green, Blue }
+fn describe(Color c) -> int {
+    return match c {
+        Color::Red | Color::Green => 0,
+        Color::Blue => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "or-pattern covering Red+Green plus a Blue arm is exhaustive; got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn or_pattern_missing_variant_is_detected() {
+        // Only Red and Green are covered (via the or-pattern) — Blue
+        // is missing and must still be reported.
+        let src = r#"
+enum Color { Red, Green, Blue }
+fn describe(Color c) -> int {
+    return match c {
+        Color::Red | Color::Green => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected exactly one exhaustiveness error; got: {:?}",
+            errs
+        );
+        assert!(
+            errs[0].missing.contains(&"Blue".to_string()),
+            "missing variants should include Blue; got: {:?}",
+            errs[0].missing
+        );
+    }
+
+    #[test]
+    fn or_pattern_with_payload_variants_all_covered_no_error() {
+        // Or-pattern branches over payload-carrying variants — still a
+        // pure variant-name union, payload shape doesn't matter here.
+        let src = r#"
+enum Expr {
+    Lit(int),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+fn is_leaf(Expr e) -> bool {
+    return match e {
+        Expr::Lit(n) => true,
+        Expr::Add(a, b) | Expr::Neg(a) => false,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "or-pattern over two payload variants plus Lit is exhaustive; got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn or_pattern_mixing_different_enums_bails_conservatively() {
+        // `Color::Red | Status::Ok` can't type-check as a real program
+        // (mismatched scrutinee type), but at the AST level this module
+        // must still bail rather than panic or misattribute variants.
+        let src = r#"
+enum Color { Red, Green }
+enum Status { Ok, Err }
+fn f(Color c) -> int {
+    return match c {
+        Color::Red | Status::Ok => 0,
+        Color::Green => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        // Must not panic; bailing (empty) is the documented conservative
+        // behavior for arms whose patterns don't resolve to one enum.
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "mixed-enum or-pattern must bail conservatively, not report a spurious error; got: {:?}",
+            errs
+        );
+    }
+
+    /// Documents a known, intentional conservative gap (see the module
+    /// doc comment): a guarded `EnumVariant` arm is treated as covering
+    /// its variant even though the guard might not fire at runtime, so
+    /// this match compiles even though `Color::Red` is only reachable
+    /// when `flag` is true. Tightening this requires proving something
+    /// about the guard expression, which is out of scope for this
+    /// AST-only pass — tracked as a follow-up rather than fixed here.
+    #[test]
+    fn guarded_only_arm_conservatively_counts_as_covering_its_variant() {
+        let src = r#"
+enum Color { Red, Green }
+fn describe(Color c, bool flag) -> int {
+    return match c {
+        Color::Red if flag => 0,
+        Color::Green => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "documented conservative behavior: guarded arm counts as covering; got: {:?}",
+            errs
+        );
+    }
+
+    /// Struct-pattern + enum-payload combination: a variant's payload is
+    /// itself a struct, destructured in the arm. Variant-level coverage
+    /// must still be tracked correctly regardless of how complex the
+    /// nested payload pattern is — this module only reasons about
+    /// variant names, never payload shape.
+    #[test]
+    fn struct_payload_variant_coverage_tracked_independent_of_nested_pattern() {
+        let src = r#"
+struct Point { int x, int y }
+enum Shape {
+    Circle(Point),
+    Square(Point),
+}
+fn describe(Shape s) -> int {
+    return match s {
+        Shape::Circle(Point { x, y }) => x,
+        Shape::Square(Point { .. }) => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "both variants covered despite nested struct payload patterns; got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn struct_payload_variant_missing_still_detected() {
+        let src = r#"
+struct Point { int x, int y }
+enum Shape {
+    Circle(Point),
+    Square(Point),
+}
+fn describe(Shape s) -> int {
+    return match s {
+        Shape::Circle(Point { x, y }) => x,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert_eq!(errs.len(), 1, "expected one exhaustiveness error");
+        assert!(
+            errs[0].missing.contains(&"Square".to_string()),
+            "missing variants should include Square; got: {:?}",
+            errs[0].missing
+        );
+    }
+
+    /// Documents a known scope limitation: this module checks *variant*
+    /// coverage only, never payload *value* coverage. A range sub-pattern
+    /// that only covers part of the int domain (`0..10`) is treated the
+    /// same as any other payload pattern — the variant counts as covered.
+    /// Full payload-value exhaustiveness (union of ranges/literals over
+    /// an unbounded int domain) is a materially different, much larger
+    /// analysis and is out of scope for this pass.
+    #[test]
+    fn range_payload_subpattern_does_not_affect_variant_coverage() {
+        let src = r#"
+enum Reading {
+    Value(int),
+    Unavailable,
+}
+fn classify(Reading r) -> int {
+    return match r {
+        Reading::Value(0..10) => 0,
+        Reading::Unavailable => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "variant-level coverage doesn't inspect payload range completeness; got: {:?}",
+            errs
+        );
+    }
+
+    /// RES-3934: known gap, tracked as a follow-up rather than fixed
+    /// here (fixing it requires a genuinely different algorithm — see
+    /// the module doc comment's "Detection strategy" section). This
+    /// module only inspects the TOP-LEVEL arm pattern of a `Node::Match`;
+    /// it has no concept of "nested match completeness" for an enum
+    /// pattern embedded inside another pattern (e.g. `Some(Shape::Circle(r))`
+    /// nested inside an `Option<Shape>` match). Such a match can compile
+    /// and run today even when the inner `Shape` variant set isn't fully
+    /// covered — reaching the uncovered case currently produces a wrong
+    /// runtime value (observed: silently returns `void`) instead of a
+    /// compile error. `analyze()` reports nothing for this program by
+    /// design of its current scope.
+    #[test]
+    fn nested_enum_pattern_inside_option_is_not_analyzed() {
+        let src = r#"
+enum Shape {
+    Circle(int),
+    Square(int),
+}
+fn f(Option<Shape> os) -> int {
+    return match os {
+        Some(Shape::Circle(r)) => r,
+        None => 0,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let errs = analyze(&prog);
+        assert!(
+            errs.is_empty(),
+            "documents current scope limitation — nested pattern completeness \
+             is not checked by this module; got: {:?}",
+            errs
+        );
+    }
+
+    // RES-3934: did-you-mean hint for a mistyped variant name.
+
+    #[test]
+    fn typo_variant_name_gets_did_you_mean_hint() {
+        // `Statuss::Pending` doesn't exist — presumably a typo of `Pending`.
+        // `Ok`/`Err` are covered under their real names, but `Pending` is
+        // both genuinely missing AND was (mis)referenced under a typo'd
+        // name, so the hint should point back at it.
+        let src = r#"
+enum Status { Ok, Err, Pending }
+fn handle(Status s) -> int {
+    return match s {
+        Status::Ok => 0,
+        Status::Err => 1,
+        Status::Pendign => 2,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let result = check(&prog, "test.rz");
+        assert!(result.is_err(), "expected check to fail");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Pending"),
+            "error must name missing variant 'Pending': {msg}"
+        );
+        assert!(
+            msg.contains("did you mean"),
+            "error should hint at the typo'd `Pendign` arm: {msg}"
+        );
+        assert!(
+            msg.contains("`Pending`"),
+            "hint should suggest the real variant name 'Pending': {msg}"
+        );
+    }
+
+    #[test]
+    fn no_typo_no_did_you_mean_hint() {
+        let src = r#"
+enum Status { Ok, Err, Pending }
+fn handle(Status s) -> int {
+    return match s {
+        Status::Ok => 0,
+        Status::Err => 1,
+    };
+}
+"#;
+        let (prog, _) = crate::parse(src);
+        let result = check(&prog, "test.rz");
+        let msg = result.unwrap_err();
+        assert!(
+            !msg.contains("did you mean"),
+            "no unrecognized variant names — no hint expected: {msg}"
         );
     }
 }
