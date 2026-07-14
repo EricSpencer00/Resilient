@@ -67,9 +67,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential cmake python3 pkg-config libclang-dev
 
+      # RES-4002: ship LSP-capable release binaries by default so
+      # editor integration (the VS Code extension, `lspconfig`, etc.)
+      # works against a downloaded tarball with no source build. Adds
+      # `tower-lsp` + `tokio` to every release target's transitive
+      # dep tree; `--features lsp` stays opt-in for the regular
+      # (non-release) dev/CI build, so the fast-path build stays free
+      # of that dependency — see the `lsp` feature doc comment in
+      # `resilient/Cargo.toml`.
       - name: Build (native)
         if: "!matrix.cross && !matrix.z3"
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --features lsp
         working-directory: resilient
 
       # RES-3979: static-link libz3 into the binary so the release
@@ -94,12 +102,12 @@ jobs:
         if: matrix.z3
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo build --release --locked --target ${{ matrix.target }} --features z3,z3-static
+        run: cargo build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
         working-directory: resilient
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --locked --target ${{ matrix.target }}
+        run: cross build --release --locked --target ${{ matrix.target }} --features lsp
         working-directory: resilient
 
       # RES-3979: a binary that merely *links* z3 could still silently
@@ -110,6 +118,18 @@ jobs:
       - name: Z3 release smoke test
         if: matrix.z3
         run: scripts/release-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
+
+      # RES-4002: every release target now ships `--features lsp` (see
+      # the "Build (native)" / "Build (native, Z3 static-linked)" /
+      # "Build (cross)" steps above), but `aarch64-unknown-linux-gnu`
+      # is cross-compiled via QEMU on an x86_64 runner (`matrix.cross`)
+      # — that binary can't execute on the build host, same reason the
+      # z3 smoke test above is scoped off it. Skip only there; the
+      # macOS legs run natively (arm64 host) or under Rosetta 2
+      # (x86_64 leg, preinstalled on GitHub's macOS images).
+      - name: LSP release smoke test
+        if: "!matrix.cross"
+        run: scripts/release-lsp-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
 
       - name: Package
         shell: bash

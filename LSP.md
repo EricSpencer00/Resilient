@@ -1,12 +1,24 @@
 # Resilient LSP (Language Server Protocol)
 
-Resilient ships an **opt-in** Language Server that provides diagnostics,
-hover, go-to-definition, and completion in any editor that speaks LSP.
+Resilient ships a Language Server that provides diagnostics, hover,
+go-to-definition, and completion in any editor that speaks LSP.
 
-## Build
+**Pre-built release binaries** (see the README "Install" section)
+ship with the LSP compiled in already (RES-4002) — `rz --lsp` works
+immediately after `curl`-installing or downloading a release tarball,
+no rebuild needed. CI verifies this on every tagged release via
+`scripts/release-lsp-smoke-test.sh`, which sends a JSON-RPC
+`initialize` request over stdio and checks the response for a
+`capabilities` object.
+
+## Build from source
 
 The LSP server pulls in `tower-lsp` + `tokio` as heavy transitive
-dependencies, so it's gated behind a feature flag.
+dependencies (~2.4 MB added to the release binary), so a **from-source
+build** keeps it behind an opt-in feature flag rather than defaulting
+it on — that keeps `cargo build`/`cargo test` in this repo, and any
+downstream `cargo install --path resilient` without the flag, free of
+that dependency tree.
 
 ```bash
 cd resilient
