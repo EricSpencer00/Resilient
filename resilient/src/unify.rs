@@ -151,6 +151,8 @@ impl Substitution {
             ),
             // RES-2651: Option inner type may contain Var nodes.
             Type::Option(inner) => Type::Option(Box::new(self.apply(inner))),
+            // RES-3923: TypedArray element may contain Var nodes.
+            Type::TypedArray(inner) => Type::TypedArray(Box::new(self.apply(inner))),
             // Primitive and opaque variants have no sub-types.
             Type::Int
             | Type::Int8
@@ -260,6 +262,10 @@ impl Substitution {
             }
             // RES-2651: Option<T> unifies element-wise.
             (Type::Option(a), Type::Option(b)) => self.unify(&a, &b),
+            // RES-3923: tracked arrays unify element-wise; an untyped
+            // array unifies with any tracked array (unknown element).
+            (Type::TypedArray(a), Type::TypedArray(b)) => self.unify(&a, &b),
+            (Type::TypedArray(_), Type::Array) | (Type::Array, Type::TypedArray(_)) => Ok(()),
             (a, b) => Err(UnifyError::Mismatch(a, b)),
         }
     }
@@ -328,6 +334,8 @@ impl Substitution {
             Type::AnonymousStruct(fields) => fields.iter().any(|(_, ty)| self.occurs(v, ty)),
             // RES-2651: check inner type of Option.
             Type::Option(inner) => self.occurs(v, inner),
+            // RES-3923: check element type of a tracked array.
+            Type::TypedArray(inner) => self.occurs(v, inner),
             _ => false,
         }
     }
