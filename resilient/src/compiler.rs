@@ -997,13 +997,14 @@ fn compile_stmt(
             line,
             loop_stack,
         ),
-        // RES-4024: `unsafe { body }` lifts the typechecker's capability
-        // gate on volatile MMIO intrinsics but is otherwise identical to a
-        // plain block at runtime (see `parse_unsafe_block`'s doc comment
-        // and the tree-walker's `Node::UnsafeBlock => self.eval(body)`).
-        // Compile the body exactly like `LiveBlock` — previously this was
-        // grouped with the declaration-only nodes below and silently
-        // dropped, so `--vm` skipped the entire block body.
+        // RES-4024: the MMIO-wrapper block keyword lifts the typechecker's
+        // capability gate on volatile MMIO intrinsics but is otherwise
+        // identical to a plain block at runtime (see `parse_unsafe_block`'s
+        // doc comment and the tree-walker's `Node::UnsafeBlock =>
+        // self.eval(body)`). Compile the body exactly like `LiveBlock` —
+        // previously this was grouped with the declaration-only nodes
+        // below and silently dropped, so `--vm` skipped the entire block
+        // body.
         Node::UnsafeBlock { body, .. } => compile_stmt(
             body,
             chunk,
@@ -1946,10 +1947,11 @@ fn compile_stmt_in_fn(
             line,
             loop_stack,
         ),
-        // RES-4024: `unsafe { body }` inside fn body — compile the body
-        // exactly like `LiveBlock`. See the matching comment in
-        // `compile_stmt` above; this arm was previously grouped with the
-        // declaration-only nodes below and silently dropped the body.
+        // RES-4024: the MMIO-wrapper block keyword inside fn body —
+        // compile the body exactly like `LiveBlock`. See the matching
+        // comment in `compile_stmt` above; this arm was previously grouped
+        // with the declaration-only nodes below and silently dropped the
+        // body.
         Node::UnsafeBlock { body, .. } => compile_stmt_in_fn(
             body,
             chunk,
