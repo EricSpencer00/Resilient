@@ -1034,6 +1034,46 @@ fn zero_arg_enum_variant_const(name: &str, chunk: &mut Chunk) -> Result<Option<u
     Ok(Some(chunk.add_constant(val)?))
 }
 
+/// RES-3915: if `name` is a `::`-qualified reference to a **tuple-payload**
+/// enum variant recorded in `ENUM_INDEX`, intern a `Value::EnumConstructor`
+/// carrying its declared arity and return the pool index. Returns `Ok(None)`
+/// when `name` isn't a qualified tuple variant, so the caller falls through
+/// to its normal unknown-identifier path.
+///
+/// A bare `Color::Rgb` reference in expression position (passed to a
+/// higher-order function, stored in a local) becomes a first-class
+/// constructor value; a later `Op::CallClosure` turns it into the
+/// corresponding `Value::EnumVariant`. This mirrors the interpreter's
+/// `Value::EnumConstructor` → `enum_ctors::apply_constructor` path.
+/// Named-payload variants are intentionally excluded — the interpreter
+/// doesn't support them as first-class constructors either.
+fn tuple_enum_constructor_const(
+    name: &str,
+    chunk: &mut Chunk,
+) -> Result<Option<u16>, CompileError> {
+    let Some((type_name, variant_name)) = crate::split_qualified(name) else {
+        return Ok(None);
+    };
+    let arity = ENUM_INDEX.with(|ei| {
+        ei.borrow()
+            .get(type_name)
+            .and_then(|vs| vs.iter().find(|v| v.name == variant_name))
+            .and_then(|v| match &v.payload {
+                crate::EnumPayload::Tuple(types) => Some(types.len()),
+                _ => None,
+            })
+    });
+    let Some(arity) = arity else {
+        return Ok(None);
+    };
+    let val = Value::EnumConstructor {
+        type_name: type_name.to_string(),
+        variant: variant_name.to_string(),
+        arity,
+    };
+    Ok(Some(chunk.add_constant(val)?))
+}
+
 fn emit_unit_enum_variants(
     enum_name: &str,
     variants: &[crate::EnumVariant],
@@ -2462,6 +2502,14 @@ fn compile_expr(
                 // `UnknownIdentifier`. Resolve against the scope-independent
                 // `ENUM_INDEX` (same registry the `E::A(x)` constructor path
                 // uses) and emit the variant constant directly.
+                chunk.emit(Op::Const(const_idx), line);
+            } else if let Some(const_idx) = tuple_enum_constructor_const(name, chunk)? {
+                // RES-3915: bare tuple-payload enum-variant reference like
+                // `Color::Rgb` used as a first-class value (passed to a
+                // higher-order function, stored in a local). Emit a
+                // `Value::EnumConstructor` constant; a later `CallClosure`
+                // converts it into the corresponding `EnumVariant`, mirroring
+                // the interpreter's first-class-constructor path.
                 chunk.emit(Op::Const(const_idx), line);
             } else {
                 return Err(CompileError::UnknownIdentifier(name.clone()));
