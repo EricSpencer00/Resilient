@@ -13,6 +13,74 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# RES-4021: hardcoded denylist of tracker/umbrella issue numbers that must
+# NEVER be auto-closed by the Refs/Closes heuristic below, even when they're
+# the first "#N" mentioned in a PR body's "Refs #N · EPIC" convention line.
+# #3933 is the v1.0 roadmap tracker; child PRs reference it via `Refs #3933`
+# and must not accidentally close it on merge.
+TRACKER_ISSUE_DENYLIST=(3933)
+
+# is_tracker_issue ISSUE — true (0) if ISSUE must never be auto-closed.
+# Checks the hardcoded denylist first (works offline, e.g. in tests), then
+# falls back to a live `gh issue view` label lookup for issues not on the
+# denylist, matching (case-insensitively) the labels tracker/epic/umbrella.
+is_tracker_issue() {
+  local issue="$1"
+  local n
+  for n in "${TRACKER_ISSUE_DENYLIST[@]}"; do
+    [ "$n" = "$issue" ] && return 0
+  done
+  local labels
+  labels="$(gh issue view "$issue" --json labels -q '.labels[].name' 2>/dev/null || true)"
+  printf '%s\n' "$labels" | grep -qiE '^(tracker|epic|umbrella)$'
+}
+
+# compute_close_issue BODY_FILE [IS_TRACKER_FN] — derives which issue
+# number, if any, should get a `Closes #N` line appended to BODY_FILE.
+# Prints the issue number on stdout, or nothing.
+#
+#   1. If BODY_FILE already has an explicit `Closes #N`, that is the
+#      agent's chosen close-target — print nothing (there's nothing to
+#      append; the explicit Closes stays as-is).
+#   2. Otherwise fall back to the first `Refs #N` in the body.
+#   3. If that derived issue is a tracker per IS_TRACKER_FN (default
+#      `is_tracker_issue`), print nothing — never auto-close a tracker.
+#
+# IS_TRACKER_FN names a function taking one arg (issue number) and
+# returning 0/1, so tests can substitute a mock instead of shelling out
+# to `gh`.
+compute_close_issue() {
+  local body_file="$1"
+  local is_tracker_fn="${2:-is_tracker_issue}"
+
+  local explicit_closes
+  explicit_closes="$(sed -nE 's/^[[:space:]]*[Cc]loses[[:space:]]+#([0-9]+).*/\1/p' "$body_file" | head -1 || true)"
+  if [ -n "$explicit_closes" ]; then
+    return 0
+  fi
+
+  local refs_issue
+  refs_issue="$(sed -nE 's/^[[:space:]]*[Rr]efs[[:space:]]+#([0-9]+).*/\1/p' "$body_file" | head -1 || true)"
+  if [ -z "$refs_issue" ]; then
+    return 0
+  fi
+
+  if "$is_tracker_fn" "$refs_issue"; then
+    return 0
+  fi
+
+  printf '%s\n' "$refs_issue"
+}
+
+# RES-4021: allow this file to be `source`d (e.g. by
+# agent-scripts/test-ready-or-bail-closes.sh) to unit-test the functions
+# above without running the full draft-to-ready flow, which requires a
+# real PR and `gh` mutations.
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  return 0
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
@@ -90,11 +158,11 @@ PYEOF
 
   BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-body.XXXXXX")"
   gh pr view "$PR" --json body -q '.body // ""' > "$BODY_FILE"
-  ISSUE="$(sed -nE 's/^[[:space:]]*([Rr]efs|[Cc]loses)[[:space:]]+#([0-9]+).*/\2/p' "$BODY_FILE" | head -1 || true)"
-  if [ -n "$ISSUE" ] && ! grep -qiE "^[[:space:]]*Closes[[:space:]]+#${ISSUE}([^0-9]|$)" "$BODY_FILE"; then
+  CLOSE_ISSUE="$(compute_close_issue "$BODY_FILE")"
+  if [ -n "$CLOSE_ISSUE" ]; then
     {
       cat "$BODY_FILE"
-      printf '\n\nCloses #%s\n' "$ISSUE"
+      printf '\n\nCloses #%s\n' "$CLOSE_ISSUE"
     } > "${BODY_FILE}.next"
     gh pr edit "$PR" --body-file "${BODY_FILE}.next" >/dev/null
   fi

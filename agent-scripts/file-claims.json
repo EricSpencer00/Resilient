@@ -132,17 +132,9 @@
       "branch": "res-3933-phase2-roadmap",
       "claimed_at": "2026-07-14T13:45:53Z"
     },
-    "resilient/tests/it/differential.rs": {
-      "branch": "res-3993-vm-denylist-retriage",
-      "claimed_at": "2026-07-14T17:35:45Z"
-    },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3993-vm-denylist-retriage",
-      "claimed_at": "2026-07-14T17:35:45Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-3993-vm-denylist-retriage",
-      "claimed_at": "2026-07-14T17:35:45Z"
+    "agent-scripts/ready-or-bail.sh": {
+      "branch": "res-4021-ready-or-bail-tracker-guard",
+      "claimed_at": "2026-07-14T23:33:34Z"
     }
   }
 }
