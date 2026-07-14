@@ -1,0 +1,17 @@
+// Conformance case: Stable "Integer and float arithmetic operators" +
+// "Float (f64)" primitive type (STABILITY.md § Feature Stability › Stable).
+fn main() {
+    let a = 10.5;
+    let b = 2.5;
+    println(a + b);
+    println(a - b);
+    println(a * b);
+    println(a / b);
+    println(a == b);
+    println(a != b);
+    println(a < b);
+    println(a >= b);
+    println(type_of(a + b));
+    println(type_of(a < b));
+}
+main();

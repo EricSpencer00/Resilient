@@ -112,6 +112,16 @@ jobs:
         if: needs.changes.outputs.run_heavy == 'true'
         run: cargo test --locked --verbose
 
+      # RES-3983: F-E1 conformance suite (STABILITY.md Stable surface vs
+      # tree-walker/--vm/--jit). Already exercised by the `cargo test`
+      # step above as part of the single `tests/it` binary — this step
+      # re-runs just that module so a conformance regression shows up as
+      # its own clearly-named, required CI line instead of being buried
+      # in ~1200 other test names. See docs/CONFORMANCE.md.
+      - name: Conformance suite (STABILITY.md Stable surface)
+        if: needs.changes.outputs.run_heavy == 'true'
+        run: cargo test --locked --test it conformance --verbose
+
       - name: Upload cargo --timings report
         if: needs.changes.outputs.run_heavy == 'true' && always()
         uses: actions/upload-artifact@v4

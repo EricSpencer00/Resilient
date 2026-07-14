@@ -1,0 +1,5 @@
+negative
+zero
+positive
+pos
+Program executed successfully

@@ -1,0 +1,20 @@
+// Conformance case: Stable "Core syntax: while" + "Basic control flow:
+// while loops" (STABILITY.md § Feature Stability › Stable).
+fn main() {
+    let mut i = 0;
+    let mut sum = 0;
+    while i < 5 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    println(sum);
+    println(i);
+
+    // zero-iteration case
+    let mut never = 0;
+    while never > 0 {
+        never = never + 1;
+    }
+    println(never);
+}
+main();
