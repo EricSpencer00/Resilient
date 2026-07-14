@@ -128,33 +128,13 @@
       "branch": "res-4048-trait-bound-enforcement",
       "claimed_at": "2026-07-14T09:50:50Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-4012-unify-exhaustiveness",
-      "claimed_at": "2026-07-14T10:39:37Z"
-    },
-    "resilient/src/enum_exhaustiveness.rs": {
-      "branch": "res-4012-unify-exhaustiveness",
-      "claimed_at": "2026-07-14T10:39:37Z"
-    },
-    "resilient/src/struct_exhaustiveness.rs": {
-      "branch": "res-4012-unify-exhaustiveness",
-      "claimed_at": "2026-07-14T10:39:37Z"
-    },
     "docs/ROADMAP_PHASE2.md": {
       "branch": "res-3933-phase2-roadmap",
       "claimed_at": "2026-07-14T13:45:53Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3993-vm-break-return",
-      "claimed_at": "2026-07-14T15:29:39Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-3993-vm-break-return",
-      "claimed_at": "2026-07-14T15:29:39Z"
-    },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-3993-vm-break-return",
-      "claimed_at": "2026-07-14T15:29:39Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-4011-nested-pattern-exhaustiveness",
+      "claimed_at": "2026-07-14T15:46:37Z"
     }
   }
 }
