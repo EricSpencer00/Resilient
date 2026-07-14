@@ -1,0 +1,9 @@
+0.30000000000000004
+false
+true
+false
+true
+true
+true
+5
+Program executed successfully

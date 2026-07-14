@@ -1,0 +1,27 @@
+// Conformance case: Stable "Region annotation syntax" (STABILITY.md §
+// Feature Stability › Stable) — `region NAME;` declarations,
+// `&[NAME] T` shared-reference parameters, `&mut[NAME] T`
+// exclusive-mutable-reference parameters. This case pins the accepted
+// (non-aliasing) path: two functions taking references into distinct
+// regions, and a function taking a shared `&[R] T` reference alongside
+// a `&mut[S] T` reference into a different region. The compile-time
+// rejection of two `&mut[A]` params sharing a label is a *negative*
+// test (must fail to compile) so it isn't a `--vm`/`--jit`
+// success-path conformance case — see
+// `resilient/examples/region_aliasing_err.rz` for that side.
+region A;
+region B;
+
+fn swap_buffers(&mut[A] int a, &mut[B] int b) {
+    println("swap_buffers accepted - distinct regions A vs B");
+}
+
+fn read_and_write(&[A] int reader, &mut[B] int writer) {
+    println("read_and_write accepted - shared A, mutable B");
+}
+
+fn main() {
+    swap_buffers(1, 2);
+    read_and_write(1, 2);
+}
+main();

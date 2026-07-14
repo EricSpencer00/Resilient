@@ -1,0 +1,38 @@
+// Conformance case: Stable "Core syntax: if / else" + "Basic control
+// flow: expression-level if" (STABILITY.md § Feature Stability ›
+// Stable). Complements `control_flow_if.rz` (which covers the basic
+// if/else-if/else ladder and expression-level if) with nested `if`
+// inside `if`, and `if` used purely as a statement with no `else`
+// branch at all (both the taken and not-taken cases).
+fn sign_label(int x) -> string {
+    if x > 0 {
+        if x > 100 {
+            return "big-positive";
+        }
+        return "positive";
+    } else if x < 0 {
+        return "negative";
+    } else {
+        return "zero";
+    }
+}
+
+fn main() {
+    println(sign_label(500));
+    println(sign_label(3));
+    println(sign_label(-2));
+    println(sign_label(0));
+
+    let mut flag = false;
+    if 1 < 2 {
+        flag = true;
+    }
+    println(flag);
+
+    let mut count = 0;
+    if false {
+        count = 100;
+    }
+    println(count);
+}
+main();

@@ -1,0 +1,32 @@
+// Conformance case: Stable "Bool" primitive type (STABILITY.md §
+// Feature Stability › Stable). `&&`, `||`, and unary `!` are the
+// standard boolean-logic operators over the Bool type; this case pins
+// their truth tables plus short-circuit evaluation (the right-hand side
+// of `&&`/`||` must not run when the left side already determines the
+// result — proven here via a side-effecting `println` inside the
+// unevaluated branch never firing).
+fn side_effect_true() -> bool {
+    println("called-true");
+    return true;
+}
+
+fn side_effect_false() -> bool {
+    println("called-false");
+    return false;
+}
+
+fn main() {
+    println(true && true);
+    println(true && false);
+    println(false && true);
+    println(true || false);
+    println(false || false);
+    println(!true);
+    println(!false);
+    println(!(3 > 5));
+
+    // short-circuit: right side must not evaluate
+    println(false && side_effect_true());
+    println(true || side_effect_false());
+}
+main();

@@ -1,0 +1,19 @@
+// Conformance case: Stable "Integer and float arithmetic operators" +
+// "Int (i64)" primitive type (STABILITY.md § Feature Stability ›
+// Stable). Complements `int_arithmetic.rz` with the edge cases that
+// most often diverge between backends: `/` and `%` sign behavior on
+// negative operands (Resilient truncates toward zero, matching Rust's
+// `/`/`%`, not Euclidean floor division), and zero-numerator division.
+fn main() {
+    println(-7 / 2);
+    println(-7 % 2);
+    println(7 / -2);
+    println(7 % -2);
+    println(-7 / -2);
+    println(-7 % -2);
+    println(0 / 5);
+    println(0 % 5);
+    println((1 < 2) == (3 < 4));
+    println((1 < 2) == (5 < 4));
+}
+main();

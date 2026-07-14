@@ -1,0 +1,23 @@
+// Conformance case: Stable "Bytes" primitive type (STABILITY.md §
+// Feature Stability › Stable). Complements `bool_bytes_types.rz` with
+// more `\xNN` byte-literal escapes mixed with the shared `\n`/`\t`/`\\`/
+// `\"` escapes in the same `b"..."` literal, plus the empty-bytes edge
+// case and `bytes_len`/`byte_at` indexing across a mixed-escape buffer.
+// Note: `Bytes` equality (`==`/`!=`) is not exercised here — it is not
+// currently supported by the tree-walker (`Type mismatch` runtime
+// error), so it stays out of this Stable-surface case.
+fn main() {
+    let a = b"\x01\x02\x03";
+    println(bytes_len(a));
+    println(byte_at(a, 0));
+    println(byte_at(a, 1));
+    println(byte_at(a, 2));
+    let empty = b"";
+    println(bytes_len(empty));
+    let mixed = b"\n\t\\\"\x41";
+    println(bytes_len(mixed));
+    println(byte_at(mixed, 0));
+    println(byte_at(mixed, 4));
+    println(type_of(a));
+}
+main();

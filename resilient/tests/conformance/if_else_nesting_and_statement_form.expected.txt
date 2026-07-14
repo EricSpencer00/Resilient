@@ -1,0 +1,7 @@
+big-positive
+positive
+negative
+zero
+true
+0
+Program executed successfully

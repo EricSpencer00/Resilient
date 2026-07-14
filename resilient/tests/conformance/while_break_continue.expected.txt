@@ -1,0 +1,5 @@
+25
+10
+4
+3
+Program executed successfully
