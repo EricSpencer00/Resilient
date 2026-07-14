@@ -297,25 +297,27 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "showcase_quantifiers.rz",
     "unsafe_block_smoke.rz",
     "while_let.rz",
-    // RES-3994 (remaining): `Op::CallMethod`'s built-in-container fallback
-    // (`vm_call_builtin_method`) has no path for calling a *user-supplied
-    // closure* per element — `.map()`/`.flat_map()` etc. need the VM to
-    // invoke a `Value::Closure` and resume the host-side loop with its
-    // result, which needs a re-entrant "run this call to completion"
-    // primitive the flat bytecode dispatch loop doesn't have yet (unlike
-    // the tree-walker, which just recurses). `StringBuilder` methods hit
-    // the same "receiver is a struct but there's no `$method` — check
-    // built-ins" fallback, but the interpreter's `StringBuilder` dispatch
-    // (`eval_string_builder_method`) also writes the mutated struct back to
-    // the caller's local binding, which `vm_call_builtin_method` has no
-    // handle on. `mutual_tco.rz` is unrelated to `CallMethod` — the VM has
-    // no tail-call optimization for mutual recursion, so it blows the
-    // `>1024`-frame cap where the tree-walker doesn't. (CallMethod
-    // primitive-`impl` dispatch, `impl Add`/`Sub`/`Mul` operator-overload
-    // dispatch, `Result` error-chaining methods, `Display::fmt` dispatch,
-    // `{ ..base, f: v }` struct-update-syntax field merge, and
-    // `Option::`/`Result::`-qualified match patterns were fixed in the
-    // same pass and no longer belong here). Refs #3933 · B-E3.
+    // RES-4017 (split off from RES-3994; that ticket closed once every
+    // sub-case had a home — see PR #4016): `Op::CallMethod`'s built-in-
+    // container fallback (`vm_call_builtin_method`) has no path for
+    // calling a *user-supplied closure* per element — `.map()`/
+    // `.flat_map()` etc. need the VM to invoke a `Value::Closure` and
+    // resume the host-side loop with its result, which needs a re-entrant
+    // "run this call to completion" primitive the flat bytecode dispatch
+    // loop doesn't have yet (unlike the tree-walker, which just recurses).
+    // `StringBuilder` methods hit the same "receiver is a struct but
+    // there's no `$method` — check built-ins" fallback, but the
+    // interpreter's `StringBuilder` dispatch (`eval_string_builder_method`)
+    // also writes the mutated struct back to the caller's local binding,
+    // which `vm_call_builtin_method` has no handle on. `mutual_tco.rz` is
+    // unrelated to `CallMethod` — the VM has no tail-call optimization for
+    // mutual recursion, so it blows the `>1024`-frame cap where the
+    // tree-walker doesn't. (CallMethod primitive-`impl` dispatch, `impl
+    // Add`/`Sub`/`Mul` operator-overload dispatch, `Result` error-chaining
+    // methods, `Display::fmt` dispatch, `{ ..base, f: v }` struct-update-
+    // syntax field merge, and `Option::`/`Result::`-qualified match
+    // patterns were fixed under RES-3994 and no longer belong here).
+    // Refs #3933 · B-E3.
     "array_functional.rz",
     "array_method_chains.rz",
     "mutual_tco.rz",
