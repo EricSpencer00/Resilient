@@ -128,17 +128,17 @@
       "branch": "res-4014-z3-overflow",
       "claimed_at": "2026-07-14T04:21:41Z"
     },
-    "resilient/src/vm.rs": {
-      "branch": "res-3994-vm-method-struct-add",
-      "claimed_at": "2026-07-14T04:13:43Z"
-    },
-    "resilient/src/compiler.rs": {
-      "branch": "res-3994-vm-method-struct-add",
-      "claimed_at": "2026-07-14T04:13:43Z"
-    },
     "resilient/tests/it/differential.rs": {
       "branch": "res-3994-denylist-comment-retarget",
       "claimed_at": "2026-07-14T05:06:11Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-4005-vm-block-scope",
+      "claimed_at": "2026-07-14T05:12:23Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-4005-vm-block-scope",
+      "claimed_at": "2026-07-14T05:12:23Z"
     }
   }
 }
