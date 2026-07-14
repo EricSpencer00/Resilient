@@ -996,6 +996,24 @@ fn run_inner(
                         upvalues,
                         source_slots,
                     } => (fn_idx, upvalues, source_slots),
+                    // RES-3915: calling a first-class enum constructor value
+                    // (`Color::Rgb` passed to a HOF, then invoked as `f(x)`)
+                    // builds the corresponding EnumVariant, mirroring the
+                    // interpreter's `apply_function` → `apply_constructor` path.
+                    Value::EnumConstructor {
+                        type_name,
+                        variant,
+                        arity: ctor_arity,
+                    } => {
+                        let result = crate::enum_ctors::apply_constructor(
+                            &type_name, &variant, ctor_arity, args,
+                        )
+                        .map_err(|_| {
+                            VmError::TypeMismatch("CallClosure: enum constructor arity mismatch")
+                        })?;
+                        stack.push(result);
+                        continue;
+                    }
                     _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
                 };
                 let func = program
@@ -2589,6 +2607,23 @@ fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
             upvalues,
             source_slots,
         } => (fn_idx, upvalues, source_slots),
+        // RES-3915: calling a first-class enum constructor value
+        // (`Color::Rgb` passed to a HOF, then invoked as `f(x)`) builds the
+        // corresponding EnumVariant, mirroring the interpreter's
+        // `apply_function` → `apply_constructor` path.
+        Value::EnumConstructor {
+            type_name,
+            variant,
+            arity: ctor_arity,
+        } => {
+            let result =
+                crate::enum_ctors::apply_constructor(&type_name, &variant, ctor_arity, args)
+                    .map_err(|_| {
+                        VmError::TypeMismatch("CallClosure: enum constructor arity mismatch")
+                    })?;
+            state.stack.push(result);
+            return Ok(Step::Continue);
+        }
         _ => return Err(VmError::TypeMismatch("CallClosure: expected Closure")),
     };
     let func = state
