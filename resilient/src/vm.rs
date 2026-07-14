@@ -355,6 +355,39 @@ fn err_at(line_info: &[u32], pc: usize, e: VmError) -> VmError {
 const MAX_CALL_DEPTH: usize = 1024;
 const MAX_STRING_REPEAT: usize = 10_000_000;
 
+/// RES-141 / RES-3995: process-wide live-block telemetry counters for
+/// the VM backend, mirroring the tree-walker's `LIVE_TOTAL_RETRIES` /
+/// `LIVE_TOTAL_EXHAUSTIONS` (lib.rs). Kept as separate VM-local statics
+/// rather than sharing the interpreter's — each `rz` invocation only
+/// ever runs one backend, so a fresh process gives each its own
+/// zeroed counters either way, and this avoids reaching into the
+/// interpreter's private thread-locals from a different module.
+static VM_LIVE_TOTAL_RETRIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static VM_LIVE_TOTAL_EXHAUSTIONS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// RES-359: per-retry sleep for a given backoff config and schedule
+/// kind. Duplicates the tree-walker's private `live_backoff_delay_ms`
+/// (lib.rs) — the math is a few lines of pure arithmetic over the
+/// already-`pub` `BackoffConfig`/`BackoffKind` types, so re-deriving it
+/// here is cheaper and lower-risk than reaching into a private
+/// interpreter helper from a different module. Keep in sync with
+/// lib.rs if the schedule shapes ever change.
+fn vm_live_backoff_delay_ms(
+    cfg: &crate::BackoffConfig,
+    kind: crate::BackoffKind,
+    retries: u32,
+) -> u64 {
+    match kind {
+        crate::BackoffKind::Exponential => cfg.delay_ms(retries),
+        crate::BackoffKind::Linear => {
+            let steps = (retries as u64).saturating_add(1);
+            let want = cfg.base_ms.saturating_mul(steps);
+            want.min(cfg.max_ms)
+        }
+    }
+}
+
 /// RES-081: one active function invocation. `chunk_idx = usize::MAX`
 /// marks the `main` frame; any other value indexes into
 /// `program.functions`.
@@ -524,6 +557,41 @@ pub fn run_with(
     }
 }
 
+/// RES-3995: which frame a live-block retry loop is tracking inside a
+/// recursive `run_dispatch_loop` call, plus the attempt number the
+/// *next* invocation should expose via `live_retries()`.
+struct LiveTrack {
+    /// Index into `frames` of the call that lexically contains the
+    /// live block. Frames deeper than this belong to calls the body
+    /// makes; once `frames.len()` drops to or below this value, the
+    /// live block's own frame is gone.
+    frame_idx: usize,
+    /// Current attempt number (0 on the first attempt). Stays valid
+    /// for the whole attempt, including any ordinary (non-live) calls
+    /// the body makes — those don't recurse into a new
+    /// `run_dispatch_loop` invocation, so `live_retries()` still
+    /// resolves through this same `LiveTrack`.
+    retry_count: usize,
+}
+
+/// RES-3995: how a (possibly nested) `run_dispatch_loop` invocation
+/// ended.
+enum LoopOutcome {
+    /// The whole program halted (top-level `Op::Return`, or the
+    /// implicit end-of-main fallthrough). Propagates through every
+    /// active live-block retry loop unchanged — the program is
+    /// ending, not just the innermost block.
+    Halted(Value),
+    /// Reached the paired `Op::ExitLive` for the tracked live block:
+    /// this attempt's body ran to completion and any invariants held.
+    ExitedNormally,
+    /// The tracked live block's own enclosing frame returned from
+    /// *inside* the body (an early `return`, e.g.
+    /// `thermal_safety_cutoff.rz`'s `safe_read`). Also a success —
+    /// there's no more of the block left to retry.
+    ReturnedFromFrame(Value),
+}
+
 /// RES-091: the original dispatch loop, factored out so `run` can
 /// wrap any returned error with source-line info. `last_pc` is
 /// updated at the top of every iteration so the outer wrapper knows
@@ -550,6 +618,52 @@ fn run_inner(
         source_slots: Box::default(),
     });
     let mut try_stack: Vec<TryFrame> = Vec::new();
+    match run_dispatch_loop(
+        program,
+        &mut stack,
+        &mut locals,
+        &mut frames,
+        &mut try_stack,
+        overflow_mode,
+        last_pc,
+        None,
+    )? {
+        LoopOutcome::Halted(v) => Ok(v),
+        // The top-level call always passes `tracked: None`, so the
+        // ExitLive/ReturnedFromFrame stop conditions — which only
+        // ever fire when `tracked.is_some()` — can't produce these.
+        LoopOutcome::ExitedNormally | LoopOutcome::ReturnedFromFrame(_) => {
+            unreachable!("top-level run_dispatch_loop only ever produces LoopOutcome::Halted")
+        }
+    }
+}
+
+/// RES-3995: the actual per-op dispatch loop, extracted from the
+/// original `run_inner` so `Op::EnterLive` can recurse into it to run
+/// a live block's body as an independently retryable unit — exactly
+/// like the tree-walker's `eval_live_block` wraps `self.eval(body)` in
+/// a Rust-level retry loop and catches `Err` normally (including
+/// assertion failures deep inside a nested call, not just structured
+/// `fails` errors). `tracked` is `Some` only for a recursive call
+/// running a live block's body; `stack`/`locals`/`frames`/`try_stack`
+/// are shared by `&mut` reference with the caller so a retry can see
+/// (and roll back) whatever the failed attempt mutated.
+#[allow(clippy::too_many_arguments)]
+fn run_dispatch_loop(
+    program: &Program,
+    stack: &mut Vec<Value>,
+    locals: &mut Vec<Value>,
+    frames: &mut Vec<CallFrame>,
+    try_stack: &mut Vec<TryFrame>,
+    overflow_mode: OverflowMode,
+    last_pc: &mut (usize, usize),
+    tracked: Option<LiveTrack>,
+) -> Result<LoopOutcome, VmError> {
+    // RES-3995: once a frame pop drops `frames.len()` below this, the
+    // tracked live block's own frame is gone — further ops belong to
+    // whoever called it, and this invocation must stop.
+    let target_frames_len = tracked.as_ref().map(|t| t.frame_idx + 1);
+    let live_retry_count = tracked.as_ref().map(|t| t.retry_count);
 
     loop {
         // SAFETY: frames is non-empty for the duration of the main
@@ -574,15 +688,32 @@ fn run_inner(
             // an implicit Return / ReturnFromCall depending on
             // whether we're in main.
             if frames.len() == 1 {
-                return Ok(stack.pop().unwrap_or(Value::Void));
+                return Ok(LoopOutcome::Halted(stack.pop().unwrap_or(Value::Void)));
             }
             // In a fn body: implicit ReturnFromCall with Void.
             let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
             locals.truncate(popped.locals_base);
             stack.push(Value::Void);
+            if let Some(target_len) = target_frames_len
+                && frames.len() < target_len
+            {
+                return Ok(LoopOutcome::ReturnedFromFrame(Value::Void));
+            }
             continue;
         }
         let op = chunk.code[pc];
+        // RES-3995: the tracked live block's own paired `ExitLive` —
+        // only at the exact frame depth the block was entered at
+        // (nested live blocks in the same frame each get their own
+        // recursive `run_dispatch_loop` call, so this always matches
+        // the innermost still-open block first).
+        if let Some(target_len) = target_frames_len
+            && frames.len() == target_len
+            && matches!(op, Op::ExitLive)
+        {
+            frames[frame_idx].pc += 1;
+            return Ok(LoopOutcome::ExitedNormally);
+        }
         frames[frame_idx].pc += 1;
 
         match op {
@@ -825,6 +956,20 @@ fn run_inner(
                         }
                     }
                     if dispatched {
+                        // RES-3995: rare edge case — a `fails` catch
+                        // dispatch unwound *past* a tracked live
+                        // block's own frame (the handler lives in an
+                        // ancestor of the live block, not inside it).
+                        // The VM state already correctly resumes at
+                        // the handler PC; this invocation just has
+                        // nothing left to track, so stop immediately
+                        // rather than let a stale `target_frames_len`
+                        // misfire on later, unrelated ops.
+                        if let Some(target_len) = target_frames_len
+                            && frames.len() < target_len
+                        {
+                            return Ok(LoopOutcome::ReturnedFromFrame(Value::Void));
+                        }
                         continue;
                     }
                     return Err(VmError::CheckedFailure(variant.clone()));
@@ -864,12 +1009,23 @@ fn run_inner(
                 let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
                 if frames.is_empty() {
-                    return Ok(ret);
+                    return Ok(LoopOutcome::Halted(ret));
                 }
                 let caller_base = frames.last().map_or(0, |f| f.locals_base);
-                write_back_upvalues(&popped, caller_base, &mut locals);
+                write_back_upvalues(&popped, caller_base, locals);
                 locals.truncate(popped.locals_base);
-                stack.push(ret);
+                stack.push(ret.clone());
+                // RES-3995: an early `return` from inside a live
+                // block's body pops the block's own enclosing frame
+                // before ever reaching `ExitLive` — see
+                // `thermal_safety_cutoff.rz`'s `safe_read`, whose
+                // whole body is `live invariant true { ...; return
+                // reading; }`. Treat it as the block succeeding.
+                if let Some(target_len) = target_frames_len
+                    && frames.len() < target_len
+                {
+                    return Ok(LoopOutcome::ReturnedFromFrame(ret));
+                }
             }
             // RES-384: self-tail-call. Reuse the current frame
             // instead of pushing a new one — O(1) call-stack depth
@@ -1033,7 +1189,7 @@ fn run_inner(
                 stack.push(Value::Bool(negated));
             }
             Op::Return => {
-                return Ok(stack.pop().unwrap_or(Value::Void));
+                return Ok(LoopOutcome::Halted(stack.pop().unwrap_or(Value::Void)));
             }
             // RES-169a: skeleton dispatch arms. The compiler never
             // emits these until RES-169b lands the MakeClosure /
@@ -1307,10 +1463,31 @@ fn run_inner(
                     });
                     continue;
                 }
-                // Try the non-namespaced builtin table first, then fall
-                // back to stdlib qualified names (e.g. "math::sqrt") so
-                // `use std::math;` works under --vm.
-                let result = if let Some(func) = crate::lookup_builtin(name) {
+                // RES-3995: `live_retries()` / `live_total_retries()` /
+                // `live_total_exhaustions()` read VM-local state
+                // (which live block is active, and process-wide retry
+                // counters) that the shared builtin table has no
+                // access to — it only ever sees `&[Value]`. Intercept
+                // these three names before the generic dispatch below;
+                // everything else falls through unchanged.
+                let result = if name == "live_retries" {
+                    match live_retry_count {
+                        Some(n) => Value::Int(n as i64),
+                        None => {
+                            return Err(VmError::BuiltinCallFailed(
+                                "live_retries() called outside a live block".to_string(),
+                            ));
+                        }
+                    }
+                } else if name == "live_total_retries" {
+                    Value::Int(
+                        VM_LIVE_TOTAL_RETRIES.load(std::sync::atomic::Ordering::Relaxed) as i64,
+                    )
+                } else if name == "live_total_exhaustions" {
+                    Value::Int(
+                        VM_LIVE_TOTAL_EXHAUSTIONS.load(std::sync::atomic::Ordering::Relaxed) as i64,
+                    )
+                } else if let Some(func) = crate::lookup_builtin(name) {
                     func(&args).map_err(VmError::BuiltinCallFailed)?
                 } else if let Some(stdlib_result) =
                     crate::stdlib::call_by_qualified_name(name, &args)
@@ -1359,18 +1536,28 @@ fn run_inner(
                         let ret = Value::Result { ok: false, payload };
                         let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
                         if frames.is_empty() {
-                            return Ok(ret);
+                            return Ok(LoopOutcome::Halted(ret));
                         }
                         locals.truncate(popped.locals_base);
-                        stack.push(ret);
+                        stack.push(ret.clone());
+                        if let Some(target_len) = target_frames_len
+                            && frames.len() < target_len
+                        {
+                            return Ok(LoopOutcome::ReturnedFromFrame(ret));
+                        }
                     }
                     Value::Option(None) => {
                         let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
                         if frames.is_empty() {
-                            return Ok(Value::Option(None));
+                            return Ok(LoopOutcome::Halted(Value::Option(None)));
                         }
                         locals.truncate(popped.locals_base);
                         stack.push(Value::Option(None));
+                        if let Some(target_len) = target_frames_len
+                            && frames.len() < target_len
+                        {
+                            return Ok(LoopOutcome::ReturnedFromFrame(Value::Option(None)));
+                        }
                     }
                     _ => {
                         return Err(VmError::TypeMismatch(
@@ -1409,6 +1596,103 @@ fn run_inner(
             }
             Op::ExitTry => {
                 try_stack.pop();
+            }
+            // RES-3995: `Op::ExitLive` is normally consumed by the
+            // pre-check above (fired from the recursive call this
+            // block's `EnterLive` made). Reaching this arm directly
+            // would mean an `ExitLive` with no matching tracked
+            // `EnterLive` at this frame depth — not reachable from any
+            // program the compiler emits, but a no-op is safer than
+            // an error if it ever is.
+            Op::ExitLive => {}
+            // RES-3995: `live { ... }` retry loop. The body was
+            // compiled inline (same chunk, same locals slab) between
+            // this op and its paired `ExitLive`; each attempt reruns
+            // it via a recursive `run_dispatch_loop` call so any
+            // error — including one raised deep inside a nested call —
+            // is caught with plain Rust `Result` semantics, exactly
+            // like the tree-walker's `eval_live_block`.
+            Op::EnterLive(idx) => {
+                let entry = chunk.live_handlers[idx as usize];
+                let locals_base = frames[frame_idx].locals_base;
+                let locals_snapshot: Vec<Value> = locals[locals_base..].to_vec();
+                let stack_depth = stack.len();
+                let max_retries = entry.max_retries as usize;
+                let start_instant = entry.timeout_ns.map(|_| std::time::Instant::now());
+                let mut retry_count: usize = 0;
+                loop {
+                    frames[frame_idx].pc = entry.body_start_pc;
+                    let outcome = run_dispatch_loop(
+                        program,
+                        stack,
+                        locals,
+                        frames,
+                        try_stack,
+                        overflow_mode,
+                        last_pc,
+                        Some(LiveTrack {
+                            frame_idx,
+                            retry_count,
+                        }),
+                    );
+                    match outcome {
+                        Ok(LoopOutcome::ExitedNormally) => break,
+                        Ok(LoopOutcome::ReturnedFromFrame(v)) => {
+                            if let Some(target_len) = target_frames_len
+                                && frames.len() < target_len
+                            {
+                                return Ok(LoopOutcome::ReturnedFromFrame(v));
+                            }
+                            break;
+                        }
+                        Ok(LoopOutcome::Halted(v)) => return Ok(LoopOutcome::Halted(v)),
+                        Err(e) => {
+                            // RES-359 + RES-141: same retry-count
+                            // arithmetic as the tree-walker's
+                            // `eval_live_block` — exhaustion fires
+                            // once `retry_count` reaches
+                            // `max_retries`, so `max_retries` is the
+                            // total attempt count, not "initial +
+                            // max_retries".
+                            retry_count += 1;
+                            if retry_count < max_retries {
+                                VM_LIVE_TOTAL_RETRIES
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            let timed_out = match (start_instant, entry.timeout_ns) {
+                                (Some(t0), Some(budget)) => {
+                                    t0.elapsed().as_nanos() >= u128::from(budget)
+                                }
+                                _ => false,
+                            };
+                            if retry_count >= max_retries || timed_out {
+                                VM_LIVE_TOTAL_EXHAUSTIONS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                return Err(e);
+                            }
+                            // RES-050: restore the pre-attempt
+                            // locals/stack/frames snapshot — discards
+                            // both the live block's own mutations and
+                            // any leftover state from nested calls the
+                            // failed attempt made, mirroring the
+                            // tree-walker's env-snapshot restore.
+                            frames.truncate(frame_idx + 1);
+                            locals.truncate(locals_base);
+                            locals.extend(locals_snapshot.iter().cloned());
+                            stack.truncate(stack_depth);
+                            if let Some(cfg) = &entry.backoff {
+                                let ms = vm_live_backoff_delay_ms(
+                                    cfg,
+                                    entry.backoff_kind,
+                                    (retry_count - 1) as u32,
+                                );
+                                if ms > 0 {
+                                    crate::host_clock::sleep_ms(ms);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1646,26 +1930,26 @@ fn run_inner(
                 });
             }
             Op::Band => {
-                let (a, b) = pop_two_ints(&mut stack, "Band")?;
+                let (a, b) = pop_two_ints(stack, "Band")?;
                 stack.push(Value::Int(a & b));
             }
             Op::Bor => {
-                let (a, b) = pop_two_ints(&mut stack, "Bor")?;
+                let (a, b) = pop_two_ints(stack, "Bor")?;
                 stack.push(Value::Int(a | b));
             }
             Op::Bxor => {
-                let (a, b) = pop_two_ints(&mut stack, "Bxor")?;
+                let (a, b) = pop_two_ints(stack, "Bxor")?;
                 stack.push(Value::Int(a ^ b));
             }
             Op::Shl => {
-                let (a, b) = pop_two_ints(&mut stack, "Shl")?;
+                let (a, b) = pop_two_ints(stack, "Shl")?;
                 if !(0..64).contains(&b) {
                     return Err(VmError::ShiftOutOfRange(b));
                 }
                 stack.push(Value::Int(a << b));
             }
             Op::Shr => {
-                let (a, b) = pop_two_ints(&mut stack, "Shr")?;
+                let (a, b) = pop_two_ints(stack, "Shr")?;
                 if !(0..64).contains(&b) {
                     return Err(VmError::ShiftOutOfRange(b));
                 }
@@ -2193,6 +2477,8 @@ fn op_to_index(op: Op) -> usize {
         Op::AssertBool => OP_KIND_ASSERT_BOOL,
         Op::Pop => OP_KIND_POP,
         Op::AssumeFail => OP_KIND_ASSUME_FAIL,
+        Op::EnterLive(_) => OP_KIND_ENTER_LIVE,
+        Op::ExitLive => OP_KIND_EXIT_LIVE,
     }
 }
 
@@ -2219,7 +2505,14 @@ const OP_KIND_EXIT_TRY: usize = 50;
 const OP_KIND_ASSERT_BOOL: usize = 51;
 const OP_KIND_POP: usize = 52;
 const OP_KIND_ASSUME_FAIL: usize = 53;
-const HANDLER_TABLE_LEN: usize = 54;
+/// RES-3995: `EnterLive`/`ExitLive` are only implemented by the Match
+/// dispatch engine (`run_inner`); the Direct (table-dispatch) engine
+/// surfaces a clean `VmError::Unsupported` via `h_live_unsupported`
+/// instead of silently mis-executing the block. Follow-up ticket:
+/// port the retry-loop recursion to `run_direct`.
+const OP_KIND_ENTER_LIVE: usize = 54;
+const OP_KIND_EXIT_LIVE: usize = 55;
+const HANDLER_TABLE_LEN: usize = 56;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -2279,8 +2572,22 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_ASSERT_BOOL] = h_assert_bool;
     table[OP_KIND_POP] = h_pop;
     table[OP_KIND_ASSUME_FAIL] = h_assume_fail;
+    table[OP_KIND_ENTER_LIVE] = h_live_unsupported;
+    table[OP_KIND_EXIT_LIVE] = h_live_unsupported;
     table
 };
+
+/// RES-3995: `run_direct` doesn't implement live-block retry semantics
+/// yet — see the `OP_KIND_ENTER_LIVE` doc comment. Surface a clean
+/// error instead of silently running the body exactly once (which
+/// would print correct output on the happy path but corrupt retry
+/// counters / skip the retry loop on the failure path).
+#[inline(never)]
+fn h_live_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported(
+        "live block (RESILIENT_DISPATCH=direct doesn't implement RES-3995 retry semantics yet)",
+    ))
+}
 
 /// Direct-threaded entry point. Mirrors `run_inner` byte-for-byte but
 /// dispatches via the handler table. The outer error-wrapping logic
@@ -3804,6 +4111,169 @@ mod tests {
         // on the inner kind via VmError::kind().
         let err = compile_run("10 / 0;").unwrap_err();
         assert_eq!(err.kind(), &VmError::DivideByZero);
+    }
+
+    // --- RES-3995: `live { ... }` retry loop under `--vm` ---
+
+    #[test]
+    fn live_block_retries_until_success_returns_value() {
+        // Mirrors examples/live_retry_log.rz: fails twice, succeeds on
+        // the third attempt, and the block's own value flows out.
+        let src = "\
+            static let fails_left = 2;\n\
+            fn maybe_fail() {\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced fail\");\n\
+                }\n\
+                return 42;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    maybe_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert!(
+            compile_run(src).is_ok(),
+            "expected the block to eventually succeed"
+        );
+    }
+
+    #[test]
+    fn live_retries_reports_attempt_number_across_retries() {
+        // `live_retries()` must read 0, 1, 2 across the three attempts
+        // — same counter arithmetic as the tree-walker's `LiveRetryGuard`.
+        let src = "\
+            static let fails_left = 2;\n\
+            static let seen = 0;\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    seen = live_retries();\n\
+                    if fails_left > 0 {\n\
+                        fails_left = fails_left - 1;\n\
+                        assert(false, \"forced fail\");\n\
+                    }\n\
+                }\n\
+                return seen;\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert_int(compile_run(src).unwrap(), 2);
+    }
+
+    #[test]
+    fn live_retries_outside_live_block_is_clean_error() {
+        let err = compile_run("live_retries();").unwrap_err();
+        let display = err.to_string();
+        assert!(
+            display.contains("live_retries() called outside a live block"),
+            "unexpected error text: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn live_block_invariant_failure_triggers_retry_and_rolls_back_state() {
+        // `live invariant` treats a false invariant exactly like a body
+        // error: retry with the pre-attempt state restored. `count` is
+        // declared OUTSIDE the block (in the enclosing fn), so this
+        // also exercises that the retry rollback covers the enclosing
+        // scope's locals, not just the block's own — mirrors
+        // examples/showcase_live_invariant.rz's rollback requirement.
+        let src = "\
+            fn main(int _d) {\n\
+                let count = 0;\n\
+                live invariant count <= 1 {\n\
+                    count = count + 1;\n\
+                    if live_retries() == 0 {\n\
+                        count = count + 5;\n\
+                    }\n\
+                }\n\
+                return count;\n\
+            }\n\
+            main(0);\n\
+        ";
+        // Attempt 0: count = 0+1+5 = 6, invariant (6 <= 1) fails, retry
+        // (count rolls back to 0). Attempt 1: count = 0+1 = 1, holds.
+        assert_int(compile_run(src).unwrap(), 1);
+    }
+
+    #[test]
+    fn live_block_exhausts_retry_budget_and_propagates_error() {
+        // Always fails — `retries(1)` caps the budget at exactly one
+        // attempt, so the assertion error must propagate rather than
+        // retry forever.
+        let src = "\
+            fn main(int _d) {\n\
+                live retries(1) {\n\
+                    assert(false, \"always fails\");\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let err = compile_run(src).unwrap_err();
+        let display = err.to_string();
+        assert!(
+            display.contains("always fails"),
+            "expected the underlying assertion text to propagate: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn live_block_early_return_from_body_exits_successfully() {
+        // A `return` inside a live block's body (e.g.
+        // examples/thermal_safety_cutoff.rz's `safe_read`) must return
+        // from the enclosing function, not be treated as a failure.
+        let src = "\
+            fn safe_read(int nominal) -> int {\n\
+                live invariant true {\n\
+                    let reading = nominal;\n\
+                    return reading;\n\
+                }\n\
+            }\n\
+            fn main() {\n\
+                return safe_read(500);\n\
+            }\n\
+            main();\n\
+        ";
+        assert_int(compile_run(src).unwrap(), 500);
+    }
+
+    #[test]
+    fn live_block_retries_are_visible_via_live_total_retries() {
+        // RES-141: `VM_LIVE_TOTAL_RETRIES` is a process-wide counter
+        // shared across every test in this binary (mirrors the
+        // tree-walker's own `LIVE_TOTAL_RETRIES` and its test's
+        // before/after-delta pattern) — snapshot before running so
+        // parallel test execution can't make this flaky.
+        use std::sync::atomic::Ordering::Relaxed;
+        let before = VM_LIVE_TOTAL_RETRIES.load(Relaxed);
+        let src = "\
+            static let fails_left = 2;\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    if fails_left > 0 {\n\
+                        fails_left = fails_left - 1;\n\
+                        assert(false, \"forced\");\n\
+                    }\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert!(compile_run(src).is_ok());
+        let after = VM_LIVE_TOTAL_RETRIES.load(Relaxed);
+        // Lower-bound, not exact — other tests running in parallel on
+        // the same process bump this same atomic, inflating the delta
+        // (never deflating it below what this test's own workload
+        // contributes).
+        assert!(
+            after - before >= 2,
+            "expected at least 2 retries counted from this test's own workload, saw delta {}",
+            after - before
+        );
     }
 
     #[test]

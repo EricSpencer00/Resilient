@@ -162,6 +162,15 @@ fn remove_unreachable(chunk: &mut Chunk) {
         }
     }
 
+    // RES-3995: remap live_handler `body_start_pc` the same way — it's
+    // a raw stored PC (not an `Op::Jump` offset), so it needs the same
+    // `old_to_new` translation as `try_handlers` above or a retry would
+    // jump to the wrong instruction after dead code earlier in the
+    // chunk gets removed.
+    for entry in &mut chunk.live_handlers {
+        entry.body_start_pc = old_to_new[entry.body_start_pc];
+    }
+
     chunk.code = new_code;
     chunk.line_info = new_line_info;
 }

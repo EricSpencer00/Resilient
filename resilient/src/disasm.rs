@@ -250,6 +250,8 @@ fn write_op(
         } => write!(out, "CallMethod method={} arity={}", method_const, arity)?,
         Op::EnterTry(idx) => write!(out, "EnterTry handler_table={}", idx)?,
         Op::ExitTry => write!(out, "ExitTry")?,
+        Op::EnterLive(idx) => write!(out, "EnterLive handler_table={}", idx)?,
+        Op::ExitLive => write!(out, "ExitLive")?,
         Op::MakeEnumTuple {
             type_const,
             variant_const,
