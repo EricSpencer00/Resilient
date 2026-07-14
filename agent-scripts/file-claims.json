@@ -71,6 +71,18 @@
     ".github/workflows/release-file-claims.yml": {
       "branch": "res-3901-release-file-claims-push",
       "claimed_at": "2026-07-14T01:28:40Z"
+    },
+    "docs/MEMORY_MODEL.md": {
+      "branch": "res-3652-backend-contract-design-docs",
+      "claimed_at": "2026-07-14T01:30:01Z"
+    },
+    "docs/TYPE_SYSTEM_ROADMAP.md": {
+      "branch": "res-3652-backend-contract-design-docs",
+      "claimed_at": "2026-07-14T01:30:01Z"
+    },
+    "docs/BACKENDS.md": {
+      "branch": "res-3652-backend-contract-design-docs",
+      "claimed_at": "2026-07-14T01:30:01Z"
     }
   }
 }
