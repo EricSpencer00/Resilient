@@ -81,6 +81,10 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod hash_builtins;
+// RES-3987 (D-E1): `rz build --target <TRIPLE>` support — maps the
+// compiler's `Op` stream onto `resilient_runtime::vm::Instr` and
+// serializes to the `.rzbc` wire format the embedded runtime decodes.
+mod rzbc_emit;
 mod type_relations;
 // RES-2560 / RES-2561: SHA-256, SHA-512, CRC-32, CRC-16 builtins.
 mod crypto_hash;
@@ -32586,6 +32590,199 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
+/// RES-3987 (D-E1): `rz build --target <TRIPLE> <file.rz> [-o <out.rzbc>]`
+/// — compile a `.rz` program to a `.rzbc` blob for the no_std
+/// embedded runtime VM (`resilient_runtime::vm`, `--features vm`).
+///
+/// Unlike the generic `--target` flag (which only flips
+/// `#[cfg(target = "...")]` predicates for a host-interpreted run —
+/// see `docs/EMBEDDED_PIPELINE.md`'s "gap, stated plainly" section),
+/// this subcommand emits a real portable bytecode artifact. Only the
+/// no_std-representable subset (Int/Bool/Float arithmetic,
+/// comparisons, control flow, locals — no `fn` declarations,
+/// strings, collections, structs, closures, or FFI) is supported;
+/// anything else is a clear diagnostic naming the offending
+/// construct, never a silently broken blob. See `rzbc_emit.rs` for
+/// the `Op` → `Instr` mapping and its scope-cut documentation.
+///
+/// Exit codes:
+/// - 0 = `.rzbc` blob written successfully.
+/// - 1 = parse error, type error, compile error, or the program uses
+///   a construct outside the embedded subset.
+/// - 2 = usage error (missing `--target`, missing file path, bad
+///   flag, unreadable source file).
+fn dispatch_build_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("build") {
+        return None;
+    }
+    if is_build_help_request(args) {
+        print_build_help();
+        return Some(0);
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut target: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--target" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --target requires a target triple");
+                return Some(2);
+            }
+            target = Some(args[i].clone());
+        } else if let Some(v) = a.strip_prefix("--target=") {
+            target = Some(v.to_string());
+        } else if a == "-o" || a == "--out" || a == "--output" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: {a} requires an output path");
+                return Some(2);
+            }
+            out = Some(PathBuf::from(&args[i]));
+        } else if let Some(v) = a.strip_prefix("--output=") {
+            out = Some(PathBuf::from(v));
+        } else if file.is_none() && !a.starts_with('-') {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to build", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(target) = target else {
+        eprintln!("Error: `rz build --target <TRIPLE> <file> [-o <out.rzbc>]` requires --target");
+        return Some(2);
+    };
+    if target.is_empty() {
+        eprintln!("Error: --target requires a non-empty target triple");
+        return Some(2);
+    }
+    let Some(path) = file else {
+        eprintln!(
+            "Error: `rz build --target <TRIPLE> <file> [-o <out.rzbc>]` requires a file path"
+        );
+        return Some(2);
+    };
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", path.display(), e);
+            return Some(2);
+        }
+    };
+
+    let (program, parse_errs) = parse(&src);
+    if !parse_errs.is_empty() {
+        for e in &parse_errs {
+            eprintln!("{}", render_with_caret(&src, e, "parse error"));
+        }
+        return Some(1);
+    }
+
+    // RES-073: resolve `use "..."` before typechecking/compiling,
+    // matching the `--vm` / `--dump-chunks` driver paths.
+    let mut resolved = program;
+    let has_use = matches!(
+        &resolved,
+        Node::Program(stmts) if stmts.iter().any(|s| matches!(s.node, Node::Use { .. }))
+    );
+    if has_use {
+        let base_dir = path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut loaded = std::collections::HashSet::new();
+        if let Err(e) = imports::expand_uses(&mut resolved, &base_dir, &mut loaded) {
+            eprintln!("Error: {}", e);
+            return Some(1);
+        }
+    }
+
+    let path_str = path.to_string_lossy();
+    let mut tc = typechecker::TypeChecker::new();
+    if let Err(e) = tc.check_program_with_source(&resolved, path_str.as_ref()) {
+        eprintln!("Typecheck error: {}", e);
+        return Some(1);
+    }
+
+    // RES-405 PR 3 / RES-2605: same lowering pipeline `run_via_vm`
+    // and `--dump-chunks` use before handing the AST to the
+    // bytecode compiler.
+    let resolved = monomorph::lower(&resolved);
+    let resolved = devirtualize::lower(&resolved);
+    let compiled = match compiler::compile(&resolved) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error: compile failed: {:?}", e);
+            return Some(1);
+        }
+    };
+
+    let blob = match rzbc_emit::compile_to_rzbc(&compiled, &target) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return Some(1);
+        }
+    };
+
+    let out_path = out.unwrap_or_else(|| path.with_extension("rzbc"));
+    if let Err(e) = fs::write(&out_path, &blob) {
+        eprintln!("Error: could not write {}: {}", out_path.display(), e);
+        return Some(1);
+    }
+
+    println!(
+        "rz build: wrote {} bytes to {} (target: {})",
+        blob.len(),
+        out_path.display(),
+        target
+    );
+    Some(0)
+}
+
+const BUILD_HELP_TEXT: &str = r#"rz build — compile a file to a `.rzbc` blob for the embedded no_std VM
+
+USAGE:
+    rz build --target <TRIPLE> <file> [-o <out.rzbc>]
+
+Only the no_std-representable subset is supported: Int/Bool/Float
+arithmetic, comparisons, control flow, and locals. Programs using
+`fn` declarations, strings, collections, structs, closures, or FFI
+are rejected with a diagnostic naming the unsupported construct —
+never silently miscompiled.
+
+FLAGS:
+        --target TRIPLE   Target triple (required, e.g.
+                          thumbv7em-none-eabihf, thumbv6m-none-eabi,
+                          riscv32imac-unknown-none-elf)
+    -o, --output PATH     Output path (default: <file> with a
+                          `.rzbc` extension)
+
+EXAMPLES:
+    rz build --target thumbv7em-none-eabihf examples/hello.rz
+    rz build --target riscv32imac-unknown-none-elf prog.rz -o prog.rzbc
+
+Run `rz --help` for global flags and other subcommands.
+"#;
+
+fn is_build_help_request(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("build")
+        && matches!(
+            args.get(2).map(String::as_str),
+            Some("--help" | "-h" | "help")
+        )
+}
+
+fn print_build_help() {
+    print!("{}", BUILD_HELP_TEXT);
+}
+
 /// RES-4032: `resilient fmt <file> [--in-place]` — pretty-print a
 /// Resilient source file in canonical style.
 ///
@@ -33338,6 +33535,7 @@ pub fn run_cli() {
             args.get(2).map(String::as_str),
             Some(
                 "bench"
+                    | "build"
                     | "check"
                     | "debug"
                     | "fmt"
@@ -33379,6 +33577,10 @@ pub fn run_cli() {
 
     if is_fmt_help_request(&args) {
         print_fmt_help();
+        std::process::exit(0);
+    }
+    if is_build_help_request(&args) {
+        print_build_help();
         std::process::exit(0);
     }
     if is_debug_help_request(&args) {
@@ -33520,6 +33722,12 @@ pub fn run_cli() {
 
     // RES-225: `check <file>` — parse + type-check without running.
     if let Some(code) = dispatch_check_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-3987 (D-E1): `build --target <TRIPLE> <file>` — compile to
+    // a `.rzbc` blob for the no_std embedded runtime VM.
+    if let Some(code) = dispatch_build_subcommand(&args) {
         std::process::exit(code);
     }
 

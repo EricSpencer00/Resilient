@@ -12,6 +12,15 @@ D-E1 — the design doc that unblocks the implementation PR sequence.
 No source changes ship with this doc.
 {: .fs-6 .fw-300 }
 
+**Status (decomposition in section 5): items 1-3 done.** #4031 shipped
+the no_std `Instr`/`Vm` skeleton, #4034 shipped the `.rzbc`
+encoder/decoder (`resilient_runtime::vm::serde`), and the `rz build
+--target <TRIPLE>` subcommand (`resilient/src/rzbc_emit.rs` +
+`lib.rs`'s `dispatch_build_subcommand`) now closes the loop end to
+end for the Int/Bool/Float arithmetic/comparison/control-flow/locals
+subset — see section 3.1's "Proposed" column, now real. Items 4-7
+(QEMU CI, `Value::Array`, interrupt lowering) remain open follow-ups.
+
 <details open markdown="block">
   <summary>Table of contents</summary>
   {: .text-delta }
@@ -36,10 +45,15 @@ things exist that look adjacent to it, and none of them close the gap:
    > this flag, but it lets a hosted developer simulate an embedded
    > build's cfg-strip behaviour."
 
-   Running `rz build --target thumbv7em-none-eabihf foo.rz` today
-   type-checks and *interprets `foo.rz` on the host* with a different
-   `#[cfg]` view. It does not emit anything that runs on a
-   `thumbv7em-none-eabihf` chip.
+   Running `rz --target thumbv7em-none-eabihf foo.rz` (no `build`
+   subcommand) today type-checks and *interprets `foo.rz` on the
+   host* with a different `#[cfg]` view — that specific flag-only
+   invocation is unchanged by this document's implementation. The
+   new `rz build --target thumbv7em-none-eabihf foo.rz` **subcommand**
+   (section 3, item 3 of the decomposition below) is a different code
+   path that does close this gap for the supported subset: it
+   compiles, validates, and emits a real `.rzbc` blob instead of
+   interpreting on the host.
 2. **`resilient-runtime-cortex-m-demo/`** is a hand-written Rust crate
    that links `resilient-runtime` (the sibling `#![no_std]` value-layer
    crate) with `embedded-alloc`, builds one `Value::String` and one
@@ -208,11 +222,23 @@ table already published in `docs/no-std.md`.
 
 ## 3. Pipeline design: `rz build --target <TRIPLE>`
 
+**Status: shipped for the Int/Bool/Float scalar subset** (decomposition
+item 3, this document's section 5). `resilient/src/rzbc_emit.rs` maps
+`compiler::compile`'s `Op` stream onto `resilient_runtime::vm::Instr`
+and serializes with `resilient_runtime::vm::serde::encode` — the
+"Proposed" column below is what actually ships, with two adjustments
+from the original sketch: the `.rzbc` format that shipped in #4034 has
+no separate constant pool or function table (every constant is inlined
+directly onto `Instr::PushConst`, and there is no `vm_profile` header
+field), and there is no "scaffold a loader crate" step yet (section 3.3
+remains a follow-up) — `rz build` emits the `.rzbc` blob only.
+
 ### 3.1 Today vs. proposed
 
-| | Today | Proposed |
+| | Before this document's implementation PRs | Now |
 |---|---|---|
-| `rz build --target thumbv7em-none-eabihf foo.rz` | Type-checks + **interprets on host** with `#[cfg(target="thumbv7em-none-eabihf")]` predicates active. No artifact. | Compiles `foo.rz` to a `Program` (via the existing `compiler.rs` → `bytecode.rs` path), validates every opcode/constant against the target's supported subset (section 1), serializes the `Program` to a portable bytecode blob, and emits it alongside a thin loader binary. |
+| `rz build --target thumbv7em-none-eabihf foo.rz` | `build` was not a recognized subcommand, so the generic flag parser treated it as a throwaway positional argument (overwritten by the later `foo.rz` positional) — the command silently **type-checked + interpreted `foo.rz` on the host**, identical to plain `rz --target thumbv7em-none-eabihf foo.rz` below, with `--target` only flipping `#[cfg]` predicates. No artifact, and the leading `build` word was pure noise. | `build` is now a real subcommand (`dispatch_build_subcommand` in `lib.rs`, intercepted before the generic flag loop). It compiles `foo.rz` to a `Program` (via the existing `compiler.rs` → `bytecode.rs` path), rejects any construct outside the no_std-clean subset (section 1) with a clear diagnostic, and serializes the result to a `.rzbc` blob (`resilient_runtime::vm::serde`'s wire format) written to `-o <path>` (default: `foo.rzbc`). No loader-crate scaffolding yet (section 3.3 is still a follow-up). |
+| `rz --target thumbv7em-none-eabihf foo.rz` (no `build` subcommand) | Type-checks + **interprets on host** with `#[cfg(target="thumbv7em-none-eabihf")]` predicates active. No artifact. | Unchanged — this flag-only invocation still only flips `#[cfg]` predicates for a host-interpreted run; it is a separate code path from the new `build` subcommand. |
 | Consumer of `--target` | Only `#[cfg(target = "...")]` conditional-compilation predicates inside the `.rz` source itself | Same predicates (unchanged, still useful for source-level portability), *plus* it now also selects the opcode/constant validation profile and the loader template. |
 
 `target_profiles.rs` (`resilient/src/target_profiles.rs`, RES-2614)
@@ -349,13 +375,19 @@ tickets"):
    `resilient-runtime` behind the `vm` feature. Round-trip tests:
    compile a `.rz` program on host, serialize, deserialize inside a
    `#![no_std]` unit test, compare `Op` streams.
-3. **`rz build --target <TRIPLE>` subcommand.** Wire
-   `target_profiles.rs`'s existing manifest parsing to a real build
-   path: compile → validate against the target's `vm_profile` →
-   serialize → scaffold/refresh the loader crate (section 3.3). This
-   PR should explicitly *reject* (with a clear diagnostic, not a
-   silent host-interpret fallback) any program using a (b)-class
-   opcode when the target's profile is `no_std-scalar`.
+3. **`rz build --target <TRIPLE>` subcommand — DONE.** Shipped as a
+   real `build` subcommand (`resilient/src/rzbc_emit.rs` +
+   `dispatch_build_subcommand` in `lib.rs`): compile → reject (with a
+   clear diagnostic, never a silent host-interpret fallback or a
+   malformed blob) any construct outside the no_std-clean scalar
+   subset, including every `fn` declaration (no call-frame stack yet)
+   → serialize straight to a `.rzbc` blob via
+   `resilient_runtime::vm::serde::encode`. Scoped down from the
+   original sketch: no `target_profiles.rs`/`vm_profile` wiring (the
+   `Instr` subset is fixed, not target-parameterized, so there's
+   nothing to select between yet) and no loader-crate
+   scaffold/refresh (section 3.3) — both remain follow-up work once
+   more than one `vm_profile` exists to choose from.
 4. **QEMU CI job (Cortex-M).** `embedded-runtime.yml`, per section 4,
    items 1–2 and 4, for the `lm3s6965evb` + Cortex-M4 case only.
 5. **QEMU CI job (RISC-V).** Same job, RISC-V variant (section 4,

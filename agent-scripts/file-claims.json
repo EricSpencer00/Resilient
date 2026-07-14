@@ -64,10 +64,6 @@
       "branch": "res-3510-stability-failure-module-design",
       "claimed_at": "2026-07-14T01:47:27Z"
     },
-    "docs/EMBEDDED_PIPELINE.md": {
-      "branch": "res-3987-embedded-pipeline-design",
-      "claimed_at": "2026-07-14T02:49:00Z"
-    },
     ".github/workflows/fuzz.yml": {
       "branch": "res-fe4-fuzz-perf-ci",
       "claimed_at": "2026-07-14T02:55:50Z"
@@ -113,8 +109,8 @@
       "claimed_at": "2026-07-14T06:13:56Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-4032-fmt-check",
-      "claimed_at": "2026-07-14T06:43:13Z"
+      "branch": "res-3987-rz-build-subcommand",
+      "claimed_at": "2026-07-14T07:45:06Z"
     },
     "resilient/src/formatter.rs": {
       "branch": "res-4032-fmt-check",
@@ -155,6 +151,10 @@
     "resilient/src/bytecode.rs": {
       "branch": "res-4000-vm-range-type",
       "claimed_at": "2026-07-14T07:39:46Z"
+    },
+    "docs/EMBEDDED_PIPELINE.md": {
+      "branch": "res-3987-rz-build-subcommand",
+      "claimed_at": "2026-07-14T07:45:06Z"
     }
   }
 }
