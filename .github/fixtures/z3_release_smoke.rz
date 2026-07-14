@@ -1,0 +1,23 @@
+// RES-3979: release smoke-test fixture.
+//
+// `x + 0 == x` is a universal tautology over a free variable `x` —
+// the hand-rolled folder (RES-060..065) can't discharge it (it only
+// handles constant folding / let-propagation / control-flow facts,
+// not open quantifier-free arithmetic), but stock Z3 proves it
+// instantly. A release binary built with `--features z3,z3-static`
+// must report this clause as "proven by Z3 (SMT)" in `rz --audit`
+// output; a no-z3 binary reports it as left for runtime instead.
+//
+// See `scripts/release-smoke-test.sh`, which runs `rz --audit` on
+// this file and asserts the Z3-discharged count is non-zero.
+fn ident_round(int x) -> int
+    requires x + 0 == x
+{
+    return x;
+}
+
+fn main() {
+    println(ident_round(42));
+}
+
+main();

@@ -46,6 +46,36 @@ bench = false
 # and falls back to Z3 only when fold returns Unknown.
 default = []
 z3 = ["dep:z3", "dep:ed25519-dalek", "dep:rand_core"]
+# RES-3979: static-link libz3 into the binary instead of dynamically
+# linking against a system install. `z3-sys` vendors the actual Z3
+# C++ source tree (Z3 4.12.1) and builds it via `cmake` at compile
+# time, so the resulting `rz` binary needs no `libz3.so`/`libz3.dylib`
+# on the host at runtime — this is what makes Z3 shippable in a
+# portable release tarball. Always combine with `z3` (this feature
+# alone doesn't pull in the `z3` crate — see the `dep-name/feature-name`
+# forwarding below): `cargo build --features z3,z3-static`.
+#
+# Requires `cmake` and a C++ compiler on the *build* host (not the run
+# host). IMPORTANT: the vendored Z3 4.12.1 sources trip a two-phase
+# name-lookup diagnostic (`-Wtemplate-body`, promoted to a hard error)
+# under very new compilers — confirmed reproducing on Apple Clang 17
+# and Homebrew GCC 16, but NOT on GCC 12/13/14 (verified locally in a
+# plain Ubuntu 24.04 container, which matches `ubuntu-latest`'s default
+# toolchain — no CC/CXX override needed there). macOS's default
+# toolchain (Apple Clang) hits the broken path, and routing it through
+# Homebrew GCC instead trips a separate libstdc++/libc++ ABI mismatch
+# at the final link step — that needs more plumbing than fits this
+# ticket, so `z3-static` is currently wired up for
+# `x86_64-unknown-linux-gnu` only. Not part of any default developer/CI
+# build — see `.github/workflows/release.yml` for where it's used.
+#
+# We stay on `z3 = "0.12"` (see the dependency entry below) rather than
+# bumping to a newer `z3`/`z3-sys` release with a fixed vendored Z3
+# version, because the newer `z3` crate's public API (0.14+) dropped
+# the explicit `&Context` threading that `verifier_z3.rs` /
+# `quantifiers.rs` are written against — migrating that is a
+# compiler-source change out of scope for this release-infra ticket.
+z3-static = ["z3", "z3/static-link-z3"]
 # RES-074: opt-in LSP server. Default off so the regular build
 # doesn't pull in tower-lsp/tokio's transitive-dep tree. Enable with:
 #

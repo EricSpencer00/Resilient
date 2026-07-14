@@ -103,6 +103,14 @@
     "resilient/src/vm.rs": {
       "branch": "res-3914-vm-mutable-upvalues",
       "claimed_at": "2026-07-14T01:39:50Z"
+    },
+    ".github/workflows/release.yml": {
+      "branch": "res-3979-z3-default-artifact",
+      "claimed_at": "2026-07-14T01:43:36Z"
+    },
+    "resilient/Cargo.toml": {
+      "branch": "res-3979-z3-default-artifact",
+      "claimed_at": "2026-07-14T01:43:36Z"
     }
   }
 }
