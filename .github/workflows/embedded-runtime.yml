@@ -1,0 +1,131 @@
+# RES-3987 (D-E1): QEMU runtime gate for the on-device `.rzbc` loader
+# demo (`resilient-runtime-loader-demo/`, added in #4042). Separate
+# workflow file from `embedded.yml` on purpose — per
+# `docs/EMBEDDED_PIPELINE.md` section 4, item 1: `embedded.yml`'s jobs
+# are build-only gates ("No QEMU runners here... out of scope for this
+# ticket" — its own header comment), and this job would otherwise sit
+# oddly next to that scope statement. Splitting the file also means a
+# flaky QEMU/semihosting setup can't hold up the (much cheaper, purely
+# build-gate) `embedded.yml` jobs.
+#
+# What this proves: `resilient-runtime-loader-demo`'s ELF, built for
+# `thumbv7em-none-eabihf`, actually *runs* under
+# `qemu-system-arm -M lm3s6965evb` — decodes the committed
+# `arithmetic_demo.rzbc` fixture with the no_std VM
+# (`resilient_runtime::vm::loader::load_and_run`), computes
+# `(2+3)*4+1==21`, and reports it over `cortex-m-semihosting` before
+# exiting via `debug::exit(EXIT_SUCCESS)`. The job fails if QEMU times
+# out, if the semihosting output doesn't contain the expected value, or
+# if QEMU's own exit status is non-zero.
+#
+# Advisory, not required (yet): this job is intentionally NOT added to
+# main's required-status-checks list in this PR. It exercises exactly
+# one `no_std-scalar` example end-to-end (section 4, item 5's stated
+# scope boundary) and a brand-new apt-installed `qemu-system-arm` on
+# `ubuntu-latest` is a new external dependency for CI green — better to
+# let it prove itself flake-free for a few cycles before it can block
+# every unrelated PR's auto-merge. Promote it once it's been stable.
+
+name: embedded-runtime
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # `ready_for_review` so the gate deferred while the PR was a draft
+    # runs for real the moment it is marked ready, matching
+    # `embedded.yml` / `size_gate.yml`'s existing convention.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: detect skippable change
+    runs-on: ubuntu-latest
+    outputs:
+      run_heavy: ${{ steps.filter.outputs.run_heavy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the heavy gate should run
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Draft PRs and docs-only PRs defer the QEMU gate. A draft
+          # re-runs it for real on `ready_for_review`; the job reports
+          # success (skipped steps) meanwhile, and auto-merge only fires
+          # once a PR is non-draft anyway.
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${{ github.event.pull_request.draft }}" == "true" ]]; then
+            echo "draft PR — QEMU gate deferred until ready_for_review"
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          non_docs="$(git diff --name-only "$base" "$head" \
+            | grep -Ev '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/)' || true)"
+          if [[ -z "$non_docs" ]]; then
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  qemu_cortex_m:
+    name: loader-demo under QEMU (lm3s6965evb / thumbv7em)
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deferred gate fast path
+        if: needs.changes.outputs.run_heavy != 'true'
+        run: echo "docs-only or draft PR; QEMU run deferred until ready"
+
+      - name: Install Rust toolchain
+        if: needs.changes.outputs.run_heavy == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+          targets: thumbv7em-none-eabihf
+
+      # RES-1198: see notes in embedded.yml — rust-cache strips
+      # incremental compilation artifacts and keys off Cargo.lock +
+      # Cargo.toml + rustc version + feature set automatically.
+      - name: Cache cargo
+        if: needs.changes.outputs.run_heavy == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient-runtime-loader-demo
+          key: loader-demo-qemu
+
+      - name: Install qemu-system-arm
+        if: needs.changes.outputs.run_heavy == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm
+
+      - name: build_loader_demo.sh
+        if: needs.changes.outputs.run_heavy == 'true'
+        run: scripts/build_loader_demo.sh
+
+      - name: run_qemu.sh
+        if: needs.changes.outputs.run_heavy == 'true'
+        run: resilient-runtime-loader-demo/run_qemu.sh
