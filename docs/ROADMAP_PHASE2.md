@@ -17,6 +17,13 @@
 > language work and/or the B-E3 VM-completeness follow-ups. See the gate table and sequencing
 > below for details.
 
+> **Status update 2 (2026-07-14):** sequencing **steps 2 & 4 advanced.** Both infra fixes landed
+> (`#4021`→`#4065`, `#3976`→`#4066`), and all three deep Track-A type-system epics shipped a sound,
+> zero-regression **first increment**: associated-type projection resolution (A-E3, `#4069`), region
+> inference for unannotated `&mut` aliasing (A-E5, `#4071`), and higher-order effect enforcement
+> (A-E7, `#4073`). Deeper scope for each is tracked (`#4067`/`#4068`, `#4070`, `#4072`). Remaining
+> Track-A: those follow-ups + A-E2 generics completeness + A-E6 module system.
+
 ## Where we are (entering Phase 2)
 
 **Done in the swarm:** X1–X5 cross-cutting blockers; body-aware `ensures`; Z3 shipped +
@@ -53,10 +60,12 @@ Most of this contends on `typechecker.rs`/`lib.rs`, so run these **one at a time
 - [ ] Differential monomorphization tests across all three backends.
 
 ### A-E3 · Trait system: associated types & trait objects
-- [ ] Decide + document v1 scope for associated types (ship, or mark unsupported in the tier table).
-- [ ] Typechecker projection resolution for `Self::Width` (parser + `AssociatedTypeDecl` exist; **zero
-      enforcement today**).
-- [ ] Trait-object / `dyn` dispatch: implement, or formally document static-dispatch-only for v1.
+- [x] Associated-type projection resolution — **DONE** (`#4069`): `Self::AssocName` now parses and flows
+      through the normal return/param type machinery (via `current_self_assoc_types`), impl
+      binding-completeness + unknown/duplicate-binding enforced. `dyn Trait` formally descoped to
+      static-dispatch-only for v1 with a clear diagnostic + tier-table note.
+- [ ] Remaining associated-type scope (`T::Assoc` at generic use-sites, default-method-body resolution,
+      GATs) → **`#4067`**. Trait-object / `dyn` vtable dispatch design → **`#4068`**.
 
 ### A-E4 · Pattern-matching exhaustiveness *(cont.)*
 - [x] **`#4011`** — nested/payload pattern exhaustiveness (`Some(Shape::Circle(r))`-class) — **DONE**
@@ -67,13 +76,19 @@ Most of this contends on `typechecker.rs`/`lib.rs`, so run these **one at a time
       and `Result` `Ok`/`Err` payload recursion (deliberately left opaque by `#4056`).
 
 ### A-E5 · Memory / ownership: region inference
-- [ ] Region/lifetime **inference for unannotated code** (`region_inference::infer` is a documented
-      no-op stub today; `MEMORY_MODEL.md`'s "Enforcement Reality Check" section flags the gap).
-- [ ] Finish conditional-path use-after-move via Z3 fallback.
+- [x] Region inference for unannotated code — **first increment DONE** (`#4071`): `region_inference::infer`
+      (was a no-op stub) now catches provably-sound simultaneous-mutable-alias on plain fns (same
+      identifier passed to ≥2 param slots, ≥1 `&mut`) — zero false positives by construction.
+- [ ] Use-after-move (needs a Copy/Move type classification the language lacks), conditional-path aliasing,
+      interprocedural inference, local-to-local aliasing → **`#4070`**.
 
 ### A-E7 · Effect system: higher-order soundness
-- [ ] Effect-polymorphic HOF signatures (`fn run<E>(f: () -> int ! E) -> int ! E`) — the `!` effect-arrow
-      is **parsed-only** today (no unification). Corpus: a pure HOF called with an `io` callback must reject.
+- [x] Higher-order effect enforcement — **first increment DONE** (`#4073`): a `pure` HOF that invokes a
+      function-typed parameter is rejected when a call site binds that parameter to a top-level fn whose
+      declared effect isn't `pure` (proven violation); unresolvable callees accepted (conservative). This
+      also *un*-broke pure HOFs, which `check_program_effects` previously blanket-rejected.
+- [ ] True effect-variable polymorphism (`fn run<E>(f: () -> int ! E) -> int ! E` unifying `E` with the
+      callback's actual effect) + inline-lambda / local-variable effect resolution → **`#4072`**.
 
 ### A-E6 · Module & package system (language side)
 - [ ] Complete module-path resolution; `pub use` re-export + glob-import coverage; circular-import
@@ -183,10 +198,14 @@ tracked under `#4060` and `#4063`.
    landed; the "zero silent-wrongness" gate is closed. The residual VM `UNSUPPORTED_BY_VM` entries are
    *loud* feature-completeness gaps (Track B-E3), tracked under `#4060` (quantifier + `defer`) and
    `#4063` (actor VM execution, call-stack introspection, nested-fn closure capture).
-2. **Land the two infra fixes** (`#4021`, `#3976`) in a quiet window — they tax every future swarm.
+2. ~~**Land the two infra fixes**~~ — **DONE.** `#4021` (`#4065`: ready-or-bail never auto-closes a
+   tracker/umbrella — self-verified on its own PR) and `#3976` (`#4066`: claims moved to a dedicated
+   `agent-claims` ref via compare-and-swap; the DIRTY-on-`file-claims.json` tarpit is gone).
 3. ~~**Resolve the maintainer decisions**~~ — `#4025` **DONE** (`#[interrupt]` de-Stabled, `#4054`).
    E-E3 (vsce republish) remains a maintainer-only external action.
-4. **Then the deep language work** (A-E3 → A-E5 → A-E7), serialized on `typechecker.rs`, one epic per PR-chain.
+4. **Deep language work** — **first increments DONE** (A-E3 `#4069`, A-E5 `#4071`, A-E7 `#4073`), each a
+   sound, zero-regression increment with deeper scope tracked (`#4067`/`#4068`, `#4070`, `#4072`). Next:
+   drive those follow-ups + A-E2 generics completeness / A-E6 module system to finish Track A.
 5. **Extend embedded** (D-E1 `fn` support → D-E2 board app) to widen the on-device story past scalars.
 6. **Ship prep** (F-E1 full conformance → F-E6 release dry-run → tag `v1.0.0-rc`).
 
