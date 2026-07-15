@@ -1,0 +1,35 @@
+// RES-4070 (A-E5 increment 2): conditional-path conservatism — accept case.
+//
+// The alias-through-`let` pass merges branch states by INTERSECTION: a
+// fact survives an `if` only when it holds on every path. Here the
+// shadowing `let y = x;` happens on one branch only, and `y = 0;`
+// inside the loop kills the second fact on the path through the loop,
+// so neither post-merge call is provably aliasing — the program must
+// keep compiling (the A-E5 zero-false-positive rule).
+fn set_both(&mut int a, &mut int b) {
+    println("set_both ran");
+}
+
+fn caller(&mut int x, int c) {
+    let y = 0;
+    if (c > 0) {
+        let y = x;
+        println("branch-local alias only");
+    }
+    set_both(x, y);
+
+    let z = x;
+    let i = 0;
+    while (i < c) {
+        z = 0;
+        i = i + 1;
+    }
+    set_both(x, z);
+}
+
+fn main() {
+    let v = 1;
+    caller(v, 2);
+}
+
+main();
