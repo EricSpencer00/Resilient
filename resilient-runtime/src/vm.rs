@@ -289,6 +289,21 @@ pub enum Instr {
     /// there is no room to push a callee frame) and always surfaces
     /// [`VmError::CallStackOverflow`] for this instruction.
     Call(u16),
+    /// RES-4075 (D-E1 fn-support tail): pop and discard TOS — a
+    /// discarded expression-statement result, e.g. a `f(x);` call
+    /// whose value is unused. The host compiler emits `Op::Pop`
+    /// after every non-final expression statement, so any embedded
+    /// program with more than one top-level statement needs this.
+    Pop,
+    /// RES-4075 (D-E1 fn-support tail): tail call to function-table
+    /// index `idx`. Pops `arity` args like [`Instr::Call`], but
+    /// *reuses* the current frame instead of pushing a new one —
+    /// the host peephole pass rewrites a self-recursive
+    /// `Call(i); Return` pair into `TailCall(i)` (see
+    /// `resilient/src/compiler.rs`), so tail-recursive loops run in
+    /// O(1) call-frame space and never hit
+    /// [`VmError::CallStackOverflow`], no matter the depth.
+    TailCall(u16),
 }
 
 /// One callable function for [`Vm::run_with_functions`]: a
@@ -576,6 +591,38 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                     code = f.code;
                     pc = 0;
                     self.frame = next_frame;
+                }
+                Instr::Pop => {
+                    self.pop()?;
+                }
+                Instr::TailCall(idx) => {
+                    let f = functions
+                        .get(idx as usize)
+                        .copied()
+                        .ok_or(VmError::FunctionOutOfBounds(idx))?;
+                    let arity = f.arity as usize;
+                    if self.sp < arity {
+                        return Err(VmError::StackUnderflow);
+                    }
+                    // Reuse the current frame: pop args into its
+                    // first `arity` slots, zero the rest (same
+                    // fresh-frame hygiene as `Call`), and jump to
+                    // the callee at pc 0. No `returns` push — the
+                    // eventual `Return` resumes this frame's
+                    // original caller.
+                    for i in (0..arity).rev() {
+                        let v = self.pop()?;
+                        let slot = self.locals[self.frame]
+                            .get_mut(i)
+                            .ok_or(VmError::LocalsOutOfBounds)?;
+                        *slot = v;
+                    }
+                    for slot in self.locals[self.frame].iter_mut().skip(arity) {
+                        *slot = Value::Int(0);
+                    }
+                    current_func = Some(idx);
+                    code = f.code;
+                    pc = 0;
                 }
                 Instr::Return => {
                     let v = self.pop()?;
@@ -1030,6 +1077,153 @@ mod tests {
         ];
         let mut vm = Vm::<8, 0>::new();
         assert_eq!(vm.run(&program), Ok(Value::Bool(true)));
+    }
+
+    // ---------- RES-4075 (fn-support tail): TailCall + Pop ----------
+
+    #[test]
+    fn pop_discards_unused_call_result() {
+        // main: f(); 9   — f() = 5, result discarded via Pop.
+        let f = [Instr::PushConst(Value::Int(5)), Instr::Return];
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 0,
+            local_count: 0,
+        }];
+        let program = [
+            Instr::Call(0),
+            Instr::Pop,
+            Instr::PushConst(Value::Int(9)),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(9))
+        );
+    }
+
+    #[test]
+    fn pop_on_empty_stack_is_underflow_not_a_panic() {
+        let program = [Instr::Pop, Instr::Return];
+        let mut vm = Vm::<8, 0>::new();
+        assert_eq!(vm.run(&program), Err(VmError::StackUnderflow));
+    }
+
+    #[test]
+    fn tail_call_recursion_runs_in_constant_frame_space() {
+        // countdown(n) = if n < 1 { 0 } else { countdown(n - 1) }
+        // in tail-call form: depth 100 with only CALLS = 2.
+        let countdown = [
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Lt,
+            Instr::JumpIfFalse(6),
+            Instr::PushConst(Value::Int(0)),
+            Instr::Return,
+            Instr::LoadLocal(0), // 6
+            Instr::PushConst(Value::Int(1)),
+            Instr::Sub,
+            Instr::TailCall(0),
+        ];
+        let functions = [FunctionDef {
+            code: &countdown,
+            arity: 1,
+            local_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(100)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(0))
+        );
+    }
+
+    #[test]
+    fn tail_call_returns_to_original_caller() {
+        // g(x) = x * 2; f(x) = TailCall g(x + 1); main: 10 + f(3).
+        // f's TailCall must return g's result to *main*, and main's
+        // locals must be untouched by the reused frame.
+        let g = [
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(2)),
+            Instr::Mul,
+            Instr::Return,
+        ];
+        let f = [
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Add,
+            Instr::TailCall(1),
+        ];
+        let functions = [
+            FunctionDef {
+                code: &f,
+                arity: 1,
+                local_count: 1,
+            },
+            FunctionDef {
+                code: &g,
+                arity: 1,
+                local_count: 1,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(10)),
+            Instr::StoreLocal(0),
+            Instr::PushConst(Value::Int(3)),
+            Instr::Call(0),
+            Instr::LoadLocal(0),
+            Instr::Add,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 3>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(18))
+        );
+    }
+
+    #[test]
+    fn tail_call_bad_function_index_is_typed_error_not_a_panic() {
+        let f = [Instr::TailCall(7)];
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 0,
+            local_count: 0,
+        }];
+        let program = [Instr::Call(0), Instr::Return];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::FunctionOutOfBounds(7))
+        );
+    }
+
+    #[test]
+    fn tail_call_with_missing_args_is_underflow_not_a_panic() {
+        let f = [Instr::TailCall(0)];
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 1,
+            local_count: 1,
+        }];
+        // Call f with its one arg; f then TailCalls itself with an
+        // empty operand stack.
+        let program = [
+            Instr::PushConst(Value::Int(1)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::StackUnderflow)
+        );
     }
 
     // ---------- RES-4077 (D-E1 fn-support): calls ----------
