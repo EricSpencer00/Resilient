@@ -187,8 +187,8 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
         + fns.len() * rzbc_serde::FN_ENTRY_LEN
         + instrs.len() * MAX_INSTR_WIRE_WIDTH;
     let mut buf = vec![0u8; cap];
-    let len = rzbc_serde::encode_program(&instrs, &fns, main_local_count, &mut buf).map_err(
-        |e| {
+    let len =
+        rzbc_serde::encode_program(&instrs, &fns, main_local_count, &mut buf).map_err(|e| {
             unsupported(
                 target,
                 format!(
@@ -197,8 +197,7 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
                     e
                 ),
             )
-        },
-    )?;
+        })?;
     buf.truncate(len);
     Ok(buf)
 }
@@ -337,7 +336,12 @@ mod tests {
         local_count: 0,
     };
 
-    fn plain_fn(name: &str, arity: u8, local_count: u16, chunk: Chunk) -> crate::bytecode::Function {
+    fn plain_fn(
+        name: &str,
+        arity: u8,
+        local_count: u16,
+        chunk: Chunk,
+    ) -> crate::bytecode::Function {
         Function {
             name: name.to_string(),
             arity,
@@ -514,11 +518,11 @@ mod tests {
         );
         let body = chunk_from(
             vec![
-                Op::LoadLocal(0),      // fn-local 0 (stream 3)
-                Op::JumpIfFalse(2),    // -> fn-local 4 (stream 7)
-                Op::Const(0),          // 10
-                Op::ReturnFromCall,    // fn-local 3
-                Op::Const(1),          // fn-local 4: 20
+                Op::LoadLocal(0),   // fn-local 0 (stream 3)
+                Op::JumpIfFalse(2), // -> fn-local 4 (stream 7)
+                Op::Const(0),       // 10
+                Op::ReturnFromCall, // fn-local 3
+                Op::Const(1),       // fn-local 4: 20
                 Op::ReturnFromCall,
             ],
             vec![HostValue::Int(10), HostValue::Int(20)],
@@ -534,7 +538,11 @@ mod tests {
         let mut out = [Instr::Return; 16];
         let mut fns = [NO_FN; 4];
         let header = rzbc_serde::decode_program(&blob, &mut out, &mut fns).expect("should decode");
-        assert_eq!(out[4], Instr::JumpIfFalse(7), "target must be rebased by entry pc 3");
+        assert_eq!(
+            out[4],
+            Instr::JumpIfFalse(7),
+            "target must be rebased by entry pc 3"
+        );
 
         let mut vm = resilient_runtime::vm::Vm::<8, 8, 4>::new();
         assert_eq!(

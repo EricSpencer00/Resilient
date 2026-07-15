@@ -454,7 +454,11 @@ pub fn decode(bytes: &[u8], out: &mut [Instr]) -> Result<usize, DecodeError> {
     Ok(instr_count)
 }
 
-fn read_instrs(r: &mut Reader<'_>, out: &mut [Instr], instr_count: usize) -> Result<(), DecodeError> {
+fn read_instrs(
+    r: &mut Reader<'_>,
+    out: &mut [Instr],
+    instr_count: usize,
+) -> Result<(), DecodeError> {
     if instr_count > out.len() {
         return Err(DecodeError::TooManyInstrs);
     }
@@ -760,7 +764,7 @@ mod tests {
     #[test]
     fn decode_program_truncated_fn_table_is_truncated_not_a_panic() {
         let mut buf = [0u8; 256];
-        let len = encode_program(&CALLS_PROGRAM, &CALLS_FNS, 0, &mut buf).unwrap();
+        let _ = encode_program(&CALLS_PROGRAM, &CALLS_FNS, 0, &mut buf).unwrap();
         let mut out = [Instr::Return; 16];
         let mut fns = [CALLS_FNS[0]; 4];
         // Cut mid-way through the function table.

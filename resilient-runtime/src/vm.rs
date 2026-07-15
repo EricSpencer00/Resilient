@@ -1233,10 +1233,7 @@ mod tests {
     fn call_with_bad_function_index_is_a_typed_error_not_a_panic() {
         let program = [Instr::Call(7), Instr::Return];
         let mut vm = Vm::<8, 8, 4>::new();
-        assert_eq!(
-            vm.run_program(&program, &[], 0),
-            Err(VmError::BadFunction)
-        );
+        assert_eq!(vm.run_program(&program, &[], 0), Err(VmError::BadFunction));
     }
 
     #[test]
