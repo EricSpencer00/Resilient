@@ -15,6 +15,18 @@
 //! test in `resilient-runtime/src/vm/loader.rs` — both consume the
 //! exact same committed bytes, so a QEMU run and `cargo test` are
 //! checking the same program.
+//!
+//! RES-4084 (D-E2): a second blob is embedded and run below — the
+//! thermal-safety-cutoff reference app
+//! (`resilient/examples/thermal_cutoff_embedded.rz`), compiled by
+//! `rz build` into the v2 function-table `.rzbc` format and run via
+//! [`resilient_runtime::vm::loader::load_and_run_with_functions`].
+//! This is the fn-calling QEMU smoke test tracked as a pending item
+//! in #4083 — a function-decomposed control loop (sensor
+//! plausibility check, cutoff decision, control step, each a
+//! top-level `fn`) rather than the flat arithmetic fixture above.
+//! See `docs/THERMAL_CUTOFF_EMBEDDED_PIPELINE.md` for the full
+//! source -> contracts-checked -> bytecode -> no_std VM story.
 
 #![no_std]
 #![no_main]
@@ -22,7 +34,7 @@
 use cortex_m_rt::entry;
 use cortex_m_semihosting::{debug, hprintln};
 use resilient_runtime::vm::Value;
-use resilient_runtime::vm::loader::load_and_run;
+use resilient_runtime::vm::loader::{load_and_run, load_and_run_with_functions};
 
 /// `(2 + 3) * 4 + 1 == 21` — see
 /// `resilient-runtime/fixtures/arithmetic_demo.rzbc`.
@@ -39,19 +51,66 @@ const LOCALS_SLOTS: usize = 0;
 
 const EXPECTED: Value = Value::Int(21);
 
+/// The thermal-cutoff reference app — see
+/// `resilient/examples/thermal_cutoff_embedded.rz` and
+/// `resilient-runtime/fixtures/thermal_cutoff_demo.rzbc`. Four
+/// `control_step` calls summed: 100 (normal) + 0 (at cutoff) + 0
+/// (above cutoff) + 80 (glitch recovered via last-known-good) = 180.
+static THERMAL_RZBC_BLOB: &[u8] =
+    include_bytes!("../../resilient-runtime/fixtures/thermal_cutoff_demo.rzbc");
+
+/// Sized generously against the committed fixture (5 top-level fns,
+/// shallow non-recursive call depth, a handful of locals per frame).
+const THERMAL_MAIN_N: usize = 32;
+const THERMAL_FUNC_META_N: usize = 8;
+const THERMAL_FUNC_CODE_N: usize = 96;
+const THERMAL_STACK: usize = 16;
+const THERMAL_LOCALS: usize = 8;
+const THERMAL_CALLS: usize = 6;
+
+const THERMAL_EXPECTED: Value = Value::Int(180);
+
 #[entry]
 fn main() -> ! {
     match load_and_run::<MAX_INSTRS, STACK_SLOTS, LOCALS_SLOTS>(RZBC_BLOB) {
         Ok(v) if v == EXPECTED => {
             hprintln!("loader ok: {:?}", v);
-            debug::exit(debug::EXIT_SUCCESS);
         }
         Ok(v) => {
             hprintln!("loader produced unexpected value: {:?}", v);
             debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
         }
         Err(e) => {
             hprintln!("loader error: {:?}", e);
+            debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
+        }
+    }
+
+    match load_and_run_with_functions::<
+        THERMAL_MAIN_N,
+        THERMAL_FUNC_META_N,
+        THERMAL_FUNC_CODE_N,
+        THERMAL_STACK,
+        THERMAL_LOCALS,
+        THERMAL_CALLS,
+    >(THERMAL_RZBC_BLOB)
+    {
+        Ok(v) if v == THERMAL_EXPECTED => {
+            hprintln!("thermal cutoff loader ok: {:?}", v);
+            debug::exit(debug::EXIT_SUCCESS);
+        }
+        Ok(v) => {
+            hprintln!("thermal cutoff loader produced unexpected value: {:?}", v);
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(e) => {
+            hprintln!("thermal cutoff loader error: {:?}", e);
             debug::exit(debug::EXIT_FAILURE);
         }
     }
