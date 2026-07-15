@@ -1,0 +1,48 @@
+// RES-3933 A-E7: effect enforcement for higher-order functions.
+//
+// This example demonstrates the ACCEPT side of the call-site-based
+// higher-order effect check (`effect_polymorphism::check`, wired
+// into `check_program_effects`):
+//   - `run` is a `pure` HOF that invokes its function-typed
+//     parameter `f`. Calling it with a `pure` named-function
+//     callback (`add1`) is provably safe and must type-check.
+//   - `run_io` is an `io` HOF; it is never constrained by this
+//     pass, so it may invoke an `io` callback freely.
+//   - `call_with_local` forwards its own function-typed parameter
+//     `cb` into `run`. The bound value's effect can't be resolved
+//     from a bare parameter identifier, so per the project's
+//     "when uncertain, accept" rule this also type-checks — the
+//     monomorphic direction only rejects *proven* violations.
+//
+// See `hof_effect_io_callback_rejected.rz` for the mirror REJECT
+// case: a `pure` HOF invoked with a proven `io` callback.
+
+pure fn add1(int x) -> int {
+    return x + 1;
+}
+
+io fn noisy(int x) -> int {
+    println(x);
+    return x;
+}
+
+pure fn run(fn(int) -> int f, int x) -> int {
+    return f(x);
+}
+
+io fn run_io(fn(int) -> int f, int x) -> int {
+    return f(x);
+}
+
+fn call_with_local(fn(int) -> int cb, int x) -> int {
+    return run(cb, x);
+}
+
+fn main() -> int {
+    println(run(add1, 5));
+    println(run_io(noisy, 10));
+    println(call_with_local(add1, 20));
+    return 0;
+}
+
+main();

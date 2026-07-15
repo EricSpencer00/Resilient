@@ -1,0 +1,6 @@
+Type error: resilient/examples/hof_effect_io_callback_rejected.rz:30:16: cannot pass io callback `noisy` to pure higher-order function `run` (parameter `f` is invoked inside `run`)
+resilient/examples/hof_effect_io_callback_rejected.rz:30:16: cannot pass io callback `noisy` to pure higher-order function `run` (parameter `f` is invoked inside `run`)
+Type error: cannot pass io callback `noisy` to pure higher-order function `run` (parameter `f` is invoked inside `run`)
+       return run(noisy, 5);
+                  ^
+Error: Type check failed: resilient/examples/hof_effect_io_callback_rejected.rz:30:16: cannot pass io callback `noisy` to pure higher-order function `run` (parameter `f` is invoked inside `run`)
