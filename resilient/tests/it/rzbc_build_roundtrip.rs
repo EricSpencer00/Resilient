@@ -282,6 +282,113 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// RES-4075 (fn-support tail): decode a fn-table blob and run it —
+/// the same dance as `build_decode_run_matches_interpreter_for_fn_declarations`,
+/// shared by the TailCall/Pop round-trip tests below.
+fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
+    let mut out_main = [resilient_runtime::vm::Instr::Return; 32];
+    let mut out_func_meta = [resilient_runtime::vm::serde::DecodedFunctionMeta {
+        offset: 0,
+        len: 0,
+        arity: 0,
+        local_count: 0,
+    }; 8];
+    let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
+    let counts = resilient_runtime::vm::serde::decode_program(
+        blob,
+        &mut out_main,
+        &mut out_func_meta,
+        &mut out_func_code,
+    )
+    .expect("blob should decode as the function-table .rzbc format");
+
+    let mut functions = [resilient_runtime::vm::FunctionDef {
+        code: &[][..],
+        arity: 0,
+        local_count: 0,
+    }; 8];
+    for (slot, meta) in functions
+        .iter_mut()
+        .zip(out_func_meta.iter())
+        .take(counts.func_count)
+    {
+        *slot = resilient_runtime::vm::FunctionDef {
+            code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+            arity: meta.arity,
+            local_count: meta.local_count,
+        };
+    }
+    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
+    vm.run_with_functions(
+        &functions[..counts.func_count],
+        &out_main[..counts.main_len],
+    )
+    .expect("embedded VM should run the decoded program")
+}
+
+/// RES-4075: a tail-recursive fn — the host peephole rewrites the
+/// self-recursive `Call; ReturnFromCall` into `TailCall`, which now
+/// translates and runs in O(1) call-frame space (depth 50 with only
+/// 4 frame slots).
+#[test]
+fn build_compiles_tail_recursive_fn_and_embedded_vm_runs_it() {
+    let dir = tmp_dir("tail_rec");
+    let src = dir.join("countdown.rz");
+    std::fs::write(
+        &src,
+        "fn countdown(int n) -> int {\n    if n < 1 {\n        return 0;\n    }\n    return countdown(n - 1);\n}\ncountdown(50);\n",
+    )
+    .unwrap();
+    let out = dir.join("countdown.rzbc");
+
+    let (code, stderr) = run_build(&src, &out, "thumbv7em-none-eabihf");
+    assert_eq!(
+        code,
+        Some(0),
+        "tail-recursive fn should build for embedded targets; stderr={stderr}"
+    );
+
+    let blob = std::fs::read(&out).unwrap();
+    assert_eq!(run_fn_blob(&blob), resilient_runtime::vm::Value::Int(0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RES-4075: a program with a discarded call-statement result — the
+/// compiler emits `Op::Pop` after `f(1);`, which now translates.
+#[test]
+fn build_compiles_discarded_call_statement_and_embedded_vm_runs_it() {
+    let dir = tmp_dir("pop_stmt");
+    let src = dir.join("pop.rz");
+    std::fs::write(
+        &src,
+        "fn f(int a) -> int {\n    return a + 1;\n}\nf(1);\nf(41);\n",
+    )
+    .unwrap();
+    let out = dir.join("pop.rzbc");
+
+    let (code, stderr) = run_build(&src, &out, "riscv32imac-unknown-none-elf");
+    assert_eq!(
+        code,
+        Some(0),
+        "discarded call statements should build; stderr={stderr}"
+    );
+
+    let blob = std::fs::read(&out).unwrap();
+    assert_eq!(run_fn_blob(&blob), resilient_runtime::vm::Value::Int(42));
+
+    let interpreter_src = dir.join("pop_print.rz");
+    std::fs::write(
+        &interpreter_src,
+        "fn f(int a) -> int {\n    return a + 1;\n}\nf(1);\nprintln(f(41));\n",
+    )
+    .unwrap();
+    let interpreter_stdout = run_interpreter(&interpreter_src);
+    assert_eq!(interpreter_stdout.lines().next(), Some("42"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn build_missing_target_is_usage_error() {
     let dir = tmp_dir("missing_target");

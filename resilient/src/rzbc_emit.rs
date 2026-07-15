@@ -34,9 +34,9 @@
 //!   the function.
 //! - Every function/`main` [`Op`] must be one this module knows how
 //!   to translate 1:1 into an [`Instr`] (see [`translate_chunk`]).
-//!   Anything else — `Pop`, `IncLocal`, arrays, structs, enums,
+//!   Anything else — `IncLocal`, arrays, structs, enums,
 //!   closures, try/catch, FFI, builtins, bitwise ops,
-//!   `TailCall`/`CallClosure`/`CallMethod`/`CallForeign`/
+//!   `CallClosure`/`CallMethod`/`CallForeign`/
 //!   `CallBuiltin`, ... — is a typed [`EmitError`] naming the exact
 //!   opcode, never a silently malformed blob.
 //! - Every `Op::Const` constant must be `Value::Int`/`Bool`/`Float`
@@ -257,11 +257,20 @@ fn translate_chunk(chunk: &Chunk, target: &str) -> Result<Vec<Instr>, EmitError>
             // `resilient_runtime::vm::Vm::run_with_functions`).
             Op::ReturnFromCall => Instr::Return,
             Op::Call(idx) => Instr::Call(idx),
+            // RES-4075 (D-E1 fn-support tail): the peephole pass
+            // rewrites a self-recursive `Call(i); ReturnFromCall`
+            // pair into `TailCall(i)` (see `compiler.rs`), so any
+            // tail-recursive fn reaches this emitter as `TailCall`.
+            Op::TailCall(idx) => Instr::TailCall(idx),
+            // RES-4075: the compiler emits `Pop` after every
+            // non-final expression statement (e.g. `f(1);`), so
+            // multi-statement programs need it.
+            Op::Pop => Instr::Pop,
             Op::Jump(offset) => Instr::Jump(jump_target(i, offset, target)?),
             Op::JumpIfFalse(offset) => Instr::JumpIfFalse(jump_target(i, offset, target)?),
             Op::JumpIfTrue(offset) => Instr::JumpIfTrue(jump_target(i, offset, target)?),
             // Everything else is (b)-class or otherwise absent from
-            // `Instr` (bitwise ops, `IncLocal`, `Pop`, try/catch,
+            // `Instr` (bitwise ops, `IncLocal`, try/catch,
             // FFI, builtins, arrays/structs/enums/closures/tuples,
             // globals). `{:?}` on `Op` names the exact variant so the
             // diagnostic is actionable without a giant match arm per
@@ -589,10 +598,35 @@ mod tests {
             err.reason
         );
 
-        let main = chunk_from(vec![Op::Pop, Op::Return], vec![]);
+        // RES-4075: `Op::Pop` graduated into the supported subset,
+        // so the second unsupported-opcode probe is now a bitwise op.
+        let main = chunk_from(vec![Op::Band, Op::Return], vec![]);
         let program = program_from(main);
         let err = compile_to_rzbc(&program, "thumbv7em-none-eabihf").unwrap_err();
-        assert!(err.reason.contains("Pop"), "reason was: {}", err.reason);
+        assert!(err.reason.contains("Band"), "reason was: {}", err.reason);
+    }
+
+    /// RES-4075 (fn-support tail): `Op::Pop` (discarded expression
+    /// statements) and `Op::TailCall` (the peephole's self-recursion
+    /// rewrite) now translate instead of erroring.
+    #[test]
+    fn translates_pop_and_tail_call() {
+        let main = chunk_from(
+            vec![Op::Const(0), Op::Call(0), Op::Pop, Op::Const(0), Op::Return],
+            vec![HostValue::Int(1)],
+        );
+        let body = chunk_from(vec![Op::LoadLocal(0), Op::TailCall(0)], vec![]);
+        let program = Program {
+            main,
+            functions: vec![function_from("f", 1, 1, body)],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        // Just proving it emits — execution semantics are covered by
+        // resilient-runtime's own TailCall/Pop tests and the
+        // rzbc_build_roundtrip end-to-end tests.
+        compile_to_rzbc(&program, "thumbv6m-none-eabi")
+            .expect("Pop and TailCall should be emittable");
     }
 
     #[test]

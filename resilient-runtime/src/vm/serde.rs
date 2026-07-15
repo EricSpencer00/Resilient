@@ -101,6 +101,9 @@ const TAG_JUMP_IF_TRUE: u8 = 18;
 const TAG_RETURN: u8 = 19;
 /// RES-4077 (D-E1 fn-support): `Instr::Call(idx)`.
 const TAG_CALL: u8 = 20;
+// RES-4075 (D-E1 fn-support tail):
+const TAG_POP: u8 = 21;
+const TAG_TAIL_CALL: u8 = 22;
 
 const VALUE_TAG_INT: u8 = 0;
 const VALUE_TAG_BOOL: u8 = 1;
@@ -329,6 +332,11 @@ fn write_instr(w: &mut Writer<'_>, instr: Instr) -> Result<(), EncodeError> {
             w.write_u8(TAG_CALL)?;
             w.write_u16(idx)?;
         }
+        Instr::Pop => w.write_u8(TAG_POP)?,
+        Instr::TailCall(idx) => {
+            w.write_u8(TAG_TAIL_CALL)?;
+            w.write_u16(idx)?;
+        }
     }
     Ok(())
 }
@@ -357,6 +365,8 @@ fn read_instr(r: &mut Reader<'_>) -> Result<Instr, DecodeError> {
         TAG_JUMP_IF_TRUE => Instr::JumpIfTrue(r.read_u32()?),
         TAG_RETURN => Instr::Return,
         TAG_CALL => Instr::Call(r.read_u16()?),
+        TAG_POP => Instr::Pop,
+        TAG_TAIL_CALL => Instr::TailCall(r.read_u16()?),
         other => return Err(DecodeError::BadTag(other)),
     })
 }
@@ -733,6 +743,20 @@ mod tests {
         let program = [
             Instr::LoadLocal(u16::MAX),
             Instr::Jump(u32::MAX),
+            Instr::Return,
+        ];
+        let (out, count) = roundtrip(&program);
+        assert_eq!(&out[..count], &program[..]);
+    }
+
+    // ---------- RES-4075 (fn-support tail) ----------
+
+    #[test]
+    fn roundtrip_pop_and_tail_call() {
+        let program = [
+            Instr::Pop,
+            Instr::TailCall(9),
+            Instr::Call(2),
             Instr::Return,
         ];
         let (out, count) = roundtrip(&program);
