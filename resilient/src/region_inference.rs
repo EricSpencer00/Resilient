@@ -300,26 +300,208 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
     map
 }
 
-/// EXTENSION_PASSES entry point — runs after type-checking.
+/// A-E5: region/lifetime inference entry point for UNANNOTATED code.
 ///
-/// RES-1202: this pass was originally a placeholder slot for the D2/D5
-/// inference work that landed in `build_region_map`. The function body
-/// historically called `build_region_map(program)` and immediately
-/// *discarded* the returned `RegionMap`, then returned `Ok(())`.
+/// RES-1202 / RES-1611 history: this used to be a no-op stub — the
+/// call-site region-label substitution check
+/// (`check_call_site_region_aliasing`) only ever covers
+/// region-*polymorphic* callees (`fn f<R, S>(...)`), because it needs a
+/// declared/inferred region *label* on the caller's argument to build a
+/// substitution. A plain (non-generic) function whose `&mut` parameters
+/// carry no `[LABEL]` at all — the common case for code that hasn't
+/// opted into the region system — was never checked at call sites: two
+/// `&mut` parameters on the same function were only compared at the
+/// *declaration* (`check_region_aliasing`'s pairwise loop), where two
+/// unlabeled params always get distinct fresh `RegionVar`s and are
+/// therefore always accepted (RES-394 D5) — there is no dataflow-driven
+/// unification that would ever force them to collide. So passing the
+/// *same* local variable into two `&mut` parameters of a plain function
+/// compiled silently.
 ///
-/// The actual consumer of the region map (the alias-aliasing check at
-/// `lib.rs:check_region_aliasing`) builds its own copy via
-/// `build_region_map(program)` when it needs one, so the work here was
-/// unobservable: no thread-local, no global, no I/O — just an
-/// allocation and a tree walk whose result was dropped on function
-/// exit. For a single type-check that meant walking the AST twice for
-/// region inference (once here, once at the consumer) instead of once.
+/// This pass closes that gap with a check that needs no label inference
+/// at all: within a single call expression, if the same plain
+/// identifier appears as the argument for two (or more) parameter
+/// slots and at least one of those slots is a reference type
+/// (`&`/`&mut`) with at least one of them `&mut`, the two references
+/// are provably the same runtime binding — aliasing isn't a matter of
+/// inference, it's syntactic identity at one evaluation point. That
+/// makes this check unconditionally sound: no false positive is
+/// possible, because two occurrences of the same identifier in the same
+/// argument list *are* the same binding, full stop.
 ///
-/// The entry point is kept (so the `EXTENSION_PASSES` block in
-/// `typechecker.rs` is undisturbed and a future use can flow data
-/// here) but the body is now empty.
-pub fn infer(_program: &crate::Node, _source_path: &str) -> Result<(), String> {
-    Ok(())
+/// Deliberately conservative / deferred (tracked in a follow-up issue,
+/// see the PR body for the number):
+/// - Region-polymorphic callees (non-empty `type_params`) are skipped
+///   here — `check_call_site_region_aliasing` already covers them via
+///   region-label substitution, and skipping avoids double-reporting.
+/// - No cross-statement / conditional-path aliasing (e.g. an `if` that
+///   sometimes passes the same variable twice) — only literal syntactic
+///   repetition within one call's argument list.
+/// - No use-after-move detection: the language has no Copy/Move type
+///   distinction outside `linear T` (see `linear.rs`), so there is no
+///   sound way yet to tell whether re-reading a plain local after
+///   passing it somewhere is a genuine violation or an ordinary Copy.
+///   Enforcing that now would risk false positives on every ordinary
+///   value type in the corpus.
+/// - No whole-program / interprocedural analysis — call sites are
+///   checked against the literal argument identifiers visible at that
+///   call, not through further indirection (struct fields, arrays,
+///   closures).
+pub fn infer(program: &crate::Node, source_path: &str) -> Result<(), String> {
+    let errors = check_unannotated_mut_alias(program, source_path);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+/// Walk a node tree collecting all `Node::CallExpression` nodes whose
+/// function slot is a plain `Node::Identifier`, alongside the call's
+/// own span. Same traversal shape as `collect_calls`, extended with the
+/// span so diagnostics can point at the offending call site rather than
+/// falling back to the enclosing function's span.
+fn collect_calls_with_span<'a>(
+    node: &'a crate::Node,
+    calls: &mut Vec<(&'a str, &'a [crate::Node], crate::span::Span)>,
+) {
+    match node {
+        crate::Node::CallExpression {
+            function,
+            arguments,
+            span,
+        } => {
+            if let crate::Node::Identifier { name, .. } = function.as_ref() {
+                calls.push((name.as_str(), arguments.as_slice(), *span));
+            }
+            for arg in arguments {
+                collect_calls_with_span(arg, calls);
+            }
+        }
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_calls_with_span(s, calls);
+            }
+        }
+        crate::Node::LetStatement { value, .. } => collect_calls_with_span(value, calls),
+        crate::Node::Assignment { value, .. } => collect_calls_with_span(value, calls),
+        crate::Node::ReturnStatement { value: Some(v), .. } => collect_calls_with_span(v, calls),
+        crate::Node::ReturnStatement { value: None, .. } => {}
+        crate::Node::ExpressionStatement { expr, .. } => {
+            collect_calls_with_span(expr, calls);
+        }
+        crate::Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_calls_with_span(condition, calls);
+            collect_calls_with_span(consequence, calls);
+            if let Some(alt) = alternative {
+                collect_calls_with_span(alt, calls);
+            }
+        }
+        crate::Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_calls_with_span(condition, calls);
+            collect_calls_with_span(body, calls);
+        }
+        crate::Node::ForInStatement { body, .. } => collect_calls_with_span(body, calls),
+        crate::Node::InfixExpression { left, right, .. } => {
+            collect_calls_with_span(left, calls);
+            collect_calls_with_span(right, calls);
+        }
+        crate::Node::PrefixExpression { right, .. } => collect_calls_with_span(right, calls),
+        _ => {}
+    }
+}
+
+/// A-E5: the actual check backing [`infer`]. Split out so
+/// `check_region_aliasing` in `lib.rs` can call it directly (mirroring
+/// how it already calls `check_call_site_region_aliasing`), returning
+/// every violation rather than stopping at the first.
+pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    let stmts = match program {
+        crate::Node::Program(s) => s,
+        _ => return errors,
+    };
+
+    // fn_name -> parameter types, restricted to non-generic top-level
+    // functions with at least one reference-typed parameter. Region-
+    // polymorphic functions (`type_params` non-empty) are left to
+    // `check_call_site_region_aliasing`.
+    let mut callee_table: HashMap<&str, &[(String, String)]> = HashMap::new();
+    for spanned in stmts {
+        if let crate::Node::Function {
+            name,
+            type_params,
+            parameters,
+            ..
+        } = &spanned.node
+            && type_params.is_empty()
+            && parameters.iter().any(|(ty, _)| ty.starts_with('&'))
+        {
+            callee_table.insert(name.as_str(), parameters.as_slice());
+        }
+    }
+    if callee_table.is_empty() {
+        return errors;
+    }
+
+    for spanned in stmts {
+        let crate::Node::Function { body, .. } = &spanned.node else {
+            continue;
+        };
+        let mut calls: Vec<(&str, &[crate::Node], crate::span::Span)> = Vec::new();
+        collect_calls_with_span(body, &mut calls);
+
+        for (callee_name, args, call_span) in calls {
+            let Some(param_types) = callee_table.get(callee_name) else {
+                continue;
+            };
+            if args.len() != param_types.len() {
+                continue; // arity mismatch — typechecker handles it
+            }
+
+            // identifier name -> mutability of each reference-typed
+            // slot it was passed into.
+            let mut by_name: HashMap<&str, Vec<bool>> = HashMap::new();
+            for (arg, (ty, _)) in args.iter().zip(param_types.iter()) {
+                if let crate::Node::Identifier { name, .. } = arg
+                    && let Some((is_mut, _label)) = region_from_type_str(ty)
+                {
+                    by_name.entry(name.as_str()).or_default().push(is_mut);
+                }
+            }
+
+            let mut hits: Vec<(&str, usize)> = by_name
+                .into_iter()
+                .filter(|(_, muts)| muts.len() >= 2 && muts.iter().any(|m| *m))
+                .map(|(name, muts)| (name, muts.len()))
+                .collect();
+            hits.sort_unstable();
+
+            for (var_name, count) in hits {
+                let loc = if call_span.start.line == 0 {
+                    "E: ".to_string()
+                } else {
+                    format!(
+                        "{}:{}:{}: E: ",
+                        source_path, call_span.start.line, call_span.start.column
+                    )
+                };
+                errors.push(format!(
+                    "{}call to `{}` passes `{}` as {} simultaneous reference arguments (at least one `&mut`) — the same binding cannot be both aliased and exclusively borrowed at once",
+                    loc, callee_name, var_name, count
+                ));
+            }
+        }
+    }
+
+    errors
 }
 
 // ============================================================
@@ -873,6 +1055,132 @@ mod tests {
         assert!(
             matches!(map.get_local_resolved(&key), Some(Region::Var(_))),
             "unlabeled local ref should get a RegionVar"
+        );
+    }
+
+    // --- A-E5: region inference for unannotated code ---
+
+    #[test]
+    fn unannotated_two_distinct_vars_to_mut_params_accepted() {
+        let src = "fn set_both(&mut int a, &mut int b) {} \
+                    fn caller(int x, int y) { set_both(x, y); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let errors = check_unannotated_mut_alias(&program, "<test>");
+        assert!(
+            errors.is_empty(),
+            "distinct vars passed to distinct &mut params should be accepted, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn unannotated_same_var_to_two_mut_params_rejected() {
+        // Genuine simultaneous mutable alias: `x` is passed to both
+        // `&mut` parameters of the same non-generic call — no region
+        // label is needed to know this aliases, it's syntactic
+        // identity within one call's argument list.
+        let src = "fn set_both(&mut int a, &mut int b) {} \
+                    fn caller(int x) { set_both(x, x); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let errors = check_unannotated_mut_alias(&program, "<test>");
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("call to `set_both`") && errors[0].contains("`x`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn unannotated_same_var_to_two_shared_refs_accepted() {
+        // Two shared (`&`, non-mut) refs to the same binding cannot
+        // conflict — no write is possible through either.
+        let src = "fn read_both(& int a, & int b) {} \
+                    fn caller(int x) { read_both(x, x); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let errors = check_unannotated_mut_alias(&program, "<test>");
+        assert!(
+            errors.is_empty(),
+            "two shared refs to the same var should be fine, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn unannotated_same_var_mixed_shared_and_mut_rejected() {
+        // A shared ref and an exclusive ref to the same binding at the
+        // same call is still a genuine aliasing violation.
+        let src = "fn mix(& int a, &mut int b) {} \
+                    fn caller(int x) { mix(x, x); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let errors = check_unannotated_mut_alias(&program, "<test>");
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn unannotated_value_param_plus_mut_param_same_var_accepted() {
+        // One slot is a plain by-value `int` (no reference at all) —
+        // only one live reference exists (the `&mut` slot), so this is
+        // not an aliasing violation.
+        let src = "fn one_ref(int a, &mut int b) {} \
+                    fn caller(int x) { one_ref(x, x); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let errors = check_unannotated_mut_alias(&program, "<test>");
+        assert!(
+            errors.is_empty(),
+            "by-value + single &mut on the same var is not aliasing, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn unannotated_generic_callee_left_to_call_site_pass() {
+        // Region-polymorphic callees are already covered by
+        // `check_call_site_region_aliasing` via label substitution;
+        // this pass skips them to avoid double-reporting the same
+        // violation (see `res395_d8_call_site_same_var_twice_detected`
+        // in lib.rs for the generic-callee coverage).
+        let src = "region A; \
+                    fn update<R, S>(&mut[R] int a, &mut[S] int b) {} \
+                    fn caller(&mut[A] int x) { update(x, x); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let errors = check_unannotated_mut_alias(&program, "<test>");
+        assert!(
+            errors.is_empty(),
+            "generic callees are left to check_call_site_region_aliasing, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn infer_wraps_check_unannotated_mut_alias() {
+        let src = "fn set_both(&mut int a, &mut int b) {} \
+                    fn caller(int x) { set_both(x, x); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let err = infer(&program, "<test>").expect_err("should reject same-var mut alias");
+        assert!(
+            err.contains("call to `set_both`"),
+            "infer() should surface the violation, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn infer_accepts_safe_unannotated_program() {
+        let src = "fn set_both(&mut int a, &mut int b) {} \
+                    fn caller(int x, int y) { set_both(x, y); }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert!(
+            infer(&program, "<test>").is_ok(),
+            "safe program must be accepted"
         );
     }
 }
