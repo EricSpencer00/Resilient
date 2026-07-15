@@ -37,6 +37,10 @@ if [ ! -f "$ELF" ]; then
 fi
 
 EXPECTED="loader ok: Int(21)"
+# RES-4084 (D-E2): the thermal-safety-cutoff reference app's
+# function-calling blob, run second — see
+# `docs/THERMAL_CUTOFF_EMBEDDED_PIPELINE.md`.
+EXPECTED_THERMAL="thermal cutoff loader ok: Int(180)"
 TIMEOUT_SECS=30
 OUTPUT_FILE="$(mktemp)"
 trap 'rm -f "$OUTPUT_FILE"' EXIT
@@ -71,4 +75,9 @@ if ! grep -qF "$EXPECTED" "$OUTPUT_FILE"; then
   exit 1
 fi
 
-echo "ok: loader-demo ran under QEMU and reported '$EXPECTED'"
+if ! grep -qF "$EXPECTED_THERMAL" "$OUTPUT_FILE"; then
+  echo "error: expected semihosting output '$EXPECTED_THERMAL' not found" >&2
+  exit 1
+fi
+
+echo "ok: loader-demo ran under QEMU and reported '$EXPECTED' and '$EXPECTED_THERMAL'"

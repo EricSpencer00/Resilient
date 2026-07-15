@@ -1,0 +1,80 @@
+// Embedded thermal safety cutoff — the D-E2 reference app for the
+// real .rz -> rz build -> .rzbc -> no_std VM pipeline (RES-4084,
+// Refs #3933 Track D). See docs/EMBEDDED_PIPELINE.md and
+// resilient-runtime-loader-demo/README.md for the full story of how
+// this file becomes bytes a Cortex-M target executes.
+//
+// This is a function-decomposed sibling of the host-only flagship
+// app in resilient/examples/thermal_safety_cutoff.rz (PR #3850),
+// restructured to stay inside the v1 embedded fn-call subset that
+// `rz build` / `rzbc_emit.rs` accepts (see #4083 for what's
+// excluded): plain top-level fns only, no closures, no `fails`
+// variants, no `ensures`/`recovers_to` postcondition-bearing fns
+// (those get their contracts checked at compile/verify time via
+// `rz check --features z3` on the flagship app instead — this file
+// is the runtime-executable shape of the same control logic), no
+// strings/println (the embedded `Value` has no heap), scalar
+// int-only I/O.
+//
+// Same safety property as the flagship app: the heater duty is
+// provably zero once the measured temperature reaches the cutoff.
+// Here that property is exercised at runtime on real hardware; the
+// flagship app is where Z3 proves it holds for every input.
+
+// Tenths of a degree C. 800 = 80.0 C.
+fn is_plausible(int temp) -> bool {
+    if temp < -400 {
+        return false;
+    }
+    if temp > 1250 {
+        return false;
+    }
+    return true;
+}
+
+// Core cutoff decision: never drive the heater at or above cutoff.
+fn commanded_duty(int temp, int requested) -> int {
+    if temp >= 800 {
+        return 0;
+    }
+    if requested > 100 {
+        return 100;
+    }
+    if requested < 0 {
+        return 0;
+    }
+    return requested;
+}
+
+// Reject implausible sensor glitches by clamping to the last-known
+// safe reading instead of trusting the raw sample. A real driver
+// would re-sample the ADC; this is the deterministic on-device
+// stand-in the embedded subset can express (no `live` blocks — see
+// the flagship app for the host-side retry-loop version).
+fn safe_temp(int raw, int last_good) -> int {
+    if is_plausible(raw) {
+        return raw;
+    }
+    return last_good;
+}
+
+// One control-loop iteration: read, sanitize, decide, return duty.
+fn control_step(int raw_temp, int last_good, int requested) -> int {
+    let temp = safe_temp(raw_temp, last_good);
+    return commanded_duty(temp, requested);
+}
+
+fn main() -> int {
+    // Below cutoff: request honored -> 100.
+    let step1 = control_step(720, 720, 100);
+    // At cutoff: provably zero regardless of request.
+    let step2 = control_step(800, 720, 100);
+    // Above cutoff: still zero.
+    let step3 = control_step(910, 720, 60);
+    // Sensor glitch (implausible raw reading) falls back to
+    // last-known-good 500 (below cutoff) -> request honored.
+    let step4 = control_step(9999, 500, 80);
+
+    return step1 + step2 + step3 + step4;
+}
+main();
