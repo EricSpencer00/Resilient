@@ -1,0 +1,36 @@
+// A-E3 (RES-3933): associated-type projection resolution — reject case.
+//
+// This program is intentionally invalid: `Register8` binds
+// `type Width = int;`, so `Self::Width` in `read`'s declared return
+// type resolves to `int` — but the method body returns a `string`
+// literal. The typechecker now resolves `Self::AssocName` projections
+// against the impl's binding (`typechecker.rs`'s
+// `current_self_assoc_types`, populated from `associated_type_impls`)
+// instead of treating `Self::Width` as an unresolvable opaque name, so
+// this surfaces the same "return type mismatch" diagnostic any other
+// wrongly-typed `return` would.
+
+trait Register {
+    type Width;
+
+    fn read(self) -> Self::Width;
+}
+
+struct Register8 {
+    int addr,
+}
+
+impl Register for Register8 {
+    type Width = int;
+
+    fn read(self) -> Self::Width {
+        return "not an int";
+    }
+}
+
+fn main() {
+    let r = new Register8 { addr: 100 };
+    println(r.read());
+}
+
+main();

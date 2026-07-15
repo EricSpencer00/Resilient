@@ -1,0 +1,35 @@
+// A-E3 (RES-3933): associated-type projection resolution — accept case.
+//
+// `Register` declares an associated type `Width` and a method whose
+// return type is the projection `Self::Width`. `Register8` binds
+// `Width = int` and its `read` method's declared return type is
+// literally `Self::Width`. `associated_types::check` resolves that
+// projection against the impl's binding and structurally checks the
+// method's `return` expression against it — the returned `42` is an
+// int literal, matching the resolved `int` binding, so this program
+// type-checks and runs.
+
+trait Register {
+    type Width;
+
+    fn read(self) -> Self::Width;
+}
+
+struct Register8 {
+    int addr,
+}
+
+impl Register for Register8 {
+    type Width = int;
+
+    fn read(self) -> Self::Width {
+        return 42;
+    }
+}
+
+fn main() {
+    let r = new Register8 { addr: 100 };
+    println(r.read());
+}
+
+main();

@@ -10,6 +10,7 @@ mod agent_docs_lib_touchpoints_smoke;
 mod agent_playbook_lib_allowlist_smoke;
 mod ai_threats_smoke;
 mod anonymous_structs_smoke;
+mod associated_types_smoke;
 mod atomic_types_callsite_smoke;
 mod atomic_types_runtime_parity;
 mod atomic_types_smoke;

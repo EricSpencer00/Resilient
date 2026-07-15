@@ -564,11 +564,26 @@ Associated types enable polymorphic interfaces where each implementation can spe
 ### Limitations
 
 The current trait system does not support:
-- Projection syntax (`T::AssocType`) in generic bounds (RES-779 follow-up)
-- `dyn Trait` / virtual tables (RES-293)
-- Generic associated types are not supported yet
-- Default method bodies are not supported yet
-- Blanket impls and specialization are not supported yet
+- `T::AssocType` projections for a generic type parameter `T` at an
+  arbitrary use site inside a generic function body (as opposed to a
+  `where T::AssocType: Bound` clause, which resolves at the call site,
+  or `Self::AssocType` inside a concrete `impl`'s own methods, which
+  resolves against that impl's binding and participates in real type
+  checking — A-E3/RES-3933) — tracked in
+  [#4067](https://github.com/EricSpencer00/Resilient/issues/4067)
+- `dyn Trait` / virtual tables — `dyn Trait` syntax parses to a
+  dedicated, clear diagnostic rather than a vtable; there is no
+  dynamic dispatch — tracked in
+  [#4068](https://github.com/EricSpencer00/Resilient/issues/4068)
+- Generic associated types (`type Item<T>;`) and associated constants
+  are not supported yet
+
+Default trait method bodies (a trait method with a `{ ... }` body that
+an `impl` may omit) and blanket impls (`impl<T: Bound> Trait for T`)
+*are* supported today, despite not having a dedicated section in this
+file yet — see `default_trait_methods.rs` / `blanket_impl.rs` and the
+"Nominal-look traits" / "Default trait method bodies" / "Blanket
+impls" rows in [docs/LANGUAGE.md](docs/LANGUAGE.md#current-feature-classification).
 
 ## Data Types
 
