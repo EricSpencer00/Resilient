@@ -6891,6 +6891,9 @@ impl TypeChecker {
                 crate::generated_annotation::check(program, source_path)?;
                 // RES-3836: general-purpose state machine topology enforcement.
                 crate::state_topology::check(program, source_path)?;
+                // RES-4078 (A-E2): const-generic `[T; N]` length checking —
+                // rejects provable array-literal length mismatches only.
+                crate::const_generic_len::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

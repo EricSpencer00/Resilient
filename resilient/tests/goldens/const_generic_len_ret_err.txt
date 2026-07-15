@@ -1,0 +1,16 @@
+exit=1
+<tmp>.rz:0:0: warning[resilience]: `axes` scores 20/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+<tmp>.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+<tmp>.rz:0:0: warning[vibe_debt]: `axes` has no contracts, no effect annotation, and is unreferenced — fully vibe-coded
+<tmp>.rz:0:0: warning[vibe_debt]: program-wide vibe debt is 87.5% (1 of 2 function(s) have zero verification signals)
+mutation: 2 total mutation site(s) across 2 function(s)
+mutation:   `axes`: 1 site(s) [return]
+mutation:   `main`: 1 site(s) [literal]
+<tmp>.rz:0:0: warning[mutation]: 2/2 mutation site(s) (100%) are in functions with no contracts — the Z3 verifier cannot kill them
+<tmp>.rz:0:0: warning[mutation]: `axes`: 1 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+<tmp>.rz:0:0: warning[mutation]: `main`: 1 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+<tmp>.rz:1:36: array literal has 1 element(s) but `axes` returns `[string; 2]` (expected 2)
+<tmp>.rz:1:36: array literal has 1 element(s) but `axes` returns `[string; 2]` (expected 2)
+error: array literal has 1 element(s) but `axes` returns `[string; 2]` (expected 2)
+   fn axes() -> [string; 2] { return ["x"]; }
+                                      ^

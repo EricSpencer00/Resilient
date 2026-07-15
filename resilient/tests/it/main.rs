@@ -37,6 +37,8 @@ mod cli_toggle_source_lib_split_smoke;
 mod cluster_invariant_smoke;
 mod conformance;
 mod contract_certificate_e2e_smoke;
+mod compound_trait_bounds_golden;
+mod const_generic_len_golden;
 mod core_touchpoint_source_lib_split_smoke;
 mod debug_help_smoke;
 mod derive_partial_ord_runtime;

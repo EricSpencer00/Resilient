@@ -1,0 +1,6 @@
+exit=1
+<tmp>.rz:6:34: type `Circle` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Circle` and required methods are missing)
+<tmp>.rz:6:34: type `Circle` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Circle` and required methods are missing)
+error: type `Circle` does not satisfy bound `T: Drawable` at call to `render` (no `impl Drawable for Circle` and required methods are missing)
+   fn main(int _d) { println(render(new Circle { radius: 4 })); }
+                                    ^

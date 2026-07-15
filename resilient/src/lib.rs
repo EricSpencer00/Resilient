@@ -722,6 +722,8 @@ mod unused_imports;
 mod tuple_struct;
 // RES-2580: extended const eval — string concat, bitwise ops, conditionals.
 mod const_eval_ext;
+// RES-4078 (A-E2): const-generic `[T; N]` length checking.
+mod const_generic_len;
 // RES-2601: exhaustive struct field checking in match patterns.
 mod struct_field_check;
 // RES-2586: deque (double-ended queue) collection builtins.
