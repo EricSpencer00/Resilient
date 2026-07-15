@@ -1,0 +1,19 @@
+// A-E5: region/lifetime inference for unannotated code — reject case.
+//
+// `set_both` takes two unlabeled `&mut int` parameters — no `[R]`
+// region syntax anywhere in this program. Passing the SAME local
+// variable to both is a genuine simultaneous-mutable-alias violation:
+// no region-label inference is needed to see it, it's syntactic
+// identity of the argument within one call expression. Before this
+// pass landed, `region_inference::infer` was a no-op stub and this
+// program compiled (and ran) silently.
+fn set_both(&mut int a, &mut int b) {
+    println("should never reach this - borrow check rejects the same var twice");
+}
+
+fn main() {
+    let x = 1;
+    set_both(x, x);
+}
+
+main();

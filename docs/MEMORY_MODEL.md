@@ -271,7 +271,8 @@ scoping work toward, not a guarantee you can rely on for a safety case.
 ## Enforcement Reality Check: what is actually checked today
 
 Grounded in `resilient/src/region_inference.rs` and the
-`check_region_aliasing` pass in `resilient/src/lib.rs` (RES-391/RES-393/RES-394).
+`check_region_aliasing` pass in `resilient/src/lib.rs`
+(RES-391/RES-393/RES-394/RES-395, A-E5 · #3933).
 
 **What exists:**
 - A **syntactic, function-signature-level** aliasing check. For every
@@ -282,37 +283,64 @@ Grounded in `resilient/src/region_inference.rs` and the
 - Unlabeled `&mut` parameters get inference-assigned region variables
   (`region_inference::build_region_map`); two unlabeled `&mut` params
   with distinct inferred regions are accepted as independent (RES-394 D5).
-- A separate `region_inference::check_call_site_region_aliasing` pass
-  checks call-site region consistency; `region_inference::infer` itself
-  is a **no-op stub returning `Ok(())`** (see the comment at
-  `typechecker.rs:6397`) — the real logic lives in the call-site check,
-  not in a general inference pass.
-- When the syntactic rule rejects a program, a Z3 fallback using the
-  function's `requires` preconditions may still accept it (RES-393 D1),
-  if the `z3` feature is enabled.
+- `region_inference::check_call_site_region_aliasing` checks call-site
+  region-label consistency for **region-polymorphic** callees
+  (`fn f<R, S>(...)`) — it substitutes each type-param region with the
+  caller's concrete label and rejects a call that unifies two `&mut`
+  parameters onto the same region.
+- **A-E5:** `region_inference::infer` (backed by
+  `check_unannotated_mut_alias`) is no longer a no-op. It closes the gap
+  the call-site check above cannot: a **plain, non-generic** function
+  whose `&mut` parameters carry no `[LABEL]` at all. Within a single
+  call expression, if the same identifier is passed as the argument for
+  two (or more) parameter slots and at least one of those slots is
+  `&mut`, the two references are provably the same runtime binding —
+  this needs no region-label inference, only syntactic identity within
+  one call's argument list, so it is unconditionally sound (no false
+  positive is possible). Region-polymorphic callees are left to the
+  call-site-substitution check above to avoid double-reporting.
+- When the syntactic signature-level rule rejects a program, a Z3
+  fallback using the function's `requires` preconditions may still
+  accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
+  check has no Z3 fallback yet — see the "What does not exist" list.
 
-**What does not exist (yet):**
-- No whole-program or interprocedural alias analysis. The checker only
-  looks at parameter *signatures*; it does not track whether a reference
-  escapes into a struct field, a static, a return value, or an array
-  element.
-- No borrow checker over local variables or expressions — aliasing
-  through locals, closures, or heap-allocated structures is not analyzed.
+**What does not exist (yet)** (tracked in
+[#4070](https://github.com/EricSpencer00/Resilient/issues/4070)):
+- No use-after-move detection for unannotated (non-`linear`) bindings.
+  The language has no Copy/Move type distinction outside `linear T`
+  (`resilient/src/linear.rs`), so there is no sound way yet to tell
+  whether re-reading a plain local after passing it somewhere is a
+  genuine violation or an ordinary value copy.
+- No conditional-path aliasing detection. The A-E5 call-site check only
+  catches literal syntactic identifier repetition within one call's
+  argument list (straight-line); a program that aliases the same
+  binding only on some branches is not caught.
+- No whole-program or interprocedural alias analysis. Both region
+  checks only look at parameter *signatures* and direct call-site
+  arguments; neither tracks whether a reference escapes into a struct
+  field, a static, a return value, an array element, or a closure
+  capture.
+- No borrow checker over local-to-local aliasing — there is no
+  expression syntax in the language today to take a reference to
+  another local (`&mut` only ever appears in parameter/`let` *type*
+  annotations, never as an expression), so this has no concrete surface
+  to check yet.
 - No lifetime/region tracking beyond the function-parameter boundary
   (there is no equivalent of Rust's NLL or region-based lifetime
   elaboration across a whole function body).
 - No enforcement for Tier 3 (Heap) or Tier 4 (MMIO) aliasing beyond
-  whatever the `&`/`&mut` parameter check happens to cover if a
-  heap/MMIO reference is passed as a parameter.
+  whatever the `&`/`&mut` parameter and call-site checks happen to cover
+  if a heap/MMIO reference is passed as a parameter.
 
 **Practical implication:** the "Aliasing Rules" and "Memory Safety
 Invariants" sections above describe the *intended* end-state model. Code
 that violates the invariants informally (e.g., stores a `&mut`
 reference to a struct field and reads it through a second alias that
-never appears as a function parameter pair) will compile today without
-error. Do not cite this document as evidence of a memory-safety
-guarantee beyond bounds-checking and the narrow parameter-level aliasing
-rule described above.
+never appears as a function parameter pair, or aliases a variable only
+on one branch of an `if`) will compile today without error. Do not cite
+this document as evidence of a memory-safety guarantee beyond
+bounds-checking and the narrow parameter-signature-level and
+direct-call-site aliasing rules described above.
 
 ---
 

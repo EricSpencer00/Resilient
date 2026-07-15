@@ -29554,6 +29554,12 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
     if !has_ref_param {
         return crate::region_inference::check_call_site_region_aliasing(program, source_path);
     }
+    // Note: `check_unannotated_mut_alias` (A-E5) is only added to the
+    // main path below — it internally fast-rejects on an empty callee
+    // table (no non-generic fn with a `&`-prefixed param), which is
+    // guaranteed here since `has_ref_param` covers exactly that
+    // condition, so calling it from this early-return branch would be
+    // a guaranteed no-op.
 
     // Collect the set of declared region names.
     let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -29690,6 +29696,16 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
     // concrete region labels to a callee with region type params, verify
     // that the substituted labels don't alias.
     errors.extend(crate::region_inference::check_call_site_region_aliasing(
+        program,
+        source_path,
+    ));
+
+    // A-E5: region/lifetime inference for UNANNOTATED code — catches a
+    // plain (non-generic) `&mut` callee receiving the same identifier
+    // twice at one call site, which `check_call_site_region_aliasing`
+    // above cannot see (it only substitutes region *labels*, and a
+    // plain callee's unlabeled `&mut` params never carry one).
+    errors.extend(crate::region_inference::check_unannotated_mut_alias(
         program,
         source_path,
     ));

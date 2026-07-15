@@ -1,0 +1,18 @@
+// A-E5: region/lifetime inference for unannotated code — accept case.
+//
+// `set_both` takes two unlabeled `&mut int` parameters (no `[R]` region
+// syntax at all). Passing two DISTINCT local variables is safe — the
+// two `&mut` parameters cannot alias each other — so region inference
+// accepts the call without requiring the caller to opt into the
+// region-label system at all.
+fn set_both(&mut int a, &mut int b) {
+    println("set_both accepted - distinct unannotated bindings");
+}
+
+fn main() {
+    let x = 1;
+    let y = 2;
+    set_both(x, y);
+}
+
+main();
