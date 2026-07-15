@@ -200,11 +200,15 @@ fn build_rejects_unsupported_construct_with_clear_diagnostic() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `rz build` must reject a program containing `fn` declarations —
-/// the embedded VM has no call-frame stack yet (D-E1 decomposition
-/// item 7).
+/// RES-4077 (D-E1 fn-support): `rz build` now accepts a program
+/// containing top-level `fn` declarations — this test used to be
+/// `build_rejects_fn_declarations` (reject with exit 1), and is
+/// rewritten to prove the full positive pipeline instead: build →
+/// decode the function-table `.rzbc` format with
+/// `resilient_runtime::vm::serde::decode_program` → execute on
+/// `Vm::run_with_functions` → match the tree-walking interpreter.
 #[test]
-fn build_rejects_fn_declarations() {
+fn build_decode_run_matches_interpreter_for_fn_declarations() {
     let dir = tmp_dir("fn_decl");
     let src = dir.join("with_fn.rz");
     std::fs::write(
@@ -215,11 +219,65 @@ fn build_rejects_fn_declarations() {
     let out = dir.join("with_fn.rzbc");
 
     let (code, stderr) = run_build(&src, &out, "thumbv7em-none-eabihf");
-    assert_eq!(code, Some(1), "fn declarations should be rejected");
-    assert!(
-        stderr.contains("fn"),
-        "expected the diagnostic to mention `fn`; got: {stderr}"
+    assert_eq!(
+        code,
+        Some(0),
+        "fn declarations should now build for embedded targets; stderr={stderr}"
     );
+
+    let blob = std::fs::read(&out).expect("rz build should have written the .rzbc file");
+    assert!(blob.starts_with(b"RZBC"));
+
+    let mut out_main = [resilient_runtime::vm::Instr::Return; 32];
+    let mut out_func_meta = [resilient_runtime::vm::serde::DecodedFunctionMeta {
+        offset: 0,
+        len: 0,
+        arity: 0,
+        local_count: 0,
+    }; 8];
+    let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
+    let counts = resilient_runtime::vm::serde::decode_program(
+        &blob,
+        &mut out_main,
+        &mut out_func_meta,
+        &mut out_func_code,
+    )
+    .expect("blob should decode as the function-table .rzbc format");
+    assert_eq!(counts.func_count, 1, "one fn declaration → one table entry");
+
+    let mut functions = [resilient_runtime::vm::FunctionDef {
+        code: &[][..],
+        arity: 0,
+        local_count: 0,
+    }; 8];
+    for (slot, meta) in functions
+        .iter_mut()
+        .zip(out_func_meta.iter())
+        .take(counts.func_count)
+    {
+        *slot = resilient_runtime::vm::FunctionDef {
+            code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+            arity: meta.arity,
+            local_count: meta.local_count,
+        };
+    }
+    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
+    let embedded_result = vm
+        .run_with_functions(
+            &functions[..counts.func_count],
+            &out_main[..counts.main_len],
+        )
+        .expect("embedded VM should run the decoded fn-calling program");
+    assert_eq!(embedded_result, resilient_runtime::vm::Value::Int(3));
+
+    let interpreter_src = dir.join("with_fn_print.rz");
+    std::fs::write(
+        &interpreter_src,
+        "fn add(int a, int b) -> int {\n    return a + b;\n}\nprintln(add(1, 2));\n",
+    )
+    .unwrap();
+    let interpreter_stdout = run_interpreter(&interpreter_src);
+    assert_eq!(interpreter_stdout.lines().next(), Some("3"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
