@@ -1,0 +1,37 @@
+// A-E3 (RES-3933): associated-type projection resolution — reject case.
+//
+// This program is intentionally invalid: `impl Register for Register8`
+// binds `type Voltage = int;`, but the `Register` trait never declares
+// an associated type named `Voltage` (only `Width`). `traits::check`'s
+// completeness pass only validates that every trait-declared
+// associated type is bound — it does not catch the converse, an impl
+// binding a name the trait never declared. `associated_types::check`
+// closes that gap with:
+//   "impl `Register` for `Register8` binds unknown associated type
+//    `Voltage` — trait `Register` does not declare it"
+
+trait Register {
+    type Width;
+
+    fn read(self) -> Self::Width;
+}
+
+struct Register8 {
+    int addr,
+}
+
+impl Register for Register8 {
+    type Width = int;
+    type Voltage = int;
+
+    fn read(self) -> Self::Width {
+        return 42;
+    }
+}
+
+fn main() {
+    let r = new Register8 { addr: 100 };
+    println(r.read());
+}
+
+main();

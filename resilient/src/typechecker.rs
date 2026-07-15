@@ -1631,6 +1631,17 @@ pub struct TypeChecker {
     /// to validate `return expr` against the declared type, catching early
     /// returns that bypass the function body's final-expression check.
     current_fn_return_type: Option<Type>,
+    /// A-E3 (RES-3933): `Self::AssocName` -> concrete `Type` bindings
+    /// for the `impl Trait for Type` block whose methods are
+    /// currently being checked. Populated from that block's
+    /// `associated_type_impls` when entering `Node::ImplBlock`;
+    /// cleared (empty map) on exit. Consulted by
+    /// `parse_type_name_inner` so a method signature written as
+    /// `-> Self::Width` resolves to the impl's bound concrete type
+    /// instead of falling through to the `Type::Struct("Self::Width")`
+    /// catch-all, which could never structurally match anything a
+    /// method body actually returns.
+    current_self_assoc_types: HashMap<String, Type>,
     /// RES-910: depth of enclosing `while` / `for-in` bodies. `break`
     /// and `continue` are typechecker-rejected when this is 0. Bumped
     /// before recursing into a loop body and decremented after.
@@ -5482,6 +5493,8 @@ impl TypeChecker {
             current_fn_fails: None,
             // RES-403: no enclosing fn return type at program start.
             current_fn_return_type: None,
+            // A-E3 (RES-3933): no enclosing impl block at program start.
+            current_self_assoc_types: HashMap::new(),
             // RES-910: loop depth starts at 0 (top-level is not a loop).
             loop_depth: 0,
             // RES-2653: no enclosing labeled loops at the top level.
@@ -6410,6 +6423,14 @@ impl TypeChecker {
                     || markers.has_generic_fn
                 {
                     crate::traits::check(program, source_path)?;
+                }
+                // RES-3933 (A-E3) gate: pass only has work when some
+                // `impl Trait for Type` block exists (its own fast-reject
+                // further narrows to blocks that bind an associated
+                // type). Runs after `traits::check` so trait decls and
+                // binding-completeness are already validated.
+                if !markers.impl_trait_names.is_empty() {
+                    crate::associated_types::check(program, source_path)?;
                 }
                 // RES-2604 gate: validate `impl Display for T` blocks — fmt
                 // method presence, arity, and string return type.
@@ -8620,11 +8641,40 @@ impl TypeChecker {
             // The parser has already mangled the name and injected
             // `self` as the first parameter, so no special handling is
             // required here beyond delegation.
-            Node::ImplBlock { methods, .. } => {
-                for method in methods {
-                    let _ = self.check_node(method)?;
+            //
+            // A-E3 (RES-3933): before walking the methods, resolve this
+            // block's `associated_type_impls` bindings (`type Width =
+            // int;`) into `current_self_assoc_types` so any method
+            // signature written as `-> Self::Width` (or a parameter
+            // typed `Self::Width`) resolves against the concrete bound
+            // type instead of the `Type::Struct("Self::Width")`
+            // catch-all. Best-effort: a binding whose type expression
+            // fails to parse resolves to `Type::Any` rather than
+            // aborting the whole impl block — the same fallback other
+            // best-effort type hoisting in this file already uses.
+            Node::ImplBlock {
+                methods,
+                associated_type_impls,
+                ..
+            } => {
+                let saved_self_assoc_types = std::mem::take(&mut self.current_self_assoc_types);
+                if !associated_type_impls.is_empty() {
+                    self.current_self_assoc_types = associated_type_impls
+                        .iter()
+                        .map(|(name, type_expr)| {
+                            let resolved = self.parse_type_name(type_expr).unwrap_or(Type::Any);
+                            (name.clone(), resolved)
+                        })
+                        .collect();
                 }
-                Ok(Type::Void)
+                let result = (|| {
+                    for method in methods {
+                        let _ = self.check_node(method)?;
+                    }
+                    Ok(Type::Void)
+                })();
+                self.current_self_assoc_types = saved_self_assoc_types;
+                result
             }
 
             // RES-128: register the alias. Resolution (with cycle
@@ -11026,6 +11076,23 @@ impl TypeChecker {
                     }
                 }
                 Ok(Type::AnonymousStruct(fields))
+            }
+            // A-E3 (RES-3933): `Self::AssocName` projection. Resolved
+            // against the associated-type bindings of whichever
+            // `impl Trait for Type` block's methods are currently
+            // being checked (`current_self_assoc_types`, populated by
+            // the `Node::ImplBlock` arm below). Outside any impl
+            // block — or when the projection names an associated
+            // type this impl never bound (already rejected with a
+            // dedicated diagnostic by `associated_types::check`) —
+            // there is nothing to resolve against, so this falls
+            // through to the ordinary alias/struct-name handling,
+            // same as any other unresolvable identifier.
+            other if other.starts_with("Self::") => {
+                match self.current_self_assoc_types.get(&other[6..]) {
+                    Some(resolved) => Ok(resolved.clone()),
+                    None => Ok(Type::Struct(other.to_string())),
+                }
             }
             // RES-128: a registered alias expands transitively.
             // RES-1894: single `.get()` replaces the former
