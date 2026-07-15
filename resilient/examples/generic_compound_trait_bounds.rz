@@ -1,0 +1,42 @@
+// RES-4078 (A-E2): compound trait bounds — `fn render<T: Drawable + Sizable>`
+// requires the concrete type argument to satisfy EVERY listed trait.
+// `Circle` implements both, so the call typechecks and runs; dropping
+// either impl produces a typecheck-time "does not satisfy bound"
+// diagnostic (covered by tests/it/compound_trait_bounds_golden.rs).
+
+trait Drawable {
+    fn draw(self) -> int;
+}
+
+trait Sizable {
+    fn size(self) -> int;
+}
+
+struct Circle {
+    int radius,
+}
+
+impl Drawable for Circle {
+    fn draw(self) -> int {
+        return self.radius;
+    }
+}
+
+impl Sizable for Circle {
+    fn size(self) -> int {
+        return self.radius * 2;
+    }
+}
+
+fn render<T: Drawable + Sizable>(T shape) -> int {
+    let d: int = shape.draw();
+    let s: int = shape.size();
+    return d + s;
+}
+
+fn main(int dummy) {
+    println(render(new Circle { radius: 4 }));
+    return 0;
+}
+
+main(0);

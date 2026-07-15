@@ -1,0 +1,25 @@
+// RES-4078 (A-E2): const-generic fixed-array lengths — `[T; N]`
+// annotations are length-checked at typecheck time wherever the value
+// is a direct array literal (let bindings, call arguments, returns).
+// Every literal here matches its declared length, so this compiles
+// and runs; a provable mismatch like `let xs: [int; 3] = [1, 2];` is
+// rejected before execution (tests/it/const_generic_len_golden.rs).
+
+fn sum3(int base, [int; 3] v) -> int {
+    return base + v[0] + v[1] + v[2];
+}
+
+fn axes() -> [string; 2] {
+    return ["x", "y"];
+}
+
+fn main() {
+    let xs: [int; 3] = [10, 20, 30];
+    println(sum3(1, xs));
+    println(sum3(0, [1, 2, 3]));
+    let names = axes();
+    println(names[0]);
+    println(names[1]);
+}
+
+main();
