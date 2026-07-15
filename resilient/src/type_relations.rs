@@ -46,9 +46,31 @@ pub(crate) fn infer_common_type(types: &[Type]) -> Type {
     infer_common_type_inner(types)
 }
 
+/// RES-3933 A-E3 follow-up (#4067): `true` when `name` is an
+/// associated-type projection `X::Assoc` whose base `X` is one of the
+/// callee's generic type parameters. Such a projection is *opaque* at
+/// a generic call site — its concrete identity depends on which impl
+/// binds it, context that only exists at monomorphization time — so
+/// substitution maps it to `Type::Any` exactly like a bare `T`.
+/// Without this, `Type::Struct("T::Item")` survives substitution
+/// verbatim and can never structurally match any real argument or
+/// binding, falsely rejecting every call to a fn with a
+/// parameter-position projection. Well-formedness of the projection
+/// itself (does some trait bound of `X` declare `Assoc`?) is
+/// validated separately in `associated_types::check`.
+fn is_type_param_projection(name: &str, type_params: &[String]) -> bool {
+    name.split_once("::")
+        .is_some_and(|(base, _)| type_params.iter().any(|p| p == base))
+}
+
 pub(crate) fn substitute_type_params(ty: &Type, type_params: &[String]) -> Type {
     match ty {
-        Type::Struct(name) if type_params.iter().any(|p| p == name) => Type::Any,
+        Type::Struct(name)
+            if type_params.iter().any(|p| p == name)
+                || is_type_param_projection(name, type_params) =>
+        {
+            Type::Any
+        }
         Type::Function {
             params,
             return_type,
@@ -85,6 +107,12 @@ pub(crate) fn substitute_with_bindings(
         Type::Struct(name) if type_params.iter().any(|p| p == name) => {
             bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
         }
+        // A projection off a type parameter (`T::Item`) is opaque at
+        // the call site even when `T` itself has a binding — resolving
+        // it to the impl's concrete bound type needs the trait/impl
+        // tables, which this pure helper doesn't have. `Any` is the
+        // sound permissive fallback (see #4067).
+        Type::Struct(name) if is_type_param_projection(name, type_params) => Type::Any,
         Type::Function {
             params,
             return_type,

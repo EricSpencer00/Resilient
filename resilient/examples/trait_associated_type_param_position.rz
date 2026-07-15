@@ -1,0 +1,52 @@
+// A-E3 follow-up (#4067): associated-type projections through a
+// generic context — parameter and return position.
+//
+// `T::Item` in `describe`'s signature is *opaque*: its concrete
+// identity depends on which impl of `Container` the call site picks,
+// context that only exists at monomorphization time. The typechecker
+// therefore treats it like a bare `T` at call sites (substituted to
+// the permissive top type) instead of the old behaviour, where the
+// unresolved projection text could never match any real argument and
+// every call was falsely rejected with
+//   "Type mismatch in argument 2: expected T::Item, got int".
+//
+// Well-formedness is still checked statically: projecting a name no
+// trait bound of `T` declares (e.g. `T::Bogus`) is rejected — see
+// trait_associated_type_generic_projection_reject.rz.
+
+trait Container {
+    type Item;
+
+    fn first(self) -> Self::Item;
+}
+
+struct IntBox {
+    int v,
+}
+
+impl Container for IntBox {
+    type Item = int;
+
+    fn first(self) -> Self::Item {
+        return self.v;
+    }
+}
+
+// Parameter-position projection: `seed` is typed `T::Item`.
+fn describe<T: Container>(T c, T::Item seed) -> int {
+    println(seed);
+    return 1;
+}
+
+// Return-position projection through the generic context.
+fn get_first<T: Container>(T c) -> T::Item {
+    return c.first();
+}
+
+fn main() {
+    let b = new IntBox { v: 42 };
+    println(get_first(b));
+    describe(b, 7);
+}
+
+main();

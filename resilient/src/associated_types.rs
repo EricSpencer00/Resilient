@@ -46,13 +46,38 @@
 //!    surfaces as a generic "return type mismatch" error rather than
 //!    naming the real problem: the projection itself is malformed.
 //!
-//! Deliberately out of scope for this increment — tracked in
+//! Second increment (RES-3933 A-E3 follow-up, #4067):
+//!
+//! 3. **`T::AssocName` projections in generic fn signatures.** A
+//!    projection whose base is a generic type parameter is *opaque* —
+//!    its concrete identity only exists at monomorphization time — so
+//!    the call-site machinery substitutes it to `Type::Any`
+//!    (`type_relations::is_type_param_projection`), which stops
+//!    parameter-position projections falsely rejecting every call
+//!    (`Type::Struct("T::Item")` could never structurally match a
+//!    real argument). What *can* be checked statically, and is (this
+//!    module, `check_generic_fn_projections`): well-formedness — a
+//!    projection `T::Assoc` where every trait reachable from `T`'s
+//!    declared bounds (including `extends` super-traits) is known and
+//!    none declares `Assoc` is a provable violation and is rejected.
+//!    Any unknown trait in the chain, an unbounded `T` (a `where`
+//!    clause may bound it), or a projection nested inside a larger
+//!    type expression is permissively skipped — zero false positives
+//!    by construction.
+//! 4. **`let`-binding annotations inside impl methods** — `let x:
+//!    Self::Width = ...;` resolves against the impl's concrete
+//!    binding for free, because `parse_type_name` is the single
+//!    shared resolver `Node::LetBinding` also goes through. Now
+//!    explicitly tested (see `self_assoc_let_binding_*` tests and
+//!    `examples/trait_associated_type_let_binding.rz`) rather than an
+//!    undocumented side effect.
+//!
+//! Still out of scope — tracked in
 //! [issue #4067](https://github.com/EricSpencer00/Resilient/issues/4067):
 //!
-//! - `T::AssocName` projections for a generic type parameter `T`
-//!   (as opposed to `Self`) at a *use* site — RES-2695 already
-//!   resolves these at `where T::Assoc: Bound` call sites; resolving
-//!   them at arbitrary use sites needs monomorphization-time context.
+//! - Resolving `T::AssocName` to the *concrete* bound type at a
+//!   monomorphized call site (today it is opaque `Any` — permissive,
+//!   never wrong, just not maximally precise).
 //! - `Self::AssocName` in trait *default* method bodies (shared
 //!   across impls — no single binding to resolve against until
 //!   per-impl dispatch).
@@ -75,23 +100,34 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     };
 
     // Fast-reject: nothing to do unless some impl block binds at
-    // least one associated type.
-    let has_work = stmts.iter().any(|s| {
+    // least one associated type, or some generic fn signature carries
+    // a `T::Assoc` projection (#4067 second increment).
+    let has_impl_work = stmts.iter().any(|s| {
         matches!(
             &s.node,
             Node::ImplBlock { associated_type_impls, .. } if !associated_type_impls.is_empty()
         )
     });
-    if !has_work {
+    let has_generic_fn_work = stmts.iter().any(|s| {
+        matches!(
+            &s.node,
+            Node::Function { type_params, .. } if !type_params.is_empty()
+        )
+    });
+    if !has_impl_work && !has_generic_fn_work {
         return Ok(());
     }
 
     // trait_name -> set of associated-type names it declares.
     let mut trait_assoc_names: HashMap<&str, HashSet<&str>> = HashMap::new();
+    // trait_name -> super-traits it `extends` (for transitive
+    // associated-type lookup through inheritance).
+    let mut trait_supers: HashMap<&str, &[String]> = HashMap::new();
     for stmt in stmts {
         if let Node::TraitDecl {
             name,
             associated_types,
+            supers,
             ..
         } = &stmt.node
         {
@@ -99,7 +135,25 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             for at in associated_types {
                 set.insert(at.name.as_str());
             }
+            trait_supers.insert(name.as_str(), supers.as_slice());
         }
+    }
+
+    if has_generic_fn_work {
+        for stmt in stmts {
+            if let Node::Function { .. } = &stmt.node {
+                check_generic_fn_projections(
+                    &stmt.node,
+                    &trait_assoc_names,
+                    &trait_supers,
+                    source_path,
+                )?;
+            }
+        }
+    }
+
+    if !has_impl_work {
+        return Ok(());
     }
 
     for stmt in stmts {
@@ -178,6 +232,118 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// #4067: well-formedness of `T::Assoc` projections in a generic fn
+/// signature (return and parameter positions). Rejects ONLY provable
+/// violations: the base must be one of the fn's type parameters, that
+/// parameter must have at least one declared bound, every trait
+/// reachable from those bounds (through `extends` super-traits) must
+/// be known, and none of them may declare the projected name. An
+/// unbounded parameter, any unknown trait in the chain, or a
+/// projection nested inside a larger type expression is skipped —
+/// permissive by construction, so every previously-compiling program
+/// keeps compiling unless it names a provably-nonexistent associated
+/// type.
+fn check_generic_fn_projections(
+    func: &Node,
+    trait_assoc_names: &HashMap<&str, HashSet<&str>>,
+    trait_supers: &HashMap<&str, &[String]>,
+    source_path: &str,
+) -> Result<(), String> {
+    let Node::Function {
+        name: fn_name,
+        parameters,
+        return_type,
+        type_params,
+        type_param_bounds,
+        span,
+        ..
+    } = func
+    else {
+        return Ok(());
+    };
+    if type_params.is_empty() {
+        return Ok(());
+    }
+
+    let annotations = return_type
+        .iter()
+        .map(|rt| (rt.as_str(), "return type"))
+        .chain(
+            parameters
+                .iter()
+                .map(|(ty, _name)| (ty.as_str(), "parameter type")),
+        );
+
+    for (raw, position) in annotations {
+        let ty = raw.strip_prefix("linear ").unwrap_or(raw);
+        let Some((base, assoc)) = ty.split_once("::") else {
+            continue;
+        };
+        // Nested projections (`Array<T::Item>`) don't split at the
+        // top level like this; a chained `A::B::C` is already
+        // unparseable. Only exact `Base::Assoc` reaches here.
+        let Some(idx) = type_params.iter().position(|p| p == base) else {
+            continue; // `Self::X` (impl methods) or a non-generic base.
+        };
+        let bounds = match type_param_bounds.get(idx) {
+            Some(b) if !b.is_empty() => b,
+            // Unbounded parameter — a `where` clause may bound it;
+            // stay permissive.
+            _ => continue,
+        };
+        let Some(declared) = transitive_assoc_names(bounds, trait_assoc_names, trait_supers) else {
+            continue; // Unknown trait somewhere in the chain.
+        };
+        if !declared.contains(assoc) {
+            return Err(format_err(
+                source_path,
+                *span,
+                &format!(
+                    "fn `{}` {} projects `{}::{}`, but no trait bound of `{}` ({}) declares associated type `{}`",
+                    fn_name,
+                    position,
+                    base,
+                    assoc,
+                    base,
+                    bounds.join(" + "),
+                    assoc
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Union of associated-type names declared by `bounds` and,
+/// transitively, their `extends` super-traits. Returns `None` when
+/// any trait in the chain is unknown — the caller must then stay
+/// permissive rather than risk a false positive.
+fn transitive_assoc_names<'a>(
+    bounds: &[String],
+    trait_assoc_names: &HashMap<&str, HashSet<&'a str>>,
+    trait_supers: &HashMap<&str, &'a [String]>,
+) -> Option<HashSet<&'a str>> {
+    let mut names: HashSet<&str> = HashSet::new();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut work: Vec<&str> = bounds.iter().map(String::as_str).collect();
+    while let Some(t) = work.pop() {
+        if !visited.insert(t) {
+            continue;
+        }
+        // `effect` is a bound-position keyword (`E: effect`), not a
+        // trait; it declares no associated types and is always known.
+        if t == "effect" {
+            continue;
+        }
+        let declared = trait_assoc_names.get(t)?;
+        names.extend(declared.iter().copied());
+        if let Some(supers) = trait_supers.get(t) {
+            work.extend(supers.iter().map(String::as_str));
+        }
+    }
+    Some(names)
 }
 
 fn format_err(source_path: &str, span: Span, msg: &str) -> String {
@@ -373,5 +539,134 @@ mod tests {
     fn empty_program_passes() {
         let prog = Node::Program(Vec::new());
         check(&prog, "test.rz").expect("empty program should pass");
+    }
+
+    // --- #4067: `T::Assoc` projections in generic fn signatures ---
+
+    const CONTAINER_PRELUDE: &str = "trait Container { type Item; fn first(self) -> Self::Item; }\n\
+         struct IntBox { int v }\n\
+         impl Container for IntBox {\n\
+             type Item = int;\n\
+             fn first(self) -> Self::Item { return self.v; }\n\
+         }\n";
+
+    #[test]
+    fn generic_return_projection_of_declared_assoc_accepted() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn get_first<T: Container>(T c) -> T::Item {{ return c.first(); }}\n\
+             fn main() {{}} main();"
+        );
+        typecheck(&src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_param_position_projection_call_site_accepted() {
+        // The regression this increment fixes: before #4067 the call
+        // was rejected with "expected T::Item, got int" because the
+        // unresolved projection survived call-site substitution.
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn use_item<T: Container>(T c, T::Item seed) -> int {{ return 1; }}\n\
+             fn main() {{\n\
+                 let b = new IntBox {{ v: 42 }};\n\
+                 println(use_item(b, 5));\n\
+             }} main();"
+        );
+        typecheck(&src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_projection_of_undeclared_assoc_rejected() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn get_bogus<T: Container>(T c) -> T::Bogus {{ return c.first(); }}\n\
+             fn main() {{}} main();"
+        );
+        let e = typecheck(&src).expect_err("expected undeclared-projection error");
+        assert!(e.contains("T::Bogus"), "got: {e}");
+        assert!(e.contains("Container"), "got: {e}");
+    }
+
+    #[test]
+    fn generic_param_position_projection_of_undeclared_assoc_rejected() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn use_bogus<T: Container>(T c, T::Bogus seed) -> int {{ return 1; }}\n\
+             fn main() {{}} main();"
+        );
+        let e = typecheck(&src).expect_err("expected undeclared-projection error");
+        assert!(e.contains("T::Bogus"), "got: {e}");
+        assert!(e.contains("parameter type"), "got: {e}");
+    }
+
+    #[test]
+    fn generic_projection_through_supertrait_accepted() {
+        // `Iter extends Container` — projecting `T::Item` through a
+        // bound on the *sub*-trait must find the super-trait's
+        // declaration.
+        let src = "trait Container { type Item; }\n\
+             trait Iter extends Container { fn advance(self) -> int; }\n\
+             fn peek<T: Iter>(T it) -> T::Item { return 1; }\n\
+             fn main() {} main();";
+        // The body `return 1` vs opaque `T::Item` is a separate
+        // (pre-existing) mismatch question; run only this module's
+        // well-formedness pass, which must accept the projection.
+        let prog = parse_program(src);
+        check(&prog, "test.rz").unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_projection_on_unbounded_param_is_permissively_skipped() {
+        // No bounds on `T` — a `where` clause may bound it, so the
+        // pass must not reject (zero false positives).
+        let src = "fn f<T>(T x) -> T::Item { return x; }\n\
+             fn main() {} main();";
+        let prog = parse_program(src);
+        check(&prog, "test.rz").unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_projection_with_unknown_bound_trait_is_permissively_skipped() {
+        // `Mystery` is not declared in this program — `traits::check`
+        // owns that diagnostic; this pass must stay permissive.
+        let src = "fn f<T: Mystery>(T x) -> T::Item { return x; }\n\
+             fn main() {} main();";
+        let prog = parse_program(src);
+        check(&prog, "test.rz").unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    // --- #4067 item 4: `Self::Assoc` in let-binding annotations ---
+
+    #[test]
+    fn self_assoc_let_binding_matching_binding_typechecks() {
+        let src = "trait Sized2 { type Width; fn width(self) -> Self::Width; }\n\
+             struct Fixed { int w }\n\
+             impl Sized2 for Fixed {\n\
+                 type Width = int;\n\
+                 fn width(self) -> Self::Width {\n\
+                     let x: Self::Width = self.w;\n\
+                     return x;\n\
+                 }\n\
+             }\n\
+             fn main() {} main();";
+        typecheck(src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn self_assoc_let_binding_mismatched_binding_is_rejected() {
+        let src = "trait Sized2 { type Width; fn width(self) -> Self::Width; }\n\
+             struct Fixed { int w }\n\
+             impl Sized2 for Fixed {\n\
+                 type Width = int;\n\
+                 fn width(self) -> Self::Width {\n\
+                     let x: Self::Width = \"nope\";\n\
+                     return 1;\n\
+                 }\n\
+             }\n\
+             fn main() {} main();";
+        let e = typecheck(src).expect_err("expected let-binding mismatch error");
+        assert!(e.contains("int"), "got: {e}");
+        assert!(e.contains("string"), "got: {e}");
     }
 }

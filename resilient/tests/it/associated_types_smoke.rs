@@ -78,3 +78,59 @@ fn check_rejects_self_assoc_return_type_mismatch() {
         "expected the resolved concrete type in the diagnostic; got: {stderr}"
     );
 }
+
+// --- A-E3 follow-up (#4067): generic-context projections + let bindings ---
+
+#[test]
+fn check_accepts_param_and_return_position_generic_projections() {
+    let output = Command::new(bin())
+        .args(["check", "examples/trait_associated_type_param_position.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn check_rejects_generic_projection_of_undeclared_assoc_type() {
+    let output = Command::new(bin())
+        .args([
+            "check",
+            "examples/trait_associated_type_generic_projection_reject.rz",
+        ])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("projects `T::Bogus`"),
+        "expected generic-projection diagnostic; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("declares associated type `Bogus`"),
+        "expected generic-projection diagnostic; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_accepts_self_assoc_let_binding_annotation() {
+    let output = Command::new(bin())
+        .args(["check", "examples/trait_associated_type_let_binding.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
