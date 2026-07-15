@@ -383,10 +383,15 @@ fn sum(int a, [int; 3] v) -> int {
 }
 ```
 
-`[T; N]` is a type annotation only — the length is carried in
-the type, not at runtime. The interpreter and VM accept both
-dynamic and fixed-size arrays; the JIT uses this annotation for
-layout decisions.
+The length `N` is carried in the type, not at runtime, and is
+checked at compile time wherever the value is a direct array
+literal — a `let`/`const` initializer, a call argument, or a
+`return` expression with a provably wrong element count is a
+type error (RES-4078). Values whose length is not syntactically
+known (variables, call results, slices) are accepted unchecked;
+the runtime bounds check remains the backstop. The interpreter
+and VM accept both dynamic and fixed-size arrays; the JIT uses
+this annotation for layout decisions.
 
 ---
 
