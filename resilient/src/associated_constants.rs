@@ -17,7 +17,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
 #[derive(Debug, Clone)]
@@ -133,6 +133,14 @@ fn parse_assoc_const_record(
         )
     })?;
 
+    // RES-3388/RES-3390: `trait` and `name` are resolved as path segments
+    // at every `Type::NAME` call site, so they must be valid identifiers
+    // and must not collide with a reserved word — either failure mode
+    // can never succeed at runtime, so reject it here instead.
+    check_assoc_const_identifier(&item, rec, source_path, "trait", &trait_name)?;
+    check_assoc_const_identifier(&item, rec, source_path, "name", &const_name)?;
+    check_assoc_const_value_control_chars(&item, rec, source_path, &value)?;
+
     Ok(AssocConstant {
         type_name: item,
         trait_name,
@@ -198,6 +206,80 @@ fn assoc_const_diag(source_path: &str, line: usize, message: impl AsRef<str>) ->
     )
 }
 
+/// RES-3388/RES-3390: reserved words that cannot be used as an
+/// associated-constant `trait`/`name` identifier. Resolving `Type::NAME`
+/// at a call site against one of these would collide with the
+/// language's own grammar, so runtime lookup can never succeed —
+/// reject it at typecheck time instead of letting it fail silently
+/// later.
+const RESERVED_ASSOC_CONST_WORDS: &[&str] = &[
+    "self", "fn", "trait", "impl", "struct", "enum", "let", "const", "return", "if", "else",
+    "while", "for", "match", "true", "false", "and", "or", "not", "pub", "mod", "use",
+];
+
+/// RES-3388: an identifier usable at a call site (`Type::NAME`) must be
+/// non-empty, start with an ASCII letter or underscore, and contain only
+/// ASCII alphanumerics/underscores — anything else can never be resolved
+/// as a path segment by the parser, so it is a provable violation.
+fn is_valid_assoc_const_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn check_assoc_const_identifier(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    if !is_valid_assoc_const_identifier(value) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "#[assoc_const] on `{item}` argument `{key}` value `{value}` is not a valid identifier"
+            ),
+        ));
+    }
+    if RESERVED_ASSOC_CONST_WORDS.contains(&value) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "#[assoc_const] on `{item}` argument `{key}` value `{value}` is a reserved word and cannot be resolved at a call site"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// RES-3390: values containing raw control characters can never
+/// round-trip through the runtime's value formatting, so a value that
+/// embeds one is provably unusable — reject it at typecheck time
+/// instead of at first runtime access.
+fn check_assoc_const_value_control_chars(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+    value: &str,
+) -> Result<(), String> {
+    if value.chars().any(|c| c.is_control()) {
+        return Err(assoc_const_diag(
+            source_path,
+            rec.line,
+            format!(
+                "#[assoc_const] on `{item}` argument `value` must not contain control characters"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub fn install(items: Vec<AssocConstant>) {
     if let Ok(mut g) = ASSOC.write() {
         g.clear();
@@ -234,20 +316,49 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut items = Vec::with_capacity(attrs.len());
-    let mut seen = HashSet::with_capacity(attrs.len());
+    // RES-3389: track the first declaration's (line, trait, value) per
+    // (type, const) pair so a repeat can be reported as either a plain
+    // duplicate (same trait/value — almost certainly copy-paste) or a
+    // conflicting registration (different trait and/or value — two
+    // incompatible sources of truth for the same symbol), each with
+    // both declarations' locations.
+    let mut seen: HashMap<(String, String), (usize, String, String)> =
+        HashMap::with_capacity(attrs.len());
 
     for (item, rec) in attrs {
         let constant = parse_assoc_const_record(item, &rec, _source_path)?;
-        if !seen.insert((constant.type_name.clone(), constant.const_name.clone())) {
+        let key = (constant.type_name.clone(), constant.const_name.clone());
+        if let Some((first_line, first_trait, first_value)) = seen.get(&key) {
+            if *first_trait != constant.trait_name || *first_value != constant.value {
+                return Err(assoc_const_diag(
+                    _source_path,
+                    rec.line,
+                    format!(
+                        "conflicting associated constant `{}` for type `{}`: first declared at line {first_line} as `{first_trait}` = `{first_value}`, redeclared here as `{}` = `{}`",
+                        constant.const_name,
+                        constant.type_name,
+                        constant.trait_name,
+                        constant.value,
+                    ),
+                ));
+            }
             return Err(assoc_const_diag(
                 _source_path,
                 rec.line,
                 format!(
-                    "duplicate associated constant `{}` for type `{}`",
+                    "duplicate associated constant `{}` for type `{}` (first declared at line {first_line})",
                     constant.const_name, constant.type_name
                 ),
             ));
         }
+        seen.insert(
+            key,
+            (
+                rec.line,
+                constant.trait_name.clone(),
+                constant.value.clone(),
+            ),
+        );
         items.push(constant);
     }
 
@@ -434,7 +545,11 @@ mod tests {
     }
 
     #[test]
-    fn check_rejects_duplicate_assoc_const_declaration() {
+    fn check_rejects_conflicting_assoc_const_declaration() {
+        // RES-3389: same (type, const) pair, different trait+value —
+        // two incompatible sources of truth, must be flagged as a
+        // "conflicting" registration (not a plain duplicate) with
+        // both declarations' locations in the message.
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
         let program = sample_program();
@@ -449,11 +564,87 @@ mod tests {
             13,
         );
 
+        let err = check(&program, "test.rz").expect_err("conflicting declaration must fail");
+        assert_eq!(
+            err,
+            "test.rz:13:0: error[assoc-const]: conflicting associated constant `MIN` for type `Temperature`: first declared at line 12 as `Bounded` = `-40`, redeclared here as `Limits` = `-50`"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_duplicate_assoc_const_declaration() {
+        // RES-3389: same (type, const, trait, value) declared twice —
+        // a plain duplicate, distinct from a conflicting redeclaration.
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let program = sample_program();
+        record_assoc_const(
+            "Temperature",
+            r#"trait = "Bounded", name = "MIN", value = "-40""#,
+            12,
+        );
+        record_assoc_const(
+            "Temperature",
+            r#"trait = "Bounded", name = "MIN", value = "-40""#,
+            13,
+        );
+
         let err = check(&program, "test.rz").expect_err("duplicate declaration must fail");
         assert_eq!(
             err,
-            "test.rz:13:0: error[assoc-const]: duplicate associated constant `MIN` for type `Temperature`"
+            "test.rz:13:0: error[assoc-const]: duplicate associated constant `MIN` for type `Temperature` (first declared at line 12)"
         );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_non_identifier_call_site_arguments() {
+        // RES-3388: `trait`/`name` become path segments at `Type::NAME`
+        // call sites, so anything that cannot lex as an identifier must
+        // be rejected at typecheck time rather than failing at lookup.
+        let _g = crate::feature_attrs::lock_for_test();
+        let program = sample_program();
+        let cases = [
+            (
+                "non-identifier trait",
+                r#"trait = "Bad Trait", name = "MIN", value = "-40""#,
+                30,
+                "test.rz:30:0: error[assoc-const]: #[assoc_const] on `Temperature` argument `trait` value `Bad Trait` is not a valid identifier",
+            ),
+            (
+                "non-identifier name",
+                r#"trait = "Bounded", name = "1MIN", value = "-40""#,
+                31,
+                "test.rz:31:0: error[assoc-const]: #[assoc_const] on `Temperature` argument `name` value `1MIN` is not a valid identifier",
+            ),
+            (
+                "reserved trait word",
+                r#"trait = "self", name = "MIN", value = "-40""#,
+                32,
+                "test.rz:32:0: error[assoc-const]: #[assoc_const] on `Temperature` argument `trait` value `self` is a reserved word and cannot be resolved at a call site",
+            ),
+            (
+                "reserved name word",
+                r#"trait = "Bounded", name = "return", value = "-40""#,
+                33,
+                "test.rz:33:0: error[assoc-const]: #[assoc_const] on `Temperature` argument `name` value `return` is a reserved word and cannot be resolved at a call site",
+            ),
+            (
+                "control character in value",
+                "trait = \"Bounded\", name = \"MIN\", value = \"-4\n0\"",
+                34,
+                "test.rz:34:0: error[assoc-const]: #[assoc_const] on `Temperature` argument `value` must not contain control characters",
+            ),
+        ];
+
+        for (case, args, line, expected) in cases {
+            crate::feature_attrs::reset();
+            record_assoc_const("Temperature", args, line);
+            let err = check(&program, "test.rz").expect_err(case);
+            assert_eq!(err, expected, "{case}");
+        }
+
         crate::feature_attrs::reset();
     }
 
