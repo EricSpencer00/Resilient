@@ -71,15 +71,24 @@ fn run_interpreter(src: &Path) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Decode a `.rzbc` blob and run it on `resilient_runtime::vm::Vm`,
-/// returning the runtime `Value`.
+/// Decode a `.rzbc` blob (v1 or v2 — RES-4075) and run it on
+/// `resilient_runtime::vm::Vm`, returning the runtime `Value`.
 fn run_embedded_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
     let mut instrs = [resilient_runtime::vm::Instr::Return; 64];
-    let count = resilient_runtime::vm::serde::decode(blob, &mut instrs)
+    let mut fns = [resilient_runtime::vm::FnEntry {
+        entry: 0,
+        arity: 0,
+        local_count: 0,
+    }; 8];
+    let header = resilient_runtime::vm::serde::decode_program(blob, &mut instrs, &mut fns)
         .expect("decode should succeed on a blob `rz build` just emitted");
-    let mut vm = resilient_runtime::vm::Vm::<32, 8>::new();
-    vm.run(&instrs[..count])
-        .expect("embedded VM should run the decoded program without error")
+    let mut vm = resilient_runtime::vm::Vm::<32, 16, 8>::new();
+    vm.run_program(
+        &instrs[..header.instr_count],
+        &fns[..header.fn_count],
+        header.main_local_count,
+    )
+    .expect("embedded VM should run the decoded program without error")
 }
 
 /// Core proof: `rz build` → `resilient_runtime::vm::serde::decode` →
@@ -200,11 +209,12 @@ fn build_rejects_unsupported_construct_with_clear_diagnostic() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `rz build` must reject a program containing `fn` declarations —
-/// the embedded VM has no call-frame stack yet (D-E1 decomposition
-/// item 7).
+/// RES-4075: replaces `build_rejects_fn_declarations` — `rz build`
+/// now compiles `fn` declarations into the v2 `.rzbc` function
+/// table, and the embedded VM executes the calls. Same
+/// source-and-oracle shape as the other round-trip tests.
 #[test]
-fn build_rejects_fn_declarations() {
+fn build_compiles_fn_declarations_and_embedded_vm_runs_them() {
     let dir = tmp_dir("fn_decl");
     let src = dir.join("with_fn.rz");
     std::fs::write(
@@ -215,11 +225,48 @@ fn build_rejects_fn_declarations() {
     let out = dir.join("with_fn.rzbc");
 
     let (code, stderr) = run_build(&src, &out, "thumbv7em-none-eabihf");
-    assert_eq!(code, Some(1), "fn declarations should be rejected");
-    assert!(
-        stderr.contains("fn"),
-        "expected the diagnostic to mention `fn`; got: {stderr}"
+    assert_eq!(
+        code,
+        Some(0),
+        "fn declarations should now build for embedded targets; stderr={stderr}"
     );
+
+    let blob = std::fs::read(&out).expect("rz build should have written the .rzbc file");
+    let embedded_result = run_embedded_blob(&blob);
+    assert_eq!(embedded_result, resilient_runtime::vm::Value::Int(3));
+
+    let interpreter_src = dir.join("with_fn_print.rz");
+    std::fs::write(
+        &interpreter_src,
+        "fn add(int a, int b) -> int {\n    return a + b;\n}\nprintln(add(1, 2));\n",
+    )
+    .unwrap();
+    let interpreter_stdout = run_interpreter(&interpreter_src);
+    assert_eq!(interpreter_stdout.lines().next(), Some("3"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RES-4075: recursion round-trip — the fixed-capacity call-frame
+/// stack must handle a self-recursive function compiled by the real
+/// pipeline (which may peephole the recursive call into `TailCall`).
+#[test]
+fn build_compiles_recursive_fn_and_embedded_vm_runs_it() {
+    let dir = tmp_dir("fn_rec");
+    let src = dir.join("fact.rz");
+    std::fs::write(
+        &src,
+        "fn fact(int n) -> int {\n    if n < 2 {\n        return 1;\n    }\n    return n * fact(n - 1);\n}\nfact(5);\n",
+    )
+    .unwrap();
+    let out = dir.join("fact.rzbc");
+
+    let (code, stderr) = run_build(&src, &out, "riscv32imac-unknown-none-elf");
+    assert_eq!(code, Some(0), "recursive fn should build; stderr={stderr}");
+
+    let blob = std::fs::read(&out).unwrap();
+    let embedded_result = run_embedded_blob(&blob);
+    assert_eq!(embedded_result, resilient_runtime::vm::Value::Int(120));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

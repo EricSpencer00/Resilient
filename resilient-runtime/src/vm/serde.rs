@@ -65,19 +65,34 @@
 //! assert_eq!(&out[..count], &program[..]);
 //! ```
 
-use super::{Instr, Value};
+use super::{FnEntry, Instr, Value};
 
 /// Wire-format magic bytes identifying a `.rzbc` blob.
 pub const MAGIC: [u8; 4] = *b"RZBC";
 
-/// Current wire-format version. Bump on any incompatible layout
-/// change; [`decode`] rejects anything else with
-/// [`DecodeError::UnsupportedVersion`].
+/// Version-1 wire format: flat instruction stream, no function
+/// table. [`encode`] writes this; [`decode`] accepts only this.
 pub const FORMAT_VERSION: u16 = 1;
 
-/// Byte length of the fixed header (`magic` + `version` +
+/// RES-4075: version-2 wire format — adds a `main_local_count`
+/// field and a function table (see [`encode_program`]) between the
+/// version field and the instruction stream. [`decode_program`]
+/// accepts both versions; the v1 [`decode`] rejects v2 blobs with
+/// [`DecodeError::UnsupportedVersion`].
+pub const PROGRAM_FORMAT_VERSION: u16 = 2;
+
+/// Byte length of the fixed v1 header (`magic` + `version` +
 /// `instr_count`).
 pub const HEADER_LEN: usize = 4 + 2 + 4;
+
+/// RES-4075: byte length of the fixed v2 header (`magic` +
+/// `version` + `main_local_count` + `fn_count` + `instr_count`),
+/// excluding the variable-length function table.
+pub const PROGRAM_HEADER_LEN: usize = 4 + 2 + 2 + 2 + 4;
+
+/// RES-4075: wire width of one function-table entry
+/// (`entry: u32` + `arity: u8` + `local_count: u16`).
+pub const FN_ENTRY_LEN: usize = 4 + 1 + 2;
 
 const TAG_PUSH_CONST: u8 = 0;
 const TAG_LOAD_LOCAL: u8 = 1;
@@ -99,6 +114,13 @@ const TAG_JUMP: u8 = 16;
 const TAG_JUMP_IF_FALSE: u8 = 17;
 const TAG_JUMP_IF_TRUE: u8 = 18;
 const TAG_RETURN: u8 = 19;
+// RES-4075: function-call opcodes (v2 programs; tags are shared
+// across versions — a v1 blob containing them simply never
+// existed, since v1 encoders predate the variants).
+const TAG_POP: u8 = 20;
+const TAG_CALL: u8 = 21;
+const TAG_RET: u8 = 22;
+const TAG_TAIL_CALL: u8 = 23;
 
 const VALUE_TAG_INT: u8 = 0;
 const VALUE_TAG_BOOL: u8 = 1;
@@ -135,6 +157,9 @@ pub enum DecodeError {
     /// value for its type (e.g. a `Value` tag byte outside 0..=2,
     /// or a bool byte outside 0..=1).
     BadOperand,
+    /// RES-4075: the v2 header's `fn_count` exceeds the
+    /// caller-provided function-table slice's capacity.
+    TooManyFns,
 }
 
 struct Writer<'a> {
@@ -288,7 +313,11 @@ pub fn encode(program: &[Instr], out: &mut [u8]) -> Result<usize, EncodeError> {
     w.write_bytes(&MAGIC)?;
     w.write_u16(FORMAT_VERSION)?;
     w.write_u32(instr_count)?;
+    write_instrs(&mut w, program)?;
+    Ok(w.pos)
+}
 
+fn write_instrs(w: &mut Writer<'_>, program: &[Instr]) -> Result<(), EncodeError> {
     for instr in program {
         match *instr {
             Instr::PushConst(v) => {
@@ -329,10 +358,77 @@ pub fn encode(program: &[Instr], out: &mut [u8]) -> Result<usize, EncodeError> {
                 w.write_u32(target)?;
             }
             Instr::Return => w.write_u8(TAG_RETURN)?,
+            Instr::Pop => w.write_u8(TAG_POP)?,
+            Instr::Call(idx) => {
+                w.write_u8(TAG_CALL)?;
+                w.write_u16(idx)?;
+            }
+            Instr::Ret => w.write_u8(TAG_RET)?,
+            Instr::TailCall(idx) => {
+                w.write_u8(TAG_TAIL_CALL)?;
+                w.write_u16(idx)?;
+            }
         }
     }
+    Ok(())
+}
 
+/// RES-4075: encode a full program — a flat instruction stream plus
+/// its function table and top-level locals count — as a v2 `.rzbc`
+/// blob:
+///
+/// ```text
+/// [4] magic:            b"RZBC"
+/// [2] version:          u16 LE (2)
+/// [2] main_local_count: u16 LE (locals slots top-level code owns)
+/// [2] fn_count:         u16 LE
+/// [7] per function:     entry u32 LE, arity u8, local_count u16 LE
+/// [4] instr_count:      u32 LE
+/// [N] instructions      (same per-instruction encoding as v1)
+/// ```
+///
+/// Never panics; a too-small buffer or an over-`u16`/`u32`-sized
+/// table yields [`EncodeError::BufferTooSmall`].
+pub fn encode_program(
+    program: &[Instr],
+    functions: &[FnEntry],
+    main_local_count: u16,
+    out: &mut [u8],
+) -> Result<usize, EncodeError> {
+    let instr_count: u32 = match u32::try_from(program.len()) {
+        Ok(n) => n,
+        Err(_) => return Err(EncodeError::BufferTooSmall),
+    };
+    let fn_count: u16 = match u16::try_from(functions.len()) {
+        Ok(n) => n,
+        Err(_) => return Err(EncodeError::BufferTooSmall),
+    };
+
+    let mut w = Writer::new(out);
+    w.write_bytes(&MAGIC)?;
+    w.write_u16(PROGRAM_FORMAT_VERSION)?;
+    w.write_u16(main_local_count)?;
+    w.write_u16(fn_count)?;
+    for f in functions {
+        w.write_u32(f.entry)?;
+        w.write_u8(f.arity)?;
+        w.write_u16(f.local_count)?;
+    }
+    w.write_u32(instr_count)?;
+    write_instrs(&mut w, program)?;
     Ok(w.pos)
+}
+
+/// RES-4075: what [`decode_program`] read out of a blob's header:
+/// how many instructions and function-table entries were written to
+/// the output slices, and how many locals slots top-level code
+/// declares (`u16::MAX` for a v1 blob, which predates the field —
+/// the "whole slab" sentinel [`super::Vm::run_program`] documents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgramHeader {
+    pub instr_count: usize,
+    pub fn_count: usize,
+    pub main_local_count: u16,
 }
 
 /// Decode a `.rzbc` blob from `bytes` into `out`, returning the
@@ -354,6 +450,11 @@ pub fn decode(bytes: &[u8], out: &mut [Instr]) -> Result<usize, DecodeError> {
     }
 
     let instr_count = r.read_u32()? as usize;
+    read_instrs(&mut r, out, instr_count)?;
+    Ok(instr_count)
+}
+
+fn read_instrs(r: &mut Reader<'_>, out: &mut [Instr], instr_count: usize) -> Result<(), DecodeError> {
     if instr_count > out.len() {
         return Err(DecodeError::TooManyInstrs);
     }
@@ -381,11 +482,66 @@ pub fn decode(bytes: &[u8], out: &mut [Instr]) -> Result<usize, DecodeError> {
             TAG_JUMP_IF_FALSE => Instr::JumpIfFalse(r.read_u32()?),
             TAG_JUMP_IF_TRUE => Instr::JumpIfTrue(r.read_u32()?),
             TAG_RETURN => Instr::Return,
+            TAG_POP => Instr::Pop,
+            TAG_CALL => Instr::Call(r.read_u16()?),
+            TAG_RET => Instr::Ret,
+            TAG_TAIL_CALL => Instr::TailCall(r.read_u16()?),
             other => return Err(DecodeError::BadTag(other)),
         };
     }
 
-    Ok(instr_count)
+    Ok(())
+}
+
+/// RES-4075: decode a v1 *or* v2 `.rzbc` blob into `out` (the
+/// instruction stream) and `out_fns` (the function table), returning
+/// the counts and the top-level locals declaration as a
+/// [`ProgramHeader`]. A v1 blob decodes with an empty function table
+/// and `main_local_count == u16::MAX` (the "top-level code owns the
+/// whole locals slab" sentinel). Never panics on any input — same
+/// guarantee as [`decode`].
+pub fn decode_program(
+    bytes: &[u8],
+    out: &mut [Instr],
+    out_fns: &mut [FnEntry],
+) -> Result<ProgramHeader, DecodeError> {
+    let mut r = Reader::new(bytes);
+
+    let magic = r.read_bytes(4)?;
+    if magic != MAGIC {
+        return Err(DecodeError::BadMagic);
+    }
+
+    let version = r.read_u16()?;
+    let (main_local_count, fn_count) = match version {
+        FORMAT_VERSION => (u16::MAX, 0usize),
+        PROGRAM_FORMAT_VERSION => {
+            let main_local_count = r.read_u16()?;
+            let fn_count = r.read_u16()? as usize;
+            (main_local_count, fn_count)
+        }
+        _ => return Err(DecodeError::UnsupportedVersion),
+    };
+
+    if fn_count > out_fns.len() {
+        return Err(DecodeError::TooManyFns);
+    }
+    for slot in out_fns.iter_mut().take(fn_count) {
+        *slot = FnEntry {
+            entry: r.read_u32()?,
+            arity: r.read_u8()?,
+            local_count: r.read_u16()?,
+        };
+    }
+
+    let instr_count = r.read_u32()? as usize;
+    read_instrs(&mut r, out, instr_count)?;
+
+    Ok(ProgramHeader {
+        instr_count,
+        fn_count,
+        main_local_count,
+    })
 }
 
 #[cfg(test)]
@@ -514,6 +670,131 @@ mod tests {
         ];
         let (out, count) = roundtrip(&program);
         assert_eq!(&out[..count], &program[..]);
+    }
+
+    // ---------- RES-4075: v2 program encoding ----------
+
+    const CALLS_PROGRAM: [Instr; 7] = [
+        Instr::PushConst(Value::Int(21)),
+        Instr::Call(0),
+        Instr::Return,
+        Instr::LoadLocal(0),
+        Instr::PushConst(Value::Int(2)),
+        Instr::Mul,
+        Instr::Ret,
+    ];
+    const CALLS_FNS: [FnEntry; 1] = [FnEntry {
+        entry: 3,
+        arity: 1,
+        local_count: 1,
+    }];
+
+    #[test]
+    fn program_roundtrip_preserves_fn_table_and_instrs() {
+        let mut buf = [0u8; 256];
+        let len = encode_program(&CALLS_PROGRAM, &CALLS_FNS, 5, &mut buf).unwrap();
+
+        let mut out = [Instr::Return; 16];
+        let mut fns = [CALLS_FNS[0]; 4];
+        let header = decode_program(&buf[..len], &mut out, &mut fns).unwrap();
+        assert_eq!(
+            header,
+            ProgramHeader {
+                instr_count: CALLS_PROGRAM.len(),
+                fn_count: 1,
+                main_local_count: 5
+            }
+        );
+        assert_eq!(&out[..header.instr_count], &CALLS_PROGRAM[..]);
+        assert_eq!(&fns[..header.fn_count], &CALLS_FNS[..]);
+
+        let mut vm = Vm::<8, 4, 4>::new();
+        assert_eq!(
+            vm.run_program(&out[..header.instr_count], &fns[..header.fn_count], 0),
+            Ok(Value::Int(42))
+        );
+    }
+
+    #[test]
+    fn decode_program_accepts_v1_blob_with_whole_slab_sentinel() {
+        let program = [
+            Instr::PushConst(Value::Int(7)),
+            Instr::StoreLocal(0),
+            Instr::LoadLocal(0),
+            Instr::Return,
+        ];
+        let mut buf = [0u8; 64];
+        let len = encode(&program, &mut buf).unwrap();
+
+        let mut out = [Instr::Return; 8];
+        let mut fns = [CALLS_FNS[0]; 2];
+        let header = decode_program(&buf[..len], &mut out, &mut fns).unwrap();
+        assert_eq!(header.fn_count, 0);
+        assert_eq!(header.main_local_count, u16::MAX);
+        assert_eq!(&out[..header.instr_count], &program[..]);
+    }
+
+    #[test]
+    fn v1_decode_rejects_v2_blob_as_unsupported_version() {
+        let mut buf = [0u8; 256];
+        let len = encode_program(&CALLS_PROGRAM, &CALLS_FNS, 0, &mut buf).unwrap();
+        let mut out = [Instr::Return; 16];
+        assert_eq!(
+            decode(&buf[..len], &mut out),
+            Err(DecodeError::UnsupportedVersion)
+        );
+    }
+
+    #[test]
+    fn decode_program_fn_table_overflow_is_typed_error_not_a_panic() {
+        let mut buf = [0u8; 256];
+        let len = encode_program(&CALLS_PROGRAM, &CALLS_FNS, 0, &mut buf).unwrap();
+        let mut out = [Instr::Return; 16];
+        let mut fns: [FnEntry; 0] = [];
+        assert_eq!(
+            decode_program(&buf[..len], &mut out, &mut fns),
+            Err(DecodeError::TooManyFns)
+        );
+    }
+
+    #[test]
+    fn decode_program_truncated_fn_table_is_truncated_not_a_panic() {
+        let mut buf = [0u8; 256];
+        let len = encode_program(&CALLS_PROGRAM, &CALLS_FNS, 0, &mut buf).unwrap();
+        let mut out = [Instr::Return; 16];
+        let mut fns = [CALLS_FNS[0]; 4];
+        // Cut mid-way through the function table.
+        assert_eq!(
+            decode_program(&buf[..PROGRAM_HEADER_LEN - 4 + 3], &mut out, &mut fns),
+            Err(DecodeError::Truncated)
+        );
+    }
+
+    #[test]
+    fn roundtrip_call_opcodes_via_v1_instr_stream() {
+        let program = [
+            Instr::Pop,
+            Instr::Call(9),
+            Instr::Ret,
+            Instr::TailCall(2),
+            Instr::Return,
+        ];
+        let (out, count) = roundtrip(&program);
+        assert_eq!(&out[..count], &program[..]);
+    }
+
+    #[test]
+    fn decode_program_never_panics_on_random_bytes() {
+        let mut rng = Xorshift32(0xBADC_0DE5);
+        let mut out = [Instr::Return; 16];
+        let mut fns = [CALLS_FNS[0]; 4];
+        for len in 0..48 {
+            let mut buf = [0u8; 48];
+            for slot in buf.iter_mut().take(len) {
+                *slot = (rng.next() & 0xFF) as u8;
+            }
+            let _ = decode_program(&buf[..len], &mut out, &mut fns);
+        }
     }
 
     // ---------- encode errors ----------

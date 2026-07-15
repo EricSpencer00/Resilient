@@ -14,16 +14,21 @@
 //! into "no_std-clean" (arithmetic/comparison/control-flow/locals)
 //! vs. "alloc-required" (anything touching a heap-bearing `Value`).
 //! [`Instr`] only has dispatch arms for the no_std-clean subset
-//! *minus* function calls (no call-frame stack yet — see the design
-//! doc's item 7) and bitwise ops (not yet ported to `Instr`). This
-//! module enforces exactly that subset at compile time:
+//! minus bitwise ops (not yet ported to `Instr`). RES-4075 added
+//! function calls: `main` plus every function chunk is laid out
+//! into one flat instruction stream (main at index 0, functions
+//! appended in table order), with a v2 `.rzbc` function table
+//! (entry pc / arity / local count) that the embedded VM's
+//! fixed-capacity call-frame stack indexes via
+//! `Instr::Call`/`Ret`/`TailCall`. This module enforces exactly
+//! that subset at compile time:
 //!
-//! - [`Program::functions`] must be empty — no `fn` declarations, no
-//!   `Op::Call`/`Op::ReturnFromCall`/`Op::TailCall`. A no_std `Instr`
-//!   stream has no call-frame concept.
-//! - [`Program::main`]'s every [`Op`] must be one this module knows
+//! - Functions must be plain: no closures (`upvalue_source_slots`),
+//!   no `fails` variants, no `ensures`/`recovers_to` postcheck —
+//!   each is a typed [`EmitError`] naming the offending `fn`.
+//! - Every chunk's every [`Op`] must be one this module knows
 //!   how to translate 1:1 into an [`Instr`] (see [`translate_chunk`]).
-//!   Anything else — `Pop`, `IncLocal`, arrays, structs, enums,
+//!   Anything else — `IncLocal`, arrays, structs, enums,
 //!   closures, try/catch, FFI, builtins, bitwise ops, ... — is a
 //!   typed [`EmitError`] naming the exact opcode, never a silently
 //!   malformed blob.
@@ -61,7 +66,7 @@
 use crate::Value as HostValue;
 use crate::bytecode::{Chunk, Op, Program};
 use resilient_runtime::vm::serde as rzbc_serde;
-use resilient_runtime::vm::{Instr, Value as RtValue};
+use resilient_runtime::vm::{FnEntry, Instr, Value as RtValue};
 
 /// A construct in the compiled [`Program`] that has no representation
 /// in the embedded no_std [`Instr`] subset. `target` is the triple
@@ -112,40 +117,103 @@ const MAX_INSTR_WIRE_WIDTH: usize = 10;
 /// partial/malformed blob on error — the whole translation happens
 /// before any bytes are written.
 pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitError> {
-    if !program.functions.is_empty() {
-        return Err(unsupported(
-            target,
-            format!(
-                "{} top-level `fn` declaration{} (compiles to `Op::Call`/`Op::ReturnFromCall`) — \
-                 the embedded no_std VM has no call-frame stack yet (see \
-                 docs/EMBEDDED_PIPELINE.md, D-E1 decomposition item 7); only a program with no \
-                 `fn` declarations can build for an embedded target today",
-                program.functions.len(),
-                if program.functions.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ),
-        ));
+    // RES-4075: functions are supported (fixed-capacity call frames
+    // on the embedded VM) — with the v1 exclusions below, each of
+    // which names a construct the embedded VM has no representation
+    // for yet.
+    for f in &program.functions {
+        if !f.upvalue_source_slots.is_empty() {
+            return Err(unsupported(
+                target,
+                format!(
+                    "fn `{}` is a closure (captures {} upvalue(s)) — the embedded no_std VM's \
+                     call frames carry no captured-environment slab",
+                    f.name,
+                    f.upvalue_source_slots.len()
+                ),
+            ));
+        }
+        if !f.fails.is_empty() {
+            return Err(unsupported(
+                target,
+                format!(
+                    "fn `{}` declares `fails` variants — try/checked-failure semantics are not \
+                     part of the embedded no_std VM subset",
+                    f.name
+                ),
+            ));
+        }
+        if f.postcheck.is_some() {
+            return Err(unsupported(
+                target,
+                format!(
+                    "fn `{}` has an `ensures`/`recovers_to` postcondition-check function — \
+                     runtime contract checks are not part of the embedded no_std VM subset",
+                    f.name
+                ),
+            ));
+        }
     }
 
-    let instrs = translate_chunk(&program.main, target)?;
+    // Layout: main's instructions first (index 0 is the entrypoint),
+    // then each function's chunk appended in table order. Jump
+    // targets inside each chunk are chunk-local, so every chunk is
+    // translated with its own base offset.
+    let mut instrs = translate_chunk(&program.main, 0, target)?;
+    let mut fns = Vec::with_capacity(program.functions.len());
+    for f in &program.functions {
+        let entry = instrs.len();
+        let entry_u32 = u32::try_from(entry).map_err(|_| {
+            unsupported(
+                target,
+                format!(
+                    "fn `{}` starts at instruction {}, past the `.rzbc` format's u32 entry-point \
+                     encoding",
+                    f.name, entry
+                ),
+            )
+        })?;
+        let local_count = f.local_count.max(f.arity as u16);
+        fns.push(FnEntry {
+            entry: entry_u32,
+            arity: f.arity,
+            local_count,
+        });
+        instrs.extend(translate_chunk(&f.chunk, entry, target)?);
+    }
+    let main_local_count = max_local_count(&program.main);
 
-    let cap = rzbc_serde::HEADER_LEN + instrs.len() * MAX_INSTR_WIRE_WIDTH;
+    let cap = rzbc_serde::PROGRAM_HEADER_LEN
+        + fns.len() * rzbc_serde::FN_ENTRY_LEN
+        + instrs.len() * MAX_INSTR_WIRE_WIDTH;
     let mut buf = vec![0u8; cap];
-    let len = rzbc_serde::encode(&instrs, &mut buf).map_err(|e| {
-        unsupported(
-            target,
-            format!(
-                "internal error serializing the `.rzbc` blob ({:?}) — this is a bug in \
-                 rzbc_emit's buffer sizing, not a property of the source program",
-                e
-            ),
-        )
-    })?;
+    let len = rzbc_serde::encode_program(&instrs, &fns, main_local_count, &mut buf).map_err(
+        |e| {
+            unsupported(
+                target,
+                format!(
+                    "internal error serializing the `.rzbc` blob ({:?}) — this is a bug in \
+                     rzbc_emit's buffer sizing, not a property of the source program",
+                    e
+                ),
+            )
+        },
+    )?;
     buf.truncate(len);
     Ok(buf)
+}
+
+/// How many locals slots top-level code needs: one past the highest
+/// local index `main` touches. Written into the v2 header so the
+/// embedded VM knows where call frames may start carving the slab.
+fn max_local_count(chunk: &Chunk) -> u16 {
+    let mut count: u16 = 0;
+    for op in &chunk.code {
+        if let Op::LoadLocal(idx) | Op::StoreLocal(idx) | Op::IncLocal(idx) = *op {
+            count = count.max(idx.saturating_add(1));
+        }
+    }
+    count
 }
 
 /// Translate every [`Op`] in `chunk.code` to the matching [`Instr`],
@@ -153,11 +221,15 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
 /// see the module docs for why this index-preserving property is
 /// exactly what makes [`jump_target`]'s offset-to-absolute-index math
 /// sound.
-fn translate_chunk(chunk: &Chunk, target: &str) -> Result<Vec<Instr>, EmitError> {
+fn translate_chunk(chunk: &Chunk, base: usize, target: &str) -> Result<Vec<Instr>, EmitError> {
     let mut out = Vec::with_capacity(chunk.code.len());
     for (i, op) in chunk.code.iter().enumerate() {
         let instr = match *op {
             Op::Const(idx) => Instr::PushConst(translate_const(chunk, idx, target)?),
+            Op::Pop => Instr::Pop,
+            Op::Call(idx) => Instr::Call(idx),
+            Op::TailCall(idx) => Instr::TailCall(idx),
+            Op::ReturnFromCall => Instr::Ret,
             Op::Add => Instr::Add,
             Op::Sub => Instr::Sub,
             Op::Mul => Instr::Mul,
@@ -174,11 +246,11 @@ fn translate_chunk(chunk: &Chunk, target: &str) -> Result<Vec<Instr>, EmitError>
             Op::Ge => Instr::Ge,
             Op::Not => Instr::Not,
             Op::Return => Instr::Return,
-            Op::Jump(offset) => Instr::Jump(jump_target(i, offset, target)?),
-            Op::JumpIfFalse(offset) => Instr::JumpIfFalse(jump_target(i, offset, target)?),
-            Op::JumpIfTrue(offset) => Instr::JumpIfTrue(jump_target(i, offset, target)?),
+            Op::Jump(offset) => Instr::Jump(jump_target(i, base, offset, target)?),
+            Op::JumpIfFalse(offset) => Instr::JumpIfFalse(jump_target(i, base, offset, target)?),
+            Op::JumpIfTrue(offset) => Instr::JumpIfTrue(jump_target(i, base, offset, target)?),
             // Everything else is (b)-class or otherwise absent from
-            // `Instr` (bitwise ops, `IncLocal`, `Pop`, try/catch,
+            // `Instr` (bitwise ops, `IncLocal`, try/catch,
             // FFI, builtins, arrays/structs/enums/closures/tuples,
             // globals). `{:?}` on `Op` names the exact variant so the
             // diagnostic is actionable without a giant match arm per
@@ -232,14 +304,16 @@ fn translate_const(chunk: &Chunk, idx: u16, target: &str) -> Result<RtValue, Emi
 }
 
 /// Convert an `Op::Jump*`-style relative offset (relative to the PC
-/// *after* the jump, at index `i + 1`) into the `.rzbc` format's
-/// absolute `u32` instruction index. Sound only because
-/// [`translate_chunk`] emits exactly one `Instr` per `Op`, so index
-/// `i` in `chunk.code` and index `i` in the translated `Instr` stream
+/// *after* the jump, at index `i + 1` within its chunk) into the
+/// `.rzbc` format's absolute `u32` instruction index. `base` is the
+/// chunk's start offset in the flat concatenated stream (0 for
+/// `main`; each function's entry pc otherwise — RES-4075). Sound
+/// only because [`translate_chunk`] emits exactly one `Instr` per
+/// `Op`, so chunk-local index `i` and stream index `base + i`
 /// always refer to the same instruction.
-fn jump_target(i: usize, offset: i16, target: &str) -> Result<u32, EmitError> {
+fn jump_target(i: usize, base: usize, offset: i16, target: &str) -> Result<u32, EmitError> {
     let pc_after = i as i64 + 1;
-    let dest = pc_after + offset as i64;
+    let dest = base as i64 + pc_after + offset as i64;
     u32::try_from(dest).map_err(|_| {
         unsupported(
             target,
@@ -256,6 +330,24 @@ fn jump_target(i: usize, offset: i16, target: &str) -> Result<u32, EmitError> {
 mod tests {
     use super::*;
     use crate::bytecode::Function;
+
+    const NO_FN: FnEntry = FnEntry {
+        entry: 0,
+        arity: 0,
+        local_count: 0,
+    };
+
+    fn plain_fn(name: &str, arity: u8, local_count: u16, chunk: Chunk) -> crate::bytecode::Function {
+        Function {
+            name: name.to_string(),
+            arity,
+            chunk,
+            local_count,
+            upvalue_source_slots: Box::default(),
+            fails: Box::default(),
+            postcheck: None,
+        }
+    }
 
     fn chunk_from(code: Vec<Op>, constants: Vec<HostValue>) -> Chunk {
         let mut chunk = Chunk::new();
@@ -291,7 +383,10 @@ mod tests {
         let blob = compile_to_rzbc(&program, "thumbv7em-none-eabihf").expect("should translate");
 
         let mut out = [Instr::Return; 16];
-        let count = rzbc_serde::decode(&blob, &mut out).expect("should decode");
+        let mut fns = [NO_FN; 4];
+        let header = rzbc_serde::decode_program(&blob, &mut out, &mut fns).expect("should decode");
+        let count = header.instr_count;
+        assert_eq!(header.fn_count, 0);
         assert_eq!(
             &out[..count],
             &[
@@ -343,7 +438,9 @@ mod tests {
             .expect("should translate loop");
 
         let mut out = [Instr::Return; 32];
-        let count = rzbc_serde::decode(&blob, &mut out).expect("should decode");
+        let mut fns = [NO_FN; 4];
+        let header = rzbc_serde::decode_program(&blob, &mut out, &mut fns).expect("should decode");
+        let count = header.instr_count;
 
         let mut vm = resilient_runtime::vm::Vm::<8, 2>::new();
         assert_eq!(
@@ -354,25 +451,125 @@ mod tests {
         );
     }
 
+    /// RES-4075: replaces `rejects_fn_declarations` — fn
+    /// declarations now compile to a v2 blob whose function table
+    /// and relocated call/return instructions round-trip through
+    /// the real embedded decoder and VM.
     #[test]
-    fn rejects_fn_declarations() {
+    fn compiles_fn_declarations_and_executes_calls() {
+        // main: add2(3, 4)   fn add2(a, b) = a + b
+        let main = chunk_from(
+            vec![Op::Const(0), Op::Const(1), Op::Call(0), Op::Return],
+            vec![HostValue::Int(3), HostValue::Int(4)],
+        );
+        let body = chunk_from(
+            vec![
+                Op::LoadLocal(0),
+                Op::LoadLocal(1),
+                Op::Add,
+                Op::ReturnFromCall,
+            ],
+            vec![],
+        );
         let program = Program {
-            main: chunk_from(vec![Op::Return], vec![]),
-            functions: vec![Function {
-                name: "f".to_string(),
-                arity: 0,
-                chunk: Chunk::new(),
-                local_count: 0,
-                upvalue_source_slots: Box::default(),
-                fails: Box::default(),
-                postcheck: None,
-            }],
+            main,
+            functions: vec![plain_fn("add2", 2, 2, body)],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
         };
-        let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
-        assert!(err.reason.contains("fn"), "reason was: {}", err.reason);
-        assert_eq!(err.target, "thumbv6m-none-eabi");
+        let blob = compile_to_rzbc(&program, "thumbv6m-none-eabi").expect("fns should compile");
+
+        let mut out = [Instr::Return; 16];
+        let mut fns = [NO_FN; 4];
+        let header = rzbc_serde::decode_program(&blob, &mut out, &mut fns).expect("should decode");
+        assert_eq!(header.fn_count, 1);
+        assert_eq!(
+            fns[0],
+            FnEntry {
+                entry: 4, // main has 4 instructions; fn body starts right after
+                arity: 2,
+                local_count: 2
+            }
+        );
+
+        let mut vm = resilient_runtime::vm::Vm::<8, 8, 4>::new();
+        assert_eq!(
+            vm.run_program(
+                &out[..header.instr_count],
+                &fns[..header.fn_count],
+                header.main_local_count
+            ),
+            Ok(RtValue::Int(7))
+        );
+    }
+
+    /// RES-4075: a function body's chunk-local jump offsets must be
+    /// rebased onto the fn's position in the flat stream.
+    #[test]
+    fn rebases_jump_targets_inside_function_bodies() {
+        // fn pick(flag) = if flag { 10 } else { 20 }; main: pick(false)
+        let main = chunk_from(
+            vec![Op::Const(0), Op::Call(0), Op::Return],
+            vec![HostValue::Bool(false)],
+        );
+        let body = chunk_from(
+            vec![
+                Op::LoadLocal(0),      // fn-local 0 (stream 3)
+                Op::JumpIfFalse(2),    // -> fn-local 4 (stream 7)
+                Op::Const(0),          // 10
+                Op::ReturnFromCall,    // fn-local 3
+                Op::Const(1),          // fn-local 4: 20
+                Op::ReturnFromCall,
+            ],
+            vec![HostValue::Int(10), HostValue::Int(20)],
+        );
+        let program = Program {
+            main,
+            functions: vec![plain_fn("pick", 1, 1, body)],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let blob = compile_to_rzbc(&program, "thumbv7em-none-eabihf").expect("should compile");
+
+        let mut out = [Instr::Return; 16];
+        let mut fns = [NO_FN; 4];
+        let header = rzbc_serde::decode_program(&blob, &mut out, &mut fns).expect("should decode");
+        assert_eq!(out[4], Instr::JumpIfFalse(7), "target must be rebased by entry pc 3");
+
+        let mut vm = resilient_runtime::vm::Vm::<8, 8, 4>::new();
+        assert_eq!(
+            vm.run_program(
+                &out[..header.instr_count],
+                &fns[..header.fn_count],
+                header.main_local_count
+            ),
+            Ok(RtValue::Int(20))
+        );
+    }
+
+    #[test]
+    fn rejects_closures_fails_and_postchecks() {
+        let mk = |f: Function| Program {
+            main: chunk_from(vec![Op::Const(0), Op::Return], vec![HostValue::Int(0)]),
+            functions: vec![f],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+
+        let mut closure = plain_fn("c", 0, 0, Chunk::new());
+        closure.upvalue_source_slots = vec![0u16].into_boxed_slice();
+        let err = compile_to_rzbc(&mk(closure), "thumbv6m-none-eabi").unwrap_err();
+        assert!(err.reason.contains("closure"), "reason was: {}", err.reason);
+
+        let mut fails = plain_fn("f", 0, 0, Chunk::new());
+        fails.fails = vec!["Overflow".to_string()].into_boxed_slice();
+        let err = compile_to_rzbc(&mk(fails), "thumbv6m-none-eabi").unwrap_err();
+        assert!(err.reason.contains("fails"), "reason was: {}", err.reason);
+
+        let mut post = plain_fn("p", 0, 0, Chunk::new());
+        post.postcheck = Some(1);
+        let err = compile_to_rzbc(&mk(post), "thumbv6m-none-eabi").unwrap_err();
+        assert!(err.reason.contains("ensures"), "reason was: {}", err.reason);
     }
 
     #[test]
@@ -401,10 +598,12 @@ mod tests {
             err.reason
         );
 
-        let main = chunk_from(vec![Op::Pop, Op::Return], vec![]);
+        // RES-4075: `Op::Pop` graduated into the supported subset,
+        // so the second unsupported-opcode probe is now a bitwise op.
+        let main = chunk_from(vec![Op::Band, Op::Return], vec![]);
         let program = program_from(main);
         let err = compile_to_rzbc(&program, "thumbv7em-none-eabihf").unwrap_err();
-        assert!(err.reason.contains("Pop"), "reason was: {}", err.reason);
+        assert!(err.reason.contains("Band"), "reason was: {}", err.reason);
     }
 
     #[test]

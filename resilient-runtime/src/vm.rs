@@ -26,12 +26,12 @@
 //!
 //! # Stack model
 //!
-//! No heap, no `Vec`, no function-call stack (calls are out of
-//! scope for this increment — see the design doc's opcode audit;
-//! `Call`/`TailCall`/`ReturnFromCall` need a bounded call-frame
-//! stack that a follow-up PR adds once this skeleton lands). The
-//! operand stack and the locals slab are both fixed-capacity
-//! arrays sized by `const` generics, mirroring the
+//! No heap, no `Vec`. RES-4075 added function calls: a bounded
+//! call-frame stack (`FRAMES` const generic, default 8) plus
+//! `Call`/`Ret`/`TailCall` instructions and an [`FnEntry`] function
+//! table — see [`Vm::run_program`]. The operand stack, the locals
+//! slab, and the frame stack are all fixed-capacity arrays sized
+//! by `const` generics, mirroring the
 //! `[TimerState; MAX_TIMERS]` fixed-array idiom already used by
 //! [`crate::timer`] and the `Fixed<N, D>` const-generic idiom used
 //! by [`crate::fixed`]:
@@ -279,7 +279,56 @@ pub enum Instr {
     /// Pop TOS and end execution, returning it as the program's
     /// result.
     Return,
+    /// RES-4075: pop and discard TOS (an expression-statement's
+    /// unused result — e.g. a `f(x);` call whose value is ignored).
+    Pop,
+    /// RES-4075: call `functions[idx]`. Pops `arity` arguments
+    /// (rightmost first) into the callee's fresh locals region,
+    /// pushes a return frame, and jumps to the callee's entry pc.
+    Call(u16),
+    /// RES-4075: return from the current call frame. Pops the
+    /// return value, restores the caller's frame (pc + locals
+    /// region), and pushes the return value back for the caller.
+    /// Executing this with no frame on the call stack is a typed
+    /// [`VmError::CallStackUnderflow`].
+    Ret,
+    /// RES-4075: self-recursive tail call to `functions[idx]` (the
+    /// host peephole pass only rewrites `Call(i); ReturnFromCall`
+    /// into `TailCall(i)` for direct self-recursion). Reuses the
+    /// current frame instead of pushing a new one, so tail-recursive
+    /// loops run in O(1) call-stack space.
+    TailCall(u16),
 }
+
+/// RES-4075: one entry in a program's function table — where the
+/// function's code starts in the flat instruction stream, how many
+/// arguments `Call` pops for it, and how many locals slots (params +
+/// `let` bindings) its frame reserves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FnEntry {
+    /// Absolute instruction index of the function's first instruction.
+    pub entry: u32,
+    /// Number of arguments popped from the operand stack on `Call`.
+    /// They become the first `arity` locals of the new frame.
+    pub arity: u8,
+    /// Total locals slots the frame reserves (`arity <= local_count`).
+    pub local_count: u16,
+}
+
+/// RES-4075: a saved caller context on the call-frame stack. `Copy`
+/// so the frame stack can be a plain fixed-capacity array.
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    return_pc: usize,
+    locals_base: usize,
+    locals_top: usize,
+}
+
+const EMPTY_FRAME: Frame = Frame {
+    return_pc: 0,
+    locals_base: 0,
+    locals_top: 0,
+};
 
 /// Errors the VM can surface. Every fallible dispatch step returns
 /// one of these instead of panicking — see the module-level
@@ -306,6 +355,16 @@ pub enum VmError {
     /// variant(s). The payload names the op, matching
     /// [`crate::RuntimeError::TypeMismatch`]'s shape.
     TypeMismatch(&'static str),
+    /// RES-4075: a `Call` would exceed the fixed call-frame
+    /// capacity (`FRAMES`) — e.g. recursion deeper than the
+    /// configured budget. Typed error, never a stack smash.
+    CallStackOverflow,
+    /// RES-4075: `Ret` executed with no frame on the call stack
+    /// (a `Ret` in top-level code — a malformed program).
+    CallStackUnderflow,
+    /// RES-4075: a `Call`/`TailCall` named a function index with no
+    /// entry in the program's function table.
+    BadFunction,
 }
 
 /// A bytecode VM instance with a fixed-capacity operand stack
@@ -314,29 +373,49 @@ pub enum VmError {
 /// parameters — no heap, no growth, overflow is a typed
 /// [`VmError`] rather than a panic.
 ///
-/// Function calls (and therefore a call-frame stack) are out of
-/// scope for this increment; `run` executes a single flat
-/// instruction slice from index 0 until `Return` or an error.
-pub struct Vm<const STACK: usize, const LOCALS: usize> {
+/// RES-4075: function calls use a fixed-capacity call-frame stack
+/// (`FRAMES` slots, default 8) and carve per-frame locals regions
+/// out of the single `LOCALS` slab — `Call` reserves the callee's
+/// `local_count` slots above the caller's region, `Ret` releases
+/// them. Frame exhaustion and locals-slab exhaustion are typed
+/// errors ([`VmError::CallStackOverflow`] /
+/// [`VmError::LocalsOutOfBounds`]), never a panic. `run` executes a
+/// flat, function-free instruction slice; [`Vm::run_program`] takes
+/// a function table too.
+pub struct Vm<const STACK: usize, const LOCALS: usize, const FRAMES: usize = 8> {
     stack: [Value; STACK],
     sp: usize,
     locals: [Value; LOCALS],
+    frames: [Frame; FRAMES],
+    fp: usize,
+    locals_base: usize,
+    locals_top: usize,
 }
 
-impl<const STACK: usize, const LOCALS: usize> Default for Vm<STACK, LOCALS> {
+impl<const STACK: usize, const LOCALS: usize, const FRAMES: usize> Default
+    for Vm<STACK, LOCALS, FRAMES>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const STACK: usize, const LOCALS: usize> Vm<STACK, LOCALS> {
-    /// A fresh VM: empty operand stack, locals zero-initialised to
-    /// `Value::Int(0)`.
+impl<const STACK: usize, const LOCALS: usize, const FRAMES: usize> Vm<STACK, LOCALS, FRAMES> {
+    /// A fresh VM: empty operand stack, empty call stack, locals
+    /// zero-initialised to `Value::Int(0)`. Top-level code initially
+    /// owns the whole locals slab (a v1 flat program has no
+    /// function table to say otherwise; [`Vm::run_program`] narrows
+    /// the top-level region to the program's declared main-locals
+    /// count so frames start above it).
     pub fn new() -> Self {
         Self {
             stack: [Value::Int(0); STACK],
             sp: 0,
             locals: [Value::Int(0); LOCALS],
+            frames: [EMPTY_FRAME; FRAMES],
+            fp: 0,
+            locals_base: 0,
+            locals_top: LOCALS,
         }
     }
 
@@ -394,10 +473,83 @@ impl<const STACK: usize, const LOCALS: usize> Vm<STACK, LOCALS> {
         self.push(result)
     }
 
-    /// Run `program` from instruction 0 until `Return` or the
-    /// first error. Every branch, arithmetic op, and stack/locals
-    /// access is bounds-checked — no panic path exists here.
+    /// Resolve a frame-relative local index to its absolute slot in
+    /// the locals slab, bounds-checked against the current frame's
+    /// region (`locals_base..locals_top`).
+    fn local_slot(&self, idx: u16) -> Result<usize, VmError> {
+        let abs = self
+            .locals_base
+            .checked_add(idx as usize)
+            .ok_or(VmError::LocalsOutOfBounds)?;
+        if abs < self.locals_top {
+            Ok(abs)
+        } else {
+            Err(VmError::LocalsOutOfBounds)
+        }
+    }
+
+    /// Pop `arity` arguments off the operand stack (rightmost was
+    /// pushed last) into the locals region starting at `base`, in
+    /// source order: `locals[base]` = leftmost argument.
+    fn pop_args_into(&mut self, base: usize, arity: u8) -> Result<(), VmError> {
+        for i in (0..arity as usize).rev() {
+            let v = self.pop()?;
+            let slot = self
+                .locals
+                .get_mut(base + i)
+                .ok_or(VmError::LocalsOutOfBounds)?;
+            *slot = v;
+        }
+        Ok(())
+    }
+
+    /// Look up `functions[idx]` and check its frame's locals region
+    /// (`[base, base + local_count)`) fits the slab. Returns the
+    /// entry pc and the new `locals_top`.
+    fn resolve_fn(
+        functions: &[FnEntry],
+        idx: u16,
+        base: usize,
+    ) -> Result<(usize, usize, u8), VmError> {
+        let f = functions.get(idx as usize).ok_or(VmError::BadFunction)?;
+        if f.arity as u16 > f.local_count {
+            return Err(VmError::BadFunction);
+        }
+        let top = base
+            .checked_add(f.local_count as usize)
+            .ok_or(VmError::LocalsOutOfBounds)?;
+        if top > LOCALS {
+            return Err(VmError::LocalsOutOfBounds);
+        }
+        Ok((f.entry as usize, top, f.arity))
+    }
+
+    /// Run a flat, function-free `program` from instruction 0 until
+    /// `Return` or the first error. Every branch, arithmetic op, and
+    /// stack/locals access is bounds-checked — no panic path exists
+    /// here. A `Call`/`TailCall` in the stream is a typed
+    /// [`VmError::BadFunction`] (there is no function table); use
+    /// [`Vm::run_program`] for programs with functions.
     pub fn run(&mut self, program: &[Instr]) -> Result<Value, VmError> {
+        self.run_program(program, &[], u16::MAX)
+    }
+
+    /// Run `program` (one flat instruction stream: top-level code at
+    /// index 0, function bodies appended after it) with `functions`
+    /// as the table `Call`/`TailCall` index into. `main_locals` is
+    /// the number of locals slots top-level code owns — call frames
+    /// carve their regions out of the slab above it (pass
+    /// `u16::MAX` to give top-level code the whole slab, the flat
+    /// v1-program behaviour).
+    pub fn run_program(
+        &mut self,
+        program: &[Instr],
+        functions: &[FnEntry],
+        main_locals: u16,
+    ) -> Result<Value, VmError> {
+        self.locals_base = 0;
+        self.locals_top = LOCALS.min(main_locals as usize);
+        self.fp = 0;
         let mut pc: usize = 0;
         loop {
             let instr = *program.get(pc).ok_or(VmError::PcOutOfBounds)?;
@@ -405,17 +557,16 @@ impl<const STACK: usize, const LOCALS: usize> Vm<STACK, LOCALS> {
             match instr {
                 Instr::PushConst(v) => self.push(v)?,
                 Instr::LoadLocal(idx) => {
-                    let v = *self
-                        .locals
-                        .get(idx as usize)
-                        .ok_or(VmError::LocalsOutOfBounds)?;
+                    let slot = self.local_slot(idx)?;
+                    let v = *self.locals.get(slot).ok_or(VmError::LocalsOutOfBounds)?;
                     self.push(v)?;
                 }
                 Instr::StoreLocal(idx) => {
                     let v = self.pop()?;
+                    let slot = self.local_slot(idx)?;
                     let slot = self
                         .locals
-                        .get_mut(idx as usize)
+                        .get_mut(slot)
                         .ok_or(VmError::LocalsOutOfBounds)?;
                     *slot = v;
                 }
@@ -448,6 +599,55 @@ impl<const STACK: usize, const LOCALS: usize> Vm<STACK, LOCALS> {
                     }
                 }
                 Instr::Return => return self.pop(),
+                Instr::Pop => {
+                    self.pop()?;
+                }
+                Instr::Call(idx) => {
+                    let frame = self
+                        .frames
+                        .get_mut(self.fp)
+                        .ok_or(VmError::CallStackOverflow)?;
+                    *frame = Frame {
+                        return_pc: pc,
+                        locals_base: self.locals_base,
+                        locals_top: self.locals_top,
+                    };
+                    let base = self.locals_top;
+                    let (entry, top, arity) = Self::resolve_fn(functions, idx, base)?;
+                    self.pop_args_into(base, arity)?;
+                    self.fp += 1;
+                    self.locals_base = base;
+                    self.locals_top = top;
+                    pc = Self::validate_target(entry as u32, program.len())?;
+                }
+                Instr::TailCall(idx) => {
+                    // Reuse the current frame: same locals base, the
+                    // callee's own local_count above it. No frame
+                    // push, so self-recursive loops never exhaust
+                    // the call stack.
+                    let base = self.locals_base;
+                    let (entry, top, arity) = Self::resolve_fn(functions, idx, base)?;
+                    // Args must land in the frame being reused, so
+                    // resize the region before writing them.
+                    self.locals_top = top;
+                    self.pop_args_into(base, arity)?;
+                    pc = Self::validate_target(entry as u32, program.len())?;
+                }
+                Instr::Ret => {
+                    if self.fp == 0 {
+                        return Err(VmError::CallStackUnderflow);
+                    }
+                    let ret = self.pop()?;
+                    self.fp -= 1;
+                    let frame = *self
+                        .frames
+                        .get(self.fp)
+                        .ok_or(VmError::CallStackUnderflow)?;
+                    self.locals_base = frame.locals_base;
+                    self.locals_top = frame.locals_top;
+                    self.push(ret)?;
+                    pc = frame.return_pc;
+                }
             }
         }
     }
@@ -869,6 +1069,226 @@ mod tests {
         ];
         let mut vm = Vm::<8, 0>::new();
         assert_eq!(vm.run(&program), Ok(Value::Int(2)));
+    }
+
+    // ---------- RES-4075: function calls ----------
+
+    const fn fentry(entry: u32, arity: u8, local_count: u16) -> FnEntry {
+        FnEntry {
+            entry,
+            arity,
+            local_count,
+        }
+    }
+
+    #[test]
+    fn call_and_return_with_arguments() {
+        // main: add2(3, 4)          fns[0] "add2": locals[0] + locals[1]
+        let program = [
+            Instr::PushConst(Value::Int(3)),
+            Instr::PushConst(Value::Int(4)),
+            Instr::Call(0),
+            Instr::Return,
+            // fns[0] entry = 4
+            Instr::LoadLocal(0),
+            Instr::LoadLocal(1),
+            Instr::Add,
+            Instr::Ret,
+        ];
+        let fns = [fentry(4, 2, 2)];
+        let mut vm = Vm::<8, 8, 4>::new();
+        assert_eq!(vm.run_program(&program, &fns, 0), Ok(Value::Int(7)));
+    }
+
+    #[test]
+    fn nested_calls_restore_caller_locals() {
+        // main: x = 10; outer(1) + x
+        //   outer(a) = inner(a + 1) * 2   (1 local)
+        //   inner(b) = b + 100            (1 local)
+        let program = [
+            Instr::PushConst(Value::Int(10)),
+            Instr::StoreLocal(0), // main local 0 = 10
+            Instr::PushConst(Value::Int(1)),
+            Instr::Call(0), // outer(1)
+            Instr::LoadLocal(0),
+            Instr::Add,
+            Instr::Return,
+            // outer, entry = 7
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Add,
+            Instr::Call(1), // inner(a + 1)
+            Instr::PushConst(Value::Int(2)),
+            Instr::Mul,
+            Instr::Ret,
+            // inner, entry = 14
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(100)),
+            Instr::Add,
+            Instr::Ret,
+        ];
+        let fns = [fentry(7, 1, 1), fentry(14, 1, 1)];
+        let mut vm = Vm::<8, 8, 4>::new();
+        // inner(2) = 102; outer = 204; main = 204 + 10 = 214, and
+        // main's local 0 must still read 10 after the nested calls.
+        assert_eq!(vm.run_program(&program, &fns, 1), Ok(Value::Int(214)));
+    }
+
+    #[test]
+    fn recursion_within_frame_budget() {
+        // fact(n) = if n < 2 { 1 } else { n * fact(n - 1) }
+        let program = [
+            Instr::PushConst(Value::Int(5)),
+            Instr::Call(0),
+            Instr::Return,
+            // fact, entry = 3
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(2)),
+            Instr::Lt,
+            Instr::JumpIfFalse(9),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Ret,
+            Instr::LoadLocal(0), // 9
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Sub,
+            Instr::Call(0),
+            Instr::Mul,
+            Instr::Ret,
+        ];
+        let fns = [fentry(3, 1, 1)];
+        let mut vm = Vm::<16, 16, 8>::new();
+        assert_eq!(vm.run_program(&program, &fns, 0), Ok(Value::Int(120)));
+    }
+
+    #[test]
+    fn frame_exhaustion_is_a_typed_error_not_a_panic() {
+        // f(n) = f(n + 1) — unbounded recursion must hit the FRAMES
+        // budget and surface CallStackOverflow, never smash anything.
+        let program = [
+            Instr::PushConst(Value::Int(0)),
+            Instr::Call(0),
+            Instr::Return,
+            // f, entry = 3
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Add,
+            Instr::Call(0),
+            Instr::Ret,
+        ];
+        let fns = [fentry(3, 1, 1)];
+        let mut vm = Vm::<64, 64, 4>::new();
+        assert_eq!(
+            vm.run_program(&program, &fns, 0),
+            Err(VmError::CallStackOverflow)
+        );
+    }
+
+    #[test]
+    fn locals_slab_exhaustion_on_call_is_a_typed_error_not_a_panic() {
+        // The frame budget is generous but the locals slab (4 slots,
+        // 2 per frame) runs out first.
+        let program = [
+            Instr::PushConst(Value::Int(0)),
+            Instr::Call(0),
+            Instr::Return,
+            Instr::LoadLocal(0), // f, entry = 3
+            Instr::Call(0),
+            Instr::Ret,
+        ];
+        let fns = [fentry(3, 1, 2)];
+        let mut vm = Vm::<64, 4, 64>::new();
+        assert_eq!(
+            vm.run_program(&program, &fns, 0),
+            Err(VmError::LocalsOutOfBounds)
+        );
+    }
+
+    #[test]
+    fn tail_call_recursion_runs_in_constant_frame_space() {
+        // countdown(n) = if n < 1 { 0 } else { countdown(n - 1) },
+        // tail-call form: depth 100 with only 2 frame slots.
+        let program = [
+            Instr::PushConst(Value::Int(100)),
+            Instr::Call(0),
+            Instr::Return,
+            // countdown, entry = 3
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Lt,
+            Instr::JumpIfFalse(9),
+            Instr::PushConst(Value::Int(0)),
+            Instr::Ret,
+            Instr::LoadLocal(0), // 9
+            Instr::PushConst(Value::Int(1)),
+            Instr::Sub,
+            Instr::TailCall(0),
+        ];
+        let fns = [fentry(3, 1, 1)];
+        let mut vm = Vm::<8, 8, 2>::new();
+        assert_eq!(vm.run_program(&program, &fns, 0), Ok(Value::Int(0)));
+    }
+
+    #[test]
+    fn call_with_bad_function_index_is_a_typed_error_not_a_panic() {
+        let program = [Instr::Call(7), Instr::Return];
+        let mut vm = Vm::<8, 8, 4>::new();
+        assert_eq!(
+            vm.run_program(&program, &[], 0),
+            Err(VmError::BadFunction)
+        );
+    }
+
+    #[test]
+    fn ret_outside_a_function_is_a_typed_error_not_a_panic() {
+        let program = [Instr::PushConst(Value::Int(1)), Instr::Ret];
+        let mut vm = Vm::<8, 8, 4>::new();
+        assert_eq!(
+            vm.run_program(&program, &[], 0),
+            Err(VmError::CallStackUnderflow)
+        );
+    }
+
+    #[test]
+    fn call_in_flat_run_is_bad_function_not_a_panic() {
+        let program = [Instr::Call(0), Instr::Return];
+        let mut vm = Vm::<8, 0>::new();
+        assert_eq!(vm.run(&program), Err(VmError::BadFunction));
+    }
+
+    #[test]
+    fn callee_cannot_read_past_its_own_frame() {
+        // f has 1 local; LoadLocal(1) inside it must be out of
+        // bounds even though the slab has room.
+        let program = [
+            Instr::PushConst(Value::Int(1)),
+            Instr::Call(0),
+            Instr::Return,
+            Instr::LoadLocal(1), // f, entry = 3
+            Instr::Ret,
+        ];
+        let fns = [fentry(3, 1, 1)];
+        let mut vm = Vm::<8, 8, 4>::new();
+        assert_eq!(
+            vm.run_program(&program, &fns, 0),
+            Err(VmError::LocalsOutOfBounds)
+        );
+    }
+
+    #[test]
+    fn pop_discards_unused_call_result() {
+        // main: f(); 9   where f() = 5, result discarded via Pop.
+        let program = [
+            Instr::Call(0),
+            Instr::Pop,
+            Instr::PushConst(Value::Int(9)),
+            Instr::Return,
+            Instr::PushConst(Value::Int(5)), // f, entry = 4
+            Instr::Ret,
+        ];
+        let fns = [fentry(4, 0, 0)];
+        let mut vm = Vm::<8, 8, 4>::new();
+        assert_eq!(vm.run_program(&program, &fns, 0), Ok(Value::Int(9)));
     }
 
     #[test]

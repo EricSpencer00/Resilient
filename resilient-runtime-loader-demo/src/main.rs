@@ -22,11 +22,17 @@
 use cortex_m_rt::entry;
 use cortex_m_semihosting::{debug, hprintln};
 use resilient_runtime::vm::Value;
-use resilient_runtime::vm::loader::load_and_run;
+use resilient_runtime::vm::loader::{load_and_run, load_and_run_program};
 
 /// `(2 + 3) * 4 + 1 == 21` — see
 /// `resilient-runtime/fixtures/arithmetic_demo.rzbc`.
 static RZBC_BLOB: &[u8] = include_bytes!("../../resilient-runtime/fixtures/arithmetic_demo.rzbc");
+
+/// RES-4075: `fn add(int a, int b) -> int { return a + b; }
+/// add(19, 23);` — a v2 blob (function table + CALL/RET) emitted by
+/// the real `rz build`; see
+/// `resilient-runtime/fixtures/calls_demo.rzbc`.
+static CALLS_BLOB: &[u8] = include_bytes!("../../resilient-runtime/fixtures/calls_demo.rzbc");
 
 /// Sized for the committed fixture: 8 instructions, an operand
 /// stack that never holds more than 3 values at once, and no
@@ -39,12 +45,21 @@ const LOCALS_SLOTS: usize = 0;
 
 const EXPECTED: Value = Value::Int(21);
 
+/// Capacities for the RES-4075 calls fixture: 8 instructions, one
+/// function-table entry, shallow (depth-1) call chain.
+const CALLS_MAX_INSTRS: usize = 16;
+const CALLS_MAX_FNS: usize = 4;
+const CALLS_FRAMES: usize = 4;
+const CALLS_LOCALS: usize = 8;
+const CALLS_EXPECTED: Value = Value::Int(42);
+
 #[entry]
 fn main() -> ! {
     match load_and_run::<MAX_INSTRS, STACK_SLOTS, LOCALS_SLOTS>(RZBC_BLOB) {
         Ok(v) if v == EXPECTED => {
+            // Success — fall through to the RES-4075 fn-calls gate
+            // below, which owns the final EXIT_SUCCESS.
             hprintln!("loader ok: {:?}", v);
-            debug::exit(debug::EXIT_SUCCESS);
         }
         Ok(v) => {
             hprintln!("loader produced unexpected value: {:?}", v);
@@ -52,6 +67,24 @@ fn main() -> ! {
         }
         Err(e) => {
             hprintln!("loader error: {:?}", e);
+            debug::exit(debug::EXIT_FAILURE);
+        }
+    }
+
+    // RES-4075: same gate for the function-calling v2 fixture.
+    match load_and_run_program::<CALLS_MAX_INSTRS, CALLS_MAX_FNS, STACK_SLOTS, CALLS_LOCALS, CALLS_FRAMES>(
+        CALLS_BLOB,
+    ) {
+        Ok(v) if v == CALLS_EXPECTED => {
+            hprintln!("loader ok (fn calls): {:?}", v);
+            debug::exit(debug::EXIT_SUCCESS);
+        }
+        Ok(v) => {
+            hprintln!("calls loader produced unexpected value: {:?}", v);
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(e) => {
+            hprintln!("calls loader error: {:?}", e);
             debug::exit(debug::EXIT_FAILURE);
         }
     }

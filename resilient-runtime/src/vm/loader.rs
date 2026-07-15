@@ -23,7 +23,7 @@
 //! returns a typed [`LoaderError`] instead of panicking.
 
 use super::serde::{self, DecodeError};
-use super::{Instr, Value, Vm, VmError};
+use super::{FnEntry, Instr, Value, Vm, VmError};
 
 /// Errors [`load_and_run`] can return. Wraps the two error sources
 /// it composes — [`DecodeError`] and [`VmError`] — plus a
@@ -41,6 +41,10 @@ pub enum LoaderError {
     /// loader's fixed-capacity buffer (`N`) can hold. Retry with a
     /// larger `N`.
     TooManyInstrs,
+    /// RES-4075: the blob's v2 header declares more function-table
+    /// entries than the loader's fixed-capacity table (`F`) can
+    /// hold. Retry with a larger `F`.
+    TooManyFns,
     /// The blob decoded cleanly but the VM hit a typed runtime error
     /// while executing it (stack/locals overflow, divide by zero,
     /// bad jump target, operand type mismatch, ...). See [`VmError`].
@@ -51,6 +55,7 @@ impl From<DecodeError> for LoaderError {
     fn from(e: DecodeError) -> Self {
         match e {
             DecodeError::TooManyInstrs => LoaderError::TooManyInstrs,
+            DecodeError::TooManyFns => LoaderError::TooManyFns,
             other => LoaderError::DecodeFailed(other),
         }
     }
@@ -104,6 +109,60 @@ pub fn load_and_run<const N: usize, const STACK: usize, const LOCALS: usize>(
     Ok(result)
 }
 
+/// RES-4075: like [`load_and_run`], but for programs with function
+/// calls — accepts both v1 (flat) and v2 (function-table) `.rzbc`
+/// blobs. `F` is the function-table capacity and `FRAMES` the
+/// call-frame-stack depth; both are fixed arrays, and exceeding
+/// either is a typed error ([`LoaderError::TooManyFns`] /
+/// [`VmError::CallStackOverflow`]), never a panic.
+///
+/// ```
+/// use resilient_runtime::vm::{FnEntry, Instr, Value};
+/// use resilient_runtime::vm::serde::encode_program;
+/// use resilient_runtime::vm::loader::load_and_run_program;
+///
+/// // main: double(21)     fns[0] "double": locals[0] * 2
+/// let program = [
+///     Instr::PushConst(Value::Int(21)),
+///     Instr::Call(0),
+///     Instr::Return,
+///     Instr::LoadLocal(0), // fns[0] entry
+///     Instr::PushConst(Value::Int(2)),
+///     Instr::Mul,
+///     Instr::Ret,
+/// ];
+/// let fns = [FnEntry { entry: 3, arity: 1, local_count: 1 }];
+/// let mut buf = [0u8; 128];
+/// let len = encode_program(&program, &fns, 0, &mut buf).unwrap();
+///
+/// let result = load_and_run_program::<16, 4, 8, 8, 4>(&buf[..len]);
+/// assert_eq!(result, Ok(Value::Int(42)));
+/// ```
+pub fn load_and_run_program<
+    const N: usize,
+    const F: usize,
+    const STACK: usize,
+    const LOCALS: usize,
+    const FRAMES: usize,
+>(
+    blob: &[u8],
+) -> Result<Value, LoaderError> {
+    let mut instrs = [Instr::Return; N];
+    let mut fns = [FnEntry {
+        entry: 0,
+        arity: 0,
+        local_count: 0,
+    }; F];
+    let header = serde::decode_program(blob, &mut instrs, &mut fns)?;
+    let mut vm = Vm::<STACK, LOCALS, FRAMES>::new();
+    let result = vm.run_program(
+        &instrs[..header.instr_count],
+        &fns[..header.fn_count],
+        header.main_local_count,
+    )?;
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,10 +173,61 @@ mod tests {
     /// `(2 + 3) * 4 + 1 == 21`.
     const ARITHMETIC_DEMO_RZBC: &[u8] = include_bytes!("../../fixtures/arithmetic_demo.rzbc");
 
+    /// RES-4075: a v2 fixture emitted by the real host pipeline
+    /// (`rz build --target thumbv7em-none-eabihf` on
+    /// `fn add(int a, int b) -> int { return a + b; } add(19, 23);`),
+    /// committed so the host test and the on-device loader-demo
+    /// binary consume identical bytes.
+    const CALLS_DEMO_RZBC: &[u8] = include_bytes!("../../fixtures/calls_demo.rzbc");
+
     #[test]
     fn load_and_run_committed_fixture_round_trips_through_real_decoder_and_vm() {
         let result = load_and_run::<16, 8, 0>(ARITHMETIC_DEMO_RZBC);
         assert_eq!(result, Ok(Value::Int(21)));
+    }
+
+    #[test]
+    fn load_and_run_program_committed_calls_fixture() {
+        let result = load_and_run_program::<16, 4, 8, 8, 4>(CALLS_DEMO_RZBC);
+        assert_eq!(result, Ok(Value::Int(42)));
+    }
+
+    #[test]
+    fn load_and_run_program_accepts_v1_blob() {
+        let result = load_and_run_program::<16, 4, 8, 8, 4>(ARITHMETIC_DEMO_RZBC);
+        assert_eq!(result, Ok(Value::Int(21)));
+    }
+
+    #[test]
+    fn load_and_run_program_fn_table_overflow_is_typed_error_not_a_panic() {
+        // F == 0 can't hold the fixture's 1-entry function table.
+        let result = load_and_run_program::<16, 0, 8, 8, 4>(CALLS_DEMO_RZBC);
+        assert_eq!(result, Err(LoaderError::TooManyFns));
+    }
+
+    #[test]
+    fn load_and_run_program_frame_exhaustion_is_typed_error_not_a_panic() {
+        // f() = f(), encoded inline: unbounded recursion must hit
+        // the FRAMES budget as a typed error.
+        let program = [
+            Instr::Call(0),
+            Instr::Return,
+            Instr::Call(0), // f, entry = 2
+            Instr::Ret,
+        ];
+        let fns = [FnEntry {
+            entry: 2,
+            arity: 0,
+            local_count: 0,
+        }];
+        let mut buf = [0u8; 64];
+        let len = serde::encode_program(&program, &fns, 0, &mut buf).unwrap();
+
+        let result = load_and_run_program::<8, 2, 8, 8, 4>(&buf[..len]);
+        assert_eq!(
+            result,
+            Err(LoaderError::VmError(VmError::CallStackOverflow))
+        );
     }
 
     #[test]
