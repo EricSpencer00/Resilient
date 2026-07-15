@@ -402,6 +402,27 @@ fn collect_calls_with_span<'a>(
                 collect_calls_with_span(alt, calls);
             }
         }
+        // RES-4070: `match` arms were never walked here, so a `&mut`-alias
+        // call hidden inside an arm body (or a guard) compiled silently —
+        // the A-E5 straight-line check only ever saw `IfStatement`/`Block`/
+        // etc. Each arm's guard and body run on the same footing as an
+        // `if` branch: whichever arm actually matches, that arm's body is
+        // the one that executes, so flagging a literal same-identifier
+        // `&mut` repetition found in *any* arm is exactly as sound as the
+        // existing per-`if`-branch behavior above — the flagged call is a
+        // genuine violation whenever that arm is taken, regardless of
+        // what the other arms do.
+        crate::Node::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_calls_with_span(scrutinee, calls);
+            for (_pattern, guard, body) in arms {
+                if let Some(g) = guard {
+                    collect_calls_with_span(g, calls);
+                }
+                collect_calls_with_span(body, calls);
+            }
+        }
         crate::Node::WhileStatement {
             condition, body, ..
         } => {
@@ -501,7 +522,398 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    // RES-4070: second increment — conditional-path-aware alias
+    // tracking through `let` reference bindings.
+    errors.extend(check_unannotated_let_alias(
+        stmts,
+        &callee_table,
+        source_path,
+    ));
+
     errors
+}
+
+// ============================================================
+// A-E5 increment 2 (RES-4070): alias tracking through `let`
+// reference bindings, with conditional-path awareness
+// ============================================================
+//
+// The first A-E5 increment only catches literal syntactic repetition of
+// one identifier within a single call's argument list (`f(x, x)`). This
+// pass closes the next provable gap: a reference binding copied into a
+// second name via `let`,
+//
+//     fn bump(&mut int a, &mut int b) { ... }
+//     fn caller(&mut int x) {
+//         let y = x;      // `y` provably refers to x's region
+//         bump(x, y);     // same region behind two &mut params
+//     }
+//
+// Soundness contract (the A-E5 "zero false positives" rule):
+//
+// - Alias facts are established ONLY by a straight-line `let NAME = IDENT;`
+//   whose right-hand side is a plain identifier currently known to be a
+//   reference (a `&`/`&mut`-typed parameter of the enclosing function,
+//   or a previous alias of one). Copying a reference binding cannot do
+//   anything but refer to the same region — there is no address-of or
+//   re-seating expression syntax in the language today.
+// - Any construct whose effect on a binding is not fully understood
+//   KILLS the fact rather than guessing: assignments kill (re-seating
+//   semantics not locked in), shadowing `let`s kill and detach the old
+//   group, `match` arms are analysed with an empty fact set (pattern
+//   bindings can shadow names invisibly), and unrecognised statement
+//   forms simply aren't descended into.
+// - Conditional paths merge by INTERSECTION: after `if`/`else` (and
+//   after loops, which may run zero times) a fact survives only if it
+//   holds on every path. A call inside a branch is checked against the
+//   facts established on the path that provably reaches it — if that
+//   path executes, the violation is real.
+//
+// Deferred (see issue #4070): Z3-backed branch-condition disjointness,
+// aliasing through struct fields / array elements / closures, and
+// use-after-move for plain bindings (still blocked on the Copy/Move
+// default-semantics design decision — `linear.rs` remains the only
+// move-semantics surface).
+
+/// Per-path alias state for [`check_unannotated_let_alias`].
+#[derive(Clone, Default)]
+struct AliasState {
+    /// alias name → root name. Roots are either live reference-typed
+    /// parameter names or synthetic detached-group tokens.
+    aliases: HashMap<String, String>,
+    /// Reference-typed parameter names that are still untouched (never
+    /// shadowed or reassigned) and may act as alias roots.
+    live_roots: std::collections::HashSet<String>,
+}
+
+impl AliasState {
+    /// Resolve `name` to its region root, if it is provably a reference.
+    fn root_of<'s>(&'s self, name: &'s str) -> Option<&'s str> {
+        if let Some(r) = self.aliases.get(name) {
+            return Some(r.as_str());
+        }
+        if self.live_roots.contains(name) {
+            return Some(name);
+        }
+        None
+    }
+
+    /// Keep only facts that hold in both `self` and `other`.
+    fn intersect(&mut self, other: &AliasState) {
+        self.aliases
+            .retain(|k, v| other.aliases.get(k).map(String::as_str) == Some(v.as_str()));
+        self.live_roots.retain(|r| other.live_roots.contains(r));
+    }
+}
+
+struct AliasWalker<'a> {
+    callee_table: &'a HashMap<&'a str, &'a [(String, String)]>,
+    source_path: &'a str,
+    errors: Vec<String>,
+    /// Counter for synthetic detached-root tokens (contains `\u{0}` so
+    /// it can never collide with a source identifier).
+    detached: u32,
+}
+
+impl<'a> AliasWalker<'a> {
+    /// A binding named `name` is being rebound (shadowing `let`,
+    /// assignment, or loop/pattern binder). Its old alias group must
+    /// survive under a token no new binding can join.
+    fn kill_name(&mut self, state: &mut AliasState, name: &str) {
+        state.aliases.remove(name);
+        if state.live_roots.remove(name) || state.aliases.values().any(|r| r == name) {
+            let fresh = format!("{name}\u{0}{}", self.detached);
+            self.detached += 1;
+            for root in state.aliases.values_mut() {
+                if root == name {
+                    *root = fresh.clone();
+                }
+            }
+        }
+    }
+
+    fn walk_stmt(&mut self, node: &crate::Node, state: &mut AliasState) {
+        match node {
+            crate::Node::Block { stmts, .. } => {
+                for s in stmts {
+                    self.walk_stmt(s, state);
+                }
+            }
+            crate::Node::LetStatement { name, value, .. } => {
+                self.walk_expr(value, state);
+                let new_root = if let crate::Node::Identifier { name: rhs, .. } = value.as_ref() {
+                    state.root_of(rhs).map(str::to_owned)
+                } else {
+                    None
+                };
+                self.kill_name(state, name);
+                if let Some(root) = new_root
+                    && root != *name
+                {
+                    state.aliases.insert(name.clone(), root);
+                }
+            }
+            crate::Node::Assignment { name, value, .. } => {
+                self.walk_expr(value, state);
+                // Re-seating semantics for reference bindings are not
+                // locked in — kill, never re-establish.
+                self.kill_name(state, name);
+            }
+            crate::Node::ExpressionStatement { expr, .. } => self.walk_expr(expr, state),
+            crate::Node::ReturnStatement { value: Some(v), .. } => self.walk_expr(v, state),
+            crate::Node::ReturnStatement { value: None, .. } => {}
+            crate::Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
+                self.walk_expr(condition, state);
+                let mut then_state = state.clone();
+                self.walk_stmt(consequence, &mut then_state);
+                let mut else_state = state.clone();
+                if let Some(alt) = alternative {
+                    self.walk_stmt(alt, &mut else_state);
+                }
+                *state = then_state;
+                state.intersect(&else_state);
+            }
+            crate::Node::WhileStatement {
+                condition, body, ..
+            } => {
+                self.walk_expr(condition, state);
+                let mut body_state = state.clone();
+                self.walk_stmt(body, &mut body_state);
+                state.intersect(&body_state);
+            }
+            crate::Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                ..
+            } => {
+                self.walk_expr(iterable, state);
+                let mut body_state = state.clone();
+                self.kill_name(&mut body_state, name);
+                self.walk_stmt(body, &mut body_state);
+                state.intersect(&body_state);
+            }
+            crate::Node::Match { .. } => self.walk_expr(node, state),
+            // Expressions in statement position and anything not
+            // recognised: treat expressions as expressions, skip the
+            // rest (conservative accept — no facts, no reports).
+            crate::Node::CallExpression { .. }
+            | crate::Node::InfixExpression { .. }
+            | crate::Node::PrefixExpression { .. } => self.walk_expr(node, state),
+            _ => {}
+        }
+    }
+
+    fn walk_expr(&mut self, node: &crate::Node, state: &mut AliasState) {
+        match node {
+            crate::Node::Match {
+                scrutinee, arms, ..
+            } => {
+                self.walk_expr(scrutinee, state);
+                // Pattern bindings can shadow outer names without a
+                // `let`, so arm bodies are analysed with NO facts (they
+                // can still report on same-arm `let` aliases of their
+                // own — none exist without roots, so effectively arms
+                // are opaque). Any name an arm might rebind is killed
+                // from the fall-through state.
+                for (_pat, guard, arm_body) in arms {
+                    let mut arm_state = AliasState::default();
+                    if let Some(g) = guard {
+                        self.walk_expr(g, &mut arm_state);
+                    }
+                    self.walk_stmt(arm_body, &mut arm_state);
+                    let mut assigned = Vec::new();
+                    collect_rebound_names(arm_body, &mut assigned);
+                    for n in assigned {
+                        self.kill_name(state, &n);
+                    }
+                }
+            }
+            crate::Node::CallExpression {
+                function,
+                arguments,
+                span,
+            } => {
+                for arg in arguments {
+                    self.walk_expr(arg, state);
+                }
+                if let crate::Node::Identifier { name, .. } = function.as_ref() {
+                    self.check_call(name, arguments, *span, state);
+                }
+            }
+            crate::Node::InfixExpression { left, right, .. } => {
+                self.walk_expr(left, state);
+                self.walk_expr(right, state);
+            }
+            crate::Node::PrefixExpression { right, .. } => self.walk_expr(right, state),
+            _ => {}
+        }
+    }
+
+    fn check_call(
+        &mut self,
+        callee_name: &str,
+        args: &[crate::Node],
+        call_span: crate::span::Span,
+        state: &AliasState,
+    ) {
+        let Some(param_types) = self.callee_table.get(callee_name) else {
+            return;
+        };
+        if args.len() != param_types.len() {
+            return; // arity mismatch — typechecker handles it
+        }
+
+        // region root → (arg names seen, any-&mut-slot flag)
+        let mut by_root: HashMap<String, (Vec<&str>, bool)> = HashMap::new();
+        for (arg, (ty, _)) in args.iter().zip(param_types.iter()) {
+            if let crate::Node::Identifier { name, .. } = arg
+                && let Some((is_mut, _label)) = region_from_type_str(ty)
+                && let Some(root) = state.root_of(name)
+            {
+                let entry = by_root.entry(root.to_owned()).or_default();
+                entry.0.push(name.as_str());
+                entry.1 |= is_mut;
+            }
+        }
+
+        let mut hits: Vec<(String, Vec<&str>)> = by_root
+            .into_iter()
+            .filter(|(_, (names, any_mut))| {
+                // ≥2 reference slots sharing a root, at least one
+                // `&mut`, and at least two DISTINCT identifiers — the
+                // same-identifier case is already reported by the
+                // syntactic pass above (no double-reporting).
+                names.len() >= 2 && *any_mut && names.iter().any(|n| *n != names[0])
+            })
+            .map(|(root, (mut names, _))| {
+                names.sort_unstable();
+                names.dedup();
+                (root, names)
+            })
+            .collect();
+        hits.sort_unstable();
+
+        for (_root, names) in hits {
+            let loc = if call_span.start.line == 0 {
+                "E: ".to_string()
+            } else {
+                format!(
+                    "{}:{}:{}: E: ",
+                    self.source_path, call_span.start.line, call_span.start.column
+                )
+            };
+            self.errors.push(format!(
+                "{}call to `{}` passes `{}` as simultaneous reference arguments (at least one `&mut`) — these bindings provably refer to the same region via `let` reference aliasing",
+                loc,
+                callee_name,
+                names.join("`, `"),
+            ));
+        }
+    }
+}
+
+/// Collect every name a subtree might rebind (via `let` or assignment),
+/// so `match` fall-through state can conservatively kill them.
+fn collect_rebound_names(node: &crate::Node, out: &mut Vec<String>) {
+    match node {
+        crate::Node::LetStatement { name, value, .. }
+        | crate::Node::Assignment { name, value, .. } => {
+            out.push(name.clone());
+            collect_rebound_names(value, out);
+        }
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_rebound_names(s, out);
+            }
+        }
+        crate::Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_rebound_names(condition, out);
+            collect_rebound_names(consequence, out);
+            if let Some(alt) = alternative {
+                collect_rebound_names(alt, out);
+            }
+        }
+        crate::Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_rebound_names(condition, out);
+            collect_rebound_names(body, out);
+        }
+        crate::Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            ..
+        } => {
+            out.push(name.clone());
+            collect_rebound_names(iterable, out);
+            collect_rebound_names(body, out);
+        }
+        crate::Node::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_rebound_names(scrutinee, out);
+            for (_p, guard, body) in arms {
+                if let Some(g) = guard {
+                    collect_rebound_names(g, out);
+                }
+                collect_rebound_names(body, out);
+            }
+        }
+        crate::Node::ExpressionStatement { expr, .. } => collect_rebound_names(expr, out),
+        _ => {}
+    }
+}
+
+/// RES-4070 (A-E5 increment 2): flag calls where two *different*
+/// identifiers provably refer to the same region — established by
+/// straight-line `let`-copies of reference bindings — and are passed as
+/// simultaneous reference arguments with at least one `&mut` slot.
+/// Conditional paths are merged by intersection; see the module-level
+/// soundness contract above.
+fn check_unannotated_let_alias(
+    stmts: &[crate::Spanned<crate::Node>],
+    callee_table: &HashMap<&str, &[(String, String)]>,
+    source_path: &str,
+) -> Vec<String> {
+    let mut walker = AliasWalker {
+        callee_table,
+        source_path,
+        errors: Vec::new(),
+        detached: 0,
+    };
+
+    for spanned in stmts {
+        let crate::Node::Function {
+            parameters, body, ..
+        } = &spanned.node
+        else {
+            continue;
+        };
+        let mut state = AliasState::default();
+        for (ty, pname) in parameters {
+            if ty.starts_with('&') {
+                state.live_roots.insert(pname.clone());
+            }
+        }
+        if state.live_roots.is_empty() {
+            continue; // no reference roots — nothing can alias
+        }
+        walker.walk_stmt(body, &mut state);
+    }
+
+    walker.errors
 }
 
 // ============================================================
@@ -1181,6 +1593,234 @@ mod tests {
         assert!(
             infer(&program, "<test>").is_ok(),
             "safe program must be accepted"
+        );
+    }
+
+    // --- RES-4070 (A-E5 increment 2): alias tracking through `let` ---
+
+    fn run_alias_check(src: &str) -> Vec<String> {
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        check_unannotated_mut_alias(&program, "<test>")
+    }
+
+    #[test]
+    fn let_alias_of_ref_param_rejected() {
+        // `y` is a straight-line `let`-copy of the `&mut` param `x` —
+        // passing both to `&mut` slots is a provable aliasing violation.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let y = x; set_both(x, y); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("set_both")
+                && errors[0].contains("`x`")
+                && errors[0].contains("`y`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn let_alias_chain_rejected() {
+        // Transitive chain: z → y → x.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let y = x; let z = y; set_both(x, z); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_two_copies_without_root_rejected() {
+        // Both call args are copies; the root itself isn't passed.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let y = x; let z = x; set_both(y, z); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_in_both_branches_then_call_rejected() {
+        // The alias fact holds on EVERY path to the call — the
+        // intersection merge keeps it, so this is provable.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int c) { \
+                 let y = x; \
+                 if (c > 0) { println(\"a\"); } else { println(\"b\"); } \
+                 set_both(x, y); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_call_inside_branch_rejected() {
+        // The call sits inside one branch, but the path that reaches it
+        // provably establishes the alias — real violation when taken.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int c) { \
+                 let y = x; \
+                 if (c > 0) { set_both(x, y); } \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_only_on_one_branch_accepted() {
+        // `y` aliases `x` only on the then-path; on the else-path it is
+        // a fresh non-reference value. The post-if call is NOT provably
+        // aliasing on all paths — conservative accept.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int c) { \
+                 let y = 0; \
+                 if (c > 0) { let y = x; println(\"shadow\"); } \
+                 set_both(x, y); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "conservative accept expected: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn let_alias_killed_by_reassignment_accepted() {
+        // `y = 0;` re-binds y before the call — re-seating semantics
+        // are not locked in, so the fact is killed, not flagged.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let y = x; y = 0; set_both(x, y); }",
+        );
+        assert!(errors.is_empty(), "kill-on-assign expected: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_of_shadowed_root_stays_grouped() {
+        // After `let x = 5;` shadows the ref param, y and z still alias
+        // each other (the ORIGINAL x region) — but neither aliases the
+        // new x.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; let z = x; let x = 5; set_both(y, z); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "detached group must persist: {:?}", errors);
+        // And the shadowed x must NOT be considered aliased to y.
+        let errors2 = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; let x = 5; set_both(x, y); \
+             }",
+        );
+        assert!(
+            errors2.is_empty(),
+            "shadowed root must not alias old copies: {:?}",
+            errors2
+        );
+    }
+
+    #[test]
+    fn let_copy_of_value_param_accepted() {
+        // `x` is a plain by-value `int` — copying it creates a new
+        // value, not an alias. Nothing to flag.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(int x) { let y = x; set_both(x, y); }",
+        );
+        assert!(errors.is_empty(), "value copies never alias: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_shared_only_slots_accepted() {
+        // Two shared (`&`) slots — no `&mut` involved, no conflict.
+        let errors = run_alias_check(
+            "fn read_both(& int a, & int b) {} \
+             fn caller(& int x) { let y = x; read_both(x, y); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "shared-only aliasing is fine: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn let_alias_inside_while_body_rejected_and_survives_loop_merge() {
+        // Fact established inside the loop body before the call in the
+        // same iteration — provable on the path that reaches the call.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int n) { \
+                 let i = 0; \
+                 while (i < n) { let y = x; set_both(x, y); i = i + 1; } \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_killed_across_loop_accepted() {
+        // `y` is reassigned inside the loop; after the loop (which may
+        // have run), the fact must be gone.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int n) { \
+                 let y = x; \
+                 let i = 0; \
+                 while (i < n) { y = 0; i = i + 1; } \
+                 set_both(x, y); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "loop-killed fact must not flag: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn let_alias_match_arms_are_opaque() {
+        // Match arms are analysed with no facts (pattern bindings can
+        // shadow silently) and rebinding inside an arm kills the fact
+        // in fall-through state — both directions conservative.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int c) { \
+                 let y = x; \
+                 match c { 0 => { y = 0; }, _ => { println(\"n\"); } } \
+                 set_both(x, y); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "match must kill rebound facts: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn let_alias_no_double_report_with_syntactic_pass() {
+        // `set_both(y, y)` is the same identifier twice — the syntactic
+        // pass reports it; the let-alias pass must stay silent so the
+        // program yields exactly one diagnostic.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let y = x; set_both(y, y); }",
+        );
+        assert_eq!(errors.len(), 1, "exactly one report expected: {:?}", errors);
+        assert!(
+            errors[0].contains("simultaneous reference arguments"),
+            "unexpected message: {}",
+            errors[0]
         );
     }
 }

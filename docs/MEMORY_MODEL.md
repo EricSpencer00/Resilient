@@ -299,6 +299,21 @@ Grounded in `resilient/src/region_inference.rs` and the
   one call's argument list, so it is unconditionally sound (no false
   positive is possible). Region-polymorphic callees are left to the
   call-site-substitution check above to avoid double-reporting.
+- **A-E5 increment 2 (RES-4070):** `check_unannotated_let_alias` (called
+  from `check_unannotated_mut_alias`) tracks aliasing through
+  straight-line `let` copies of reference bindings: after `let y = x;`
+  where `x` is a `&`/`&mut`-typed parameter (or a previous alias of
+  one), passing `x` and `y` — or two such copies — to a plain callee's
+  reference slots with at least one `&mut` is rejected. The analysis is
+  path-sensitive and conservative: branch states merge by
+  *intersection* (a fact survives an `if`/loop only if it holds on
+  every path), assignments and shadowing `let`s *kill* facts rather
+  than guessing at re-seating semantics, and `match` arms are treated
+  as opaque (pattern bindings can shadow names silently). A call inside
+  a branch is checked against the facts the path reaching it provably
+  establishes. This preserves the A-E5 zero-false-positive rule: every
+  previously-compiling program keeps compiling unless it provably
+  aliases on the executed path.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -311,10 +326,12 @@ Grounded in `resilient/src/region_inference.rs` and the
   (`resilient/src/linear.rs`), so there is no sound way yet to tell
   whether re-reading a plain local after passing it somewhere is a
   genuine violation or an ordinary value copy.
-- No conditional-path aliasing detection. The A-E5 call-site check only
-  catches literal syntactic identifier repetition within one call's
-  argument list (straight-line); a program that aliases the same
-  binding only on some branches is not caught.
+- Conditional-path aliasing detection is *partial*. The let-alias pass
+  above handles `if`/`while`/`for` path merging by intersection, but
+  there is no Z3-backed branch-condition disjointness reasoning, no
+  alias facts survive into or out of `match` arms, and aliasing
+  established by anything other than a literal `let NAME = IDENT;` copy
+  of a reference binding is invisible.
 - No whole-program or interprocedural alias analysis. Both region
   checks only look at parameter *signatures* and direct call-site
   arguments; neither tracks whether a reference escapes into a struct

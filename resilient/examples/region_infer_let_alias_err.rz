@@ -1,0 +1,23 @@
+// RES-4070 (A-E5 increment 2): alias tracking through `let` — reject case.
+//
+// `y` is a straight-line `let`-copy of the `&mut int` parameter `x`,
+// so `x` and `y` provably refer to the same region. Passing both to
+// the two `&mut` parameters of `set_both` is a genuine simultaneous
+// mutable-alias violation, even though no identifier is repeated
+// within the call's argument list (which is all the first A-E5
+// increment could see).
+fn set_both(&mut int a, &mut int b) {
+    println("should never reach this - borrow check rejects the alias");
+}
+
+fn caller(&mut int x) {
+    let y = x;
+    set_both(x, y);
+}
+
+fn main() {
+    let v = 1;
+    caller(v);
+}
+
+main();
