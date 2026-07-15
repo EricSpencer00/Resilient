@@ -274,6 +274,11 @@ mod ffi_trampolines;
 // used in type-annotation strings, plus the single-use-enforcement
 // pass invoked from the typechecker.
 mod linear;
+// RES-3933 A-E7: effect enforcement for higher-order functions —
+// narrows `check_program_effects`'s blanket rejection of calls
+// through function-typed parameters into a sound, call-site-based
+// check (reject only a proven io-callback-into-pure-HOF violation).
+mod effect_polymorphism;
 // RES-392b: per-prefix bounded model checking for crash-recovery semantics.
 // Extends RES-392 (final-state only) with verification that recovers_to
 // holds from any instruction boundary in the function.

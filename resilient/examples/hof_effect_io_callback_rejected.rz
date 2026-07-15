@@ -1,0 +1,33 @@
+// RES-3933 A-E7: effect enforcement for higher-order functions — REJECT case.
+//
+// `run` is a `pure` HOF that invokes its function-typed parameter
+// `f`. Passing `noisy` (declared `io fn`) as the callback is a
+// provable violation: `run`'s purity would be broken by the io
+// side effect inside `noisy`. `effect_polymorphism::check` rejects
+// this at the call site with a `line:col` diagnostic pointing at
+// the offending argument.
+//
+// See `hof_effect_pure_callback_accepted.rz` for the mirror ACCEPT
+// case (same shape, `pure` callback instead).
+//
+// Marked `.interactive` (matching `linear_effect_pure_rejected.rz`)
+// because the golden-output harness only replays examples under the
+// default soft-typecheck mode (diagnostics on stderr, program still
+// runs — RES-1088). This example's `.expected.txt` was captured
+// under `--typecheck-strict`, which is what actually fails the
+// build on this violation.
+
+io fn noisy(int x) -> int {
+    println(x);
+    return x;
+}
+
+pure fn run(fn(int) -> int f, int x) -> int {
+    return f(x);
+}
+
+fn main() -> int {
+    return run(noisy, 5);
+}
+
+main();

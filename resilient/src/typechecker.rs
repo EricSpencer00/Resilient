@@ -12717,6 +12717,15 @@ fn check_program_effects(
             });
         }
     }
+    // RES-3933 A-E7: call-site-based effect propagation for calls
+    // through a function-typed parameter. `check_body_effects` above
+    // defers those calls (see the `is_function_type` check inside its
+    // `CallExpression` arm) instead of blanket-rejecting them; this
+    // pass makes the real, sound-but-monomorphic call using
+    // whole-program call-site information the per-body walk doesn't
+    // have. See `effect_polymorphism` module docs for what's enforced
+    // vs deferred.
+    crate::effect_polymorphism::check(statements, &fn_effects, source_path)?;
     Ok(())
 }
 
@@ -12819,6 +12828,24 @@ fn check_body_effects(
                     ));
                 }
                 if is_known_pure_builtin(callee) {
+                    return Ok(());
+                }
+                // RES-3933 A-E7: a call through one of the enclosing
+                // fn's own function-typed parameters. We can't
+                // resolve its effect here — the same parameter name
+                // could be bound to a pure or an io value depending
+                // on the call site — so defer to
+                // `effect_polymorphism::check`, which has
+                // whole-program call-site visibility and only
+                // rejects a *proven* io-callback violation. Falling
+                // through to the blanket "unknown callee" rejection
+                // below would make every higher-order `pure` fn
+                // uncompilable, even when every actual callback
+                // passed to it is pure.
+                if linear_params
+                    .iter()
+                    .any(|(ty, n)| n == callee && crate::effect_polymorphism::is_function_type(ty))
+                {
                     return Ok(());
                 }
                 // Unknown callee (not in BUILTINS and not a
