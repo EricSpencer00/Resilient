@@ -26,15 +26,16 @@
 //!
 //! # Stack model
 //!
-//! No heap, no `Vec`, no function-call stack (calls are out of
-//! scope for this increment — see the design doc's opcode audit;
-//! `Call`/`TailCall`/`ReturnFromCall` need a bounded call-frame
-//! stack that a follow-up PR adds once this skeleton lands). The
-//! operand stack and the locals slab are both fixed-capacity
-//! arrays sized by `const` generics, mirroring the
+//! No heap, no `Vec`. The operand stack, the per-frame locals slab,
+//! and (RES-4077, D-E1 fn-support) the call-frame stack are all
+//! fixed-capacity arrays sized by `const` generics, mirroring the
 //! `[TimerState; MAX_TIMERS]` fixed-array idiom already used by
 //! [`crate::timer`] and the `Fixed<N, D>` const-generic idiom used
-//! by [`crate::fixed`]:
+//! by [`crate::fixed`]. `Instr::Call`/[`Vm::run_with_functions`]
+//! push a bounded [`FunctionDef`] call frame instead of `TailCall`/
+//! `ReturnFromCall` — see [`Vm`]'s docs for the `CALLS` bound and
+//! [`VmError::CallStackOverflow`] for how unbounded/too-deep
+//! recursion surfaces as a typed error rather than a stack smash.
 //!
 //! ```
 //! use resilient_runtime::vm::{Instr, Value, Vm};
@@ -279,6 +280,28 @@ pub enum Instr {
     /// Pop TOS and end execution, returning it as the program's
     /// result.
     Return,
+    /// RES-4077 (D-E1 fn-support): call function-table index `idx`.
+    /// Pops `arity` args off the operand stack (rightmost popped
+    /// first, matching the host VM's `Op::Call`), pushes a call
+    /// frame, and transfers control to the callee's code at pc 0.
+    /// Only meaningful with [`Vm::run_with_functions`] — a bare
+    /// [`Vm::run`] has no function table (`CALLS` defaults to 1, so
+    /// there is no room to push a callee frame) and always surfaces
+    /// [`VmError::CallStackOverflow`] for this instruction.
+    Call(u16),
+}
+
+/// One callable function for [`Vm::run_with_functions`]: a
+/// contiguous slice of [`Instr`] (the callee's own code, indexed
+/// from 0 — mirrors how the host compiler emits per-function local
+/// slots starting at 0), its arity, and its declared local-slot
+/// count. Borrowed, not owned — no heap allocation needed, since a
+/// `&[Instr]` is just a pointer + length.
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionDef<'a> {
+    pub code: &'a [Instr],
+    pub arity: u8,
+    pub local_count: u16,
 }
 
 /// Errors the VM can surface. Every fallible dispatch step returns
@@ -306,45 +329,97 @@ pub enum VmError {
     /// variant(s). The payload names the op, matching
     /// [`crate::RuntimeError::TypeMismatch`]'s shape.
     TypeMismatch(&'static str),
+    /// RES-4077 (D-E1 fn-support): `Instr::Call(idx)` with `idx`
+    /// outside the function table passed to
+    /// [`Vm::run_with_functions`] (or any `Call` at all under a
+    /// bare [`Vm::run`], which has no function table).
+    FunctionOutOfBounds(u16),
+    /// RES-4077 (D-E1 fn-support): a `Call` would push more nested
+    /// call frames than the VM's `CALLS` capacity allows. This is
+    /// the typed, non-panicking substitute for unbounded recursion
+    /// — a deep or infinite recursive call always surfaces this
+    /// error instead of overflowing a real stack.
+    CallStackOverflow,
+}
+
+/// RES-4077 (D-E1 fn-support): who to resume, and where, once the
+/// frame that used this slot returns. Recorded on `Call`, consumed
+/// on the matching `Return`. `caller_func: None` means "resume in
+/// `program`" (the entry/main chunk); `Some(idx)` means "resume in
+/// `functions[idx].code`".
+#[derive(Debug, Clone, Copy)]
+struct ReturnInfo {
+    caller_func: Option<u16>,
+    ret_pc: usize,
 }
 
 /// A bytecode VM instance with a fixed-capacity operand stack
-/// (`STACK` slots) and a fixed-capacity local-variable slab
-/// (`LOCALS` slots). Both bounds are compile-time `const` generic
-/// parameters — no heap, no growth, overflow is a typed
-/// [`VmError`] rather than a panic.
+/// (`STACK` slots), a fixed-capacity per-frame local-variable slab
+/// (`LOCALS` slots per frame), and a fixed-capacity call-frame
+/// stack (`CALLS` simultaneous frames, main counted as frame 0).
+/// All three bounds are compile-time `const` generic parameters —
+/// no heap, no growth, overflow is a typed [`VmError`] rather than
+/// a panic.
 ///
-/// Function calls (and therefore a call-frame stack) are out of
-/// scope for this increment; `run` executes a single flat
-/// instruction slice from index 0 until `Return` or an error.
-pub struct Vm<const STACK: usize, const LOCALS: usize> {
+/// `CALLS` defaults to `1` (just the main/entry frame, no room to
+/// push a callee) so every existing `Vm::<STACK, LOCALS>` call site
+/// keeps compiling unchanged and behaves exactly as before —
+/// `Instr::Call` under the default surfaces
+/// [`VmError::CallStackOverflow`] rather than executing, since
+/// there is no second frame slot. Programs that call functions
+/// pick a `CALLS > 1` and use [`Vm::run_with_functions`].
+///
+/// Every frame gets the same `LOCALS`-sized slab regardless of its
+/// declared local count — simpler and still zero-heap, at the cost
+/// of some wasted memory relative to a tightly-packed bump
+/// allocator (acceptable for v1; see RES-4077's PR description for
+/// the follow-up note).
+pub struct Vm<const STACK: usize, const LOCALS: usize, const CALLS: usize = 1> {
     stack: [Value; STACK],
     sp: usize,
-    locals: [Value; LOCALS],
+    locals: [[Value; LOCALS]; CALLS],
+    /// Index of the currently active frame; `0` is always `program`
+    /// (the entry/main chunk).
+    frame: usize,
+    /// `returns[i]` is where frame `i` resumes its *caller* once
+    /// frame `i` returns. Only slots `1..=frame` are meaningful at
+    /// any given time; `returns[0]` is never read (frame 0 returning
+    /// ends execution, see `Instr::Return`).
+    returns: [ReturnInfo; CALLS],
 }
 
-impl<const STACK: usize, const LOCALS: usize> Default for Vm<STACK, LOCALS> {
+impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Default
+    for Vm<STACK, LOCALS, CALLS>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const STACK: usize, const LOCALS: usize> Vm<STACK, LOCALS> {
+impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCALS, CALLS> {
     /// A fresh VM: empty operand stack, locals zero-initialised to
-    /// `Value::Int(0)`.
+    /// `Value::Int(0)`, no active call frames beyond the implicit
+    /// main frame.
     pub fn new() -> Self {
         Self {
             stack: [Value::Int(0); STACK],
             sp: 0,
-            locals: [Value::Int(0); LOCALS],
+            locals: [[Value::Int(0); LOCALS]; CALLS],
+            frame: 0,
+            returns: [ReturnInfo {
+                caller_func: None,
+                ret_pc: 0,
+            }; CALLS],
         }
     }
 
-    /// Overwrite the locals slab before a run (e.g. to seed
-    /// function arguments). Returns `LocalsOutOfBounds` if `idx >=
-    /// LOCALS` instead of panicking.
+    /// Overwrite a slot in the *current* frame's locals slab before
+    /// a run (e.g. to seed top-level `let`s or, before calling
+    /// `run`/`run_with_functions`, the entry frame's initial
+    /// state). Returns `LocalsOutOfBounds` if `idx >= LOCALS`
+    /// instead of panicking.
     pub fn set_local(&mut self, idx: u16, value: Value) -> Result<(), VmError> {
-        match self.locals.get_mut(idx as usize) {
+        match self.locals[self.frame].get_mut(idx as usize) {
             Some(slot) => {
                 *slot = value;
                 Ok(())
@@ -395,26 +470,49 @@ impl<const STACK: usize, const LOCALS: usize> Vm<STACK, LOCALS> {
     }
 
     /// Run `program` from instruction 0 until `Return` or the
-    /// first error. Every branch, arithmetic op, and stack/locals
-    /// access is bounds-checked — no panic path exists here.
+    /// first error, with no function table — `Instr::Call` always
+    /// fails. Every branch, arithmetic op, and stack/locals access
+    /// is bounds-checked — no panic path exists here.
     pub fn run(&mut self, program: &[Instr]) -> Result<Value, VmError> {
+        self.execute(&[], program)
+    }
+
+    /// Run `program` from instruction 0 until the entry frame's
+    /// `Return` or the first error, with `functions` available as
+    /// the table `Instr::Call(idx)` indexes into. Requires
+    /// `CALLS >= 2` for any `Call` to succeed (frame 0 is always
+    /// `program`; a callee needs at least frame 1).
+    pub fn run_with_functions(
+        &mut self,
+        functions: &[FunctionDef<'_>],
+        program: &[Instr],
+    ) -> Result<Value, VmError> {
+        self.execute(functions, program)
+    }
+
+    fn execute(
+        &mut self,
+        functions: &[FunctionDef<'_>],
+        program: &[Instr],
+    ) -> Result<Value, VmError> {
+        self.frame = 0;
+        let mut current_func: Option<u16> = None;
+        let mut code: &[Instr] = program;
         let mut pc: usize = 0;
         loop {
-            let instr = *program.get(pc).ok_or(VmError::PcOutOfBounds)?;
+            let instr = *code.get(pc).ok_or(VmError::PcOutOfBounds)?;
             pc += 1;
             match instr {
                 Instr::PushConst(v) => self.push(v)?,
                 Instr::LoadLocal(idx) => {
-                    let v = *self
-                        .locals
+                    let v = *self.locals[self.frame]
                         .get(idx as usize)
                         .ok_or(VmError::LocalsOutOfBounds)?;
                     self.push(v)?;
                 }
                 Instr::StoreLocal(idx) => {
                     let v = self.pop()?;
-                    let slot = self
-                        .locals
+                    let slot = self.locals[self.frame]
                         .get_mut(idx as usize)
                         .ok_or(VmError::LocalsOutOfBounds)?;
                     *slot = v;
@@ -433,21 +531,72 @@ impl<const STACK: usize, const LOCALS: usize> Vm<STACK, LOCALS> {
                 Instr::Ge => self.binary(Value::ge)?,
                 Instr::Not => self.unary(Value::not)?,
                 Instr::Jump(target) => {
-                    pc = Self::validate_target(target, program.len())?;
+                    pc = Self::validate_target(target, code.len())?;
                 }
                 Instr::JumpIfFalse(target) => {
                     let cond = self.pop()?.as_bool()?;
                     if !cond {
-                        pc = Self::validate_target(target, program.len())?;
+                        pc = Self::validate_target(target, code.len())?;
                     }
                 }
                 Instr::JumpIfTrue(target) => {
                     let cond = self.pop()?.as_bool()?;
                     if cond {
-                        pc = Self::validate_target(target, program.len())?;
+                        pc = Self::validate_target(target, code.len())?;
                     }
                 }
-                Instr::Return => return self.pop(),
+                Instr::Call(idx) => {
+                    let f = functions
+                        .get(idx as usize)
+                        .copied()
+                        .ok_or(VmError::FunctionOutOfBounds(idx))?;
+                    let arity = f.arity as usize;
+                    if self.sp < arity {
+                        return Err(VmError::StackUnderflow);
+                    }
+                    let next_frame = self.frame + 1;
+                    if next_frame >= CALLS {
+                        return Err(VmError::CallStackOverflow);
+                    }
+                    for slot in self.locals[next_frame].iter_mut() {
+                        *slot = Value::Int(0);
+                    }
+                    for i in (0..arity).rev() {
+                        let v = self.pop()?;
+                        let slot = self.locals[next_frame]
+                            .get_mut(i)
+                            .ok_or(VmError::LocalsOutOfBounds)?;
+                        *slot = v;
+                    }
+                    self.returns[next_frame] = ReturnInfo {
+                        caller_func: current_func,
+                        ret_pc: pc,
+                    };
+                    current_func = Some(idx);
+                    code = f.code;
+                    pc = 0;
+                    self.frame = next_frame;
+                }
+                Instr::Return => {
+                    let v = self.pop()?;
+                    if self.frame == 0 {
+                        return Ok(v);
+                    }
+                    let info = self.returns[self.frame];
+                    self.frame -= 1;
+                    current_func = info.caller_func;
+                    code = match current_func {
+                        Some(fi) => {
+                            functions
+                                .get(fi as usize)
+                                .ok_or(VmError::FunctionOutOfBounds(fi))?
+                                .code
+                        }
+                        None => program,
+                    };
+                    pc = info.ret_pc;
+                    self.push(v)?;
+                }
             }
         }
     }
@@ -881,5 +1030,236 @@ mod tests {
         ];
         let mut vm = Vm::<8, 0>::new();
         assert_eq!(vm.run(&program), Ok(Value::Bool(true)));
+    }
+
+    // ---------- RES-4077 (D-E1 fn-support): calls ----------
+
+    #[test]
+    fn call_returns_a_constant() {
+        // fn f() -> Int { 42 }
+        // main: f()
+        let square = [Instr::PushConst(Value::Int(42)), Instr::Return];
+        let functions = [FunctionDef {
+            code: &square,
+            arity: 0,
+            local_count: 0,
+        }];
+        let program = [Instr::Call(0), Instr::Return];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(42))
+        );
+    }
+
+    #[test]
+    fn call_passes_arguments_into_callee_locals() {
+        // fn square(x: Int) -> Int { x * x }
+        // main: square(7)
+        let square = [
+            Instr::LoadLocal(0),
+            Instr::LoadLocal(0),
+            Instr::Mul,
+            Instr::Return,
+        ];
+        let functions = [FunctionDef {
+            code: &square,
+            arity: 1,
+            local_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(7)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(49))
+        );
+    }
+
+    #[test]
+    fn call_with_multiple_arguments_preserves_order() {
+        // fn sub(a: Int, b: Int) -> Int { a - b }
+        // main: sub(10, 3) == 7  (argument order must not be swapped
+        // by the reverse-pop-off-the-stack fill loop)
+        let sub = [
+            Instr::LoadLocal(0),
+            Instr::LoadLocal(1),
+            Instr::Sub,
+            Instr::Return,
+        ];
+        let functions = [FunctionDef {
+            code: &sub,
+            arity: 2,
+            local_count: 2,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(10)),
+            Instr::PushConst(Value::Int(3)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(7))
+        );
+    }
+
+    #[test]
+    fn nested_calls_resume_correct_caller() {
+        // fn inc(x: Int) -> Int { x + 1 }
+        // fn double_inc(x: Int) -> Int { inc(inc(x)) }
+        // main: double_inc(5) == 7
+        let inc = [
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Add,
+            Instr::Return,
+        ];
+        let double_inc = [
+            Instr::LoadLocal(0),
+            Instr::Call(0), // inc(x)
+            Instr::Call(0), // inc(inc(x))
+            Instr::Return,
+        ];
+        let functions = [
+            FunctionDef {
+                code: &inc,
+                arity: 1,
+                local_count: 1,
+            },
+            FunctionDef {
+                code: &double_inc,
+                arity: 1,
+                local_count: 1,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(5)),
+            Instr::Call(1),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 3>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(7))
+        );
+    }
+
+    #[test]
+    fn recursive_call_within_depth_budget_succeeds() {
+        // fn countdown(n: Int) -> Int { if n <= 0 { n } else { countdown(n - 1) } }
+        // main: countdown(3) == 0
+        let countdown = [
+            Instr::LoadLocal(0),             // 0: push n
+            Instr::PushConst(Value::Int(0)), // 1: push 0
+            Instr::Gt,                       // 2: n > 0
+            Instr::JumpIfFalse(9),           // 3: -> base case
+            Instr::LoadLocal(0),             // 4: push n
+            Instr::PushConst(Value::Int(1)), // 5: push 1
+            Instr::Sub,                      // 6: n - 1
+            Instr::Call(0),                  // 7: countdown(n - 1)
+            Instr::Return,                   // 8: return recursive result
+            Instr::LoadLocal(0),             // 9: base case: push n
+            Instr::Return,                   // 10
+        ];
+        let functions = [FunctionDef {
+            code: &countdown,
+            arity: 1,
+            local_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(3)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 8>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(0))
+        );
+    }
+
+    #[test]
+    fn recursion_beyond_call_depth_is_typed_error_not_a_panic() {
+        let countdown = [
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(0)),
+            Instr::Gt,
+            Instr::JumpIfFalse(9),
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Sub,
+            Instr::Call(0),
+            Instr::Return,
+            Instr::LoadLocal(0),
+            Instr::Return,
+        ];
+        let functions = [FunctionDef {
+            code: &countdown,
+            arity: 1,
+            local_count: 1,
+        }];
+        // CALLS == 3 only allows 2 nested frames (main + 2 callees);
+        // recursing 100 deep must surface a typed error, never
+        // overflow a real stack.
+        let program = [
+            Instr::PushConst(Value::Int(100)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 3>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::CallStackOverflow)
+        );
+    }
+
+    #[test]
+    fn call_to_out_of_range_function_index_is_typed_error() {
+        let program = [
+            Instr::PushConst(Value::Int(0)),
+            Instr::Call(5),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 0, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&[], &program),
+            Err(VmError::FunctionOutOfBounds(5))
+        );
+    }
+
+    #[test]
+    fn call_under_bare_run_with_no_function_table_is_function_out_of_bounds() {
+        // `Vm::run` passes an empty function table, so any `Call`
+        // index — including 0 — is out of range. A bare `run` also
+        // has `CALLS` defaulting to 1, leaving no room to push a
+        // callee frame even if the table were non-empty; the
+        // function-table check runs first and produces the more
+        // specific error.
+        let program = [Instr::Call(0), Instr::Return];
+        let mut vm = Vm::<8, 0>::new();
+        assert_eq!(vm.run(&program), Err(VmError::FunctionOutOfBounds(0)));
+    }
+
+    #[test]
+    fn call_with_too_few_stack_values_for_arity_is_stack_underflow() {
+        let callee = [Instr::LoadLocal(0), Instr::Return];
+        let functions = [FunctionDef {
+            code: &callee,
+            arity: 1,
+            local_count: 1,
+        }];
+        // No PushConst before Call(0) — the operand stack is empty
+        // but the callee wants 1 argument.
+        let program = [Instr::Call(0), Instr::Return];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::StackUnderflow)
+        );
     }
 }

@@ -13,26 +13,41 @@
 //! `docs/EMBEDDED_PIPELINE.md` section 1 audits `Op`'s 54 variants
 //! into "no_std-clean" (arithmetic/comparison/control-flow/locals)
 //! vs. "alloc-required" (anything touching a heap-bearing `Value`).
-//! [`Instr`] only has dispatch arms for the no_std-clean subset
-//! *minus* function calls (no call-frame stack yet — see the design
-//! doc's item 7) and bitwise ops (not yet ported to `Instr`). This
-//! module enforces exactly that subset at compile time:
+//! [`Instr`] has dispatch arms for the no_std-clean subset plus
+//! (RES-4077, D-E1 fn-support) plain top-level function calls —
+//! `Op::Call`/`Op::ReturnFromCall` translate to `Instr::Call`/
+//! `Instr::Return` against the embedded VM's bounded call-frame
+//! stack (`resilient_runtime::vm::Vm::run_with_functions`). Bitwise
+//! ops are still not ported to `Instr`. This module enforces exactly
+//! that subset at compile time:
 //!
-//! - [`Program::functions`] must be empty — no `fn` declarations, no
-//!   `Op::Call`/`Op::ReturnFromCall`/`Op::TailCall`. A no_std `Instr`
-//!   stream has no call-frame concept.
-//! - [`Program::main`]'s every [`Op`] must be one this module knows
-//!   how to translate 1:1 into an [`Instr`] (see [`translate_chunk`]).
+//! - Every [`Program::functions`] entry must be a plain top-level
+//!   `fn`: no captured upvalues (closures), no declared `fails`
+//!   variants (checked-failure catch dispatch has no embedded
+//!   equivalent — the translated `Call`/`Return` pair does not walk
+//!   a try-handler table), and no synthesized postcondition-check
+//!   function (`ensures`/`recovers_to` — the host VM invokes those
+//!   automatically on every `Op::ReturnFromCall`; the embedded
+//!   `Instr::Return` does not, so translating a postcheck-bearing
+//!   function would silently drop its postcondition check at
+//!   runtime). Each of these produces a typed [`EmitError`] naming
+//!   the function.
+//! - Every function/`main` [`Op`] must be one this module knows how
+//!   to translate 1:1 into an [`Instr`] (see [`translate_chunk`]).
 //!   Anything else — `Pop`, `IncLocal`, arrays, structs, enums,
-//!   closures, try/catch, FFI, builtins, bitwise ops, ... — is a
-//!   typed [`EmitError`] naming the exact opcode, never a silently
-//!   malformed blob.
+//!   closures, try/catch, FFI, builtins, bitwise ops,
+//!   `TailCall`/`CallClosure`/`CallMethod`/`CallForeign`/
+//!   `CallBuiltin`, ... — is a typed [`EmitError`] naming the exact
+//!   opcode, never a silently malformed blob.
 //! - Every `Op::Const` constant must be `Value::Int`/`Bool`/`Float`
 //!   — `Instr::PushConst` carries the value inline (no separate
 //!   constant pool in the `.rzbc` format; see
 //!   `resilient_runtime::vm::serde`'s module docs for the wire
 //!   layout this mirrors), so a `String`/`Array`/... constant has no
-//!   representation to translate into.
+//!   representation to translate into. This also means every
+//!   function parameter and return value is implicitly scalar —
+//!   there is no representation for a non-scalar argument to have
+//!   arrived on the stack in the first place.
 //!
 //! This 1:1, index-preserving translation is only sound because the
 //! host compiler's [`peephole`](crate::peephole) pass already
@@ -61,6 +76,7 @@
 use crate::Value as HostValue;
 use crate::bytecode::{Chunk, Op, Program};
 use resilient_runtime::vm::serde as rzbc_serde;
+use resilient_runtime::vm::serde::EncodeFunctionDef;
 use resilient_runtime::vm::{Instr, Value as RtValue};
 
 /// A construct in the compiled [`Program`] that has no representation
@@ -111,30 +127,89 @@ const MAX_INSTR_WIRE_WIDTH: usize = 10;
 /// the first unsupported construct encountered. Never emits a
 /// partial/malformed blob on error — the whole translation happens
 /// before any bytes are written.
+///
+/// If `program.functions` is non-empty, emits the
+/// [`rzbc_serde::encode_program`] function-table format (RES-4077,
+/// D-E1 fn-support); otherwise emits the flat [`rzbc_serde::encode`]
+/// format unchanged (byte-for-byte identical to before fn-support
+/// landed, so no existing `.rzbc` consumer regresses).
 pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitError> {
-    if !program.functions.is_empty() {
-        return Err(unsupported(
-            target,
-            format!(
-                "{} top-level `fn` declaration{} (compiles to `Op::Call`/`Op::ReturnFromCall`) — \
-                 the embedded no_std VM has no call-frame stack yet (see \
-                 docs/EMBEDDED_PIPELINE.md, D-E1 decomposition item 7); only a program with no \
-                 `fn` declarations can build for an embedded target today",
-                program.functions.len(),
-                if program.functions.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ),
-        ));
+    let main_instrs = translate_chunk(&program.main, target)?;
+
+    if program.functions.is_empty() {
+        let cap = rzbc_serde::HEADER_LEN + main_instrs.len() * MAX_INSTR_WIRE_WIDTH;
+        let mut buf = vec![0u8; cap];
+        let len = rzbc_serde::encode(&main_instrs, &mut buf).map_err(|e| {
+            unsupported(
+                target,
+                format!(
+                    "internal error serializing the `.rzbc` blob ({:?}) — this is a bug in \
+                     rzbc_emit's buffer sizing, not a property of the source program",
+                    e
+                ),
+            )
+        })?;
+        buf.truncate(len);
+        return Ok(buf);
     }
 
-    let instrs = translate_chunk(&program.main, target)?;
+    let mut func_instrs: Vec<Vec<Instr>> = Vec::with_capacity(program.functions.len());
+    for func in &program.functions {
+        if !func.upvalue_source_slots.is_empty() {
+            return Err(unsupported(
+                target,
+                format!(
+                    "function `{}` captures {} upvalue(s) (a closure) — the embedded no_std VM's \
+                     call-frame stack has no upvalue slab, only plain top-level function calls",
+                    func.name,
+                    func.upvalue_source_slots.len()
+                ),
+            ));
+        }
+        if !func.fails.is_empty() {
+            return Err(unsupported(
+                target,
+                format!(
+                    "function `{}` declares `fails` variant(s) ({}) — checked-failure catch \
+                     dispatch has no embedded equivalent; the translated `Call`/`Return` pair \
+                     does not walk a try-handler table",
+                    func.name,
+                    func.fails.join(", ")
+                ),
+            ));
+        }
+        if func.postcheck.is_some() {
+            return Err(unsupported(
+                target,
+                format!(
+                    "function `{}` has a synthesized postcondition-check function (`ensures`/\
+                     `recovers_to`) — the host VM invokes that automatically on every \
+                     `Op::ReturnFromCall`, but the embedded `Instr::Return` does not, so \
+                     translating it would silently drop the postcondition check at runtime",
+                    func.name
+                ),
+            ));
+        }
+        func_instrs.push(translate_chunk(&func.chunk, target)?);
+    }
 
-    let cap = rzbc_serde::HEADER_LEN + instrs.len() * MAX_INSTR_WIRE_WIDTH;
+    let functions: Vec<EncodeFunctionDef<'_>> = program
+        .functions
+        .iter()
+        .zip(func_instrs.iter())
+        .map(|(func, instrs)| EncodeFunctionDef {
+            code: instrs.as_slice(),
+            arity: func.arity,
+            local_count: func.local_count,
+        })
+        .collect();
+
+    let func_instr_total: usize = func_instrs.iter().map(Vec::len).sum();
+    let cap = rzbc_serde::HEADER_LEN
+        + (main_instrs.len() + func_instr_total + functions.len()) * MAX_INSTR_WIRE_WIDTH
+        + functions.len() * 8;
     let mut buf = vec![0u8; cap];
-    let len = rzbc_serde::encode(&instrs, &mut buf).map_err(|e| {
+    let len = rzbc_serde::encode_program(&main_instrs, &functions, &mut buf).map_err(|e| {
         unsupported(
             target,
             format!(
@@ -174,6 +249,14 @@ fn translate_chunk(chunk: &Chunk, target: &str) -> Result<Vec<Instr>, EmitError>
             Op::Ge => Instr::Ge,
             Op::Not => Instr::Not,
             Op::Return => Instr::Return,
+            // RES-4077 (D-E1 fn-support): function bodies end with
+            // `ReturnFromCall`, not `Return` (see `compiler.rs`) —
+            // both pop TOS and hand it back to the caller, which is
+            // exactly what the embedded `Instr::Return` does for
+            // both the entry chunk and a callee chunk (see
+            // `resilient_runtime::vm::Vm::run_with_functions`).
+            Op::ReturnFromCall => Instr::Return,
+            Op::Call(idx) => Instr::Call(idx),
             Op::Jump(offset) => Instr::Jump(jump_target(i, offset, target)?),
             Op::JumpIfFalse(offset) => Instr::JumpIfFalse(jump_target(i, offset, target)?),
             Op::JumpIfTrue(offset) => Instr::JumpIfTrue(jump_target(i, offset, target)?),
@@ -354,25 +437,130 @@ mod tests {
         );
     }
 
+    fn function_from(name: &str, arity: u8, local_count: u16, chunk: Chunk) -> Function {
+        Function {
+            name: name.to_string(),
+            arity,
+            chunk,
+            local_count,
+            upvalue_source_slots: Box::default(),
+            fails: Box::default(),
+            postcheck: None,
+        }
+    }
+
+    // RES-4077 (D-E1 fn-support): this test used to be
+    // `rejects_fn_declarations` — the whole point of RES-4077 is to
+    // make `fn` declarations translate instead of being rejected, so
+    // it's rewritten to prove the positive case (compiles, decodes,
+    // and executes correctly on `resilient_runtime::vm::Vm`) rather
+    // than deleted. The three `rejects_*` tests immediately below
+    // cover the fn-shaped constructs that remain out of scope (see
+    // the module docs): closures, checked failures, and
+    // postcondition-check functions.
     #[test]
-    fn rejects_fn_declarations() {
+    fn compiles_and_executes_top_level_fn_declarations() {
+        // fn square(x: Int) -> Int { x * x }
+        // main: square(6)
+        let square = chunk_from(
+            vec![
+                Op::LoadLocal(0),
+                Op::LoadLocal(0),
+                Op::Mul,
+                Op::ReturnFromCall,
+            ],
+            vec![],
+        );
+        let main = chunk_from(
+            vec![Op::Const(0), Op::Call(0), Op::Return],
+            vec![HostValue::Int(6)],
+        );
+        let program = Program {
+            main,
+            functions: vec![function_from("square", 1, 1, square)],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+
+        let blob =
+            compile_to_rzbc(&program, "thumbv6m-none-eabi").expect("fn decls should translate");
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [rzbc_serde::DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let counts = rzbc_serde::decode_program(
+            &blob,
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+        )
+        .expect("should decode as the function-table format");
+        assert_eq!(counts.func_count, 1);
+
+        let meta = out_func_meta[0];
+        assert_eq!(meta.arity, 1);
+        assert_eq!(meta.local_count, 1);
+        let functions = [resilient_runtime::vm::FunctionDef {
+            code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+            arity: meta.arity,
+            local_count: meta.local_count,
+        }];
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &out_main[..counts.main_len]),
+            Ok(RtValue::Int(36))
+        );
+    }
+
+    #[test]
+    fn rejects_closures_capturing_upvalues() {
+        let mut closure = function_from("f", 0, 0, chunk_from(vec![Op::ReturnFromCall], vec![]));
+        closure.upvalue_source_slots = vec![0u16].into_boxed_slice();
         let program = Program {
             main: chunk_from(vec![Op::Return], vec![]),
-            functions: vec![Function {
-                name: "f".to_string(),
-                arity: 0,
-                chunk: Chunk::new(),
-                local_count: 0,
-                upvalue_source_slots: Box::default(),
-                fails: Box::default(),
-                postcheck: None,
-            }],
+            functions: vec![closure],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
         };
         let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
-        assert!(err.reason.contains("fn"), "reason was: {}", err.reason);
-        assert_eq!(err.target, "thumbv6m-none-eabi");
+        assert!(err.reason.contains("upvalue"), "reason was: {}", err.reason);
+    }
+
+    #[test]
+    fn rejects_functions_declaring_fails() {
+        let mut fallible = function_from("f", 0, 0, chunk_from(vec![Op::ReturnFromCall], vec![]));
+        fallible.fails = vec!["Overflow".to_string()].into_boxed_slice();
+        let program = Program {
+            main: chunk_from(vec![Op::Return], vec![]),
+            functions: vec![fallible],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
+        assert!(err.reason.contains("fails"), "reason was: {}", err.reason);
+    }
+
+    #[test]
+    fn rejects_functions_with_postcheck() {
+        let mut checked = function_from("f", 0, 0, chunk_from(vec![Op::ReturnFromCall], vec![]));
+        checked.postcheck = Some(0);
+        let program = Program {
+            main: chunk_from(vec![Op::Return], vec![]),
+            functions: vec![checked],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
+        assert!(
+            err.reason.contains("postcondition"),
+            "reason was: {}",
+            err.reason
+        );
     }
 
     #[test]

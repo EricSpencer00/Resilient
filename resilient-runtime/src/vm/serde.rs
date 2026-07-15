@@ -99,6 +99,8 @@ const TAG_JUMP: u8 = 16;
 const TAG_JUMP_IF_FALSE: u8 = 17;
 const TAG_JUMP_IF_TRUE: u8 = 18;
 const TAG_RETURN: u8 = 19;
+/// RES-4077 (D-E1 fn-support): `Instr::Call(idx)`.
+const TAG_CALL: u8 = 20;
 
 const VALUE_TAG_INT: u8 = 0;
 const VALUE_TAG_BOOL: u8 = 1;
@@ -135,6 +137,15 @@ pub enum DecodeError {
     /// value for its type (e.g. a `Value` tag byte outside 0..=2,
     /// or a bool byte outside 0..=1).
     BadOperand,
+    /// RES-4077 (D-E1 fn-support): [`decode_program`]'s header
+    /// declares more functions than the caller-provided
+    /// `out_func_meta` slice can hold.
+    TooManyFuncs,
+    /// RES-4077 (D-E1 fn-support): the combined instruction count
+    /// across every function body [`decode_program`] has decoded so
+    /// far exceeds the caller-provided `out_func_code` slice's
+    /// capacity.
+    TooManyFuncInstrs,
 }
 
 struct Writer<'a> {
@@ -274,6 +285,82 @@ impl<'a> Reader<'a> {
     }
 }
 
+fn write_instr(w: &mut Writer<'_>, instr: Instr) -> Result<(), EncodeError> {
+    match instr {
+        Instr::PushConst(v) => {
+            w.write_u8(TAG_PUSH_CONST)?;
+            w.write_value(v)?;
+        }
+        Instr::LoadLocal(idx) => {
+            w.write_u8(TAG_LOAD_LOCAL)?;
+            w.write_u16(idx)?;
+        }
+        Instr::StoreLocal(idx) => {
+            w.write_u8(TAG_STORE_LOCAL)?;
+            w.write_u16(idx)?;
+        }
+        Instr::Add => w.write_u8(TAG_ADD)?,
+        Instr::Sub => w.write_u8(TAG_SUB)?,
+        Instr::Mul => w.write_u8(TAG_MUL)?,
+        Instr::Div => w.write_u8(TAG_DIV)?,
+        Instr::Rem => w.write_u8(TAG_REM)?,
+        Instr::Neg => w.write_u8(TAG_NEG)?,
+        Instr::Eq => w.write_u8(TAG_EQ)?,
+        Instr::Neq => w.write_u8(TAG_NEQ)?,
+        Instr::Lt => w.write_u8(TAG_LT)?,
+        Instr::Le => w.write_u8(TAG_LE)?,
+        Instr::Gt => w.write_u8(TAG_GT)?,
+        Instr::Ge => w.write_u8(TAG_GE)?,
+        Instr::Not => w.write_u8(TAG_NOT)?,
+        Instr::Jump(target) => {
+            w.write_u8(TAG_JUMP)?;
+            w.write_u32(target)?;
+        }
+        Instr::JumpIfFalse(target) => {
+            w.write_u8(TAG_JUMP_IF_FALSE)?;
+            w.write_u32(target)?;
+        }
+        Instr::JumpIfTrue(target) => {
+            w.write_u8(TAG_JUMP_IF_TRUE)?;
+            w.write_u32(target)?;
+        }
+        Instr::Return => w.write_u8(TAG_RETURN)?,
+        Instr::Call(idx) => {
+            w.write_u8(TAG_CALL)?;
+            w.write_u16(idx)?;
+        }
+    }
+    Ok(())
+}
+
+fn read_instr(r: &mut Reader<'_>) -> Result<Instr, DecodeError> {
+    let tag = r.read_u8()?;
+    Ok(match tag {
+        TAG_PUSH_CONST => Instr::PushConst(r.read_value()?),
+        TAG_LOAD_LOCAL => Instr::LoadLocal(r.read_u16()?),
+        TAG_STORE_LOCAL => Instr::StoreLocal(r.read_u16()?),
+        TAG_ADD => Instr::Add,
+        TAG_SUB => Instr::Sub,
+        TAG_MUL => Instr::Mul,
+        TAG_DIV => Instr::Div,
+        TAG_REM => Instr::Rem,
+        TAG_NEG => Instr::Neg,
+        TAG_EQ => Instr::Eq,
+        TAG_NEQ => Instr::Neq,
+        TAG_LT => Instr::Lt,
+        TAG_LE => Instr::Le,
+        TAG_GT => Instr::Gt,
+        TAG_GE => Instr::Ge,
+        TAG_NOT => Instr::Not,
+        TAG_JUMP => Instr::Jump(r.read_u32()?),
+        TAG_JUMP_IF_FALSE => Instr::JumpIfFalse(r.read_u32()?),
+        TAG_JUMP_IF_TRUE => Instr::JumpIfTrue(r.read_u32()?),
+        TAG_RETURN => Instr::Return,
+        TAG_CALL => Instr::Call(r.read_u16()?),
+        other => return Err(DecodeError::BadTag(other)),
+    })
+}
+
 /// Encode `program` into `out`, returning the number of bytes
 /// written. Never panics: a buffer too small to hold the header
 /// plus every instruction yields [`EncodeError::BufferTooSmall`]
@@ -290,46 +377,7 @@ pub fn encode(program: &[Instr], out: &mut [u8]) -> Result<usize, EncodeError> {
     w.write_u32(instr_count)?;
 
     for instr in program {
-        match *instr {
-            Instr::PushConst(v) => {
-                w.write_u8(TAG_PUSH_CONST)?;
-                w.write_value(v)?;
-            }
-            Instr::LoadLocal(idx) => {
-                w.write_u8(TAG_LOAD_LOCAL)?;
-                w.write_u16(idx)?;
-            }
-            Instr::StoreLocal(idx) => {
-                w.write_u8(TAG_STORE_LOCAL)?;
-                w.write_u16(idx)?;
-            }
-            Instr::Add => w.write_u8(TAG_ADD)?,
-            Instr::Sub => w.write_u8(TAG_SUB)?,
-            Instr::Mul => w.write_u8(TAG_MUL)?,
-            Instr::Div => w.write_u8(TAG_DIV)?,
-            Instr::Rem => w.write_u8(TAG_REM)?,
-            Instr::Neg => w.write_u8(TAG_NEG)?,
-            Instr::Eq => w.write_u8(TAG_EQ)?,
-            Instr::Neq => w.write_u8(TAG_NEQ)?,
-            Instr::Lt => w.write_u8(TAG_LT)?,
-            Instr::Le => w.write_u8(TAG_LE)?,
-            Instr::Gt => w.write_u8(TAG_GT)?,
-            Instr::Ge => w.write_u8(TAG_GE)?,
-            Instr::Not => w.write_u8(TAG_NOT)?,
-            Instr::Jump(target) => {
-                w.write_u8(TAG_JUMP)?;
-                w.write_u32(target)?;
-            }
-            Instr::JumpIfFalse(target) => {
-                w.write_u8(TAG_JUMP_IF_FALSE)?;
-                w.write_u32(target)?;
-            }
-            Instr::JumpIfTrue(target) => {
-                w.write_u8(TAG_JUMP_IF_TRUE)?;
-                w.write_u32(target)?;
-            }
-            Instr::Return => w.write_u8(TAG_RETURN)?,
-        }
+        write_instr(&mut w, *instr)?;
     }
 
     Ok(w.pos)
@@ -359,33 +407,208 @@ pub fn decode(bytes: &[u8], out: &mut [Instr]) -> Result<usize, DecodeError> {
     }
 
     for slot in out.iter_mut().take(instr_count) {
-        let tag = r.read_u8()?;
-        *slot = match tag {
-            TAG_PUSH_CONST => Instr::PushConst(r.read_value()?),
-            TAG_LOAD_LOCAL => Instr::LoadLocal(r.read_u16()?),
-            TAG_STORE_LOCAL => Instr::StoreLocal(r.read_u16()?),
-            TAG_ADD => Instr::Add,
-            TAG_SUB => Instr::Sub,
-            TAG_MUL => Instr::Mul,
-            TAG_DIV => Instr::Div,
-            TAG_REM => Instr::Rem,
-            TAG_NEG => Instr::Neg,
-            TAG_EQ => Instr::Eq,
-            TAG_NEQ => Instr::Neq,
-            TAG_LT => Instr::Lt,
-            TAG_LE => Instr::Le,
-            TAG_GT => Instr::Gt,
-            TAG_GE => Instr::Ge,
-            TAG_NOT => Instr::Not,
-            TAG_JUMP => Instr::Jump(r.read_u32()?),
-            TAG_JUMP_IF_FALSE => Instr::JumpIfFalse(r.read_u32()?),
-            TAG_JUMP_IF_TRUE => Instr::JumpIfTrue(r.read_u32()?),
-            TAG_RETURN => Instr::Return,
-            other => return Err(DecodeError::BadTag(other)),
-        };
+        *slot = read_instr(&mut r)?;
     }
 
     Ok(instr_count)
+}
+
+/// One function's metadata as encoded by [`encode_program`] and
+/// borrowed source for it — used on the encode side.
+///
+/// RES-4077 (D-E1 fn-support).
+#[derive(Debug, Clone, Copy)]
+pub struct EncodeFunctionDef<'a> {
+    pub code: &'a [Instr],
+    pub arity: u8,
+    pub local_count: u16,
+}
+
+/// One function's metadata as recovered by [`decode_program`]: an
+/// `[offset, offset + len)` range into the caller's `out_func_code`
+/// buffer (all function bodies are packed back-to-back into that
+/// one flat buffer, in table order), plus `arity`/`local_count`.
+///
+/// RES-4077 (D-E1 fn-support).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodedFunctionMeta {
+    pub offset: u32,
+    pub len: u32,
+    pub arity: u8,
+    pub local_count: u16,
+}
+
+/// How many main instructions, functions, and total function-body
+/// instructions [`decode_program`] wrote into the caller's output
+/// slices.
+///
+/// RES-4077 (D-E1 fn-support).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgramCounts {
+    pub main_len: usize,
+    pub func_count: usize,
+    pub func_code_len: usize,
+}
+
+/// RES-4077 (D-E1 fn-support): current wire-format version for
+/// [`encode_program`]/[`decode_program`] — the `.rzbc` layout that
+/// adds a function table after the main instruction stream. Kept
+/// distinct from [`FORMAT_VERSION`] (the flat, no-function-table
+/// format [`encode`]/[`decode`] still emit/accept) so a blob
+/// produced by one pair is always rejected — never
+/// misinterpreted — by the other.
+pub const PROGRAM_FORMAT_VERSION: u16 = 2;
+
+/// Encode `main` plus `functions` into `out`, returning the number
+/// of bytes written. Wire layout:
+///
+/// ```text
+/// [4] magic:            b"RZBC"
+/// [2] version:           u16 LE (= PROGRAM_FORMAT_VERSION)
+/// [4] main_instr_count:  u32 LE
+/// [N] main instructions, same per-instruction encoding as `encode`
+/// [2] func_count:        u16 LE
+/// for each function, in order:
+///   [1] arity:           u8
+///   [2] local_count:     u16 LE
+///   [4] instr_count:     u32 LE
+///   [M] instructions,    same per-instruction encoding as `encode`
+/// ```
+///
+/// Never panics: a buffer too small for the header, `main`, or any
+/// function body yields [`EncodeError::BufferTooSmall`] rather than
+/// an out-of-bounds write; a `functions` table with more than
+/// `u16::MAX` entries or a body longer than `u32::MAX` instructions
+/// does the same (both are always representable in practice — this
+/// just avoids a silent truncating cast).
+pub fn encode_program(
+    main: &[Instr],
+    functions: &[EncodeFunctionDef<'_>],
+    out: &mut [u8],
+) -> Result<usize, EncodeError> {
+    let main_count: u32 = u32::try_from(main.len()).map_err(|_| EncodeError::BufferTooSmall)?;
+    let func_count: u16 =
+        u16::try_from(functions.len()).map_err(|_| EncodeError::BufferTooSmall)?;
+
+    let mut w = Writer::new(out);
+    w.write_bytes(&MAGIC)?;
+    w.write_u16(PROGRAM_FORMAT_VERSION)?;
+    w.write_u32(main_count)?;
+    for instr in main {
+        write_instr(&mut w, *instr)?;
+    }
+
+    w.write_u16(func_count)?;
+    for f in functions {
+        let instr_count: u32 =
+            u32::try_from(f.code.len()).map_err(|_| EncodeError::BufferTooSmall)?;
+        w.write_u8(f.arity)?;
+        w.write_u16(f.local_count)?;
+        w.write_u32(instr_count)?;
+        for instr in f.code {
+            write_instr(&mut w, *instr)?;
+        }
+    }
+
+    Ok(w.pos)
+}
+
+/// Decode a `.rzbc` function-table blob (as produced by
+/// [`encode_program`]) from `bytes`: the main chunk goes into
+/// `out_main`, and every function's `(arity, local_count)` plus its
+/// code range into `out_func_code` goes into `out_func_meta[i]`.
+/// Every function's instructions are packed back-to-back into
+/// `out_func_code` in table order; `out_func_meta[i].offset..+len`
+/// slices out function `i`'s own code from it.
+///
+/// Never panics on any input — truncated, corrupt, or adversarially
+/// mutated bytes always produce a typed [`DecodeError`] instead of
+/// a crash, matching [`decode`]'s guarantee.
+///
+/// ```
+/// use resilient_runtime::vm::Instr;
+/// use resilient_runtime::vm::serde::{
+///     decode_program, encode_program, DecodedFunctionMeta, EncodeFunctionDef,
+/// };
+///
+/// let square_body = [Instr::LoadLocal(0), Instr::LoadLocal(0), Instr::Mul, Instr::Return];
+/// let main = [Instr::PushConst(resilient_runtime::vm::Value::Int(7)), Instr::Call(0), Instr::Return];
+/// let functions = [EncodeFunctionDef { code: &square_body, arity: 1, local_count: 1 }];
+///
+/// let mut buf = [0u8; 128];
+/// let len = encode_program(&main, &functions, &mut buf).unwrap();
+///
+/// let mut out_main = [Instr::Return; 8];
+/// let mut out_func_meta = [DecodedFunctionMeta { offset: 0, len: 0, arity: 0, local_count: 0 }; 4];
+/// let mut out_func_code = [Instr::Return; 16];
+/// let counts = decode_program(&buf[..len], &mut out_main, &mut out_func_meta, &mut out_func_code).unwrap();
+/// assert_eq!(counts.func_count, 1);
+/// assert_eq!(&out_main[..counts.main_len], &main[..]);
+/// let meta = out_func_meta[0];
+/// let callee_code = &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize];
+/// assert_eq!(callee_code, &square_body[..]);
+/// ```
+pub fn decode_program(
+    bytes: &[u8],
+    out_main: &mut [Instr],
+    out_func_meta: &mut [DecodedFunctionMeta],
+    out_func_code: &mut [Instr],
+) -> Result<ProgramCounts, DecodeError> {
+    let mut r = Reader::new(bytes);
+
+    let magic = r.read_bytes(4)?;
+    if magic != MAGIC {
+        return Err(DecodeError::BadMagic);
+    }
+
+    let version = r.read_u16()?;
+    if version != PROGRAM_FORMAT_VERSION {
+        return Err(DecodeError::UnsupportedVersion);
+    }
+
+    let main_count = r.read_u32()? as usize;
+    if main_count > out_main.len() {
+        return Err(DecodeError::TooManyInstrs);
+    }
+    for slot in out_main.iter_mut().take(main_count) {
+        *slot = read_instr(&mut r)?;
+    }
+
+    let func_count = r.read_u16()? as usize;
+    if func_count > out_func_meta.len() {
+        return Err(DecodeError::TooManyFuncs);
+    }
+
+    let mut func_code_len = 0usize;
+    for meta_slot in out_func_meta.iter_mut().take(func_count) {
+        let arity = r.read_u8()?;
+        let local_count = r.read_u16()?;
+        let instr_count = r.read_u32()? as usize;
+
+        let end = func_code_len
+            .checked_add(instr_count)
+            .ok_or(DecodeError::TooManyFuncInstrs)?;
+        if end > out_func_code.len() {
+            return Err(DecodeError::TooManyFuncInstrs);
+        }
+        for slot in out_func_code[func_code_len..end].iter_mut() {
+            *slot = read_instr(&mut r)?;
+        }
+
+        *meta_slot = DecodedFunctionMeta {
+            offset: func_code_len as u32,
+            len: instr_count as u32,
+            arity,
+            local_count,
+        };
+        func_code_len = end;
+    }
+
+    Ok(ProgramCounts {
+        main_len: main_count,
+        func_count,
+        func_code_len,
+    })
 }
 
 #[cfg(test)]
@@ -745,6 +968,211 @@ mod tests {
         let mut buf = [0u8; HEADER_LEN + 40];
         for cap in 0..buf.len() {
             let _ = encode(&program, &mut buf[..cap]);
+        }
+    }
+
+    // ---------- RES-4077 (D-E1 fn-support): program (fn table) format ----------
+
+    #[test]
+    fn program_roundtrip_no_functions() {
+        let main = [
+            Instr::PushConst(Value::Int(1)),
+            Instr::PushConst(Value::Int(2)),
+            Instr::Add,
+            Instr::Return,
+        ];
+        let mut buf = [0u8; 128];
+        let len = encode_program(&main, &[], &mut buf).expect("encode_program should fit");
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let counts = decode_program(
+            &buf[..len],
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+        )
+        .expect("decode_program should succeed");
+
+        assert_eq!(counts.main_len, main.len());
+        assert_eq!(counts.func_count, 0);
+        assert_eq!(&out_main[..counts.main_len], &main[..]);
+    }
+
+    #[test]
+    fn program_roundtrip_with_functions_and_vm_executes_it() {
+        let square = [
+            Instr::LoadLocal(0),
+            Instr::LoadLocal(0),
+            Instr::Mul,
+            Instr::Return,
+        ];
+        let main = [
+            Instr::PushConst(Value::Int(6)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let functions = [EncodeFunctionDef {
+            code: &square,
+            arity: 1,
+            local_count: 1,
+        }];
+
+        let mut buf = [0u8; 128];
+        let len = encode_program(&main, &functions, &mut buf).expect("encode_program should fit");
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let counts = decode_program(
+            &buf[..len],
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+        )
+        .expect("decode_program should succeed");
+
+        assert_eq!(counts.func_count, 1);
+        let meta = out_func_meta[0];
+        assert_eq!(meta.arity, 1);
+        assert_eq!(meta.local_count, 1);
+        let callee_code = &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize];
+        assert_eq!(callee_code, &square[..]);
+
+        let decoded_functions = [crate::vm::FunctionDef {
+            code: callee_code,
+            arity: meta.arity,
+            local_count: meta.local_count,
+        }];
+        let mut vm = crate::vm::Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&decoded_functions, &out_main[..counts.main_len]),
+            Ok(Value::Int(36))
+        );
+    }
+
+    #[test]
+    fn program_decode_wrong_version_is_typed_error() {
+        // A flat-format (v1) blob fed to decode_program (which wants v2).
+        let program = [Instr::Return];
+        let mut buf = [0u8; 64];
+        let len = encode(&program, &mut buf).unwrap();
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        assert_eq!(
+            decode_program(
+                &buf[..len],
+                &mut out_main,
+                &mut out_func_meta,
+                &mut out_func_code
+            ),
+            Err(DecodeError::UnsupportedVersion)
+        );
+    }
+
+    #[test]
+    fn program_decode_too_many_funcs_is_typed_error_not_a_panic() {
+        let f1 = [Instr::Return];
+        let f2 = [Instr::Return];
+        let functions = [
+            EncodeFunctionDef {
+                code: &f1,
+                arity: 0,
+                local_count: 0,
+            },
+            EncodeFunctionDef {
+                code: &f2,
+                arity: 0,
+                local_count: 0,
+            },
+        ];
+        let mut buf = [0u8; 128];
+        let len = encode_program(&[], &functions, &mut buf).unwrap();
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+        }; 1];
+        let mut out_func_code = [Instr::Return; 16];
+        assert_eq!(
+            decode_program(
+                &buf[..len],
+                &mut out_main,
+                &mut out_func_meta,
+                &mut out_func_code
+            ),
+            Err(DecodeError::TooManyFuncs)
+        );
+    }
+
+    #[test]
+    fn program_decode_too_many_func_instrs_is_typed_error_not_a_panic() {
+        let f1 = [Instr::PushConst(Value::Int(1)), Instr::Return];
+        let functions = [EncodeFunctionDef {
+            code: &f1,
+            arity: 0,
+            local_count: 0,
+        }];
+        let mut buf = [0u8; 128];
+        let len = encode_program(&[], &functions, &mut buf).unwrap();
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 1];
+        assert_eq!(
+            decode_program(
+                &buf[..len],
+                &mut out_main,
+                &mut out_func_meta,
+                &mut out_func_code
+            ),
+            Err(DecodeError::TooManyFuncInstrs)
+        );
+    }
+
+    #[test]
+    fn program_decode_never_panics_on_random_bytes() {
+        let mut rng = Xorshift32(0xC0FFEE);
+        let mut out_main = [Instr::Return; 16];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        for _ in 0..2000 {
+            let mut buf = [0u8; 48];
+            for byte in buf.iter_mut() {
+                *byte = rng.next() as u8;
+            }
+            let _ = decode_program(&buf, &mut out_main, &mut out_func_meta, &mut out_func_code);
         }
     }
 }
