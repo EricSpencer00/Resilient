@@ -89,7 +89,8 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 type_annot: Some(ty),
                 ..
             } => {
-                if let (Some(want), Some((got, span))) = (fixed_len(ty), literal_len(value.as_ref()))
+                if let (Some(want), Some((got, span))) =
+                    (fixed_len(ty), literal_len(value.as_ref()))
                     && got != want
                 {
                     first_err = Some(format_err(
@@ -163,9 +164,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 /// their returns).
 fn find_return_literal_mismatch(node: &Node, want: usize) -> Option<(usize, Span)> {
     match node {
-        Node::ReturnStatement {
-            value: Some(v), ..
-        } => match literal_len(v.as_ref()) {
+        Node::ReturnStatement { value: Some(v), .. } => match literal_len(v.as_ref()) {
             Some((got, span)) if got != want => Some((got, span)),
             _ => None,
         },
@@ -220,7 +219,10 @@ mod tests {
         let err = typecheck("fn main() { let xs: [int; 3] = [1, 2]; }\nmain();\n").unwrap_err();
         assert!(err.contains("array literal has 2 element(s)"), "got: {err}");
         assert!(err.contains("[int; 3]"), "got: {err}");
-        assert!(err.contains("test.rz:1:"), "diagnostic must carry line:col, got: {err}");
+        assert!(
+            err.contains("test.rz:1:"),
+            "diagnostic must carry line:col, got: {err}"
+        );
     }
 
     #[test]
