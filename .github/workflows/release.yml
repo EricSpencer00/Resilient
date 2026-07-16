@@ -76,7 +76,7 @@ jobs:
       # `cross-rs` Docker image instead (see `Cross.toml`'s `pre-build`
       # hook), not on this bare `ubuntu-latest` host.
       - name: Install Z3 static-link build deps (Linux native only)
-        if: matrix.z3 && !matrix.cross
+        if: matrix.z3 && !matrix.cross && runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential cmake python3 pkg-config libclang-dev
