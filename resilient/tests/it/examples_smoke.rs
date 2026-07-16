@@ -1227,3 +1227,145 @@ fn res379_parser_emits_json_program_node() {
         "output must contain at least one Function node; got:\n{stdout}"
     );
 }
+
+#[test]
+fn visibility_boundary_neg_rejects_private_symbol_across_import() {
+    // RES-4099: visibility_boundary_lib.rz marks `exposed` `pub` and
+    // leaves `hidden` private. Because at least one declaration in
+    // that file is `pub`, legacy whole-file-export mode does not
+    // apply — `hidden` must not be spliced into an importer, so
+    // calling it must fail cleanly (not silently resolve, not panic).
+    let (stdout, stderr, code) = run_example("visibility_boundary_neg.rz");
+    assert_ne!(
+        code,
+        Some(0),
+        "importing a private declaration must fail; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("Undefined variable 'hidden'") || stderr.contains("hidden"),
+        "expected an undefined-symbol diagnostic naming `hidden`; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "visibility rejection must be a clean diagnostic, not a panic; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn glob_import_via_double_colon_star_is_rejected_cleanly() {
+    // RES-4099: `use foo::*;` / `use std::*;` (Rust-style glob import)
+    // is not a supported feature — `parse_use_statement_with_visibility`
+    // only accepts an `Identifier` after each `::` segment. Pin the
+    // current behavior (a typed parser diagnostic, not a panic and not
+    // a silent no-op) so a future change can't quietly start accepting
+    // or quietly start crashing on this syntax without a test noticing.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_4099_glob_colon_{}.rz", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "use std::*;").unwrap();
+        writeln!(f, "fn main() {{}}").unwrap();
+        writeln!(f, "main();").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "glob-import syntax must not be silently accepted; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("Parser error"),
+        "expected a parser diagnostic for unsupported glob syntax; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "glob-import rejection must be a clean diagnostic, not a panic; got:\n{stderr}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn glob_import_via_selector_star_is_rejected_cleanly() {
+    // RES-4099: the other place a glob might plausibly be spelled is
+    // inside the selective-import braces: `use "path" { * };`. The
+    // selector-list parser only accepts `Identifier` tokens, so this
+    // also fails at parse time — before the (here nonexistent) target
+    // file is ever resolved.
+    use std::io::Write;
+    let tmp =
+        std::env::temp_dir().join(format!("res_4099_glob_selector_{}.rz", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "use \"does-not-exist.rz\" {{ * }};").unwrap();
+        writeln!(f, "fn main() {{}}").unwrap();
+        writeln!(f, "main();").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "glob selector syntax must not be silently accepted; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("Parser error"),
+        "expected a parser diagnostic for unsupported glob selector; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("could not be resolved"),
+        "parse error must fire before file resolution is even attempted; got:\n{stderr}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn cli_level_circular_file_import_is_rejected() {
+    // RES-4099: `imports.rs` already has in-process unit tests for
+    // circular `use "path.rz"` detection (`circular_import_detected`,
+    // `three_file_cycle_detected`). This is the CLI-level companion —
+    // spawning the actual `rz` binary end-to-end — so a regression in
+    // how the driver wires `imports::expand_uses` into the compile
+    // pipeline (not just in the library function itself) would also
+    // show up here.
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "res_4099_cli_cycle_{}_{}",
+        std::process::id(),
+        CTR.fetch_add(1, Ordering::Relaxed),
+    ));
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    {
+        let mut f = std::fs::File::create(dir.join("a.rz")).expect("create a.rz");
+        writeln!(f, "use \"b.rz\" as b;").unwrap();
+        writeln!(f, "fn a_fn() -> int {{ return 1; }}").unwrap();
+    }
+    {
+        let mut f = std::fs::File::create(dir.join("b.rz")).expect("create b.rz");
+        writeln!(f, "use \"a.rz\" as a;").unwrap();
+        writeln!(f, "fn b_fn() -> int {{ return 2; }}").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg(dir.join("a.rz"))
+        .output()
+        .expect("spawn resilient");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "circular file import must fail; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("circular import detected"),
+        "expected the circular-import diagnostic; got:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

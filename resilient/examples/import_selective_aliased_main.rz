@@ -1,0 +1,10 @@
+// RES-4099: selective import combined with a namespace alias —
+// `use "path" as ns { A, B };`. The parser accepts `as` and the
+// `{ ... }` selector list on the same `use` clause; the selected
+// names are spliced in renamed under the `ns::` prefix.
+use "import_selective_plain_lib.rz" as m { add };
+
+fn main() {
+    println(m::add(10, 20));
+}
+main();

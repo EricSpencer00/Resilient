@@ -1,0 +1,11 @@
+// RES-4099: positive half of the visibility-boundary pair — calling
+// the `pub` declaration through a plain `use` succeeds normally.
+// See visibility_boundary_neg.rz for the companion failing case
+// (calling the private `hidden()`), asserted via a dedicated
+// #[test] in tests/it/examples_smoke.rs since it must NOT compile.
+use "visibility_boundary_lib.rz";
+
+fn main() {
+    println(exposed());
+}
+main();

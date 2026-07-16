@@ -1,0 +1,14 @@
+// RES-4099: negative half of the visibility-boundary pair. `hidden()`
+// is not `pub` in visibility_boundary_lib.rz, and that file has at
+// least one `pub` declaration (so legacy whole-file-export mode does
+// not kick in) — `hidden` must NOT be spliced into this importer.
+// This file has no `.expected.txt` sidecar on purpose: it is expected
+// to fail typechecking/compilation. Asserted by a dedicated #[test]
+// in tests/it/examples_smoke.rs (non-zero exit + "Undefined variable
+// 'hidden'" diagnostic), not by the golden-success harness.
+use "visibility_boundary_lib.rz";
+
+fn main() {
+    println(hidden());
+}
+main();
