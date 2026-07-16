@@ -16,7 +16,7 @@ other in sequence:
 | `package` | push of a `v*` tag, after `build` passes | Runs `npx --yes @vscode/vsce package --out resilient-vscode.vsix` and uploads the `.vsix` as a GitHub Actions artifact (30-day retention). |
 | `publish` | push of a `v*` tag, after `package` passes | Runs `npx --yes @vscode/vsce publish --pat "$VSCE_PAT"`, authenticated with the `VSCE_PAT` repository secret, to push the extension live to the Marketplace. |
 
-Pushing a tag matching `v*` (e.g. `v0.2.3`) is what triggers a real release:
+Pushing a tag matching `v*` (e.g. `v1.0.0-rc.1`) is what triggers a real release:
 it runs `build` → `package` → `publish` end to end, uploading the `.vsix`
 and publishing it to the Marketplace in the same run. Plain pushes to `main`
 and PRs only run `build` — no packaging, no publish, no Marketplace side
@@ -38,69 +38,40 @@ publish.
 `resilient/Cargo.toml` (`version`) are asserted to stay in sync by
 `resilient/tests/it/vscode_release_sync_smoke.rs`, run as part of the normal
 compiler test suite (`cargo test --manifest-path resilient/Cargo.toml`).
-That test currently enforces:
+That test enforces:
 
 - `publisher == "fromamerica"`
 - `name == "resilient-vscode"`
 - `version` is present, non-empty, and parses as `major.minor.patch` semver
-- `version` in `vscode-extension/package.json` equals `version` in
-  `resilient/Cargo.toml` (both are `0.2.3` as of this writing)
+- the `version` core in `vscode-extension/package.json` is **>=** the
+  `version` core in `resilient/Cargo.toml` — the extension line may *lead*
+  the compiler (see the Marketplace reconciliation below) but must never
+  fall behind it
 
-If a future change decouples the extension version from the compiler
-version (see "Reconciliation options" below), that equality assertion is
-the one line in the test that needs to change — do it deliberately, in the
-same PR that makes the decoupling decision, not as a side effect of an
-unrelated version bump.
+As of RES-4102 the extension is at **`1.6.0`** and the compiler at
+**`1.0.0-rc.1`**: the version numbers are intentionally decoupled, so the
+extension's own CHANGELOG — not the number — is the source of truth for
+which compiler version a given extension release targets.
 
-## Marketplace divergence: 1.5.3 vs the 0.2.x line
+## Marketplace divergence: reconciled by publishing forward (RES-4102)
 
-The live published extension `fromamerica.resilient-vscode` on the
-Marketplace is currently at **1.5.3** — a line published above, and
-unrelated to, the repo's `0.2.x` compiler-aligned version line. This means:
+The live published extension `fromamerica.resilient-vscode` reached **1.5.3**
+under an old versioning scheme (the `v1.5.x` git tags were VSCE-package
+version relics, not real compiler releases — see `RELEASE_AUDIT.md`). The VS
+Code Marketplace enforces **monotonically increasing** versions, so nothing
+on the `0.2.x`/`1.0.0-rc` compiler line can ever be published over `1.5.3`.
 
-- The repo's `package.json` at `0.2.3` does **not** match what a user
-  installing from the Marketplace today receives (`1.5.3`).
-- The VS Code Marketplace enforces **monotonically increasing** version
-  numbers per extension. Publishing `0.2.3` while `1.5.3` is live would be
-  **rejected outright** — `vsce publish` cannot push a lower version over a
-  higher one.
-- The only way to make a `0.2.x` version "latest" again is
-  `vsce unpublish` on the `1.x` versions, which is destructive: it wipes
-  Marketplace version history and install-count continuity for those
-  versions. That is a decision only the maintainer can make, and it is not
-  automated by this workflow or any script in this repo.
+**Decision (maintainer, 2026-07-16):** publish *forward* and decouple, rather
+than wipe public history. The extension version line moves to `1.6.0` (ahead
+of `1.5.3`) independent of the compiler's `1.0.0-rc.1`; the
+`vscode_release_sync_smoke.rs` guard was relaxed from strict equality to
+`extension core >= compiler core` in the same PR. This is non-destructive:
+Marketplace version history and install stats are preserved, and a `v*` tag
+push now publishes `1.6.0` cleanly.
 
-**This repo intentionally does not roll `package.json`'s version backward**
-to try to "fix" this divergence — a lower number does not resolve a
-Marketplace ordering conflict, it just makes the mismatch worse (the CI
-`publish` job would then fail outright on the next tag push, since
-`0.2.3 < 1.5.3`).
-
-### Reconciliation options
-
-Pick one, deliberately, when the maintainer is ready to make the Marketplace
-line match the repo again:
-
-1. **Unpublish the accidental `1.x` line.** Maintainer runs
-   `vsce unpublish fromamerica.resilient-vscode` (or unpublishes only the
-   offending versions, if the CLI/portal supports partial removal) from
-   their own machine with their own PAT. Irreversible: version history and
-   download stats for the removed versions are gone. After that, a
-   `0.2.x`-tagged release publishes cleanly again and the compiler-version
-   mirroring in the smoke test continues to hold.
-2. **Publish forward from `1.5.3` and decouple the extension version from
-   the compiler version.** Bump `vscode-extension/package.json` to
-   `1.5.4` (or higher) independent of `resilient/Cargo.toml`, and relax the
-   `vscode_release_sync_smoke.rs` equality assertion to no longer require
-   `package.json` version == `Cargo.toml` version (keep the publisher/name/
-   semver-shape checks). This is non-destructive but means the two version
-   numbers no longer tell you anything about each other — the extension's
-   CHANGELOG becomes the source of truth for "what compiler version does
-   this extension version target."
-
-Neither option is executed by any code in this repo. This document exists
-so the tradeoff is visible before the next real `v*` tag push, not
-discovered as a failed `publish` job.
+The rejected alternative was `vsce unpublish` of the `1.x` line, which would
+have wiped Marketplace version history and install-count continuity — a
+destructive, maintainer-only action this repo deliberately does not take.
 
 ## Manual fallback
 

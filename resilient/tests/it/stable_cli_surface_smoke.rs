@@ -114,7 +114,7 @@ fn version_verbose_extends_short_banner() {
     assert_eq!(short.status.code(), Some(0));
     let short_stdout = String::from_utf8_lossy(&short.stdout);
     assert!(
-        short_stdout.starts_with("rz ") && short_stdout.contains("pre-1.0"),
+        short_stdout.starts_with("rz ") && short_stdout.contains("STABILITY.md"),
         "unexpected short version output: {short_stdout}"
     );
 

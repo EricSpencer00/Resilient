@@ -18,11 +18,23 @@
 //! verbose printout rather than echoed back as a useless line.
 
 /// RES-2631: the short single-line banner.
+///
+/// RES-4102 (F-E6): the stability notice is derived from the version
+/// rather than hardcoded to `pre-1.0`, so the same banner stays honest
+/// as the crate crosses the 1.0 line:
+///   - `0.x`            → `pre-1.0` (breaking changes at any time)
+///   - `x.y.z-<pre>`    → `release candidate` (API stabilizing)
+///   - `>= 1.0.0` final → `stable release`
 pub fn short() -> String {
-    format!(
-        "rz {}: pre-1.0 — breaking changes possible (see STABILITY.md)\n",
-        env!("CARGO_PKG_VERSION")
-    )
+    let version = env!("CARGO_PKG_VERSION");
+    let notice = if version.starts_with("0.") {
+        "pre-1.0 — breaking changes possible (see STABILITY.md)"
+    } else if version.contains('-') {
+        "release candidate — API stabilizing toward 1.0 (see STABILITY.md)"
+    } else {
+        "stable release (see STABILITY.md)"
+    };
+    format!("rz {}: {}\n", version, notice)
 }
 
 /// RES-2631: the full multi-line `--version --verbose` banner.
@@ -57,7 +69,9 @@ mod tests {
         let s = short();
         assert!(s.starts_with("rz "), "got: {:?}", s);
         assert!(s.contains(env!("CARGO_PKG_VERSION")));
-        assert!(s.contains("pre-1.0"));
+        // RES-4102: the notice text is version-derived (pre-1.0 /
+        // release candidate / stable), but always points at the policy.
+        assert!(s.contains("STABILITY.md"));
         assert!(s.ends_with('\n'));
     }
 

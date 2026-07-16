@@ -1,6 +1,6 @@
 [package]
 name = "resilient-playground"
-version = "0.2.3"
+version = "1.0.0-rc.1"
 edition = "2024"
 description = "RES-368: WASM-targeted Resilient web playground."
 authors = ["Eric Spencer"]
