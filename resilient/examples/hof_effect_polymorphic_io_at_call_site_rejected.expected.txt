@@ -1,0 +1,6 @@
+Type error: examples/hof_effect_polymorphic_io_at_call_site_rejected.rz:32:6: pure fn `pure_caller`: cannot call io function `run` from pure context
+examples/hof_effect_polymorphic_io_at_call_site_rejected.rz:32:6: pure fn `pure_caller`: cannot call io function `run` from pure context
+Type error: pure fn `pure_caller`: cannot call io function `run` from pure context
+   pure fn pure_caller() -> int {
+        ^
+Error: Type check failed: examples/hof_effect_polymorphic_io_at_call_site_rejected.rz:32:6: pure fn `pure_caller`: cannot call io function `run` from pure context

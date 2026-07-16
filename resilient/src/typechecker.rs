@@ -11171,7 +11171,7 @@ impl TypeChecker {
 ///
 /// Keep in sync with `resilient/src/lib.rs::BUILTINS` — adding a
 /// new I/O / clock / env builtin there means adding it here.
-const IMPURE_BUILTINS: &[&str] = &[
+pub(crate) const IMPURE_BUILTINS: &[&str] = &[
     // RES-004 / RES-144: stdio.
     "println",
     "print",
@@ -11575,7 +11575,7 @@ fn check_body_purity(
 ///
 /// Input is the callee name. Returns true iff the name is one of
 /// the pure-by-default builtins we ship.
-fn is_known_pure_builtin(name: &str) -> bool {
+pub(crate) fn is_known_pure_builtin(name: &str) -> bool {
     // Keep this list in sync with `resilient/src/lib.rs::BUILTINS`
     // minus the names in `IMPURE_BUILTINS`.
     const PURE_BUILTINS: &[&str] = &[
@@ -12720,7 +12720,7 @@ fn check_program_effects(
             ..
         } = &stmt.node
             && effects.pure
-            && let Err(reason) = check_body_effects(body, &fn_effects, parameters)
+            && let Err(reason) = check_body_effects(body, &fn_effects, parameters, statements)
         {
             let (line, col) = (stmt.span.start.line, stmt.span.start.column);
             return Err(if line == 0 {
@@ -12753,18 +12753,19 @@ fn check_body_effects(
     node: &Node,
     fn_effects: &std::collections::HashMap<String, EffectSet>,
     linear_params: &[(String, String)],
+    statements: &[crate::span::Spanned<Node>],
 ) -> Result<(), String> {
     match node {
         Node::Block { stmts, .. } => {
             for s in stmts {
-                check_body_effects(s, fn_effects, linear_params)?;
+                check_body_effects(s, fn_effects, linear_params, statements)?;
             }
         }
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
-            check_body_effects(value, fn_effects, linear_params)?;
+            check_body_effects(value, fn_effects, linear_params, statements)?;
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            check_body_effects(v, fn_effects, linear_params)?
+            check_body_effects(v, fn_effects, linear_params, statements)?
         }
         Node::ReturnStatement { value: None, .. } => {}
         Node::IfStatement {
@@ -12773,32 +12774,34 @@ fn check_body_effects(
             alternative,
             ..
         } => {
-            check_body_effects(condition, fn_effects, linear_params)?;
-            check_body_effects(consequence, fn_effects, linear_params)?;
+            check_body_effects(condition, fn_effects, linear_params, statements)?;
+            check_body_effects(consequence, fn_effects, linear_params, statements)?;
             if let Some(a) = alternative {
-                check_body_effects(a, fn_effects, linear_params)?;
+                check_body_effects(a, fn_effects, linear_params, statements)?;
             }
         }
         Node::WhileStatement {
             condition, body, ..
         } => {
-            check_body_effects(condition, fn_effects, linear_params)?;
-            check_body_effects(body, fn_effects, linear_params)?;
+            check_body_effects(condition, fn_effects, linear_params, statements)?;
+            check_body_effects(body, fn_effects, linear_params, statements)?;
         }
         Node::ForInStatement { iterable, body, .. } => {
-            check_body_effects(iterable, fn_effects, linear_params)?;
-            check_body_effects(body, fn_effects, linear_params)?;
+            check_body_effects(iterable, fn_effects, linear_params, statements)?;
+            check_body_effects(body, fn_effects, linear_params, statements)?;
         }
         Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
-            check_body_effects(condition, fn_effects, linear_params)?;
+            check_body_effects(condition, fn_effects, linear_params, statements)?;
         }
-        Node::LiveBlock { body, .. } => check_body_effects(body, fn_effects, linear_params)?,
+        Node::LiveBlock { body, .. } => {
+            check_body_effects(body, fn_effects, linear_params, statements)?
+        }
         Node::InfixExpression { left, right, .. } => {
-            check_body_effects(left, fn_effects, linear_params)?;
-            check_body_effects(right, fn_effects, linear_params)?;
+            check_body_effects(left, fn_effects, linear_params, statements)?;
+            check_body_effects(right, fn_effects, linear_params, statements)?;
         }
         Node::PrefixExpression { right, .. } => {
-            check_body_effects(right, fn_effects, linear_params)?
+            check_body_effects(right, fn_effects, linear_params, statements)?
         }
         Node::CallExpression {
             function,
@@ -12806,7 +12809,7 @@ fn check_body_effects(
             ..
         } => {
             for a in arguments {
-                check_body_effects(a, fn_effects, linear_params)?;
+                check_body_effects(a, fn_effects, linear_params, statements)?;
                 // RES-385c: detect if a linear parameter is being
                 // consumed (passed to a function). Consuming a linear
                 // parameter is observable IO — an operation on a
@@ -12828,6 +12831,23 @@ fn check_body_effects(
                 // `io`) is a violation.
                 if let Some(callee_effects) = fn_effects.get(callee) {
                     if callee_effects.pure {
+                        return Ok(());
+                    }
+                    // RES-3933 A-E7 follow-up (#4072): true
+                    // effect-variable polymorphism. `callee`'s own
+                    // declared effect isn't `pure`, but it may still
+                    // be provably pure *at this call site* if it
+                    // declares an effect-variable parameter (RES-193
+                    // `-e->`) that this call binds to a provably-pure
+                    // callback, and the rest of its body is
+                    // independently pure. See
+                    // `effect_polymorphism::resolves_pure_at_call_site`
+                    // for the full soundness argument — this can only
+                    // ever turn a previously-rejected call into an
+                    // accepted one, never the reverse.
+                    if crate::effect_polymorphism::resolves_pure_at_call_site(
+                        callee, arguments, statements, fn_effects,
+                    ) {
                         return Ok(());
                     }
                     return Err(format!(
@@ -12874,20 +12894,24 @@ fn check_body_effects(
             }
             // Method / computed callee — can't resolve statically;
             // same conservative rejection as the purity pass.
-            check_body_effects(function, fn_effects, linear_params)?;
+            check_body_effects(function, fn_effects, linear_params, statements)?;
             return Err(
                 "cannot call indirect/method callee from pure context (effect unknown)".to_string(),
             );
         }
-        Node::FieldAccess { target, .. } => check_body_effects(target, fn_effects, linear_params)?,
-        Node::FieldAssignment { target, value, .. } => {
-            check_body_effects(target, fn_effects, linear_params)?;
-            check_body_effects(value, fn_effects, linear_params)?;
+        Node::FieldAccess { target, .. } => {
+            check_body_effects(target, fn_effects, linear_params, statements)?
         }
-        Node::Assignment { value, .. } => check_body_effects(value, fn_effects, linear_params)?,
+        Node::FieldAssignment { target, value, .. } => {
+            check_body_effects(target, fn_effects, linear_params, statements)?;
+            check_body_effects(value, fn_effects, linear_params, statements)?;
+        }
+        Node::Assignment { value, .. } => {
+            check_body_effects(value, fn_effects, linear_params, statements)?
+        }
         Node::IndexExpression { target, index, .. } => {
-            check_body_effects(target, fn_effects, linear_params)?;
-            check_body_effects(index, fn_effects, linear_params)?;
+            check_body_effects(target, fn_effects, linear_params, statements)?;
+            check_body_effects(index, fn_effects, linear_params, statements)?;
         }
         Node::IndexAssignment {
             target,
@@ -12895,47 +12919,51 @@ fn check_body_effects(
             value,
             ..
         } => {
-            check_body_effects(target, fn_effects, linear_params)?;
-            check_body_effects(index, fn_effects, linear_params)?;
-            check_body_effects(value, fn_effects, linear_params)?;
+            check_body_effects(target, fn_effects, linear_params, statements)?;
+            check_body_effects(index, fn_effects, linear_params, statements)?;
+            check_body_effects(value, fn_effects, linear_params, statements)?;
         }
         Node::ArrayLiteral { items, .. } => {
             for i in items {
-                check_body_effects(i, fn_effects, linear_params)?;
+                check_body_effects(i, fn_effects, linear_params, statements)?;
             }
         }
         Node::StructLiteral { fields, base, .. } => {
             if let Some(b) = base {
-                check_body_effects(b, fn_effects, linear_params)?;
+                check_body_effects(b, fn_effects, linear_params, statements)?;
             }
             for (_, v) in fields {
-                check_body_effects(v, fn_effects, linear_params)?;
+                check_body_effects(v, fn_effects, linear_params, statements)?;
             }
         }
         Node::Match {
             scrutinee, arms, ..
         } => {
-            check_body_effects(scrutinee, fn_effects, linear_params)?;
+            check_body_effects(scrutinee, fn_effects, linear_params, statements)?;
             for (_pat, guard, arm_body) in arms {
                 if let Some(g) = guard {
-                    check_body_effects(g, fn_effects, linear_params)?;
+                    check_body_effects(g, fn_effects, linear_params, statements)?;
                 }
-                check_body_effects(arm_body, fn_effects, linear_params)?;
+                check_body_effects(arm_body, fn_effects, linear_params, statements)?;
             }
         }
         Node::ExpressionStatement { expr, .. } => {
-            check_body_effects(expr, fn_effects, linear_params)?
+            check_body_effects(expr, fn_effects, linear_params, statements)?
         }
-        Node::TryExpression { expr, .. } => check_body_effects(expr, fn_effects, linear_params)?,
+        Node::TryExpression { expr, .. } => {
+            check_body_effects(expr, fn_effects, linear_params, statements)?
+        }
         Node::OptionalChain { object, access, .. } => {
-            check_body_effects(object, fn_effects, linear_params)?;
+            check_body_effects(object, fn_effects, linear_params, statements)?;
             if let crate::ChainAccess::Method(_, args) = access {
                 for a in args {
-                    check_body_effects(a, fn_effects, linear_params)?;
+                    check_body_effects(a, fn_effects, linear_params, statements)?;
                 }
             }
         }
-        Node::Function { body, .. } => check_body_effects(body, fn_effects, linear_params)?,
+        Node::Function { body, .. } => {
+            check_body_effects(body, fn_effects, linear_params, statements)?
+        }
         // Literals, identifier reads, durations — nothing to do.
         _ => {}
     }
