@@ -1,0 +1,10 @@
+// RES-4099: golden test for a 3-level transitive `pub use` chain:
+// main -> top -> mid -> leaf. A plain (non-pub) `use` of the top-level
+// re-export should see `leaf_value`, proving re-exports compose
+// through multiple hops, not just one.
+use "pub_use_chain_top.rz";
+
+fn main() {
+    println(leaf_value());
+}
+main();

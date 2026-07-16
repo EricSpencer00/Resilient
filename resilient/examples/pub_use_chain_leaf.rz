@@ -1,0 +1,5 @@
+// RES-4099: leaf of a 3-level `pub use` re-export chain (see
+// pub_use_chain_mid.rz / pub_use_chain_top.rz / pub_use_chain_main.rz).
+fn leaf_value() -> int {
+    return 7;
+}

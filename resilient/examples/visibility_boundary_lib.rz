@@ -1,0 +1,11 @@
+// RES-4099: regression corpus for visibility enforcement across a
+// module (file) boundary. `exposed` is `pub`; `hidden` is not. Since
+// this file has at least one `pub` declaration, legacy whole-file
+// export mode does NOT apply — importers only see `exposed`.
+pub fn exposed() -> int {
+    return 42;
+}
+
+fn hidden() -> int {
+    return 0;
+}

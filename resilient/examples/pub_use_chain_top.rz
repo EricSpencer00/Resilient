@@ -1,0 +1,6 @@
+// RES-4099: top hop — re-exports the (already re-exported) mid module.
+// Chains a second `pub use` on top of pub_use_chain_mid.rz's own
+// `pub use`, exercising the recursive-expansion path in
+// `imports::expand_recursive` (the imported file is itself expanded
+// before its declarations are spliced into the importer).
+pub use "pub_use_chain_mid.rz";

@@ -1,0 +1,12 @@
+// RES-4099: plain (non-`pub`) selective import golden test.
+// Only `add` and `mul` are pulled in from the library; `secret` is
+// left out by the selector list even though nothing in the library
+// is marked `pub` (see import_selective_plain_lib.rz for why that's
+// independent of visibility).
+use "import_selective_plain_lib.rz" { add, mul };
+
+fn main() {
+    println(add(2, 3));
+    println(mul(4, 5));
+}
+main();

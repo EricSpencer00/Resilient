@@ -1,0 +1,17 @@
+// RES-4099: regression corpus — plain (non-`pub`) selective import.
+// No declaration here is marked `pub`, so legacy whole-file export mode
+// would apply on its own; the *selector list* on the `use` clause at the
+// call site (e.g. `{ add, mul }`) is what actually restricts which names
+// get spliced in, independent of visibility. `secret` is deliberately
+// left off every importer's selector list in this corpus.
+fn add(int a, int b) -> int {
+    return a + b;
+}
+
+fn mul(int a, int b) -> int {
+    return a * b;
+}
+
+fn secret(int a) -> int {
+    return a * 999;
+}
