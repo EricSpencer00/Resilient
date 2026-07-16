@@ -235,16 +235,29 @@ curl -fSL "https://github.com/EricSpencer00/Resilient/releases/download/${TAG}/r
 rz --version
 ```
 
-**Z3 in the box (RES-3979):** the `x86_64-unknown-linux-gnu` release
-tarball statically links Z3 — `rz --audit` gets real SMT proofs out of
+**Z3 in the box (RES-3979/RES-3985):** three of the four release
+tarballs statically link Z3 — `rz --audit` gets real SMT proofs out of
 the box, no `brew install z3` / `apt-get install libz3-dev` required
-(verified: the shipped binary has no `libz3` runtime dependency). The
-other three targets (`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`,
-`aarch64-apple-darwin`) don't yet — their binaries still run fine, they
-just report `Unknown` for obligations the hand-rolled folder can't
-close, exactly like every release before this one. See
+(verified: the shipped binaries have no `libz3` runtime dependency):
+
+| Target | Z3 static-linked? |
+|---|---|
+| `x86_64-unknown-linux-gnu` | Yes |
+| `aarch64-unknown-linux-gnu` | Yes (cross-compiled) |
+| `aarch64-apple-darwin` | Yes (built via Homebrew GCC 13) |
+| `x86_64-apple-darwin` | No — see below |
+
+`x86_64-apple-darwin` doesn't yet: it's a cross-arch build from the
+arm64 `macos-latest` runner, and Homebrew's `gcc@13` bottle used for the
+`aarch64-apple-darwin` leg is arm64-native only (`g++-13 -arch x86_64`
+silently emits an arm64 object instead of cross-compiling — verified
+locally), so the same recipe doesn't carry over without bootstrapping a
+separate Rosetta-hosted Intel Homebrew prefix. Its binary still runs
+fine, it just reports `Unknown` for obligations the hand-rolled folder
+can't close, exactly like every release before this one. See
 `.github/workflows/release.yml` for the current per-target matrix and
-the tracking issue for the remaining platforms.
+[#3985](https://github.com/EricSpencer00/Resilient/issues/3985) for the
+remaining platform.
 
 **LSP in the box (RES-4002):** every pre-built release binary, on all
 four targets, ships with `--features lsp` — `rz --lsp` works
@@ -378,10 +391,10 @@ optional `z3` feature to get full SMT-backed proofs:
 rz --audit prog.rz   # SMT proofs require a binary built with --features z3
 ```
 
-If you're on `x86_64-unknown-linux-gnu`, the pre-built release binary
-already has Z3 statically linked in (see "Pre-built binaries" above) —
-skip the `apt-get`/`brew` step and `cargo install --path resilient`
-entirely.
+If you're on `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, or
+`aarch64-apple-darwin`, the pre-built release binary already has Z3
+statically linked in (see "Pre-built binaries" above) — skip the
+`apt-get`/`brew` step and `cargo install --path resilient` entirely.
 
 The audit report tags clauses proven by Z3 separately so users can
 see what the SMT layer added.

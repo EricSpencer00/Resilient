@@ -50,6 +50,15 @@ Compiler-internal APIs (the `resilient` crate's Rust types, the VM bytecode
 format, the JIT ABI, the `resilient-runtime` crate's non-public items) are
 **never** covered by SemVer and may change in any release.
 
+**"The project" version is `resilient/Cargo.toml`'s `version` field** — this
+is the canonical value every release tag (`v<version>`) is cut from (see
+`weekly-release.yml` and `docs/RELEASE_AUDIT.md`). The other in-tree
+workspace crates that aren't published to crates.io (`resilient-runtime`,
+`resilient-span`, `resilient-playground`) are kept in version lockstep with
+it — bumped in the same PR whenever `resilient/Cargo.toml` bumps — so "the
+workspace version" is a single well-defined string rather than several
+independently-drifting ones. This resolves `docs/RELEASE_AUDIT.md` Finding B.
+
 ---
 
 ## Pre-1.0 Rules

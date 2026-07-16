@@ -17,13 +17,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # RES-3979: x86_64-unknown-linux-gnu is the only target that
-          # ships Z3 statically linked in today — see the `z3` build
-          # step below for why. The other three targets are a
-          # documented no-z3 fallback (tracked in the follow-up issue
-          # referenced there); their binaries still work, they just
-          # report `Unknown` for obligations the hand-rolled folder
-          # (RES-060..065) can't discharge, same as before this PR.
+          # RES-3979/RES-3985: three of four release targets now ship Z3
+          # statically linked (`x86_64-unknown-linux-gnu`,
+          # `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`) — see the
+          # per-target "Build (..., Z3 static-linked...)" steps below for
+          # why each one works. `x86_64-apple-darwin` remains a documented
+          # no-z3 fallback: it's a cross-arch build from the arm64
+          # `macos-latest` runner, and Homebrew's GCC bottle used for the
+          # other macOS leg is arm64-native only — `g++-13 -arch x86_64`
+          # silently emits an arm64 object instead of cross-compiling
+          # (verified locally), so the same static-Z3 recipe doesn't carry
+          # over without also bootstrapping a separate Rosetta-hosted
+          # Intel Homebrew prefix, which isn't validated here. Tracked as
+          # the residual item on #3985. Its binary still works fine, it
+          # just reports `Unknown` for obligations the hand-rolled folder
+          # (RES-060..065) can't discharge, same as every release before
+          # this one.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
@@ -32,12 +41,14 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
+            z3: true
           - target: x86_64-apple-darwin
             os: macos-latest
             archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
+            z3: true
 
     steps:
       - uses: actions/checkout@v4
@@ -60,12 +71,37 @@ jobs:
       # explicitly so a runner-image change can't silently regress
       # this step. `python3` drives Z3's own codegen scripts;
       # `libclang-dev` provides `libclang.so`, which `bindgen` (a
-      # `z3-sys` build-dependency) needs to parse `z3.h`.
+      # `z3-sys` build-dependency) needs to parse `z3.h`. Scoped off
+      # `matrix.cross` — the aarch64-linux leg builds inside the
+      # `cross-rs` Docker image instead (see `Cross.toml`'s `pre-build`
+      # hook), not on this bare `ubuntu-latest` host.
       - name: Install Z3 static-link build deps (Linux native only)
-        if: matrix.z3
+        if: matrix.z3 && !matrix.cross
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential cmake python3 pkg-config libclang-dev
+
+      # RES-3985: macOS's default toolchain (Apple Clang) trips a
+      # two-phase name-lookup error compiling Z3 4.12.1's `math/lp`
+      # module (verified locally on Apple Clang bundled with a recent
+      # Xcode CLT) — the same failure noted below for why this PR
+      # couldn't originally enable Z3 here. Homebrew GCC 13 compiles it
+      # cleanly. `gcc@13`/`g++-13` ship both a `libstdc++.a` (static) and
+      # a `libstdc++.dylib` (dynamic) in the same directory; since Apple's
+      # `ld` prefers a dylib over a static archive when both are visible
+      # on the same `-L` path, stage *only* the `.a` (plus GCC's emulated-
+      # TLS helper, `libemutls_w.a` — Apple's runtime doesn't support
+      # GCC's native thread-local-storage model) into an isolated
+      # directory so the final link picks up the static archives, not
+      # Homebrew's dylibs (which end users won't have installed).
+      - name: Install Z3 static-link build deps (macOS via Homebrew GCC)
+        if: matrix.z3 && runner.os == 'macOS'
+        run: |
+          brew install gcc@13
+          STAGE="$(mktemp -d)"
+          cp "$(gcc-13 -print-file-name=libstdc++.a)" "$STAGE/"
+          cp "$(gcc-13 -print-file-name=libemutls_w.a)" "$STAGE/"
+          echo "Z3_MACOS_STATIC_CXX_LIBDIR=$STAGE" >> "$GITHUB_ENV"
 
       # RES-4002: ship LSP-capable release binaries by default so
       # editor integration (the VS Code extension, `lspconfig`, etc.)
@@ -81,52 +117,100 @@ jobs:
         working-directory: resilient
 
       # RES-3979: static-link libz3 into the binary so the release
-      # tarball is fully self-contained (no `libz3.so`/`.dylib` at
-      # runtime — verified via `ldd` locally). `CMAKE_POLICY_VERSION_MINIMUM`
-      # is a no-op on the cmake version `ubuntu-latest` ships today but
+      # tarball is fully self-contained (no `libz3.so` at runtime —
+      # verified via `ldd` locally). `CMAKE_POLICY_VERSION_MINIMUM` is a
+      # no-op on the cmake version `ubuntu-latest` ships today but
       # future-proofs against a runner-image cmake bump (cmake >= 3.31
       # otherwise refuses Z3's `cmake_minimum_required(VERSION 3.4)`).
-      #
-      # Why only this target: the *build host's* C++ compiler matters,
-      # not the runtime host. Locally-reproduced findings (see PR
-      # description): Z3 4.12.1's `math/lp` module trips a two-phase
-      # name-lookup diagnostic that very new compilers (Apple Clang 17,
-      # Homebrew GCC 16) treat as a hard error, but that GCC 12/13/14 —
-      # what `ubuntu-latest` actually ships — compiles cleanly. macOS's
-      # default toolchain is Apple Clang, so it hits the broken path;
-      # routing the macOS build through Homebrew GCC hits a separate
-      # libstdc++/libc++ ABI mismatch at the final link step that needs
-      # more plumbing than fits this PR. Tracked in the follow-up issue
-      # linked from the PR body.
-      - name: Build (native, Z3 static-linked)
-        if: matrix.z3
+      # GCC 12/13/14 — what `ubuntu-latest` actually ships — compiles Z3
+      # 4.12.1's `math/lp` module cleanly (see the macOS step below for
+      # the toolchain that doesn't).
+      - name: Build (native, Z3 static-linked, Linux)
+        if: matrix.z3 && !matrix.cross && runner.os == 'Linux'
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
         working-directory: resilient
 
+      # RES-3985: routes the build through Homebrew GCC 13 (installed in
+      # the deps step above) instead of Apple Clang, which is what makes
+      # Z3 4.12.1 compile here at all. Two things Apple Clang's default
+      # toolchain gets for free that GCC needs spelled out explicitly:
+      #   - `CXXSTDLIB=stdc++` tells `z3-sys`'s build script to link
+      #     against GNU's libstdc++ instead of its `apple`-target default
+      #     (Apple's libc++) — GCC-compiled objects use libstdc++'s ABI,
+      #     so linking against libc++ fails with missing-symbol errors
+      #     for every `std::` type Z3 touches.
+      #   - `RUSTFLAGS -L $Z3_MACOS_STATIC_CXX_LIBDIR` points the linker
+      #     at the isolated directory containing *only* the static
+      #     `libstdc++.a`/`libemutls_w.a` (see the deps step above for
+      #     why isolated), and `-l emutls_w` links GCC's emulated-TLS
+      #     helper explicitly — `z3-sys`'s build script only ever emits
+      #     one `-l` line (driven by `CXXSTDLIB`), so the emutls symbols
+      #     `synchronize_counters`/`memory::allocate`/etc. in Z3's
+      #     `memory_manager.cpp` need a second, manual link line.
+      # Verified end-to-end locally (`aarch64-apple-darwin`, Homebrew GCC
+      # 13.4.0): `otool -L` shows no `libz3` runtime dependency and
+      # `scripts/release-smoke-test.sh` passes — `rz --audit` genuinely
+      # discharges the fixture's obligation via Z3, not just links it in.
+      - name: Build (native, Z3 static-linked, macOS via GCC)
+        if: matrix.z3 && !matrix.cross && runner.os == 'macOS'
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          CC: gcc-13
+          CXX: g++-13
+          CXXSTDLIB: stdc++
+        run: |
+          export RUSTFLAGS="-L ${Z3_MACOS_STATIC_CXX_LIBDIR} -l emutls_w"
+          cargo build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
+        working-directory: resilient
+
       - name: Build (cross)
-        if: matrix.cross
+        if: matrix.cross && !matrix.z3
         run: cross build --release --locked --target ${{ matrix.target }} --features lsp
+        working-directory: resilient
+
+      # RES-3985: `aarch64-unknown-linux-gnu`'s cross-rs Docker image
+      # (`ghcr.io/cross-rs/aarch64-unknown-linux-gnu`) already ships
+      # cmake (3.23.1 — old enough that `CMAKE_POLICY_VERSION_MINIMUM`
+      # isn't needed here), the `aarch64-linux-gnu-g++` cross toolchain
+      # (GCC 13.3.0), and `libclang` (for the host-side `bindgen` build
+      # step) — verified by inspecting the image locally. The one gap is
+      # `python3`, which Z3's `CMakeLists.txt` requires
+      # (`find_package(PythonInterp 3 REQUIRED)`) for its codegen
+      # scripts; `Cross.toml`'s `pre-build` hook installs it before the
+      # build runs. `CXXSTDLIB` needs no override on this target — the
+      # default (non-`apple`/`freebsd`/`openbsd`) branch in `z3-sys`'s
+      # build script already picks `stdc++`, which matches the GNU cross
+      # toolchain's ABI.
+      - name: Build (cross, Z3 static-linked)
+        if: matrix.z3 && matrix.cross
+        run: cross build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
         working-directory: resilient
 
       # RES-3979: a binary that merely *links* z3 could still silently
       # fail to discharge anything through it — this actually exercises
       # the SMT path against a fixture the hand-rolled folder can't
       # resolve on its own, so a regression here fails the release
-      # build instead of shipping a quietly-degraded binary.
+      # build instead of shipping a quietly-degraded binary. Scoped off
+      # `matrix.cross` (RES-3985): `aarch64-unknown-linux-gnu`'s binary
+      # is built via QEMU/Docker cross-compilation on an x86_64 runner
+      # and can't execute on the build host, same reason the LSP smoke
+      # test below is scoped off it.
       - name: Z3 release smoke test
-        if: matrix.z3
+        if: matrix.z3 && !matrix.cross
         run: scripts/release-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
 
       # RES-4002: every release target now ships `--features lsp` (see
-      # the "Build (native)" / "Build (native, Z3 static-linked)" /
-      # "Build (cross)" steps above), but `aarch64-unknown-linux-gnu`
-      # is cross-compiled via QEMU on an x86_64 runner (`matrix.cross`)
-      # — that binary can't execute on the build host, same reason the
-      # z3 smoke test above is scoped off it. Skip only there; the
-      # macOS legs run natively (arm64 host) or under Rosetta 2
-      # (x86_64 leg, preinstalled on GitHub's macOS images).
+      # the "Build (native)" / "Build (native, Z3 static-linked, Linux)"
+      # / "Build (native, Z3 static-linked, macOS via GCC)" / "Build
+      # (cross)" / "Build (cross, Z3 static-linked)" steps above), but
+      # `aarch64-unknown-linux-gnu` is cross-compiled via QEMU on an
+      # x86_64 runner (`matrix.cross`) — that binary can't execute on
+      # the build host, same reason the z3 smoke test above is scoped
+      # off it. Skip only there; the macOS legs run natively (arm64
+      # host) or under Rosetta 2 (x86_64 leg, preinstalled on GitHub's
+      # macOS images).
       - name: LSP release smoke test
         if: "!matrix.cross"
         run: scripts/release-lsp-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
