@@ -17,21 +17,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # RES-3979/RES-3985: three of four release targets now ship Z3
+          # RES-3979/RES-3985/RES-4102: two of four release targets ship Z3
           # statically linked (`x86_64-unknown-linux-gnu`,
-          # `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`) — see the
-          # per-target "Build (..., Z3 static-linked...)" steps below for
-          # why each one works. `x86_64-apple-darwin` remains a documented
-          # no-z3 fallback: it's a cross-arch build from the arm64
-          # `macos-latest` runner, and Homebrew's GCC bottle used for the
-          # other macOS leg is arm64-native only — `g++-13 -arch x86_64`
-          # silently emits an arm64 object instead of cross-compiling
-          # (verified locally), so the same static-Z3 recipe doesn't carry
-          # over without also bootstrapping a separate Rosetta-hosted
-          # Intel Homebrew prefix, which isn't validated here. Tracked as
-          # the residual item on #3985. Its binary still works fine, it
-          # just reports `Unknown` for obligations the hand-rolled folder
-          # (RES-060..065) can't discharge, same as every release before
+          # `aarch64-unknown-linux-gnu`) — see the per-target
+          # "Build (..., Z3 static-linked...)" steps below for why each one
+          # works. Both macOS legs are a documented no-z3 fallback: the
+          # Homebrew-GCC static-Z3 recipe #4101 added for
+          # `aarch64-apple-darwin` compiled locally but fails to link in CI
+          # (the `Build (native, Z3 static-linked, macOS via GCC)` step), so
+          # RES-4102 reverted that leg to the plain `--features lsp` build to
+          # keep the release green; macOS static Z3 stays deferred as the
+          # residual item on #3985. `x86_64-apple-darwin` was already no-z3:
+          # it's a cross-arch build from the arm64 `macos-latest` runner, and
+          # Homebrew's arm64-native GCC bottle can't cross-compile it. The
+          # macOS binaries still work fine, they just report `Unknown` for
+          # obligations the hand-rolled folder (RES-060..065) can't
+          # discharge, same as every release before
           # this one.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -48,7 +49,6 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
-            z3: true
 
     steps:
       - uses: actions/checkout@v4

@@ -106,7 +106,38 @@ jobs:
       - name: Compile
         run: npm run compile
 
+      # RES-4102: make publish idempotent. A `v*` tag fires this workflow
+      # *and* release.yml; when a compiler re-tag (e.g. a release.yml fix)
+      # reuses an extension version already live on the Marketplace, an
+      # unconditional `vsce publish` would fail the monotonic-version check
+      # and leave a spurious red run even though the extension is already
+      # correctly published. This step skips publish in exactly that case.
+      # It always exits 0 and only sets `already=true` on an affirmative
+      # match, so any query failure falls through to a real publish attempt
+      # (preserving the prior behaviour).
+      - name: Skip publish if this version is already live
+        id: pubcheck
+        run: |
+          set +e
+          VERSION="$(node -p "require('./package.json').version")"
+          PUBLISHED="$(npx --yes @vscode/vsce show fromamerica.resilient-vscode --json 2>/dev/null \
+            | node -e "try{const d=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log((d.versions||[]).map(v=>v.version).join(' '))}catch(e){}" )"
+          echo "package.json version: $VERSION"
+          echo "published versions: $PUBLISHED"
+          for v in $PUBLISHED; do
+            if [ "$v" = "$VERSION" ]; then
+              echo "already=true" >> "$GITHUB_OUTPUT"
+              echo "Extension $VERSION is already on the Marketplace; skipping publish."
+              exit 0
+            fi
+          done
+          echo "already=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
       - name: Publish to VS Code Marketplace
+        if: steps.pubcheck.outputs.already != 'true'
         run: npx --yes @vscode/vsce publish --pat "$VSCE_PAT"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
