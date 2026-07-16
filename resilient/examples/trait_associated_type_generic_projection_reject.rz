@@ -1,0 +1,38 @@
+// A-E3 follow-up (#4067): generic-context projection — reject case.
+//
+// This program is intentionally invalid: `get_bogus` projects
+// `T::Bogus`, but `T`'s only trait bound is `Container`, which
+// declares associated type `Item`, not `Bogus`. Every trait reachable
+// from `T`'s bounds is known and none declares `Bogus`, so this is a
+// provable violation. `associated_types::check` rejects it with:
+//   "fn `get_bogus` return type projects `T::Bogus`, but no trait
+//    bound of `T` (Container) declares associated type `Bogus`"
+
+trait Container {
+    type Item;
+
+    fn first(self) -> Self::Item;
+}
+
+struct IntBox {
+    int v,
+}
+
+impl Container for IntBox {
+    type Item = int;
+
+    fn first(self) -> Self::Item {
+        return self.v;
+    }
+}
+
+fn get_bogus<T: Container>(T c) -> T::Bogus {
+    return c.first();
+}
+
+fn main() {
+    let b = new IntBox { v: 42 };
+    println(get_bogus(b));
+}
+
+main();

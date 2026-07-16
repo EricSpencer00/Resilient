@@ -1,0 +1,37 @@
+// A-E3 follow-up (#4067, item 4): `Self::AssocName` in a `let`-binding
+// annotation inside an impl method body.
+//
+// Because `parse_type_name` is the single shared type resolver,
+// `current_self_assoc_types` (populated on entry to the impl block)
+// resolves `let w: Self::Width = ...;` against the impl's concrete
+// binding (`type Width = int;`) exactly like return- and
+// parameter-position projections. A mismatched initializer
+// (`let w: Self::Width = "nope";`) is rejected as
+// "let w: int — value has type string" — proof the projection
+// resolved to the bound concrete type rather than an opaque name.
+
+trait Register {
+    type Width;
+
+    fn read(self) -> Self::Width;
+}
+
+struct Register8 {
+    int addr,
+}
+
+impl Register for Register8 {
+    type Width = int;
+
+    fn read(self) -> Self::Width {
+        let w: Self::Width = self.addr + 1;
+        return w;
+    }
+}
+
+fn main() {
+    let r = new Register8 { addr: 41 };
+    println(r.read());
+}
+
+main();

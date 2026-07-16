@@ -6424,12 +6424,13 @@ impl TypeChecker {
                 {
                     crate::traits::check(program, source_path)?;
                 }
-                // RES-3933 (A-E3) gate: pass only has work when some
-                // `impl Trait for Type` block exists (its own fast-reject
-                // further narrows to blocks that bind an associated
-                // type). Runs after `traits::check` so trait decls and
+                // RES-3933 (A-E3) gate: pass has work when some
+                // `impl Trait for Type` block exists, or (#4067) when a
+                // generic fn signature may carry a `T::Assoc` projection
+                // (the pass's own fast-reject further narrows both
+                // cases). Runs after `traits::check` so trait decls and
                 // binding-completeness are already validated.
-                if !markers.impl_trait_names.is_empty() {
+                if !markers.impl_trait_names.is_empty() || markers.has_generic_fn {
                     crate::associated_types::check(program, source_path)?;
                 }
                 // RES-2604 gate: validate `impl Display for T` blocks — fmt
