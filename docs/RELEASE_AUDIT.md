@@ -10,6 +10,17 @@ resolved, see [VSCODE_EXTENSION_RELEASE.md](VSCODE_EXTENSION_RELEASE.md)),
 and a `v1.0.0-rc.1` tag is cut to trigger `release.yml` + `vscode_extension.yml`.
 The `v1.5.x` tags are left in place as historical record per Finding A.
 
+**Follow-up (RES-4102, `v1.0.0-rc.2`):** the `v1.0.0-rc.1` tag published the
+extension (`1.6.0`) cleanly but its compiler-binary `release` job was skipped
+because the `aarch64-apple-darwin` build leg failed — the "Install Z3
+static-link build deps (Linux native only)" step in `release.yml` was missing
+a `runner.os == 'Linux'` guard, so it ran `sudo apt-get` on the macOS leg
+(#4101 added `z3: true` to that leg but not the guard). Fixed here; the
+extension is bumped to `1.6.1` and `v1.0.0-rc.2` is cut as the first
+fully-green release candidate. `v1.0.0-rc.1` is left in place (not moved) per
+this repo's no-moving-pushed-tags policy; it simply has no attached GitHub
+Release.
+
 ## 1. Tag inventory vs manifest versions
 
 ```
