@@ -1,0 +1,44 @@
+// RES-4087: `+` on the result of two method calls with a generic-`T`
+// receiver was misinferred as array concat by `rz check` (both sides
+// type as `Any` because the checker doesn't look through the trait
+// bound to see `draw`/`size` return `int`, and the array-concat branch
+// of `+` used to accept `Any` on both sides). `rz run` always executed
+// this correctly and printed 12 — only the static checker was wrong.
+// Unlike `generic_compound_trait_bounds.rz`, this does NOT bind each
+// call to an intermediate `let x: int` first — it sums the calls
+// directly, which is exactly the case that used to trip the bug.
+
+trait Drawable {
+    fn draw(self) -> int;
+}
+
+trait Sizable {
+    fn size(self) -> int;
+}
+
+struct Circle {
+    int radius,
+}
+
+impl Drawable for Circle {
+    fn draw(self) -> int {
+        return self.radius;
+    }
+}
+
+impl Sizable for Circle {
+    fn size(self) -> int {
+        return self.radius * 2;
+    }
+}
+
+fn render<T: Drawable + Sizable>(T shape) -> int {
+    return shape.draw() + shape.size();
+}
+
+fn main(int dummy) {
+    println(render(new Circle { radius: 4 }));
+    return 0;
+}
+
+main(0);
