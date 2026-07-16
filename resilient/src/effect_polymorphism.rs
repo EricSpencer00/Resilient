@@ -40,17 +40,35 @@
 //! the final call using whole-program call-site information the
 //! per-body walk doesn't have.
 //!
+//! ## True effect-variable polymorphism (RES-3933 A-E7 follow-up, #4072)
+//!
+//! [`resolves_pure_at_call_site`] extends the above to a genuinely
+//! effect-*polymorphic* HOF — one that never declares `pure fn`/`io
+//! fn` at all because its effect legitimately depends on what's
+//! passed to it:
+//!
+//! ```text
+//! fn run(f: fn(int) -e-> int, x: int) -> int {
+//!     return f(x);
+//! }
+//! ```
+//!
+//! RES-193 already parses the `-e->` effect-arrow on a function-typed
+//! parameter (marking it an "effect-variable parameter"); this module
+//! now consumes that marker: when a `pure` caller calls `run`, and
+//! `run`'s own declared effect defaults to `io` (unannotated), the
+//! call is proven pure anyway when (a) the argument bound to `f` at
+//! *this* call site is a plain identifier naming a provably-`pure`
+//! top-level fn, and (b) every other operation in `run`'s body —
+//! everything apart from invoking `f` — is independently pure
+//! ([`body_pure_modulo`]). `run(add1, 5)` type-checks as pure when
+//! `add1` is `pure`; `run(noisy, 5)` is still rejected when `noisy`
+//! is `io` (the existing unconditional-rejection path is untouched).
+//! Like [`check`], this can only ever *accept* a call that was
+//! previously rejected — never reject one that used to pass.
+//!
 //! ## Deferred (tracked as a follow-up issue, see the PR body)
 //!
-//! True effect-variable polymorphism — `fn run<E>(f: () -> int ! E)
-//! -> int ! E` unifying `E` with the actual callback's effect so
-//! `run` itself is `pure` when given a `pure` callback and `io` when
-//! given an `io` one — is *not* implemented. RES-193 already parses
-//! the `-e->` effect-arrow annotation on function-typed parameters
-//! but nothing consumes it yet; that's the real generalization this
-//! module intentionally leaves on the table. What's here is the
-//! smallest sound slice: monomorphic HOFs (no effect-variable
-//! generics) get real enforcement instead of "reject everything".
 //! - Inline lambda-literal callback arguments are never inspected
 //!   for an explicit `pure`/`io` annotation, even though the parser
 //!   supports one — only plain-identifier arguments naming a
@@ -62,6 +80,16 @@
 //!   are not traced back to their initializer.
 //! - Callback parameters invoked indirectly (through a method call,
 //!   stored in a struct field, etc.) are out of scope.
+//! - A HOF's *own* return-type effect arrow (`fn run(...) -e-> int`)
+//!   is parsed but the letter is discarded (RES-193 only preserves it
+//!   on function-typed *parameter* types); [`resolves_pure_at_call_site`]
+//!   sidesteps this by inferring polymorphism structurally (any
+//!   invoked `-e->`-marked parameter) rather than requiring the HOF's
+//!   own return type to declare a matching variable name. A follow-up
+//!   could add named-variable unification across multiple
+//!   effect-variable parameters that must agree with each other.
+//! - Full row-polymorphism / whole-program effect inference remains
+//!   out of scope, per the parent ticket.
 
 use crate::span::Spanned;
 use crate::{EffectSet, Node};
@@ -443,6 +471,276 @@ fn find_hof_call_violations(
     }
 }
 
+/// RES-3933 A-E7 follow-up (#4072): true effect-variable
+/// polymorphism.
+///
+/// [`check`] (above) only ever *narrows* the blanket rejection for
+/// calls made *through* a `pure`-declared HOF's own function-typed
+/// parameter. It says nothing about a HOF like
+///
+/// ```text
+/// fn run(f: fn(int) -e-> int, x: int) -> int {
+///     return f(x);
+/// }
+/// ```
+///
+/// which never declares `pure fn run` at all — its effect genuinely
+/// *depends* on what's passed as `f`, so RES-193's `-e->` effect-arrow
+/// marks `f` as an effect-variable parameter rather than fixing `run`
+/// to a single effect. Before this function existed, every call to
+/// `run` from a `pure` context was rejected outright (its declared
+/// effect defaults to `io` per RES-389), even `run(add1, 5)` where
+/// `add1` is provably `pure` — defeating the entire point of writing
+/// a genuinely effect-polymorphic HOF.
+///
+/// This function proves a *specific call site* `callee_name(call_arguments)`
+/// is pure despite `callee_name`'s own declared effect not being
+/// `pure`, by checking all of:
+///
+/// 1. `callee_name` has one or more invoked, function-typed
+///    parameters whose type annotation carries the RES-193 `-e->`
+///    effect-arrow marker (an "effect-variable parameter").
+/// 2. Every argument bound to one of those parameters *at this call
+///    site* is a plain identifier naming a top-level fn that is
+///    provably `pure`.
+/// 3. Every other operation in `callee_name`'s body — everything
+///    apart from invoking one of those effect-variable parameters —
+///    independently satisfies the same rules `check_body_effects`
+///    enforces for an explicitly `pure fn` ([`body_pure_modulo`]).
+///
+/// Returns `false` (never rescues) whenever any of the above can't be
+/// proven: no qualifying parameter, an unresolvable/non-pure argument,
+/// or a body operation that isn't provably pure. The caller
+/// (`typechecker::check_body_effects`) only calls this after its own
+/// unconditional rejection would otherwise fire, so `false` here is
+/// always a no-op — this function can only ever turn a
+/// previously-rejected call into an accepted one, never the reverse.
+/// Zero false-positive risk on any currently-compiling program.
+pub(crate) fn resolves_pure_at_call_site(
+    callee_name: &str,
+    call_arguments: &[Node],
+    statements: &[Spanned<Node>],
+    fn_effects: &HashMap<String, EffectSet>,
+) -> bool {
+    let Some(Node::Function {
+        parameters, body, ..
+    }) = statements
+        .iter()
+        .map(|s| &s.node)
+        .find(|n| matches!(n, Node::Function { name, .. } if name == callee_name))
+    else {
+        return false;
+    };
+
+    let invoked = invoked_callback_params(parameters, body);
+    let effect_var_params: HashSet<&str> = parameters
+        .iter()
+        .filter(|(ty, name)| {
+            is_function_type(ty) && has_effect_arrow(ty) && invoked.contains(name.as_str())
+        })
+        .map(|(_, name)| name.as_str())
+        .collect();
+    if effect_var_params.is_empty() {
+        return false;
+    }
+
+    for (idx, (_ty, pname)) in parameters.iter().enumerate() {
+        if !effect_var_params.contains(pname.as_str()) {
+            continue;
+        }
+        let Some(Node::Identifier { name: arg_name, .. }) = call_arguments.get(idx) else {
+            return false;
+        };
+        match fn_effects.get(arg_name) {
+            Some(effects) if effects.pure => {}
+            _ => return false,
+        }
+    }
+
+    body_pure_modulo(body, &effect_var_params, fn_effects, parameters)
+}
+
+/// True when `ty` (a `fn(...)`-shaped type-annotation string) carries
+/// the RES-193 `-e->` effect-arrow marker, i.e. was parsed from
+/// `fn(...) -e-> R` rather than the plain `fn(...) -> R` form. The
+/// arrow renders as a single letter sandwiched between two `-`s,
+/// ending in `>` (`"-e->"`) — see `parse_type_annotation`'s
+/// `Token::Function` arm in `lib.rs`, which is the sole producer of
+/// this string shape.
+fn has_effect_arrow(ty: &str) -> bool {
+    ty.split_whitespace().any(|tok| {
+        tok.len() >= 4
+            && tok.starts_with('-')
+            && tok.ends_with("->")
+            && tok[1..tok.len() - 2].chars().count() == 1
+    })
+}
+
+/// Recursive walk mirroring `typechecker::check_body_effects`'s
+/// pure-body rules, used to probe a *candidate* effect-polymorphic
+/// HOF's body rather than an explicitly `pure fn`. Two differences
+/// suit that purpose:
+///
+/// - A call whose callee is one of `deferred` (the HOF's own invoked
+///   effect-variable parameters) is always allowed — the caller
+///   ([`resolves_pure_at_call_site`]) has already separately proven
+///   every actual argument bound to one of those parameters is
+///   provably pure at this specific call site.
+/// - Everything else must independently satisfy the exact same rules
+///   `check_body_effects` enforces: user fns must be `pure`-declared,
+///   builtins must be on the pure-by-default list, and consuming one
+///   of `fn_params` that's `linear` is rejected (mirrors
+///   `check_body_effects`'s `linear_params` handling, applied here to
+///   the *candidate*'s own parameters).
+///
+/// Returns `bool` rather than `Result<_, String>` — the caller only
+/// needs a yes/no answer; on `false` it silently falls back to the
+/// existing rejection diagnostic.
+fn body_pure_modulo(
+    node: &Node,
+    deferred: &HashSet<&str>,
+    fn_effects: &HashMap<String, EffectSet>,
+    fn_params: &[(String, String)],
+) -> bool {
+    match node {
+        Node::Block { stmts, .. } => stmts
+            .iter()
+            .all(|s| body_pure_modulo(s, deferred, fn_effects, fn_params)),
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            body_pure_modulo(value, deferred, fn_effects, fn_params)
+        }
+        Node::ReturnStatement { value: Some(v), .. } => {
+            body_pure_modulo(v, deferred, fn_effects, fn_params)
+        }
+        Node::ReturnStatement { value: None, .. } => true,
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            body_pure_modulo(condition, deferred, fn_effects, fn_params)
+                && body_pure_modulo(consequence, deferred, fn_effects, fn_params)
+                && alternative
+                    .as_ref()
+                    .is_none_or(|a| body_pure_modulo(a, deferred, fn_effects, fn_params))
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            body_pure_modulo(condition, deferred, fn_effects, fn_params)
+                && body_pure_modulo(body, deferred, fn_effects, fn_params)
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            body_pure_modulo(iterable, deferred, fn_effects, fn_params)
+                && body_pure_modulo(body, deferred, fn_effects, fn_params)
+        }
+        Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
+            body_pure_modulo(condition, deferred, fn_effects, fn_params)
+        }
+        Node::LiveBlock { body, .. } => body_pure_modulo(body, deferred, fn_effects, fn_params),
+        Node::InfixExpression { left, right, .. } => {
+            body_pure_modulo(left, deferred, fn_effects, fn_params)
+                && body_pure_modulo(right, deferred, fn_effects, fn_params)
+        }
+        Node::PrefixExpression { right, .. } => {
+            body_pure_modulo(right, deferred, fn_effects, fn_params)
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if !arguments
+                .iter()
+                .all(|a| body_pure_modulo(a, deferred, fn_effects, fn_params))
+            {
+                return false;
+            }
+            for a in arguments {
+                if let Node::Identifier { name: arg_name, .. } = a
+                    && fn_params.iter().any(|(param_ty, param_name)| {
+                        arg_name == param_name && crate::linear::is_linear(param_ty)
+                    })
+                {
+                    return false;
+                }
+            }
+            if let Node::Identifier { name: callee, .. } = function.as_ref() {
+                if deferred.contains(callee.as_str()) {
+                    return true;
+                }
+                if let Some(callee_effects) = fn_effects.get(callee) {
+                    return callee_effects.pure;
+                }
+                if crate::typechecker::IMPURE_BUILTINS.contains(&callee.as_str()) {
+                    return false;
+                }
+                return crate::typechecker::is_known_pure_builtin(callee);
+            }
+            false
+        }
+        Node::FieldAccess { target, .. } => {
+            body_pure_modulo(target, deferred, fn_effects, fn_params)
+        }
+        Node::FieldAssignment { target, value, .. } => {
+            body_pure_modulo(target, deferred, fn_effects, fn_params)
+                && body_pure_modulo(value, deferred, fn_effects, fn_params)
+        }
+        Node::Assignment { value, .. } => body_pure_modulo(value, deferred, fn_effects, fn_params),
+        Node::IndexExpression { target, index, .. } => {
+            body_pure_modulo(target, deferred, fn_effects, fn_params)
+                && body_pure_modulo(index, deferred, fn_effects, fn_params)
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            body_pure_modulo(target, deferred, fn_effects, fn_params)
+                && body_pure_modulo(index, deferred, fn_effects, fn_params)
+                && body_pure_modulo(value, deferred, fn_effects, fn_params)
+        }
+        Node::ArrayLiteral { items, .. } => items
+            .iter()
+            .all(|i| body_pure_modulo(i, deferred, fn_effects, fn_params)),
+        Node::StructLiteral { fields, base, .. } => {
+            base.as_ref()
+                .is_none_or(|b| body_pure_modulo(b, deferred, fn_effects, fn_params))
+                && fields
+                    .iter()
+                    .all(|(_, v)| body_pure_modulo(v, deferred, fn_effects, fn_params))
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            body_pure_modulo(scrutinee, deferred, fn_effects, fn_params)
+                && arms.iter().all(|(_pat, guard, arm_body)| {
+                    guard
+                        .as_ref()
+                        .is_none_or(|g| body_pure_modulo(g, deferred, fn_effects, fn_params))
+                        && body_pure_modulo(arm_body, deferred, fn_effects, fn_params)
+                })
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            body_pure_modulo(expr, deferred, fn_effects, fn_params)
+        }
+        Node::TryExpression { expr, .. } => body_pure_modulo(expr, deferred, fn_effects, fn_params),
+        Node::OptionalChain { object, access, .. } => {
+            body_pure_modulo(object, deferred, fn_effects, fn_params)
+                && match access {
+                    crate::ChainAccess::Method(_, args) => args
+                        .iter()
+                        .all(|a| body_pure_modulo(a, deferred, fn_effects, fn_params)),
+                    _ => true,
+                }
+        }
+        Node::Function { body, .. } => body_pure_modulo(body, deferred, fn_effects, fn_params),
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +853,124 @@ mod tests {
         let err = check(&s, &fe, "<t>").unwrap_err();
         assert!(err.contains("<t>:"), "missing source path: {err}");
         assert!(err.contains(":4:"), "missing line number: {err}");
+    }
+
+    /// Finds the arguments of the first call to `callee` anywhere in
+    /// `statements` — enough to drive [`resolves_pure_at_call_site`]
+    /// directly in a unit test without hand-building `Node::Identifier`
+    /// literals.
+    fn find_call_args<'a>(statements: &'a [Spanned<Node>], callee: &str) -> &'a [Node] {
+        fn walk<'a>(node: &'a Node, callee: &str) -> Option<&'a [Node]> {
+            match node {
+                Node::Block { stmts, .. } => stmts.iter().find_map(|s| walk(s, callee)),
+                Node::ReturnStatement { value: Some(v), .. } => walk(v, callee),
+                Node::ExpressionStatement { expr, .. } => walk(expr, callee),
+                Node::Function { body, .. } => walk(body, callee),
+                Node::CallExpression {
+                    function,
+                    arguments,
+                    ..
+                } => {
+                    if let Node::Identifier { name, .. } = function.as_ref()
+                        && name == callee
+                    {
+                        return Some(arguments.as_slice());
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+        statements
+            .iter()
+            .find_map(|s| walk(&s.node, callee))
+            .unwrap_or_else(|| panic!("no call to `{callee}` found"))
+    }
+
+    #[test]
+    fn has_effect_arrow_detects_res193_marker() {
+        assert!(has_effect_arrow("fn(int) -e-> int"));
+        assert!(!has_effect_arrow("fn(int) -> int"));
+        assert!(!has_effect_arrow("int"));
+    }
+
+    #[test]
+    fn polymorphic_hof_accepts_pure_callback_at_call_site() {
+        // `run` never declares `pure fn` — its effect is genuinely
+        // polymorphic via the `-e->` marker on `f`. Calling it with a
+        // provably-pure callback must be provable pure at this site.
+        let src = "fn run(fn(int) -e-> int f, int x) -> int { return f(x); }\n\
+                   pure fn add1(int x) -> int { return x + 1; }\n\
+                   fn caller() -> int { return run(add1, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let args = find_call_args(&s, "run");
+        assert!(
+            resolves_pure_at_call_site("run", args, &s, &fe),
+            "pure callback into an effect-polymorphic HOF must resolve pure"
+        );
+    }
+
+    #[test]
+    fn polymorphic_hof_rejects_io_callback_at_call_site() {
+        let src = "fn run(fn(int) -e-> int f, int x) -> int { return f(x); }\n\
+                   io fn noisy(int x) -> int { println(x); return x; }\n\
+                   fn caller() -> int { return run(noisy, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let args = find_call_args(&s, "run");
+        assert!(
+            !resolves_pure_at_call_site("run", args, &s, &fe),
+            "io callback into an effect-polymorphic HOF must not resolve pure"
+        );
+    }
+
+    #[test]
+    fn polymorphic_hof_with_extra_impurity_is_never_rescued() {
+        // `run` does something impure (`println`) *unconditionally*,
+        // regardless of what `f` turns out to be — this must never be
+        // treated as pure even when the callback itself is pure,
+        // otherwise a `pure` caller could transitively observe I/O.
+        let src = "fn run(fn(int) -e-> int f, int x) -> int { \
+                   println(\"go\"); return f(x); }\n\
+                   pure fn add1(int x) -> int { return x + 1; }\n\
+                   fn caller() -> int { return run(add1, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let args = find_call_args(&s, "run");
+        assert!(
+            !resolves_pure_at_call_site("run", args, &s, &fe),
+            "a HOF with unconditional impurity beyond its callback must never be rescued"
+        );
+    }
+
+    #[test]
+    fn hof_without_effect_arrow_marker_is_not_rescued() {
+        // No `-e->` marker on `f` at all — this is the monomorphic
+        // case `check`/`check_call_sites` already handles; the
+        // polymorphism probe must not also fire for it.
+        let src = "fn run(fn(int) -> int f, int x) -> int { return f(x); }\n\
+                   pure fn add1(int x) -> int { return x + 1; }\n\
+                   fn caller() -> int { return run(add1, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let args = find_call_args(&s, "run");
+        assert!(!resolves_pure_at_call_site("run", args, &s, &fe));
+    }
+
+    #[test]
+    fn hof_with_unresolvable_argument_is_not_rescued() {
+        // The argument bound to `f` is a local parameter, not a
+        // plain top-level fn name — its effect can't be proven, so
+        // per "when uncertain, don't rescue" this must stay
+        // unrescued (leaving the existing rejection in place, not a
+        // regression since the call was already rejected before this
+        // pass existed).
+        let src = "fn run(fn(int) -e-> int f, int x) -> int { return f(x); }\n\
+                   fn caller(fn(int) -> int cb) -> int { return run(cb, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let args = find_call_args(&s, "run");
+        assert!(!resolves_pure_at_call_site("run", args, &s, &fe));
     }
 }

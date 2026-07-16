@@ -1,0 +1,55 @@
+// RES-3933 A-E7 follow-up (#4072): true effect-variable
+// polymorphism for higher-order functions.
+//
+// `run` never declares `pure fn` or `io fn` — its effect genuinely
+// depends on what's passed as its function-typed parameter `f`,
+// which RES-193's `-e->` effect-arrow marks as an "effect-variable
+// parameter" (as opposed to a fixed `fn(int) -> int`). Before this
+// pass existed, `run`'s own declared effect defaulted to `io`
+// (RES-389's rule for unannotated fns), so *every* call to `run`
+// from a `pure` context was rejected outright — even one passing a
+// provably-`pure` callback.
+//
+// `effect_polymorphism::resolves_pure_at_call_site` now proves a
+// specific call site pure when (a) the argument bound to the
+// effect-variable parameter is a plain identifier naming a
+// provably-`pure` top-level fn, and (b) everything else in `run`'s
+// body is independently pure. That's exactly what `pure_caller`
+// below demonstrates: `run(add1, 5)` type-checks from a `pure`
+// context because `add1` is `pure`.
+//
+// See `hof_effect_polymorphic_io_at_call_site_rejected.rz` for the
+// mirror REJECT case — the same `run`, called with an `io` callback
+// from a `pure` context, is still rejected. See
+// `hof_effect_pure_callback_accepted.rz` / `hof_effect_io_callback_rejected.rz`
+// for the earlier, monomorphic increment (#4073) this builds on.
+
+pure fn add1(int x) -> int {
+    return x + 1;
+}
+
+io fn noisy(int x) -> int {
+    println(x);
+    return x;
+}
+
+// No `pure`/`io` keyword: `run`'s effect is polymorphic over `f`'s.
+fn run(fn(int) -e-> int f, int x) -> int {
+    return f(x);
+}
+
+pure fn pure_caller() -> int {
+    return run(add1, 5);
+}
+
+fn io_caller() -> int {
+    return run(noisy, 10);
+}
+
+fn main() -> int {
+    println(pure_caller());
+    println(io_caller());
+    return 0;
+}
+
+main();

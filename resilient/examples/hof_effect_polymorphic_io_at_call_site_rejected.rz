@@ -1,0 +1,40 @@
+// RES-3933 A-E7 follow-up (#4072): true effect-variable
+// polymorphism — REJECT case.
+//
+// `run` is the same effect-polymorphic HOF as in
+// `hof_effect_polymorphic_call_site.rz`: it never declares
+// `pure fn`/`io fn`, and its effect at a given call site is inferred
+// from the actual callback bound to its `-e->`-marked parameter `f`.
+//
+// Passing `noisy` (declared `io fn`) from a `pure` caller is a
+// provable violation — `run`'s effect at *this* call site resolves
+// to `io`, which a `pure` fn may not call.
+// `effect_polymorphism::resolves_pure_at_call_site` correctly
+// declines to rescue this call (it only ever rescues a provably-pure
+// callback), so the existing RES-389 rejection stands.
+//
+// Marked `.interactive` (matching `hof_effect_io_callback_rejected.rz`
+// and `linear_effect_pure_rejected.rz`) because the golden-output
+// harness only replays examples under the default soft-typecheck
+// mode (diagnostics on stderr, program still runs — RES-1088). This
+// example's `.expected.txt` was captured under `--typecheck-strict`,
+// which is what actually fails the build on this violation.
+
+io fn noisy(int x) -> int {
+    println(x);
+    return x;
+}
+
+fn run(fn(int) -e-> int f, int x) -> int {
+    return f(x);
+}
+
+pure fn pure_caller() -> int {
+    return run(noisy, 5);
+}
+
+fn main() -> int {
+    return pure_caller();
+}
+
+main();
