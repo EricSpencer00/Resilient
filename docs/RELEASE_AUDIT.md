@@ -21,6 +21,14 @@ fully-green release candidate. `v1.0.0-rc.1` is left in place (not moved) per
 this repo's no-moving-pushed-tags policy; it simply has no attached GitHub
 Release.
 
+**Final release (RES-4106, `v1.0.0`):** `v1.0.0-rc.3` shipped cleanly (4-target
+binaries + GitHub Release; extension `1.6.1`), validating the pipeline. The
+workspace is now promoted `1.0.0-rc.1`→`1.0.0`, STABILITY.md's pre-1.0 framing
+retired for the SemVer commitment (F-E6), and the extension bumped to `1.7.0`
+(past the Marketplace `1.6.1` floor). Both macOS release legs remain no-Z3
+(the static-Z3-on-macOS link failure stays deferred as #3985); two of four
+targets — both Linux — ship static Z3.
+
 ## 1. Tag inventory vs manifest versions
 
 ```

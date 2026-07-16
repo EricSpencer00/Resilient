@@ -16,22 +16,24 @@ authoritative (RES-3510 closed the gap between them as of 2026-07).
 
 ## Overview
 
-Resilient is **pre-1.0**. Any release can currently break any program — the
-surface area is still being designed. This document defines what stability
-guarantees exist today, what they will become once the language reaches
-1.0, and how breaking changes are recorded so nobody upgrades blind.
+Resilient is **1.0**. As of `v1.0.0` the **Stable** surface is under a
+[Semantic Versioning 2.0](https://semver.org/) commitment: no breaking change
+without a MAJOR bump and a deprecation cycle. The **Experimental** surface is
+explicitly not yet covered. This document defines exactly what that split
+covers and how breaking changes are recorded so nobody upgrades blind.
 
 ## Current status
 
 - `resilient --version` / `rz --version` prints a one-line reminder that the
-  compiler is pre-1.0.
+  compiler is a stable 1.0 release.
 - Every breaking change lands in the [CHANGELOG](#changelog) at the bottom
   of `STABILITY.md`, with a one-line migration hint where practical.
-- No deprecation cycle is *required* pre-1.0, but where it's cheap the
-  compiler still emits a warning for one release before removing a
-  construct.
-- Tagged releases (`v0.x.y`) are reproducible snapshots — pin to one for a
-  stable target. `main` is always green in CI but is not itself stable.
+- Breaking a **Stable** feature requires a MAJOR bump preceded by at least one
+  MINOR release that ships the replacement with a deprecation warning;
+  **Experimental** features may still change without notice until promoted.
+- Tagged releases (`v1.x.y`) are reproducible snapshots — pin to one for a
+  fixed target. `main` is always green in CI but only tagged releases carry
+  the SemVer guarantee.
 
 ## Feature status vocabulary
 
