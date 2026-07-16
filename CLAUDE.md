@@ -392,6 +392,7 @@ discovering a fail in CI wastes minutes per cycle.
 | Tests | `cargo test --locked` |
 | Clippy | `cargo clippy --locked --all-targets -- -D warnings` |
 | Format | `cargo fmt --check` |
+| Conformance | `cargo test --locked --test it conformance` |
 | Z3 | `cargo test --features z3` |
 | Embedded cross | `cargo build --target thumbv7em-none-eabihf` etc. |
 | Size gate | `.text` ≤ 64 KiB for Cortex-M4F demo |
@@ -402,6 +403,7 @@ Required-status-checks set on the `main` branch (these block auto-merge
 if any are not `SUCCESS`):
 
 - `build / test / clippy`
+- `conformance suite (STABILITY.md Stable surface)`
 - `build / test with --features z3`
 - `board hygiene`
 - `resilient-runtime-cortex-m-demo (thumbv7em-none-eabihf)`

@@ -17,6 +17,18 @@ vs `--vm` only) and golden output was checked by
 indexed to `STABILITY.md`'s Stable list, and neither includes `--jit`.
 This suite is the first slice that is.
 
+## CI wiring
+
+As of RES-4092 (F-E1), `conformance` is its own top-level job in
+`.github/workflows/ci.yml` (`cargo test --locked --test it conformance`),
+distinct from `default_ci` ("build / test / clippy"), and is listed in
+CLAUDE.md's required-status-checks documentation. `default_ci`'s own
+`cargo test` step still exercises the same module as part of the single
+`it` binary — the dedicated job exists so a conformance regression shows
+up as its own named, independently-required CI line instead of being
+buried among ~1200 other test names in `default_ci`'s output, mirroring
+the existing `z3_ci` / `extra_feature_tests` split.
+
 ## Where things live
 
 | Path | Purpose |

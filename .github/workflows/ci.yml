@@ -112,16 +112,6 @@ jobs:
         if: needs.changes.outputs.run_heavy == 'true'
         run: cargo test --locked --verbose
 
-      # RES-3983: F-E1 conformance suite (STABILITY.md Stable surface vs
-      # tree-walker/--vm/--jit). Already exercised by the `cargo test`
-      # step above as part of the single `tests/it` binary — this step
-      # re-runs just that module so a conformance regression shows up as
-      # its own clearly-named, required CI line instead of being buried
-      # in ~1200 other test names. See docs/CONFORMANCE.md.
-      - name: Conformance suite (STABILITY.md Stable surface)
-        if: needs.changes.outputs.run_heavy == 'true'
-        run: cargo test --locked --test it conformance --verbose
-
       - name: Upload cargo --timings report
         if: needs.changes.outputs.run_heavy == 'true' && always()
         uses: actions/upload-artifact@v4
@@ -130,6 +120,49 @@ jobs:
           path: resilient/target/cargo-timings/cargo-timing-*.html
           retention-days: 14
           if-no-files-found: ignore
+
+  # RES-4092 (F-E1): the conformance suite (STABILITY.md Stable surface vs
+  # tree-walker/--vm/--jit — see docs/CONFORMANCE.md) used to run only as a
+  # step inside `default_ci`, buried among ~1200 other test names in that
+  # job's `cargo test` output and invisible as its own line in branch
+  # protection's required-status-checks list. It's promoted to its own
+  # top-level job here so a conformance regression is its own named,
+  # independently-required CI gate — mirroring how `z3_ci` and
+  # `extra_feature_tests` are already split out below rather than folded
+  # into `default_ci`. `default_ci`'s own `cargo test` step above still
+  # covers the conformance module too (it's part of the same `it` test
+  # binary), so this job is a second, cheap, targeted invocation of
+  # exactly that module, not a replacement for the full suite.
+  conformance:
+    name: conformance suite (STABILITY.md Stable surface)
+    needs: [changes]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deferred gate fast path
+        if: needs.changes.outputs.run_heavy != 'true'
+        run: echo "docs-only or draft PR; conformance gate deferred until ready"
+
+      - name: Install Rust toolchain
+        if: needs.changes.outputs.run_heavy == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        if: needs.changes.outputs.run_heavy == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: conformance
+
+      - name: cargo test --test it conformance
+        if: needs.changes.outputs.run_heavy == 'true'
+        run: cargo test --locked --test it conformance --verbose
 
   z3_ci:
     name: build / test with --features z3
