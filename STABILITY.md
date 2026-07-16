@@ -1,8 +1,10 @@
 # Resilient Stability Policy
 
-Resilient is **pre-1.0**. This document describes the stability guarantees the
-project offers today and the guarantees it will offer once the language hits
-1.0.
+Resilient is **1.0**. As of `v1.0.0` the project makes a
+[Semantic Versioning 2.0](https://semver.org/) stability commitment for the
+**Stable** surface below: it will not break without a MAJOR version bump and a
+deprecation cycle. This document describes exactly what that covers and what
+remains **experimental** (and therefore still free to change).
 
 If you are depending on Resilient in production, read this file end-to-end
 before upgrading compiler versions.
@@ -19,9 +21,9 @@ two files — see the [CHANGELOG](#changelog) entry below.
 
 ## TL;DR
 
-- Current status: **pre-1.0** — breaking changes can land at any time, with no
-  deprecation cycle. They are always recorded in the [CHANGELOG](#changelog)
-  below.
+- Current status: **1.0** — the **Stable** surface follows SemVer: no breaking
+  change without a MAJOR bump and a deprecation cycle. Every such change is
+  recorded in the [CHANGELOG](#changelog) below.
 - `resilient --version` prints a one-line reminder of this status.
 - Some features are **experimental** and will almost certainly change; others
   are **stable** and already follow a best-effort deprecation path. The lists
@@ -61,21 +63,21 @@ independently-drifting ones. This resolves `docs/RELEASE_AUDIT.md` Finding B.
 
 ---
 
-## Pre-1.0 Rules
+## 1.0 Rules
 
-Until the first `1.0.0` tag:
+From the `1.0.0` tag onward:
 
-- **Any release can break any program.** The surface area is still being
-  designed — expect syntax, keyword spellings, builtin signatures, and
-  standard-library shapes to move.
+- **The Stable surface (below) does not break without a MAJOR bump.** A
+  breaking change to it requires at least one MINOR release that ships the
+  replacement alongside a deprecation warning first.
+- **The Experimental surface (below) may still change without notice** — it is
+  explicitly *not* covered by the SemVer commitment until promoted to Stable.
 - **Every breaking change is logged** in the [CHANGELOG](#changelog) section at
   the bottom of this file, with a one-line migration hint where practical.
-- **No deprecation cycle is required** pre-1.0, but where it's cheap the
-  compiler will still emit a warning for one release before removing a
-  construct.
-- Tagged releases (`v0.x.y`) are reproducible snapshots — pin to one if you
-  want a stable target.
-- `main` is always green in CI but is not considered stable at any point.
+- Tagged releases (`v1.x.y`) are reproducible snapshots — pin to one if you
+  want a fixed target.
+- `main` is always green in CI, but only tagged releases carry the SemVer
+  guarantee.
 
 ---
 
@@ -217,6 +219,7 @@ Chronological log of breaking and stability-relevant changes. Newest first.
 
 | Date    | Version | Area        | Change                                                                                           |
 |---------|---------|-------------|--------------------------------------------------------------------------------------------------|
+| 2026-07 | 1.0.0   | Release     | RES-4106: **first stable release.** The Stable surface above is now under a SemVer 2.0 commitment — no breaking change without a MAJOR bump + deprecation cycle. Workspace promoted `1.0.0-rc.1`→`1.0.0`; `rz --version` now reads `stable release`. Pre-1.0 framing retired (F-E6). VS Code extension published at `1.7.0` (decoupled line, E-E3). No feature-list changes vs rc.1. |
 | 2026-07 | 1.0.0-rc.1 | Release  | RES-4102: cut the first 1.0 release candidate. Workspace manifests aligned to `1.0.0-rc.1` in lockstep; `rz --version` notice is now version-derived (`release candidate` on the rc line, retiring the hardcoded `pre-1.0` string — F-E6). The VS Code extension version line was decoupled and moved forward to `1.6.0` past the Marketplace `1.5.3` floor (E-E3). No change to the Stable/Experimental feature lists. API may still shift before the final `1.0.0` tag. |
 | 2026-07 | 0.2.x   | Docs        | RES-3510: reconciled this file with `docs/STABILITY_POLICY.md` into one canonical policy; added the `backend-limited` tier (already shipped in `rz --help`, RES-3133) to the written policy. No change to the Stable/Experimental feature lists themselves. |
 | 2026-04 | 0.1.x   | FFI         | Static-registry FFI landed behind `--features ffi-static` in `resilient-runtime`. Experimental — signatures, type mapping, and registration macros may change (RES-FFI phase 1). |
