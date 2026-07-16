@@ -463,6 +463,15 @@ mod traits;
 // `typechecker.rs`'s `<EXTENSION_PASSES>` block.
 mod associated_types;
 
+// RES-4068 (A-E3 follow-up): `dyn Trait` trait-object type-checking —
+// unknown-trait rejection, coercion-site checking (a value coerces to
+// `dyn Trait` only if its concrete type provably implements `Trait`),
+// and method-call resolution against the trait's declared methods.
+// Conservative v1: no vtable / dynamic-dispatch representation in any
+// backend — see the module doc for the exact scope and the follow-up
+// issue tracking codegen.
+mod dyn_trait;
+
 // RES-2552: blanket trait implementations (`impl<T: Bound> Trait for T`).
 pub(crate) mod blanket_impl;
 
@@ -5576,24 +5585,38 @@ impl Parser {
                 };
                 Some(format!("{}{}", prefix, inner))
             }
-            // A-E3 (RES-3933): `dyn Trait` trait-object syntax. `dyn` is not
-            // a lexer keyword (bare identifier), so without this arm the
-            // leftover trait-name token would fall through and produce a
-            // confusing, unrelated parse error further down. Resilient v1
-            // is static/monomorphized dispatch only — no vtable — so this
-            // is a dedicated, honest diagnostic rather than silent
-            // acceptance or a garbled downstream error. Trait objects are
-            // tracked for future work; see docs/LANGUAGE.md.
+            // RES-4068 (A-E3 follow-up): `dyn Trait` trait-object syntax.
+            // `dyn` is not a lexer keyword (bare identifier), so this arm
+            // must run before the plain-identifier arm below or the
+            // trait-name token would be parsed as an unrelated bare type.
+            // Encoded verbatim as `"dyn TraitName"` (same string-encoding
+            // convention as `linear T` / `&mut[R] T` / `Base::AssocName`);
+            // `dyn_trait::check` resolves it against known trait
+            // declarations, coercion sites, and method calls. Conservative
+            // v1: only the type-checking surface is implemented — there is
+            // still no vtable / dynamic-dispatch representation in the
+            // tree-walker, VM, or JIT (see docs/LANGUAGE.md and the
+            // follow-up issue tracking codegen).
             Token::Identifier(t) if t == "dyn" => {
-                self.record_error(format!(
-                    "trait objects (`dyn Trait`) are not supported {} — Resilient v1 uses static/monomorphized dispatch only (no vtable); use a generic type parameter with a trait bound instead (e.g. `<T: Trait>`)",
-                    ctx
-                ));
                 self.next_token(); // consume `dyn`
-                if let Token::Identifier(_) = &self.current_token {
-                    self.next_token(); // best-effort: consume the trait name too
-                }
-                return None;
+                let trait_name = match &self.current_token {
+                    Token::Identifier(n) => n.clone(),
+                    other => {
+                        let tok = other.clone();
+                        self.record_error(format!(
+                            "Expected trait name after `dyn` {}, found {}",
+                            ctx, tok
+                        ));
+                        return None;
+                    }
+                };
+                self.next_token(); // consume the trait name
+                let ty = format!("dyn {}", trait_name);
+                return Some(if is_linear {
+                    format!("linear {}", ty)
+                } else {
+                    ty
+                });
             }
             Token::Identifier(t) => {
                 let ty = t.clone();

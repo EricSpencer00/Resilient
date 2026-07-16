@@ -1,0 +1,35 @@
+// RES-4068 (A-E3 follow-up): `dyn Trait` trait objects — accept case.
+//
+// `dyn Shape` is a real, checked type: `use_shape`'s parameter is typed
+// `dyn Shape`, and `dyn_trait::check` verifies (1) `Shape` is a known
+// trait, (2) the `Circle { r: 3 }` argument passed at the call site in
+// `main` has a concrete type that provably implements `Shape` (an
+// explicit `impl Shape for Circle` here), and (3) the method call
+// `s.area()` inside `use_shape`'s body resolves against `Shape`'s
+// declared methods. Resilient v1 has no vtable — the call still
+// compiles to the same static `Circle$area` dispatch it would without
+// `dyn`; `dyn Shape` only changes what the type checker will accept.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r * self.r;
+    }
+}
+
+fn use_shape(dyn Shape s) -> int {
+    return s.area();
+}
+
+fn main() {
+    println(use_shape(new Circle { r: 3 }));
+}
+
+main();

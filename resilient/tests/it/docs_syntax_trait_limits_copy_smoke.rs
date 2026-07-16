@@ -16,6 +16,15 @@
 //! `dyn Trait` / vtable dispatch remains genuinely unsupported and is still
 //! listed, now pointing at the A-E3 follow-up tracking issue (#4068)
 //! instead of the stale `RES-293` reference.
+//!
+//! RES-4068 test change: the `dyn Trait` bullet's wording was revised
+//! again once RES-4068 shipped type-checking support (unknown-trait
+//! rejection, coercion checking, method-call resolution) — `dyn Trait`
+//! no longer parses to a hard error. The substrings this test pins
+//! ("`dyn Trait` / virtual tables", "there is no", "dynamic dispatch")
+//! still all appear in the revised bullet, which now states precisely
+//! *what* still has no vtable / dynamic dispatch (the three execution
+//! backends) instead of claiming `dyn Trait` is entirely unsupported.
 
 #[test]
 fn root_syntax_docs_describe_trait_limitations_without_future_labels() {

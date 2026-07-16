@@ -1,0 +1,29 @@
+// RES-4068 (A-E3 follow-up): `dyn Trait` trait objects — reject case.
+//
+// `Square` implements neither `Shape` explicitly (no `impl Shape for
+// Square`) nor structurally (no `area` method bound to it at all), so
+// passing a `Square { .. }` struct literal into `use_shape`'s
+// `dyn Shape`-typed parameter is a provable coercion violation.
+// `dyn_trait::check` catches this at the call site because the
+// argument's concrete type is statically determinable (a direct
+// struct-literal argument) — the same "struct-literal-only"
+// determinability `traits.rs` already relies on for generic bound
+// checking.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Square {
+    int side,
+}
+
+fn use_shape(dyn Shape s) -> int {
+    return 0;
+}
+
+fn main() {
+    println(use_shape(new Square { side: 2 }));
+}
+
+main();
