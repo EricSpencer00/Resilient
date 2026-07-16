@@ -571,10 +571,13 @@ The current trait system does not support:
   resolves against that impl's binding and participates in real type
   checking — A-E3/RES-3933) — tracked in
   [#4067](https://github.com/EricSpencer00/Resilient/issues/4067)
-- `dyn Trait` / virtual tables — `dyn Trait` syntax parses to a
-  dedicated, clear diagnostic rather than a vtable; there is no
-  dynamic dispatch — tracked in
-  [#4068](https://github.com/EricSpencer00/Resilient/issues/4068)
+- `dyn Trait` / virtual tables — `dyn Trait` is now a checked type
+  (RES-4068): coercion into a `dyn Trait`-typed slot is validated
+  against the concrete type's trait implementation, and method calls
+  on a `dyn Trait` value resolve against the trait's declared methods.
+  But there is no vtable and no dynamic dispatch code path in any of
+  the three backends — checking only, dispatch stays static —
+  tracked in [#4068](https://github.com/EricSpencer00/Resilient/issues/4068)
 - Generic associated types (`type Item<T>;`) and associated constants
   are not supported yet
 

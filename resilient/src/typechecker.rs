@@ -5693,6 +5693,21 @@ impl TypeChecker {
         {
             return true;
         }
+        // RES-4068 (A-E3 follow-up): `dyn Trait` coercion. The general
+        // type-compatibility gate stays permissive here — any concrete
+        // struct type is allowed to flow into a `dyn Trait`-typed slot
+        // at this level, exactly like `Type::Any`. The precise "does
+        // the concrete type actually implement the trait" check is
+        // `dyn_trait::check`'s job (a dedicated whole-program pass that
+        // rejects only provable violations at struct-literal call/let
+        // sites); this gate must not pre-empt it with a false-positive
+        // "Type mismatch" before that pass ever runs.
+        if let Type::Struct(expected_name) = expected
+            && expected_name.starts_with("dyn ")
+            && matches!(actual, Type::Struct(_) | Type::AnonymousStruct(_))
+        {
+            return true;
+        }
         match (actual, expected) {
             (Type::Option(actual_inner), Type::Option(expected_inner)) => {
                 self.type_satisfies(actual_inner, expected_inner)
@@ -6424,6 +6439,15 @@ impl TypeChecker {
                 {
                     crate::traits::check(program, source_path)?;
                 }
+                // RES-4068 (A-E3 follow-up): `dyn Trait` trait-object
+                // checking — unknown-trait rejection, coercion at
+                // struct-literal call/let sites, method-call resolution.
+                // No cheap Markers signal distinguishes "some `dyn X`
+                // annotation exists" from the general trait-decl flags
+                // (an unknown-trait `dyn X` can appear with zero trait
+                // declarations in the program), so this pass runs
+                // unconditionally and does its own fast-reject internally.
+                crate::dyn_trait::check(program, source_path)?;
                 // RES-3933 (A-E3) gate: pass has work when some
                 // `impl Trait for Type` block exists, or (#4067) when a
                 // generic fn signature may carry a `T::Assoc` projection
@@ -11093,6 +11117,18 @@ impl TypeChecker {
                 }
                 Ok(Type::AnonymousStruct(fields))
             }
+            // RES-4068 (A-E3 follow-up): `dyn TraitName` trait-object
+            // type. Resolved to `Type::Struct("dyn TraitName")` — a
+            // distinctly-named nominal type, never equal to any real
+            // struct's `Type::Struct` by the general compatibility
+            // machinery. `dyn_trait::check` performs the actual
+            // trait-object semantics (unknown-trait rejection, coercion
+            // checking at struct-literal call/let sites, method-call
+            // resolution against the trait's declared methods) as a
+            // dedicated whole-program pass, mirroring how `Self::Assoc`
+            // and `T::Assoc` resolve to a literal `Type::Struct` string
+            // that a dedicated module then interprets.
+            other if other.starts_with("dyn ") => Ok(Type::Struct(other.to_string())),
             // A-E3 (RES-3933): `Self::AssocName` projection. Resolved
             // against the associated-type bindings of whichever
             // `impl Trait for Type` block's methods are currently

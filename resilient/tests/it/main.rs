@@ -90,6 +90,7 @@ mod docs_tutorial_verify_all_command_smoke;
 mod dump_chunks_smoke;
 mod dump_source_map_help_smoke;
 mod dump_tokens_smoke;
+mod dyn_trait_smoke;
 mod effect_system_smoke;
 mod examples_golden;
 mod examples_smoke;

@@ -1,0 +1,17 @@
+// RES-4068 (A-E3 follow-up): `dyn Trait` trait objects — reject case.
+//
+// `Frobnicate` is never declared as a trait anywhere in this program.
+// `dyn_trait::check` rejects any `dyn X` annotation naming an unknown
+// trait — a provable violation regardless of how `X` is used
+// downstream, mirroring the "unknown trait `X` in bound" diagnostic
+// `traits.rs` already emits for `<T: Trait>` generic bounds.
+
+fn use_shape(dyn Frobnicate s) -> int {
+    return 0;
+}
+
+fn main() {
+    println(0);
+}
+
+main();
