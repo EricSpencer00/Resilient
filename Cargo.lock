@@ -1801,14 +1801,14 @@ dependencies = [
 
 [[package]]
 name = "resilient-runtime"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "embedded-alloc",
 ]
 
 [[package]]
 name = "resilient-span"
-version = "0.2.1"
+version = "0.2.3"
 
 [[package]]
 name = "rustc-hash"

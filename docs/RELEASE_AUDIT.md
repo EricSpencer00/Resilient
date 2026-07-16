@@ -206,3 +206,50 @@ that's a convention, not an enforced gate in the release pipeline itself.
    still prints the pre-1.0 stability banner correctly for an `-rc` tag
    (STABILITY.md's pre-1.0 rules stay in effect until the real `v1.0.0`,
    not the `-rc`).
+
+## 5. RES-3985 follow-up: closing Finding B and most of the Z3 gap
+
+This section records what changed after the audit above; it doesn't
+re-run the audit, just resolves the two open items it flagged.
+
+**Finding B (workspace version drift) — resolved.** `resilient-runtime`,
+`resilient-span`, and `resilient-playground` are now `0.2.3`, matching
+`resilient/Cargo.toml`. The decision (option 1 from step 3 above: bump to
+match, rather than let them drift independently) is written down in
+STABILITY.md's "Versioning Intent" section, which now states plainly
+that `resilient/Cargo.toml`'s version is canonical and these three
+crates are kept in lockstep with it going forward.
+
+**Z3-by-default gate — 3 of 4 targets now, not 1 of 4.** The "shipping 3
+of 4 platforms with Z3 verification entirely absent" gap called out in
+section 3 above is mostly closed. `release.yml` now builds
+`--features z3,z3-static` for `x86_64-unknown-linux-gnu` (unchanged),
+`aarch64-unknown-linux-gnu` (cross-compiled, via a `Cross.toml`
+`pre-build` hook that installs `python3` into the `cross-rs` Docker
+image — the only thing missing from it; cmake, the GNU cross C++
+toolchain, and libclang were already present, verified by inspecting the
+image directly), and `aarch64-apple-darwin` (built natively through
+Homebrew GCC 13 instead of Apple Clang, which is what was blocking it —
+see the "Build (native, Z3 static-linked, macOS via GCC)" step's comment
+in `release.yml` for the two extra link flags GCC needs that Clang
+didn't: `CXXSTDLIB=stdc++` and an explicit `-l emutls_w` for GCC's
+emulated-TLS helper). Verified end-to-end locally on
+`aarch64-apple-darwin`: the built binary has no `libz3` runtime
+dependency (`otool -L`) and `scripts/release-smoke-test.sh` passes,
+i.e. `rz --audit` genuinely discharges the fixture's obligation via Z3.
+
+**`x86_64-apple-darwin` remains the one no-z3 leg.** It's a cross-arch
+build from the arm64 `macos-latest` runner, and Homebrew's `gcc@13`
+bottle is arm64-native only — passing `-arch x86_64` to it silently
+produces an arm64 object instead of cross-compiling (verified locally:
+`g++-13 -arch x86_64 -c t.cpp -o t.o` emits a Mach-O arm64 object with a
+warning that the flag was ignored). Closing this fully would mean
+bootstrapping a second, Rosetta-hosted Intel Homebrew prefix
+(`arch -x86_64 /usr/local/bin/brew install gcc@13`) purely to get an
+x86_64-native GCC — plausible, but unvalidated here, and risky to wire
+into `release.yml` blind since this repo's local dev environment can
+build and verify the `aarch64-apple-darwin` leg directly but has no way
+to validate an `x86_64-apple-darwin` cross-build's link step without
+running it. Left as the residual scope of #3985; the README and
+`release.yml` matrix comment both document the current 3-of-4 state
+precisely rather than overclaiming.

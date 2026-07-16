@@ -1,0 +1,15 @@
+# RES-3985: the default `aarch64-unknown-linux-gnu` cross-rs Docker image
+# (`ghcr.io/cross-rs/aarch64-unknown-linux-gnu`) ships cmake, the GNU
+# cross C++ toolchain, and libclang — everything `z3-sys`'s vendored-Z3
+# build needs via `--features z3,z3-static` — except `python3`, which
+# Z3's `CMakeLists.txt` requires (`find_package(PythonInterp 3
+# REQUIRED)`) for its own codegen scripts. Verified locally by inspecting
+# the image (`docker run --platform linux/amd64
+# ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main`): cmake 3.23.1,
+# `aarch64-linux-gnu-g++` 13.3.0, and `libclang-18.so` are all present;
+# only `python3` is missing, and a plain `apt-get install` (the image
+# runs as root) resolves it.
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update && apt-get install --assume-yes python3",
+]
