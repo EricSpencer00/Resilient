@@ -118,3 +118,26 @@ main(0);\n"
         read_expected("compound_trait_bounds_missing_first_err.txt")
     );
 }
+
+/// RES-4087: `COMMON` above binds each method call to an intermediate
+/// `let x: int` before summing — that was the documented *workaround*
+/// for a checker bug where `shape.draw() + shape.size()` (summed
+/// directly, no intermediate bindings) was misinferred as array concat
+/// and rejected with "declared int, returning array" even though the
+/// program runs fine and prints 12. This test pins the workaround-free
+/// form so the bug can't silently come back.
+#[test]
+fn compound_bound_direct_method_call_sum_not_misinferred_as_array() {
+    let src = "trait Drawable { fn draw(self) -> int; }\n\
+trait Sizable { fn size(self) -> int; }\n\
+struct Circle { int radius }\n\
+impl Drawable for Circle { fn draw(self) -> int { return self.radius; } }\n\
+impl Sizable for Circle { fn size(self) -> int { return self.radius * 2; } }\n\
+fn render<T: Drawable + Sizable>(T shape) -> int { return shape.draw() + shape.size(); }\n\
+fn main(int _d) { println(render(new Circle { radius: 4 })); }\n\
+main(0);\n";
+    assert_eq!(
+        run_check("direct_sum_ok", true, src),
+        read_expected("compound_trait_bounds_ok.txt")
+    );
+}

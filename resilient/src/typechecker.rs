@@ -10137,8 +10137,20 @@ impl TypeChecker {
                                 bad
                             ));
                         }
-                        // Array concat.
-                        if compatible(&left_type, &Type::Array)
+                        // Array concat. RES-4087: `compatible(_, Type::Array)`
+                        // is trivially true when either side is `Any` (the
+                        // wildcard rule in `type_relations::compatible`), so
+                        // an unresolved generic method call — e.g.
+                        // `shape.draw()` on a `T: Drawable` receiver, which
+                        // types as `Any` because the checker can't yet look
+                        // through the trait bound — was misclassified as
+                        // array concat even though both operands are really
+                        // ints at runtime. Require at least one side to be a
+                        // genuine array type; `compatible` still allows the
+                        // *other* side to be `Any` (a truly dynamic value
+                        // concatenated with a known array stays array concat).
+                        if (is_array_ty(&left_type) || is_array_ty(&right_type))
+                            && compatible(&left_type, &Type::Array)
                             && compatible(&right_type, &Type::Array)
                         {
                             return Ok(Type::Array);
@@ -16854,6 +16866,75 @@ mod res2701_generic_fn_type_params {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Any),
             }
+        );
+    }
+}
+
+/// RES-4087: `+` on a generic-`T` receiver's method-call results was
+/// misinferred as array concat. `shape.draw()` on `T: Drawable` types
+/// as `Any` (the checker can't look through the trait bound to see the
+/// method returns `int`), and the array-concat branch of `+` used to
+/// accept `Any` on both sides via the `compatible(_, Type::Array)`
+/// wildcard rule — so `Any + Any` was classified as array concat even
+/// though both operands are ints at runtime. `rz check` rejected the
+/// program while `rz run` executed it correctly (printing 12).
+#[cfg(test)]
+mod res4087_generic_plus_inference {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str, fragment: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let e = TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok");
+        assert!(
+            e.contains(fragment),
+            "expected {:?} in error: {e}",
+            fragment
+        );
+    }
+
+    #[test]
+    fn sum_of_generic_bound_method_calls_typechecks_as_int() {
+        check_ok(
+            "trait Drawable { fn draw(self) -> int; }\n\
+             trait Sizable { fn size(self) -> int; }\n\
+             struct Circle { int radius }\n\
+             impl Drawable for Circle { fn draw(self) -> int { return self.radius; } }\n\
+             impl Sizable for Circle { fn size(self) -> int { return self.radius * 2; } }\n\
+             fn render<T: Drawable + Sizable>(T shape) -> int { return shape.draw() + shape.size(); }\n\
+             fn main(int _d) { println(render(new Circle { radius: 4 })); }\n\
+             main(0);\n",
+        );
+    }
+
+    #[test]
+    fn real_array_literal_concat_still_infers_array() {
+        // RES-4087 regression guard: the fix must not weaken the real
+        // array-concat case — both operands genuinely ARE arrays here,
+        // so `+` must still infer `Array` (and reject an `int` binding).
+        check_err("let x: int = [1, 2] + [3, 4];\n", "value has type array");
+    }
+
+    #[test]
+    fn array_concat_with_one_dynamic_any_operand_still_infers_array() {
+        // A genuinely-array literal on one side, `Any` on the other
+        // (simulating a dynamic value): still array concat, since one
+        // side is a real array. Only BOTH-Any should fall through to
+        // numeric inference.
+        check_ok(
+            "fn make_dynamic() -> array { return [1, 2]; }\n\
+             fn combine() -> array { return make_dynamic() + [3, 4]; }\n\
+             println(combine());\n",
         );
     }
 }
