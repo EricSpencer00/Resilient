@@ -85,19 +85,36 @@ fn vscode_package_version_is_valid_semver() {
 }
 
 #[test]
-fn vscode_package_version_tracks_compiler_release() {
+fn vscode_package_version_leads_or_matches_compiler_release() {
+    // RES-4102 (E-E3): the extension version line is intentionally
+    // *decoupled* from and allowed to *lead* the compiler version.
+    // The Marketplace listing `fromamerica.resilient-vscode` reached
+    // `1.5.3` under an old versioning scheme and the Marketplace
+    // enforces monotonically-increasing versions, so the extension
+    // can never roll back to the compiler's `1.0.0-rc.1` line. The
+    // maintainer's chosen reconciliation (see
+    // docs/VSCODE_EXTENSION_RELEASE.md) is to move the extension
+    // *forward* past `1.5.3` rather than wipe public history. This
+    // guard therefore requires the extension to be at least the
+    // compiler's release core — never behind it — instead of an exact
+    // match. Do not roll either version backward to satisfy it.
     let package = package_json();
     let extension_version = package["version"]
         .as_str()
         .expect("package.json version must be a string");
     let compiler_version = cargo_version();
 
-    assert_eq!(
-        extension_version, compiler_version,
-        "vscode-extension/package.json version should track resilient/Cargo.toml \
-         (see docs/VSCODE_EXTENSION_RELEASE.md for the current Marketplace divergence \
-         and the reconciliation options — do not roll either version backward to \
-         force this assertion to pass)"
+    let extension_core = parse_semver_core(extension_version)
+        .unwrap_or_else(|| panic!("extension version {extension_version:?} is not semver"));
+    let compiler_core = parse_semver_core(&compiler_version)
+        .unwrap_or_else(|| panic!("compiler version {compiler_version:?} is not semver"));
+
+    assert!(
+        extension_core >= compiler_core,
+        "vscode-extension/package.json version ({extension_version}) must be >= \
+         resilient/Cargo.toml ({compiler_version}); the extension line may lead the \
+         compiler (Marketplace divergence, see docs/VSCODE_EXTENSION_RELEASE.md) but \
+         must never fall behind it"
     );
 }
 

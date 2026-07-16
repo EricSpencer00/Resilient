@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "resilient"
-version = "0.2.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "clap",
  "cranelift",
@@ -1801,14 +1801,14 @@ dependencies = [
 
 [[package]]
 name = "resilient-runtime"
-version = "0.2.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "embedded-alloc",
 ]
 
 [[package]]
 name = "resilient-span"
-version = "0.2.3"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "rustc-hash"

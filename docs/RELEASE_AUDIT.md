@@ -2,9 +2,13 @@
 
 Tracks roadmap epic **F-E6** (docs/ROADMAP_PHASE2.md, Track F), part of the
 broader v1.0 roadmap under [#3933](https://github.com/EricSpencer00/Resilient/issues/3933).
-This is a documentation-only audit: **no tag was created or pushed, no
-release workflow was triggered, and nothing was published** while writing
-it.
+This began as a documentation-only audit. **Update (RES-4102, 2026-07-16):**
+its recommendations have now been executed to cut the first release
+candidate — the workspace was aligned to `1.0.0-rc.1` (Finding B resolved),
+the extension version was moved forward to `1.6.0` and decoupled (E-E3
+resolved, see [VSCODE_EXTENSION_RELEASE.md](VSCODE_EXTENSION_RELEASE.md)),
+and a `v1.0.0-rc.1` tag is cut to trigger `release.yml` + `vscode_extension.yml`.
+The `v1.5.x` tags are left in place as historical record per Finding A.
 
 ## 1. Tag inventory vs manifest versions
 
@@ -15,15 +19,15 @@ v0.2.0  v0.2.1  v0.2.2  v0.2.3
 v1.5.2  v1.5.3
 ```
 
-Manifest versions as of this audit:
+Manifest versions (original audit → post-RES-4102):
 
-| Manifest | Version |
-|---|---|
-| `resilient/Cargo.toml` | `0.2.3` |
-| `resilient-runtime/Cargo.toml` | `0.2.1` |
-| `resilient-span/Cargo.toml` | `0.2.1` |
-| `playground/Cargo.toml` | `0.2.1` |
-| `vscode-extension/package.json` | `0.2.3` |
+| Manifest | Audit | Now |
+|---|---|---|
+| `resilient/Cargo.toml` | `0.2.3` | `1.0.0-rc.1` |
+| `resilient-runtime/Cargo.toml` | `0.2.1` | `1.0.0-rc.1` |
+| `resilient-span/Cargo.toml` | `0.2.1` | `1.0.0-rc.1` |
+| `playground/Cargo.toml` | `0.2.1` | `1.0.0-rc.1` |
+| `vscode-extension/package.json` | `0.2.3` | `1.6.0` (decoupled — leads, see E-E3) |
 
 **Finding A — the `v1.5.2`/`v1.5.3` tags predate the current tagging
 scheme and don't reflect the compiler version.** Confirmed by checking out
