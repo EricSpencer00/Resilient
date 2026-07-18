@@ -317,6 +317,16 @@ pub struct FunctionDef<'a> {
     pub code: &'a [Instr],
     pub arity: u8,
     pub local_count: u16,
+    /// RES-4083 (D-E1 tail): function-table index of this function's
+    /// synthesized postcondition-check function (`ensures`/
+    /// `recovers_to` — see `compiler::build_postcheck_function` on
+    /// the host side), or `None` if this function has no postcheck.
+    /// The postcheck function is itself an ordinary [`FunctionDef`]
+    /// entry (arity = this function's arity + 1, the extra slot
+    /// holding the return value) — [`Vm::execute`] invokes it as an
+    /// isolated nested call on every [`Instr::Return`] from this
+    /// function, mirroring the host VM's `run_postcheck`.
+    pub postcheck: Option<u16>,
 }
 
 /// Errors the VM can surface. Every fallible dispatch step returns
@@ -355,6 +365,15 @@ pub enum VmError {
     /// — a deep or infinite recursive call always surfaces this
     /// error instead of overflowing a real stack.
     CallStackOverflow,
+    /// RES-4083 (D-E1 tail): a function's synthesized postcheck
+    /// (`ensures`/`recovers_to`) evaluated to `Value::Bool(false)`,
+    /// or to a non-`Bool` value (the postcheck function's body must
+    /// always produce a `Bool` — a non-`Bool` result is a
+    /// translation bug, not a legitimate contract outcome, but is
+    /// still surfaced as a typed error rather than a panic). Matches
+    /// the host VM's "Contract violation in fn ..." abort semantics:
+    /// a violation always aborts the whole run.
+    PostcheckViolation,
 }
 
 /// RES-4077 (D-E1 fn-support): who to resume, and where, once the
@@ -489,7 +508,7 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
     /// fails. Every branch, arithmetic op, and stack/locals access
     /// is bounds-checked — no panic path exists here.
     pub fn run(&mut self, program: &[Instr]) -> Result<Value, VmError> {
-        self.execute(&[], program)
+        self.execute(&[], program, 0)
     }
 
     /// Run `program` from instruction 0 until the entry frame's
@@ -502,15 +521,28 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
         functions: &[FunctionDef<'_>],
         program: &[Instr],
     ) -> Result<Value, VmError> {
-        self.execute(functions, program)
+        self.execute(functions, program, 0)
     }
 
+    /// Dispatch loop, parameterised over `entry_frame` — the frame
+    /// index this invocation starts and ends at. `entry_frame` is
+    /// always `0` for the top-level [`run`](Self::run)/
+    /// [`run_with_functions`](Self::run_with_functions) entry
+    /// points; [`Instr::Return`]'s postcheck handling recurses into
+    /// `execute` with `entry_frame` one past the returning callee's
+    /// frame — see the `Instr::Return` arm below — so a nested
+    /// postcheck evaluation runs as its own fully isolated call
+    /// (fresh locals slab, shares the same bounded operand stack and
+    /// terminates by popping exactly what it pushed, like any other
+    /// well-formed function body) without needing a second `Vm`
+    /// instance or heap allocation.
     fn execute(
         &mut self,
         functions: &[FunctionDef<'_>],
         program: &[Instr],
+        entry_frame: usize,
     ) -> Result<Value, VmError> {
-        self.frame = 0;
+        self.frame = entry_frame;
         let mut current_func: Option<u16> = None;
         let mut code: &[Instr] = program;
         let mut pc: usize = 0;
@@ -626,7 +658,58 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                 }
                 Instr::Return => {
                     let v = self.pop()?;
-                    if self.frame == 0 {
+                    // RES-4083 (D-E1 tail): `current_func` at this
+                    // point still names the function whose body is
+                    // returning (it's only reassigned below, to the
+                    // *caller*) — if it declares a postcheck
+                    // (`ensures`/`recovers_to`), run it now, while
+                    // `self.frame`'s locals (the callee's own
+                    // parameters) are still live, mirroring the host
+                    // VM's `run_postcheck` invocation from
+                    // `Op::ReturnFromCall`. A violation aborts the
+                    // whole run via `?`, matching the host's
+                    // "Contract violation" abort.
+                    if let Some(callee_idx) = current_func {
+                        let callee = functions
+                            .get(callee_idx as usize)
+                            .ok_or(VmError::FunctionOutOfBounds(callee_idx))?;
+                        if let Some(postcheck_idx) = callee.postcheck {
+                            let arity = callee.arity as usize;
+                            let next_frame = self.frame + 1;
+                            if next_frame >= CALLS {
+                                return Err(VmError::CallStackOverflow);
+                            }
+                            for i in 0..arity {
+                                let arg = self.locals[self.frame]
+                                    .get(i)
+                                    .copied()
+                                    .ok_or(VmError::LocalsOutOfBounds)?;
+                                let slot = self.locals[next_frame]
+                                    .get_mut(i)
+                                    .ok_or(VmError::LocalsOutOfBounds)?;
+                                *slot = arg;
+                            }
+                            let ret_slot = self.locals[next_frame]
+                                .get_mut(arity)
+                                .ok_or(VmError::LocalsOutOfBounds)?;
+                            *ret_slot = v;
+                            for slot in self.locals[next_frame].iter_mut().skip(arity + 1) {
+                                *slot = Value::Int(0);
+                            }
+                            let postcheck_code = functions
+                                .get(postcheck_idx as usize)
+                                .ok_or(VmError::FunctionOutOfBounds(postcheck_idx))?
+                                .code;
+                            let returning_frame = self.frame;
+                            let outcome = self.execute(functions, postcheck_code, next_frame)?;
+                            self.frame = returning_frame;
+                            match outcome {
+                                Value::Bool(true) => {}
+                                _ => return Err(VmError::PostcheckViolation),
+                            }
+                        }
+                    }
+                    if self.frame == entry_frame {
                         return Ok(v);
                     }
                     let info = self.returns[self.frame];
@@ -1089,6 +1172,7 @@ mod tests {
             code: &f,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }];
         let program = [
             Instr::Call(0),
@@ -1130,6 +1214,7 @@ mod tests {
             code: &countdown,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(100)),
@@ -1165,11 +1250,13 @@ mod tests {
                 code: &f,
                 arity: 1,
                 local_count: 1,
+                postcheck: None,
             },
             FunctionDef {
                 code: &g,
                 arity: 1,
                 local_count: 1,
+                postcheck: None,
             },
         ];
         let program = [
@@ -1195,6 +1282,7 @@ mod tests {
             code: &f,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }];
         let program = [Instr::Call(0), Instr::Return];
         let mut vm = Vm::<8, 4, 2>::new();
@@ -1211,6 +1299,7 @@ mod tests {
             code: &f,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         // Call f with its one arg; f then TailCalls itself with an
         // empty operand stack.
@@ -1237,6 +1326,7 @@ mod tests {
             code: &square,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }];
         let program = [Instr::Call(0), Instr::Return];
         let mut vm = Vm::<8, 4, 2>::new();
@@ -1260,6 +1350,7 @@ mod tests {
             code: &square,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(7)),
@@ -1288,6 +1379,7 @@ mod tests {
             code: &sub,
             arity: 2,
             local_count: 2,
+            postcheck: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(10)),
@@ -1324,11 +1416,13 @@ mod tests {
                 code: &inc,
                 arity: 1,
                 local_count: 1,
+                postcheck: None,
             },
             FunctionDef {
                 code: &double_inc,
                 arity: 1,
                 local_count: 1,
+                postcheck: None,
             },
         ];
         let program = [
@@ -1364,6 +1458,7 @@ mod tests {
             code: &countdown,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(3)),
@@ -1396,6 +1491,7 @@ mod tests {
             code: &countdown,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         // CALLS == 3 only allows 2 nested frames (main + 2 callees);
         // recursing 100 deep must surface a typed error, never
@@ -1446,6 +1542,7 @@ mod tests {
             code: &callee,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         // No PushConst before Call(0) — the operand stack is empty
         // but the callee wants 1 argument.
@@ -1454,6 +1551,206 @@ mod tests {
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::StackUnderflow)
+        );
+    }
+
+    // ---------- RES-4083 (D-E1 tail): postcheck (ensures/recovers_to) ----------
+
+    #[test]
+    fn postcheck_runs_on_return_and_passes_when_result_satisfies_it() {
+        // fn f(x) -> Int { x + 1 } ensures result > 0
+        // postcheck(x, result) -> Bool { result > 0 }
+        // main: f(5) == 6
+        let f = [
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Add,
+            Instr::Return,
+        ];
+        let postcheck = [
+            Instr::LoadLocal(1),
+            Instr::PushConst(Value::Int(0)),
+            Instr::Gt,
+            Instr::Return,
+        ];
+        let functions = [
+            FunctionDef {
+                code: &f,
+                arity: 1,
+                local_count: 1,
+                postcheck: Some(1),
+            },
+            FunctionDef {
+                code: &postcheck,
+                arity: 2,
+                local_count: 2,
+                postcheck: None,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(5)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 4>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(6))
+        );
+    }
+
+    #[test]
+    fn postcheck_violation_aborts_the_run_as_a_typed_error() {
+        // fn f(x) -> Int { x } ensures result > 0 — violated for x <= 0.
+        let f = [Instr::LoadLocal(0), Instr::Return];
+        let postcheck = [
+            Instr::LoadLocal(1),
+            Instr::PushConst(Value::Int(0)),
+            Instr::Gt,
+            Instr::Return,
+        ];
+        let functions = [
+            FunctionDef {
+                code: &f,
+                arity: 1,
+                local_count: 1,
+                postcheck: Some(1),
+            },
+            FunctionDef {
+                code: &postcheck,
+                arity: 2,
+                local_count: 2,
+                postcheck: None,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(-1)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 4>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::PostcheckViolation)
+        );
+    }
+
+    #[test]
+    fn postcheck_non_bool_result_is_postcheck_violation_not_a_panic() {
+        // A malformed postcheck body (translation bug, not a real
+        // program) that yields a non-Bool must still be a typed
+        // error, never a panic.
+        let f = [Instr::LoadLocal(0), Instr::Return];
+        let postcheck = [Instr::LoadLocal(1), Instr::Return];
+        let functions = [
+            FunctionDef {
+                code: &f,
+                arity: 1,
+                local_count: 1,
+                postcheck: Some(1),
+            },
+            FunctionDef {
+                code: &postcheck,
+                arity: 2,
+                local_count: 2,
+                postcheck: None,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(5)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 4>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::PostcheckViolation)
+        );
+    }
+
+    #[test]
+    fn postcheck_call_stack_overflow_is_typed_error_not_a_panic() {
+        // CALLS == 2 leaves no room for the postcheck's own nested
+        // frame once `f`'s frame is occupied.
+        let f = [Instr::LoadLocal(0), Instr::Return];
+        let postcheck = [
+            Instr::LoadLocal(1),
+            Instr::PushConst(Value::Int(0)),
+            Instr::Gt,
+            Instr::Return,
+        ];
+        let functions = [
+            FunctionDef {
+                code: &f,
+                arity: 1,
+                local_count: 1,
+                postcheck: Some(1),
+            },
+            FunctionDef {
+                code: &postcheck,
+                arity: 2,
+                local_count: 2,
+                postcheck: None,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(5)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::CallStackOverflow)
+        );
+    }
+
+    #[test]
+    fn nested_postcheck_calling_another_function_is_supported() {
+        // postcheck(x, result) -> Bool { is_positive(result) }
+        // is_positive(v) -> Bool { v > 0 }
+        // fn f(x) -> Int { x } ensures is_positive(result)
+        let f = [Instr::LoadLocal(0), Instr::Return];
+        let is_positive = [
+            Instr::LoadLocal(0),
+            Instr::PushConst(Value::Int(0)),
+            Instr::Gt,
+            Instr::Return,
+        ];
+        let postcheck = [
+            Instr::LoadLocal(1),
+            Instr::Call(2), // is_positive(result)
+            Instr::Return,
+        ];
+        let functions = [
+            FunctionDef {
+                code: &f,
+                arity: 1,
+                local_count: 1,
+                postcheck: Some(1),
+            },
+            FunctionDef {
+                code: &postcheck,
+                arity: 2,
+                local_count: 2,
+                postcheck: None,
+            },
+            FunctionDef {
+                code: &is_positive,
+                arity: 1,
+                local_count: 1,
+                postcheck: None,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(5)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 5>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(5))
         );
     }
 }

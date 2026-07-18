@@ -25,13 +25,14 @@
 //!   `fn`: no captured upvalues (closures), no declared `fails`
 //!   variants (checked-failure catch dispatch has no embedded
 //!   equivalent — the translated `Call`/`Return` pair does not walk
-//!   a try-handler table), and no synthesized postcondition-check
-//!   function (`ensures`/`recovers_to` — the host VM invokes those
-//!   automatically on every `Op::ReturnFromCall`; the embedded
-//!   `Instr::Return` does not, so translating a postcheck-bearing
-//!   function would silently drop its postcondition check at
-//!   runtime). Each of these produces a typed [`EmitError`] naming
-//!   the function.
+//!   a try-handler table). Each of these produces a typed
+//!   [`EmitError`] naming the function.
+//! - (RES-4083, D-E1 tail) a synthesized postcondition-check
+//!   function (`ensures`/`recovers_to`) is supported: the embedded
+//!   `Instr::Return` now invokes the postcheck function — itself
+//!   just another `program.functions` entry — as an isolated nested
+//!   call, mirroring the host VM's `run_postcheck`. See
+//!   `resilient_runtime::vm::FunctionDef::postcheck`.
 //! - Every function/`main` [`Op`] must be one this module knows how
 //!   to translate 1:1 into an [`Instr`] (see [`translate_chunk`]).
 //!   Anything else — `IncLocal`, arrays, structs, enums,
@@ -178,18 +179,18 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
                 ),
             ));
         }
-        if func.postcheck.is_some() {
-            return Err(unsupported(
-                target,
-                format!(
-                    "function `{}` has a synthesized postcondition-check function (`ensures`/\
-                     `recovers_to`) — the host VM invokes that automatically on every \
-                     `Op::ReturnFromCall`, but the embedded `Instr::Return` does not, so \
-                     translating it would silently drop the postcondition check at runtime",
-                    func.name
-                ),
-            ));
-        }
+        // RES-4083 (D-E1 tail): a function's synthesized postcheck
+        // (`ensures`/`recovers_to` — see `compiler::build_postcheck_function`)
+        // is itself a plain top-level `fn` entry in `program.functions`
+        // with no upvalues/`fails`/postcheck of its own, so it passes
+        // this same loop's checks unmodified and translates like any
+        // other function. `func.postcheck` is a `program.functions`
+        // index, and this loop emits exactly one `EncodeFunctionDef`
+        // per `program.functions` entry in order, so the index carries
+        // over unchanged into the embedded function table —
+        // `resilient_runtime::vm::Vm::execute`'s `Instr::Return` arm
+        // invokes it as an isolated nested call, mirroring the host
+        // VM's `run_postcheck`.
         func_instrs.push(translate_chunk(&func.chunk, target)?);
     }
 
@@ -201,6 +202,7 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
             code: instrs.as_slice(),
             arity: func.arity,
             local_count: func.local_count,
+            postcheck: func.postcheck,
         })
         .collect();
 
@@ -500,6 +502,7 @@ mod tests {
             len: 0,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let counts = rzbc_serde::decode_program(
@@ -514,10 +517,12 @@ mod tests {
         let meta = out_func_meta[0];
         assert_eq!(meta.arity, 1);
         assert_eq!(meta.local_count, 1);
+        assert_eq!(meta.postcheck, None);
         let functions = [resilient_runtime::vm::FunctionDef {
             code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
             arity: meta.arity,
             local_count: meta.local_count,
+            postcheck: meta.postcheck,
         }];
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 2>::new();
         assert_eq!(
@@ -554,21 +559,134 @@ mod tests {
         assert!(err.reason.contains("fails"), "reason was: {}", err.reason);
     }
 
+    // RES-4083 (D-E1 tail): postcheck-bearing functions used to be
+    // rejected here (`rejects_functions_with_postcheck`); the
+    // embedded VM now runs the postcheck as an isolated nested call
+    // on `Instr::Return` (mirroring the host's `run_postcheck`), so
+    // this proves the positive case instead.
     #[test]
-    fn rejects_functions_with_postcheck() {
-        let mut checked = function_from("f", 0, 0, chunk_from(vec![Op::ReturnFromCall], vec![]));
-        checked.postcheck = Some(0);
+    fn compiles_and_executes_fn_with_postcheck() {
+        // fn f(x: Int) -> Int { x + 1 } ensures result > 0
+        // postcheck(x: Int, result: Int) -> Bool { result > 0 }
+        // main: f(5) == 6
+        let f_body = chunk_from(
+            vec![Op::LoadLocal(0), Op::Const(0), Op::Add, Op::ReturnFromCall],
+            vec![HostValue::Int(1)],
+        );
+        let postcheck_body = chunk_from(
+            vec![Op::LoadLocal(1), Op::Const(0), Op::Gt, Op::ReturnFromCall],
+            vec![HostValue::Int(0)],
+        );
+        let mut f = function_from("f", 1, 1, f_body);
+        f.postcheck = Some(1);
+        let postcheck = function_from("f$postcheck", 2, 2, postcheck_body);
+        let main = chunk_from(
+            vec![Op::Const(0), Op::Call(0), Op::Return],
+            vec![HostValue::Int(5)],
+        );
         let program = Program {
-            main: chunk_from(vec![Op::Return], vec![]),
-            functions: vec![checked],
+            main,
+            functions: vec![f, postcheck],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
         };
-        let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
-        assert!(
-            err.reason.contains("postcondition"),
-            "reason was: {}",
-            err.reason
+
+        let blob = compile_to_rzbc(&program, "thumbv6m-none-eabi")
+            .expect("postcheck-bearing fn should translate");
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [rzbc_serde::DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let counts = rzbc_serde::decode_program(
+            &blob,
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+        )
+        .expect("should decode as the function-table format");
+        assert_eq!(counts.func_count, 2);
+        assert_eq!(out_func_meta[0].postcheck, Some(1));
+        assert_eq!(out_func_meta[1].postcheck, None);
+
+        let functions: Vec<resilient_runtime::vm::FunctionDef<'_>> = out_func_meta
+            [..counts.func_count]
+            .iter()
+            .map(|meta| resilient_runtime::vm::FunctionDef {
+                code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+                arity: meta.arity,
+                local_count: meta.local_count,
+                postcheck: meta.postcheck,
+            })
+            .collect();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &out_main[..counts.main_len]),
+            Ok(RtValue::Int(6))
+        );
+    }
+
+    #[test]
+    fn compiles_and_executes_fn_with_violated_postcheck() {
+        // fn f(x: Int) -> Int { x } ensures result > 0 — violated when x <= 0.
+        let f_body = chunk_from(vec![Op::LoadLocal(0), Op::ReturnFromCall], vec![]);
+        let postcheck_body = chunk_from(
+            vec![Op::LoadLocal(1), Op::Const(0), Op::Gt, Op::ReturnFromCall],
+            vec![HostValue::Int(0)],
+        );
+        let mut f = function_from("f", 1, 1, f_body);
+        f.postcheck = Some(1);
+        let postcheck = function_from("f$postcheck", 2, 2, postcheck_body);
+        let main = chunk_from(
+            vec![Op::Const(0), Op::Call(0), Op::Return],
+            vec![HostValue::Int(-1)],
+        );
+        let program = Program {
+            main,
+            functions: vec![f, postcheck],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+
+        let blob = compile_to_rzbc(&program, "thumbv6m-none-eabi")
+            .expect("postcheck-bearing fn should translate");
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [rzbc_serde::DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let counts = rzbc_serde::decode_program(
+            &blob,
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+        )
+        .expect("should decode as the function-table format");
+
+        let functions: Vec<resilient_runtime::vm::FunctionDef<'_>> = out_func_meta
+            [..counts.func_count]
+            .iter()
+            .map(|meta| resilient_runtime::vm::FunctionDef {
+                code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+                arity: meta.arity,
+                local_count: meta.local_count,
+                postcheck: meta.postcheck,
+            })
+            .collect();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &out_main[..counts.main_len]),
+            Err(resilient_runtime::vm::VmError::PostcheckViolation)
         );
     }
 

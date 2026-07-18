@@ -139,7 +139,7 @@ pub fn load_and_run<const N: usize, const STACK: usize, const LOCALS: usize>(
 ///     Instr::Call(0),
 ///     Instr::Return,
 /// ];
-/// let functions = [EncodeFunctionDef { code: &square, arity: 1, local_count: 1 }];
+/// let functions = [EncodeFunctionDef { code: &square, arity: 1, local_count: 1, postcheck: None }];
 ///
 /// let mut buf = [0u8; 128];
 /// let len = encode_program(&main, &functions, &mut buf).unwrap();
@@ -163,6 +163,7 @@ pub fn load_and_run_with_functions<
         len: 0,
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; FUNC_META_N];
     let mut func_code = [Instr::Return; FUNC_CODE_N];
 
@@ -172,6 +173,7 @@ pub fn load_and_run_with_functions<
         code: &[],
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; FUNC_META_N];
     for (slot, meta) in functions_buf
         .iter_mut()
@@ -182,6 +184,7 @@ pub fn load_and_run_with_functions<
             code: &func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
             arity: meta.arity,
             local_count: meta.local_count,
+            postcheck: meta.postcheck,
         };
     }
 
@@ -318,6 +321,7 @@ mod tests {
             code: &square,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         let mut buf = [0u8; 128];
         let len = serde::encode_program(&main, &functions, &mut buf).unwrap();
@@ -365,6 +369,7 @@ mod tests {
             code: &countdown,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
         let mut buf = [0u8; 256];
         let len = serde::encode_program(&main, &functions, &mut buf).unwrap();
@@ -397,11 +402,13 @@ mod tests {
                 code: &f1,
                 arity: 0,
                 local_count: 0,
+                postcheck: None,
             },
             serde::EncodeFunctionDef {
                 code: &f2,
                 arity: 0,
                 local_count: 0,
+                postcheck: None,
             },
         ];
         let mut buf = [0u8; 128];
