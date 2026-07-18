@@ -250,17 +250,18 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // body, driven by the VM's own dispatch loop" scheduler integration
     // — a new subsystem, not a call-site lowering fix.
     //
-    // `error_stack_traces.rz` calls `stacktrace()`, which needs a live
-    // call-frame-name + call-site-span stack to introspect. The VM's
-    // `CallFrame` (`vm.rs`) carries only `chunk_idx`/`pc`/locals — no
-    // function name and no column info (`Chunk::line_info` is
-    // line-only) — but the expected output format is `"<fn> at
-    // <file>:<line>:<column>"`, so even the tree-walker's `StackFrame`
-    // shape can't be reconstructed from what the VM tracks today. Needs
-    // a new call-stack introspection subsystem (frame names + call-site
-    // column tracking through every `Op::Call`/`CallClosure`/
-    // `CallMethod`/`CallForeign` site, in both dispatch engines) before
-    // `stacktrace()` can be implemented, not a builtin-dispatch fix.
+    // `error_stack_traces.rz` (FIXED, RES-4131): `Chunk` gained a
+    // sparse `call_cols: HashMap<pc, column>` populated at every
+    // `Call`/`CallClosure`/`CallMethod`/`CallForeign` emission site
+    // (`compiler.rs`) with the callee's `(` column — `line_info`
+    // already had the line. `stacktrace()` compiles to `Op::CallBuiltin`
+    // and is special-cased in both dispatch engines
+    // (`vm_stacktrace_builtin`, `vm.rs`): the VM's own `CallFrame` stack
+    // already *is* the call stack (frame `i`'s `.pc` is advanced past
+    // its call site before the callee frame is pushed), so no new
+    // tracking vec is needed — just a fn-name lookup via
+    // `program.functions[chunk_idx].name` and a `(line, column)` lookup
+    // on the caller frame's chunk at `caller.pc - 1`.
     //
     // `iterator_protocol.rz` (FIXED, RES-4063): `compile_nested_fn`
     // (the `Node::Function`-as-statement compile path) now runs the
@@ -285,7 +286,6 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     "actor_deadlock.rz",
     "actor_ping_pong.rz",
     "actor_spawn_send.rz",
-    "error_stack_traces.rz",
     "showcase_actors.rz",
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
@@ -2054,10 +2054,6 @@ mod jit_differential {
         "actor_deadlock.rz",
         "actor_ping_pong.rz",
         "actor_spawn_send.rz",
-        // Same root cause as `UNSUPPORTED_BY_VM`'s entry: `stacktrace()`
-        // needs call-frame-name + call-site-column tracking neither the
-        // VM nor the JIT's VM-fallback path implements.
-        "error_stack_traces.rz",
         "showcase_actors.rz",
     ];
 

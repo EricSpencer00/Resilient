@@ -30490,7 +30490,7 @@ fn run_via_vm(
     // which never auto-prints `interpreter.eval(&program)`'s Ok value.
     // Printing it here caused a spurious extra output line on every
     // program whose last top-level statement was a non-Void expression.
-    vm::run(&prog).map_err(|e| {
+    vm::run_with_source(&prog, filename).map_err(|e| {
         // RES-095: mirror the typechecker's `<file>:<line>:` shape
         // so VM runtime errors are editor-clickable when the
         // wrapper carries a source line. Other variants fall back
