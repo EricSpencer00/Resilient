@@ -7365,6 +7365,18 @@ impl TypeChecker {
                 // tautology is discharged; anything else is left for
                 // runtime.
                 let no_bindings: HashMap<String, i64> = HashMap::new();
+                // RES-4112: `#[overflow_checked]` opts a fn's
+                // requires/ensures clauses into the additional BV64
+                // wraparound-aware proof pass (`verifier_z3::prove_overflow_safe`)
+                // below. Opt-in, not default-on: the LIA path above is
+                // sound for contracts that don't involve arithmetic near
+                // `i64` bounds, and flipping this on for every fn would
+                // regress compile time / false-timeout rate before the
+                // false-positive rate has been measured (see #4112).
+                #[cfg(feature = "z3")]
+                let overflow_checked = crate::feature_attrs::find_kind("overflow_checked")
+                    .iter()
+                    .any(|(item_name, _)| item_name == name);
                 for (decl_idx, clause) in requires.iter().chain(ensures.iter()).enumerate() {
                     // Cheap folder first; fall back to Z3 (RES-067)
                     // for universal tautology / contradiction proofs.
@@ -7505,6 +7517,93 @@ impl TypeChecker {
                         }
                         Some(true) => {
                             self.stats.requires_tautology += 1;
+                            // RES-4112: the LIA path above proves `clause`
+                            // holds for unbounded (mathematical) integers.
+                            // Resilient's `int` is `Int64` with
+                            // `OverflowMode::Wrap` at runtime, so a LIA
+                            // tautology involving `+`/`-`/`*` can still be
+                            // false for some in-domain runtime inputs once
+                            // wraparound is modeled. `#[overflow_checked]`
+                            // fns get a second, stricter BV64 pass that
+                            // re-checks the same clause with two's-
+                            // complement modulo-2^64 arithmetic — the exact
+                            // rule the VM's wrapping add/sub/mul use. A
+                            // BV64 counterexample here means the clause is
+                            // "LIA-safe but wraps at runtime": that is
+                            // always a compile error, distinct from the
+                            // ordinary "statically false clause" case
+                            // above, since the LIA prover would otherwise
+                            // have silently discharged the runtime check.
+                            #[cfg(feature = "z3")]
+                            if overflow_checked {
+                                // RES-4112: no axioms — every `requires`
+                                // and `ensures` clause is checked
+                                // standalone here, mirroring exactly how
+                                // the LIA tautology check two lines above
+                                // treats it (this loop never threads
+                                // sibling clauses in as hypotheses; only
+                                // the separate `recovers_to` obligation
+                                // does that). Passing `requires` itself
+                                // as axioms would let a `requires` clause
+                                // "prove" itself trivially.
+                                let (bv_verdict, bv_cx, bv_timed_out) =
+                                    crate::verifier_z3::prove_overflow_safe(
+                                        clause,
+                                        &[],
+                                        &no_bindings,
+                                        self.verifier_timeout_ms,
+                                    );
+                                // RES-4112: `prove_overflow_safe` returns
+                                // `Some(true)` only for a genuine BV64
+                                // tautology, and `None` for two distinct
+                                // reasons: (a) the goal didn't translate
+                                // to BV64 at all (e.g. a `forall`/`exists`
+                                // quantifier — `translate_bool_bv_width`
+                                // has no encoding for it), in which case
+                                // no counterexample was ever computed
+                                // (`bv_cx` is `None`); or (b) Z3 fully
+                                // explored both "goal holds" and "goal
+                                // fails" under BV64 and found both
+                                // satisfiable — a real counterexample to
+                                // the universal claim (`bv_cx` is
+                                // `Some(..)`). Only (b), plus the
+                                // rarer `Some(false)` (goal impossible
+                                // under BV64), mean the LIA tautology is
+                                // NOT a BV64 tautology. (a) must stay
+                                // fail-open (same policy as an
+                                // untranslatable axiom) rather than
+                                // reject a clause BV64 simply can't
+                                // model yet. A genuine Z3 `Unknown`
+                                // (`bv_timed_out`) is always soft.
+                                let bv_counterexample_found =
+                                    matches!(bv_verdict, Some(false)) || bv_cx.is_some();
+                                if !matches!(bv_verdict, Some(true))
+                                    && !bv_timed_out
+                                    && bv_counterexample_found
+                                {
+                                    let base = format!(
+                                        "fn {}: contract proven safe under unbounded (LIA) arithmetic, but BV64 (wraparound-aware, matching Int64/OverflowMode::Wrap) arithmetic finds an overflow counterexample — LIA said safe, BV64 disproved it",
+                                        name
+                                    );
+                                    return Err(match bv_cx {
+                                        Some(cx) => format!("{} — counterexample: {}", base, cx),
+                                        None => base,
+                                    });
+                                }
+                                if bv_timed_out {
+                                    self.stats.verifier_timeouts += 1;
+                                    let plain = format!(
+                                        "hint: overflow-safety (BV64) proof timed out after {}ms — runtime check retained (fn {})",
+                                        self.verifier_timeout_ms, name
+                                    );
+                                    emit_check_diagnostic_plain(
+                                        plain,
+                                        "hint",
+                                        &self.source_path,
+                                        "proof-timeout",
+                                    );
+                                }
+                            }
                         }
                         None => {}
                     }
@@ -13473,6 +13572,187 @@ mod purity_tests {
         let mut tc = TypeChecker::new();
         tc.check_program_with_source(&program, "<t>")
             .expect("one consumption (direct call or drop) must typecheck");
+    }
+
+    // ---------- RES-4112: `#[overflow_checked]` BV64 wiring ----------
+    //
+    // `verifier_z3::prove_overflow_safe` (RES-4014 / C-E3) proves a
+    // requires/ensures clause under width-respecting BV64 arithmetic
+    // instead of unbounded LIA — sound for Resilient's `Int64` +
+    // `OverflowMode::Wrap` runtime semantics. These tests exercise the
+    // wiring into the per-fn requires/ensures static pass in
+    // `Node::Function` handling: `#[overflow_checked]` opts a fn in;
+    // without it, only the (unsound-for-overflow) LIA tautology check
+    // runs, exactly as before this ticket.
+    //
+    // Only compiled with `--features z3` — without Z3 the whole static
+    // fold/Z3 pass is a no-op and none of this applies.
+    #[cfg(feature = "z3")]
+    mod overflow_checked_tests {
+        use super::*;
+
+        /// `#[overflow_checked]` records into the process-wide
+        /// `feature_attrs` registry during parsing and is read back
+        /// during `check_program_with_source`. Serialize against the
+        /// binary-wide test lock and reset before/after so this
+        /// module's tests can't race other `feature_attrs`-mutating
+        /// tests running in parallel (see `feature_attrs::lock_for_test`).
+        fn typecheck(src: &str) -> Result<(), String> {
+            let _g = crate::feature_attrs::lock_for_test();
+            crate::feature_attrs::reset();
+            let (program, errs) = crate::parse(src);
+            assert!(errs.is_empty(), "parse errors: {errs:?}");
+            let mut tc = TypeChecker::new();
+            let result = tc.check_program_with_source(&program, "<t>").map(|_| ());
+            crate::feature_attrs::reset();
+            result
+        }
+
+        // NOTE ON SHAPE: the RES-060 static-fold loop in
+        // `Node::Function` handling proves each `requires`/`ensures`
+        // clause *standalone* — it does not thread sibling clauses in
+        // as axioms (that threading only happens for the separate
+        // `recovers_to` obligation). So every fixture below needs a
+        // clause that is a LIA tautology *on its own*, not one that
+        // only holds given other requires. `x + K > x` for a fixed
+        // positive `K` is exactly that: true for every mathematical
+        // integer `x`, but false once `x` is close enough to
+        // `i64::MAX` for `x + K` to wrap.
+
+        /// Baseline (no attribute): `x + 1 > x` is a LIA tautology, so
+        /// the existing (opt-out) path discharges it and compilation
+        /// succeeds even though it wraps at `x == i64::MAX`. Confirms
+        /// `#[overflow_checked]` is genuinely opt-in.
+        #[test]
+        fn without_attribute_wraparound_prone_add_still_compiles() {
+            let src = "fn f(int x) ensures x + 1 > x { return x; }\n";
+            typecheck(src).expect("LIA tautology discharges without the attribute");
+        }
+
+        /// Same clause, `#[overflow_checked]`: LIA proves `x + 1 > x`
+        /// a tautology, but BV64 finds `x == i64::MAX` as a
+        /// counterexample (wraps to `i64::MIN`, which is not `> x`) —
+        /// must be a hard compile error distinguishing the two
+        /// verdicts.
+        #[test]
+        fn overflow_checked_rejects_wraparound_prone_add() {
+            let src = "#[overflow_checked]\nfn f(int x) ensures x + 1 > x { return x; }\n";
+            let err = typecheck(src).expect_err("BV64 must reject the wraparound-prone add");
+            assert!(
+                err.contains("LIA said safe, BV64 disproved it"),
+                "diagnostic must distinguish LIA-vs-BV64 verdicts, got: {err}"
+            );
+            assert!(
+                err.contains("counterexample"),
+                "diagnostic must carry a BV64 counterexample, got: {err}"
+            );
+        }
+
+        /// Subtraction variant: `x - 1 < x` is a LIA tautology but
+        /// wraps at `x == i64::MIN` (`x - 1` wraps to `i64::MAX`,
+        /// which is not `< x`).
+        #[test]
+        fn overflow_checked_rejects_wraparound_prone_subtraction() {
+            let src = "#[overflow_checked]\nfn f(int x) ensures x - 1 < x { return x; }\n";
+            let err = typecheck(src).expect_err("BV64 must reject the wraparound-prone subtract");
+            assert!(
+                err.contains("LIA said safe, BV64 disproved it"),
+                "got: {err}"
+            );
+        }
+
+        /// `requires` clauses (not just `ensures`) go through the same
+        /// per-clause loop, so the attribute must catch a
+        /// wraparound-prone `requires` too.
+        #[test]
+        fn overflow_checked_rejects_wraparound_prone_requires() {
+            let src = "#[overflow_checked]\nfn f(int x) requires x + 1 > x { return x; }\n";
+            let err = typecheck(src).expect_err("BV64 must reject the wraparound-prone requires");
+            assert!(
+                err.contains("LIA said safe, BV64 disproved it"),
+                "got: {err}"
+            );
+        }
+
+        /// Multiple wraparound-prone clauses on the same fn: the loop
+        /// walks `requires` then `ensures` in order and must reject at
+        /// the first one it reaches (`requires`), not silently skip
+        /// past it to `ensures`.
+        #[test]
+        fn overflow_checked_rejects_first_of_several_bad_clauses() {
+            let src = "#[overflow_checked]\n\
+                       fn f(int x) requires x + 1 > x ensures x - 1 < x { return x; }\n";
+            let err = typecheck(src).expect_err("first wraparound-prone clause must be rejected");
+            assert!(
+                err.contains("LIA said safe, BV64 disproved it"),
+                "got: {err}"
+            );
+        }
+
+        /// Adding zero can never overflow — the attribute must not
+        /// blanket-reject every arithmetic contract, only ones that
+        /// actually wrap.
+        #[test]
+        fn overflow_checked_accepts_safe_additive_identity() {
+            let src = "#[overflow_checked]\nfn f(int x) ensures x + 0 == x { return x; }\n";
+            typecheck(src).expect("x + 0 == x must verify under BV64 (never wraps)");
+        }
+
+        /// A goal with no arithmetic at all is trivially safe under
+        /// both theories.
+        #[test]
+        fn overflow_checked_accepts_non_arithmetic_contract() {
+            let src =
+                "#[overflow_checked]\nfn f(int x) requires x >= 0 ensures x >= 0 { return x; }\n";
+            typecheck(src).expect("non-arithmetic contract must verify under BV64");
+        }
+
+        /// Unknown-tolerant: a `forall`/`exists` quantifier clause is
+        /// handled by the LIA path (`quantifiers::z3_encode`) but has
+        /// no BV64 encoding (`translate_bool_bv_width` has no
+        /// `Node::Quantifier` arm) — `prove_overflow_safe` returns
+        /// `None` (undecided), which must be silently tolerated
+        /// (matches the existing timeout/Unknown soft-failure policy)
+        /// rather than treated as a rejection.
+        #[test]
+        fn overflow_checked_tolerates_unsupported_quantifier_clause() {
+            let src = "#[overflow_checked]\n\
+                       fn f(int x) ensures forall i in 0..1: true { return x; }\n";
+            typecheck(src)
+                .expect("BV64 Unknown/unsupported-construct verdict must not fail compilation");
+        }
+
+        /// Two `#[overflow_checked]` fns in one module: the attribute
+        /// is per-fn (keyed by name in the `feature_attrs` registry),
+        /// so the unchecked sibling keeps the old (opt-out) behavior
+        /// while the annotated one is held to the stricter standard.
+        #[test]
+        fn overflow_checked_is_per_function_not_module_wide() {
+            let src = "fn unchecked(int x) ensures x + 1 > x { return x; }\n\
+                       #[overflow_checked]\n\
+                       fn checked(int x) ensures x + 1 > x { return x; }\n";
+            let err = typecheck(src).expect_err("the annotated sibling must still be rejected");
+            assert!(
+                err.contains("fn checked"),
+                "error must name the annotated fn, got: {err}"
+            );
+        }
+
+        /// A genuinely false clause (independent of overflow) must
+        /// keep reporting the pre-existing "statically false clause"
+        /// diagnostic, not the new BV64-specific one — the BV64 pass
+        /// only runs after the LIA path returns `Some(true)`.
+        #[test]
+        fn overflow_checked_does_not_change_plain_contradiction_diagnostic() {
+            let src = "#[overflow_checked]\n\
+                       fn f(int x) requires x > 0 && x < 0 { return x; }\n";
+            let err = typecheck(src).expect_err("plain contradiction must still be rejected");
+            assert!(err.contains("contract can never hold"), "got: {err}");
+            assert!(
+                !err.contains("LIA said safe"),
+                "plain LIA contradiction must not be mislabeled as a BV64 divergence, got: {err}"
+            );
+        }
     }
 
     /// AC: `let fh: linear T = …;` binds a linear local whose double-

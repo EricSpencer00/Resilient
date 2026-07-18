@@ -1863,18 +1863,21 @@ pub fn prove_auto(
 // tautology proved under this theory holds for the *actual* runtime
 // arithmetic, not just the idealized unbounded version.
 //
-// Scope (RES-4014 / C-E3): this is a new, additive entry point. It
+// Scope (RES-4014 / C-E3): this was a new, additive entry point. It
 // does not change the behavior of `prove`, `prove_with_certificate`,
 // `prove_with_axioms_and_timeout`, `prove_auto`, or any existing
 // caller — every currently-green proof obligation keeps using
-// unbounded LIA (or BV32 for bitwise ops) exactly as before. Wiring
-// this into the `requires`/`ensures` static-verification call sites
-// in `typechecker.rs` (so ordinary contract clauses get overflow-safe
-// treatment by default) is out of scope here — those call sites live
-// outside this module's ownership — and is tracked as a follow-up
-// (`Refs #3933 · C-E3`). SMT-LIB2 certificate generation is also not
-// yet implemented for this path (mirroring the existing BV32
-// prover); the return shape omits the certificate slot entirely.
+// unbounded LIA (or BV32 for bitwise ops) exactly as before.
+//
+// RES-4112: wired into the `requires`/`ensures` static-verification
+// loop in `typechecker.rs` (`Node::Function` handling, the `Some(true)`
+// match arm right after the LIA tautology check). It runs opt-in, on
+// fns annotated `#[overflow_checked]` — see
+// `feature_attrs::is_known_attribute` and the call site for the exact
+// claim it makes and how a BV64 counterexample is surfaced. SMT-LIB2
+// certificate generation is still not implemented for this path
+// (mirroring the existing BV32 prover); the return shape omits the
+// certificate slot entirely.
 //
 /// Prove `goal` under `axioms` (typically a function's `requires`
 /// clauses) using width-respecting 64-bit two's-complement arithmetic
@@ -1894,10 +1897,10 @@ pub fn prove_auto(
 /// hypothesis can only weaken the assumption set, never manufacture
 /// an unsound `Some(true)`.
 ///
-/// RES-4014: not yet called from `typechecker.rs` (out of scope for
-/// this ticket — see the module-level comment above); exercised by
-/// this module's tests, which prove the modeling is sound.
-#[allow(dead_code)]
+/// RES-4112: called from `typechecker.rs`'s requires/ensures static
+/// pass for `#[overflow_checked]` fns (see the module-level comment
+/// above); also exercised directly by this module's tests, which
+/// prove the modeling is sound.
 pub fn prove_overflow_safe(
     goal: &Node,
     axioms: &[Node],
