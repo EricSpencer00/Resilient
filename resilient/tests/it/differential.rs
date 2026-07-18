@@ -247,30 +247,30 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // `CallMethod`/`CallForeign` site, in both dispatch engines) before
     // `stacktrace()` can be implemented, not a builtin-dispatch fix.
     //
-    // `iterator_protocol.rz` declares a *named* nested function (`fn
-    // next() { .. }` as a statement inside `make_counter`'s body, not
-    // `let next = fn() { .. };`) that captures and mutates enclosing
-    // locals (`count`, `max`) and is returned as a first-class value.
-    // `compiler.rs`'s `compile_nested_fn` (the `Node::Function`-as-
-    // statement compile path) already exists and handles the
-    // self-recursion case, but unconditionally emits
-    // `Op::MakeClosure { upvalue_count: 0, .. }` — it never runs the
-    // free-variable capture analysis (`collect_free_vars` plus the
-    // `Value::Cell`-boxing dance) that `Node::FunctionLiteral`'s sibling
-    // compile arm uses for anonymous closures, so any enclosing-scope
-    // reference inside a named nested fn hits `UnknownIdentifier`.
-    // Fixing this properly means extracting that closure-capture/
-    // upvalue-boxing block out of the `FunctionLiteral` arm into a
-    // shared helper both call sites can use — real, non-mechanical
-    // refactoring on a hot, already-well-tested path, not a contained
-    // fix.
+    // `iterator_protocol.rz` (FIXED, RES-4063): `compile_nested_fn`
+    // (the `Node::Function`-as-statement compile path) now runs the
+    // same free-variable capture-by-value analysis
+    // (`analyze_and_box_captures`/`install_upvalue_locals_and_prologue`/
+    // `rewrite_store_upvalues`/`build_upvalue_source_slots`/
+    // `emit_capture_loads` in `compiler.rs`) that `Node::FunctionLiteral`
+    // uses for anonymous closures — extracted into shared helpers both
+    // call sites use, so a named nested `fn` closing over enclosing
+    // locals (`count`, `max`) compiles instead of hitting
+    // `UnknownIdentifier`. Separately, the VM's `Op::IterPrepare`
+    // (`vm.rs`) gained a `Value::Closure` case — `for x in iterator_fn`
+    // over a callable following the `fn next() { .. Some(v)/None .. }`
+    // protocol now eagerly materializes the item sequence by re-entrantly
+    // calling the closure via `vm_call_closure_value`, mirroring the
+    // tree-walker's `eval_for_in_iterator` (see `iter_prepare_closure_or_value`'s
+    // doc comment for the one documented divergence: eager vs. per-
+    // iteration interleaving when `next()` itself has an observable side
+    // effect — not exercised by this example or any other in the corpus).
     //
-    // All six: Track B-E3 VM-completeness follow-ups.
+    // Remaining five: Track B-E3 VM-completeness follow-ups.
     "actor_deadlock.rz",
     "actor_ping_pong.rz",
     "actor_spawn_send.rz",
     "error_stack_traces.rz",
-    "iterator_protocol.rz",
     "showcase_actors.rz",
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an

@@ -2468,6 +2468,23 @@ fn compile_nested_fn(
         return Err(CompileError::Unsupported("program has > 65535 functions"));
     }
     let arity = parameters.len() as u8;
+
+    // RES-4063: run the same free-variable capture-by-value analysis the
+    // `Node::FunctionLiteral` compile arm uses, so a named nested `fn`
+    // statement (e.g. `fn next() { .. count .. }` inside another fn's
+    // body) can close over enclosing locals just like an anonymous
+    // closure literal can. `name` itself is never in `outer_locals` yet
+    // (only inserted below, after the closure is fully built), so
+    // self-recursive calls to `name` inside `body` are unaffected —
+    // they keep resolving through `inner_fn_index`, not as an upvalue.
+    let param_names: std::collections::HashSet<&str> =
+        parameters.iter().map(|(_, n)| n.as_str()).collect();
+    let captured = analyze_and_box_captures(body, &param_names, outer_chunk, outer_locals, line)?;
+    if captured.len() > u8::MAX as usize {
+        return Err(CompileError::Unsupported("fn with >255 captured upvalues"));
+    }
+    let upvalue_count = captured.len();
+
     let mut chunk = Chunk::with_capacity(128);
     let cap = parameters.len().saturating_mul(2).max(8);
     let mut locals: HashMap<String, u16> = HashMap::with_capacity(cap);
@@ -2476,6 +2493,13 @@ fn compile_nested_fn(
         locals.insert(pname.clone(), next_local);
         next_local += 1;
     }
+    let upvalue_base = install_upvalue_locals_and_prologue(
+        &mut locals,
+        &mut next_local,
+        &mut chunk,
+        &captured,
+        line,
+    );
     let fn_idx = fns.len() as u16;
     fns.push(Function {
         name: name.to_string(),
@@ -2514,6 +2538,11 @@ fn compile_nested_fn(
     crate::peephole::optimize(&mut chunk)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
     crate::dce::eliminate(&mut chunk);
+    // RES-4063: rewrite StoreLocal ops targeting upvalue pseudo-slots to
+    // StoreUpvalue after the optimizer passes above, mirroring
+    // `Node::FunctionLiteral` — see `rewrite_store_upvalues`'s doc
+    // comment.
+    rewrite_store_upvalues(&mut chunk, upvalue_base, upvalue_count);
     // RES-4041: see the matching comment in the top-level `compile_fn_body`
     // closure — synthesize the postcheck fn (if any) before recording this
     // fn's own entry.
@@ -2528,19 +2557,21 @@ fn compile_nested_fn(
         next_fn_idx,
         line,
     )?;
+    let source_slots: Box<[u16]> = build_upvalue_source_slots(&captured);
     fns[fn_idx as usize] = Function {
         name: name.to_string(),
         arity,
         chunk,
         local_count: next_local,
-        upvalue_source_slots: Box::default(),
+        upvalue_source_slots: source_slots,
         fails: Box::default(),
         postcheck,
     };
+    emit_capture_loads(outer_chunk, &captured, line);
     outer_chunk.emit(
         Op::MakeClosure {
             fn_idx,
-            upvalue_count: 0,
+            upvalue_count: upvalue_count as u8,
         },
         line,
     );
@@ -2552,6 +2583,139 @@ fn compile_nested_fn(
     outer_locals.insert(name.to_string(), slot);
     outer_chunk.emit(Op::StoreLocal(slot), line);
     Ok(())
+}
+
+/// RES-4063: shared free-variable capture-by-value analysis, factored out
+/// of the `Node::FunctionLiteral` compile arm so `compile_nested_fn` (named
+/// nested `fn` statements) can reuse the same boxing semantics. Collects
+/// every identifier in `body` that isn't one of `param_names` and is bound
+/// in the *outer* `locals` map (in insertion order, for deterministic
+/// `LoadUpvalue(i)` indices), then boxes each non-global/non-static capture
+/// into a shared `Value::Cell` handle in `chunk`/`locals` (skipping any
+/// name already boxed by an earlier sibling closure in this same scope).
+fn analyze_and_box_captures(
+    body: &Node,
+    param_names: &std::collections::HashSet<&str>,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    line: u32,
+) -> Result<Vec<(u16, String)>, CompileError> {
+    let mut captured: Vec<(u16, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_free_vars(body, param_names, locals, &mut captured, &mut seen);
+
+    for (outer_slot, name) in &mut captured {
+        if *outer_slot & (GLOBAL_FLAG | STATIC_FLAG) != 0 {
+            continue;
+        }
+        if *outer_slot & BOXED_FLAG == 0 {
+            let real = *outer_slot;
+            chunk.emit(Op::LoadLocal(real), line);
+            let cell_name_const = chunk.add_string_constant("cell")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: cell_name_const,
+                    arity: 1,
+                },
+                line,
+            );
+            chunk.emit(Op::StoreLocal(real), line);
+            let boxed_slot = real | BOXED_FLAG;
+            locals.insert(name.clone(), boxed_slot);
+            *outer_slot = boxed_slot;
+        }
+    }
+    Ok(captured)
+}
+
+/// RES-4063: given the outer-scope `captured` analysis, register each
+/// capture as a pseudo-local in the callee's own `fn_locals` (starting at
+/// `*fn_next_local`, propagating `BOXED_FLAG` so in-body reads/writes route
+/// through `Cell.get()`/`Cell.set()` like the outer scope does), advance
+/// `fn_next_local` past them, and emit the `LoadUpvalue(i); StoreLocal(..)`
+/// copy-in prologue at function entry. Returns the base slot the upvalue
+/// pseudo-locals start at (needed by `rewrite_store_upvalues`).
+fn install_upvalue_locals_and_prologue(
+    fn_locals: &mut HashMap<String, u16>,
+    fn_next_local: &mut u16,
+    fn_chunk: &mut Chunk,
+    captured: &[(u16, String)],
+    line: u32,
+) -> u16 {
+    let upvalue_base = *fn_next_local;
+    for (i, (outer_slot, name)) in captured.iter().enumerate() {
+        let slot = upvalue_base + i as u16;
+        let slot = if *outer_slot & BOXED_FLAG != 0 {
+            slot | BOXED_FLAG
+        } else {
+            slot
+        };
+        fn_locals.insert(name.clone(), slot);
+    }
+    *fn_next_local += captured.len() as u16;
+    for i in 0..captured.len() {
+        fn_chunk.emit(Op::LoadUpvalue(i as u16), line);
+        fn_chunk.emit(Op::StoreLocal(upvalue_base + i as u16), line);
+    }
+    upvalue_base
+}
+
+/// RES-4063: rewrite `StoreLocal` ops targeting the upvalue pseudo-slots
+/// (`[upvalue_base, upvalue_base + upvalue_count)`) into `StoreUpvalue`, so
+/// mutations of a captured name persist in the closure's upvalue slab for
+/// cross-call visibility instead of only updating the local copy.
+fn rewrite_store_upvalues(fn_chunk: &mut Chunk, upvalue_base: u16, upvalue_count: usize) {
+    if upvalue_count == 0 {
+        return;
+    }
+    let limit = upvalue_base + upvalue_count as u16;
+    for op in fn_chunk.code.iter_mut() {
+        if let Op::StoreLocal(slot) = *op
+            && slot >= upvalue_base
+            && slot < limit
+        {
+            *op = Op::StoreUpvalue {
+                upvalue_idx: slot - upvalue_base,
+                local_slot: slot,
+            };
+        }
+    }
+}
+
+/// RES-4063: build the `Function::upvalue_source_slots` table — the outer
+/// slot each upvalue should be written back to on return, or `u16::MAX`
+/// (the existing "no write-back target" sentinel) for a static capture,
+/// which has no valid caller-frame slot.
+fn build_upvalue_source_slots(captured: &[(u16, String)]) -> Box<[u16]> {
+    captured
+        .iter()
+        .map(|(s, _)| {
+            if *s & STATIC_FLAG != 0 {
+                u16::MAX
+            } else {
+                raw_slot(*s)
+            }
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// RES-4063: emit, in the *outer* chunk, the load of each captured value
+/// onto the stack immediately before `Op::MakeClosure` — `LoadGlobal`/
+/// `LoadStatic`/`LoadLocal` per the capture's flag (non-global, non-static
+/// captures were boxed by `analyze_and_box_captures` above, so the
+/// `LoadLocal` case always loads the shared `Value::Cell` handle, never a
+/// value snapshot).
+fn emit_capture_loads(chunk: &mut Chunk, captured: &[(u16, String)], line: u32) {
+    for (outer_slot, _) in captured {
+        if *outer_slot & GLOBAL_FLAG != 0 {
+            chunk.emit(Op::LoadGlobal(raw_slot(*outer_slot)), line);
+        } else if *outer_slot & STATIC_FLAG != 0 {
+            chunk.emit(Op::LoadStatic(raw_slot(*outer_slot)), line);
+        } else {
+            chunk.emit(Op::LoadLocal(raw_slot(*outer_slot)), line);
+        }
+    }
 }
 
 /// RES-4041: synthesize a standalone bytecode `Function` that evaluates
@@ -5010,47 +5174,10 @@ fn compile_expr(
             // sequence (needed so LoadUpvalue(i) indices are stable).
             let param_names: std::collections::HashSet<&str> =
                 parameters.iter().map(|(_, n)| n.as_str()).collect();
-            let mut captured: Vec<(u16, String)> = Vec::new(); // (outer slot, name)
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            collect_free_vars(body, &param_names, locals, &mut captured, &mut seen);
-
-            // RES-3914: box every non-global captured name *before*
-            // building the closure's own local map, so the captured
-            // upvalue is a shared `Value::Cell` handle instead of a
-            // value snapshot. If `name` was already boxed (an earlier
-            // closure literal in this same enclosing scope captured it
-            // first — `captured`'s `outer_slot` already carries
-            // `BOXED_FLAG`, read straight out of `locals`), reuse the
-            // existing cell rather than double-boxing it. Globals are
-            // skipped: `LoadGlobal`/`StoreGlobal` already address one
-            // shared slot directly, so boxing would only add overhead.
-            // RES-4046: function-scoped statics are skipped for the
-            // same reason (`LoadStatic`/`StoreStatic` already address
-            // one persistent slot) — and *must* be skipped, since the
-            // boxing code below hardcodes `Op::LoadLocal`/`StoreLocal`,
-            // which would misinterpret `STATIC_FLAG`'s bit as part of
-            // an ordinary local index.
-            for (outer_slot, name) in &mut captured {
-                if *outer_slot & (GLOBAL_FLAG | STATIC_FLAG) != 0 {
-                    continue;
-                }
-                if *outer_slot & BOXED_FLAG == 0 {
-                    let real = *outer_slot;
-                    chunk.emit(Op::LoadLocal(real), line);
-                    let cell_name_const = chunk.add_string_constant("cell")?;
-                    chunk.emit(
-                        Op::CallBuiltin {
-                            name_const: cell_name_const,
-                            arity: 1,
-                        },
-                        line,
-                    );
-                    chunk.emit(Op::StoreLocal(real), line);
-                    let boxed_slot = real | BOXED_FLAG;
-                    locals.insert(name.clone(), boxed_slot);
-                    *outer_slot = boxed_slot;
-                }
-            }
+            // RES-3914/RES-4046 boxing semantics now live in
+            // `analyze_and_box_captures` (shared with `compile_nested_fn`,
+            // RES-4063) — see that function's doc comment.
+            let captured = analyze_and_box_captures(body, &param_names, chunk, locals, line)?;
 
             // Build the closure's local map: params at 0..arity, then upvalues
             // accessible via LoadUpvalue. The body chunk uses LoadUpvalue(i) for
@@ -5067,50 +5194,17 @@ fn compile_expr(
                 fn_locals.insert(pname.clone(), fn_next_local);
                 fn_next_local += 1;
             }
-            // Upvalues are accessed via Op::LoadUpvalue, not locals — we don't
-            // add them to fn_locals. The body's compile_expr will see identifiers
-            // missing from fn_locals and look them up as … well, currently we
-            // need to NOT add them as locals so the compiled body references them
-            // as upvalues. But compile_expr currently handles identifiers only
-            // via locals lookup. We add a sentinel: give each captured name a
-            // special "upvalue" pseudo-slot by injecting it into fn_locals with a
-            // flag we then post-process. Instead, we compile the body with the
-            // captured names in fn_locals, then rewrite those LoadLocal ops into
-            // LoadUpvalue ops after the fact.
-            //
-            // Simpler approach: insert captured names into fn_locals at slots
-            // >= fn_next_local (reachable area), compile, then rewrite those
-            // LoadLocal(slot) ops to LoadUpvalue(upvalue_index). The upvalue
-            // indices are 0-based and correspond to the capture order.
-            let upvalue_base = fn_next_local; // first "upvalue" local slot
-            for (i, (outer_slot, name)) in captured.iter().enumerate() {
-                let slot = upvalue_base + i as u16;
-                // RES-3914: propagate boxed-ness so reads/writes of the
-                // captured name *within this closure's own body* also
-                // route through Cell.get()/Cell.set() — the entry-copy
-                // below (LoadUpvalue; StoreLocal) copies in the Cell
-                // handle itself, so the pseudo-local slot holds a Cell
-                // just like the outer scope's slot does.
-                let slot = if *outer_slot & BOXED_FLAG != 0 {
-                    slot | BOXED_FLAG
-                } else {
-                    slot
-                };
-                fn_locals.insert(name.clone(), slot);
-            }
-            // RES-2504: advance fn_next_local past the upvalue pseudo-slots
-            // so that body `let` bindings don't collide with them.
-            fn_next_local += captured.len() as u16;
-
-            // RES-2504: copy upvalues into real local slots at function
-            // entry. This replaces the old post-hoc LoadLocal→LoadUpvalue
-            // rewrite and also makes mutations to captured variables
-            // visible within the closure body (both reads and writes use
-            // normal LoadLocal/StoreLocal on the copied slots).
-            for i in 0..upvalue_count {
-                fn_chunk.emit(Op::LoadUpvalue(i as u16), line);
-                fn_chunk.emit(Op::StoreLocal(upvalue_base + i as u16), line);
-            }
+            // RES-4063: upvalue pseudo-local plumbing (registration +
+            // copy-in prologue) now lives in
+            // `install_upvalue_locals_and_prologue`, shared with
+            // `compile_nested_fn` — see that function's doc comment.
+            let upvalue_base = install_upvalue_locals_and_prologue(
+                &mut fn_locals,
+                &mut fn_next_local,
+                &mut fn_chunk,
+                &captured,
+                line,
+            );
 
             // Compile the body statements.
             let inner_stmts = match body.as_ref() {
@@ -5130,24 +5224,10 @@ fn compile_expr(
             )?;
             fn_chunk.emit(Op::ReturnFromCall, 0);
 
-            // RES-2536: rewrite StoreLocal ops that target upvalue
-            // slots to StoreUpvalue, which persists the mutation in
-            // the closure's upvalue slab for cross-call visibility.
-            if upvalue_count > 0 {
-                let ub = upvalue_base;
-                let limit = ub + upvalue_count as u16;
-                for op in fn_chunk.code.iter_mut() {
-                    if let Op::StoreLocal(slot) = *op
-                        && slot >= ub
-                        && slot < limit
-                    {
-                        *op = Op::StoreUpvalue {
-                            upvalue_idx: slot - ub,
-                            local_slot: slot,
-                        };
-                    }
-                }
-            }
+            // RES-2536/RES-4063: rewrite StoreLocal ops that target
+            // upvalue slots to StoreUpvalue — see
+            // `rewrite_store_upvalues`'s doc comment.
+            rewrite_store_upvalues(&mut fn_chunk, upvalue_base, upvalue_count);
 
             let local_count = fn_next_local;
             // Insert at fn_idx (pre-allocated index). fns may have grown via
@@ -5164,17 +5244,7 @@ fn compile_expr(
             // sentinel (see `CallFrame::source_slot`'s doc comment);
             // `write_back_upvalues`'s bounds check already treats an
             // out-of-range index as a no-op.
-            let source_slots: Box<[u16]> = captured
-                .iter()
-                .map(|(s, _)| {
-                    if *s & STATIC_FLAG != 0 {
-                        u16::MAX
-                    } else {
-                        raw_slot(*s)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .into();
+            let source_slots: Box<[u16]> = build_upvalue_source_slots(&captured);
             while fns.len() <= fn_idx as usize {
                 fns.push(Function {
                     name: "<closure_placeholder>".into(),
@@ -5196,27 +5266,10 @@ fn compile_expr(
                 postcheck: None,
             };
 
-            // Emit: push each captured value onto the stack, then
-            // MakeClosure. Non-global, non-static captures were boxed
-            // above, so this always loads the shared `Value::Cell`
-            // handle (never a value snapshot). RES-3914: global
-            // captures use `LoadGlobal` (they were tagged `GLOBAL_FLAG`
-            // by `collect_free_vars` reading the pre-seeded globals in
-            // `locals`) instead of the previous unmasked `LoadLocal`,
-            // which read an out-of-range slot. RES-4046: static
-            // captures use `LoadStatic` the same way — this executes
-            // in the *outer* (declaring) function's own frame, so it
-            // correctly reads that function's persistent static slot
-            // one time to seed the closure's snapshot.
-            for (outer_slot, _) in &captured {
-                if *outer_slot & GLOBAL_FLAG != 0 {
-                    chunk.emit(Op::LoadGlobal(raw_slot(*outer_slot)), line);
-                } else if *outer_slot & STATIC_FLAG != 0 {
-                    chunk.emit(Op::LoadStatic(raw_slot(*outer_slot)), line);
-                } else {
-                    chunk.emit(Op::LoadLocal(raw_slot(*outer_slot)), line);
-                }
-            }
+            // RES-4063: capture-load emission now lives in
+            // `emit_capture_loads`, shared with `compile_nested_fn` — see
+            // that function's doc comment.
+            emit_capture_loads(chunk, &captured, line);
             chunk.emit(
                 Op::MakeClosure {
                     fn_idx,
