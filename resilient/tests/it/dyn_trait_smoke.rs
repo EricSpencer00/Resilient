@@ -59,3 +59,49 @@ fn check_rejects_dyn_trait_coercion_when_struct_does_not_implement() {
         "expected coercion diagnostic; got: {stderr}"
     );
 }
+
+// RES-4095 (dyn v2 increment 1): object-safety checking.
+
+#[test]
+fn check_rejects_dyn_trait_with_no_self_method() {
+    let output = Command::new(bin())
+        .args([
+            "check",
+            "examples/trait_dyn_object_safety_no_self_reject.rz",
+        ])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[E0021]") && stderr.contains("not object-safe"),
+        "expected object-safety diagnostic; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_rejects_dyn_trait_with_self_returning_method() {
+    let output = Command::new(bin())
+        .args([
+            "check",
+            "examples/trait_dyn_object_safety_self_return_reject.rz",
+        ])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[E0021]") && stderr.contains("returns `Self`"),
+        "expected object-safety diagnostic; got: {stderr}"
+    );
+}

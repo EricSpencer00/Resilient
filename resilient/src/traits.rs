@@ -90,6 +90,13 @@ pub(crate) struct TraitMethodSig {
     /// provided by every `impl` block; `Some` means the impl may omit it
     /// and the default fires instead.
     pub default_body: Option<Box<Node>>,
+    /// RES-4095: `true` when the declared return type is exactly the
+    /// bare identifier `Self` (e.g. `fn clone(self) -> Self;`). Used by
+    /// `dyn_trait::check` to reject such methods from object-safety —
+    /// a `dyn Trait` value has erased its concrete type, so a method
+    /// promising to hand back "the same concrete type" can't be
+    /// satisfied through the trait-object receiver.
+    pub returns_self: bool,
 }
 
 /// Associated type declaration in a trait.
@@ -296,13 +303,33 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
     }
 
     // Optional `-> ReturnType` — skip until `;` or `{` or `fn` or `}`.
+    // RES-4095: while skipping, note whether the return type is the bare
+    // identifier `Self` (single token, nothing else before the
+    // terminator) — that's the only shape `dyn_trait::check` needs to
+    // flag as object-safety-breaking.
+    let mut returns_self = false;
     if parser.current_token == Token::Arrow {
         parser.next_token(); // skip '->'
-        // Skip the return-type expression until a terminator.
+        let mut first = true;
         while !matches!(
             parser.current_token,
             Token::Semicolon | Token::LeftBrace | Token::RightBrace | Token::Function | Token::Eof
         ) {
+            if first
+                && let Token::Identifier(ident) = &parser.current_token
+                && ident == "Self"
+            {
+                returns_self = true;
+            } else if first {
+                returns_self = false;
+            } else {
+                // More than one token before the terminator (e.g. a
+                // generic return type or a compound path) — not the
+                // bare-`Self` shape, regardless of what the first
+                // token was.
+                returns_self = false;
+            }
+            first = false;
             parser.next_token();
         }
     }
@@ -329,6 +356,7 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
         span: sig_span,
         params,
         default_body,
+        returns_self,
     })
 }
 
