@@ -282,11 +282,22 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // iteration interleaving when `next()` itself has an observable side
     // effect — not exercised by this example or any other in the corpus).
     //
-    // Remaining five: Track B-E3 VM-completeness follow-ups.
-    "actor_deadlock.rz",
-    "actor_ping_pong.rz",
-    "actor_spawn_send.rz",
-    "showcase_actors.rz",
+    // `actor_deadlock.rz`, `actor_ping_pong.rz`, `actor_spawn_send.rz`,
+    // `showcase_actors.rz` (FIXED, RES-4141): `spawn(fn)` now accepts
+    // `Value::Closure` (the VM's callable representation for a plain
+    // top-level fn reference — `builtin_spawn`, `lib.rs`), and the VM
+    // gained its own actor scheduler (`vm::run_pending_actors`) that
+    // drains the actors `spawn`ed while the main chunk ran, invoking
+    // each body via `vm_call_closure_value` — the same re-entrant call
+    // primitive `.map()`/`.filter()`/etc. and `Op::IterPrepare` use —
+    // instead of the tree-walker's `apply_function`/`Environment`
+    // machinery. Scheduling order (`next_runnable_actor`), mailbox
+    // state, `WouldBlock:<pid>` blocking, supervisor crash-restart, and
+    // the deadlock diagnostic all live in the shared `actor_runtime`/
+    // `supervisor_runtime` thread-locals both backends already used, so
+    // the VM step mirrors the tree-walker's `run_pending_actors`
+    // (`lib.rs`) 1:1 and produces byte-identical stdout + exit code.
+    //
     // RES-3993: VM bytecode compiler "unsupported construct" (Match, WhileStatement,
     // ReturnStatement, indirect calls, non-arithmetic operators, and an
     // <other> catch-all).
@@ -2046,15 +2057,11 @@ mod jit_differential {
     /// lowering mishandles). Do not add an entry without a comment
     /// explaining why it diverges.
     const UNSUPPORTED_BY_JIT: &[&str] = &[
-        // Same root cause as the identical entries in
-        // `UNSUPPORTED_BY_VM`: `spawn(fn)` has no VM-side actor-body
-        // execution path, and `--jit` falls back to `--vm` for the
+        // RES-4141: the identical entries in `UNSUPPORTED_BY_VM` are
+        // fixed (`spawn(fn)` accepts `Value::Closure` + a VM-side
+        // actor scheduler) — `--jit` falls back to `--vm` for the
         // `Node::Spawn`/actor constructs its own lowering doesn't
-        // support, so it inherits the VM's divergence unchanged.
-        "actor_deadlock.rz",
-        "actor_ping_pong.rz",
-        "actor_spawn_send.rz",
-        "showcase_actors.rz",
+        // support, so it inherits the fix unchanged.
     ];
 
     #[test]

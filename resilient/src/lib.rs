@@ -23746,9 +23746,18 @@ fn builtin_cell_new(args: &[Value]) -> RResult<Value> {
 // RES-332 PR 2: actor spawn/send/receive builtins.
 
 /// `spawn(fn)` — allocate a new actor running `fn`, return its PID.
+///
+/// RES-4141: accepts both the tree-walker's `Value::Function` and the
+/// VM's `Value::Closure` (a plain top-level fn reference compiles to a
+/// `Closure` with empty upvalues under `--vm`/`--jit`) — `actor_spawn`
+/// just stores whatever callable `Value` it's given; `run_pending_actors`
+/// (tree-walker) and `vm::run_pending_actors` (VM) each know how to
+/// invoke their own representation.
 fn builtin_spawn(args: &[Value]) -> RResult<Value> {
     match args {
-        [fn_val @ Value::Function(_)] => crate::actor_runtime::actor_spawn(fn_val.clone()),
+        [fn_val @ (Value::Function(_) | Value::Closure { .. })] => {
+            crate::actor_runtime::actor_spawn(fn_val.clone())
+        }
         [other] => Err(format!(
             "spawn: expected a function argument, got {:?}",
             other
