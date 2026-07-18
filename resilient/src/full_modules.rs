@@ -13,7 +13,8 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::{HashMap, HashSet};
+use resilient_span::Span;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
@@ -32,9 +33,27 @@ impl Visibility {
     }
 }
 
+/// A single `use` edge from the enclosing module to `target`, tagged
+/// with the source span of the `use` statement that introduced it —
+/// this is what lets RES-4110's cycle diagnostic point at a concrete
+/// `line:col` instead of just naming the modules involved.
+#[derive(Debug, Clone)]
+pub struct Edge {
+    pub target: String,
+    pub span: Span,
+}
+
+/// RES-4110: `deps` is a `BTreeMap<String, Vec<Edge>>` rather than the
+/// previous `HashMap<String, HashSet<String>>` for two reasons: (1) a
+/// `BTreeMap` iterates in a deterministic key order, and a `Vec`
+/// preserves the source order edges were discovered in, so
+/// `detect_cycle` reports the *same* cycle on every run regardless of
+/// hash-iteration order; (2) edges now carry a span, so duplicate
+/// targets from different `use` sites are legitimately distinct edges,
+/// not something a `HashSet` should collapse.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleGraph {
-    pub deps: HashMap<String, HashSet<String>>,
+    pub deps: BTreeMap<String, Vec<Edge>>,
 }
 
 pub fn build(program: &Node) -> ModuleGraph {
@@ -46,32 +65,14 @@ pub fn build(program: &Node) -> ModuleGraph {
     for s in stmts {
         match &s.node {
             Node::ModuleDecl { name, .. } => {
-                // RES-2236: hoist the `current_mod` entry-init into the
-                // ModuleDecl arm and use `or_default` *with* the owned
-                // String we already have in hand. The previous shape did
-                // `entry(current_mod.clone())` here AND `entry(
-                // current_mod.clone())` on every subsequent Use — the Use
-                // path's clone was paid per use-statement even though the
-                // entry was already in the map. Borrow-then-fallback
-                // collapses the steady-state per-Use cost to a single
-                // hash probe.
                 current_mod = name.clone();
                 g.deps.entry(current_mod.clone()).or_default();
             }
             Node::Use { path, .. } => {
-                // RES-2236: hot path — the entry exists once the enclosing
-                // ModuleDecl has been processed (or after the first Use
-                // under `__root`). `get_mut` borrows the key as `&str` and
-                // skips the per-call `current_mod.clone()`. Only the cold
-                // first-Use-without-ModuleDecl branch pays for the owned
-                // String allocation now.
-                if let Some(deps) = g.deps.get_mut(current_mod.as_str()) {
-                    deps.insert(path.clone());
-                } else {
-                    let mut set = HashSet::new();
-                    set.insert(path.clone());
-                    g.deps.insert(current_mod.clone(), set);
-                }
+                g.deps.entry(current_mod.clone()).or_default().push(Edge {
+                    target: path.clone(),
+                    span: s.span,
+                });
             }
             _ => {}
         }
@@ -79,47 +80,59 @@ pub fn build(program: &Node) -> ModuleGraph {
     g
 }
 
-pub fn detect_cycle(graph: &ModuleGraph) -> Option<Vec<String>> {
-    // RES-1517: borrow node names through the DFS instead of
-    // allocating a fresh `String` per visit. The DFS visited the
-    // same node up to twice (`visited.insert(node.clone())` +
-    // `on_stack.push(node.clone())`) for every reachable module —
-    // pure overhead since the source strings already live in
-    // `graph.deps`. The owned `Vec<String>` result is built once
-    // at the public boundary. Same pattern as RES-1471 / RES-1474 /
-    // RES-1477 / RES-1514.
+/// One step of a reported import cycle: the module name, and the span
+/// of the `use` statement that leads to the *next* step in the cycle.
+#[derive(Debug, Clone)]
+pub struct CycleStep {
+    pub name: String,
+    pub span: Span,
+}
+
+/// Depth-first cycle search over the module dependency graph. Detects
+/// cycles of any length (not just direct A<->B pairs) by tracking the
+/// current DFS stack and reporting a match as soon as a node reachable
+/// from itself reappears on that stack — RES-4110 adds the edge span
+/// for every step and switches the graph traversal to the deterministic
+/// `BTreeMap`/`Vec` shape above so the *same* cycle (and the same
+/// starting node) is reported on every run for a given program.
+pub fn detect_cycle(graph: &ModuleGraph) -> Option<Vec<CycleStep>> {
     fn dfs<'a>(
         node: &'a str,
         graph: &'a ModuleGraph,
-        on_stack: &mut Vec<&'a str>,
+        on_stack: &mut Vec<(&'a str, Span)>,
         visited: &mut HashSet<&'a str>,
-    ) -> Option<Vec<&'a str>> {
-        if let Some(idx) = on_stack.iter().position(|x| *x == node) {
+    ) -> Option<Vec<(&'a str, Span)>> {
+        if let Some(idx) = on_stack.iter().position(|(n, _)| *n == node) {
             return Some(on_stack[idx..].to_vec());
         }
         if visited.contains(node) {
             return None;
         }
         visited.insert(node);
-        on_stack.push(node);
         if let Some(adj) = graph.deps.get(node) {
-            for n in adj {
-                if let Some(cycle) = dfs(n.as_str(), graph, on_stack, visited) {
+            for edge in adj {
+                on_stack.push((node, edge.span));
+                if let Some(cycle) = dfs(edge.target.as_str(), graph, on_stack, visited) {
                     return Some(cycle);
                 }
+                on_stack.pop();
             }
         }
-        on_stack.pop();
         None
     }
-    // RES-1786: pre-size both to graph.deps.len() — visited grows
-    // exactly to the module count; stack peaks at module-graph depth
-    // which is bounded by the same count.
     let mut visited: HashSet<&str> = HashSet::with_capacity(graph.deps.len());
     for start in graph.deps.keys() {
-        let mut stack: Vec<&str> = Vec::with_capacity(graph.deps.len());
+        let mut stack: Vec<(&str, Span)> = Vec::with_capacity(graph.deps.len());
         if let Some(cycle) = dfs(start.as_str(), graph, &mut stack, &mut visited) {
-            return Some(cycle.into_iter().map(str::to_string).collect());
+            return Some(
+                cycle
+                    .into_iter()
+                    .map(|(name, span)| CycleStep {
+                        name: name.to_string(),
+                        span,
+                    })
+                    .collect(),
+            );
         }
     }
     None
@@ -143,10 +156,32 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
     let g = build(program);
     if let Some(cycle) = detect_cycle(&g) {
+        // RES-4110: render the full cycle path with a `line:col` per
+        // step (the position of the `use` that closes the loop back to
+        // the first-visited module), then repeat the starting module
+        // name once more at the end so the printed path visibly closes
+        // the loop (`A -> B -> C -> A`) instead of trailing off at `C`.
+        let first = cycle.first().map(|s| s.name.clone());
+        let mut path = String::new();
+        for (i, step) in cycle.iter().enumerate() {
+            if i > 0 {
+                path.push_str(" -> ");
+            }
+            path.push_str(&format!(
+                "{} ({}:{}:{})",
+                step.name, source_path, step.span.start.line, step.span.start.column
+            ));
+        }
+        if let Some(first) = first {
+            path.push_str(" -> ");
+            path.push_str(&first);
+        }
+        let head_span = cycle.first().map(|s| s.span);
+        let (line, col) = head_span
+            .map(|sp| (sp.start.line, sp.start.column))
+            .unwrap_or((0, 0));
         return Err(format!(
-            "{}:0:0: error: circular module dependency: {}",
-            source_path,
-            cycle.join(" -> ")
+            "{source_path}:{line}:{col}: error: circular module dependency: {path}"
         ));
     }
     Ok(())
@@ -220,5 +255,93 @@ mod tests {
         "#;
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test.rz").is_ok());
+    }
+
+    fn edge(target: &str) -> Edge {
+        Edge {
+            target: target.to_string(),
+            span: Span::point(resilient_span::Pos::new(1, 1, 0)),
+        }
+    }
+
+    #[test]
+    fn two_module_cycle_detected() {
+        let mut g = ModuleGraph::default();
+        g.deps.insert("A".to_string(), vec![edge("B")]);
+        g.deps.insert("B".to_string(), vec![edge("A")]);
+        let cycle = detect_cycle(&g).expect("expected a cycle");
+        assert_eq!(cycle.len(), 2);
+        assert_eq!(cycle[0].name, "A");
+        assert_eq!(cycle[1].name, "B");
+    }
+
+    #[test]
+    fn three_module_cycle_detected_with_full_path() {
+        // RES-4110: A -> B -> C -> A is a length-3 cycle; the old
+        // detector's `on_stack` DFS could already find this
+        // structurally, but nothing asserted it and the reported order
+        // was hash-iteration-dependent. Pin it down with a deterministic
+        // BTreeMap-backed graph.
+        let mut g = ModuleGraph::default();
+        g.deps.insert("A".to_string(), vec![edge("B")]);
+        g.deps.insert("B".to_string(), vec![edge("C")]);
+        g.deps.insert("C".to_string(), vec![edge("A")]);
+        let cycle = detect_cycle(&g).expect("expected a cycle");
+        assert_eq!(
+            cycle.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+    }
+
+    #[test]
+    fn four_module_cycle_not_confused_with_shorter_subpath() {
+        // D depends on nothing cyclic; A -> B -> C -> A is still the
+        // cycle even with an extra acyclic branch hanging off B.
+        let mut g = ModuleGraph::default();
+        g.deps.insert("A".to_string(), vec![edge("B")]);
+        g.deps.insert("B".to_string(), vec![edge("C"), edge("D")]);
+        g.deps.insert("C".to_string(), vec![edge("A")]);
+        g.deps.insert("D".to_string(), vec![]);
+        let cycle = detect_cycle(&g).expect("expected a cycle");
+        assert_eq!(
+            cycle.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+    }
+
+    #[test]
+    fn check_reports_line_col_and_closes_the_loop() {
+        let mut g = ModuleGraph::default();
+        g.deps.insert(
+            "A".to_string(),
+            vec![Edge {
+                target: "B".to_string(),
+                span: Span::point(resilient_span::Pos::new(2, 5, 10)),
+            }],
+        );
+        g.deps.insert(
+            "B".to_string(),
+            vec![Edge {
+                target: "A".to_string(),
+                span: Span::point(resilient_span::Pos::new(4, 9, 40)),
+            }],
+        );
+        let cycle = detect_cycle(&g).expect("expected a cycle");
+        assert_eq!(cycle[0].span.start.line, 2);
+        assert_eq!(cycle[0].span.start.column, 5);
+        assert_eq!(cycle[1].span.start.line, 4);
+        assert_eq!(cycle[1].span.start.column, 9);
+    }
+
+    #[test]
+    fn no_false_positive_on_shared_dependency_diamond() {
+        // A -> B, A -> C, B -> D, C -> D is a diamond, not a cycle —
+        // D is reachable via two paths but never points back.
+        let mut g = ModuleGraph::default();
+        g.deps.insert("A".to_string(), vec![edge("B"), edge("C")]);
+        g.deps.insert("B".to_string(), vec![edge("D")]);
+        g.deps.insert("C".to_string(), vec![edge("D")]);
+        g.deps.insert("D".to_string(), vec![]);
+        assert!(detect_cycle(&g).is_none());
     }
 }
