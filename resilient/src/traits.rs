@@ -699,8 +699,25 @@ fn walk_call_sites(
         assoc_type_map,
         source_path,
     };
-    let mut bindings = vec![HashMap::new()];
+    let mut bindings = vec![Scope::default()];
     walk_call_sites_with_bindings(node, &ctx, &mut bindings)
+}
+
+/// RES-4109: per-block binding scope. `concrete` tracks identifiers
+/// resolved to a concrete struct type (RES-4048's original mechanism).
+/// `generic` additionally tracks identifiers whose declared type is
+/// one of the *enclosing* function's own type parameters, along with
+/// the bounds declared on that type parameter — e.g. inside
+/// `fn wrapper<U: Tag>(U item)`, `item` maps to `["Tag"]`. This lets a
+/// nested call like `announce(item)` (where `announce<T: Tag>`)
+/// verify that the bound requirement is satisfied by propagation
+/// through `wrapper`'s own signature, rather than silently skipping
+/// the check because `item`'s type isn't concrete at this call site.
+#[derive(Default)]
+struct Scope {
+    concrete: HashMap<String, String>,
+    /// param name -> (type-param name, declared bounds).
+    generic: HashMap<String, (String, Vec<String>)>,
 }
 
 struct CallSiteCheckCtx<'a> {
@@ -715,18 +732,18 @@ struct CallSiteCheckCtx<'a> {
 fn walk_call_sites_with_bindings(
     node: &Node,
     ctx: &CallSiteCheckCtx<'_>,
-    bindings: &mut Vec<HashMap<String, String>>,
+    bindings: &mut Vec<Scope>,
 ) -> Result<(), String> {
     match node {
         Node::Program(stmts) => {
-            bindings.push(HashMap::new());
+            bindings.push(Scope::default());
             for s in stmts {
                 walk_call_sites_with_bindings(&s.node, ctx, bindings)?;
             }
             bindings.pop();
         }
         Node::Block { stmts, .. } => {
-            bindings.push(HashMap::new());
+            bindings.push(Scope::default());
             for s in stmts {
                 walk_call_sites_with_bindings(s, ctx, bindings)?;
             }
@@ -735,6 +752,7 @@ fn walk_call_sites_with_bindings(
         Node::Function {
             parameters,
             type_params,
+            type_param_bounds,
             body,
             ..
         } => {
@@ -744,17 +762,29 @@ fn walk_call_sites_with_bindings(
             // the caller only has the value via a plainly-typed
             // parameter rather than a fresh struct literal — e.g.
             // `fn wrapper(Bad b) -> int { return needs_drawable(b); }`.
-            // Params typed with one of this fn's own `type_params`
-            // stay unresolved (correctly deferred — the fn body is
-            // itself polymorphic over that name).
+            //
+            // RES-4109: params typed with one of this fn's own
+            // `type_params` stay unresolved for `concrete`, but are
+            // recorded in `generic` along with the bounds *this* fn
+            // itself declares on that type parameter. That lets a
+            // nested call site (e.g. `announce(item)` inside
+            // `wrapper<U: Tag>(U item)`) verify the bound is satisfied
+            // by propagation, instead of silently skipping the check.
             let tp_set: HashSet<&str> = type_params.iter().map(String::as_str).collect();
-            let mut scope = HashMap::with_capacity(parameters.len());
+            let mut scope = Scope {
+                concrete: HashMap::with_capacity(parameters.len()),
+                generic: HashMap::new(),
+            };
             for (ptype, pname) in parameters {
                 if tp_set.contains(ptype.as_str()) {
+                    if let Some(idx) = type_params.iter().position(|tp| tp == ptype) {
+                        let bounds = type_param_bounds.get(idx).cloned().unwrap_or_default();
+                        scope.generic.insert(pname.clone(), (ptype.clone(), bounds));
+                    }
                     continue;
                 }
                 if let Some(simple) = simple_type_name(ptype) {
-                    scope.insert(pname.clone(), simple);
+                    scope.concrete.insert(pname.clone(), simple);
                 }
             }
             bindings.push(scope);
@@ -775,6 +805,7 @@ fn walk_call_sites_with_bindings(
                 bindings
                     .last_mut()
                     .expect("call-site binding scope should exist")
+                    .concrete
                     .insert(name.clone(), concrete_type);
             }
         }
@@ -784,13 +815,14 @@ fn walk_call_sites_with_bindings(
                 if let Some(scope) = bindings
                     .iter_mut()
                     .rev()
-                    .find(|scope| scope.contains_key(name))
+                    .find(|scope| scope.concrete.contains_key(name))
                 {
-                    scope.insert(name.clone(), concrete_type);
+                    scope.concrete.insert(name.clone(), concrete_type);
                 } else {
                     bindings
                         .last_mut()
                         .expect("call-site binding scope should exist")
+                        .concrete
                         .insert(name.clone(), concrete_type);
                 }
             }
@@ -869,6 +901,44 @@ fn walk_call_sites_with_bindings(
                         None => continue,
                     };
                     let concrete_type = resolve_concrete_type(arg, bindings, ctx.fns_by_name);
+                    if concrete_type.is_none() {
+                        // RES-4109: the argument didn't resolve to a
+                        // concrete type — check whether it's the
+                        // *caller's own* generic-typed parameter. If
+                        // so, the caller's signature must itself carry
+                        // every bound the callee requires; otherwise
+                        // the call is unsound (a caller with an
+                        // unconstrained `U` could pass a value that
+                        // doesn't satisfy `T: Tag`).
+                        if let Node::Identifier { name: arg_name, .. } = arg
+                            && let Some((caller_tp, caller_bounds)) = bindings
+                                .iter()
+                                .rev()
+                                .find_map(|scope| scope.generic.get(arg_name))
+                        {
+                            for bound in bounds {
+                                if bound.contains("::") {
+                                    // Projection bounds aren't
+                                    // expressible on a plain type
+                                    // parameter's bound list;
+                                    // conservatively skip (matches
+                                    // existing projection-bound scope
+                                    // elsewhere in this pass).
+                                    continue;
+                                }
+                                if !caller_bounds.iter().any(|b| b == bound) {
+                                    return Err(format_err(
+                                        ctx.source_path,
+                                        *span,
+                                        &format!(
+                                            "type parameter `{}` (bound to `{}` here) does not declare bound `{}: {}` required by call to `{}` — add it to the enclosing function's signature",
+                                            caller_tp, arg_name, tp, bound, callee_name
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     if let Some(ct) = concrete_type {
                         for bound in bounds {
                             // RES-2695: projection bound like "I::Item:Display"
@@ -958,7 +1028,7 @@ fn walk_call_sites_with_bindings(
 
 fn resolve_concrete_type(
     node: &Node,
-    bindings: &[HashMap<String, String>],
+    bindings: &[Scope],
     fns_by_name: &HashMap<&str, &Node>,
 ) -> Option<String> {
     match node {
@@ -966,7 +1036,7 @@ fn resolve_concrete_type(
         Node::Identifier { name, .. } => bindings
             .iter()
             .rev()
-            .find_map(|scope| scope.get(name).cloned()),
+            .find_map(|scope| scope.concrete.get(name).cloned()),
         // RES-4048: an argument that is itself a call to a fn with a
         // known, concrete (non-generic) return-type annotation — e.g.
         // `needs_drawable(make_bad())` where `fn make_bad() -> Bad`.
@@ -1299,21 +1369,70 @@ mod tests {
     }
 
     #[test]
-    fn generic_call_with_forwarded_generic_param_stays_unresolved() {
-        // `U` is itself a generic type parameter on `wrapper` — the
-        // concrete type isn't known at this call site, so this must
-        // NOT be treated as a (vacuously unsatisfied) concrete-type
-        // check. Conservative: no diagnostic here (deferred to a
-        // follow-up that tracks bound propagation across nested
-        // generic calls).
+    fn generic_call_with_unconstrained_forwarded_generic_param_errors() {
+        // RES-4109: `U` is itself a generic type parameter on `wrapper`,
+        // with NO declared bounds. Forwarding it into `announce<T: Tag>`
+        // is unsound — a caller could instantiate `wrapper` with any
+        // type at all, including one that doesn't satisfy `Tag`. This
+        // must now be rejected rather than silently skipped.
         let prog = parse_program(
             "trait Tag { fn tag(self) -> string; }\n\
              fn announce<T: Tag>(T item) -> string { return \"x\"; }\n\
              fn wrapper<U>(U item) -> string { return announce(item); }\n\
              fn main(int dummy) {} main();",
         );
+        let err = check(&prog, "test.rz")
+            .expect_err("unconstrained U forwarded into a T: Tag bound must be rejected");
+        assert!(err.contains("Tag"), "got: {err}");
+        assert!(err.contains('U'), "got: {err}");
+    }
+
+    #[test]
+    fn generic_call_with_bound_propagated_through_nested_generic_call_passes() {
+        // RES-4109: `wrapper<U: Tag>` declares the same bound `announce`
+        // requires, so the call is sound regardless of what `wrapper`
+        // is eventually instantiated with — propagation through one
+        // level of nested generic call must be accepted.
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             fn announce<T: Tag>(T item) -> string { return \"x\"; }\n\
+             fn wrapper<U: Tag>(U item) -> string { return announce(item); }\n\
+             fn main(int dummy) {} main();",
+        );
         check(&prog, "test.rz")
-            .expect("unresolved generic-typed param must not be rejected as concrete");
+            .expect("U: Tag satisfies announce's T: Tag requirement by propagation");
+    }
+
+    #[test]
+    fn generic_call_with_compound_bound_partially_propagated_errors() {
+        // RES-4109: `wrapper<U: Tag>` only carries `Tag`, but `render`
+        // requires the compound bound `Tag + Sized`. Partial
+        // propagation must still be rejected — every bound the callee
+        // requires must appear on the caller's own type parameter.
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             trait Sized { fn size(self) -> int; }\n\
+             fn render<T: Tag + Sized>(T item) -> string { return \"x\"; }\n\
+             fn wrapper<U: Tag>(U item) -> string { return render(item); }\n\
+             fn main(int dummy) {} main();",
+        );
+        let err = check(&prog, "test.rz").expect_err("missing Sized bound on U must be rejected");
+        assert!(err.contains("Sized"), "got: {err}");
+    }
+
+    #[test]
+    fn generic_call_with_full_compound_bound_propagated_passes() {
+        // RES-4109: `wrapper<U: Tag + Sized>` carries every bound
+        // `render<T: Tag + Sized>` requires — propagation succeeds.
+        let prog = parse_program(
+            "trait Tag { fn tag(self) -> string; }\n\
+             trait Sized { fn size(self) -> int; }\n\
+             fn render<T: Tag + Sized>(T item) -> string { return \"x\"; }\n\
+             fn wrapper<U: Tag + Sized>(U item) -> string { return render(item); }\n\
+             fn main(int dummy) {} main();",
+        );
+        check(&prog, "test.rz")
+            .expect("U: Tag + Sized satisfies render's T: Tag + Sized by propagation");
     }
 
     #[test]

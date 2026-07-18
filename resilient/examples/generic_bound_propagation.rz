@@ -1,0 +1,49 @@
+// RES-4109 (A-E2 follow-up): compound-bound propagation through a
+// nested generic call. `wrapper<U: Drawable + Sizable>` forwards its
+// own type parameter into `render<T: Drawable + Sizable>` — this is
+// sound because `wrapper`'s own signature guarantees every bound
+// `render` requires, even though the concrete type isn't known until
+// `wrapper` itself is instantiated. Dropping either bound from
+// `wrapper<U: ...>` produces a typecheck-time diagnostic naming the
+// missing bound (covered by tests/it/compound_trait_bounds_golden.rs).
+
+trait Drawable {
+    fn draw(self) -> int;
+}
+
+trait Sizable {
+    fn size(self) -> int;
+}
+
+struct Circle {
+    int radius,
+}
+
+impl Drawable for Circle {
+    fn draw(self) -> int {
+        return self.radius;
+    }
+}
+
+impl Sizable for Circle {
+    fn size(self) -> int {
+        return self.radius * 2;
+    }
+}
+
+fn render<T: Drawable + Sizable>(T shape) -> int {
+    let d: int = shape.draw();
+    let s: int = shape.size();
+    return d + s;
+}
+
+fn wrapper<U: Drawable + Sizable>(U shape) -> int {
+    return render(shape);
+}
+
+fn main(int dummy) {
+    println(wrapper(new Circle { radius: 4 }));
+    return 0;
+}
+
+main(0);
