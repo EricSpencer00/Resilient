@@ -39,6 +39,7 @@
 //! | `#[peripheral]` | `hw_state_machine` | Hardware lifecycle type |
 //! | `#[autopilot]` | `autopilot` | Mark for safety audit |
 //! | `#[format_builtin(...)]` | `format_builtin` | Format declaration metadata |
+//! | `#[overflow_checked]` | `typechecker` | BV64 overflow-safe requires/ensures |
 //!
 //! Attributes that do not match a known kind fall through to
 //! `cfg_attr`'s existing "unknown attribute" error path.
@@ -363,6 +364,9 @@ pub fn is_known_attribute(name: &str) -> bool {
         | "loop_bound"
             // RES-3836: general-purpose state machine topology enforcement.
             | "state_machine"
+        // RES-4112: opt-in BV64 overflow-safe checking for a fn's
+        // requires/ensures clauses (see `verifier_z3::prove_overflow_safe`).
+        | "overflow_checked"
     )
 }
 

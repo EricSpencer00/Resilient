@@ -95,6 +95,20 @@ If a downstream verifier needs to know the full set of obligations
 than the manifest. The manifest is intentionally a positive record
 of "what we proved", not a negative one.
 
+### `#[overflow_checked]` obligations (RES-4112) are not yet certified
+
+A fn annotated `#[overflow_checked]` gets an additional BV64
+(wraparound-aware) re-check of its `requires`/`ensures` clauses via
+`verifier_z3::prove_overflow_safe` (see `docs/VERIFICATION_MODEL.md`
+for the full theory-selection rationale). That pass does **not** yet
+emit an SMT-LIB2 certificate — `--emit-certificate` only captures the
+default LIA verdict for a clause, exactly as before this ticket. A
+manifest entry with `"kind": "requires"` proves the clause holds under
+unbounded arithmetic; it says nothing about whether the same clause
+also survived the stricter BV64 pass. Certificate support for the
+BV64 obligation is tracked as a follow-up (mirrors the existing gap
+for the BV32 bitwise-op prover).
+
 ## Verification flow
 
 ```text

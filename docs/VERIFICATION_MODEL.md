@@ -106,6 +106,36 @@ fn max(int x, int y) -> int {
 - Only present in `--features z3` builds; default builds skip Z3 entirely
   and rely on the hand-rolled folder plus runtime checks
 
+**Theory selection — LIA by default, opt-in BV64 overflow checking (RES-4014 / RES-4112):**
+- By default, `requires`/`ensures` clauses are discharged with
+  **unbounded linear integer arithmetic (LIA)** — `+`/`-`/`*` are modeled
+  as idealized mathematical integers with no upper or lower bound. This
+  is sound for logical entailment but *unsound for overflow*: Resilient's
+  `int` is `Int64` with `OverflowMode::Wrap` at runtime
+  (`resilient-runtime`/`vm.rs`), so a clause like `x + y >= 0` given
+  `x, y >= 0` is a genuine LIA tautology (the sum of two non-negative
+  mathematical integers is always non-negative) but can still be
+  **false at runtime** once `x + y` wraps past `i64::MAX` into a
+  negative value.
+- `#[overflow_checked]` on a fn opts its `requires`/`ensures` clauses
+  into a second, stricter pass: `verifier_z3::prove_overflow_safe`
+  re-checks each clause under **width-respecting 64-bit two's-complement
+  (BV64) arithmetic** — `bvadd`/`bvsub`/`bvmul` wrap at the same modulus
+  the VM's wrapping add/sub/mul use, so a BV64 tautology holds for the
+  *actual* runtime arithmetic, not just the idealized unbounded version.
+  A clause the LIA pass discharges but the BV64 pass disproves is a
+  compile error naming both verdicts ("LIA said safe, BV64 disproved
+  it") with a concrete wraparound counterexample.
+- This is opt-in, not default-on: flipping BV64 checking on for every
+  contract site would regress compile time and the false-timeout rate
+  before that trade-off has been measured across the corpus. A clause
+  BV64 can't yet encode (e.g. a `forall`/`exists` quantifier) is
+  tolerated exactly like a Z3 `Unknown` — the runtime check stays in,
+  compilation is not blocked.
+- Certificates are not yet emitted for the BV64 pass (mirrors the
+  existing BV32 bitwise-op prover); `--emit-certificate` only captures
+  the LIA verdict today.
+
 **Integration:**
 
 ```bash
