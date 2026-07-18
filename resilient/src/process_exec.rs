@@ -13,6 +13,12 @@
 //! Non-zero exit codes are NOT errors — check `exit_code` yourself.
 //! A `Result::Err` is only returned when the process cannot be spawned
 //! (e.g., command not found, permission denied).
+//!
+//! RES-4126: on `wasm32` (the web playground) there is no host
+//! process to spawn — `std::process::Command` is unimplemented for
+//! that target. Both builtins validate their arguments and then
+//! short-circuit with a graceful "unsupported on this target" `Err`
+//! instead of failing to build.
 
 use crate::Value;
 
@@ -43,6 +49,14 @@ fn err(msg: String) -> Value {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn unsupported(builtin: &str) -> Value {
+    err(format!(
+        "{}: unsupported on this target (no host process spawning in the wasm playground)",
+        builtin
+    ))
+}
+
 /// `exec(cmd, args) -> Result<ProcessResult, string>`
 ///
 /// Runs `cmd` with the given argument list. Returns `Ok(ProcessResult)` on
@@ -69,14 +83,22 @@ pub(crate) fn builtin_exec(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            match std::process::Command::new(cmd).args(&str_args).output() {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-                    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-                    let exit_code = out.status.code().unwrap_or(-1) as i64;
-                    Ok(ok(make_process_result(stdout, stderr, exit_code)))
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (cmd, str_args);
+                Ok(unsupported("exec"))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                match std::process::Command::new(cmd).args(&str_args).output() {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                        let exit_code = out.status.code().unwrap_or(-1) as i64;
+                        Ok(ok(make_process_result(stdout, stderr, exit_code)))
+                    }
+                    Err(e) => Ok(err(format!("exec: failed to spawn '{}': {}", cmd, e))),
                 }
-                Err(e) => Ok(err(format!("exec: failed to spawn '{}': {}", cmd, e))),
             }
         }
         [Value::String(_), other] => Err(format!(
@@ -106,6 +128,11 @@ pub(crate) fn builtin_exec(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_exec_shell(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(cmd)] => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = cmd;
+                return Ok(unsupported("exec_shell"));
+            }
             #[cfg(unix)]
             let result = std::process::Command::new("sh")
                 .args(["-c", cmd.as_str()])
@@ -114,12 +141,13 @@ pub(crate) fn builtin_exec_shell(args: &[Value]) -> RResult<Value> {
             let result = std::process::Command::new("cmd")
                 .args(["/c", cmd.as_str()])
                 .output();
-            #[cfg(not(any(unix, windows)))]
+            #[cfg(not(any(unix, windows, target_arch = "wasm32")))]
             let result: Result<std::process::Output, std::io::Error> = Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "exec_shell not supported on this platform",
             ));
 
+            #[cfg(not(target_arch = "wasm32"))]
             match result {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -199,5 +227,22 @@ let res = unwrap(r);
 println(trim(res.stdout));"#);
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("hello"), "stdout: {}", r.stdout);
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+
+    #[test]
+    fn exec_errs_on_wasm32() {
+        let r = builtin_exec(&[Value::String("echo".to_string()), Value::Array(vec![])]).unwrap();
+        assert!(matches!(r, Value::Result { ok: false, .. }));
+    }
+
+    #[test]
+    fn exec_shell_errs_on_wasm32() {
+        let r = builtin_exec_shell(&[Value::String("echo hello".to_string())]).unwrap();
+        assert!(matches!(r, Value::Result { ok: false, .. }));
     }
 }
