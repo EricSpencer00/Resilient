@@ -1882,7 +1882,7 @@ fn run_dispatch_loop(
             }
             Op::IterPrepare => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
-                stack.push(iter_prepare_value(v)?);
+                stack.push(iter_prepare_closure_or_value(program, v, overflow_mode)?);
             }
             Op::LoadGlobal(idx) => {
                 let abs = idx as usize;
@@ -4964,8 +4964,62 @@ fn h_opt_chain_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> 
 
 fn h_iter_prepare(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
-    state.stack.push(iter_prepare_value(v)?);
+    let prepared = iter_prepare_closure_or_value(state.program, v, state.overflow_mode)?;
+    state.stack.push(prepared);
     Ok(Step::Continue)
+}
+
+/// RES-4063: `for x in counter` over a callable iterator (a closure
+/// returned by a function, following the `fn next() { .. return
+/// Some(v)/None .. }` protocol) — mirrors the tree-walker's
+/// `eval_for_in_iterator`. Unlike `iter_prepare_value`'s array/map/range
+/// cases, this can't be normalized in a pure function: producing the
+/// item sequence means re-entrantly calling the closure through the
+/// VM's own dispatch loop (`vm_call_closure_value`), which needs
+/// `program`/`overflow_mode`.
+///
+/// RES-4063 (known simplification): materializes eagerly — every
+/// `next()` call happens before the loop body runs at all, whereas the
+/// tree-walker interleaves one `next()` call per iteration. This
+/// matches output exactly for the common case (a `next()` with no
+/// side effects beyond its own captured-state advance, which is the
+/// only shape in `examples/iterator_protocol.rz` and in every other
+/// corpus example). A `next()` with an *observable* side effect (e.g.
+/// a `println` inside `next()` itself) would still see all calls happen
+/// up front rather than interleaved with the body — a real, documented
+/// divergence from the tree-walker, not a silent one. Lazy VM iteration
+/// (matching the tree-walker's interleaving exactly) is a follow-up if
+/// that shape is ever exercised.
+fn iter_prepare_closure_or_value(
+    program: &Program,
+    v: Value,
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
+    if let Value::Closure { .. } = v {
+        const MAX_ITERS: usize = 1_000_000;
+        let mut items = Vec::new();
+        let mut iters = 0usize;
+        loop {
+            iters += 1;
+            if iters > MAX_ITERS {
+                return Err(VmError::BuiltinCallFailed(format!(
+                    "iterator exceeded {MAX_ITERS} calls to next() (runaway?)"
+                )));
+            }
+            let next_result = vm_call_closure_value(program, v.clone(), vec![], overflow_mode)?;
+            match next_result {
+                Value::Option(None) => break,
+                Value::Option(Some(inner)) => items.push(*inner),
+                other => {
+                    return Err(VmError::BuiltinCallFailed(format!(
+                        "iterator next() must return Option (Some/None), got {other}"
+                    )));
+                }
+            }
+        }
+        return Ok(Value::Array(items));
+    }
+    iter_prepare_value(v)
 }
 
 /// `Op::IterPrepare` normalizes a `for`-loop iterable into a shape the
