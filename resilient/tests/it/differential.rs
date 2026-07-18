@@ -2127,4 +2127,35 @@ mod jit_differential {
             failures.join("")
         );
     }
+
+    /// RES-4134: `benchmarks/jit_startup/trivial.rz` is the workload
+    /// `benchmarks/jit_startup/run.sh` uses to isolate the JIT's fixed
+    /// startup cost, and it's the one example in that benchmark's
+    /// coverage sweep this repo actually asserts stays native. If a
+    /// future change to the JIT's precompile checks or the top-level
+    /// `return`-required lowering regresses this back into VM
+    /// fallback, the startup-latency numbers in
+    /// `benchmarks/jit_startup/RESULTS.md` would silently start
+    /// measuring VM overhead instead of JIT overhead — this test
+    /// catches that before the benchmark numbers go stale.
+    #[test]
+    fn jit_startup_trivial_benchmark_runs_natively_without_vm_fallback() {
+        let output = Command::new(super::bin())
+            .arg("--jit")
+            .arg("--verbose")
+            .arg("../benchmarks/jit_startup/trivial.rz")
+            .output()
+            .expect("failed to spawn rz --jit --verbose");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "benchmarks/jit_startup/trivial.rz failed under --jit: {stderr}"
+        );
+        assert!(
+            !stderr.contains("fell back to the VM"),
+            "benchmarks/jit_startup/trivial.rz fell back to the VM under --jit — \
+             it's meant to isolate native JIT startup cost, so a fallback here \
+             invalidates benchmarks/jit_startup/run.sh's measurements: {stderr}"
+        );
+    }
 }

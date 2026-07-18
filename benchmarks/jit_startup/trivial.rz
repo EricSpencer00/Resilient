@@ -1,0 +1,10 @@
+// RES-4134: smallest possible JIT-compatible program. A top-level
+// `return` with no function calls, loops, or literals beyond a
+// single integer — the workload does nothing but exercise
+// Cranelift module setup, ISA lookup, and the single-block
+// function lowering + finalization path. Any wall-clock or memory
+// measured against this program is startup/compile overhead, not
+// workload time, which is the point: it isolates the JIT's fixed
+// per-invocation cost from the variable per-instruction cost that
+// benchmarks/fib and benchmarks/jit already measure.
+return 0;
