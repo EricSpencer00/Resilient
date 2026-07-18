@@ -23,7 +23,7 @@
 //! returns a typed [`LoaderError`] instead of panicking.
 
 use super::serde::{self, DecodeError};
-use super::{FunctionDef, Instr, Value, Vm, VmError};
+use super::{FunctionDef, Instr, TryHandlerEntry, Value, Vm, VmError};
 
 /// Errors [`load_and_run`] can return. Wraps the two error sources
 /// it composes — [`DecodeError`] and [`VmError`] — plus a
@@ -55,6 +55,14 @@ pub enum LoaderError {
     /// while executing it (stack/locals overflow, divide by zero,
     /// bad jump target, operand type mismatch, ...). See [`VmError`].
     VmError(VmError),
+    /// RES-4083 (D-E1 tail): [`load_and_run_with_functions_and_tries`]'s
+    /// blob declares more try-handler entries than the loader's
+    /// fixed-capacity `out_try_handlers` buffer can hold. Retry with
+    /// a larger `TRY_META_N`.
+    TooManyTries,
+    /// RES-4083 (D-E1 tail): a try-handler entry in the blob declares
+    /// more catch arms than [`super::MAX_CATCH_ARMS`].
+    TooManyCatchArms,
 }
 
 impl From<DecodeError> for LoaderError {
@@ -63,6 +71,8 @@ impl From<DecodeError> for LoaderError {
             DecodeError::TooManyInstrs => LoaderError::TooManyInstrs,
             DecodeError::TooManyFuncs => LoaderError::TooManyFuncs,
             DecodeError::TooManyFuncInstrs => LoaderError::TooManyFuncInstrs,
+            DecodeError::TooManyTries => LoaderError::TooManyTries,
+            DecodeError::TooManyCatchArms => LoaderError::TooManyCatchArms,
             other => LoaderError::DecodeFailed(other),
         }
     }
@@ -139,10 +149,10 @@ pub fn load_and_run<const N: usize, const STACK: usize, const LOCALS: usize>(
 ///     Instr::Call(0),
 ///     Instr::Return,
 /// ];
-/// let functions = [EncodeFunctionDef { code: &square, arity: 1, local_count: 1, postcheck: None }];
+/// let functions = [EncodeFunctionDef { code: &square, arity: 1, local_count: 1, postcheck: None, fails_variant: None }];
 ///
 /// let mut buf = [0u8; 128];
-/// let len = encode_program(&main, &functions, &mut buf).unwrap();
+/// let len = encode_program(&main, &functions, &[], &mut buf).unwrap();
 ///
 /// let result = load_and_run_with_functions::<8, 4, 16, 8, 4, 2>(&buf[..len]);
 /// assert_eq!(result, Ok(resilient_runtime::vm::Value::Int(81)));
@@ -164,16 +174,25 @@ pub fn load_and_run_with_functions<
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; FUNC_META_N];
     let mut func_code = [Instr::Return; FUNC_CODE_N];
+    let mut try_handlers: [TryHandlerEntry; 0] = [];
 
-    let counts = serde::decode_program(blob, &mut main_instrs, &mut func_meta, &mut func_code)?;
+    let counts = serde::decode_program(
+        blob,
+        &mut main_instrs,
+        &mut func_meta,
+        &mut func_code,
+        &mut try_handlers,
+    )?;
 
     let mut functions_buf = [FunctionDef {
         code: &[],
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; FUNC_META_N];
     for (slot, meta) in functions_buf
         .iter_mut()
@@ -185,12 +204,111 @@ pub fn load_and_run_with_functions<
             arity: meta.arity,
             local_count: meta.local_count,
             postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
         };
     }
 
     let mut vm = Vm::<STACK, LOCALS, CALLS>::new();
     let result = vm.run_with_functions(
         &functions_buf[..counts.func_count],
+        &main_instrs[..counts.main_len],
+    )?;
+    Ok(result)
+}
+
+/// RES-4083 (D-E1 tail): the `try`/`fails` counterpart of
+/// [`load_and_run_with_functions`] — additionally bounds the
+/// try-handler table (`TRY_META_N` entries) and the VM's try-nesting
+/// depth (`TRIES`), then runs on [`Vm::run_with_tries`].
+///
+/// ```
+/// use resilient_runtime::vm::Instr;
+/// use resilient_runtime::vm::serde::{encode_program, EncodeFunctionDef};
+/// use resilient_runtime::vm::loader::load_and_run_with_functions_and_tries;
+/// use resilient_runtime::vm::{CatchArm, TryHandlerEntry, VmError};
+///
+/// // fn risky() fails Boom { ... } — main: try { risky(); } catch Boom { -1 }
+/// let risky = [Instr::PushConst(resilient_runtime::vm::Value::Int(1)), Instr::Return];
+/// let main = [
+///     Instr::EnterTry(0),
+///     Instr::Call(0),
+///     Instr::Pop,
+///     Instr::PushConst(resilient_runtime::vm::Value::Int(0)),
+///     Instr::Jump(8),
+///     Instr::PushConst(resilient_runtime::vm::Value::Int(-1)), // catch Boom
+///     Instr::Return,
+///     Instr::ExitTry,
+///     Instr::Return,
+/// ];
+/// let functions = [EncodeFunctionDef { code: &risky, arity: 0, local_count: 0, postcheck: None, fails_variant: Some(0) }];
+/// let mut arms = [None; resilient_runtime::vm::MAX_CATCH_ARMS];
+/// arms[0] = Some(CatchArm { variant: 0, handler_pc: 5 });
+/// let try_handlers = [TryHandlerEntry { arms }];
+///
+/// let mut buf = [0u8; 256];
+/// let len = encode_program(&main, &functions, &try_handlers, &mut buf).unwrap();
+///
+/// let result = load_and_run_with_functions_and_tries::<9, 4, 16, 1, 8, 4, 2, 1>(&buf[..len]);
+/// assert_eq!(result, Ok(resilient_runtime::vm::Value::Int(-1)));
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn load_and_run_with_functions_and_tries<
+    const MAIN_N: usize,
+    const FUNC_META_N: usize,
+    const FUNC_CODE_N: usize,
+    const TRY_META_N: usize,
+    const STACK: usize,
+    const LOCALS: usize,
+    const CALLS: usize,
+    const TRIES: usize,
+>(
+    blob: &[u8],
+) -> Result<Value, LoaderError> {
+    let mut main_instrs = [Instr::Return; MAIN_N];
+    let mut func_meta = [serde::DecodedFunctionMeta {
+        offset: 0,
+        len: 0,
+        arity: 0,
+        local_count: 0,
+        postcheck: None,
+        fails_variant: None,
+    }; FUNC_META_N];
+    let mut func_code = [Instr::Return; FUNC_CODE_N];
+    let mut try_handlers_buf = [TryHandlerEntry::EMPTY; TRY_META_N];
+
+    let counts = serde::decode_program(
+        blob,
+        &mut main_instrs,
+        &mut func_meta,
+        &mut func_code,
+        &mut try_handlers_buf,
+    )?;
+
+    let mut functions_buf = [FunctionDef {
+        code: &[],
+        arity: 0,
+        local_count: 0,
+        postcheck: None,
+        fails_variant: None,
+    }; FUNC_META_N];
+    for (slot, meta) in functions_buf
+        .iter_mut()
+        .zip(func_meta.iter())
+        .take(counts.func_count)
+    {
+        *slot = FunctionDef {
+            code: &func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+            arity: meta.arity,
+            local_count: meta.local_count,
+            postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
+        };
+    }
+
+    let mut vm = Vm::<STACK, LOCALS, CALLS, TRIES>::new();
+    let result = vm.run_with_tries(
+        &functions_buf[..counts.func_count],
+        &try_handlers_buf[..counts.try_count],
         &main_instrs[..counts.main_len],
     )?;
     Ok(result)
@@ -322,9 +440,10 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         let mut buf = [0u8; 128];
-        let len = serde::encode_program(&main, &functions, &mut buf).unwrap();
+        let len = serde::encode_program(&main, &functions, &[], &mut buf).unwrap();
 
         let result = load_and_run_with_functions::<8, 4, 16, 8, 4, 2>(&buf[..len]);
         assert_eq!(result, Ok(Value::Int(81)));
@@ -339,7 +458,7 @@ mod tests {
             Instr::Return,
         ];
         let mut buf = [0u8; 64];
-        let len = serde::encode_program(&main, &[], &mut buf).unwrap();
+        let len = serde::encode_program(&main, &[], &[], &mut buf).unwrap();
 
         let result = load_and_run_with_functions::<8, 0, 0, 8, 0, 1>(&buf[..len]);
         assert_eq!(result, Ok(Value::Int(5)));
@@ -370,9 +489,10 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         let mut buf = [0u8; 256];
-        let len = serde::encode_program(&main, &functions, &mut buf).unwrap();
+        let len = serde::encode_program(&main, &functions, &[], &mut buf).unwrap();
 
         // CALLS == 3 caps recursion well short of depth 50.
         let result = load_and_run_with_functions::<8, 4, 32, 8, 4, 3>(&buf[..len]);
@@ -403,16 +523,18 @@ mod tests {
                 arity: 0,
                 local_count: 0,
                 postcheck: None,
+                fails_variant: None,
             },
             serde::EncodeFunctionDef {
                 code: &f2,
                 arity: 0,
                 local_count: 0,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let mut buf = [0u8; 128];
-        let len = serde::encode_program(&[], &functions, &mut buf).unwrap();
+        let len = serde::encode_program(&[], &functions, &[], &mut buf).unwrap();
 
         // FUNC_META_N == 1 can't hold 2 function-table entries.
         let result = load_and_run_with_functions::<4, 1, 8, 8, 0, 1>(&buf[..len]);

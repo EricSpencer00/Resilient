@@ -27,6 +27,15 @@
 //! top-level `fn`) rather than the flat arithmetic fixture above.
 //! See `docs/THERMAL_CUTOFF_EMBEDDED_PIPELINE.md` for the full
 //! source -> contracts-checked -> bytecode -> no_std VM story.
+//!
+//! RES-4083 (D-E1 tail): a third blob is embedded and run below —
+//! `resilient/examples/fails_try_embedded.rz`, a `fails`/
+//! `try { } catch { }` checked-failure program, run via
+//! [`resilient_runtime::vm::loader::load_and_run_with_functions_and_tries`].
+//! This is the QEMU-runnable proof that checked-failure dispatch
+//! (the deterministic catch-arm injection in
+//! `resilient_runtime::vm::Vm::execute`'s `Instr::Call` arm) works on
+//! real hardware, not just under `cargo test`.
 
 #![no_std]
 #![no_main]
@@ -34,7 +43,9 @@
 use cortex_m_rt::entry;
 use cortex_m_semihosting::{debug, hprintln};
 use resilient_runtime::vm::Value;
-use resilient_runtime::vm::loader::{load_and_run, load_and_run_with_functions};
+use resilient_runtime::vm::loader::{
+    load_and_run, load_and_run_with_functions, load_and_run_with_functions_and_tries,
+};
 
 /// `(2 + 3) * 4 + 1 == 21` — see
 /// `resilient-runtime/fixtures/arithmetic_demo.rzbc`.
@@ -70,6 +81,25 @@ const THERMAL_CALLS: usize = 6;
 
 const THERMAL_EXPECTED: Value = Value::Int(180);
 
+/// The checked-failure / try-catch reference program — see
+/// `resilient/examples/fails_try_embedded.rz`. `read_sensor` declares
+/// `fails Timeout`; the call inside `try { }` always dispatches to
+/// `catch Timeout` (the embedded VM injects the checked failure
+/// deterministically), so the result is always `-1`.
+static FAILS_TRY_RZBC_BLOB: &[u8] =
+    include_bytes!("../../resilient-runtime/fixtures/fails_try_demo.rzbc");
+
+const FAILS_TRY_MAIN_N: usize = 16;
+const FAILS_TRY_FUNC_META_N: usize = 4;
+const FAILS_TRY_FUNC_CODE_N: usize = 32;
+const FAILS_TRY_TRY_META_N: usize = 1;
+const FAILS_TRY_STACK: usize = 8;
+const FAILS_TRY_LOCALS: usize = 4;
+const FAILS_TRY_CALLS: usize = 3;
+const FAILS_TRY_TRIES: usize = 1;
+
+const FAILS_TRY_EXPECTED: Value = Value::Int(-1);
+
 #[entry]
 fn main() -> ! {
     match load_and_run::<MAX_INSTRS, STACK_SLOTS, LOCALS_SLOTS>(RZBC_BLOB) {
@@ -103,14 +133,44 @@ fn main() -> ! {
     {
         Ok(v) if v == THERMAL_EXPECTED => {
             hprintln!("thermal cutoff loader ok: {:?}", v);
-            debug::exit(debug::EXIT_SUCCESS);
         }
         Ok(v) => {
             hprintln!("thermal cutoff loader produced unexpected value: {:?}", v);
             debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
         }
         Err(e) => {
             hprintln!("thermal cutoff loader error: {:?}", e);
+            debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
+        }
+    }
+
+    match load_and_run_with_functions_and_tries::<
+        FAILS_TRY_MAIN_N,
+        FAILS_TRY_FUNC_META_N,
+        FAILS_TRY_FUNC_CODE_N,
+        FAILS_TRY_TRY_META_N,
+        FAILS_TRY_STACK,
+        FAILS_TRY_LOCALS,
+        FAILS_TRY_CALLS,
+        FAILS_TRY_TRIES,
+    >(FAILS_TRY_RZBC_BLOB)
+    {
+        Ok(v) if v == FAILS_TRY_EXPECTED => {
+            hprintln!("fails/try loader ok: {:?}", v);
+            debug::exit(debug::EXIT_SUCCESS);
+        }
+        Ok(v) => {
+            hprintln!("fails/try loader produced unexpected value: {:?}", v);
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(e) => {
+            hprintln!("fails/try loader error: {:?}", e);
             debug::exit(debug::EXIT_FAILURE);
         }
     }

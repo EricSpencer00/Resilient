@@ -104,6 +104,9 @@ const TAG_CALL: u8 = 20;
 // RES-4075 (D-E1 fn-support tail):
 const TAG_POP: u8 = 21;
 const TAG_TAIL_CALL: u8 = 22;
+/// RES-4083 (D-E1 tail): `Instr::EnterTry(idx)` / `Instr::ExitTry`.
+const TAG_ENTER_TRY: u8 = 23;
+const TAG_EXIT_TRY: u8 = 24;
 
 const VALUE_TAG_INT: u8 = 0;
 const VALUE_TAG_BOOL: u8 = 1;
@@ -149,6 +152,13 @@ pub enum DecodeError {
     /// far exceeds the caller-provided `out_func_code` slice's
     /// capacity.
     TooManyFuncInstrs,
+    /// RES-4083 (D-E1 tail): [`decode_program`]'s header declares
+    /// more try-handler entries than the caller-provided
+    /// `out_try_handlers` slice can hold.
+    TooManyTries,
+    /// RES-4083 (D-E1 tail): a try-handler entry declares more catch
+    /// arms than [`super::MAX_CATCH_ARMS`].
+    TooManyCatchArms,
 }
 
 struct Writer<'a> {
@@ -337,6 +347,11 @@ fn write_instr(w: &mut Writer<'_>, instr: Instr) -> Result<(), EncodeError> {
             w.write_u8(TAG_TAIL_CALL)?;
             w.write_u16(idx)?;
         }
+        Instr::EnterTry(idx) => {
+            w.write_u8(TAG_ENTER_TRY)?;
+            w.write_u16(idx)?;
+        }
+        Instr::ExitTry => w.write_u8(TAG_EXIT_TRY)?,
     }
     Ok(())
 }
@@ -367,6 +382,8 @@ fn read_instr(r: &mut Reader<'_>) -> Result<Instr, DecodeError> {
         TAG_CALL => Instr::Call(r.read_u16()?),
         TAG_POP => Instr::Pop,
         TAG_TAIL_CALL => Instr::TailCall(r.read_u16()?),
+        TAG_ENTER_TRY => Instr::EnterTry(r.read_u16()?),
+        TAG_EXIT_TRY => Instr::ExitTry,
         other => return Err(DecodeError::BadTag(other)),
     })
 }
@@ -436,6 +453,10 @@ pub struct EncodeFunctionDef<'a> {
     /// synthesized postcheck (`ensures`/`recovers_to`), or `None`.
     /// See [`crate::vm::FunctionDef::postcheck`].
     pub postcheck: Option<u16>,
+    /// RES-4083 (D-E1 tail): this function's declared `fails`
+    /// checked-failure variant id, or `None`. See
+    /// [`crate::vm::FunctionDef::fails_variant`].
+    pub fails_variant: Option<u16>,
 }
 
 /// One function's metadata as recovered by [`decode_program`]: an
@@ -452,18 +473,23 @@ pub struct DecodedFunctionMeta {
     pub local_count: u16,
     /// RES-4083 (D-E1 tail): see [`EncodeFunctionDef::postcheck`].
     pub postcheck: Option<u16>,
+    /// RES-4083 (D-E1 tail): see [`EncodeFunctionDef::fails_variant`].
+    pub fails_variant: Option<u16>,
 }
 
-/// How many main instructions, functions, and total function-body
-/// instructions [`decode_program`] wrote into the caller's output
-/// slices.
+/// How many main instructions, functions, total function-body
+/// instructions, and try-handler entries [`decode_program`] wrote
+/// into the caller's output slices.
 ///
-/// RES-4077 (D-E1 fn-support).
+/// RES-4077 (D-E1 fn-support). `try_count` added RES-4083.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProgramCounts {
     pub main_len: usize,
     pub func_count: usize,
     pub func_code_len: usize,
+    /// RES-4083 (D-E1 tail): number of entries decoded into
+    /// `out_try_handlers`.
+    pub try_count: usize,
 }
 
 /// RES-4077 (D-E1 fn-support): current wire-format version for
@@ -474,23 +500,25 @@ pub struct ProgramCounts {
 /// produced by one pair is always rejected — never
 /// misinterpreted — by the other.
 ///
-/// RES-4083 (D-E1 tail): bumped `2` -> `3` to add the per-function
-/// `postcheck` field (see [`EncodeFunctionDef::postcheck`]) to the
-/// function-table entry layout — a `2`-blob has no such field, so
-/// decoding it under the `3` reader (or vice versa) must be a typed
-/// [`DecodeError::UnsupportedVersion`], never a silent misread of
-/// the following bytes as a bogus postcheck index.
-pub const PROGRAM_FORMAT_VERSION: u16 = 3;
+/// RES-4083 (D-E1 tail): bumped `3` -> `4` to add the per-function
+/// `fails_variant` field (see [`EncodeFunctionDef::fails_variant`])
+/// and a trailing global try-handler table (see [`encode_program`]'s
+/// updated layout) — a `3`-blob has neither, so decoding it under the
+/// `4` reader (or vice versa) must be a typed
+/// [`DecodeError::UnsupportedVersion`], never a silent misread.
+pub const PROGRAM_FORMAT_VERSION: u16 = 4;
 
-/// Wire sentinel for `postcheck: None` in the function-table entry
-/// layout (see [`encode_program`]). `0xFFFF` is never a valid
-/// function-table index in practice: `func_count` is itself a `u16`,
-/// so a table can have at most `u16::MAX` entries, meaning valid
-/// indices are `0..=u16::MAX - 1` — `u16::MAX` is always free.
+/// Wire sentinel for `postcheck: None` / `fails_variant: None` in the
+/// function-table entry layout (see [`encode_program`]). `0xFFFF` is
+/// never a valid function-table index in practice: `func_count` is
+/// itself a `u16`, so a table can have at most `u16::MAX` entries,
+/// meaning valid indices are `0..=u16::MAX - 1` — `u16::MAX` is
+/// always free. Also doubles as the "no catch arm" sentinel for a
+/// [`super::CatchArm::variant`] wire slot.
 const NO_POSTCHECK: u16 = u16::MAX;
 
-/// Encode `main` plus `functions` into `out`, returning the number
-/// of bytes written. Wire layout:
+/// Encode `main` plus `functions` plus `try_handlers` into `out`,
+/// returning the number of bytes written. Wire layout:
 ///
 /// ```text
 /// [4] magic:            b"RZBC"
@@ -502,24 +530,36 @@ const NO_POSTCHECK: u16 = u16::MAX;
 ///   [1] arity:           u8
 ///   [2] local_count:     u16 LE
 ///   [2] postcheck:       u16 LE (RES-4083: `NO_POSTCHECK` sentinel = None)
+///   [2] fails_variant:   u16 LE (RES-4083: `NO_POSTCHECK` sentinel = None)
 ///   [4] instr_count:     u32 LE
 ///   [M] instructions,    same per-instruction encoding as `encode`
+/// [2] try_count:         u16 LE (RES-4083, D-E1 tail)
+/// for each try-handler entry, in order:
+///   [1] arm_count:       u8 (0..=MAX_CATCH_ARMS)
+///   for each arm, in order:
+///     [2] variant:       u16 LE
+///     [4] handler_pc:    u32 LE
 /// ```
 ///
-/// Never panics: a buffer too small for the header, `main`, or any
-/// function body yields [`EncodeError::BufferTooSmall`] rather than
-/// an out-of-bounds write; a `functions` table with more than
-/// `u16::MAX` entries or a body longer than `u32::MAX` instructions
-/// does the same (both are always representable in practice — this
-/// just avoids a silent truncating cast).
+/// Never panics: a buffer too small for the header, `main`, any
+/// function body, or the try-handler table yields
+/// [`EncodeError::BufferTooSmall`] rather than an out-of-bounds
+/// write; a `functions`/`try_handlers` table with more than
+/// `u16::MAX` entries, a body longer than `u32::MAX` instructions, or
+/// a try-handler entry with more than [`super::MAX_CATCH_ARMS`] arms
+/// does the same (all always representable/boundable in practice —
+/// this just avoids a silent truncating cast or arm drop).
 pub fn encode_program(
     main: &[Instr],
     functions: &[EncodeFunctionDef<'_>],
+    try_handlers: &[super::TryHandlerEntry],
     out: &mut [u8],
 ) -> Result<usize, EncodeError> {
     let main_count: u32 = u32::try_from(main.len()).map_err(|_| EncodeError::BufferTooSmall)?;
     let func_count: u16 =
         u16::try_from(functions.len()).map_err(|_| EncodeError::BufferTooSmall)?;
+    let try_count: u16 =
+        u16::try_from(try_handlers.len()).map_err(|_| EncodeError::BufferTooSmall)?;
 
     let mut w = Writer::new(out);
     w.write_bytes(&MAGIC)?;
@@ -536,9 +576,21 @@ pub fn encode_program(
         w.write_u8(f.arity)?;
         w.write_u16(f.local_count)?;
         w.write_u16(f.postcheck.unwrap_or(NO_POSTCHECK))?;
+        w.write_u16(f.fails_variant.unwrap_or(NO_POSTCHECK))?;
         w.write_u32(instr_count)?;
         for instr in f.code {
             write_instr(&mut w, *instr)?;
+        }
+    }
+
+    w.write_u16(try_count)?;
+    for entry in try_handlers {
+        let arm_count = entry.arms.iter().filter(|a| a.is_some()).count();
+        let arm_count_u8 = u8::try_from(arm_count).map_err(|_| EncodeError::BufferTooSmall)?;
+        w.write_u8(arm_count_u8)?;
+        for arm in entry.arms.iter().filter_map(|a| *a) {
+            w.write_u16(arm.variant)?;
+            w.write_u32(arm.handler_pc)?;
         }
     }
 
@@ -565,15 +617,16 @@ pub fn encode_program(
 ///
 /// let square_body = [Instr::LoadLocal(0), Instr::LoadLocal(0), Instr::Mul, Instr::Return];
 /// let main = [Instr::PushConst(resilient_runtime::vm::Value::Int(7)), Instr::Call(0), Instr::Return];
-/// let functions = [EncodeFunctionDef { code: &square_body, arity: 1, local_count: 1, postcheck: None }];
+/// let functions = [EncodeFunctionDef { code: &square_body, arity: 1, local_count: 1, postcheck: None, fails_variant: None }];
 ///
 /// let mut buf = [0u8; 128];
-/// let len = encode_program(&main, &functions, &mut buf).unwrap();
+/// let len = encode_program(&main, &functions, &[], &mut buf).unwrap();
 ///
 /// let mut out_main = [Instr::Return; 8];
-/// let mut out_func_meta = [DecodedFunctionMeta { offset: 0, len: 0, arity: 0, local_count: 0, postcheck: None }; 4];
+/// let mut out_func_meta = [DecodedFunctionMeta { offset: 0, len: 0, arity: 0, local_count: 0, postcheck: None, fails_variant: None }; 4];
 /// let mut out_func_code = [Instr::Return; 16];
-/// let counts = decode_program(&buf[..len], &mut out_main, &mut out_func_meta, &mut out_func_code).unwrap();
+/// let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
+/// let counts = decode_program(&buf[..len], &mut out_main, &mut out_func_meta, &mut out_func_code, &mut out_try_handlers).unwrap();
 /// assert_eq!(counts.func_count, 1);
 /// assert_eq!(&out_main[..counts.main_len], &main[..]);
 /// let meta = out_func_meta[0];
@@ -585,6 +638,7 @@ pub fn decode_program(
     out_main: &mut [Instr],
     out_func_meta: &mut [DecodedFunctionMeta],
     out_func_code: &mut [Instr],
+    out_try_handlers: &mut [super::TryHandlerEntry],
 ) -> Result<ProgramCounts, DecodeError> {
     let mut r = Reader::new(bytes);
 
@@ -621,6 +675,12 @@ pub fn decode_program(
         } else {
             Some(postcheck_raw)
         };
+        let fails_raw = r.read_u16()?;
+        let fails_variant = if fails_raw == NO_POSTCHECK {
+            None
+        } else {
+            Some(fails_raw)
+        };
         let instr_count = r.read_u32()? as usize;
 
         let end = func_code_len
@@ -639,14 +699,37 @@ pub fn decode_program(
             arity,
             local_count,
             postcheck,
+            fails_variant,
         };
         func_code_len = end;
+    }
+
+    let try_count = r.read_u16()? as usize;
+    if try_count > out_try_handlers.len() {
+        return Err(DecodeError::TooManyTries);
+    }
+    for entry_slot in out_try_handlers.iter_mut().take(try_count) {
+        let arm_count = r.read_u8()? as usize;
+        if arm_count > super::MAX_CATCH_ARMS {
+            return Err(DecodeError::TooManyCatchArms);
+        }
+        let mut arms = [None; super::MAX_CATCH_ARMS];
+        for arm_slot in arms.iter_mut().take(arm_count) {
+            let variant = r.read_u16()?;
+            let handler_pc = r.read_u32()?;
+            *arm_slot = Some(super::CatchArm {
+                variant,
+                handler_pc,
+            });
+        }
+        *entry_slot = super::TryHandlerEntry { arms };
     }
 
     Ok(ProgramCounts {
         main_len: main_count,
         func_count,
         func_code_len,
+        try_count,
     })
 }
 
@@ -1035,7 +1118,7 @@ mod tests {
             Instr::Return,
         ];
         let mut buf = [0u8; 128];
-        let len = encode_program(&main, &[], &mut buf).expect("encode_program should fit");
+        let len = encode_program(&main, &[], &[], &mut buf).expect("encode_program should fit");
 
         let mut out_main = [Instr::Return; 8];
         let mut out_func_meta = [DecodedFunctionMeta {
@@ -1044,13 +1127,16 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
         let counts = decode_program(
             &buf[..len],
             &mut out_main,
             &mut out_func_meta,
             &mut out_func_code,
+            &mut out_try_handlers,
         )
         .expect("decode_program should succeed");
 
@@ -1077,10 +1163,12 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
 
         let mut buf = [0u8; 128];
-        let len = encode_program(&main, &functions, &mut buf).expect("encode_program should fit");
+        let len =
+            encode_program(&main, &functions, &[], &mut buf).expect("encode_program should fit");
 
         let mut out_main = [Instr::Return; 8];
         let mut out_func_meta = [DecodedFunctionMeta {
@@ -1089,13 +1177,16 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
         let counts = decode_program(
             &buf[..len],
             &mut out_main,
             &mut out_func_meta,
             &mut out_func_code,
+            &mut out_try_handlers,
         )
         .expect("decode_program should succeed");
 
@@ -1111,6 +1202,7 @@ mod tests {
             arity: meta.arity,
             local_count: meta.local_count,
             postcheck: None,
+            fails_variant: None,
         }];
         let mut vm = crate::vm::Vm::<8, 4, 2>::new();
         assert_eq!(
@@ -1133,14 +1225,17 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
         assert_eq!(
             decode_program(
                 &buf[..len],
                 &mut out_main,
                 &mut out_func_meta,
-                &mut out_func_code
+                &mut out_func_code,
+                &mut out_try_handlers
             ),
             Err(DecodeError::UnsupportedVersion)
         );
@@ -1156,16 +1251,18 @@ mod tests {
                 arity: 0,
                 local_count: 0,
                 postcheck: None,
+                fails_variant: None,
             },
             EncodeFunctionDef {
                 code: &f2,
                 arity: 0,
                 local_count: 0,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let mut buf = [0u8; 128];
-        let len = encode_program(&[], &functions, &mut buf).unwrap();
+        let len = encode_program(&[], &functions, &[], &mut buf).unwrap();
 
         let mut out_main = [Instr::Return; 8];
         let mut out_func_meta = [DecodedFunctionMeta {
@@ -1174,14 +1271,17 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 1];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
         assert_eq!(
             decode_program(
                 &buf[..len],
                 &mut out_main,
                 &mut out_func_meta,
-                &mut out_func_code
+                &mut out_func_code,
+                &mut out_try_handlers
             ),
             Err(DecodeError::TooManyFuncs)
         );
@@ -1195,9 +1295,10 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }];
         let mut buf = [0u8; 128];
-        let len = encode_program(&[], &functions, &mut buf).unwrap();
+        let len = encode_program(&[], &functions, &[], &mut buf).unwrap();
 
         let mut out_main = [Instr::Return; 8];
         let mut out_func_meta = [DecodedFunctionMeta {
@@ -1206,14 +1307,17 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 1];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
         assert_eq!(
             decode_program(
                 &buf[..len],
                 &mut out_main,
                 &mut out_func_meta,
-                &mut out_func_code
+                &mut out_func_code,
+                &mut out_try_handlers
             ),
             Err(DecodeError::TooManyFuncInstrs)
         );
@@ -1229,14 +1333,22 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 4];
         for _ in 0..2000 {
             let mut buf = [0u8; 48];
             for byte in buf.iter_mut() {
                 *byte = rng.next() as u8;
             }
-            let _ = decode_program(&buf, &mut out_main, &mut out_func_meta, &mut out_func_code);
+            let _ = decode_program(
+                &buf,
+                &mut out_main,
+                &mut out_func_meta,
+                &mut out_func_code,
+                &mut out_try_handlers,
+            );
         }
     }
 }

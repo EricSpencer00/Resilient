@@ -304,6 +304,66 @@ pub enum Instr {
     /// O(1) call-frame space and never hit
     /// [`VmError::CallStackOverflow`], no matter the depth.
     TailCall(u16),
+    /// RES-4083 (D-E1 tail): enter a `try { }` block, pushing a
+    /// try-handler frame that records where to unwind to and which
+    /// [`TryHandlerEntry`] (in the table passed to
+    /// [`Vm::run_with_tries`]) names the catch arms in scope. Mirrors
+    /// the host VM's `Op::EnterTry` — see
+    /// `resilient/src/rzbc_emit.rs` for how the host's per-chunk
+    /// `try_handlers` tables get flattened into one global table with
+    /// this instruction's `idx` pointing into it.
+    EnterTry(u16),
+    /// RES-4083 (D-E1 tail): exit a `try { }` block on normal
+    /// completion — pops the topmost try-handler frame. A no-op
+    /// (never an error) if the try stack happens to already be empty,
+    /// mirroring the host VM's tolerant `Op::ExitTry`.
+    ExitTry,
+}
+
+/// RES-4083 (D-E1 tail): one `catch Variant { }` arm — `variant` is a
+/// compile-time-assigned numeric id for the failure-variant name (see
+/// `rzbc_emit`'s variant interning table; the embedded wire format
+/// has no string constant pool to carry the name itself), and
+/// `handler_pc` is the absolute instruction index of the arm's body
+/// in the *same code stream* as the `EnterTry` that owns this entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatchArm {
+    pub variant: u16,
+    pub handler_pc: u32,
+}
+
+/// RES-4083 (D-E1 tail): the maximum number of `catch` arms a single
+/// `try { }` block can declare in the embedded no_std VM. A fixed
+/// bound (rather than a `TRY_ARMS` const generic) keeps
+/// [`TryHandlerEntry`] a plain `Copy` value and keeps the `Vm` type
+/// signature from growing a fourth const generic; a `try` block
+/// wanting more arms is a typed [`crate::vm::VmError`]-adjacent
+/// `rzbc_emit::EmitError` at compile time, not a silent truncation.
+pub const MAX_CATCH_ARMS: usize = 4;
+
+/// RES-4083 (D-E1 tail): one `try { }` block's catch-arm table, as
+/// referenced by [`Instr::EnterTry`]. Stored in the flat table passed
+/// to [`Vm::run_with_tries`] — see that table's module docs
+/// (`vm::serde`) for how the host's per-chunk tables are flattened
+/// into it. `arms[..arm_count]` are the populated entries.
+#[derive(Debug, Clone, Copy)]
+pub struct TryHandlerEntry {
+    pub arms: [Option<CatchArm>; MAX_CATCH_ARMS],
+}
+
+impl TryHandlerEntry {
+    /// An entry with no catch arms — never actually emitted (a `try`
+    /// with zero `catch` arms is pointless), but a convenient
+    /// placeholder for fixed-size buffer initialisation.
+    pub const EMPTY: TryHandlerEntry = TryHandlerEntry {
+        arms: [None; MAX_CATCH_ARMS],
+    };
+
+    fn find(&self, variant: u16) -> Option<u32> {
+        self.arms
+            .iter()
+            .find_map(|arm| arm.filter(|a| a.variant == variant).map(|a| a.handler_pc))
+    }
 }
 
 /// One callable function for [`Vm::run_with_functions`]: a
@@ -327,6 +387,14 @@ pub struct FunctionDef<'a> {
     /// isolated nested call on every [`Instr::Return`] from this
     /// function, mirroring the host VM's `run_postcheck`.
     pub postcheck: Option<u16>,
+    /// RES-4083 (D-E1 tail): this function's declared `fails`
+    /// checked-failure variant, as the numeric id `rzbc_emit`
+    /// interned it under, or `None` if the function declares no
+    /// `fails` clause. Mirrors the host VM's "inject the *first*
+    /// declared variant" semantics (`vm.rs`'s `h_call`) — Resilient's
+    /// checked-failure injection only ever raises `func.fails[0]`, so
+    /// there's no need to carry the whole list.
+    pub fails_variant: Option<u16>,
 }
 
 /// Errors the VM can surface. Every fallible dispatch step returns
@@ -374,6 +442,20 @@ pub enum VmError {
     /// the host VM's "Contract violation in fn ..." abort semantics:
     /// a violation always aborts the whole run.
     PostcheckViolation,
+    /// RES-4083 (D-E1 tail): `Instr::EnterTry` would push more nested
+    /// try-handler frames than the VM's `TRIES` capacity allows —
+    /// the typed substitute for unbounded `try` nesting depth.
+    TryStackOverflow,
+    /// RES-4083 (D-E1 tail): `Instr::EnterTry(idx)`/a `Call` into a
+    /// `fails`-declaring function with `idx` outside the
+    /// `try_handlers` table passed to [`Vm::run_with_tries`].
+    TryHandlerOutOfBounds(u16),
+    /// RES-4083 (D-E1 tail): a `Call` into a function declaring
+    /// `fails` raised its checked-failure variant (numeric id) and no
+    /// enclosing `try { }` block's catch arms matched it — mirrors
+    /// the host VM's `VmError::CheckedFailure`. Always aborts the
+    /// whole run, matching an uncaught checked failure on the host.
+    CheckedFailure(u16),
 }
 
 /// RES-4077 (D-E1 fn-support): who to resume, and where, once the
@@ -385,6 +467,19 @@ pub enum VmError {
 struct ReturnInfo {
     caller_func: Option<u16>,
     ret_pc: usize,
+}
+
+/// RES-4083 (D-E1 tail): an active `try { }` block, pushed by
+/// `Instr::EnterTry` and consumed (or skipped past) by a subsequent
+/// `Call` into a `fails`-declaring function. `call_depth`/`stack_depth`
+/// are the frame index / operand-stack pointer to unwind back to on a
+/// catch dispatch — captured at `EnterTry` time, exactly mirroring
+/// the host VM's `TryFrame` snapshot.
+#[derive(Debug, Clone, Copy)]
+struct TryFrame {
+    handler_idx: u16,
+    call_depth: usize,
+    stack_depth: usize,
 }
 
 /// A bytecode VM instance with a fixed-capacity operand stack
@@ -408,7 +503,12 @@ struct ReturnInfo {
 /// of some wasted memory relative to a tightly-packed bump
 /// allocator (acceptable for v1; see RES-4077's PR description for
 /// the follow-up note).
-pub struct Vm<const STACK: usize, const LOCALS: usize, const CALLS: usize = 1> {
+pub struct Vm<
+    const STACK: usize,
+    const LOCALS: usize,
+    const CALLS: usize = 1,
+    const TRIES: usize = 0,
+> {
     stack: [Value; STACK],
     sp: usize,
     locals: [[Value; LOCALS]; CALLS],
@@ -420,20 +520,44 @@ pub struct Vm<const STACK: usize, const LOCALS: usize, const CALLS: usize = 1> {
     /// any given time; `returns[0]` is never read (frame 0 returning
     /// ends execution, see `Instr::Return`).
     returns: [ReturnInfo; CALLS],
+    /// RES-4083 (D-E1 tail): `frame_func[i]` is the function-table
+    /// index whose code frame `i` is executing (`None` for the
+    /// `program`/main frame). Lets a checked-failure catch dispatch
+    /// look up which code stream to resume in after unwinding back to
+    /// an arbitrary ancestor frame — `returns` only records a frame's
+    /// *caller*, not the frame's own identity, so this is tracked
+    /// separately (mirrors the host VM's `TryFrame::chunk_idx`, just
+    /// keyed by frame depth instead of carried on the try frame
+    /// itself, since every embedded frame's function never changes
+    /// once pushed).
+    frame_func: [Option<u16>; CALLS],
+    /// RES-4083 (D-E1 tail): active `try { }` blocks, `TRIES`
+    /// simultaneous nesting depth. `TRIES` defaults to `0` so every
+    /// existing `Vm::<STACK, LOCALS, CALLS>` call site keeps compiling
+    /// unchanged — `Instr::EnterTry` under the default always
+    /// surfaces `VmError::TryStackOverflow` (no room to push a try
+    /// frame), and a `fails`-declaring function called with an empty
+    /// try stack always propagates as `VmError::CheckedFailure`
+    /// (never dispatches a catch), matching a program with no `try`
+    /// blocks.
+    try_stack: [TryFrame; TRIES],
+    try_sp: usize,
 }
 
-impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Default
-    for Vm<STACK, LOCALS, CALLS>
+impl<const STACK: usize, const LOCALS: usize, const CALLS: usize, const TRIES: usize> Default
+    for Vm<STACK, LOCALS, CALLS, TRIES>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCALS, CALLS> {
+impl<const STACK: usize, const LOCALS: usize, const CALLS: usize, const TRIES: usize>
+    Vm<STACK, LOCALS, CALLS, TRIES>
+{
     /// A fresh VM: empty operand stack, locals zero-initialised to
     /// `Value::Int(0)`, no active call frames beyond the implicit
-    /// main frame.
+    /// main frame, no active `try` blocks.
     pub fn new() -> Self {
         Self {
             stack: [Value::Int(0); STACK],
@@ -444,6 +568,13 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                 caller_func: None,
                 ret_pc: 0,
             }; CALLS],
+            frame_func: [None; CALLS],
+            try_stack: [TryFrame {
+                handler_idx: 0,
+                call_depth: 0,
+                stack_depth: 0,
+            }; TRIES],
+            try_sp: 0,
         }
     }
 
@@ -508,7 +639,7 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
     /// fails. Every branch, arithmetic op, and stack/locals access
     /// is bounds-checked — no panic path exists here.
     pub fn run(&mut self, program: &[Instr]) -> Result<Value, VmError> {
-        self.execute(&[], program, 0)
+        self.execute(&[], &[], program, 0)
     }
 
     /// Run `program` from instruction 0 until the entry frame's
@@ -521,7 +652,22 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
         functions: &[FunctionDef<'_>],
         program: &[Instr],
     ) -> Result<Value, VmError> {
-        self.execute(functions, program, 0)
+        self.execute(functions, &[], program, 0)
+    }
+
+    /// RES-4083 (D-E1 tail): the `try`/`fails` counterpart of
+    /// [`run_with_functions`](Self::run_with_functions) — additionally
+    /// takes `try_handlers`, the flat table `Instr::EnterTry(idx)`
+    /// indexes into (see `rzbc_emit` for how the host's per-chunk
+    /// tables get flattened into this one global table). Requires
+    /// `TRIES >= 1` for any `EnterTry` to succeed.
+    pub fn run_with_tries(
+        &mut self,
+        functions: &[FunctionDef<'_>],
+        try_handlers: &[TryHandlerEntry],
+        program: &[Instr],
+    ) -> Result<Value, VmError> {
+        self.execute(functions, try_handlers, program, 0)
     }
 
     /// Dispatch loop, parameterised over `entry_frame` — the frame
@@ -536,10 +682,11 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
     /// terminates by popping exactly what it pushed, like any other
     /// well-formed function body) without needing a second `Vm`
     /// instance or heap allocation.
-    fn execute(
+    fn execute<'a>(
         &mut self,
-        functions: &[FunctionDef<'_>],
-        program: &[Instr],
+        functions: &'a [FunctionDef<'a>],
+        try_handlers: &[TryHandlerEntry],
+        program: &'a [Instr],
         entry_frame: usize,
     ) -> Result<Value, VmError> {
         self.frame = entry_frame;
@@ -598,6 +745,31 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                         .copied()
                         .ok_or(VmError::FunctionOutOfBounds(idx))?;
                     let arity = f.arity as usize;
+                    // RES-4083 (D-E1 tail): mirrors the host VM's
+                    // `h_call` — a call into a `fails`-declaring
+                    // function made anywhere inside an active `try`
+                    // block deterministically injects the function's
+                    // first declared checked-failure variant instead
+                    // of running the body at all. Dispatch (or an
+                    // uncaught propagation) happens without ever
+                    // pushing a new frame.
+                    if self.try_sp > 0
+                        && let Some(variant) = f.fails_variant
+                    {
+                        if self.sp < arity {
+                            return Err(VmError::StackUnderflow);
+                        }
+                        self.sp -= arity;
+                        pc = self.dispatch_checked_failure(
+                            variant,
+                            try_handlers,
+                            &mut current_func,
+                            &mut code,
+                            functions,
+                            program,
+                        )?;
+                        continue;
+                    }
                     if self.sp < arity {
                         return Err(VmError::StackUnderflow);
                     }
@@ -620,9 +792,29 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                         ret_pc: pc,
                     };
                     current_func = Some(idx);
+                    self.frame_func[next_frame] = Some(idx);
                     code = f.code;
                     pc = 0;
                     self.frame = next_frame;
+                }
+                Instr::EnterTry(idx) => {
+                    if idx as usize >= try_handlers.len() {
+                        return Err(VmError::TryHandlerOutOfBounds(idx));
+                    }
+                    if self.try_sp >= TRIES {
+                        return Err(VmError::TryStackOverflow);
+                    }
+                    self.try_stack[self.try_sp] = TryFrame {
+                        handler_idx: idx,
+                        call_depth: self.frame,
+                        stack_depth: self.sp,
+                    };
+                    self.try_sp += 1;
+                }
+                Instr::ExitTry => {
+                    if self.try_sp > 0 {
+                        self.try_sp -= 1;
+                    }
                 }
                 Instr::Pop => {
                     self.pop()?;
@@ -653,6 +845,7 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                         *slot = Value::Int(0);
                     }
                     current_func = Some(idx);
+                    self.frame_func[self.frame] = Some(idx);
                     code = f.code;
                     pc = 0;
                 }
@@ -701,7 +894,9 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                                 .ok_or(VmError::FunctionOutOfBounds(postcheck_idx))?
                                 .code;
                             let returning_frame = self.frame;
-                            let outcome = self.execute(functions, postcheck_code, next_frame)?;
+                            self.frame_func[next_frame] = Some(postcheck_idx);
+                            let outcome =
+                                self.execute(functions, try_handlers, postcheck_code, next_frame)?;
                             self.frame = returning_frame;
                             match outcome {
                                 Value::Bool(true) => {}
@@ -729,6 +924,52 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize> Vm<STACK, LOCA
                 }
             }
         }
+    }
+
+    /// RES-4083 (D-E1 tail): mirrors the host VM's `h_call` checked-
+    /// failure unwind loop — pop try-handler frames from the newest
+    /// down, and for the first one whose `TryHandlerEntry` has a
+    /// `catch` arm matching `variant`, unwind `self.frame`/`self.sp`
+    /// back to that block's snapshot, restore `current_func`/`code`
+    /// to whatever was running in that frame, and resume at the
+    /// arm's handler pc. If the whole try stack is exhausted with no
+    /// match, the checked failure propagates as an uncaught
+    /// `VmError::CheckedFailure` — never a panic, matching the host's
+    /// abort-the-whole-run semantics for an undischarged `fails`
+    /// variant.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_checked_failure<'a>(
+        &mut self,
+        variant: u16,
+        try_handlers: &[TryHandlerEntry],
+        current_func: &mut Option<u16>,
+        code: &mut &'a [Instr],
+        functions: &'a [FunctionDef<'a>],
+        program: &'a [Instr],
+    ) -> Result<usize, VmError> {
+        while self.try_sp > 0 {
+            self.try_sp -= 1;
+            let try_frame = self.try_stack[self.try_sp];
+            let entry = try_handlers
+                .get(try_frame.handler_idx as usize)
+                .ok_or(VmError::TryHandlerOutOfBounds(try_frame.handler_idx))?;
+            if let Some(handler_pc) = entry.find(variant) {
+                self.frame = try_frame.call_depth;
+                self.sp = try_frame.stack_depth;
+                *current_func = self.frame_func[self.frame];
+                *code = match *current_func {
+                    Some(fi) => {
+                        functions
+                            .get(fi as usize)
+                            .ok_or(VmError::FunctionOutOfBounds(fi))?
+                            .code
+                    }
+                    None => program,
+                };
+                return Self::validate_target(handler_pc, code.len());
+            }
+        }
+        Err(VmError::CheckedFailure(variant))
     }
 
     fn validate_target(target: u32, len: usize) -> Result<usize, VmError> {
@@ -1173,6 +1414,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }];
         let program = [
             Instr::Call(0),
@@ -1215,6 +1457,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(100)),
@@ -1251,12 +1494,14 @@ mod tests {
                 arity: 1,
                 local_count: 1,
                 postcheck: None,
+                fails_variant: None,
             },
             FunctionDef {
                 code: &g,
                 arity: 1,
                 local_count: 1,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let program = [
@@ -1283,6 +1528,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }];
         let program = [Instr::Call(0), Instr::Return];
         let mut vm = Vm::<8, 4, 2>::new();
@@ -1300,6 +1546,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         // Call f with its one arg; f then TailCalls itself with an
         // empty operand stack.
@@ -1327,6 +1574,7 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }];
         let program = [Instr::Call(0), Instr::Return];
         let mut vm = Vm::<8, 4, 2>::new();
@@ -1351,6 +1599,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(7)),
@@ -1380,6 +1629,7 @@ mod tests {
             arity: 2,
             local_count: 2,
             postcheck: None,
+            fails_variant: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(10)),
@@ -1417,12 +1667,14 @@ mod tests {
                 arity: 1,
                 local_count: 1,
                 postcheck: None,
+                fails_variant: None,
             },
             FunctionDef {
                 code: &double_inc,
                 arity: 1,
                 local_count: 1,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let program = [
@@ -1459,6 +1711,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         let program = [
             Instr::PushConst(Value::Int(3)),
@@ -1492,6 +1745,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         // CALLS == 3 only allows 2 nested frames (main + 2 callees);
         // recursing 100 deep must surface a typed error, never
@@ -1543,6 +1797,7 @@ mod tests {
             arity: 1,
             local_count: 1,
             postcheck: None,
+            fails_variant: None,
         }];
         // No PushConst before Call(0) — the operand stack is empty
         // but the callee wants 1 argument.
@@ -1579,12 +1834,14 @@ mod tests {
                 arity: 1,
                 local_count: 1,
                 postcheck: Some(1),
+                fails_variant: None,
             },
             FunctionDef {
                 code: &postcheck,
                 arity: 2,
                 local_count: 2,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let program = [
@@ -1615,12 +1872,14 @@ mod tests {
                 arity: 1,
                 local_count: 1,
                 postcheck: Some(1),
+                fails_variant: None,
             },
             FunctionDef {
                 code: &postcheck,
                 arity: 2,
                 local_count: 2,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let program = [
@@ -1648,12 +1907,14 @@ mod tests {
                 arity: 1,
                 local_count: 1,
                 postcheck: Some(1),
+                fails_variant: None,
             },
             FunctionDef {
                 code: &postcheck,
                 arity: 2,
                 local_count: 2,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let program = [
@@ -1685,12 +1946,14 @@ mod tests {
                 arity: 1,
                 local_count: 1,
                 postcheck: Some(1),
+                fails_variant: None,
             },
             FunctionDef {
                 code: &postcheck,
                 arity: 2,
                 local_count: 2,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let program = [
@@ -1728,18 +1991,21 @@ mod tests {
                 arity: 1,
                 local_count: 1,
                 postcheck: Some(1),
+                fails_variant: None,
             },
             FunctionDef {
                 code: &postcheck,
                 arity: 2,
                 local_count: 2,
                 postcheck: None,
+                fails_variant: None,
             },
             FunctionDef {
                 code: &is_positive,
                 arity: 1,
                 local_count: 1,
                 postcheck: None,
+                fails_variant: None,
             },
         ];
         let program = [
@@ -1752,5 +2018,204 @@ mod tests {
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(5))
         );
+    }
+
+    // ---------- RES-4083 (D-E1 tail): `fails`/checked-failure dispatch ----------
+
+    #[test]
+    fn call_outside_try_declaring_fails_runs_normally() {
+        // fn risky() fails Boom { 42 } — called with no enclosing try:
+        // the checked-failure injection only fires inside a `try`, so
+        // this just runs the body like any other call.
+        let risky = [Instr::PushConst(Value::Int(42)), Instr::Return];
+        let functions = [FunctionDef {
+            code: &risky,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: Some(0),
+        }];
+        let program = [Instr::Call(0), Instr::Return];
+        let mut vm = Vm::<8, 4, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(42))
+        );
+    }
+
+    #[test]
+    fn call_inside_try_dispatches_to_matching_catch_arm() {
+        // try { risky(); } catch Boom { -1 }
+        let risky = [Instr::PushConst(Value::Int(42)), Instr::Return];
+        let functions = [FunctionDef {
+            code: &risky,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: Some(0),
+        }];
+        let mut arms = [None; MAX_CATCH_ARMS];
+        arms[0] = Some(CatchArm {
+            variant: 0,
+            handler_pc: 5,
+        });
+        let try_handlers = [TryHandlerEntry { arms }];
+        let program = [
+            Instr::EnterTry(0),               // 0
+            Instr::Call(0),                   // 1: never runs risky's body
+            Instr::Pop,                       // 2
+            Instr::PushConst(Value::Int(0)),  // 3
+            Instr::Jump(7),                   // 4: skip catch arm on normal completion
+            Instr::PushConst(Value::Int(-1)), // 5: catch Boom
+            Instr::Return,                    // 6
+            Instr::ExitTry,                   // 7
+            Instr::Return,                    // 8
+        ];
+        let mut vm = Vm::<8, 4, 2, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(&functions, &try_handlers, &program),
+            Ok(Value::Int(-1))
+        );
+    }
+
+    #[test]
+    fn call_inside_try_with_no_matching_arm_is_uncaught_checked_failure() {
+        let risky = [Instr::Return];
+        let functions = [FunctionDef {
+            code: &risky,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: Some(7),
+        }];
+        let mut arms = [None; MAX_CATCH_ARMS];
+        arms[0] = Some(CatchArm {
+            variant: 1, // doesn't match variant 7
+            handler_pc: 0,
+        });
+        let try_handlers = [TryHandlerEntry { arms }];
+        let program = [
+            Instr::EnterTry(0),
+            Instr::Call(0),
+            Instr::ExitTry,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(&functions, &try_handlers, &program),
+            Err(VmError::CheckedFailure(7))
+        );
+    }
+
+    #[test]
+    fn call_inside_try_with_no_fails_variant_runs_normally() {
+        // A try block with no matching catch is irrelevant to a
+        // function that doesn't declare `fails` at all.
+        let safe = [Instr::PushConst(Value::Int(9)), Instr::Return];
+        let functions = [FunctionDef {
+            code: &safe,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+        }];
+        let try_handlers = [TryHandlerEntry::EMPTY];
+        let program = [
+            Instr::EnterTry(0),
+            Instr::Call(0),
+            Instr::ExitTry,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(&functions, &try_handlers, &program),
+            Ok(Value::Int(9))
+        );
+    }
+
+    #[test]
+    fn checked_failure_unwinds_across_nested_call_frames() {
+        // main -> outer() -> inner() (fails Boom), with the `try`
+        // wrapping only the call to `outer`. The catch dispatch must
+        // unwind both the `inner` and `outer` frames back to main.
+        let inner = [Instr::Return];
+        let outer = [
+            Instr::Call(0), // call inner() — this is what raises Boom
+            Instr::Return,
+        ];
+        let functions = [
+            FunctionDef {
+                code: &inner,
+                arity: 0,
+                local_count: 0,
+                postcheck: None,
+                fails_variant: Some(0),
+            },
+            FunctionDef {
+                code: &outer,
+                arity: 0,
+                local_count: 0,
+                postcheck: None,
+                fails_variant: None,
+            },
+        ];
+        let mut arms = [None; MAX_CATCH_ARMS];
+        arms[0] = Some(CatchArm {
+            variant: 0,
+            handler_pc: 4,
+        });
+        let try_handlers = [TryHandlerEntry { arms }];
+        let program = [
+            Instr::EnterTry(0),               // 0
+            Instr::Call(1),                   // 1: outer() -> inner() raises Boom
+            Instr::Jump(6),                   // 2
+            Instr::PushConst(Value::Int(0)),  // 3 (unreached)
+            Instr::PushConst(Value::Int(-1)), // 4: catch Boom
+            Instr::Return,                    // 5
+            Instr::ExitTry,                   // 6
+            Instr::Return,                    // 7
+        ];
+        let mut vm = Vm::<8, 4, 3, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(&functions, &try_handlers, &program),
+            Ok(Value::Int(-1))
+        );
+    }
+
+    #[test]
+    fn enter_try_beyond_tries_capacity_is_typed_error_not_a_panic() {
+        let program = [
+            Instr::EnterTry(0),
+            Instr::EnterTry(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::Return,
+        ];
+        let try_handlers = [TryHandlerEntry::EMPTY];
+        let mut vm = Vm::<8, 0, 1, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(&[], &try_handlers, &program),
+            Err(VmError::TryStackOverflow)
+        );
+    }
+
+    #[test]
+    fn enter_try_out_of_range_handler_is_typed_error_not_a_panic() {
+        let program = [Instr::EnterTry(5), Instr::Return];
+        let mut vm = Vm::<8, 0, 1, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(&[], &[], &program),
+            Err(VmError::TryHandlerOutOfBounds(5))
+        );
+    }
+
+    #[test]
+    fn exit_try_on_empty_try_stack_is_tolerated_not_an_error() {
+        let program = [
+            Instr::ExitTry,
+            Instr::PushConst(Value::Int(1)),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 0>::new();
+        assert_eq!(vm.run(&program), Ok(Value::Int(1)));
     }
 }

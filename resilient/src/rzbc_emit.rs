@@ -22,11 +22,25 @@
 //! that subset at compile time:
 //!
 //! - Every [`Program::functions`] entry must be a plain top-level
-//!   `fn`: no captured upvalues (closures), no declared `fails`
-//!   variants (checked-failure catch dispatch has no embedded
-//!   equivalent — the translated `Call`/`Return` pair does not walk
-//!   a try-handler table). Each of these produces a typed
-//!   [`EmitError`] naming the function.
+//!   `fn`: no captured upvalues (closures) — the embedded no_std VM's
+//!   call-frame stack has no upvalue slab. Each of these produces a
+//!   typed [`EmitError`] naming the function.
+//! - (RES-4083, D-E1 tail) a function declaring `fails` is
+//!   supported: `func.fails[0]`'s variant name is interned to a
+//!   numeric id (see [`build_variant_map`]) and carried as
+//!   [`resilient_runtime::vm::FunctionDef::fails_variant`] — the
+//!   embedded VM's `Instr::Call` deterministically injects it inside
+//!   an active `try` block, mirroring the host VM's `h_call`. A
+//!   `try { } catch Variant { }` block's `Op::EnterTry`/`Op::ExitTry`
+//!   translate to `Instr::EnterTry`/`Instr::ExitTry` against a
+//!   *global* try-handler table this module flattens from every
+//!   chunk's own `Chunk::try_handlers` (see [`flatten_try_handlers`])
+//!   — the embedded wire format has one flat table rather than one
+//!   per chunk, so `Op::EnterTry(local_idx)` is rebased by each
+//!   chunk's offset into that global table. A single `try` block
+//!   declaring more than [`resilient_runtime::vm::MAX_CATCH_ARMS`]
+//!   catch arms is a typed [`EmitError`] (the embedded `TryHandlerEntry`
+//!   is a fixed-size array, not a `Vec`).
 //! - (RES-4083, D-E1 tail) a synthesized postcondition-check
 //!   function (`ensures`/`recovers_to`) is supported: the embedded
 //!   `Instr::Return` now invokes the postcheck function — itself
@@ -36,7 +50,7 @@
 //! - Every function/`main` [`Op`] must be one this module knows how
 //!   to translate 1:1 into an [`Instr`] (see [`translate_chunk`]).
 //!   Anything else — `IncLocal`, arrays, structs, enums,
-//!   closures, try/catch, FFI, builtins, bitwise ops,
+//!   closures, FFI, builtins, bitwise ops,
 //!   `CallClosure`/`CallMethod`/`CallForeign`/
 //!   `CallBuiltin`, ... — is a typed [`EmitError`] naming the exact
 //!   opcode, never a silently malformed blob.
@@ -75,10 +89,14 @@
 //! implicit-return convention `compiler.rs` already uses).
 
 use crate::Value as HostValue;
-use crate::bytecode::{Chunk, Op, Program};
+use crate::bytecode::{Chunk, Op, Program, TryHandlerEntry as HostTryHandlerEntry};
 use resilient_runtime::vm::serde as rzbc_serde;
 use resilient_runtime::vm::serde::EncodeFunctionDef;
-use resilient_runtime::vm::{Instr, Value as RtValue};
+use resilient_runtime::vm::{
+    CatchArm as RtCatchArm, Instr, MAX_CATCH_ARMS, TryHandlerEntry as RtTryHandlerEntry,
+    Value as RtValue,
+};
+use std::collections::HashMap;
 
 /// A construct in the compiled [`Program`] that has no representation
 /// in the embedded no_std [`Instr`] subset. `target` is the triple
@@ -135,9 +153,28 @@ const MAX_INSTR_WIRE_WIDTH: usize = 10;
 /// format unchanged (byte-for-byte identical to before fn-support
 /// landed, so no existing `.rzbc` consumer regresses).
 pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitError> {
-    let main_instrs = translate_chunk(&program.main, target)?;
+    // RES-4083 (D-E1 tail): intern every `fails`/`catch` variant name
+    // in the whole program to a stable numeric id up front, so
+    // `func.fails[0]` and every `catch Variant` arm referencing the
+    // same name agree on the same id regardless of translation order.
+    let variant_map = build_variant_map(program);
+
+    let mut global_try_handlers: Vec<RtTryHandlerEntry> = Vec::new();
+    let main_try_base = global_try_handlers.len();
+    let main_handlers = flatten_try_handlers(&program.main.try_handlers, &variant_map, target)?;
+    global_try_handlers.extend(main_handlers);
+    let main_instrs = translate_chunk(&program.main, target, main_try_base)?;
 
     if program.functions.is_empty() {
+        if !global_try_handlers.is_empty() {
+            return Err(unsupported(
+                target,
+                "top-level `try { }` blocks require the function-table `.rzbc` format, but this \
+                 program declares no functions — a `try` around nothing but builtin/expression \
+                 code has no `fails`-declaring callee to ever dispatch a catch arm for"
+                    .to_string(),
+            ));
+        }
         let cap = rzbc_serde::HEADER_LEN + main_instrs.len() * MAX_INSTR_WIRE_WIDTH;
         let mut buf = vec![0u8; cap];
         let len = rzbc_serde::encode(&main_instrs, &mut buf).map_err(|e| {
@@ -155,6 +192,7 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
     }
 
     let mut func_instrs: Vec<Vec<Instr>> = Vec::with_capacity(program.functions.len());
+    let mut fails_variants: Vec<Option<u16>> = Vec::with_capacity(program.functions.len());
     for func in &program.functions {
         if !func.upvalue_source_slots.is_empty() {
             return Err(unsupported(
@@ -167,18 +205,16 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
                 ),
             ));
         }
-        if !func.fails.is_empty() {
-            return Err(unsupported(
-                target,
-                format!(
-                    "function `{}` declares `fails` variant(s) ({}) — checked-failure catch \
-                     dispatch has no embedded equivalent; the translated `Call`/`Return` pair \
-                     does not walk a try-handler table",
-                    func.name,
-                    func.fails.join(", ")
-                ),
-            ));
-        }
+        // RES-4083 (D-E1 tail): the host VM only ever injects
+        // `func.fails[0]` on a checked-failure dispatch (see
+        // `vm.rs`'s `h_call`), so only that first variant needs a
+        // carried id — `build_variant_map` already interned it.
+        fails_variants.push(func.fails.first().map(|v| variant_map[v]));
+
+        let try_base = global_try_handlers.len();
+        let handlers = flatten_try_handlers(&func.chunk.try_handlers, &variant_map, target)?;
+        global_try_handlers.extend(handlers);
+
         // RES-4083 (D-E1 tail): a function's synthesized postcheck
         // (`ensures`/`recovers_to` — see `compiler::build_postcheck_function`)
         // is itself a plain top-level `fn` entry in `program.functions`
@@ -191,38 +227,141 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
         // `resilient_runtime::vm::Vm::execute`'s `Instr::Return` arm
         // invokes it as an isolated nested call, mirroring the host
         // VM's `run_postcheck`.
-        func_instrs.push(translate_chunk(&func.chunk, target)?);
+        func_instrs.push(translate_chunk(&func.chunk, target, try_base)?);
     }
 
     let functions: Vec<EncodeFunctionDef<'_>> = program
         .functions
         .iter()
         .zip(func_instrs.iter())
-        .map(|(func, instrs)| EncodeFunctionDef {
+        .zip(fails_variants.iter())
+        .map(|((func, instrs), fails_variant)| EncodeFunctionDef {
             code: instrs.as_slice(),
             arity: func.arity,
             local_count: func.local_count,
             postcheck: func.postcheck,
+            fails_variant: *fails_variant,
         })
         .collect();
 
     let func_instr_total: usize = func_instrs.iter().map(Vec::len).sum();
+    // Each try-handler entry, worst case: 1 (arm_count) +
+    // MAX_CATCH_ARMS * (2 variant + 4 handler_pc) bytes.
+    const MAX_TRY_ENTRY_WIRE_WIDTH: usize = 1 + MAX_CATCH_ARMS * (2 + 4);
     let cap = rzbc_serde::HEADER_LEN
         + (main_instrs.len() + func_instr_total + functions.len()) * MAX_INSTR_WIRE_WIDTH
-        + functions.len() * 8;
+        + functions.len() * 8
+        + global_try_handlers.len() * MAX_TRY_ENTRY_WIRE_WIDTH
+        + 2;
     let mut buf = vec![0u8; cap];
-    let len = rzbc_serde::encode_program(&main_instrs, &functions, &mut buf).map_err(|e| {
-        unsupported(
-            target,
-            format!(
-                "internal error serializing the `.rzbc` blob ({:?}) — this is a bug in \
-                 rzbc_emit's buffer sizing, not a property of the source program",
-                e
-            ),
-        )
-    })?;
+    let len = rzbc_serde::encode_program(&main_instrs, &functions, &global_try_handlers, &mut buf)
+        .map_err(|e| {
+            unsupported(
+                target,
+                format!(
+                    "internal error serializing the `.rzbc` blob ({:?}) — this is a bug in \
+                     rzbc_emit's buffer sizing, not a property of the source program",
+                    e
+                ),
+            )
+        })?;
     buf.truncate(len);
     Ok(buf)
+}
+
+/// RES-4083 (D-E1 tail): intern every `fails`-declaring function's
+/// first variant name and every `catch Variant` arm's name (across
+/// `program.main` and every `program.functions` entry) into a single
+/// `name -> id` map, assigning ids in first-seen order. Both a
+/// function's `fails_variant` and its catch arms' `variant` ids come
+/// from this same map, so `f() fails Boom` and `catch Boom { }`
+/// always agree on the numeric id regardless of which chunk defines
+/// which — the embedded wire format has no string constant pool to
+/// carry the name itself (see the module docs' "narrow bridge"
+/// section), so this id is the only representation that survives.
+fn build_variant_map(program: &Program) -> HashMap<String, u16> {
+    let mut map: HashMap<String, u16> = HashMap::new();
+    let intern = |name: &str, map: &mut HashMap<String, u16>| {
+        if !map.contains_key(name) {
+            let id = map.len() as u16;
+            map.insert(name.to_string(), id);
+        }
+    };
+    for entry in &program.main.try_handlers {
+        for arm in &entry.arms {
+            intern(&arm.variant, &mut map);
+        }
+    }
+    for func in &program.functions {
+        if let Some(first) = func.fails.first() {
+            intern(first, &mut map);
+        }
+        for entry in &func.chunk.try_handlers {
+            for arm in &entry.arms {
+                intern(&arm.variant, &mut map);
+            }
+        }
+    }
+    map
+}
+
+/// RES-4083 (D-E1 tail): translate one chunk's `Chunk::try_handlers`
+/// table into the embedded [`RtTryHandlerEntry`] shape, resolving
+/// each arm's variant name through `variant_map`. A variant name with
+/// no id in `variant_map` can't happen — every name reachable from a
+/// `catch` arm was interned by [`build_variant_map`] scanning the
+/// same `try_handlers` tables — but the lookup still goes through
+/// `HashMap::get` rather than indexing, so a hypothetical future
+/// caller mismatch is a clean panic-free path, not a panic.
+fn flatten_try_handlers(
+    handlers: &[HostTryHandlerEntry],
+    variant_map: &HashMap<String, u16>,
+    target: &str,
+) -> Result<Vec<RtTryHandlerEntry>, EmitError> {
+    handlers
+        .iter()
+        .map(|entry| {
+            if entry.arms.len() > MAX_CATCH_ARMS {
+                return Err(unsupported(
+                    target,
+                    format!(
+                        "a `try` block declares {} `catch` arms, exceeding the embedded no_std \
+                         VM's fixed limit of {MAX_CATCH_ARMS} arms per `try` block",
+                        entry.arms.len()
+                    ),
+                ));
+            }
+            let mut arms = [None; MAX_CATCH_ARMS];
+            for (slot, arm) in arms.iter_mut().zip(entry.arms.iter()) {
+                let variant = *variant_map.get(&arm.variant).ok_or_else(|| {
+                    unsupported(
+                        target,
+                        format!(
+                            "internal error: catch arm variant `{}` has no interned id — this is \
+                             a bug in rzbc_emit's variant table, not a property of the source \
+                             program",
+                            arm.variant
+                        ),
+                    )
+                })?;
+                let handler_pc = u32::try_from(arm.handler_pc).map_err(|_| {
+                    unsupported(
+                        target,
+                        format!(
+                            "catch arm handler pc {} does not fit the `.rzbc` format's u32 \
+                             absolute-target encoding",
+                            arm.handler_pc
+                        ),
+                    )
+                })?;
+                *slot = Some(RtCatchArm {
+                    variant,
+                    handler_pc,
+                });
+            }
+            Ok(RtTryHandlerEntry { arms })
+        })
+        .collect()
 }
 
 /// Translate every [`Op`] in `chunk.code` to the matching [`Instr`],
@@ -230,7 +369,7 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
 /// see the module docs for why this index-preserving property is
 /// exactly what makes [`jump_target`]'s offset-to-absolute-index math
 /// sound.
-fn translate_chunk(chunk: &Chunk, target: &str) -> Result<Vec<Instr>, EmitError> {
+fn translate_chunk(chunk: &Chunk, target: &str, try_base: usize) -> Result<Vec<Instr>, EmitError> {
     let mut out = Vec::with_capacity(chunk.code.len());
     for (i, op) in chunk.code.iter().enumerate() {
         let instr = match *op {
@@ -271,8 +410,31 @@ fn translate_chunk(chunk: &Chunk, target: &str) -> Result<Vec<Instr>, EmitError>
             Op::Jump(offset) => Instr::Jump(jump_target(i, offset, target)?),
             Op::JumpIfFalse(offset) => Instr::JumpIfFalse(jump_target(i, offset, target)?),
             Op::JumpIfTrue(offset) => Instr::JumpIfTrue(jump_target(i, offset, target)?),
+            // RES-4083 (D-E1 tail): `handler_table` is a *local*
+            // index into this chunk's own `Chunk::try_handlers` —
+            // rebase it by `try_base` (this chunk's offset into the
+            // flattened global table `compile_to_rzbc` built via
+            // `flatten_try_handlers`) so `Instr::EnterTry` indexes
+            // correctly into that global table at runtime.
+            Op::EnterTry(handler_table) => {
+                let global_idx = try_base
+                    .checked_add(handler_table as usize)
+                    .and_then(|idx| u16::try_from(idx).ok())
+                    .ok_or_else(|| {
+                        unsupported(
+                            target,
+                            format!(
+                                "internal error: global try-handler index overflowed u16 (chunk-\
+                                 local index {handler_table}, base {try_base}) — this is a bug in \
+                                 rzbc_emit, not a property of the source program"
+                            ),
+                        )
+                    })?;
+                Instr::EnterTry(global_idx)
+            }
+            Op::ExitTry => Instr::ExitTry,
             // Everything else is (b)-class or otherwise absent from
-            // `Instr` (bitwise ops, `IncLocal`, try/catch,
+            // `Instr` (bitwise ops, `IncLocal`,
             // FFI, builtins, arrays/structs/enums/closures/tuples,
             // globals). `{:?}` on `Op` names the exact variant so the
             // diagnostic is actionable without a giant match arm per
@@ -503,13 +665,16 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
         let counts = rzbc_serde::decode_program(
             &blob,
             &mut out_main,
             &mut out_func_meta,
             &mut out_func_code,
+            &mut out_try_handlers,
         )
         .expect("should decode as the function-table format");
         assert_eq!(counts.func_count, 1);
@@ -523,6 +688,7 @@ mod tests {
             arity: meta.arity,
             local_count: meta.local_count,
             postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
         }];
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 2>::new();
         assert_eq!(
@@ -545,18 +711,127 @@ mod tests {
         assert!(err.reason.contains("upvalue"), "reason was: {}", err.reason);
     }
 
+    // RES-4083 (D-E1 tail): `fails`-declaring functions used to be
+    // rejected here (`rejects_functions_declaring_fails`); the
+    // embedded VM now dispatches a checked failure through a
+    // translated `try`/`catch` block (mirroring the host's `h_call`
+    // injection), so this proves the positive case instead.
     #[test]
-    fn rejects_functions_declaring_fails() {
-        let mut fallible = function_from("f", 0, 0, chunk_from(vec![Op::ReturnFromCall], vec![]));
-        fallible.fails = vec!["Overflow".to_string()].into_boxed_slice();
+    fn compiles_and_executes_fn_with_fails_and_try_catch() {
+        // fn risky() fails Boom { 1 }
+        // main: try { risky(); 0 } catch Boom { -1 }
+        let risky = chunk_from(
+            vec![Op::Const(0), Op::ReturnFromCall],
+            vec![HostValue::Int(1)],
+        );
+        let mut fallible = function_from("risky", 0, 0, risky);
+        fallible.fails = vec!["Boom".to_string()].into_boxed_slice();
+
+        let mut main = chunk_from(
+            vec![
+                Op::EnterTry(0), // 0
+                Op::Call(0),     // 1: risky() — never runs its body
+                Op::Pop,         // 2: discard the (never produced) result
+                Op::Const(0),    // 3: push 0
+                Op::Jump(2),     // 4: -> Return (skip the catch arm)
+                Op::Const(1),    // 5: catch Boom -> push -1
+                Op::Return,      // 6
+                Op::ExitTry,     // 7
+                Op::Return,      // 8
+            ],
+            vec![HostValue::Int(0), HostValue::Int(-1)],
+        );
+        main.try_handlers.push(crate::bytecode::TryHandlerEntry {
+            arms: vec![crate::bytecode::CatchArm {
+                variant: "Boom".to_string(),
+                handler_pc: 5,
+            }],
+        });
+
         let program = Program {
-            main: chunk_from(vec![Op::Return], vec![]),
+            main,
             functions: vec![fallible],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
         };
+
+        let blob = compile_to_rzbc(&program, "thumbv6m-none-eabi")
+            .expect("fails/try/catch should translate");
+
+        let mut out_main = [Instr::Return; 16];
+        let mut out_func_meta = [rzbc_serde::DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 4];
+        let counts = rzbc_serde::decode_program(
+            &blob,
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+            &mut out_try_handlers,
+        )
+        .expect("should decode as the function-table format");
+        assert_eq!(counts.func_count, 1);
+        assert_eq!(counts.try_count, 1);
+        assert_eq!(out_func_meta[0].fails_variant, Some(0));
+
+        let functions = [resilient_runtime::vm::FunctionDef {
+            code: &out_func_code[out_func_meta[0].offset as usize
+                ..(out_func_meta[0].offset + out_func_meta[0].len) as usize],
+            arity: out_func_meta[0].arity,
+            local_count: out_func_meta[0].local_count,
+            postcheck: out_func_meta[0].postcheck,
+            fails_variant: out_func_meta[0].fails_variant,
+        }];
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(
+                &functions,
+                &out_try_handlers[..counts.try_count],
+                &out_main[..counts.main_len]
+            ),
+            Ok(RtValue::Int(-1))
+        );
+    }
+
+    #[test]
+    fn rejects_try_block_with_too_many_catch_arms() {
+        let mut main = chunk_from(vec![Op::EnterTry(0), Op::Return], vec![]);
+        main.try_handlers.push(crate::bytecode::TryHandlerEntry {
+            arms: (0..(resilient_runtime::vm::MAX_CATCH_ARMS + 1))
+                .map(|i| crate::bytecode::CatchArm {
+                    variant: format!("V{i}"),
+                    handler_pc: 0,
+                })
+                .collect(),
+        });
+        let program = program_from(main);
         let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
-        assert!(err.reason.contains("fails"), "reason was: {}", err.reason);
+        assert!(err.reason.contains("catch"), "reason was: {}", err.reason);
+    }
+
+    #[test]
+    fn rejects_top_level_try_with_no_functions() {
+        let mut main = chunk_from(vec![Op::EnterTry(0), Op::ExitTry, Op::Return], vec![]);
+        main.try_handlers.push(crate::bytecode::TryHandlerEntry {
+            arms: vec![crate::bytecode::CatchArm {
+                variant: "Boom".to_string(),
+                handler_pc: 1,
+            }],
+        });
+        let program = program_from(main);
+        let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
+        assert!(
+            err.reason.contains("function-table"),
+            "reason was: {}",
+            err.reason
+        );
     }
 
     // RES-4083 (D-E1 tail): postcheck-bearing functions used to be
@@ -601,13 +876,16 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
         let counts = rzbc_serde::decode_program(
             &blob,
             &mut out_main,
             &mut out_func_meta,
             &mut out_func_code,
+            &mut out_try_handlers,
         )
         .expect("should decode as the function-table format");
         assert_eq!(counts.func_count, 2);
@@ -622,6 +900,7 @@ mod tests {
                 arity: meta.arity,
                 local_count: meta.local_count,
                 postcheck: meta.postcheck,
+                fails_variant: meta.fails_variant,
             })
             .collect();
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();
@@ -663,13 +942,16 @@ mod tests {
             arity: 0,
             local_count: 0,
             postcheck: None,
+            fails_variant: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
         let counts = rzbc_serde::decode_program(
             &blob,
             &mut out_main,
             &mut out_func_meta,
             &mut out_func_code,
+            &mut out_try_handlers,
         )
         .expect("should decode as the function-table format");
 
@@ -681,6 +963,7 @@ mod tests {
                 arity: meta.arity,
                 local_count: meta.local_count,
                 postcheck: meta.postcheck,
+                fails_variant: meta.fails_variant,
             })
             .collect();
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();
