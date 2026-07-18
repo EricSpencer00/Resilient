@@ -137,6 +137,12 @@ fn write_op(
             }
         }
         Op::ReturnFromCall => write!(out, "ReturnFromCall")?,
+        Op::DeferPush(idx) => {
+            write!(out, "DeferPush {}", idx)?;
+            if let Some(name) = fn_names.get(idx as usize) {
+                write!(out, "     ; -> {}", name)?;
+            }
+        }
         // RES-384: TailCall reuses the current frame (TCO).
         Op::TailCall(idx) => {
             write!(out, "TailCall {}", idx)?;

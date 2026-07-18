@@ -2666,6 +2666,81 @@ fn build_postcheck_function(
     Ok(Some(fn_idx))
 }
 
+/// RES-4119: synthesize a standalone bytecode `Function` that evaluates
+/// a `defer <expr>;` call. `outer_locals`/`local_count` are the
+/// enclosing fn's `locals` map and `next_local` counter *as of the
+/// `defer` statement's position* — the thunk reuses those same name →
+/// slot bindings as its own parameters (slots `0..local_count`), so
+/// identifiers inside `expr` resolve exactly as they did in the
+/// enclosing fn body. `Op::DeferPush` just records this thunk's index
+/// on the current frame; `Op::ReturnFromCall` invokes it later (in LIFO
+/// order, isolated per `run_postcheck`), reading its args from the
+/// frame's *live* locals at that point — not a snapshot taken at the
+/// `defer` site. This mirrors the tree-walking interpreter's
+/// `Node::DeferStatement` eval arm: its "captured environment" is
+/// `Rc<RefCell<..>>`-shared with the live one, so reassignments to
+/// those locals between the `defer` statement and the function's exit
+/// ARE visible to the deferred call.
+///
+/// The evaluated value is discarded (deferred exprs run for side
+/// effects only, exactly like the interpreter's defer drain), and the
+/// thunk returns `Void`.
+#[allow(clippy::too_many_arguments)]
+fn build_defer_function(
+    expr: &Node,
+    outer_locals: &HashMap<String, u16>,
+    local_count: u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<u16, CompileError> {
+    if local_count as usize >= u8::MAX as usize {
+        return Err(CompileError::Unsupported(
+            "defer site with >255 live locals",
+        ));
+    }
+    let arity = local_count as u8;
+    let mut chunk = Chunk::with_capacity(16);
+    let mut locals: HashMap<String, u16> = outer_locals.clone();
+    let mut next_local = local_count;
+
+    compile_expr(
+        expr,
+        &mut chunk,
+        &mut locals,
+        &mut next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    chunk.emit(Op::Pop, line);
+    let void_idx = chunk.add_constant(Value::Void)?;
+    chunk.emit(Op::Const(void_idx), line);
+    chunk.emit(Op::ReturnFromCall, line);
+
+    crate::const_fold::optimize_if_enabled(&mut chunk)
+        .map_err(|_| CompileError::InternalError("constant folder failed"))?;
+    crate::peephole::optimize(&mut chunk)
+        .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
+    crate::dce::eliminate(&mut chunk);
+
+    let fn_idx = fns.len() as u16;
+    fns.push(Function {
+        name: "$defer".to_string(),
+        arity,
+        chunk,
+        local_count: next_local,
+        upvalue_source_slots: Box::default(),
+        fails: Box::default(),
+        postcheck: None,
+    });
+    Ok(fn_idx)
+}
+
 /// RES-4041: compile one `ensures`/`recovers_to` clause inside a
 /// synthesized postcheck function (see `build_postcheck_function`).
 /// Evaluates `clause`, and if falsy, loads `result` (already bound as
@@ -2845,6 +2920,21 @@ fn compile_stmt_in_fn(
             line,
             loop_stack,
         ),
+        // RES-4119: `defer <expr>;` — synthesize a standalone thunk
+        // function over the locals declared so far in this fn (see
+        // `build_defer_function`) and register it with `Op::DeferPush`.
+        // The VM (`vm::run_dispatch_loop`'s `Op::DeferPush` handler)
+        // snapshots the current locals and pushes `(fn_idx, snapshot)`
+        // onto the frame's defer stack, drained LIFO by every
+        // `Op::ReturnFromCall` for this fn — mirrors the tree-walking
+        // interpreter's `Node::DeferStatement` eval arm (`lib.rs`).
+        Node::DeferStatement { expr, .. } => {
+            let fn_idx = build_defer_function(
+                expr, locals, *next_local, fn_index, ffi_index, fns, next_fn_idx, line,
+            )?;
+            chunk.emit(Op::DeferPush(fn_idx), line);
+            Ok(())
+        }
         Node::Assignment { name, value, .. } => compile_assignment(
             name,
             value,
@@ -8998,6 +9088,97 @@ x;
             }
             other => panic!("expected AssertionFailed, got {:?}", other),
         }
+    }
+
+    // ── RES-4119: `Node::DeferStatement` VM lowering ──
+
+    #[test]
+    fn defer_emits_defer_push_and_thunk_function() {
+        let src = r#"fn f() { defer 1 + 1; } f();"#;
+        let prog = parse_one(src);
+        let p = compile(&prog).expect("compiles");
+        let f = p.functions.iter().find(|f| f.name == "f").expect("f");
+        assert!(
+            f.chunk.code.iter().any(|op| matches!(op, Op::DeferPush(_))),
+            "f's chunk must contain Op::DeferPush: {:?}",
+            f.chunk.code
+        );
+        assert!(
+            p.functions.iter().any(|f| f.name == "$defer"),
+            "program must contain a synthesized $defer thunk"
+        );
+    }
+
+    #[test]
+    fn defer_does_not_alter_return_value() {
+        let src = "fn f() -> int { defer 1 + 1; return 7; } f();";
+        assert!(matches!(vm_ok(src), Value::Int(7)));
+    }
+
+    #[test]
+    fn defer_runs_on_implicit_end_of_body() {
+        // The deferred `1 / 0` fires on the implicit fall-off-the-end
+        // return path — the call errors even though the body has no
+        // explicit `return`.
+        let src = "fn f() { defer 1 / 0; } f();";
+        let err = format!("{:?}", vm_run(src));
+        assert!(err.contains("DivideByZero"), "got: {err}");
+    }
+
+    #[test]
+    fn defer_runs_on_early_return() {
+        let src = "fn f() -> int { defer 1 / 0; return 1; } f();";
+        let err = format!("{:?}", vm_run(src));
+        assert!(err.contains("DivideByZero"), "got: {err}");
+    }
+
+    #[test]
+    fn defer_lifo_order_last_registered_fires_first() {
+        // Both defers error with distinguishable errors; LIFO means the
+        // second-registered one runs (and fails) first, so its error —
+        // ArrayIndexOutOfBounds, not DivisionByZero — is the one kept.
+        let src = "fn f() { defer 1 / 0; defer [1][5]; } f();";
+        let err = format!("{:?}", vm_run(src));
+        assert!(
+            err.contains("ArrayIndexOutOfBounds"),
+            "LIFO: expected the later defer's error first, got: {err}"
+        );
+    }
+
+    #[test]
+    fn defer_sees_reassignment_after_registration() {
+        // Matches the tree-walker: its captured Environment is
+        // Rc<RefCell>-shared with the live one, so a reassignment
+        // between `defer` and function exit is visible to the deferred
+        // expr. `1 / x` only succeeds with the NEW value (1), so a
+        // stale defer-time snapshot (x = 0) would error here.
+        let src = "fn f() -> int { let x = 0; defer 1 / x; x = 1; return x; } f();";
+        assert!(matches!(vm_ok(src), Value::Int(1)));
+    }
+
+    #[test]
+    fn defer_body_error_takes_precedence_over_defer_error() {
+        // Body fails (array index out of bounds) before any return path
+        // is reached — the reported error is the body's, never the
+        // deferred `1 / 0`'s, observably matching the interpreter
+        // (which drains the defer but discards its error in favor of
+        // the body's).
+        let src = "fn f() -> int { defer 1 / 0; return [1][5]; } f();";
+        let err = format!("{:?}", vm_run(src));
+        assert!(err.contains("ArrayIndexOutOfBounds"), "got: {err}");
+    }
+
+    #[test]
+    fn defer_in_nested_calls_drains_per_frame() {
+        // Each frame drains its own stack: inner's defer divides by
+        // `y - 4` (only sound against inner's own local), outer's
+        // return value is untouched by either drain.
+        let src = r#"
+fn inner() -> int { let y = 5; defer 1 / (y - 4); return y; }
+fn outer() -> int { defer 1 + 1; let v = inner(); return v + 1; }
+outer();
+"#;
+        assert!(matches!(vm_ok(src), Value::Int(6)));
     }
 
     #[test]
