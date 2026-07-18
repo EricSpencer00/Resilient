@@ -1469,6 +1469,69 @@ fn render_rich_arg_type_mismatch(
     crate::diag::format_diagnostic_terminal(&src, &diag)
 }
 
+/// RES-4115: format the duplicate-fn-name error. Default output is
+/// byte-identical to the pre-existing plain message (goldens stay
+/// pinned); `RESILIENT_RICH_DIAG=1` inserts the `[E0011]` code the
+/// same way `render_rich_arg_type_mismatch` does for E0007.
+fn render_duplicate_fn_error(
+    source_path: &str,
+    span: crate::span::Span,
+    name: &str,
+    prev: crate::span::Span,
+) -> String {
+    let level = if rich_diag_enabled() {
+        "error[E0011]"
+    } else {
+        "error"
+    };
+    format!(
+        "{}:{}:{}: {}: duplicate function name `{}` — \
+         previously declared at {}:{}",
+        source_path,
+        span.start.line,
+        span.start.column,
+        level,
+        name,
+        prev.start.line,
+        prev.start.column,
+    )
+}
+
+/// RES-4115: format the missing-return error. Default output is
+/// byte-identical to the pre-existing plain message; `RESILIENT_RICH_DIAG=1`
+/// prefixes the `[E0013]` code.
+fn render_missing_return_error(name: &str, declared: &Type) -> String {
+    let prefix = if rich_diag_enabled() { "[E0013] " } else { "" };
+    format!(
+        "{}fn {}: missing return on at least one path — declared `{}`, but the body can fall off the end without returning a value",
+        prefix, name, declared
+    )
+}
+
+/// RES-4115: format the unknown-struct-field error. Default output is
+/// byte-identical to the pre-existing plain message; `RESILIENT_RICH_DIAG=1`
+/// prefixes the `[E0017]` code.
+fn render_unknown_struct_field_error(
+    struct_name: &str,
+    field_name: &str,
+    hint: &str,
+    avail: &str,
+) -> String {
+    let prefix = if rich_diag_enabled() { "[E0017] " } else { "" };
+    format!(
+        "{}struct `{}` has no field `{}`{}; available fields: {}",
+        prefix, struct_name, field_name, hint, avail
+    )
+}
+
+/// RES-4115: format the impure-builtin-call error. Default output is
+/// byte-identical to the pre-existing plain message; `RESILIENT_RICH_DIAG=1`
+/// prefixes the `[E0020]` code.
+fn render_impure_builtin_error(callee: &str) -> String {
+    let prefix = if rich_diag_enabled() { "[E0020] " } else { "" };
+    format!("{}calls impure builtin `{}`", prefix, callee)
+}
+
 /// RES-217: format + print the partial-proof warning to stderr.
 /// The message follows the ticket's mandated shape:
 ///
@@ -6082,15 +6145,11 @@ impl TypeChecker {
                             // the first before this guard, making the
                             // program non-deterministic.
                             if let Some(prev) = self.fn_decl_spans.get(name) {
-                                return Err(format!(
-                                    "{}:{}:{}: error: duplicate function name `{}` — \
-                                     previously declared at {}:{}",
-                                    self.source_path,
-                                    span.start.line,
-                                    span.start.column,
+                                return Err(render_duplicate_fn_error(
+                                    &self.source_path,
+                                    *span,
                                     name,
-                                    prev.start.line,
-                                    prev.start.column,
+                                    *prev,
                                 ));
                             }
                             self.fn_decl_spans.insert(name.clone(), *span);
@@ -7915,10 +7974,7 @@ impl TypeChecker {
                             && declared != Type::Any
                             && !body_yields_value(body)
                         {
-                            return Err(format!(
-                                "fn {}: missing return on at least one path — declared `{}`, but the body can fall off the end without returning a value",
-                                name, declared
-                            ));
+                            return Err(render_missing_return_error(name, &declared));
                         }
                         declared
                     }
@@ -9192,16 +9248,16 @@ impl TypeChecker {
                                 declared.iter().map(|(n, _)| n.as_str()).collect();
                             let hint =
                                 crate::did_you_mean::hint_from(field_name, avail.iter().copied());
-                            return Err(format!(
-                                "struct `{}` has no field `{}`{}; available fields: {}",
-                                effective_struct_name,
+                            let avail_str = if avail.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                avail.join(", ")
+                            };
+                            return Err(render_unknown_struct_field_error(
+                                &effective_struct_name,
                                 field_name,
-                                hint,
-                                if avail.is_empty() {
-                                    "(none)".to_string()
-                                } else {
-                                    avail.join(", ")
-                                }
+                                &hint,
+                                &avail_str,
                             ));
                         }
                         // Type mismatch on a known field.
@@ -11588,7 +11644,7 @@ fn check_body_purity(
             // conservative "unknown callee — reject" treatment.
             if let Node::Identifier { name: callee, .. } = function.as_ref() {
                 if IMPURE_BUILTINS.contains(&callee.as_str()) {
-                    return Err(format!("calls impure builtin `{}`", callee));
+                    return Err(render_impure_builtin_error(callee));
                 }
                 // Pure-to-pure is fine.
                 if pure_fns.contains(callee.as_str()) {
@@ -14232,6 +14288,54 @@ mod res340_rich_type_mismatch_tests {
             out.contains("note: expected `Meters` because of this declaration"),
             "note missing on no-source path: {out}"
         );
+    }
+
+    /// RES-4115: shared assertion for the four new gated helpers —
+    /// default output stays byte-identical to the legacy message
+    /// (no bracketed code), and `RESILIENT_RICH_DIAG=1` attaches the
+    /// code. Mirrors `legacy_default_remains_byte_identical`'s
+    /// don't-touch-the-env-var-mid-test discipline: check whichever
+    /// branch the ambient environment is actually in.
+    fn assert_gated_code(out: &str, legacy_substr: &str, code: &str) {
+        if std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1") {
+            assert!(
+                out.contains(code),
+                "rich path must include code {code}: {out}"
+            );
+        } else {
+            assert!(
+                out.contains(legacy_substr),
+                "default format must remain the legacy message; got: {out}"
+            );
+            assert!(
+                !out.contains(code),
+                "code {code} leaked into default output: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_fn_error_carries_e0011_when_gated() {
+        let out = render_duplicate_fn_error("<t>", span(2, 1, 2, 3), "foo", span(1, 1, 1, 3));
+        assert_gated_code(&out, "duplicate function name `foo`", "E0011");
+    }
+
+    #[test]
+    fn missing_return_error_carries_e0013_when_gated() {
+        let out = render_missing_return_error("f", &Type::Int);
+        assert_gated_code(&out, "missing return on at least one path", "E0013");
+    }
+
+    #[test]
+    fn unknown_struct_field_error_carries_e0017_when_gated() {
+        let out = render_unknown_struct_field_error("Point", "z", "", "x, y");
+        assert_gated_code(&out, "struct `Point` has no field `z`", "E0017");
+    }
+
+    #[test]
+    fn impure_builtin_error_carries_e0020_when_gated() {
+        let out = render_impure_builtin_error("println");
+        assert_gated_code(&out, "calls impure builtin `println`", "E0020");
     }
 
     #[test]
