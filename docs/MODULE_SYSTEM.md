@@ -91,7 +91,82 @@ model above with:
   yet.
 - A **module dependency graph** built from `use` statements.
 - A **cycle detector** over that graph — a circular `use` dependency is a
-  compile-time error, not a runtime surprise.
+  compile-time error, not a runtime surprise (RES-4110 extends this to
+  cycles of any length N, not just direct two-module pairs, and reports
+  every step's `line:col` in the printed path).
+
+### `pub use` re-export (RES-2541, coverage audited under RES-4110)
+
+```resilient
+// b.rz
+pub fn shared() { return 1; }
+
+// a.rz
+pub use "b.rz";        // re-export everything b.rz marks `pub`
+pub use "b.rz" { shared };  // selective: re-export only `shared`
+
+// c.rz
+use "a.rz";
+fn main() { return shared(); }   // works — re-exported transitively
+```
+
+`pub use "path";` (implemented in `imports.rs::append_imported_stmts`)
+marks every declaration spliced in from `path` as `pub` in the importing
+file, so a file two or more `use` hops away picks it up the same way it
+would pick up a declaration written directly in the intermediate file —
+this chains through any number of hops because `expand_recursive` expands
+each file's own `use`s (including its `pub use`s) before splicing that
+file's resulting statement list into whoever imports it. RES-4110 added
+regression coverage in `imports.rs` for the single-hop case, the two-hop
+transitive case, the selective `{ name }` re-export form, and the
+existing "no `pub` anywhere in a file = legacy import-everything" fallback
+(pinned so it isn't accidentally tightened later).
+
+This applies to file-based (`use "path.rz"`) and dependency-module
+(`use dep::module;`) imports; there is no `pub use` form for inline
+`mod name { ... }` blocks or `std::` imports today.
+
+### Dependency-module path resolution (RES-4110)
+
+`use dep_name::module;` resolves `module` against `<dep_root>/src/`. A
+multi-segment module path — `use dep_name::sub::leaf;` — now resolves
+each `::`-separated segment before the last as a nested directory
+component (`<dep_root>/src/sub/leaf.rz`), rather than failing to find a
+file literally named `sub::leaf.rz`. Single-segment module paths
+(`use dep_name::foo;` → `<dep_root>/src/foo.rz`) are unaffected.
+
+### Glob-import (`use mod::*;`) — deferred, v1.x decision (RES-4110)
+
+Glob-import is **not implemented** and is being deferred again, this
+time explicitly rather than silently:
+
+- File-based imports (`use "path.rz";`) already behave like an implicit
+  glob for `pub` items — every `pub` declaration in the target file is
+  spliced in unqualified (or selectively, with `{ A, B }`, or
+  transitively re-exported with `pub use`). There is no additional
+  value in a `use "path.rz" { * };` spelling; it would be a no-op alias
+  for the existing default.
+- The gap that would matter is `use mod_name::*;` for **inline**
+  `mod name { ... }` blocks (`modules.rs`), which flatten every item to
+  `mod_name::item` at parse time with no separate symbol table (see
+  "Inline `mod` blocks" above). Making `mod_name::*` bring those
+  flattened names into unqualified scope requires: (1) a new lexer/
+  parser form for a `*` path segment — today `parse_use_statement`
+  only accepts `Token::Identifier` after `::`, so `Token::Star` needs a
+  new arm; (2) a symbol-table pass over already-flattened
+  `mod_name::item` bindings to alias them unqualified in the importing
+  scope, since nothing currently records "which items belong to which
+  `mod` block" outside of `modules.rs::check`'s ephemeral per-call
+  `module_items` map; and (3) a decision on shadowing semantics when
+  two glob-imported `mod`s export the same unqualified name — Rust
+  treats this as an ambiguity error only if the name is actually used,
+  which is more design surface than a single PR should absorb alongside
+  the re-export and path-resolution work above.
+- **Decision:** ship `pub use` re-export coverage and multi-segment
+  dependency-module path resolution now; leave `use mod::*;` as a
+  follow-up ticket scoped to inline `mod` blocks specifically, once the
+  shadowing-on-conflict semantics are decided. Until then, reference
+  inline-module items by their fully-qualified `mod_name::item` name.
 
 ---
 
