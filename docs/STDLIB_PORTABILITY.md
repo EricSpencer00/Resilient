@@ -570,20 +570,24 @@ construction).
 | Builtin(s) | Tier | Resource | `no_std`/embedded | `wasm32` |
 |---|---|---|---|---|
 | `file_read`, `file_write` | 2 | file I/O | **Reject** (compile error) | Graceful (routed through `file_io::vfs_*`) |
-| `file_exists`, `file_is_dir`, `file_is_file`, `file_size`, `file_stat`, `dir_list` | 2 | file metadata | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
-| `env` | 2 | environment access | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
-| `http_get`, `http_post` | 2 | networking | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
-| `exec`, `exec_shell` | 3 | process control | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
+| `file_exists`, `file_is_dir`, `file_is_file`, `file_size`, `file_stat`, `dir_list` | 2 | file metadata | **Reject** (compile error) | Graceful (`file_meta.rs`, RES-4126) |
+| `env` | 2 | environment access | **Reject** (compile error) | Graceful (`std::env::var` returns `NotPresent` on `wasm32`, no host env to read) |
+| `http_get`, `http_post` | 2 | networking | **Reject** (compile error) | Graceful (`http_client.rs`, RES-4126) |
+| `exec`, `exec_shell` | 3 | process control | **Reject** (compile error) | Graceful (`process_exec.rs`, RES-4126) |
 | `tcp_*`, `udp_*` | 2 | networking | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
 
-The `wasm32` graceful-degrade column (`file_meta`/`http`/`exec`/`env`
-returning `Err` instead of hard-rejecting, mirroring the `fs`/time VFS
-pattern already shipped for the playground) is a follow-up ticket —
-see the RES-4116 issue thread for the tracking link. `fs` read/write
-already degrade gracefully on `wasm32` via the in-memory VFS
-(`file_io.rs`), so they're excluded from the reject list on that
-target; this pass currently only fires for `no_std`/embedded triples,
-not `wasm32`.
+RES-4126 closed most of the `wasm32` graceful-degrade gap opened by
+RES-4116: `file_meta.rs`, `http_client.rs`, and `process_exec.rs` all
+now short-circuit on `#[cfg(target_arch = "wasm32")]` with a clear
+"unsupported on this target" `Err` instead of running unpredictably
+against whatever the wasm host happens to expose (there is no real
+filesystem, socket, or process-spawning capability in the playground
+sandbox). `fs` read/write already degraded gracefully via the
+in-memory VFS (`file_io.rs`, RES-3877); `env` was already graceful
+because `std::env::var` simply reports "not present" rather than
+panicking on `wasm32-unknown-unknown`. `tcp_*`/`udp_*` remain
+host-only pending their own follow-up. This pass currently only
+fires for `no_std`/embedded triples, not `wasm32`.
 
 ---
 

@@ -10,7 +10,9 @@
 use crate::span::Span;
 use crate::{MapKey, Node, Value};
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -32,6 +34,7 @@ fn err_val(msg: String) -> Value {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct ParsedUrl {
     host: String,
     port: u16,
@@ -53,6 +56,7 @@ impl Default for RequestOptions {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_url(url: &str) -> Result<ParsedUrl, String> {
     let rest = url
         .strip_prefix("http://")
@@ -85,6 +89,7 @@ fn parse_url(url: &str) -> Result<ParsedUrl, String> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn response_headers_to_map(headers: Vec<(String, String)>) -> Value {
     let mut map = HashMap::with_capacity(headers.len());
     for (key, value) in headers {
@@ -93,6 +98,7 @@ fn response_headers_to_map(headers: Vec<(String, String)>) -> Value {
     Value::Map(map)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn make_response(status: i64, body: String, headers: Vec<(String, String)>) -> Value {
     Value::Struct {
         name: "Response".to_string(),
@@ -550,6 +556,7 @@ fn walk(node: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn connect_with_timeout(parsed: &ParsedUrl, timeout: Duration) -> Result<TcpStream, String> {
     let addr = format!("{}:{}", parsed.host, parsed.port);
     let mut last_err: Option<String> = None;
@@ -571,6 +578,7 @@ fn connect_with_timeout(parsed: &ParsedUrl, timeout: Duration) -> Result<TcpStre
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn host_header(parsed: &ParsedUrl) -> String {
     if parsed.port == 80 {
         parsed.host.clone()
@@ -579,6 +587,7 @@ fn host_header(parsed: &ParsedUrl) -> String {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn send_request(method: &str, url: &str, body: Option<&str>, options: RequestOptions) -> Value {
     let parsed = match parse_url(url) {
         Ok(p) => p,
@@ -638,6 +647,7 @@ fn send_request(method: &str, url: &str, body: Option<&str>, options: RequestOpt
     parse_http_response(&raw_str)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_http_response(raw: &str) -> Value {
     let header_end = match raw.find("\r\n\r\n") {
         Some(i) => i,
@@ -717,11 +727,26 @@ fn decode_chunked(data: &str) -> String {
 // Builtins
 // ---------------------------------------------------------------------------
 
+/// RES-4126: on `wasm32` (the web playground) there is no raw-socket
+/// access — `TcpStream::connect` is unimplemented for that target, so
+/// letting `send_request` run would fail to compile/link, not just to
+/// connect. Both builtins short-circuit here with a graceful `Err`
+/// after validating arguments, so `try`/`match Err(..)` in Resilient
+/// code sees a normal failure instead of the playground refusing to
+/// build.
+#[cfg(target_arch = "wasm32")]
+fn unsupported(builtin: &str) -> Value {
+    err_val(format!(
+        "{}: unsupported on this target (no raw sockets in the wasm playground)",
+        builtin
+    ))
+}
+
 pub(crate) fn builtin_http_get(args: &[Value]) -> RResult<Value> {
     if args.is_empty() {
         return Err("http_get: expected at least 1 argument, got 0".to_string());
     }
-    let url = match &args[0] {
+    let _url = match &args[0] {
         Value::String(url) => url,
         other => return Err(format!("http_get: expected string URL, got {}", other)),
     };
@@ -731,8 +756,15 @@ pub(crate) fn builtin_http_get(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    let options = parse_request_options(args, 1, "http_get")?;
-    Ok(send_request("GET", url, None, options))
+    let _options = parse_request_options(args, 1, "http_get")?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(unsupported("http_get"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Ok(send_request("GET", _url, None, _options))
+    }
 }
 
 pub(crate) fn builtin_http_post(args: &[Value]) -> RResult<Value> {
@@ -742,11 +774,11 @@ pub(crate) fn builtin_http_post(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    let url = match &args[0] {
+    let _url = match &args[0] {
         Value::String(url) => url,
         other => return Err(format!("http_post: expected string URL, got {}", other)),
     };
-    let body = match &args[1] {
+    let _body = match &args[1] {
         Value::String(body) => body,
         other => return Err(format!("http_post: expected string body, got {}", other)),
     };
@@ -756,8 +788,15 @@ pub(crate) fn builtin_http_post(args: &[Value]) -> RResult<Value> {
             args.len()
         ));
     }
-    let options = parse_request_options(args, 2, "http_post")?;
-    Ok(send_request("POST", url, Some(body), options))
+    let _options = parse_request_options(args, 2, "http_post")?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(unsupported("http_post"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Ok(send_request("POST", _url, Some(_body), _options))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1214,5 +1253,31 @@ Err(e) => println("error: " + e),
     fn corpus_http_with_headers_and_timeout() {
         // Complex call with headers and timeout should typecheck
         check_std_ok(r#"let resp = http_get("http://example.com", {"X-Test" -> "value"}, 30);"#);
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+
+    #[test]
+    fn http_get_errs_on_wasm32() {
+        let r = builtin_http_get(&[Value::String("http://example.com".to_string())]).unwrap();
+        assert!(matches!(r, Value::Result { ok: false, .. }));
+    }
+
+    #[test]
+    fn http_post_errs_on_wasm32() {
+        let r = builtin_http_post(&[
+            Value::String("http://example.com".to_string()),
+            Value::String("body".to_string()),
+        ])
+        .unwrap();
+        assert!(matches!(r, Value::Result { ok: false, .. }));
+    }
+
+    #[test]
+    fn http_get_still_validates_args_on_wasm32() {
+        assert!(builtin_http_get(&[Value::Int(1)]).is_err());
     }
 }
