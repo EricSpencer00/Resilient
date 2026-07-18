@@ -35,6 +35,11 @@
 //! rev = "abc123"
 //! ```
 
+// RES-4114: static JSON registry index format + checksum verification
+// (increment 1 of E-E2). See `docs/PACKAGE_REGISTRY.md`.
+#[path = "pkg_registry.rs"]
+pub mod pkg_registry;
+
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
