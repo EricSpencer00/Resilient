@@ -1,0 +1,7 @@
+// RES-4134: repro for the two new JIT builtins (abs_diff, sign).
+// Neither had a Cranelift shim before this ticket, so calling them
+// hit the JIT's "call to unknown function" catch-all. Uses an
+// explicit top-level `return` — see println_string.rz's comment.
+println(abs_diff(10, 3));
+println(sign(-5));
+return 0;

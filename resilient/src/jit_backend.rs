@@ -727,6 +727,8 @@ pub(crate) struct JitRuntimeImports {
     pub res_jit_len_array: FuncId,
     pub res_jit_max: FuncId,
     pub res_jit_min: FuncId,
+    pub res_jit_abs_diff: FuncId,
+    pub res_jit_sign: FuncId,
     /// RES-380: noreturn abort shim for out-of-bounds index / store.
     pub res_jit_abort_oob: FuncId,
     /// RES-380: noreturn abort shim for `pop` on an empty array.
@@ -818,6 +820,12 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         .map_err(|e| JitError::LinkError(e.to_string()))?;
     let res_jit_min = module
         .declare_function("res_jit_min", Linkage::Import, &sig2mm)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_abs_diff = module
+        .declare_function("res_jit_abs_diff", Linkage::Import, &sig2mm)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_sign = module
+        .declare_function("res_jit_sign", Linkage::Import, &sig1r)
         .map_err(|e| JitError::LinkError(e.to_string()))?;
 
     // RES-380: abort shims. Both return i64 to satisfy cranelift's
@@ -915,6 +923,8 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_jit_len_array,
         res_jit_max,
         res_jit_min,
+        res_jit_abs_diff,
+        res_jit_sign,
         res_jit_abort_oob,
         res_jit_abort_empty_pop,
         res_jit_alloc_float,
@@ -1309,6 +1319,24 @@ pub(crate) mod jit_builtins {
     pub extern "C-unwind" fn res_jit_len_array(arr: i64) -> i64 {
         super::runtime_shims::res_array_len(arr as *mut super::runtime_shims::ResArray)
     }
+
+    /// RES-4134: `abs_diff(a, b)` — absolute difference of two ints.
+    /// Matches `builtin_abs_diff`'s `Value::Int` case: `a.abs_diff(b)`
+    /// narrowed from `u64` back to `i64`, saturating to `i64::MAX`
+    /// rather than panicking on the one input pair
+    /// (`i64::MIN`/`i64::MAX`) whose true `u64` difference doesn't
+    /// fit — same total, panic-free contract as the interpreter.
+    pub extern "C-unwind" fn res_jit_abs_diff(a: i64, b: i64) -> i64 {
+        let d = a.abs_diff(b);
+        i64::try_from(d).unwrap_or(i64::MAX)
+    }
+
+    /// RES-4134: `sign(x)` — integer signum. Matches `builtin_sign`'s
+    /// `Value::Int` case (`i.signum()`); total for every `i64`
+    /// including `i64::MIN`.
+    pub extern "C-unwind" fn res_jit_sign(x: i64) -> i64 {
+        x.signum()
+    }
 }
 
 /// RES-167a: descriptor for a JIT-side builtin. `name` is the
@@ -1371,7 +1399,7 @@ pub(crate) fn jit_builtin_table() -> &'static [JitBuiltinSig] {
     // The slice contents are compile-time known; the only
     // non-const bit is the `as *const u8` coercion.
     use jit_builtins::*;
-    static TABLE: std::sync::OnceLock<[JitBuiltinSig; 4]> = std::sync::OnceLock::new();
+    static TABLE: std::sync::OnceLock<[JitBuiltinSig; 6]> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
         [
             JitBuiltinSig {
@@ -1379,6 +1407,12 @@ pub(crate) fn jit_builtin_table() -> &'static [JitBuiltinSig] {
                 symbol: "res_jit_abs",
                 arity: 1,
                 addr: res_jit_abs as *const u8,
+            },
+            JitBuiltinSig {
+                name: "abs_diff",
+                symbol: "res_jit_abs_diff",
+                arity: 2,
+                addr: res_jit_abs_diff as *const u8,
             },
             JitBuiltinSig {
                 name: "len",
@@ -1397,6 +1431,12 @@ pub(crate) fn jit_builtin_table() -> &'static [JitBuiltinSig] {
                 symbol: "res_jit_min",
                 arity: 2,
                 addr: res_jit_min as *const u8,
+            },
+            JitBuiltinSig {
+                name: "sign",
+                symbol: "res_jit_sign",
+                arity: 1,
+                addr: res_jit_sign as *const u8,
             },
         ]
     })
@@ -1577,8 +1617,10 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
 
     // ---------- Pass 2 cont.: compile main ----------
     // The "main" function is the program's top-level non-function
-    // statements. If the program has no top-level return,
-    // compile_statements raises EmptyProgram and we never run.
+    // statements. RES-4134: if the program has no top-level
+    // `return`, `compile_statements` now lowers an implicit
+    // `return 0` (matching the walker/VM backends) rather than
+    // raising `EmptyProgram`.
     let mut main_sig = module.make_signature();
     main_sig.returns.push(AbiParam::new(types::I64));
     let main_id = module
@@ -2196,6 +2238,23 @@ fn compile_statements(
         .filter(|n| !matches!(n, Node::Function { .. }))
         .collect();
     let returned = compile_node_list(&nodes, bcx, ctx, module)?;
+    // RES-4134 investigated making top-level fallthrough (no explicit
+    // `return`, i.e. the `fn main() { ... } main();` shape virtually
+    // all real Resilient source uses — the corpus sweep in
+    // benchmarks/jit_startup/coverage.sh found zero examples with a
+    // top-level `return`) implicitly return 0, to match the
+    // walker/VM's behavior instead of erroring `EmptyProgram` here.
+    // Reverted: flipping that gate makes the JIT actually *execute*
+    // top-level bodies that used to always precompile-fail first, and
+    // that exposed a wide, pre-existing class of value-display bugs
+    // in `jit_runtime.rs` (booleans lower to untagged raw 0/1 per
+    // RES-100, so `println`'s tag-based `jit_value_display` can't
+    // distinguish a bool from a small int; likewise several
+    // string/struct paths) that need their own fix first. See the PR
+    // discussion for RES-4134 for the follow-up ticket. Left as
+    // `EmptyProgram` for now — safe (transparent VM fallback) but
+    // means top-level fallthrough programs stay off native lowering
+    // until that follow-up lands.
     if !returned {
         return Err(JitError::EmptyProgram);
     }
@@ -2364,8 +2423,23 @@ fn compile_node_list(
                 }
                 continue;
             }
-            // Skip statements with no JIT-relevant effect for now.
-            _ => continue,
+            // RES-4134: this used to be `_ => continue` — silently
+            // skip any node shape not explicitly matched above,
+            // instead of erroring. That's a correctness trap for any
+            // construct with control-flow meaning the JIT doesn't
+            // lower yet: `Node::Break`/`Node::Continue` (and their
+            // labeled variants) fall out here today, and skipping a
+            // `break`/`continue` rather than jumping doesn't just
+            // mis-lower the loop — it turns an intended early-exit
+            // into a genuine infinite loop at the machine-code level
+            // (found via `examples/loop_keyword.rz` hanging once
+            // RES-4134's top-level-fallthrough fix let the JIT
+            // actually execute past the point where it used to always
+            // bail with `EmptyProgram`). Treat every unmatched shape
+            // as `Unsupported` so it falls back to the VM instead of
+            // silently miscompiling — matching `lower_block_or_stmt`'s
+            // existing catch-all one level down.
+            _ => return Err(JitError::Unsupported(node_kind(node))),
         }
     }
     Ok(false)
@@ -2947,9 +3021,11 @@ fn lower_expr(
                 }
                 let fid = match callee_name.as_str() {
                     "abs" => ctx.imports.res_jit_abs,
+                    "abs_diff" => ctx.imports.res_jit_abs_diff,
                     "len" => ctx.imports.res_jit_len_array,
                     "max" => ctx.imports.res_jit_max,
                     "min" => ctx.imports.res_jit_min,
+                    "sign" => ctx.imports.res_jit_sign,
                     _ => return Err(JitError::Unsupported("unknown JIT builtin")),
                 };
                 let local_ref = module.declare_func_in_func(fid, bcx.func);
@@ -3121,6 +3197,22 @@ fn lower_expr(
         Node::StringLiteral { value, .. } => {
             let ptr_val = bcx.ins().iconst(types::I64, value.as_ptr() as i64);
             let len_val = bcx.ins().iconst(types::I64, value.len() as i64);
+            let fref = module.declare_func_in_func(ctx.imports.res_jit_alloc_string, bcx.func);
+            let call = bcx.ins().call(fref, &[ptr_val, len_val]);
+            Ok(bcx.inst_results(call)[0])
+        }
+        // RES-4134: interned string literal — RES-2612 made this the
+        // node the parser actually emits for a plain `"..."` literal
+        // (`Node::StringLiteral` above is only reachable via the
+        // string-interpolation re-wrap path). Without this arm every
+        // string literal fell through to the `_` catch-all below,
+        // which is why builtins like `println("...")` never lowered
+        // natively despite the println/print call-site handling
+        // already existing: the string *argument* was the unsupported
+        // construct, not the call itself.
+        Node::StringInternLiteral { content, .. } => {
+            let ptr_val = bcx.ins().iconst(types::I64, content.as_ptr() as i64);
+            let len_val = bcx.ins().iconst(types::I64, content.len() as i64);
             let fref = module.declare_func_in_func(ctx.imports.res_jit_alloc_string, bcx.func);
             let call = bcx.ins().call(fref, &[ptr_val, len_val]);
             Ok(bcx.inst_results(call)[0])
@@ -3332,6 +3424,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::IntegerLiteral { .. } => "IntegerLiteral",
         Node::FloatLiteral { .. } => "FloatLiteral",
         Node::StringLiteral { .. } => "StringLiteral",
+        Node::StringInternLiteral { .. } => "StringInternLiteral",
         Node::BooleanLiteral { .. } => "BooleanLiteral",
         Node::PrefixExpression { .. } => "PrefixExpression",
         Node::InfixExpression { .. } => "InfixExpression",
@@ -3347,6 +3440,16 @@ fn node_kind(n: &Node) -> &'static str {
         Node::EnumDecl { .. } => "EnumDecl",
         Node::ImplBlock { .. } => "ImplBlock",
         Node::InterpolatedString { .. } => "InterpolatedString",
+        // RES-4134: named explicitly (rather than falling into
+        // "<other>") so a JIT fallback note for one of these reads
+        // as "break"/"continue" instead of an opaque catch-all —
+        // these are exactly the constructs whose old silent-skip
+        // handling in `compile_node_list` could hang a loop.
+        Node::Break { .. } => "Break",
+        Node::BreakWith { .. } => "BreakWith",
+        Node::Continue { .. } => "Continue",
+        Node::BreakLabel { .. } => "BreakLabel",
+        Node::ContinueLabel { .. } => "ContinueLabel",
         _ => "<other>",
     }
 }

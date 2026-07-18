@@ -30931,9 +30931,20 @@ fn execute_file(
             // RES-2605: devirtualize after monomorphization.
             let jit_program = devirtualize::lower(&jit_program);
             match jit_backend::run(&jit_program) {
-                Ok(result) => {
-                    println!("{}", result);
-                    // RES-355: write cache entry on JIT success.
+                Ok(_result) => {
+                    // RES-4134: don't print the top-level return
+                    // value. RES-3991 already established (for the
+                    // VM path, see `run_via_vm` above) that the
+                    // walker/interpreter oracle never auto-prints a
+                    // top-level return/expression value — printing it
+                    // here diverged from that. It went unnoticed
+                    // because the JIT falls back to the VM with
+                    // `EmptyProgram` for any program with no top-level
+                    // `return` (the corpus sweep in
+                    // benchmarks/jit_startup/coverage.sh found zero
+                    // such examples), so this arm was only ever
+                    // reached by a program that *does* have one —
+                    // rare, but a real divergence whenever it happens.
                     if !no_cache {
                         cache::write_entry(&cache_dir, &source_hash);
                     }

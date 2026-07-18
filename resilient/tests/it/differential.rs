@@ -2161,4 +2161,81 @@ mod jit_differential {
              invalidates benchmarks/jit_startup/run.sh's measurements: {stderr}"
         );
     }
+
+    /// RES-4134: every plain string literal parses to
+    /// `Node::StringInternLiteral` (RES-2612 interning), which
+    /// `jit_backend.rs`'s lowering never handled — only the
+    /// effectively-dead `Node::StringLiteral` variant was — so any
+    /// `println("...")` call site's *argument* was the unsupported
+    /// construct, independent of `println`'s own call-site handling
+    /// (which already existed and works fine for i64 args). This is
+    /// why every corpus example fell back to the VM (0% native, per
+    /// benchmarks/jit_startup/coverage.sh): virtually all of them
+    /// `println` a string somewhere. `println_string.rz` uses an
+    /// explicit top-level `return` (rather than the corpus's
+    /// universal `fn main() { ... } main();` shape) because the JIT
+    /// still requires one — RES-4134 also investigated dropping that
+    /// requirement but reverted it after finding it exposes a
+    /// separate, pre-existing class of value-display bugs (booleans
+    /// lower to untagged raw 0/1 per RES-100, so `println`'s
+    /// tag-based display can't tell a bool from a small int; see the
+    /// PR body for the follow-up ticket), so this test targets only
+    /// the string-literal fix this PR actually ships.
+    #[test]
+    fn jit_println_string_literal_runs_natively() {
+        let output = Command::new(super::bin())
+            .arg("--jit")
+            .arg("--verbose")
+            .arg("../benchmarks/jit_startup/println_string.rz")
+            .output()
+            .expect("failed to spawn rz --jit --verbose");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "println_string.rz failed under --jit: {stderr}"
+        );
+        assert!(
+            !stderr.contains("fell back to the VM"),
+            "println_string.rz fell back to the VM under --jit: {stderr}"
+        );
+        assert!(
+            stdout.contains("hello, jit"),
+            "println_string.rz's println output missing from stdout: {stdout}"
+        );
+    }
+
+    /// RES-4134: `abs_diff` and `sign` are interpreter builtins
+    /// (`lib.rs`'s BUILTINS table) the JIT previously had no shim for
+    /// at all — calling either hit the `_ => Err(Unsupported("call to
+    /// unknown function"))` catch-all in `Node::CallExpression`
+    /// lowering. `examples/abs_diff.rz` (the corpus's own example for
+    /// the builtin) uses the `fn main() { ... } main();` shape with
+    /// no top-level `return`, so it still falls back — see
+    /// `jit_println_string_literal_runs_natively`'s doc comment for
+    /// why. This test instead uses an explicit top-level `return` to
+    /// prove the two new builtins lower correctly on their own.
+    #[test]
+    fn jit_abs_diff_and_sign_builtins_run_natively() {
+        let output = Command::new(super::bin())
+            .arg("--jit")
+            .arg("--verbose")
+            .arg("../benchmarks/jit_startup/abs_diff_sign.rz")
+            .output()
+            .expect("failed to spawn rz --jit --verbose");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "abs_diff_sign.rz failed under --jit: {stderr}"
+        );
+        assert!(
+            !stderr.contains("fell back to the VM"),
+            "abs_diff_sign.rz fell back to the VM under --jit: {stderr}"
+        );
+        assert!(
+            stdout.contains("7\n-1"),
+            "abs_diff_sign.rz produced unexpected output: {stdout}"
+        );
+    }
 }

@@ -1,0 +1,10 @@
+// RES-4134: repro for the gap that kept the entire example corpus at
+// 0% native JIT coverage — a string literal argument to `println`.
+// Every plain "..." literal parses to Node::StringInternLiteral,
+// which the JIT didn't lower (only the effectively-dead
+// Node::StringLiteral variant was handled). Uses an explicit
+// top-level `return` since the JIT still requires one — see
+// RESULTS.md for why the `fn main() { ... } main();` shape the rest
+// of the corpus uses doesn't reach native lowering yet.
+println("hello, jit");
+return 0;
