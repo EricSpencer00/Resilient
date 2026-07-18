@@ -235,13 +235,16 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; 8];
     let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
+    let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
     let counts = resilient_runtime::vm::serde::decode_program(
         &blob,
         &mut out_main,
         &mut out_func_meta,
         &mut out_func_code,
+        &mut out_try_handlers,
     )
     .expect("blob should decode as the function-table .rzbc format");
     assert_eq!(counts.func_count, 1, "one fn declaration → one table entry");
@@ -251,6 +254,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -262,6 +266,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
             arity: meta.arity,
             local_count: meta.local_count,
             postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
         };
     }
     let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
@@ -296,13 +301,16 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; 8];
     let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
+    let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
     let counts = resilient_runtime::vm::serde::decode_program(
         blob,
         &mut out_main,
         &mut out_func_meta,
         &mut out_func_code,
+        &mut out_try_handlers,
     )
     .expect("blob should decode as the function-table .rzbc format");
 
@@ -311,6 +319,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -322,6 +331,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
             arity: meta.arity,
             local_count: meta.local_count,
             postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
         };
     }
     let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
@@ -330,6 +340,120 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
         &out_main[..counts.main_len],
     )
     .expect("embedded VM should run the decoded program")
+}
+
+/// RES-4083 (D-E1 tail): the `try`/`fails` counterpart of
+/// [`run_fn_blob`] — decodes the try-handler table too and runs on
+/// [`resilient_runtime::vm::Vm::run_with_tries`].
+fn run_fn_blob_with_tries(blob: &[u8]) -> resilient_runtime::vm::Value {
+    let mut out_main = [resilient_runtime::vm::Instr::Return; 32];
+    let mut out_func_meta = [resilient_runtime::vm::serde::DecodedFunctionMeta {
+        offset: 0,
+        len: 0,
+        arity: 0,
+        local_count: 0,
+        postcheck: None,
+        fails_variant: None,
+    }; 8];
+    let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
+    let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 4];
+    let counts = resilient_runtime::vm::serde::decode_program(
+        blob,
+        &mut out_main,
+        &mut out_func_meta,
+        &mut out_func_code,
+        &mut out_try_handlers,
+    )
+    .expect("blob should decode as the function-table .rzbc format");
+
+    let mut functions = [resilient_runtime::vm::FunctionDef {
+        code: &[][..],
+        arity: 0,
+        local_count: 0,
+        postcheck: None,
+        fails_variant: None,
+    }; 8];
+    for (slot, meta) in functions
+        .iter_mut()
+        .zip(out_func_meta.iter())
+        .take(counts.func_count)
+    {
+        *slot = resilient_runtime::vm::FunctionDef {
+            code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+            arity: meta.arity,
+            local_count: meta.local_count,
+            postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
+        };
+    }
+    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4, 2>::new();
+    vm.run_with_tries(
+        &functions[..counts.func_count],
+        &out_try_handlers[..counts.try_count],
+        &out_main[..counts.main_len],
+    )
+    .expect("embedded VM should run the decoded try/fails program")
+}
+
+/// RES-4083 (D-E1 tail): `rz build` now accepts a program declaring
+/// `fails` and using `try { } catch Variant { }` — the whole
+/// parser -> typechecker -> compiler -> `rzbc_emit` -> embedded `Vm`
+/// pipeline for checked-failure dispatch. The embedded VM
+/// deterministically injects the declared checked failure on any
+/// call made inside an active `try` (mirroring the host interpreter's
+/// `RES-775` behavior), so `catch Timeout` always fires here.
+#[test]
+fn build_decode_run_matches_interpreter_for_fails_try_catch() {
+    let dir = tmp_dir("fails_try");
+    let src_body = "fn read_sensor(int addr) fails Timeout {\n    \
+                     return addr;\n\
+                     }\n\n\
+                     fn caller(int addr) -> int {\n    \
+                     if addr > 0 {\n        \
+                     try {\n            \
+                     let v = read_sensor(addr);\n            \
+                     return v;\n        \
+                     } catch Timeout {\n            \
+                     return -1;\n        \
+                     }\n    \
+                     }\n    \
+                     return -2;\n\
+                     }\n\n";
+
+    let embedded_src = dir.join("fails_try.rz");
+    std::fs::write(&embedded_src, format!("{src_body}caller(42);\n")).unwrap();
+    let out = dir.join("fails_try.rzbc");
+
+    let (code, stderr) = run_build(&embedded_src, &out, "thumbv7em-none-eabihf");
+    assert_eq!(
+        code,
+        Some(0),
+        "fails/try/catch should build for embedded targets; stderr={stderr}"
+    );
+
+    let blob = std::fs::read(&out).expect("rz build should have written the .rzbc file");
+    assert_eq!(
+        run_fn_blob_with_tries(&blob),
+        resilient_runtime::vm::Value::Int(-1),
+        "the embedded VM deterministically injects the declared checked failure inside `try`, \
+         so `catch Timeout` should fire"
+    );
+
+    let interpreter_src = dir.join("fails_try_print.rz");
+    std::fs::write(
+        &interpreter_src,
+        format!("{src_body}println(caller(42));\n"),
+    )
+    .unwrap();
+    let interpreter_stdout = run_interpreter(&interpreter_src);
+    assert_eq!(
+        interpreter_stdout.lines().next(),
+        Some("-1"),
+        "the tree-walking interpreter also injects the checked failure inside `try` (RES-775), \
+         so both backends should agree on -1; full stdout={interpreter_stdout:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// RES-4075: a tail-recursive fn — the host peephole rewrites the

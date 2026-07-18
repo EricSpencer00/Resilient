@@ -28,7 +28,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use resilient_runtime::vm::serde::{DecodedFunctionMeta, decode_program};
-use resilient_runtime::vm::{FunctionDef, Instr, Value, Vm};
+use resilient_runtime::vm::{FunctionDef, Instr, TryHandlerEntry, Value, Vm};
 
 const EXPECTED_DUTY_SUM: Value = Value::Int(180); // 100 + 0 + 0 + 80
 
@@ -57,17 +57,26 @@ fn run_and_decode(blob: &[u8]) -> Value {
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; 8];
     let mut out_func_code = [Instr::Return; 128];
+    let mut out_try_handlers = [TryHandlerEntry::EMPTY; 1];
 
-    let counts = decode_program(blob, &mut out_main, &mut out_func_meta, &mut out_func_code)
-        .expect("thermal cutoff blob should decode as the v2 function-table format");
+    let counts = decode_program(
+        blob,
+        &mut out_main,
+        &mut out_func_meta,
+        &mut out_func_code,
+        &mut out_try_handlers,
+    )
+    .expect("thermal cutoff blob should decode as the v2 function-table format");
 
     let mut functions = [FunctionDef {
         code: &[][..],
         arity: 0,
         local_count: 0,
         postcheck: None,
+        fails_variant: None,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -79,6 +88,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
             arity: meta.arity,
             local_count: meta.local_count,
             postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
         };
     }
 

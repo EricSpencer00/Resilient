@@ -1,0 +1,32 @@
+// Embedded checked-failure / try-catch dispatch — the D-E1 tail
+// reference for RES-4083's `fails`/`try`/`catch` embedded increment
+// (Refs #3933 Track D). See docs/EMBEDDED_PIPELINE.md and
+// resilient-runtime/src/vm.rs's `dispatch_checked_failure` for the
+// runtime story, and rzbc_emit.rs's `flatten_try_handlers`/
+// `build_variant_map` for how this source's `fails Timeout` /
+// `catch Timeout` translate to the embedded wire format's numeric
+// variant ids and flattened global try-handler table.
+//
+// `read_sensor` declares `fails Timeout`. The embedded no_std VM
+// deterministically injects that checked failure whenever the call
+// happens inside an active `try` block — mirroring the host
+// tree-walking interpreter's RES-775 behavior — so `catch Timeout`
+// always fires here; `read_sensor`'s body never actually runs.
+
+fn read_sensor(int addr) fails Timeout {
+    return addr;
+}
+
+fn caller(int addr) -> int {
+    if addr > 0 {
+        try {
+            let v = read_sensor(addr);
+            return v;
+        } catch Timeout {
+            return -1;
+        }
+    }
+    return -2;
+}
+
+caller(42);
