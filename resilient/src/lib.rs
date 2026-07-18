@@ -743,6 +743,8 @@ mod deque;
 mod heap;
 // RES-2614: cross-compilation target profiles in rz.toml.
 mod target_profiles;
+// RES-4116: stdlib portability lint (Tier-2/3 builtins vs no_std/embedded targets).
+mod stdlib_portability_lint;
 // RES-2611: source maps linking bytecode offsets to source positions.
 mod source_map;
 // RES-2583: mutex and rwlock synchronization primitives.

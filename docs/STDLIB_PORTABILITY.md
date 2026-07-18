@@ -553,6 +553,40 @@ pub fn swap_with_logging<T>(a: &mut T, b: &mut T) {
 
 ---
 
+## Compiler Enforcement (RES-4116)
+
+`resilient/src/stdlib_portability_lint.rs` enforces the table below at
+typecheck time. The pass reads the nearest `rz.toml`/`resilient.toml`
+manifest for `[target.TRIPLE]` sections (RES-2614); when a declared
+target is bare-metal `no_std` (either a known embedded triple, or any
+triple whose `features` list contains `"no_std"`), every reachable
+Tier-2/3 builtin call below is a **hard compile-time error** naming the
+builtin, its tier, and the offending triple — never a silent
+miscompile or a runtime panic. When no manifest is present, or no
+declared target is embedded/no_std, the pass is a no-op (it never
+guesses at an implicit build target — zero false positives by
+construction).
+
+| Builtin(s) | Tier | Resource | `no_std`/embedded | `wasm32` |
+|---|---|---|---|---|
+| `file_read`, `file_write` | 2 | file I/O | **Reject** (compile error) | Graceful (routed through `file_io::vfs_*`) |
+| `file_exists`, `file_is_dir`, `file_is_file`, `file_size`, `file_stat`, `dir_list` | 2 | file metadata | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
+| `env` | 2 | environment access | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
+| `http_get`, `http_post` | 2 | networking | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
+| `exec`, `exec_shell` | 3 | process control | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
+| `tcp_*`, `udp_*` | 2 | networking | **Reject** (compile error) | Host-only today; graceful `Err` stub tracked as follow-up |
+
+The `wasm32` graceful-degrade column (`file_meta`/`http`/`exec`/`env`
+returning `Err` instead of hard-rejecting, mirroring the `fs`/time VFS
+pattern already shipped for the playground) is a follow-up ticket —
+see the RES-4116 issue thread for the tracking link. `fs` read/write
+already degrade gracefully on `wasm32` via the in-memory VFS
+(`file_io.rs`), so they're excluded from the reject list on that
+target; this pass currently only fires for `no_std`/embedded triples,
+not `wasm32`.
+
+---
+
 ## References
 
 - **RES-3507:** Design a production-grade standard library portability model
