@@ -3489,7 +3489,7 @@ impl LanguageServer for Backend {
                 };
                 let candidates = undefined_name_candidates(&index, &uri, diag);
                 actions.extend(
-                    build_add_use_actions(&uri, diag, &text, candidates.into_iter())
+                    build_add_use_actions(&uri, diag, &text, candidates)
                         .into_iter()
                         .map(CodeActionOrCommand::CodeAction),
                 );
