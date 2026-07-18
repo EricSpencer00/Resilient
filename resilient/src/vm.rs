@@ -422,6 +422,18 @@ struct CallFrame {
     /// captured from. On return, mutated upvalues are written back to
     /// both the `Value::Closure` and the caller's local slots.
     source_slots: Box<[u16]>,
+    /// RES-4119: pending `defer <expr>;` calls registered by this
+    /// frame, in registration order — each entry is the synthesized
+    /// defer-thunk function (`compiler::build_defer_function`).
+    /// Mirrors the tree-walking interpreter's `defer_stack`
+    /// (`lib.rs`'s `Node::DeferStatement` eval arm): `Environment` is
+    /// `Rc<RefCell<..>>`, so the interpreter's "captured environment"
+    /// is the *same* live store, not a snapshot — later reassignments
+    /// to those variables ARE visible when the defer finally runs.
+    /// The VM mirrors this by reading the frame's *live* locals at
+    /// drain time (see `Op::ReturnFromCall`) rather than snapshotting
+    /// at `Op::DeferPush` time. Drained in reverse (LIFO) on return.
+    defers: Vec<u16>,
 }
 
 /// RES-3914: write mutated upvalues back to the caller's locals and
@@ -684,6 +696,7 @@ fn run_postcheck(
         upvalues: Box::default(),
         closure_home: None,
         source_slots: Box::default(),
+        defers: Vec::new(),
     }];
     let mut try_stack: Vec<TryFrame> = Vec::new();
     // RES-4046: `statics`/`statics_init` persist a fn's `static let`
@@ -753,6 +766,7 @@ fn run_inner(
         upvalues: Box::default(),
         closure_home: None,
         source_slots: Box::default(),
+        defers: Vec::new(),
     });
     let mut try_stack: Vec<TryFrame> = Vec::new();
     match run_dispatch_loop(
@@ -914,6 +928,7 @@ fn run_dispatch_loop(
                                 upvalues: Box::default(),
                                 closure_home: None,
                                 source_slots: Box::default(),
+                                defers: Vec::new(),
                             });
                             continue;
                         }
@@ -949,6 +964,7 @@ fn run_dispatch_loop(
                                 upvalues: Box::default(),
                                 closure_home: None,
                                 source_slots: Box::default(),
+                                defers: Vec::new(),
                             });
                             continue;
                         }
@@ -1001,6 +1017,7 @@ fn run_dispatch_loop(
                                 upvalues: Box::default(),
                                 closure_home: None,
                                 source_slots: Box::default(),
+                                defers: Vec::new(),
                             });
                             continue;
                         }
@@ -1139,7 +1156,16 @@ fn run_dispatch_loop(
                     upvalues: Box::default(),
                     closure_home: None,
                     source_slots: Box::default(),
+                    defers: Vec::new(),
                 });
+            }
+            // RES-4119: register a `defer <expr>;` call on the *current*
+            // frame's defer stack. `idx` names the synthesized
+            // defer-thunk function (`compiler::build_defer_function`);
+            // see the `CallFrame::defers` doc comment for why this
+            // stores just the fn index (no value snapshot).
+            Op::DeferPush(idx) => {
+                frames[frame_idx].defers.push(idx);
             }
             Op::ReturnFromCall => {
                 // Pop the return value, unwind the frame, push it
@@ -1149,6 +1175,39 @@ fn run_dispatch_loop(
                 // semantics.
                 let ret = stack.pop().unwrap_or(Value::Void);
                 let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                // RES-4119: drain `popped`'s deferred calls in LIFO
+                // order — mirrors the tree-walking interpreter's
+                // `defer_stack` drain (`lib.rs`), which always runs
+                // every deferred expr (remembering only the first
+                // error) before honoring the function's own return
+                // value. Args are read from `popped`'s *live* locals
+                // right now (drain time), not snapshotted at
+                // `Op::DeferPush` time — see the `CallFrame::defers`
+                // doc comment for why that matches the interpreter.
+                // Each thunk runs as its own isolated
+                // `run_postcheck`-style sub-call, so mutations inside a
+                // deferred call can't corrupt the frame that's
+                // unwinding.
+                let mut first_defer_err: Option<VmError> = None;
+                for defer_fn_idx in popped.defers.iter().rev() {
+                    let arity = program
+                        .functions
+                        .get(*defer_fn_idx as usize)
+                        .ok_or(VmError::FunctionOutOfBounds(*defer_fn_idx))?
+                        .arity as usize;
+                    let args: Vec<Value> = locals
+                        .get(popped.locals_base..popped.locals_base + arity)
+                        .map(<[Value]>::to_vec)
+                        .unwrap_or_default();
+                    if let Err(e) = run_postcheck(program, *defer_fn_idx, args, overflow_mode)
+                        && first_defer_err.is_none()
+                    {
+                        first_defer_err = Some(e);
+                    }
+                }
+                if let Some(e) = first_defer_err {
+                    return Err(e);
+                }
                 // RES-4041: run `popped`'s `ensures`/`recovers_to`
                 // postcondition checks now, while its own parameters are
                 // still addressable via `popped.locals_base` — mirrors
@@ -1483,6 +1542,7 @@ fn run_dispatch_loop(
                     upvalues: captured,
                     closure_home: home,
                     source_slots: src_slots,
+                    defers: Vec::new(),
                 });
                 continue;
             }
@@ -1573,6 +1633,7 @@ fn run_dispatch_loop(
                     upvalues: Box::default(),
                     closure_home: None,
                     source_slots: Box::default(),
+                    defers: Vec::new(),
                 });
                 continue;
             }
@@ -1661,6 +1722,7 @@ fn run_dispatch_loop(
                         upvalues: Box::default(),
                         closure_home: None,
                         source_slots: Box::default(),
+                        defers: Vec::new(),
                     });
                     continue;
                 }
@@ -2546,6 +2608,7 @@ fn vm_call_closure_value(
         upvalues,
         closure_home: None,
         source_slots,
+        defers: Vec::new(),
     }];
     let mut try_stack: Vec<TryFrame> = Vec::new();
     let mut statics: Vec<Vec<Value>> = Vec::new();
@@ -3318,7 +3381,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 /// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
 /// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
 /// grow together.
-const OP_KIND_COUNT: usize = 39;
+const OP_KIND_COUNT: usize = 40;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -3338,6 +3401,7 @@ fn op_to_index(op: Op) -> usize {
         Op::StoreLocal(_) => 8,
         Op::Call(_) => 9,
         Op::ReturnFromCall => 10,
+        Op::DeferPush(_) => OP_KIND_DEFER_PUSH,
         Op::Jump(_) => 11,
         Op::JumpIfFalse(_) => 12,
         Op::JumpIfTrue(_) => 13,
@@ -3447,7 +3511,16 @@ const OP_KIND_CONTRACT_VIOLATION: usize = 59;
 const OP_KIND_COALESCE: usize = 60;
 /// RES-3993: `?.` optional-chaining pre-access unwrap.
 const OP_KIND_OPT_CHAIN_UNWRAP: usize = 61;
-const HANDLER_TABLE_LEN: usize = 62;
+/// RES-4119: `defer <expr>;` is only implemented by the Match dispatch
+/// engine (`run_inner`), which drains a frame's defer stack via the
+/// isolated `run_postcheck`-style recursion in `Op::ReturnFromCall`.
+/// `run_direct` surfaces a clean `VmError::Unsupported` via
+/// `h_defer_unsupported` instead of silently dropping the deferred
+/// call — same scope cut as `OP_KIND_ENTER_LIVE`/
+/// `OP_KIND_PUSH_STATIC_INITIALIZED` above. Follow-up: port the
+/// nested-call recursion to `run_direct`.
+const OP_KIND_DEFER_PUSH: usize = 62;
+const HANDLER_TABLE_LEN: usize = 63;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -3515,8 +3588,17 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_STORE_STATIC] = h_static_unsupported;
     table[OP_KIND_LOAD_STATIC] = h_static_unsupported;
     table[OP_KIND_CONTRACT_VIOLATION] = h_contract_violation;
+    table[OP_KIND_DEFER_PUSH] = h_defer_unsupported;
     table
 };
+
+/// See `OP_KIND_DEFER_PUSH`.
+#[inline(never)]
+fn h_defer_unsupported(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported(
+        "defer (RESILIENT_DISPATCH=direct doesn't implement RES-4119 defer recursion yet)",
+    ))
+}
 
 /// RES-3995: `run_direct` doesn't implement live-block retry semantics
 /// yet — see the `OP_KIND_ENTER_LIVE` doc comment. Surface a clean
@@ -3568,6 +3650,7 @@ fn run_direct(
         upvalues: Box::default(),
         closure_home: None,
         source_slots: Box::default(),
+        defers: Vec::new(),
     });
 
     loop {
@@ -3707,6 +3790,7 @@ fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                     upvalues: Box::default(),
                     closure_home: None,
                     source_slots: Box::default(),
+                    defers: Vec::new(),
                 });
                 return Ok(Step::Continue);
             }
@@ -3749,6 +3833,7 @@ fn h_sub(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                     upvalues: Box::default(),
                     closure_home: None,
                     source_slots: Box::default(),
+                    defers: Vec::new(),
                 });
                 return Ok(Step::Continue);
             }
@@ -3807,6 +3892,7 @@ fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
                     upvalues: Box::default(),
                     closure_home: None,
                     source_slots: Box::default(),
+                    defers: Vec::new(),
                 });
                 return Ok(Step::Continue);
             }
@@ -3936,6 +4022,7 @@ fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         upvalues: Box::default(),
         closure_home: None,
         source_slots: Box::default(),
+        defers: Vec::new(),
     });
     Ok(Step::Continue)
 }
@@ -4259,6 +4346,7 @@ fn h_call_closure(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         upvalues: captured,
         closure_home: home,
         source_slots: src_slots,
+        defers: Vec::new(),
     });
     Ok(Step::Continue)
 }
@@ -4512,6 +4600,7 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
             upvalues: Box::default(),
             closure_home: None,
             source_slots: Box::default(),
+            defers: Vec::new(),
         });
         return Ok(Step::Continue);
     }
@@ -5061,6 +5150,7 @@ fn h_call_method(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         upvalues: Box::default(),
         closure_home: None,
         source_slots: Box::default(),
+        defers: Vec::new(),
     });
     Ok(Step::Continue)
 }

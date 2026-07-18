@@ -54,6 +54,17 @@ pub enum Op {
     /// top-level `return;` at program scope emits `Return`; a
     /// `return;` inside a `fn` body emits `ReturnFromCall`.
     ReturnFromCall,
+    /// RES-4119: register a `defer <expr>;` call. `idx` names the
+    /// synthesized defer-thunk function (`compiler::build_defer_function`)
+    /// that evaluates `<expr>` — pushed as-is onto the *current frame's*
+    /// defer stack (`vm::CallFrame::defers`). `Op::ReturnFromCall` drains
+    /// this stack in LIFO order, reading the thunk's args from the
+    /// frame's *live* locals at drain time (not a snapshot taken here) —
+    /// mirrors the tree-walking interpreter's `Node::DeferStatement` eval
+    /// arm, whose "captured environment" is `Rc<RefCell<..>>`-shared with
+    /// the live one, so later reassignments are visible to the deferred
+    /// call.
+    DeferPush(u16),
     /// RES-083: unconditional relative jump. The target PC is
     /// `(pc_after_this_op) + offset`; positive offsets jump forward,
     /// negative offsets loop backward.

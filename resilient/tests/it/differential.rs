@@ -369,20 +369,22 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // tree-walker's `crate::quantifiers::eval_quantifier` exactly for both
     // the bounded-range and iterable forms. No longer belong here.
     //
-    // `defer_stmt.rz` uses `defer <expr>;` (`Node::DeferStatement`), which
-    // has no bytecode-compile arm (`<other>` catch-all). The tree-walker
-    // maintains a `defer_stack: Vec<(Node, Environment)>` on `Interpreter`,
-    // pushes `(expr, captured_env)` at each `defer` site, and drains it in
-    // LIFO order at the function-call boundary (both the implicit
-    // end-of-body path and every early `return`), regardless of whether the
-    // body succeeded or failed. The VM has no equivalent call-frame-scoped
-    // defer stack or return-path hook — adding one needs `CallFrame` to
-    // carry a per-frame deferred-bytecode list and every exit path
-    // (`Op::Return`, `Op::ReturnFromCall`, and the `TryUnwrap`/
-    // `ContractViolation` early-return paths) to drain it, in both dispatch
-    // engines. Split off #4060 into #4119 (defer-only) once the quantifier
-    // half shipped; not attempted here, left for #4119.
-    "defer_stmt.rz",
+    // RES-4119: `defer_stmt.rz` (`defer <expr>;` / `Node::DeferStatement`)
+    // is fixed — `CallFrame` (`vm.rs`) now carries a per-frame `defers:
+    // Vec<u16>` stack of synthesized defer-thunk functions
+    // (`compiler::build_defer_function`), registered by `Op::DeferPush`
+    // and drained LIFO by every `Op::ReturnFromCall` (covering both the
+    // implicit end-of-body path and early `return`, since both compile to
+    // that same op), matching the tree-walker's `defer_stack` exactly —
+    // including that `Environment` is `Rc<RefCell<..>>`-shared, so
+    // reassignments between the `defer` site and the function's exit are
+    // visible to the deferred call (the VM mirrors this by reading args
+    // from the frame's *live* locals at drain time, not a snapshot). Only
+    // the default Match dispatch engine (`run_inner`) implements this —
+    // `RESILIENT_DISPATCH=direct` surfaces a clean `Unsupported` error,
+    // same scope cut as the existing live-block/static-let gaps. No
+    // longer belongs here.
+    //
     // RES-4017 (split off from RES-3994; that ticket closed once every
     // sub-case had a home — see PR #4016): the `Op::CallMethod`
     // built-in-container-fallback / closure-invocation slice of this
