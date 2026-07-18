@@ -169,13 +169,16 @@ jobs:
             #
             # Every check in that list must be SUCCESS for the merge
             # to fire; non-required checks are advisory only.
-            failed=$(echo "$info" | jq -r '
-              [.statusCheckRollup[]
-                | select(.name | test("diff-shape guardrail") | not)
-                | select(.name | test("fib\\(25\\) medians") | not)
-                | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == null)
-                | (.name + "=" + (.conclusion // "PENDING"))
-              ] | join(" | ")')
+            #
+            # RES-4125: statusCheckRollup can contain multiple runs of
+            # the same check name on one head SHA (e.g. a CANCELLED run
+            # from before the PR was marked ready, superseded by a later
+            # SUCCESS run). Dedupe to the latest run per name first —
+            # see agent-scripts/filter-required-checks.sh — so a stale
+            # CANCELLED run doesn't permanently block a clean PR
+            # (observed on PR #4124).
+            failed=$(echo "$info" | jq -c '.statusCheckRollup' \
+              | agent-scripts/filter-required-checks.sh)
 
             if [[ -n "$failed" ]]; then
               echo "  checks not clean: $failed"
