@@ -30930,21 +30930,25 @@ fn execute_file(
             let jit_program = monomorph::lower(&program);
             // RES-2605: devirtualize after monomorphization.
             let jit_program = devirtualize::lower(&jit_program);
-            match jit_backend::run(&jit_program) {
-                Ok(result) => {
-                    // Note (RES-4134): printing the top-level return
-                    // value here diverges from the walker/VM, which
-                    // never auto-print one (RES-3991). It's pinned by
-                    // the `bytecode_jit_runs_*` tests in
-                    // `tests/it/examples_smoke.rs`, so it stays; the
-                    // divergence is only observable for programs with
-                    // an explicit top-level `return` (which the JIT
-                    // requires and the example corpus never uses —
-                    // everything else VM-falls-back on `EmptyProgram`
-                    // first). Revisit alongside the top-level
-                    // fallthrough follow-up documented in
-                    // benchmarks/jit_startup/RESULTS.md.
-                    println!("{}", result);
+            match jit_backend::run_with_explicit_return_flag(&jit_program) {
+                Ok((result, had_explicit_return)) => {
+                    // Note (RES-4134 / RES-4153): printing the
+                    // top-level return value here diverges from the
+                    // walker/VM, which never auto-print one
+                    // (RES-3991) — pinned by the `bytecode_jit_runs_*`
+                    // tests in `tests/it/examples_smoke.rs` for
+                    // programs with an explicit top-level `return`.
+                    // RES-4153 made top-level fallthrough (the
+                    // `fn main() { ... } main();` shape the example
+                    // corpus universally uses) compile natively via an
+                    // implicit `return 0` instead of always
+                    // VM-falling-back on `EmptyProgram`, so this must
+                    // only print for an explicit `return` — printing
+                    // the synthesized placeholder would diverge from
+                    // every other backend on every corpus example.
+                    if had_explicit_return {
+                        println!("{}", result);
+                    }
                     if !no_cache {
                         cache::write_entry(&cache_dir, &source_hash);
                     }

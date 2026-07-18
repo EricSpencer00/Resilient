@@ -97,6 +97,31 @@ struct LowerCtx {
     /// RES-380: import `FuncId`s for `res_array_*` / `res_jit_*`
     /// shims declared once per `JITModule`.
     imports: JitRuntimeImports,
+    /// RES-4153: program-wide map of user function name → its declared
+    /// `-> TYPE` return-type annotation's static `ValueKind`. Populated
+    /// in Pass 1 alongside `functions`/`function_arities`. Used by
+    /// `static_kind` to resolve a `CallExpression`'s result kind at a
+    /// `println`/`print`/`to_string`/arithmetic call site, since the
+    /// raw i64 JIT representation can't otherwise distinguish a bare
+    /// `0`/`1` int from `false`/`true` (RES-100), or a plain int add
+    /// from a float/string one (both booleans and floats/strings need
+    /// non-`iadd` handling at some call sites — see `is_bool_expr`
+    /// and the `InfixExpression` arithmetic dispatch).
+    function_kind: HashMap<String, ValueKind>,
+    /// RES-4153: locals (including function parameters) currently
+    /// known to have a statically-determined `ValueKind`, keyed by
+    /// name. Populated wherever a `let`/parameter binding's static
+    /// kind is known via `static_kind`/parameter-type text. Shadowing
+    /// a previous binding overwrites the entry, matching `locals`.
+    local_kind: HashMap<String, ValueKind>,
+    /// RES-4153: for locals bound directly to a `StructLiteral`
+    /// (`let p = new Pair { first: ..., second: true };`), the field
+    /// name → static `ValueKind` map taken from that literal's field
+    /// expressions. Lets `static_kind` resolve `p.second` in later
+    /// `FieldAccess` reads without a full struct-type-table (best
+    /// effort: only covers locals bound straight to a literal, not
+    /// ones passed through a function call or reassigned).
+    local_struct_fields: HashMap<String, HashMap<String, ValueKind>>,
 }
 
 impl LowerCtx {
@@ -114,6 +139,9 @@ impl LowerCtx {
             #[cfg(feature = "ffi")]
             foreign_entries: Vec::new(),
             imports,
+            function_kind: HashMap::new(),
+            local_kind: HashMap::new(),
+            local_struct_fields: HashMap::new(),
         }
     }
 
@@ -131,6 +159,161 @@ impl LowerCtx {
 
     fn lookup(&self, name: &str) -> Option<Variable> {
         self.locals.get(name).copied()
+    }
+
+    /// RES-4153: record local `name`'s statically-determined
+    /// `ValueKind`. Called at every `let`/parameter binding site
+    /// alongside `declare` so `static_kind` can resolve `Identifier`
+    /// reads later in the body.
+    fn set_local_kind(&mut self, name: &str, kind: ValueKind) {
+        self.local_kind.insert(name.to_string(), kind);
+    }
+
+    fn local_kind_of(&self, name: &str) -> ValueKind {
+        self.local_kind
+            .get(name)
+            .copied()
+            .unwrap_or(ValueKind::Unknown)
+    }
+
+    /// RES-4153: record the field→kind map for a local bound directly
+    /// to a `StructLiteral`. A previous entry (e.g. from shadowing) is
+    /// simply overwritten, matching `local_kind`/`locals`.
+    fn set_local_struct_fields(&mut self, name: &str, fields: HashMap<String, ValueKind>) {
+        self.local_struct_fields.insert(name.to_string(), fields);
+    }
+
+    fn local_field_kind(&self, name: &str, field: &str) -> ValueKind {
+        self.local_struct_fields
+            .get(name)
+            .and_then(|fields| fields.get(field))
+            .copied()
+            .unwrap_or(ValueKind::Unknown)
+    }
+}
+
+/// RES-4153: a best-effort static classification of an expression's
+/// runtime tag, used only to pick the correct display/arithmetic shim
+/// at lowering time — never to change how a value is computed or
+/// stored. A `ValueKind::Unknown` result is always safe: it just keeps
+/// whatever the existing (tag-based, or plain `iadd`-family) handling
+/// already does, which is correct for every case this analysis doesn't
+/// specifically improve on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueKind {
+    Int,
+    Bool,
+    Float,
+    String,
+    Unknown,
+}
+
+/// RES-4153: classify a parameter/return-type annotation string.
+/// Mirrors the alias sets the typechecker accepts (RES-2719:
+/// `typechecker.rs`'s `"bool" | "Bool" | "boolean" => Type::Bool`, and
+/// the analogous `String`/`str` and `float`/`double` aliases).
+fn type_text_to_kind(ty: &str) -> ValueKind {
+    match ty {
+        "bool" | "Bool" | "boolean" => ValueKind::Bool,
+        "String" | "str" => ValueKind::String,
+        "float" | "Float" | "double" => ValueKind::Float,
+        _ => ValueKind::Unknown,
+    }
+}
+
+/// RES-4153: best-effort static `ValueKind` of `node`. See `ValueKind`
+/// for the safety contract — `Unknown` is always a safe fallback.
+fn static_kind(node: &Node, ctx: &LowerCtx) -> ValueKind {
+    match node {
+        Node::BooleanLiteral { .. } => ValueKind::Bool,
+        Node::IntegerLiteral { .. } => ValueKind::Int,
+        Node::FloatLiteral { .. } => ValueKind::Float,
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => ValueKind::String,
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
+            if *operator == "!" {
+                ValueKind::Bool
+            } else {
+                static_kind(right, ctx)
+            }
+        }
+        Node::InfixExpression {
+            operator,
+            left,
+            right,
+            ..
+        } => match *operator {
+            "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" => ValueKind::Bool,
+            "+" => {
+                let (lk, rk) = (static_kind(left, ctx), static_kind(right, ctx));
+                if lk == ValueKind::String || rk == ValueKind::String {
+                    ValueKind::String
+                } else if lk == ValueKind::Float || rk == ValueKind::Float {
+                    ValueKind::Float
+                } else {
+                    ValueKind::Int
+                }
+            }
+            "-" | "*" | "/" | "%" => {
+                let (lk, rk) = (static_kind(left, ctx), static_kind(right, ctx));
+                if lk == ValueKind::Float || rk == ValueKind::Float {
+                    ValueKind::Float
+                } else {
+                    ValueKind::Int
+                }
+            }
+            _ => ValueKind::Unknown,
+        },
+        Node::Identifier { name, .. } => ctx.local_kind_of(name),
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => ctx
+                .function_kind
+                .get(name)
+                .copied()
+                .unwrap_or(ValueKind::Unknown),
+            // RES-4153: method call (`recv.method(args)`, including
+            // primitive-type `impl` blocks like `impl int { fn is_even
+            // (self) -> bool ... }`). Mirrors the mangled-name lookup
+            // `lower_expr`'s `CallExpression` arm uses to resolve the
+            // callee: search for any declared function keyed
+            // `"...${field}"` and use its declared return kind.
+            Node::FieldAccess { field, .. } => ctx
+                .function_kind
+                .iter()
+                .find(|(k, _)| k.ends_with(&format!("${field}")))
+                .map(|(_, kind)| *kind)
+                .unwrap_or(ValueKind::Unknown),
+            _ => ValueKind::Unknown,
+        },
+        Node::FieldAccess { target, field, .. } => match target.as_ref() {
+            Node::Identifier { name, .. } => ctx.local_field_kind(name, field),
+            _ => ValueKind::Unknown,
+        },
+        _ => ValueKind::Unknown,
+    }
+}
+
+/// RES-4153: is `node` statically a `bool`? Thin wrapper over
+/// `static_kind` for call sites (`println`/`print`/`to_string`) that
+/// only care about the bool/non-bool distinction.
+fn is_bool_expr(node: &Node, ctx: &LowerCtx) -> bool {
+    static_kind(node, ctx) == ValueKind::Bool
+}
+
+/// RES-4153: if `value` is a `StructLiteral`, compute its field →
+/// static-kind map (for `LowerCtx::set_local_struct_fields`, so a
+/// later `FieldAccess` on the bound local can resolve its kind).
+/// Returns `None` for every other expression shape.
+fn struct_literal_field_kinds(value: &Node, ctx: &LowerCtx) -> Option<HashMap<String, ValueKind>> {
+    match value {
+        Node::StructLiteral { fields, .. } => Some(
+            fields
+                .iter()
+                .map(|(name, expr)| (name.clone(), static_kind(expr, ctx)))
+                .collect(),
+        ),
+        _ => None,
     }
 }
 
@@ -211,6 +394,26 @@ fn has_disqualifying_construct(n: &Node) -> bool {
         | Node::IndexExpression { .. }
         | Node::IndexAssignment { .. }
         | Node::ArrayLiteral { .. } => true,
+        // RES-4153: `try_lower_inline_call` lowers from
+        // `ctx.fn_asts.get(&callee_name).cloned()` — an owned clone
+        // that's a local temporary living only for this call site's
+        // lowering, not the process's whole JIT invocation. String
+        // and float literals lower to a Cranelift `iconst` holding a
+        // raw pointer into that literal's backing bytes
+        // (`value.as_ptr()`/`content.as_ptr()`); once the temporary
+        // clone drops (immediately after this call returns), that
+        // pointer is dangling, and the already-compiled machine code
+        // reads freed memory when later invoked — the exact class of
+        // corruption RES-4153 traced back from a string printing as a
+        // raw pointer. A non-inlined call instead lowers from the
+        // stable per-function AST reference `compile_function` was
+        // given directly (borrowed from the program's own tree, kept
+        // alive for the whole JIT run), so disqualifying these
+        // literals from inlining — falling back to a regular call —
+        // is the safe fix rather than reworking `fn_asts`'s ownership.
+        Node::StringLiteral { .. }
+        | Node::StringInternLiteral { .. }
+        | Node::FloatLiteral { .. } => true,
         Node::PrefixExpression { right, .. } => has_disqualifying_construct(right),
         Node::InfixExpression { left, right, .. } => {
             has_disqualifying_construct(left) || has_disqualifying_construct(right)
@@ -762,6 +965,15 @@ pub(crate) struct JitRuntimeImports {
     pub res_jit_print: FuncId,
     pub res_jit_value_eq: FuncId,
     pub res_jit_value_ne: FuncId,
+    /// RES-4153: boolean-aware display shims. `println`/`print`
+    /// lower a raw untagged 0/1 i64 the same way whether it came from
+    /// a `BooleanLiteral`, a comparison, or an int — `jit_value_display`
+    /// can't tell them apart (RES-100). When `is_bool_expr` determines
+    /// the argument is statically boolean, the call site routes through
+    /// these instead so the payload is interpreted as `true`/`false`.
+    pub res_jit_println_bool: FuncId,
+    pub res_jit_print_bool: FuncId,
+    pub res_jit_bool_to_string: FuncId,
 }
 
 fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImports, JitError> {
@@ -869,6 +1081,9 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
     let res_jit_map_len = decl_import!("res_jit_map_len", sig1r);
     let res_jit_println = decl_import!("res_jit_println", sig1r);
     let res_jit_print = decl_import!("res_jit_print", sig1r);
+    let res_jit_println_bool = decl_import!("res_jit_println_bool", sig1r);
+    let res_jit_print_bool = decl_import!("res_jit_print_bool", sig1r);
+    let res_jit_bool_to_string = decl_import!("res_jit_bool_to_string", sig1r);
     let res_jit_struct_get_name = decl_import!("res_jit_struct_get_name", sig1r);
 
     // sig2r: (i64, i64) -> i64
@@ -955,6 +1170,9 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_jit_print,
         res_jit_value_eq,
         res_jit_value_ne,
+        res_jit_println_bool,
+        res_jit_print_bool,
+        res_jit_bool_to_string,
     })
 }
 
@@ -1471,7 +1689,7 @@ fn register_jit_builtin_symbols(builder: &mut JITBuilder) {
 ///   Pass 2: compile each function body using compile_function,
 ///           plus the program's top-level non-function
 ///           statements as `main`.
-fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
+fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
     let stmts = match program {
         Node::Program(s) => s,
         _ => return Err(JitError::Unsupported("non-Program root")),
@@ -1495,6 +1713,8 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     // function's body for Pass 2.
     let mut functions: HashMap<String, FuncId> = HashMap::new();
     let mut function_arities: HashMap<String, usize> = HashMap::new();
+    // RES-4153: name → declared return type resolves to bool.
+    let mut function_kind: HashMap<String, ValueKind> = HashMap::new();
     // RES-175: per-name AST map so the leaf-fn inliner can
     // re-lower a callee's body at each qualifying call site.
     let mut fn_asts: HashMap<String, (Vec<(String, String)>, Node)> = HashMap::new();
@@ -1540,6 +1760,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
             body,
             requires,
             ensures,
+            return_type,
             ..
         } = fn_node
         {
@@ -1554,6 +1775,13 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
             fn_asts.insert(
                 effective_name.clone(),
                 (parameters.clone(), (**body).clone()),
+            );
+            function_kind.insert(
+                effective_name.clone(),
+                return_type
+                    .as_deref()
+                    .map(type_text_to_kind)
+                    .unwrap_or(ValueKind::Unknown),
             );
             let h = fn_hash(parameters, requires, ensures, body);
             if let Some(existing) = cache.map.get(&h).copied() {
@@ -1608,6 +1836,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
                 &functions,
                 &function_arities,
                 &fn_asts,
+                &function_kind,
                 imports,
                 &mut module,
             )?;
@@ -1630,6 +1859,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     let mut ctx = module.make_context();
     ctx.func.signature = main_sig;
     let mut builder_ctx = FunctionBuilderContext::new();
+    let had_explicit_return;
     {
         let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let entry = bcx.create_block();
@@ -1649,7 +1879,15 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
         lctx.functions = functions;
         lctx.function_arities = function_arities;
         lctx.fn_asts = fn_asts;
-        compile_statements(stmts, &mut bcx, &mut lctx, &mut module)?;
+        lctx.function_kind = function_kind;
+        let allow_implicit_return = !program_has_unsound_native_fallthrough_construct(stmts);
+        had_explicit_return = compile_statements(
+            stmts,
+            &mut bcx,
+            &mut lctx,
+            &mut module,
+            allow_implicit_return,
+        )?;
         bcx.finalize();
     }
 
@@ -1687,7 +1925,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     // from `lib.rs` at exit. Counters are relaxed-atomic — no
     // synchronization semantics, just diagnostic accumulation.
     flush_cache_stats_to_globals(&cache);
-    Ok((result, cache))
+    Ok((result, had_explicit_return, cache))
 }
 
 /// Public `run()` — discards the per-run cache after folding its
@@ -1695,7 +1933,18 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
 /// the examples_smoke harness, the rest of the test suite) go
 /// through this path.
 pub fn run(program: &Node) -> Result<i64, JitError> {
-    run_internal(program).map(|(v, _)| v)
+    run_internal(program).map(|(v, _, _)| v)
+}
+
+/// RES-4153: like `run`, but also reports whether the program had an
+/// explicit top-level `return` — the CLI's `--jit` path needs this to
+/// decide whether to print the return value (RES-4134's divergence
+/// note): a synthesized implicit `return 0` for the fallthrough
+/// `fn main() { ... } main();` shape must stay silent, matching the
+/// walker/VM (RES-3991), while an explicit top-level `return`'s value
+/// still prints as before.
+pub fn run_with_explicit_return_flag(program: &Node) -> Result<(i64, bool), JitError> {
+    run_internal(program).map(|(v, explicit, _)| (v, explicit))
 }
 
 /// RES-174: test hook — run the program and return the per-run
@@ -1705,7 +1954,7 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
 /// test execution doesn't pollute the delta.
 #[cfg(test)]
 pub(crate) fn run_with_stats(program: &Node) -> Result<(i64, u32, u32, u32), JitError> {
-    let (result, cache) = run_internal(program)?;
+    let (result, _explicit, cache) = run_internal(program)?;
     Ok((result, cache.hits, cache.misses, cache.compiles))
 }
 
@@ -1756,6 +2005,7 @@ pub(crate) fn jit_run_ast_with_entries(
     // ---------- Pass 1: declare user-defined functions ----------
     let mut functions: HashMap<String, FuncId> = HashMap::new();
     let mut function_arities: HashMap<String, usize> = HashMap::new();
+    let mut function_kind: HashMap<String, ValueKind> = HashMap::new();
     let mut fn_asts: HashMap<String, (Vec<(String, String)>, Node)> = HashMap::new();
     let mut primaries: Vec<String> = Vec::new();
     for spanned in stmts {
@@ -1765,10 +2015,18 @@ pub(crate) fn jit_run_ast_with_entries(
             body,
             requires,
             ensures,
+            return_type,
             ..
         } = &spanned.node
         {
             fn_asts.insert(name.clone(), (parameters.clone(), (**body).clone()));
+            function_kind.insert(
+                name.clone(),
+                return_type
+                    .as_deref()
+                    .map(type_text_to_kind)
+                    .unwrap_or(ValueKind::Unknown),
+            );
             let h = fn_hash(parameters, requires, ensures, body);
             if let Some(existing) = cache.map.get(&h).copied() {
                 cache.hits += 1;
@@ -1813,6 +2071,7 @@ pub(crate) fn jit_run_ast_with_entries(
                 &functions,
                 &function_arities,
                 &fn_asts,
+                &function_kind,
                 &foreign_entries,
                 imports,
                 &mut module,
@@ -1848,7 +2107,15 @@ pub(crate) fn jit_run_ast_with_entries(
         lctx.function_arities = function_arities;
         lctx.fn_asts = fn_asts;
         lctx.foreign_entries = foreign_entries;
-        compile_statements(stmts, &mut bcx, &mut lctx, &mut module)?;
+        lctx.function_kind = function_kind;
+        let allow_implicit_return = !program_has_unsound_native_fallthrough_construct(stmts);
+        compile_statements(
+            stmts,
+            &mut bcx,
+            &mut lctx,
+            &mut module,
+            allow_implicit_return,
+        )?;
         bcx.finalize();
     }
 
@@ -1890,6 +2157,7 @@ fn compile_function_with_ffi(
     functions: &HashMap<String, FuncId>,
     function_arities: &HashMap<String, usize>,
     fn_asts: &FnAstMap,
+    function_kind: &HashMap<String, ValueKind>,
     foreign_entries: &[ForeignJitEntry],
     imports: JitRuntimeImports,
     module: &mut JITModule,
@@ -1915,10 +2183,12 @@ fn compile_function_with_ffi(
         lctx.function_arities = function_arities.clone();
         lctx.fn_asts = fn_asts.clone();
         lctx.foreign_entries = foreign_entries.to_vec();
+        lctx.function_kind = function_kind.clone();
         let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
         let mut param_vars: Vec<Variable> = Vec::with_capacity(parameters.len());
-        for ((_ty, name), pval) in parameters.iter().zip(block_params.iter()) {
+        for ((ty, name), pval) in parameters.iter().zip(block_params.iter()) {
             let var = lctx.declare(name, &mut bcx);
+            lctx.set_local_kind(name, type_text_to_kind(ty));
             bcx.def_var(var, *pval);
             param_vars.push(var);
         }
@@ -1974,6 +2244,7 @@ fn compile_function(
     functions: &HashMap<String, FuncId>,
     function_arities: &HashMap<String, usize>,
     fn_asts: &FnAstMap,
+    function_kind: &HashMap<String, ValueKind>,
     imports: JitRuntimeImports,
     module: &mut JITModule,
 ) -> Result<(), JitError> {
@@ -2005,12 +2276,14 @@ fn compile_function(
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
         lctx.fn_asts = fn_asts.clone();
+        lctx.function_kind = function_kind.clone();
         // parameters: Vec<(String, String)> — (type, name) per
         // the AST. Name is the second element.
         let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
         let mut param_vars: Vec<Variable> = Vec::with_capacity(parameters.len());
-        for ((_ty, name), pval) in parameters.iter().zip(block_params.iter()) {
+        for ((ty, name), pval) in parameters.iter().zip(block_params.iter()) {
             let var = lctx.declare(name, &mut bcx);
+            lctx.set_local_kind(name, type_text_to_kind(ty));
             bcx.def_var(var, *pval);
             param_vars.push(var);
         }
@@ -2205,6 +2478,88 @@ fn try_lower_tail_call(
     Ok(true)
 }
 
+/// RES-4153: conservative whole-program scan gating the implicit
+/// `return 0` top-level-fallthrough path in `compile_statements`.
+///
+/// Enabling native fallthrough surfaced several pre-existing, unrelated
+/// JIT-lowering correctness gaps that were previously unreachable
+/// because every corpus example took the `EmptyProgram` → VM-fallback
+/// path first:
+///   - `Node::Match` — the differential corpus showed match arms
+///     resolving to the wrong branch under native execution.
+///   - `Node::IndexExpression` / `Node::IndexAssignment` — negative
+///     indices (a supported, VM-correct feature — RES-2731/RES-921)
+///     misbehave or abort natively.
+///   - an `impl <Trait> for T` block naming an arithmetic operator
+///     trait (`Add`/`Sub`/`Mul`/`Div`) — operator-overload dispatch on
+///     a struct hits the plain-`iadd`-family arithmetic path (structs
+///     are heap-tagged pointers, not raw ints) and corrupts data or
+///     crashes.
+///
+/// None of these are what RES-4153 set out to fix (bool/string value
+/// display); each is its own follow-up. Per repo policy ("anything
+/// that diverges must fall back to VM, not denylist"), a program that
+/// reaches any of them keeps raising `EmptyProgram` from
+/// `compile_statements` so it transparently VM-falls-back instead of
+/// running natively with a wrong answer. This is intentionally coarse
+/// (whole-program, not reachability-from-main) — correctness over
+/// maximizing the coverage number.
+fn program_has_unsound_native_fallthrough_construct(stmts: &[crate::Spanned<Node>]) -> bool {
+    fn node_is_unsound(n: &Node) -> bool {
+        match n {
+            Node::Match { .. } | Node::IndexExpression { .. } | Node::IndexAssignment { .. } => {
+                true
+            }
+            Node::ImplBlock { trait_name, .. } => trait_name
+                .as_deref()
+                .is_some_and(|t| matches!(t, "Add" | "Sub" | "Mul" | "Div")),
+            Node::PrefixExpression { right, .. } => node_is_unsound(right),
+            Node::InfixExpression { left, right, .. } => {
+                node_is_unsound(left) || node_is_unsound(right)
+            }
+            Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => node_is_unsound(function) || arguments.iter().any(node_is_unsound),
+            Node::ReturnStatement { value, .. } => {
+                value.as_ref().is_some_and(|v| node_is_unsound(v))
+            }
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
+                node_is_unsound(condition)
+                    || node_is_unsound(consequence)
+                    || alternative.as_ref().is_some_and(|a| node_is_unsound(a))
+            }
+            Node::WhileStatement {
+                condition, body, ..
+            } => node_is_unsound(condition) || node_is_unsound(body),
+            Node::ForInStatement { iterable, body, .. } => {
+                node_is_unsound(iterable) || node_is_unsound(body)
+            }
+            Node::LetStatement { value, .. }
+            | Node::StaticLet { value, .. }
+            | Node::Assignment { value, .. } => node_is_unsound(value),
+            Node::ExpressionStatement { expr, .. } => node_is_unsound(expr),
+            Node::Block { stmts, .. } => stmts.iter().any(node_is_unsound),
+            Node::Function { body, .. } => node_is_unsound(body),
+            Node::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| node_is_unsound(v)),
+            Node::NewtypeConstruct { value, .. } => node_is_unsound(value),
+            _ => false,
+        }
+    }
+    stmts.iter().any(|s| match &s.node {
+        Node::ImplBlock { methods, .. } => {
+            node_is_unsound(&s.node) || methods.iter().any(node_is_unsound)
+        }
+        other => node_is_unsound(other),
+    })
+}
+
 /// RES-102 + RES-103: walk a slice of top-level statements and
 /// emit Cranelift instructions including the function's `return_`.
 ///
@@ -2219,12 +2574,21 @@ fn try_lower_tail_call(
 ///    without ever emitting a return, compile_statements raises
 ///    `EmptyProgram` ("program has no top-level return") — same
 ///    behavior as a program with no return statement at all.
+///
+/// Returns `Ok(true)` when the program had an explicit top-level
+/// `return` (the caller's return value is meaningful and should be
+/// surfaced), `Ok(false)` when the walk fell through and this
+/// function synthesized the implicit `return 0` (the caller's return
+/// value is a synthetic placeholder — RES-3991: the walker/VM never
+/// print a return value for the `fn main() { ... } main();` shape, so
+/// callers must not either).
 fn compile_statements(
     stmts: &[crate::Spanned<Node>],
     bcx: &mut FunctionBuilder,
     ctx: &mut LowerCtx,
     module: &mut JITModule,
-) -> Result<(), JitError> {
+    allow_implicit_return: bool,
+) -> Result<bool, JitError> {
     // Top-level statements are Spanned<Node>; Block bodies are
     // raw Node. Strip the wrapper here and delegate to the shared
     // walker so the lowering logic isn't duplicated.
@@ -2244,21 +2608,29 @@ fn compile_statements(
     // benchmarks/jit_startup/coverage.sh found zero examples with a
     // top-level `return`) implicitly return 0, to match the
     // walker/VM's behavior instead of erroring `EmptyProgram` here.
-    // Reverted: flipping that gate makes the JIT actually *execute*
-    // top-level bodies that used to always precompile-fail first, and
-    // that exposed a wide, pre-existing class of value-display bugs
-    // in `jit_runtime.rs` (booleans lower to untagged raw 0/1 per
-    // RES-100, so `println`'s tag-based `jit_value_display` can't
-    // distinguish a bool from a small int; likewise several
-    // string/struct paths) that need their own fix first. See the PR
-    // discussion for RES-4134 for the follow-up ticket. Left as
-    // `EmptyProgram` for now — safe (transparent VM fallback) but
-    // means top-level fallthrough programs stay off native lowering
-    // until that follow-up lands.
+    // That attempt was reverted because flipping the gate made the
+    // JIT actually *execute* top-level bodies that used to always
+    // precompile-fail first, surfacing a class of value-display bugs:
+    // booleans lower to untagged raw 0/1 (RES-100), and
+    // `jit_value_display` couldn't tell a bare `0`/`1` int from
+    // `false`/`true`. RES-4153 fixed that (see `is_bool_expr` +
+    // `res_jit_*_bool` shims above, which route `println`/`print`/
+    // `to_string` through a boolean-aware display path whenever the
+    // static AST shape says the argument is a bool), so it's now safe
+    // to lower top-level fallthrough to an implicit `return 0` and
+    // match the walker/VM's behavior. The caller (`run_internal`)
+    // uses the `bool` returned here to decide whether the CLI's
+    // `println!("{}", result)` (RES-4134's divergence note, pinned by
+    // `bytecode_jit_runs_*`) applies — it must not fire for the
+    // synthesized implicit return, only for a real top-level `return`.
     if !returned {
-        return Err(JitError::EmptyProgram);
+        if !allow_implicit_return {
+            return Err(JitError::EmptyProgram);
+        }
+        let zero = bcx.ins().iconst(types::I64, 0);
+        bcx.ins().return_(&[zero]);
     }
-    Ok(())
+    Ok(returned)
 }
 
 /// Walks a slice of statement nodes and emits cranelift
@@ -2326,8 +2698,14 @@ fn compile_node_list(
             // identifier reads via lower_expr will use_var the
             // same Variable.
             Node::LetStatement { name, value, .. } => {
+                let kind = static_kind(value, ctx);
+                let struct_fields = struct_literal_field_kinds(value, ctx);
                 let v = lower_expr(value, bcx, ctx, module)?;
                 let var = ctx.declare(name, bcx);
+                ctx.set_local_kind(name, kind);
+                if let Some(fields) = struct_fields {
+                    ctx.set_local_struct_fields(name, fields);
+                }
                 bcx.def_var(var, v);
                 continue;
             }
@@ -2342,7 +2720,13 @@ fn compile_node_list(
                         "reassignment of undeclared identifier",
                     ));
                 };
+                let kind = static_kind(value, ctx);
+                let struct_fields = struct_literal_field_kinds(value, ctx);
                 let v = lower_expr(value, bcx, ctx, module)?;
+                ctx.set_local_kind(name, kind);
+                if let Some(fields) = struct_fields {
+                    ctx.set_local_struct_fields(name, fields);
+                }
                 bcx.def_var(var, v);
                 continue;
             }
@@ -2729,8 +3113,14 @@ fn lower_block_or_stmt(
         }
         // RES-jit: let binding
         Node::LetStatement { name, value, .. } => {
+            let kind = static_kind(value, ctx);
+            let struct_fields = struct_literal_field_kinds(value, ctx);
             let v = lower_expr(value, bcx, ctx, module)?;
             let var = ctx.declare(name, bcx);
+            ctx.set_local_kind(name, kind);
+            if let Some(fields) = struct_fields {
+                ctx.set_local_struct_fields(name, fields);
+            }
             bcx.def_var(var, v);
             Ok(false)
         }
@@ -2741,7 +3131,13 @@ fn lower_block_or_stmt(
                     "reassignment of undeclared identifier",
                 ));
             };
+            let kind = static_kind(value, ctx);
+            let struct_fields = struct_literal_field_kinds(value, ctx);
             let v = lower_expr(value, bcx, ctx, module)?;
+            ctx.set_local_kind(name, kind);
+            if let Some(fields) = struct_fields {
+                ctx.set_local_struct_fields(name, fields);
+            }
             bcx.def_var(var, v);
             Ok(false)
         }
@@ -3034,12 +3430,23 @@ fn lower_expr(
             }
 
             // RES-jit: println / print builtins
+            // RES-4153: `is_bool_expr` is a static, AST-level check on
+            // the *un-lowered* argument — it never inspects the
+            // runtime value, so it can distinguish a real bool from an
+            // int that happens to be 0 or 1, which `jit_value_display`
+            // cannot do at runtime given the shared raw representation.
             if callee_name == "println" {
                 if arguments.len() != 1 {
                     return Err(JitError::Unsupported("println: expected 1 argument"));
                 }
+                let is_bool = is_bool_expr(&arguments[0], ctx);
                 let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
-                let fref = module.declare_func_in_func(ctx.imports.res_jit_println, bcx.func);
+                let shim = if is_bool {
+                    ctx.imports.res_jit_println_bool
+                } else {
+                    ctx.imports.res_jit_println
+                };
+                let fref = module.declare_func_in_func(shim, bcx.func);
                 let call = bcx.ins().call(fref, &[arg]);
                 return Ok(bcx.inst_results(call)[0]);
             }
@@ -3047,8 +3454,14 @@ fn lower_expr(
                 if arguments.len() != 1 {
                     return Err(JitError::Unsupported("print: expected 1 argument"));
                 }
+                let is_bool = is_bool_expr(&arguments[0], ctx);
                 let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
-                let fref = module.declare_func_in_func(ctx.imports.res_jit_print, bcx.func);
+                let shim = if is_bool {
+                    ctx.imports.res_jit_print_bool
+                } else {
+                    ctx.imports.res_jit_print
+                };
+                let fref = module.declare_func_in_func(shim, bcx.func);
                 let call = bcx.ins().call(fref, &[arg]);
                 return Ok(bcx.inst_results(call)[0]);
             }
@@ -3056,9 +3469,14 @@ fn lower_expr(
                 if arguments.len() != 1 {
                     return Err(JitError::Unsupported("to_string: expected 1 argument"));
                 }
+                let is_bool = is_bool_expr(&arguments[0], ctx);
                 let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
-                let fref =
-                    module.declare_func_in_func(ctx.imports.res_jit_value_to_string, bcx.func);
+                let shim = if is_bool {
+                    ctx.imports.res_jit_bool_to_string
+                } else {
+                    ctx.imports.res_jit_value_to_string
+                };
+                let fref = module.declare_func_in_func(shim, bcx.func);
                 let call = bcx.ins().call(fref, &[arg]);
                 return Ok(bcx.inst_results(call)[0]);
             }
@@ -3159,8 +3577,49 @@ fn lower_expr(
                     "infix operator other than +,-,*,/,%,==,!=,<,<=,>,>=",
                 ));
             }
+            // RES-4153: `static_kind` on the un-lowered operands picks
+            // the right shim for `+`/`-`/`*`/`/`/`%` when either side
+            // is statically a `String` or `Float` — both are
+            // heap-tagged i64 values (RES-jit's TAG_STRING/TAG_FLOAT),
+            // so a plain `iadd`/`isub`/... on them corrupts the tag
+            // and payload bits instead of concatenating/computing.
+            // Comparisons stay on raw `icmp` — RES-100's tagged-bool
+            // and TAG_INT scheme means direct int comparison already
+            // matches the walker/VM for the operand kinds the parser
+            // actually produces at these operators.
+            let kind = if matches!(op_str, "+" | "-" | "*" | "/" | "%") {
+                let (lk, rk) = (static_kind(left, ctx), static_kind(right, ctx));
+                if op_str == "+" && (lk == ValueKind::String || rk == ValueKind::String) {
+                    ValueKind::String
+                } else if lk == ValueKind::Float || rk == ValueKind::Float {
+                    ValueKind::Float
+                } else {
+                    ValueKind::Int
+                }
+            } else {
+                ValueKind::Int
+            };
             let l = lower_expr(left, bcx, ctx, module)?;
             let r = lower_expr(right, bcx, ctx, module)?;
+            if kind == ValueKind::String {
+                debug_assert_eq!(op_str, "+", "string kind only applies to +");
+                let fref = module.declare_func_in_func(ctx.imports.res_jit_string_concat, bcx.func);
+                let call = bcx.ins().call(fref, &[l, r]);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+            if kind == ValueKind::Float {
+                let shim = match op_str {
+                    "+" => ctx.imports.res_jit_float_add,
+                    "-" => ctx.imports.res_jit_float_sub,
+                    "*" => ctx.imports.res_jit_float_mul,
+                    "/" => ctx.imports.res_jit_float_div,
+                    "%" => ctx.imports.res_jit_float_rem,
+                    _ => unreachable!("validated above"),
+                };
+                let fref = module.declare_func_in_func(shim, bcx.func);
+                let call = bcx.ins().call(fref, &[l, r]);
+                return Ok(bcx.inst_results(call)[0]);
+            }
             Ok(match op_str {
                 "+" => bcx.ins().iadd(l, r),
                 "-" => bcx.ins().isub(l, r),
@@ -4092,20 +4551,23 @@ mod tests {
     // AND has nothing after it. The function never returns.
 
     #[test]
-    fn jit_if_with_no_return_anywhere_is_empty_program() {
-        // `if (false) { let x = 1; }` — no return in either
-        // arm, no trailing statement. Function never returns,
-        // so this surfaces as EmptyProgram (same error a bare
-        // `let x = 1;` would).
+    fn jit_if_with_no_return_anywhere_implicitly_returns_zero() {
+        // `if (false) { let x = 1; }` — no return in either arm, no
+        // trailing statement. RES-4153: top-level fallthrough now
+        // implicitly returns 0, matching the walker/VM backends,
+        // instead of raising `EmptyProgram` (see `compile_statements`).
         let p = parse_program("if (1 < 2) { let x = 1; }");
-        assert_eq!(run(&p).unwrap_err(), JitError::EmptyProgram);
+        assert_eq!(run(&p).unwrap(), 0);
     }
 
     #[test]
-    fn jit_empty_program_is_clean_error() {
+    fn jit_top_level_fallthrough_implicitly_returns_zero() {
+        // RES-4153: a top-level program with no `return` at all — the
+        // `fn main() { ... } main();` shape virtually all real
+        // Resilient source uses — now compiles and implicitly returns
+        // 0 instead of raising `EmptyProgram`.
         let p = parse_program("let x = 1;");
-        let err = run(&p).unwrap_err();
-        assert_eq!(err, JitError::EmptyProgram);
+        assert_eq!(run(&p).unwrap(), 0);
     }
 
     #[test]
@@ -5692,8 +6154,14 @@ return add_two(10, 32);
         let unsupported = run(&parse_program("return undefined_var;")).unwrap_err();
         assert!(unsupported.is_precompile(), "{unsupported}");
 
-        let empty = run(&parse_program("let x = 1;")).unwrap_err();
+        // RES-4153: top-level fallthrough (`let x = 1;` alone) no
+        // longer raises `EmptyProgram` — it implicitly returns 0,
+        // matching the walker/VM. A user *function* body that falls
+        // through without a `return` still does, since `compile_function`
+        // requires an explicit terminator for non-top-level bodies.
+        let empty = run(&parse_program("fn f() { let x = 1; } f();")).unwrap_err();
         assert!(empty.is_precompile(), "{empty}");
+        assert_eq!(empty, JitError::EmptyProgram);
     }
 
     #[test]

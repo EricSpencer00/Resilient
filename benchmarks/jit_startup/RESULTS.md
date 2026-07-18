@@ -48,84 +48,73 @@ by the presence/absence of the `note: --jit fell back to the VM for
 ...` line RES-4019 emits (see that script's header for exact
 detection logic and its caveats).
 
-Current numbers (619 examples swept; 99 error out under `--verbose`'s
+Current numbers (619 examples swept; 96 error out under `--verbose`'s
 implied `--typecheck` for reasons unrelated to the JIT — deliberately
 non-type-clean examples — and are excluded from the native/fallback
 split):
 
-| | Count | % of runnable (520) |
+| | Count | % of runnable (523) |
 |---|---:|---:|
-| Native (no fallback) | 0 | 0% |
-| Fallback to VM | 520 | 100% |
+| Native (no fallback) | 24 | 3.8% |
+| Fallback to VM | 499 | 96.2% |
 
-**Still 0% — but for a different, now-diagnosed reason.** The
-original 0% headline (previous revision of this doc) blamed missing
-builtin-call lowering. That diagnosis was incomplete. This PR
-(RES-4134) fixed two real, *verified* gaps and found — but did not
-ship — the actual dominant blocker:
+**Off zero (RES-4153).** The previous revision of this doc diagnosed
+the dominant blocker as "zero examples have a top-level `return`" and
+described an attempted implicit-`return 0` fallthrough fix that had to
+be reverted because it surfaced pre-existing value-*display* bugs
+(booleans printing as `1`/`0`) and a memory-corruption bug (a string
+printing as a raw pointer). RES-4153 fixed both root causes and
+re-landed the fallthrough:
 
-1. **String-literal lowering (fixed, shipped).** Every plain `"..."`
-   literal parses to `Node::StringInternLiteral` (RES-2612 string
-   interning) — not `Node::StringLiteral`, which is what
-   `jit_backend.rs`'s `lower_expr` actually had an arm for.
-   `Node::StringLiteral` is effectively dead: the parser stopped
-   emitting it once interning landed, except via one
-   interpolation-fallback path. So any `println("...")` call's
-   *string argument* — not the call itself — was the unsupported
-   construct, independent of `println`'s call-site handling (which
-   already existed and works correctly for i64 args). Added a mirror
-   arm for `Node::StringInternLiteral`.
-2. **Two new JIT builtins (fixed, shipped): `abs_diff`, `sign`.**
-   Neither had a Cranelift shim; calling either hit
-   `jit: unsupported: call to unknown function`. Added
-   `res_jit_abs_diff`/`res_jit_sign` extern shims following the
-   existing `abs`/`min`/`max` pattern (both are total, panic-free i64
-   functions, matching the interpreter's `Value::Int` semantics for
-   each).
-3. **The actual dominant blocker (diagnosed, NOT fixed — see below):
-   zero examples in the corpus have a top-level `return`.** Every
-   example uses the `fn main() { ... } main();` shape. The JIT's
-   `compile_statements` requires an explicit top-level `return` and
-   raises `EmptyProgram` (a precompile, safe-fallback error)
-   otherwise — a structural gate that applies regardless of how much
-   of the body is otherwise natively lowerable, including after fixes
-   1 and 2 above.
+1. **Value tagging (`jit_backend.rs`'s `static_kind`/`ValueKind`).** A
+   best-effort, AST-level static classifier (`Int`/`Bool`/`Float`/
+   `String`/`Unknown`) tracked through locals, function/method return
+   types, and struct-literal fields. `println`/`print`/`to_string`
+   route through boolean-aware `res_jit_*_bool` shims
+   (`jit_runtime.rs`) whenever the argument is statically `Bool`,
+   fixing the `1`/`0` display bug without changing how booleans are
+   computed (RES-100's untagged-int representation is unchanged, so
+   arithmetic/comparisons are unaffected).
+2. **String-concat-via-`+` and float-arithmetic-via-`+`/`-`/`*`/`/`/`%`
+   dispatch.** `InfixExpression` lowering previously always emitted
+   `iadd`/`isub`/... regardless of operand type, corrupting
+   heap-tagged string/float values (e.g. `"hello " + name` produced
+   garbage). Now dispatches to `res_jit_string_concat` /
+   `res_jit_float_{add,sub,mul,div,rem}` when `static_kind` says either
+   operand is `String`/`Float`.
+3. **RES-175 leaf-inliner dangling-pointer fix.** The trivial-leaf-fn
+   inliner clones a callee's AST into a call-site-local temporary
+   before re-lowering it; a string/float literal inside that clone
+   bakes a `Cranelift iconst` pointing at the clone's bytes, which are
+   freed once the temporary drops — a genuine use-after-free that
+   produced the raw-pointer-string symptom. Fixed by disqualifying
+   bodies containing `StringLiteral`/`StringInternLiteral`/
+   `FloatLiteral` from inlining (`has_disqualifying_construct`); a
+   non-inlined call lowers from the stable, whole-run-lifetime AST
+   instead.
+4. **Implicit top-level `return 0`, gated.** `compile_statements` now
+   lowers non-terminating top-level fallthrough (the
+   `fn main() { ... } main();` shape) to an implicit `return 0`,
+   matching the walker/VM (RES-3991) — but only when
+   `program_has_unsound_native_fallthrough_construct` finds none of
+   `Match`, `IndexExpression`/`IndexAssignment` (negative-index
+   handling), or an `impl Add/Sub/Mul/Div for T` operator-overload
+   block anywhere in the program. Enabling fallthrough surfaced these
+   three as separate, pre-existing, unrelated JIT-lowering
+   correctness gaps (wrong match-arm selection, negative-index
+   mishandling, and operator-overload dispatch corrupting/crashing on
+   heap-tagged struct operands) that are each their own follow-up
+   ticket, not RES-4153's scope. Programs touching any of them keep
+   raising `EmptyProgram` and transparently VM-fall-back, per repo
+   policy ("anything that diverges must fall back to VM, not
+   denylist") — this is why coverage is 3.8%, not higher: it is
+   deliberately conservative (whole-program, not
+   reachable-from-`main`) in favor of never running natively with a
+   wrong answer.
 
-**Why the top-level-fallthrough gate isn't just flipped to 0.** This
-PR *tried* making top-level fallthrough implicitly `return 0` (to
-match the walker/VM, which both silently discard a top-level
-non-`return` result — RES-3991). Locally this raised native coverage
-from 0/520 to real double-digit percentages. But it also made the JIT
-*execute* bodies that used to always precompile-fail first, which
-surfaced a wide, pre-existing class of value-*display* bugs in
-`jit_runtime.rs`'s tagged-value scheme (`TAG_INT`/`TAG_BOOL`/
-`TAG_STRING`/`TAG_STRUCT`/...): `Node::BooleanLiteral` lowers to
-untagged raw `0`/`1` (RES-100, deliberate — arithmetic/comparison
-treat bools as plain ints), so `println`'s tag-based
-`jit_value_display` can't tell a bare `false` from the integer `0`
-once it reaches a print call; failures on the corpus sweep showed
-`true`/`false` printing as `1`/`0`, and separately a `String`-typed
-value printing as a raw pointer-sized integer for at least one example
-(`type_name_aliases.rz`) whose root cause wasn't fully isolated in
-this session. `interpreter_and_jit_agree_on_all_examples` (the
-existing differential parity test) caught every one of these — this
-PR reverted the top-level-fallthrough change rather than paper over
-real output-correctness divergences with denylist entries, since
-`UNSUPPORTED_BY_JIT` only skips the *test comparison*, not what `--jit`
-actually does at runtime for a real user. See `jit_backend.rs`'s
-`compile_statements` for the revert and its rationale comment.
-
-**Follow-up (not filed as a numbered ticket in this session, per
-project convention of noting it here since #4134 owns "native
-lowering remainder"):** fix the JIT's value-tagging so every literal
-kind (starting with `Node::BooleanLiteral`) that can reach a
-`println`/`to_string`/generic-equality call site carries a runtime tag
-consistent with `jit_runtime.rs`'s scheme, then re-attempt the
-top-level-fallthrough fix. That combination is what actually moves
-this number off zero for the real corpus — either change alone either
-regresses correctness (fallthrough without tag fixes) or doesn't move
-the metric (tag fixes without fallthrough, since `EmptyProgram` still
-gates every example first).
+`interpreter_and_jit_agree_on_all_examples` (the differential parity
+test) is green with zero denylist additions — every one of the bugs
+above was root-caused and fixed rather than papered over.
 
 ## Reproducing
 
