@@ -30377,8 +30377,14 @@ fn backend_limited_feature_message(
     message
 }
 
+// RES-4145: these "stable path" strings are only quoted from the
+// `#[cfg(not(feature = "z3"))]` backend-limited-message call sites below;
+// under `--features z3` nothing references them.
+#[cfg(not(feature = "z3"))]
 const DEFAULT_BUILD_CERT_STABLE_PATH: &str = "run `rz --typecheck <file>` or `rz --audit <file>` without certificate flags on the default build.";
+#[cfg(not(feature = "z3"))]
 const DEFAULT_BUILD_VERIFY_STABLE_PATH: &str = "run `rz --typecheck <file>` or `rz --audit <file>` without certificate verification on the default build.";
+#[cfg(not(feature = "z3"))]
 const DEFAULT_BUILD_Z3_THEORY_STABLE_PATH: &str =
     "omit --z3-theory; the default build still runs non-SMT type checks.";
 

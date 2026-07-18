@@ -1,13 +1,16 @@
 //! RES-3133: pin user-facing stability vocabulary in CLI help.
 
+#[cfg(not(feature = "jit"))]
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(not(feature = "jit"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
 }
 
+#[cfg(not(feature = "jit"))]
 fn tmp_file(tag: &str, body: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
