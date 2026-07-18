@@ -192,6 +192,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          components: clippy
 
       - name: Cache cargo
         if: needs.changes.outputs.run_heavy == 'true'
@@ -199,6 +200,18 @@ jobs:
         with:
           workspaces: resilient
           key: z3
+
+      # RES-4145: `--features z3` disables some default-build-only
+      # code paths (e.g. the backend-limited messaging in lib.rs), so
+      # it needs its own clippy pass — `default_ci`'s clippy step
+      # doesn't compile with this feature and can't catch dead code
+      # that's only live under `not(feature = "z3")`.
+      - name: cargo clippy --features z3
+        if: needs.changes.outputs.run_heavy == 'true'
+        run: cargo clippy --locked --features z3 -- -D warnings
+        env:
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
 
       # RES-2446: `cargo test` compiles the library + test harness
       # in one pass, so a separate `cargo build` step is redundant —
@@ -230,12 +243,21 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: resilient
           key: test-${{ matrix.features }}
+
+      # RES-4145: each of these features disables/enables different
+      # dead-code paths (e.g. `jit` drops a test helper only used by
+      # the non-jit CLI-gate test), so `default_ci`'s clippy pass alone
+      # doesn't catch feature-specific dead code — run clippy per
+      # feature alongside the existing per-feature `cargo test`.
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets --features ${{ matrix.features }} -- -D warnings
 
       - name: cargo test
         run: cargo test --locked --features ${{ matrix.features }} --verbose
