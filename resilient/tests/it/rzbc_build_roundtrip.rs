@@ -234,6 +234,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
         len: 0,
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; 8];
     let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
     let counts = resilient_runtime::vm::serde::decode_program(
@@ -249,6 +250,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
         code: &[][..],
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -259,6 +261,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
             code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
             arity: meta.arity,
             local_count: meta.local_count,
+            postcheck: meta.postcheck,
         };
     }
     let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
@@ -292,6 +295,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
         len: 0,
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; 8];
     let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
     let counts = resilient_runtime::vm::serde::decode_program(
@@ -306,6 +310,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
         code: &[][..],
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -316,6 +321,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
             code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
             arity: meta.arity,
             local_count: meta.local_count,
+            postcheck: meta.postcheck,
         };
     }
     let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();

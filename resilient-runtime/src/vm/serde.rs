@@ -432,6 +432,10 @@ pub struct EncodeFunctionDef<'a> {
     pub code: &'a [Instr],
     pub arity: u8,
     pub local_count: u16,
+    /// RES-4083 (D-E1 tail): function-table index of this function's
+    /// synthesized postcheck (`ensures`/`recovers_to`), or `None`.
+    /// See [`crate::vm::FunctionDef::postcheck`].
+    pub postcheck: Option<u16>,
 }
 
 /// One function's metadata as recovered by [`decode_program`]: an
@@ -446,6 +450,8 @@ pub struct DecodedFunctionMeta {
     pub len: u32,
     pub arity: u8,
     pub local_count: u16,
+    /// RES-4083 (D-E1 tail): see [`EncodeFunctionDef::postcheck`].
+    pub postcheck: Option<u16>,
 }
 
 /// How many main instructions, functions, and total function-body
@@ -467,7 +473,21 @@ pub struct ProgramCounts {
 /// format [`encode`]/[`decode`] still emit/accept) so a blob
 /// produced by one pair is always rejected — never
 /// misinterpreted — by the other.
-pub const PROGRAM_FORMAT_VERSION: u16 = 2;
+///
+/// RES-4083 (D-E1 tail): bumped `2` -> `3` to add the per-function
+/// `postcheck` field (see [`EncodeFunctionDef::postcheck`]) to the
+/// function-table entry layout — a `2`-blob has no such field, so
+/// decoding it under the `3` reader (or vice versa) must be a typed
+/// [`DecodeError::UnsupportedVersion`], never a silent misread of
+/// the following bytes as a bogus postcheck index.
+pub const PROGRAM_FORMAT_VERSION: u16 = 3;
+
+/// Wire sentinel for `postcheck: None` in the function-table entry
+/// layout (see [`encode_program`]). `0xFFFF` is never a valid
+/// function-table index in practice: `func_count` is itself a `u16`,
+/// so a table can have at most `u16::MAX` entries, meaning valid
+/// indices are `0..=u16::MAX - 1` — `u16::MAX` is always free.
+const NO_POSTCHECK: u16 = u16::MAX;
 
 /// Encode `main` plus `functions` into `out`, returning the number
 /// of bytes written. Wire layout:
@@ -481,6 +501,7 @@ pub const PROGRAM_FORMAT_VERSION: u16 = 2;
 /// for each function, in order:
 ///   [1] arity:           u8
 ///   [2] local_count:     u16 LE
+///   [2] postcheck:       u16 LE (RES-4083: `NO_POSTCHECK` sentinel = None)
 ///   [4] instr_count:     u32 LE
 ///   [M] instructions,    same per-instruction encoding as `encode`
 /// ```
@@ -514,6 +535,7 @@ pub fn encode_program(
             u32::try_from(f.code.len()).map_err(|_| EncodeError::BufferTooSmall)?;
         w.write_u8(f.arity)?;
         w.write_u16(f.local_count)?;
+        w.write_u16(f.postcheck.unwrap_or(NO_POSTCHECK))?;
         w.write_u32(instr_count)?;
         for instr in f.code {
             write_instr(&mut w, *instr)?;
@@ -543,13 +565,13 @@ pub fn encode_program(
 ///
 /// let square_body = [Instr::LoadLocal(0), Instr::LoadLocal(0), Instr::Mul, Instr::Return];
 /// let main = [Instr::PushConst(resilient_runtime::vm::Value::Int(7)), Instr::Call(0), Instr::Return];
-/// let functions = [EncodeFunctionDef { code: &square_body, arity: 1, local_count: 1 }];
+/// let functions = [EncodeFunctionDef { code: &square_body, arity: 1, local_count: 1, postcheck: None }];
 ///
 /// let mut buf = [0u8; 128];
 /// let len = encode_program(&main, &functions, &mut buf).unwrap();
 ///
 /// let mut out_main = [Instr::Return; 8];
-/// let mut out_func_meta = [DecodedFunctionMeta { offset: 0, len: 0, arity: 0, local_count: 0 }; 4];
+/// let mut out_func_meta = [DecodedFunctionMeta { offset: 0, len: 0, arity: 0, local_count: 0, postcheck: None }; 4];
 /// let mut out_func_code = [Instr::Return; 16];
 /// let counts = decode_program(&buf[..len], &mut out_main, &mut out_func_meta, &mut out_func_code).unwrap();
 /// assert_eq!(counts.func_count, 1);
@@ -593,6 +615,12 @@ pub fn decode_program(
     for meta_slot in out_func_meta.iter_mut().take(func_count) {
         let arity = r.read_u8()?;
         let local_count = r.read_u16()?;
+        let postcheck_raw = r.read_u16()?;
+        let postcheck = if postcheck_raw == NO_POSTCHECK {
+            None
+        } else {
+            Some(postcheck_raw)
+        };
         let instr_count = r.read_u32()? as usize;
 
         let end = func_code_len
@@ -610,6 +638,7 @@ pub fn decode_program(
             len: instr_count as u32,
             arity,
             local_count,
+            postcheck,
         };
         func_code_len = end;
     }
@@ -1014,6 +1043,7 @@ mod tests {
             len: 0,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let counts = decode_program(
@@ -1046,6 +1076,7 @@ mod tests {
             code: &square,
             arity: 1,
             local_count: 1,
+            postcheck: None,
         }];
 
         let mut buf = [0u8; 128];
@@ -1057,6 +1088,7 @@ mod tests {
             len: 0,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let counts = decode_program(
@@ -1078,6 +1110,7 @@ mod tests {
             code: callee_code,
             arity: meta.arity,
             local_count: meta.local_count,
+            postcheck: None,
         }];
         let mut vm = crate::vm::Vm::<8, 4, 2>::new();
         assert_eq!(
@@ -1099,6 +1132,7 @@ mod tests {
             len: 0,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         assert_eq!(
@@ -1121,11 +1155,13 @@ mod tests {
                 code: &f1,
                 arity: 0,
                 local_count: 0,
+                postcheck: None,
             },
             EncodeFunctionDef {
                 code: &f2,
                 arity: 0,
                 local_count: 0,
+                postcheck: None,
             },
         ];
         let mut buf = [0u8; 128];
@@ -1137,6 +1173,7 @@ mod tests {
             len: 0,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }; 1];
         let mut out_func_code = [Instr::Return; 16];
         assert_eq!(
@@ -1157,6 +1194,7 @@ mod tests {
             code: &f1,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }];
         let mut buf = [0u8; 128];
         let len = encode_program(&[], &functions, &mut buf).unwrap();
@@ -1167,6 +1205,7 @@ mod tests {
             len: 0,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 1];
         assert_eq!(
@@ -1189,6 +1228,7 @@ mod tests {
             len: 0,
             arity: 0,
             local_count: 0,
+            postcheck: None,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         for _ in 0..2000 {

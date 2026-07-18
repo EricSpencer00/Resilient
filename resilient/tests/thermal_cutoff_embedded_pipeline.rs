@@ -56,6 +56,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
         len: 0,
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; 8];
     let mut out_func_code = [Instr::Return; 128];
 
@@ -66,6 +67,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
         code: &[][..],
         arity: 0,
         local_count: 0,
+        postcheck: None,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -76,6 +78,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
             code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
             arity: meta.arity,
             local_count: meta.local_count,
+            postcheck: meta.postcheck,
         };
     }
 
