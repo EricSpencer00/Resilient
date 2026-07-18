@@ -971,6 +971,13 @@ fn dep_source_display(source: &DepSource) -> String {
 /// Given `use mylib::foo;`, `dep_name` is `"mylib"` and `module` is
 /// `"foo"`. Returns the path to `<dep_root>/src/foo.rz` if it exists.
 ///
+/// RES-4110: `module` may itself be a multi-segment path — e.g. given
+/// `use mylib::sub::leaf;`, `module` is `"sub::leaf"`. Each `::`-
+/// separated segment maps to a nested directory component, so this
+/// resolves to `<dep_root>/src/sub/leaf.rz` rather than a literal
+/// `sub::leaf.rz` file (which could never exist). A single-segment
+/// module is unaffected: `"foo"` still resolves to `src/foo.rz`.
+///
 /// Called from `imports.rs` as a fallback when a `use X::Y;` is
 /// neither a stdlib import nor a local file.
 pub fn resolve_dep_module(
@@ -989,7 +996,13 @@ pub fn resolve_dep_module(
     };
     let project_root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let resolved = resolve_one(project_root, dep).map_err(|e| e.to_string())?;
-    let module_file = resolved.src_dir.join(format!("{}.rz", module));
+    let mut module_file = resolved.src_dir.clone();
+    let segments: Vec<&str> = module.split("::").collect();
+    let (last, dirs) = segments.split_last().expect("split on non-empty str");
+    for dir in dirs {
+        module_file.push(dir);
+    }
+    module_file.push(format!("{}.rz", last));
     if module_file.exists() {
         Ok(Some(module_file))
     } else {
@@ -1452,6 +1465,61 @@ lib = { git = \"https://ex.com/lib\", branch = \"develop\" }
         assert!(result.is_some());
         let path = result.unwrap();
         assert!(path.ends_with("foo.rz"), "got: {}", path.display());
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn resolve_dep_module_finds_nested_submodule_path() {
+        // RES-4110: `use mylib::sub::leaf;` must resolve to
+        // `<dep_root>/src/sub/leaf.rz`, not a literal `sub::leaf.rz`.
+        let project = tmp_dir("dep_module_nested");
+        fs::write(
+            project.join("resilient.toml"),
+            "[package]\nname = \"proj\"\n\n[dependencies]\nmylib = { path = \"mylib\" }\n",
+        )
+        .unwrap();
+        let dep_dir = project.join("mylib");
+        fs::create_dir_all(dep_dir.join("src/sub")).unwrap();
+        fs::write(
+            dep_dir.join("resilient.toml"),
+            "[package]\nname = \"mylib\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dep_dir.join("src/sub/leaf.rz"),
+            "pub fn hello() { return 1; }",
+        )
+        .unwrap();
+
+        let result = resolve_dep_module(&project, "mylib", "sub::leaf").unwrap();
+        assert!(result.is_some(), "expected nested module to resolve");
+        let path = result.unwrap();
+        assert!(
+            path.ends_with("sub/leaf.rz") || path.ends_with("sub\\leaf.rz"),
+            "got: {}",
+            path.display()
+        );
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn resolve_dep_module_nested_missing_returns_none() {
+        let project = tmp_dir("dep_module_nested_missing");
+        fs::write(
+            project.join("resilient.toml"),
+            "[package]\nname = \"proj\"\n\n[dependencies]\nmylib = { path = \"mylib\" }\n",
+        )
+        .unwrap();
+        let dep_dir = project.join("mylib");
+        fs::create_dir_all(dep_dir.join("src")).unwrap();
+        fs::write(
+            dep_dir.join("resilient.toml"),
+            "[package]\nname = \"mylib\"\n",
+        )
+        .unwrap();
+
+        let result = resolve_dep_module(&project, "mylib", "sub::missing").unwrap();
+        assert!(result.is_none());
         let _ = fs::remove_dir_all(&project);
     }
 

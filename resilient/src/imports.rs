@@ -492,4 +492,133 @@ mod tests {
         let in_flight = vec![a, b];
         assert!(check_cycle(&c, &in_flight).is_ok());
     }
+
+    // ── RES-4110: `pub use` re-export coverage ───────────────────────
+
+    #[test]
+    fn pub_use_reexports_single_hop() {
+        // b.rz has a pub fn; a.rz does `pub use "b.rz";`; importing a.rz
+        // directly should see b's pub declaration re-exported.
+        let dir = make_temp_dir().join("pub_use_single_hop");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("b.rz"), "pub fn shared() { return 1; }\n").unwrap();
+        fs::write(dir.join("a.rz"), "pub use \"b.rz\";\n").unwrap();
+
+        let src = "use \"a.rz\";\nfn main() { return shared(); }\n";
+        let (mut program, _) = crate::parse(src);
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_ok(), "expand failed: {:?}", result);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => panic!("expected Program"),
+        };
+        assert!(
+            stmts.iter().any(|s| matches!(
+                &s.node,
+                Node::Function { name, .. } if name == "shared"
+            )),
+            "expected `shared` re-exported through a.rz"
+        );
+    }
+
+    #[test]
+    fn pub_use_reexports_transitively_two_hops() {
+        // c.rz -> b.rz (pub use) -> a.rz (pub use): importing c.rz should
+        // still see a.rz's pub declaration two hops away.
+        let dir = make_temp_dir().join("pub_use_two_hops");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("a.rz"), "pub fn deepest() { return 1; }\n").unwrap();
+        fs::write(dir.join("b.rz"), "pub use \"a.rz\";\n").unwrap();
+        fs::write(dir.join("c.rz"), "pub use \"b.rz\";\n").unwrap();
+
+        let src = "use \"c.rz\";\nfn main() { return deepest(); }\n";
+        let (mut program, _) = crate::parse(src);
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_ok(), "expand failed: {:?}", result);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => panic!("expected Program"),
+        };
+        assert!(
+            stmts.iter().any(|s| matches!(
+                &s.node,
+                Node::Function { name, .. } if name == "deepest"
+            )),
+            "expected `deepest` re-exported two hops through b.rz -> c.rz"
+        );
+    }
+
+    #[test]
+    fn non_pub_use_does_not_reexport_private_decl() {
+        // Without `pub use`, b's declarations should not surface as
+        // callable names through a plain `use "b.rz";` re-splice chain
+        // when b itself has private-only declarations relative to a
+        // re-export boundary... this test pins the existing (documented)
+        // "no pub anywhere = legacy export-all" behavior for a *plain*
+        // (non-pub) `use` so a future change to re-export semantics does
+        // not silently start hiding legacy imports.
+        let dir = make_temp_dir().join("plain_use_legacy_export_all");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("b.rz"), "fn helper() { return 1; }\n").unwrap();
+        fs::write(dir.join("a.rz"), "use \"b.rz\";\n").unwrap();
+
+        let src = "use \"a.rz\";\nfn main() { return helper(); }\n";
+        let (mut program, _) = crate::parse(src);
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_ok(), "expand failed: {:?}", result);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => panic!("expected Program"),
+        };
+        assert!(
+            stmts.iter().any(|s| matches!(
+                &s.node,
+                Node::Function { name, .. } if name == "helper"
+            )),
+            "legacy no-pub-anywhere import-all behavior must still hold"
+        );
+    }
+
+    #[test]
+    fn selective_pub_use_reexports_only_named_items() {
+        // `pub use "b.rz" { wanted };` should re-export only `wanted`,
+        // not `other`, even though both are `pub` in b.rz.
+        let dir = make_temp_dir().join("selective_pub_use");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(
+            dir.join("b.rz"),
+            "pub fn wanted() { return 1; }\npub fn other() { return 2; }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("a.rz"), "pub use \"b.rz\" { wanted };\n").unwrap();
+
+        let src = "use \"a.rz\";\nfn main() { return wanted(); }\n";
+        let (mut program, _) = crate::parse(src);
+        let mut loaded = HashSet::new();
+        let result = expand_uses(&mut program, &dir, &mut loaded);
+        cleanup_temp_dir(&dir);
+        assert!(result.is_ok(), "expand failed: {:?}", result);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => panic!("expected Program"),
+        };
+        assert!(
+            stmts
+                .iter()
+                .any(|s| matches!(&s.node, Node::Function { name, .. } if name == "wanted")),
+            "expected `wanted` present"
+        );
+        assert!(
+            !stmts
+                .iter()
+                .any(|s| matches!(&s.node, Node::Function { name, .. } if name == "other")),
+            "expected `other` filtered out by selective re-export"
+        );
+    }
 }
