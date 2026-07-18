@@ -348,6 +348,33 @@ pub(crate) extern "C-unwind" fn res_jit_print(v: i64) -> i64 {
     0
 }
 
+// --- RES-4153: boolean-aware display shims ---
+//
+// `jit_value_display` can't distinguish a bare untagged `0`/`1` int
+// from `false`/`true` (RES-100: booleans lower to raw i64 0/1, same
+// representation as small ints, so arithmetic/comparisons keep
+// working without a tag check). `jit_backend.rs`'s `is_bool_expr`
+// determines statically (from the AST, not the runtime value) when a
+// `println`/`print`/`to_string` argument is boolean-typed and routes
+// through these shims instead, which always print/stringify the
+// payload as `true`/`false` regardless of tag bits.
+
+pub(crate) extern "C-unwind" fn res_jit_println_bool(v: i64) -> i64 {
+    println!("{}", if v != 0 { "true" } else { "false" });
+    0
+}
+
+pub(crate) extern "C-unwind" fn res_jit_print_bool(v: i64) -> i64 {
+    print!("{}", if v != 0 { "true" } else { "false" });
+    0
+}
+
+pub(crate) extern "C-unwind" fn res_jit_bool_to_string(v: i64) -> i64 {
+    let s = if v != 0 { "true" } else { "false" };
+    let boxed = Box::new(s.to_string());
+    tag_string(Box::into_raw(boxed))
+}
+
 // --- Equality ---
 
 pub(crate) extern "C-unwind" fn res_jit_value_eq(a: i64, b: i64) -> i64 {
@@ -570,6 +597,9 @@ pub(crate) fn register_jit_runtime_symbols(builder: &mut cranelift_jit::JITBuild
     reg!(res_jit_print);
     reg!(res_jit_value_eq);
     reg!(res_jit_value_ne);
+    reg!(res_jit_println_bool);
+    reg!(res_jit_print_bool);
+    reg!(res_jit_bool_to_string);
 }
 
 // ============================================================
@@ -704,6 +734,15 @@ mod tests {
         assert!((read_float(prod) - 6.0).abs() < 1e-10);
         let quot = res_jit_float_div(a, b);
         assert!((read_float(quot) - (2.0 / 3.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn bool_to_string_shim() {
+        let v = res_jit_bool_to_string(1);
+        assert_eq!(tag_of(v), TAG_STRING);
+        assert_eq!(jit_value_display(v), "true");
+        let f = res_jit_bool_to_string(0);
+        assert_eq!(jit_value_display(f), "false");
     }
 
     #[test]
