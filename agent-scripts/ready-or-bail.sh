@@ -6,9 +6,17 @@
 #   agent-scripts/ready-or-bail.sh              # infer PR from current branch
 #   agent-scripts/ready-or-bail.sh --pr 232
 #   agent-scripts/ready-or-bail.sh --dry-run    # skip gh mutations
+#   agent-scripts/ready-or-bail.sh --no-close   # never touch the PR body's
+#                                                # Closes/Refs lines at all
 #
 # This is the ONLY path the orchestrator uses to transition a draft → ready.
 # If this script isn't run, the PR stays draft — that's the whole point.
+#
+# RES-4136: this script never auto-derives `Closes #N` from a `Refs #N`
+# line — only an explicit `Closes #N` already in the PR body closes
+# anything on merge. See compute_close_issue() below for the history.
+# `--no-close` is a belt-and-suspenders opt-out for callers that want a
+# guarantee the body is left untouched regardless.
 
 set -euo pipefail
 
@@ -40,19 +48,32 @@ is_tracker_issue() {
 # number, if any, should get a `Closes #N` line appended to BODY_FILE.
 # Prints the issue number on stdout, or nothing.
 #
-#   1. If BODY_FILE already has an explicit `Closes #N`, that is the
-#      agent's chosen close-target — print nothing (there's nothing to
-#      append; the explicit Closes stays as-is).
-#   2. Otherwise fall back to the first `Refs #N` in the body.
-#   3. If that derived issue is a tracker per IS_TRACKER_FN (default
-#      `is_tracker_issue`), print nothing — never auto-close a tracker.
+# RES-4136: `Refs #N` is NEVER treated as a closing signal. `Refs #N`
+# means "this PR is part of the work for ticket N" — it says nothing
+# about whether *this* PR is the final increment. Auto-converting it
+# into `Closes #N` wrongly closed umbrella/parent issues #4083 and
+# #4063, which carried plain `ticket`/`enhancement` labels (not
+# tracker/epic/umbrella), so the RES-4021 tracker denylist didn't catch
+# them either. The only way an issue closes now is an explicit
+# `Closes #N` the agent wrote into the PR body themselves, attesting
+# that this PR really does finish ticket N.
 #
-# IS_TRACKER_FN names a function taking one arg (issue number) and
-# returning 0/1, so tests can substitute a mock instead of shelling out
-# to `gh`.
+#   1. If BODY_FILE already has an explicit `Closes #N`, that's the
+#      agent's own attestation — print nothing (nothing to append; the
+#      explicit line stays as-is and does the closing on merge).
+#   2. Otherwise — whether or not a `Refs #N` line is present — print
+#      nothing. There is no safe automatic derivation left; the agent
+#      must opt in explicitly.
+#
+# IS_TRACKER_FN is accepted for backward compatibility with existing
+# callers/tests but is no longer consulted here, since Refs no longer
+# feeds into closing at all. is_tracker_issue() itself is kept as a
+# building block in case a future explicit-Closes-derived-from-Refs
+# path needs it again.
 compute_close_issue() {
   local body_file="$1"
-  local is_tracker_fn="${2:-is_tracker_issue}"
+  local _is_tracker_fn="${2:-is_tracker_issue}" # unused: kept for signature compatibility
+  : "$_is_tracker_fn"
 
   local explicit_closes
   explicit_closes="$(sed -nE 's/^[[:space:]]*[Cc]loses[[:space:]]+#([0-9]+).*/\1/p' "$body_file" | head -1 || true)"
@@ -60,17 +81,7 @@ compute_close_issue() {
     return 0
   fi
 
-  local refs_issue
-  refs_issue="$(sed -nE 's/^[[:space:]]*[Rr]efs[[:space:]]+#([0-9]+).*/\1/p' "$body_file" | head -1 || true)"
-  if [ -z "$refs_issue" ]; then
-    return 0
-  fi
-
-  if "$is_tracker_fn" "$refs_issue"; then
-    return 0
-  fi
-
-  printf '%s\n' "$refs_issue"
+  return 0
 }
 
 # RES-4021: allow this file to be `source`d (e.g. by
@@ -86,10 +97,12 @@ cd "$REPO_ROOT"
 
 PR=""
 DRY_RUN=0
+NO_CLOSE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) PR="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --no-close) NO_CLOSE=1; shift ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -158,13 +171,36 @@ PYEOF
 
   BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/resilient-pr-body.XXXXXX")"
   gh pr view "$PR" --json body -q '.body // ""' > "$BODY_FILE"
-  CLOSE_ISSUE="$(compute_close_issue "$BODY_FILE")"
-  if [ -n "$CLOSE_ISSUE" ]; then
-    {
-      cat "$BODY_FILE"
-      printf '\n\nCloses #%s\n' "$CLOSE_ISSUE"
-    } > "${BODY_FILE}.next"
-    gh pr edit "$PR" --body-file "${BODY_FILE}.next" >/dev/null
+  echo
+  echo "=============================================================="
+  if (( NO_CLOSE == 1 )); then
+    echo " ISSUE-CLOSE NOTICE: --no-close passed — PR #$PR body will NOT"
+    echo " be modified. Whatever Closes/Refs lines are already in the"
+    echo " body are the only ones that take effect on merge."
+    echo "=============================================================="
+  else
+    CLOSE_ISSUE="$(compute_close_issue "$BODY_FILE")"
+    if [ -n "$CLOSE_ISSUE" ]; then
+      echo " ISSUE-CLOSE NOTICE: this should not happen — compute_close_issue"
+      echo " returned #$CLOSE_ISSUE. ready-or-bail.sh no longer auto-appends"
+      echo " Closes derived from Refs (RES-4136); refusing to append."
+      echo "=============================================================="
+      CLOSE_ISSUE=""
+    else
+      EXPLICIT_CLOSES="$(sed -nE 's/^[[:space:]]*[Cc]loses[[:space:]]+#([0-9]+).*/\1/p' "$BODY_FILE" | head -1 || true)"
+      if [ -n "$EXPLICIT_CLOSES" ]; then
+        echo " ISSUE-CLOSE NOTICE: PR #$PR body already has an explicit"
+        echo " 'Closes #$EXPLICIT_CLOSES' — that issue WILL close on merge."
+        echo " Nothing appended."
+      else
+        echo " ISSUE-CLOSE NOTICE: PR #$PR body has no explicit 'Closes #N'."
+        echo " NOTHING will close on merge. ready-or-bail.sh never derives"
+        echo " Closes from a 'Refs #N' line (RES-4136) — if this PR really"
+        echo " is the final increment of its ticket, add an explicit"
+        echo " 'Closes #N' line to the PR body yourself before merge."
+      fi
+      echo "=============================================================="
+    fi
   fi
   rm -f "$BODY_FILE" "${BODY_FILE}.next"
 
