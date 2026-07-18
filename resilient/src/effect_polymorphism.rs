@@ -67,17 +67,36 @@
 //! Like [`check`], this can only ever *accept* a call that was
 //! previously rejected — never reject one that used to pass.
 //!
+//! ## Local-variable callback tracing (RES-3933 A-E7 follow-up, #4097)
+//!
+//! [`resolve_local_alias`] extends both [`check`] and
+//! [`resolves_pure_at_call_site`] to trace a callback argument that is
+//! a *local variable* back to its initializer — `let g = add1; run(g,
+//! 5);` now resolves `g` to `add1` in both the monomorphic
+//! (`check`/`find_hof_call_violations`) and effect-polymorphic
+//! (`resolves_pure_at_call_site`) directions, using the enclosing
+//! top-level fn's body (threaded through as `caller_body`) as the
+//! scope to search. The trace is deliberately conservative: it only
+//! fires when there is exactly one `let g = <identifier>;` binding for
+//! that name anywhere in the enclosing fn, *and* `g` is never the
+//! target of a plain `Assignment` anywhere in that fn (path-insensitive
+//! — any reassignment anywhere disqualifies the trace, even one that
+//! happens after the call site). Either condition failing leaves the
+//! argument unresolvable, same as before this pass existed — "when
+//! uncertain, don't rescue/reject" is preserved exactly.
+//!
 //! ## Deferred (tracked as a follow-up issue, see the PR body)
 //!
 //! - Inline lambda-literal callback arguments are never inspected
 //!   for an explicit `pure`/`io` annotation, even though the parser
-//!   supports one — only plain-identifier arguments naming a
-//!   top-level fn are resolved. Extending this to lambda literals
-//!   requires reliably distinguishing an *explicit* `pure`/`io`
-//!   annotation on the literal from the default (`io`) so an
-//!   unannotated inline closure isn't wrongly flagged.
-//! - Local variables bound to a function value (`let g = ...; run(g, x)`)
-//!   are not traced back to their initializer.
+//!   supports one — only plain-identifier arguments (now including
+//!   ones traced through a local `let` alias) are resolved. Extending
+//!   this to lambda literals requires reliably distinguishing an
+//!   *explicit* `pure`/`io` annotation on the literal from the default
+//!   (`io`) so an unannotated inline closure isn't wrongly flagged —
+//!   and today's grammar doesn't even parse `pure fn(...) { ... }` as
+//!   an expression (only bare `fn(...) { ... }`, RES-042), so this
+//!   also needs a parser change.
 //! - Callback parameters invoked indirectly (through a method call,
 //!   stored in a struct field, etc.) are out of scope.
 //! - A HOF's *own* return-type effect arrow (`fn run(...) -e-> int`)
@@ -87,7 +106,10 @@
 //!   invoked `-e->`-marked parameter) rather than requiring the HOF's
 //!   own return type to declare a matching variable name. A follow-up
 //!   could add named-variable unification across multiple
-//!   effect-variable parameters that must agree with each other.
+//!   effect-variable parameters that must agree with each other —
+//!   this needs a new `Node` field (or an encoding convention) to
+//!   preserve the letter past the parser, which is out of scope for
+//!   this pass.
 //! - Full row-polymorphism / whole-program effect inference remains
 //!   out of scope, per the parent ticket.
 
@@ -294,7 +316,14 @@ fn check_call_sites(
 ) -> Result<(), String> {
     let mut violation: Option<(crate::span::Span, String)> = None;
     for stmt in statements {
-        find_hof_call_violations(&stmt.node, hof_name, idx, fn_effects, &mut violation);
+        find_hof_call_violations(
+            &stmt.node,
+            hof_name,
+            idx,
+            fn_effects,
+            &stmt.node,
+            &mut violation,
+        );
         if violation.is_some() {
             break;
         }
@@ -327,6 +356,7 @@ fn find_hof_call_violations(
     hof_name: &str,
     idx: usize,
     fn_effects: &HashMap<String, EffectSet>,
+    caller_body: &Node,
     violation: &mut Option<(crate::span::Span, String)>,
 ) {
     if violation.is_some() {
@@ -335,14 +365,14 @@ fn find_hof_call_violations(
     match node {
         Node::Block { stmts, .. } => {
             for s in stmts {
-                find_hof_call_violations(s, hof_name, idx, fn_effects, violation);
+                find_hof_call_violations(s, hof_name, idx, fn_effects, caller_body, violation);
             }
         }
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
-            find_hof_call_violations(value, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(value, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            find_hof_call_violations(v, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(v, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::IfStatement {
             condition,
@@ -350,34 +380,41 @@ fn find_hof_call_violations(
             alternative,
             ..
         } => {
-            find_hof_call_violations(condition, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(consequence, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(condition, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(
+                consequence,
+                hof_name,
+                idx,
+                fn_effects,
+                caller_body,
+                violation,
+            );
             if let Some(a) = alternative {
-                find_hof_call_violations(a, hof_name, idx, fn_effects, violation);
+                find_hof_call_violations(a, hof_name, idx, fn_effects, caller_body, violation);
             }
         }
         Node::WhileStatement {
             condition, body, ..
         } => {
-            find_hof_call_violations(condition, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(body, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(condition, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(body, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::ForInStatement { iterable, body, .. } => {
-            find_hof_call_violations(iterable, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(body, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(iterable, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(body, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
-            find_hof_call_violations(condition, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(condition, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::LiveBlock { body, .. } => {
-            find_hof_call_violations(body, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(body, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::InfixExpression { left, right, .. } => {
-            find_hof_call_violations(left, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(right, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(left, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(right, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::PrefixExpression { right, .. } => {
-            find_hof_call_violations(right, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(right, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::CallExpression {
             function,
@@ -391,30 +428,45 @@ fn find_hof_call_violations(
                     name: callback_name,
                     ..
                 } = arg
-                && let Some(effects) = fn_effects.get(callback_name)
-                && !effects.pure
             {
-                *violation = Some((*span, callback_name.clone()));
-                return;
+                // RES-3933 A-E7 follow-up (#4097): a plain identifier
+                // argument that doesn't itself name a top-level fn
+                // might be a local variable aliasing one — trace it
+                // back through `resolve_local_alias` (sound only when
+                // the alias is unambiguous and never reassigned; see
+                // its doc comment) before falling back to treating it
+                // as unresolvable.
+                let resolved_name = if fn_effects.contains_key(callback_name) {
+                    Some(callback_name.clone())
+                } else {
+                    resolve_local_alias(callback_name, caller_body)
+                };
+                if let Some(resolved_name) = resolved_name
+                    && let Some(effects) = fn_effects.get(&resolved_name)
+                    && !effects.pure
+                {
+                    *violation = Some((*span, resolved_name));
+                    return;
+                }
             }
-            find_hof_call_violations(function, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(function, hof_name, idx, fn_effects, caller_body, violation);
             for a in arguments {
-                find_hof_call_violations(a, hof_name, idx, fn_effects, violation);
+                find_hof_call_violations(a, hof_name, idx, fn_effects, caller_body, violation);
             }
         }
         Node::FieldAccess { target, .. } => {
-            find_hof_call_violations(target, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(target, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::FieldAssignment { target, value, .. } => {
-            find_hof_call_violations(target, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(value, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(target, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(value, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::Assignment { value, .. } => {
-            find_hof_call_violations(value, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(value, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::IndexExpression { target, index, .. } => {
-            find_hof_call_violations(target, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(index, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(target, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(index, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::IndexAssignment {
             target,
@@ -422,50 +474,57 @@ fn find_hof_call_violations(
             value,
             ..
         } => {
-            find_hof_call_violations(target, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(index, hof_name, idx, fn_effects, violation);
-            find_hof_call_violations(value, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(target, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(index, hof_name, idx, fn_effects, caller_body, violation);
+            find_hof_call_violations(value, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::ArrayLiteral { items, .. } => {
             for i in items {
-                find_hof_call_violations(i, hof_name, idx, fn_effects, violation);
+                find_hof_call_violations(i, hof_name, idx, fn_effects, caller_body, violation);
             }
         }
         Node::StructLiteral { fields, base, .. } => {
             if let Some(b) = base {
-                find_hof_call_violations(b, hof_name, idx, fn_effects, violation);
+                find_hof_call_violations(b, hof_name, idx, fn_effects, caller_body, violation);
             }
             for (_, v) in fields {
-                find_hof_call_violations(v, hof_name, idx, fn_effects, violation);
+                find_hof_call_violations(v, hof_name, idx, fn_effects, caller_body, violation);
             }
         }
         Node::Match {
             scrutinee, arms, ..
         } => {
-            find_hof_call_violations(scrutinee, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(scrutinee, hof_name, idx, fn_effects, caller_body, violation);
             for (_pat, guard, arm_body) in arms {
                 if let Some(g) = guard {
-                    find_hof_call_violations(g, hof_name, idx, fn_effects, violation);
+                    find_hof_call_violations(g, hof_name, idx, fn_effects, caller_body, violation);
                 }
-                find_hof_call_violations(arm_body, hof_name, idx, fn_effects, violation);
+                find_hof_call_violations(
+                    arm_body,
+                    hof_name,
+                    idx,
+                    fn_effects,
+                    caller_body,
+                    violation,
+                );
             }
         }
         Node::ExpressionStatement { expr, .. } => {
-            find_hof_call_violations(expr, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(expr, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::TryExpression { expr, .. } => {
-            find_hof_call_violations(expr, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(expr, hof_name, idx, fn_effects, caller_body, violation);
         }
         Node::OptionalChain { object, access, .. } => {
-            find_hof_call_violations(object, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(object, hof_name, idx, fn_effects, caller_body, violation);
             if let crate::ChainAccess::Method(_, args) = access {
                 for a in args {
-                    find_hof_call_violations(a, hof_name, idx, fn_effects, violation);
+                    find_hof_call_violations(a, hof_name, idx, fn_effects, caller_body, violation);
                 }
             }
         }
         Node::Function { body, .. } => {
-            find_hof_call_violations(body, hof_name, idx, fn_effects, violation);
+            find_hof_call_violations(body, hof_name, idx, fn_effects, body, violation);
         }
         _ => {}
     }
@@ -521,6 +580,7 @@ pub(crate) fn resolves_pure_at_call_site(
     call_arguments: &[Node],
     statements: &[Spanned<Node>],
     fn_effects: &HashMap<String, EffectSet>,
+    caller_body: &Node,
 ) -> bool {
     let Some(Node::Function {
         parameters, body, ..
@@ -551,13 +611,197 @@ pub(crate) fn resolves_pure_at_call_site(
         let Some(Node::Identifier { name: arg_name, .. }) = call_arguments.get(idx) else {
             return false;
         };
-        match fn_effects.get(arg_name) {
+        // RES-3933 A-E7 follow-up (#4097): trace a local variable
+        // argument back to its initializer (see [`resolve_local_alias`])
+        // before giving up on it as unresolvable.
+        let resolved_name = if fn_effects.contains_key(arg_name) {
+            Some(arg_name.clone())
+        } else {
+            resolve_local_alias(arg_name, caller_body)
+        };
+        match resolved_name.and_then(|n| fn_effects.get(&n).copied()) {
             Some(effects) if effects.pure => {}
             _ => return false,
         }
     }
 
     body_pure_modulo(body, &effect_var_params, fn_effects, parameters)
+}
+
+/// RES-3933 A-E7 follow-up (#4097): traces a plain identifier `var`
+/// back through a *local* `let`-binding in `scope` to the name of the
+/// value it was initialized with, e.g. resolving `g` to `"add1"` for
+/// `let g = add1; run(g, x);`.
+///
+/// Returns `Some` only when the trace is unambiguous and sound:
+///
+/// - Exactly one `let var = <identifier>;` binding for `var` exists
+///   anywhere in `scope` (a lambda/nested-fn body counts as part of
+///   `scope` too, since `collect_local_bindings` doesn't special-case
+///   `Node::Function`; that's conservative, not permissive — more
+///   candidate bindings only make ambiguity *more* likely to be
+///   detected, never less).
+/// - `var` is never the target of a plain `Assignment` anywhere in
+///   `scope` — if it were, the binding this call site actually sees
+///   could differ from the initializer, so we can't be sure the alias
+///   still holds. This is intentionally coarse (path-insensitive):
+///   *any* reassignment anywhere disqualifies the trace, not just one
+///   between the binding and this call site.
+///
+/// `scope` is normally the entire body of the enclosing top-level fn
+/// (see `caller_body` threaded through `check_body_effects` /
+/// `find_hof_call_violations`), which is exactly the set of statements
+/// that could plausibly rebind `var`.
+fn resolve_local_alias(var: &str, scope: &Node) -> Option<String> {
+    let mut bindings: Vec<Option<String>> = Vec::new();
+    let mut reassigned = false;
+    collect_local_bindings(scope, var, &mut bindings, &mut reassigned);
+    if reassigned || bindings.len() != 1 {
+        return None;
+    }
+    bindings.into_iter().next().flatten()
+}
+
+/// Recursive walk collecting, for every `let var = ...;` in `node`,
+/// `Some(name)` when the initializer is a plain identifier `name` or
+/// `None` for anything else (so `bindings.len()` still counts
+/// multiple bindings even when none are identifier-initialized), and
+/// setting `reassigned` when `var` is ever the target of a plain
+/// `Assignment`. Mirrors the node coverage of [`collect_invoked`].
+fn collect_local_bindings(
+    node: &Node,
+    var: &str,
+    bindings: &mut Vec<Option<String>>,
+    reassigned: &mut bool,
+) {
+    match node {
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_local_bindings(s, var, bindings, reassigned);
+            }
+        }
+        Node::LetStatement { name, value, .. } => {
+            if name == var {
+                bindings.push(match value.as_ref() {
+                    Node::Identifier { name: id, .. } => Some(id.clone()),
+                    _ => None,
+                });
+            }
+            collect_local_bindings(value, var, bindings, reassigned);
+        }
+        Node::StaticLet { value, .. } => collect_local_bindings(value, var, bindings, reassigned),
+        Node::ReturnStatement { value: Some(v), .. } => {
+            collect_local_bindings(v, var, bindings, reassigned)
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_local_bindings(condition, var, bindings, reassigned);
+            collect_local_bindings(consequence, var, bindings, reassigned);
+            if let Some(a) = alternative {
+                collect_local_bindings(a, var, bindings, reassigned);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_local_bindings(condition, var, bindings, reassigned);
+            collect_local_bindings(body, var, bindings, reassigned);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            collect_local_bindings(iterable, var, bindings, reassigned);
+            collect_local_bindings(body, var, bindings, reassigned);
+        }
+        Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
+            collect_local_bindings(condition, var, bindings, reassigned);
+        }
+        Node::LiveBlock { body, .. } => collect_local_bindings(body, var, bindings, reassigned),
+        Node::InfixExpression { left, right, .. } => {
+            collect_local_bindings(left, var, bindings, reassigned);
+            collect_local_bindings(right, var, bindings, reassigned);
+        }
+        Node::PrefixExpression { right, .. } => {
+            collect_local_bindings(right, var, bindings, reassigned)
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            collect_local_bindings(function, var, bindings, reassigned);
+            for a in arguments {
+                collect_local_bindings(a, var, bindings, reassigned);
+            }
+        }
+        Node::FieldAccess { target, .. } => {
+            collect_local_bindings(target, var, bindings, reassigned)
+        }
+        Node::FieldAssignment { target, value, .. } => {
+            collect_local_bindings(target, var, bindings, reassigned);
+            collect_local_bindings(value, var, bindings, reassigned);
+        }
+        Node::Assignment { name, value, .. } => {
+            if name == var {
+                *reassigned = true;
+            }
+            collect_local_bindings(value, var, bindings, reassigned);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            collect_local_bindings(target, var, bindings, reassigned);
+            collect_local_bindings(index, var, bindings, reassigned);
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            collect_local_bindings(target, var, bindings, reassigned);
+            collect_local_bindings(index, var, bindings, reassigned);
+            collect_local_bindings(value, var, bindings, reassigned);
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for i in items {
+                collect_local_bindings(i, var, bindings, reassigned);
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                collect_local_bindings(b, var, bindings, reassigned);
+            }
+            for (_, v) in fields {
+                collect_local_bindings(v, var, bindings, reassigned);
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_local_bindings(scrutinee, var, bindings, reassigned);
+            for (_pat, guard, arm_body) in arms {
+                if let Some(g) = guard {
+                    collect_local_bindings(g, var, bindings, reassigned);
+                }
+                collect_local_bindings(arm_body, var, bindings, reassigned);
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            collect_local_bindings(expr, var, bindings, reassigned)
+        }
+        Node::TryExpression { expr, .. } => collect_local_bindings(expr, var, bindings, reassigned),
+        Node::OptionalChain { object, access, .. } => {
+            collect_local_bindings(object, var, bindings, reassigned);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    collect_local_bindings(a, var, bindings, reassigned);
+                }
+            }
+        }
+        Node::Function { body, .. } => collect_local_bindings(body, var, bindings, reassigned),
+        _ => {}
+    }
 }
 
 /// True when `ty` (a `fn(...)`-shaped type-annotation string) carries
@@ -866,6 +1110,9 @@ mod tests {
                 Node::ReturnStatement { value: Some(v), .. } => walk(v, callee),
                 Node::ExpressionStatement { expr, .. } => walk(expr, callee),
                 Node::Function { body, .. } => walk(body, callee),
+                Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+                    walk(value, callee)
+                }
                 Node::CallExpression {
                     function,
                     arguments,
@@ -887,6 +1134,20 @@ mod tests {
             .unwrap_or_else(|| panic!("no call to `{callee}` found"))
     }
 
+    /// Finds the body of the top-level fn named `name` — used as the
+    /// `caller_body` argument to [`resolves_pure_at_call_site`] and
+    /// [`resolve_local_alias`] in tests, since every test fixture below
+    /// calls the HOF under test from inside `fn caller() { ... }`.
+    fn find_fn_body<'a>(statements: &'a [Spanned<Node>], name: &str) -> &'a Node {
+        statements
+            .iter()
+            .find_map(|s| match &s.node {
+                Node::Function { name: n, body, .. } if n == name => Some(body.as_ref()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no fn `{name}` found"))
+    }
+
     #[test]
     fn has_effect_arrow_detects_res193_marker() {
         assert!(has_effect_arrow("fn(int) -e-> int"));
@@ -906,7 +1167,7 @@ mod tests {
         let fe = effects_of(&s);
         let args = find_call_args(&s, "run");
         assert!(
-            resolves_pure_at_call_site("run", args, &s, &fe),
+            resolves_pure_at_call_site("run", args, &s, &fe, find_fn_body(&s, "caller")),
             "pure callback into an effect-polymorphic HOF must resolve pure"
         );
     }
@@ -920,7 +1181,7 @@ mod tests {
         let fe = effects_of(&s);
         let args = find_call_args(&s, "run");
         assert!(
-            !resolves_pure_at_call_site("run", args, &s, &fe),
+            !resolves_pure_at_call_site("run", args, &s, &fe, find_fn_body(&s, "caller")),
             "io callback into an effect-polymorphic HOF must not resolve pure"
         );
     }
@@ -939,7 +1200,7 @@ mod tests {
         let fe = effects_of(&s);
         let args = find_call_args(&s, "run");
         assert!(
-            !resolves_pure_at_call_site("run", args, &s, &fe),
+            !resolves_pure_at_call_site("run", args, &s, &fe, find_fn_body(&s, "caller")),
             "a HOF with unconditional impurity beyond its callback must never be rescued"
         );
     }
@@ -955,7 +1216,13 @@ mod tests {
         let s = stmts(src);
         let fe = effects_of(&s);
         let args = find_call_args(&s, "run");
-        assert!(!resolves_pure_at_call_site("run", args, &s, &fe));
+        assert!(!resolves_pure_at_call_site(
+            "run",
+            args,
+            &s,
+            &fe,
+            find_fn_body(&s, "caller")
+        ));
     }
 
     #[test]
@@ -971,6 +1238,129 @@ mod tests {
         let s = stmts(src);
         let fe = effects_of(&s);
         let args = find_call_args(&s, "run");
-        assert!(!resolves_pure_at_call_site("run", args, &s, &fe));
+        assert!(!resolves_pure_at_call_site(
+            "run",
+            args,
+            &s,
+            &fe,
+            find_fn_body(&s, "caller")
+        ));
+    }
+
+    // ---- RES-3933 A-E7 follow-up (#4097): local-variable callback tracing ----
+
+    #[test]
+    fn monomorphic_hof_traces_local_alias_of_io_callback() {
+        // `g` is a local variable bound to `noisy` and never
+        // reassigned — `check` must trace it back to `noisy` and
+        // reject, the same as if `noisy` were passed directly.
+        let src = "io fn noisy(int x) -> int { println(x); return x; }\n\
+                   pure fn run(fn(int) -> int f, int x) -> int { return f(x); }\n\
+                   fn caller() -> int { let g = noisy; return run(g, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let err = check(&s, &fe, "<t>")
+            .expect_err("io callback aliased through a local var must still be rejected");
+        assert!(
+            err.contains("cannot pass io callback `noisy` to pure higher-order function `run`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn monomorphic_hof_traces_local_alias_of_pure_callback() {
+        let src = "pure fn add1(int x) -> int { return x + 1; }\n\
+                   pure fn run(fn(int) -> int f, int x) -> int { return f(x); }\n\
+                   fn caller() -> int { let g = add1; return run(g, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        check(&s, &fe, "<t>")
+            .expect("pure callback aliased through a local var must still be accepted");
+    }
+
+    #[test]
+    fn monomorphic_hof_does_not_trace_reassigned_local_alias() {
+        // `g` is reassigned somewhere in `caller` — even though the
+        // reassignment here happens to be irrelevant to this call
+        // site, the pass is path-insensitive and must not trust the
+        // trace once any reassignment exists anywhere in the fn.
+        let src = "io fn noisy(int x) -> int { println(x); return x; }\n\
+                   pure fn add1(int x) -> int { return x + 1; }\n\
+                   pure fn run(fn(int) -> int f, int x) -> int { return f(x); }\n\
+                   fn caller() -> int {\n\
+                   \x20   let g = noisy;\n\
+                   \x20   let r = run(g, 5);\n\
+                   \x20   g = add1;\n\
+                   \x20   return r;\n\
+                   }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        // Unresolvable once reassigned anywhere — "when uncertain,
+        // accept" applies, so this must stay permissive rather than
+        // erroring on a stale/ambiguous trace.
+        check(&s, &fe, "<t>").expect("reassigned local alias must not be trusted either way");
+    }
+
+    #[test]
+    fn monomorphic_hof_does_not_trace_ambiguous_local_alias() {
+        // Two distinct `let g = ...;` bindings for the same name in
+        // the same fn (shadowing) — ambiguous, must not be traced.
+        let src = "io fn noisy(int x) -> int { println(x); return x; }\n\
+                   pure fn add1(int x) -> int { return x + 1; }\n\
+                   pure fn run(fn(int) -> int f, int x) -> int { return f(x); }\n\
+                   fn caller() -> int {\n\
+                   \x20   let g = add1;\n\
+                   \x20   if true { let g = noisy; }\n\
+                   \x20   return run(g, 5);\n\
+                   }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        check(&s, &fe, "<t>").expect("ambiguous (shadowed) local alias must not be trusted");
+    }
+
+    #[test]
+    fn polymorphic_hof_traces_local_alias_of_pure_callback_at_call_site() {
+        let src = "fn run(fn(int) -e-> int f, int x) -> int { return f(x); }\n\
+                   pure fn add1(int x) -> int { return x + 1; }\n\
+                   fn caller() -> int { let g = add1; return run(g, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let args = find_call_args(&s, "run");
+        assert!(
+            resolves_pure_at_call_site("run", args, &s, &fe, find_fn_body(&s, "caller")),
+            "pure callback aliased through a local var must resolve pure at this call site"
+        );
+    }
+
+    #[test]
+    fn polymorphic_hof_does_not_trace_reassigned_local_alias_at_call_site() {
+        let src = "fn run(fn(int) -e-> int f, int x) -> int { return f(x); }\n\
+                   pure fn add1(int x) -> int { return x + 1; }\n\
+                   io fn noisy(int x) -> int { println(x); return x; }\n\
+                   fn caller() -> int {\n\
+                   \x20   let g = add1;\n\
+                   \x20   let r = run(g, 5);\n\
+                   \x20   g = noisy;\n\
+                   \x20   return r;\n\
+                   }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let args = find_call_args(&s, "run");
+        assert!(
+            !resolves_pure_at_call_site("run", args, &s, &fe, find_fn_body(&s, "caller")),
+            "reassigned local alias must not be rescued"
+        );
+    }
+
+    #[test]
+    fn resolve_local_alias_unit_cases() {
+        let src = "fn caller() -> int {\n\
+                   \x20   let g = add1;\n\
+                   \x20   return g;\n\
+                   }\n";
+        let s = stmts(src);
+        let body = find_fn_body(&s, "caller");
+        assert_eq!(resolve_local_alias("g", body), Some("add1".to_string()));
+        assert_eq!(resolve_local_alias("nonexistent", body), None);
     }
 }
