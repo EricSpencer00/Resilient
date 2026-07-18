@@ -5504,8 +5504,235 @@ fn compile_expr(
             next_fn_idx,
             line,
         ),
+        // RES-4060: `forall`/`exists` quantifier expressions. See
+        // `compile_quantifier_expr` for the lowering shape.
+        Node::Quantifier {
+            kind,
+            var,
+            range,
+            body,
+            ..
+        } => compile_quantifier_expr(
+            *kind,
+            var,
+            range,
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
+}
+
+/// RES-4060: compile `forall VAR in RANGE: BODY` / `exists VAR in RANGE:
+/// BODY` to bytecode. Mirrors the tree-walker's
+/// `crate::quantifiers::eval_quantifier`: a short-circuiting loop over
+/// either a bounded integer range (`lo..hi`) or an arbitrary iterable
+/// (array/set/bytes), binding `var` fresh each iteration and evaluating
+/// `body` as a boolean expression per witness. `forall` starts `true`
+/// and flips to `false` (then exits) on the first false witness;
+/// `exists` starts `false` and flips to `true` (then exits) on the
+/// first true witness.
+///
+/// Reuses `compile_for_in`'s iteration shape: the range/iterable side
+/// is normalized via `Op::IterPrepare` into an array (the same op
+/// `for`-loops use for `Value::Range`/`Value::Set`/`Value::Bytes`), then
+/// walked with the hidden `arr`/`len`/`idx` locals. `QuantRange::Range`
+/// is lowered exactly like `Node::Range` (`compile_expr`'s
+/// `Node::Range` arm above) — a `lo..hi` half-open range via the
+/// `__range` builtin — since the quantifier grammar has no `inclusive`
+/// form.
+#[allow(clippy::too_many_arguments)]
+fn compile_quantifier_expr(
+    kind: crate::quantifiers::QuantifierKind,
+    var: &str,
+    range: &crate::quantifiers::QuantRange,
+    body: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    if (*next_local as usize) + 5 > u16::MAX as usize {
+        return Err(CompileError::TooManyLocals);
+    }
+    let arr_slot = *next_local;
+    *next_local += 1;
+    let len_slot = *next_local;
+    *next_local += 1;
+    let idx_slot = *next_local;
+    *next_local += 1;
+    let result_slot = *next_local;
+    *next_local += 1;
+    let arr_key = format!("$quant_arr@{}", arr_slot);
+    let len_key = format!("$quant_len@{}", len_slot);
+    let idx_key = format!("$quant_idx@{}", idx_slot);
+    let result_key = format!("$quant_result@{}", result_slot);
+    locals.insert(arr_key.clone(), arr_slot);
+    locals.insert(len_key.clone(), len_slot);
+    locals.insert(idx_key.clone(), idx_slot);
+    locals.insert(result_key.clone(), result_slot);
+
+    // Quantified variable: shadow any outer binding for the duration
+    // of the loop, restored afterward — same shape as `compile_for_in`.
+    let prev_var_slot = locals.get(var).copied();
+    let var_slot = *next_local;
+    *next_local += 1;
+    locals.insert(var.to_string(), var_slot);
+
+    // 1. Evaluate the range/iterable onto the stack as a single value,
+    //    normalize with `IterPrepare`, store in arr_slot.
+    match range {
+        crate::quantifiers::QuantRange::Range { lo, hi } => {
+            compile_expr(
+                lo,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                hi,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            let incl_idx = chunk.add_constant(Value::Bool(false))?;
+            chunk.emit(Op::Const(incl_idx), line);
+            let name_idx = chunk.add_string_constant("__range")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: name_idx,
+                    arity: 3,
+                },
+                line,
+            );
+        }
+        crate::quantifiers::QuantRange::Iterable(expr) => {
+            compile_expr(
+                expr,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+        }
+    }
+    chunk.emit(Op::IterPrepare, line);
+    chunk.emit(Op::StoreLocal(arr_slot), line);
+
+    // 2. len = len(arr)
+    let len_name_const = chunk.add_string_constant("len")?;
+    chunk.emit(Op::LoadLocal(arr_slot), line);
+    chunk.emit(
+        Op::CallBuiltin {
+            name_const: len_name_const,
+            arity: 1,
+        },
+        line,
+    );
+    chunk.emit(Op::StoreLocal(len_slot), line);
+
+    // 3. idx = 0
+    let zero_const = chunk.add_constant(Value::Int(0))?;
+    chunk.emit(Op::Const(zero_const), line);
+    chunk.emit(Op::StoreLocal(idx_slot), line);
+
+    // 4. result = (kind == Forall) — the vacuous-range answer, flipped
+    //    on the first witness that disproves it.
+    let initial = matches!(kind, crate::quantifiers::QuantifierKind::Forall);
+    let initial_const = chunk.add_constant(Value::Bool(initial))?;
+    chunk.emit(Op::Const(initial_const), line);
+    chunk.emit(Op::StoreLocal(result_slot), line);
+
+    // 5. Loop test: idx < len.
+    let loop_start = chunk.code.len();
+    chunk.emit(Op::LoadLocal(idx_slot), line);
+    chunk.emit(Op::LoadLocal(len_slot), line);
+    chunk.emit(Op::Lt, line);
+    let jif = chunk.emit(Op::JumpIfFalse(0), line);
+
+    // 6. var = arr[idx]
+    chunk.emit(Op::LoadLocal(arr_slot), line);
+    chunk.emit(Op::LoadLocal(idx_slot), line);
+    chunk.emit(Op::LoadIndex, line);
+    chunk.emit(Op::StoreLocal(var_slot), line);
+
+    // 7. Evaluate the body (must produce a Bool) and short-circuit:
+    //    `forall` exits on the first `false` witness; `exists` exits
+    //    on the first `true` witness. Otherwise fall through to the
+    //    index increment and loop again.
+    compile_expr(
+        body,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    let short_circuit_jump = match kind {
+        crate::quantifiers::QuantifierKind::Forall => chunk.emit(Op::JumpIfTrue(0), line),
+        crate::quantifiers::QuantifierKind::Exists => chunk.emit(Op::JumpIfFalse(0), line),
+    };
+    let flipped = !initial;
+    let flipped_const = chunk.add_constant(Value::Bool(flipped))?;
+    chunk.emit(Op::Const(flipped_const), line);
+    chunk.emit(Op::StoreLocal(result_slot), line);
+    let exit_jump = chunk.emit(Op::Jump(0), line);
+    let continue_target = chunk.code.len();
+    chunk.patch_jump(short_circuit_jump, continue_target)?;
+
+    // 8. idx = idx + 1; loop back to the test.
+    chunk.emit(Op::LoadLocal(idx_slot), line);
+    let one_const = chunk.add_constant(Value::Int(1))?;
+    chunk.emit(Op::Const(one_const), line);
+    chunk.emit(Op::Add, line);
+    chunk.emit(Op::StoreLocal(idx_slot), line);
+    let jmp = chunk.emit(Op::Jump(0), line);
+    chunk.patch_jump(jmp, loop_start)?;
+
+    // 9. Exit: leave `result` on the stack as the expression's value.
+    let end = chunk.code.len();
+    chunk.patch_jump(jif, end)?;
+    chunk.patch_jump(exit_jump, end)?;
+    chunk.emit(Op::LoadLocal(result_slot), line);
+
+    locals.remove(&arr_key);
+    locals.remove(&len_key);
+    locals.remove(&idx_key);
+    locals.remove(&result_key);
+    if let Some(prev) = prev_var_slot {
+        locals.insert(var.to_string(), prev);
+    } else {
+        locals.remove(var);
+    }
+    Ok(())
 }
 
 /// RES-3993: `while`/`loop` used in *expression* position — most
@@ -8699,6 +8926,78 @@ x;
     fn range_expr_for_in_inclusive_iterates_correctly() {
         let src = "let sum = 0; for i in 1..=3 { sum = sum + i; } sum;";
         assert!(matches!(vm_ok(src), Value::Int(6))); // 1+2+3
+    }
+
+    // ── RES-4060: `Node::Quantifier` (forall/exists) VM lowering ──
+
+    #[test]
+    fn quantifier_forall_range_true() {
+        let src = "forall i in 0..5: i >= 0;";
+        assert!(matches!(vm_ok(src), Value::Bool(true)));
+    }
+
+    #[test]
+    fn quantifier_forall_range_false_short_circuits() {
+        let src = "forall i in 0..5: i < 3;";
+        assert!(matches!(vm_ok(src), Value::Bool(false)));
+    }
+
+    #[test]
+    fn quantifier_forall_vacuous_range_is_true() {
+        let src = "forall i in 5..5: false;";
+        assert!(matches!(vm_ok(src), Value::Bool(true)));
+    }
+
+    #[test]
+    fn quantifier_exists_range_true() {
+        let src = "exists i in 0..5: i == 2;";
+        assert!(matches!(vm_ok(src), Value::Bool(true)));
+    }
+
+    #[test]
+    fn quantifier_exists_range_false() {
+        let src = "exists i in 0..5: i < 0;";
+        assert!(matches!(vm_ok(src), Value::Bool(false)));
+    }
+
+    #[test]
+    fn quantifier_exists_over_array_literal() {
+        let src = "exists x in [1, 5, 9]: x > 4;";
+        assert!(matches!(vm_ok(src), Value::Bool(true)));
+    }
+
+    #[test]
+    fn quantifier_forall_over_array_referencing_indices() {
+        let src = "let a = [10, 20, 30]; forall i in 0..len(a): a[i] > 0;";
+        assert!(matches!(vm_ok(src), Value::Bool(true)));
+    }
+
+    #[test]
+    fn quantifier_var_does_not_leak_outer_scope() {
+        // The quantified variable is scoped to the quantifier body only —
+        // an outer `i` of the same name must survive unchanged.
+        let src = "let i = 99; let r = forall i in 0..3: i < 10; i;";
+        assert!(matches!(vm_ok(src), Value::Int(99)));
+    }
+
+    #[test]
+    fn quantifier_inside_assert_true_does_not_fail() {
+        let src = r#"assert(forall i in 0..10: i + 1 > 0); "ok";"#;
+        match vm_ok(src) {
+            Value::String(s) => assert_eq!(s, "ok"),
+            other => panic!("expected String(\"ok\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn quantifier_inside_assert_false_raises_assertion_failed() {
+        let src = "assert(forall i in 0..5: i < 3);";
+        match vm_run(src) {
+            crate::vm::VmError::AtLine { kind, .. } => {
+                assert!(matches!(*kind, crate::vm::VmError::AssertionFailed(_)));
+            }
+            other => panic!("expected AssertionFailed, got {:?}", other),
+        }
     }
 
     #[test]

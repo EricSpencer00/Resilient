@@ -360,47 +360,29 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // RES-4017 (the same `Op::CallMethod` built-in-container-fallback gap
     // the block below owns) and no longer belong here.
     //
-    // The remaining entries are two distinct, genuinely-large-scope root
-    // causes — deferred rather than forced into this PR:
-    //
-    // `array_contains.rz`, `array_sorted_invariant.rz`, `quantifier_assert.rz`,
-    // `quantifier_exists.rz`, `quantifier_forall.rz`, `showcase_quantifiers.rz`
-    // all use `forall`/`exists` quantifier expressions (`Node::Quantifier`),
-    // which has no bytecode-compile arm at all (`compiler.rs`'s `node_kind`
-    // has no `Quantifier` case, so it falls to the `<other>` catch-all). The
-    // tree-walker's `crate::quantifiers::eval_quantifier` short-circuits a
-    // `for`-style loop over a `lo..hi` range or an iterable (array/set/bytes),
-    // binding the quantified variable fresh each iteration and evaluating an
-    // arbitrary boolean body expression per witness. Compiling this to
-    // bytecode needs either a new dedicated loop-with-early-exit lowering (a
-    // real, non-mechanical addition to `compile_expr` — a body-generic
-    // per-witness environment binding, short-circuit jump-out on the first
-    // false/true witness, and range-vs-iterable dispatch) or a call into a
-    // reusable "run this compiled body once per witness" primitive that
-    // doesn't exist yet. Tracked by #4060 (quantifier + defer VM
-    // lowering) — re-confirmed still diverging under RES-3993's
-    // re-triage; not attempted here, left for #4060.
+    // RES-4060: `array_contains.rz`, `array_sorted_invariant.rz`,
+    // `quantifier_assert.rz`, `quantifier_exists.rz`, `quantifier_forall.rz`,
+    // `showcase_quantifiers.rz` (forall/exists quantifier expressions) are
+    // fixed — `compile_quantifier_expr` in `compiler.rs` lowers
+    // `Node::Quantifier` to a short-circuiting `Op::IterPrepare` +
+    // hidden-local loop (same shape as `compile_for_in`), matching the
+    // tree-walker's `crate::quantifiers::eval_quantifier` exactly for both
+    // the bounded-range and iterable forms. No longer belong here.
     //
     // `defer_stmt.rz` uses `defer <expr>;` (`Node::DeferStatement`), which
-    // likewise has no bytecode-compile arm (`<other>` catch-all). The
-    // tree-walker maintains a `defer_stack: Vec<(Node, Environment)>` on
-    // `Interpreter`, pushes `(expr, captured_env)` at each `defer` site, and
-    // drains it in LIFO order at the function-call boundary (both the
-    // implicit end-of-body path and every early `return`), regardless of
-    // whether the body succeeded or failed. The VM has no equivalent
-    // call-frame-scoped defer stack or return-path hook — adding one needs
-    // `CallFrame` to carry a per-frame deferred-bytecode list and every exit
-    // path (`Op::Return`, `Op::ReturnFromCall`, and the `TryUnwrap`/
+    // has no bytecode-compile arm (`<other>` catch-all). The tree-walker
+    // maintains a `defer_stack: Vec<(Node, Environment)>` on `Interpreter`,
+    // pushes `(expr, captured_env)` at each `defer` site, and drains it in
+    // LIFO order at the function-call boundary (both the implicit
+    // end-of-body path and every early `return`), regardless of whether the
+    // body succeeded or failed. The VM has no equivalent call-frame-scoped
+    // defer stack or return-path hook — adding one needs `CallFrame` to
+    // carry a per-frame deferred-bytecode list and every exit path
+    // (`Op::Return`, `Op::ReturnFromCall`, and the `TryUnwrap`/
     // `ContractViolation` early-return paths) to drain it, in both dispatch
-    // engines. Tracked by #4060 — re-confirmed still diverging under
-    // RES-3993's re-triage; not attempted here, left for #4060.
-    "array_contains.rz",
-    "array_sorted_invariant.rz",
+    // engines. Split off #4060 into #4119 (defer-only) once the quantifier
+    // half shipped; not attempted here, left for #4119.
     "defer_stmt.rz",
-    "quantifier_assert.rz",
-    "quantifier_exists.rz",
-    "quantifier_forall.rz",
-    "showcase_quantifiers.rz",
     // RES-4017 (split off from RES-3994; that ticket closed once every
     // sub-case had a home — see PR #4016): the `Op::CallMethod`
     // built-in-container-fallback / closure-invocation slice of this
