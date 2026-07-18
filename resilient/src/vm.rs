@@ -578,7 +578,18 @@ impl Dispatch {
 /// dispatch iteration — keeps every inner `?` and `return Err(...)`
 /// site untouched.
 pub fn run(program: &Program) -> Result<Value, VmError> {
-    run_with_mode(program, OverflowMode::from_env())
+    run_with_source(program, "")
+}
+
+/// RES-4131: same as `run`, but threads `source_path` through to
+/// `stacktrace()`'s frame formatting so `<fn> at <file>:<line>:<col>`
+/// lines match the tree-walker's `Interpreter::source_path`-derived
+/// output. Callers that don't care (tests, benchmarks, the many
+/// internal `vm::run(&prog)` call sites) keep using the plain `run`,
+/// which passes `""` — `stacktrace()` still works there, just with an
+/// empty file component.
+pub fn run_with_source(program: &Program, source_path: &str) -> Result<Value, VmError> {
+    run_with_mode_source(program, OverflowMode::from_env(), source_path)
 }
 
 /// RES-349: explicit-mode entry point. The default `run` reads the
@@ -591,6 +602,16 @@ pub fn run_with_mode(program: &Program, mode: OverflowMode) -> Result<Value, VmE
     run_with(program, mode, Dispatch::from_env())
 }
 
+/// RES-4131: `run_with_mode` + an explicit `source_path` (see
+/// `run_with_source`).
+pub fn run_with_mode_source(
+    program: &Program,
+    mode: OverflowMode,
+    source_path: &str,
+) -> Result<Value, VmError> {
+    run_with_source_and_dispatch(program, mode, Dispatch::from_env(), source_path)
+}
+
 /// RES-329: fully-explicit entry point. Tests and benchmarks pick the
 /// dispatch strategy directly without mutating process env.
 pub fn run_with(
@@ -598,11 +619,21 @@ pub fn run_with(
     mode: OverflowMode,
     dispatch: Dispatch,
 ) -> Result<Value, VmError> {
+    run_with_source_and_dispatch(program, mode, dispatch, "")
+}
+
+/// RES-4131: `run_with` + an explicit `source_path`.
+pub fn run_with_source_and_dispatch(
+    program: &Program,
+    mode: OverflowMode,
+    dispatch: Dispatch,
+    source_path: &str,
+) -> Result<Value, VmError> {
     // Sentinel for "no failure attributable yet" — main chunk @ pc 0.
     let mut last_pc: (usize, usize) = (usize::MAX, 0);
     let result = match dispatch {
-        Dispatch::Match => run_inner(program, &mut last_pc, mode),
-        Dispatch::Direct => run_direct(program, &mut last_pc, mode),
+        Dispatch::Match => run_inner(program, &mut last_pc, mode, source_path),
+        Dispatch::Direct => run_direct(program, &mut last_pc, mode, source_path),
     };
     match result {
         Ok(v) => Ok(v),
@@ -723,6 +754,7 @@ fn run_postcheck(
         overflow_mode,
         &mut last_pc,
         None,
+        "",
     )? {
         LoopOutcome::Halted(v) => Ok(v),
         // `tracked: None` means only `Halted` is ever produced (see
@@ -742,6 +774,7 @@ fn run_inner(
     program: &Program,
     last_pc: &mut (usize, usize),
     overflow_mode: OverflowMode,
+    source_path: &str,
 ) -> Result<Value, VmError> {
     let mut stack: Vec<Value> = Vec::with_capacity(64);
     // RES-1814: pre-size to 32 — typical VM runs have 5-30 locals
@@ -780,6 +813,7 @@ fn run_inner(
         overflow_mode,
         last_pc,
         None,
+        source_path,
     )? {
         LoopOutcome::Halted(v) => Ok(v),
         // The top-level call always passes `tracked: None`, so the
@@ -813,6 +847,7 @@ fn run_dispatch_loop(
     overflow_mode: OverflowMode,
     last_pc: &mut (usize, usize),
     tracked: Option<LiveTrack>,
+    source_path: &str,
 ) -> Result<LoopOutcome, VmError> {
     // RES-3995: once a frame pop drops `frames.len()` below this, the
     // tracked live block's own frame is gone — further ops belong to
@@ -1755,6 +1790,12 @@ fn run_dispatch_loop(
                     // needs closure-invocation access the generic
                     // `BuiltinFn` table doesn't have.
                     vm_array_none_builtin(program, &args, overflow_mode)?
+                } else if name == "stacktrace" {
+                    // RES-4131: see `vm_stacktrace_builtin`'s doc
+                    // comment — reconstructs the call stack from
+                    // `frames` itself rather than a dedicated tracking
+                    // vec (the tree-walker's `Interpreter::call_stack`).
+                    Value::Array(vm_stacktrace_builtin(frames, program, source_path))
                 } else if let Some(func) = crate::lookup_builtin(name) {
                     func(&args).map_err(VmError::BuiltinCallFailed)?
                 } else if let Some(stdlib_result) =
@@ -2008,6 +2049,7 @@ fn run_dispatch_loop(
                             frame_idx,
                             retry_count,
                         }),
+                        source_path,
                     );
                     match outcome {
                         Ok(LoopOutcome::ExitedNormally) => break,
@@ -2508,6 +2550,47 @@ fn vm_operator_overload_fn_idx(
     program.functions.iter().position(|f| f.name == mangled)
 }
 
+/// RES-4131: `stacktrace()` builtin for the VM — mirrors
+/// `Interpreter::call_stack` (lib.rs) + `error_stack_traces::
+/// builtin_stacktrace`, but reconstructs the call stack from the VM's
+/// own `frames` instead of a dedicated tracking vec, since the
+/// `CallFrame` stack already *is* the call stack: frame `i`'s own
+/// `.pc` is advanced past its current op *before* that op dispatches
+/// (see the `frames[frame_idx].pc += 1;` at the top of the dispatch
+/// loop), so by the time frame `i` calls into frame `i+1`, `frames[i]
+/// .pc - 1` is exactly the call-site instruction's `pc` in frame `i`'s
+/// own chunk. Frame 0 is always the synthetic `main` frame
+/// (`chunk_idx == usize::MAX`) and is never itself listed (it has no
+/// call site), matching the tree-walker never emitting a frame for
+/// top-level code.
+fn vm_stacktrace_builtin(frames: &[CallFrame], program: &Program, source_path: &str) -> Vec<Value> {
+    let mut trace_frames = Vec::with_capacity(frames.len().saturating_sub(1));
+    for i in 1..frames.len() {
+        let chunk_idx = frames[i].chunk_idx;
+        if chunk_idx == usize::MAX {
+            continue;
+        }
+        let fn_name = program.functions[chunk_idx].name.clone();
+        let caller = &frames[i - 1];
+        let caller_chunk: &Chunk = if caller.chunk_idx == usize::MAX {
+            &program.main
+        } else {
+            &program.functions[caller.chunk_idx].chunk
+        };
+        let call_pc = caller.pc.saturating_sub(1);
+        let line = caller_chunk.line_info.get(call_pc).copied().unwrap_or(0) as usize;
+        let column = caller_chunk.call_cols.get(&call_pc).copied().unwrap_or(0) as usize;
+        trace_frames.push(crate::error_stack_traces::StackFrame {
+            fn_name,
+            call_span: crate::span::Span::point(crate::span::Pos::new(line, column, 0)),
+        });
+    }
+    crate::error_stack_traces::builtin_stacktrace(&trace_frames, source_path)
+        .into_iter()
+        .map(Value::String)
+        .collect()
+}
+
 /// RES-3994: `to_string(x)` free-function dispatch to a struct's
 /// `Display` impl — mirrors `display_trait::try_display_fmt` (lib.rs),
 /// which the interpreter's `to_string` builtin call site consults
@@ -2625,6 +2708,7 @@ fn vm_call_closure_value(
         overflow_mode,
         &mut last_pc,
         None,
+        "",
     )? {
         LoopOutcome::Halted(v) => Ok(v),
         // `tracked: None` means only `Halted` is ever produced — see
@@ -3351,6 +3435,9 @@ struct VmState<'p> {
     frames: Vec<CallFrame>,
     overflow_mode: OverflowMode,
     try_stack: Vec<TryFrame>,
+    /// RES-4131: threaded through to `stacktrace()`'s frame
+    /// formatting — see `run_with_source`.
+    source_path: &'p str,
 }
 
 impl<'p> VmState<'p> {
@@ -3630,6 +3717,7 @@ fn run_direct(
     program: &Program,
     last_pc: &mut (usize, usize),
     overflow_mode: OverflowMode,
+    source_path: &str,
 ) -> Result<Value, VmError> {
     // RES-1830: pre-size `locals` to 32 — mirrors RES-1814 for the
     // tree-walker `run_inner` path. `run_direct` is the second VM
@@ -3642,6 +3730,7 @@ fn run_direct(
         frames: Vec::with_capacity(16),
         overflow_mode,
         try_stack: Vec::new(),
+        source_path,
     };
     state.frames.push(CallFrame {
         chunk_idx: usize::MAX,
@@ -4611,6 +4700,14 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         // RES-3993: see the match-dispatch `Op::CallBuiltin` arm and
         // `vm_array_none_builtin`'s doc comment for the rationale.
         vm_array_none_builtin(state.program, &args, state.overflow_mode)?
+    } else if name == "stacktrace" {
+        // RES-4131: see the match-dispatch `Op::CallBuiltin` arm and
+        // `vm_stacktrace_builtin`'s doc comment for the rationale.
+        Value::Array(vm_stacktrace_builtin(
+            &state.frames,
+            state.program,
+            state.source_path,
+        ))
     } else if let Some(func) = crate::lookup_builtin(name) {
         func(&args).map_err(VmError::BuiltinCallFailed)?
     } else if let Some(stdlib_result) = crate::stdlib::call_by_qualified_name(name, &args) {

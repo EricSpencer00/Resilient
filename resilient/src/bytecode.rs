@@ -493,6 +493,14 @@ pub struct Chunk {
     pub try_handlers: Vec<TryHandlerEntry>,
     /// RES-3995: live-block handler table. `EnterLive(idx)` indexes this.
     pub live_handlers: Vec<LiveHandlerEntry>,
+    /// RES-4131: sparse `pc -> source column` map for call-site
+    /// instructions only (`Call`, `CallClosure`, `CallMethod`,
+    /// `CallForeign`). `line_info` already gives the line for every
+    /// op; call sites additionally need the column so `stacktrace()`
+    /// can format `"<fn> at <file>:<line>:<column>"` frames. Kept
+    /// sparse (rather than a `Vec<u32>` parallel to every op) so the
+    /// common non-call instruction pays nothing.
+    pub call_cols: HashMap<usize, u32>,
 }
 
 /// RES-081: a compiled function. Parameters occupy the first `arity`
@@ -579,7 +587,16 @@ impl Chunk {
             string_idx: HashMap::with_capacity(cap / 4),
             try_handlers: Vec::new(),
             live_handlers: Vec::new(),
+            call_cols: HashMap::new(),
         }
+    }
+
+    /// RES-4131: record the source column of a call-site instruction
+    /// (indexed by its `pc`, the value `emit` returned for that op).
+    /// Only `Call`/`CallClosure`/`CallMethod`/`CallForeign` sites are
+    /// recorded — see `call_cols` field doc.
+    pub fn record_call_col(&mut self, pc: usize, column: u32) {
+        self.call_cols.insert(pc, column);
     }
 
     /// Append an instruction and its originating line. Returns the

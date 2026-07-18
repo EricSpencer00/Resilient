@@ -4389,8 +4389,14 @@ fn compile_expr(
         Node::CallExpression {
             function,
             arguments,
-            ..
+            span: call_expr_span,
         } => {
+            // RES-4131: column of the call's `(` token, recorded
+            // against every call-site opcode below so the VM's
+            // `stacktrace()` can format `<fn> at <file>:<line>:<col>`
+            // frames identically to the tree-walker (which uses this
+            // same span — see `lib.rs`'s `call_span = *span`).
+            let call_col = call_expr_span.start.column as u32;
             // RES-1419: hold the callee name as `&str` through the
             // three index lookups + `lookup_builtin` instead of
             // eagerly cloning to an owned `String`. The previous
@@ -4432,13 +4438,14 @@ fn compile_expr(
                     if arity > u8::MAX as usize {
                         return Err(CompileError::Unsupported("too many args in indirect call"));
                     }
-                    chunk.emit(
+                    let pc = chunk.emit(
                         Op::CallClosure {
                             arity: arity as u8,
                             source_slot: slot,
                         },
                         line,
                     );
+                    chunk.record_call_col(pc, call_col);
                     return Ok(());
                 }
             }
@@ -4475,13 +4482,14 @@ fn compile_expr(
                 if arity > u8::MAX as usize {
                     return Err(CompileError::Unsupported("method call with > 255 args"));
                 }
-                chunk.emit(
+                let pc = chunk.emit(
                     Op::CallMethod {
                         method_const,
                         arity: arity as u8,
                     },
                     line,
                 );
+                chunk.record_call_col(pc, call_col);
                 return Ok(());
             }
             // RES-3993: any other callee expression (an immediately-invoked
@@ -4526,13 +4534,14 @@ fn compile_expr(
                 if arity > u8::MAX as usize {
                     return Err(CompileError::Unsupported("too many args in indirect call"));
                 }
-                chunk.emit(
+                let pc = chunk.emit(
                     Op::CallClosure {
                         arity: arity as u8,
                         source_slot: u16::MAX,
                     },
                     line,
                 );
+                chunk.record_call_col(pc, call_col);
                 return Ok(());
             }
             let callee_name: &str = match function.as_ref() {
@@ -4554,7 +4563,8 @@ fn compile_expr(
                         line,
                     )?;
                 }
-                chunk.emit(Op::CallForeign(idx), line);
+                let pc = chunk.emit(Op::CallForeign(idx), line);
+                chunk.record_call_col(pc, call_col);
                 return Ok(());
             }
             // User-defined function next.
@@ -4574,7 +4584,8 @@ fn compile_expr(
                         line,
                     )?;
                 }
-                chunk.emit(Op::Call(callee_idx), line);
+                let pc = chunk.emit(Op::Call(callee_idx), line);
+                chunk.record_call_col(pc, call_col);
                 return Ok(());
             }
             // RES-VM (issue #266): fall back to the canonical builtin
@@ -4597,6 +4608,7 @@ fn compile_expr(
             if crate::lookup_builtin(callee_name).is_some()
                 || crate::stdlib::is_stdlib_function(callee_name)
                 || callee_name == "array_none"
+                || callee_name == "stacktrace"
             {
                 if arguments.len() > u8::MAX as usize {
                     return Err(CompileError::Unsupported("builtin call with > 255 args"));
