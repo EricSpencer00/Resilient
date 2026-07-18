@@ -636,7 +636,13 @@ pub fn run_with_source_and_dispatch(
         Dispatch::Direct => run_direct(program, &mut last_pc, mode, source_path),
     };
     match result {
-        Ok(v) => Ok(v),
+        Ok(v) => {
+            // RES-4141: drain spawned actors after the main script
+            // finishes, mirroring the tree-walker's `run_pending_actors`
+            // call site in `lib.rs`'s `execute_file`/`run_program`.
+            run_pending_actors(program, mode)?;
+            Ok(v)
+        }
         Err(e) => {
             let line_info: &[u32] = if last_pc.0 == usize::MAX {
                 &program.main.line_info
@@ -2717,6 +2723,89 @@ fn vm_call_closure_value(
             unreachable!("vm_call_closure_value's untracked, single-frame sub-run only ever halts")
         }
     }
+}
+
+/// RES-4141: VM-side counterpart to `lib.rs`'s tree-walker
+/// `run_pending_actors`. Drains every actor `spawn`ed while `program`'s
+/// main chunk ran, executing each body via `vm_call_closure_value` (the
+/// same re-entrant call primitive `.map()`/`.filter()`/etc. use) instead
+/// of the interpreter's `apply_function`/`Environment` machinery.
+///
+/// Mirrors the tree-walker step for step so scheduling order — and
+/// therefore stdout — is byte-identical: pop the next runnable PID,
+/// mark it current, invoke its body with zero arguments, then either
+/// deregister it (`Ok`), leave it blocked (`WouldBlock:<pid>`), or run
+/// it through the supervisor's crash-restart policy (any other `Err`).
+/// After the runnable queue drains, an unresolved deadlock is surfaced
+/// exactly like the tree-walker: the diagnostic is written to the
+/// output sink (so it lands in stdout, not just the error return) and
+/// then also returned as an `Err` so the process exits non-zero.
+fn run_pending_actors(program: &Program, overflow_mode: OverflowMode) -> Result<(), VmError> {
+    const MAX_ACTOR_STEPS: usize = 100_000;
+    let mut steps = 0;
+    while let Some(pid) = crate::actor_runtime::next_runnable_actor() {
+        if steps >= MAX_ACTOR_STEPS {
+            return Err(VmError::BuiltinCallFailed(format!(
+                "actor scheduler exceeded step limit ({MAX_ACTOR_STEPS}); \
+                 possible infinite loop in actor body"
+            )));
+        }
+        steps += 1;
+        let fn_val = match crate::actor_runtime::get_actor_fn(pid) {
+            Some(v) => v,
+            None => {
+                let _ = crate::actor_runtime::deregister_actor(pid);
+                continue;
+            }
+        };
+        crate::actor_runtime::set_current_actor(Some(pid));
+        let result = vm_call_closure_value(program, fn_val, vec![], overflow_mode);
+        crate::actor_runtime::set_current_actor(None);
+        match result {
+            Ok(_) => {
+                let _ = crate::actor_runtime::deregister_actor(pid);
+            }
+            Err(VmError::BuiltinCallFailed(ref e)) if e.starts_with("WouldBlock:") => {
+                // Actor blocked on receive() — already marked blocked;
+                // do not deregister; a future send() will re-queue it.
+            }
+            Err(e) => {
+                let crash_event = crate::supervisor_runtime::CrashEvent {
+                    actor_pid: pid.0,
+                    reason: crate::supervisor_runtime::CrashReason::UnhandledError,
+                };
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                if crate::supervisor_runtime::handle_crash_event(crash_event, now_secs) {
+                    crate::actor_runtime::mark_runnable(pid);
+                    if crate::actor_runtime::get_actor_fn(pid).is_some() {
+                        continue;
+                    }
+                }
+                let _ = crate::actor_runtime::deregister_actor(pid);
+                eprintln!("actor {} crashed: {}", pid.0, e);
+            }
+        }
+    }
+
+    if crate::actor_runtime::is_deadlocked() {
+        let pids = crate::actor_runtime::blocked_pids();
+        let pid_list: Vec<String> = pids.iter().map(|p| p.0.to_string()).collect();
+        let msg = format!(
+            "error: deadlock detected; {} actor(s) blocked on receive() \
+             with empty mailboxes; PIDs: [{}]",
+            pids.len(),
+            pid_list.join(", ")
+        );
+        crate::output_sink::write_str(&msg);
+        crate::output_sink::write_str("\n");
+        return Err(VmError::BuiltinCallFailed(msg));
+    }
+
+    Ok(())
 }
 
 /// RES-4017: array higher-order methods (`.map()`, `.filter()`,
