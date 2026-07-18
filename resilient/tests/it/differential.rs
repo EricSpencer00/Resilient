@@ -27,15 +27,30 @@
 //! failure without filing (or referencing) a ticket for *why* it
 //! diverges. If you fix a divergence, remove the entry in the same PR.
 //!
+//! ## JIT differential pass (RES-4111, B-E4)
+//!
+//! [`interpreter_and_jit_agree_on_all_examples`] extends the same
+//! denylist-inverted sweep to the Cranelift JIT backend (`--jit`),
+//! gated behind `#[cfg(feature = "jit")]` (the plain `cargo test`
+//! default excludes it; `cargo test --features jit` runs it).
+//!
+//! The JIT lowering only covers an i64-only subset directly, but
+//! `--jit`'s CLI dispatch (RES-4019) transparently falls back to the
+//! VM for any `JitError::is_precompile()` — i.e. any construct the
+//! native lowering doesn't (yet) handle. That fallback is why this
+//! pass covers almost the whole corpus today even though string/struct
+//! lowering (the rest of B-E4) hasn't landed yet: for the overwhelming
+//! majority of examples `--jit` *is* `--vm` end to end, byte for byte.
+//! [`UNSUPPORTED_BY_JIT`] therefore starts out identical to
+//! [`UNSUPPORTED_BY_VM`] — the JIT fallback path inherits exactly the
+//! VM's own known divergences, not new ones of its own. As string/struct
+//! lowering lands and the JIT actually executes more programs natively
+//! instead of falling back, expect this list to gain *JIT-specific*
+//! entries independent of the VM list (a program the VM gets right but
+//! the native lowering gets wrong) even as both shrink over time.
+//!
 //! ## What's not covered yet (deliberate)
 //!
-//! - The JIT backend (`--features jit`) is **out of scope for this
-//!   file**. The JIT lowering only supports a small i64-only subset (no
-//!   strings, no structs, no actors, no Z3-discharged contracts) so
-//!   running it against the full example corpus would force every
-//!   program through the "skip — unimplemented JIT node" path. See
-//!   follow-up ticket: a JIT-only differential pass once the lowering
-//!   covers enough surface to be meaningful.
 //! - A CI "shrink-ratchet" check that fails if [`UNSUPPORTED_BY_VM`]
 //!   grows without a matching ticket, and an aggregate
 //!   unsupported-construct-kind coverage artifact, are noted as
@@ -1985,6 +2000,131 @@ fn interpreter_and_vm_agree_on_ensures_recovers_to_postconditions() {
             "{tag}: expected --vm to halt on the violated postcondition, got exit {:?} stdout {:?}",
             vm.code,
             vm.stdout
+        );
+    }
+}
+
+/// RES-4111 (B-E4): JIT differential pass. Runs every discovered
+/// example through the interpreter (oracle) and `--jit` and compares
+/// stdout + exit code, mirroring [`interpreter_and_vm_agree_on_all_examples`]
+/// exactly but targeting the Cranelift backend. Gated behind
+/// `#[cfg(feature = "jit")]` — the JIT flag is a hard CLI error when the
+/// binary is built without the `jit` feature (see
+/// `backend_limited_feature_message` in `lib.rs`), so this module only
+/// compiles/runs under `cargo test --features jit`.
+#[cfg(feature = "jit")]
+mod jit_differential {
+    use super::{Run, compare_outputs, discover_examples};
+    use std::process::Command;
+
+    fn run_jit(example: &str) -> Run {
+        let path = format!("examples/{example}");
+        let output = Command::new(super::bin())
+            .arg("--jit")
+            .arg(&path)
+            .output()
+            .expect("failed to spawn rz --jit");
+        Run {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            code: output.status.code(),
+        }
+    }
+
+    /// RES-4111: denylist of `examples/*.rz` files where `--jit` does not
+    /// (yet) execute identically to the tree walker. Starts out equal to
+    /// [`super::UNSUPPORTED_BY_VM`] because `--jit` transparently falls
+    /// back to `--vm` (RES-4019) for every construct the native i64-only
+    /// lowering doesn't handle, so today the JIT path inherits exactly
+    /// the VM's own known divergences for these five actor/stacktrace
+    /// examples — not a JIT-specific bug. As string/struct lowering
+    /// (RES-4111 follow-up PRs) lands and more programs execute through
+    /// native code instead of falling back, this list is expected to
+    /// diverge from `UNSUPPORTED_BY_VM` in both directions: entries here
+    /// may clear before the VM's own copy does (JIT bypasses a VM-only
+    /// bug by running natively), or gain JIT-specific entries the VM
+    /// doesn't have (a program the VM runs correctly that the native
+    /// lowering mishandles). Do not add an entry without a comment
+    /// explaining why it diverges.
+    const UNSUPPORTED_BY_JIT: &[&str] = &[
+        // Same root cause as the identical entries in
+        // `UNSUPPORTED_BY_VM`: `spawn(fn)` has no VM-side actor-body
+        // execution path, and `--jit` falls back to `--vm` for the
+        // `Node::Spawn`/actor constructs its own lowering doesn't
+        // support, so it inherits the VM's divergence unchanged.
+        "actor_deadlock.rz",
+        "actor_ping_pong.rz",
+        "actor_spawn_send.rz",
+        // Same root cause as `UNSUPPORTED_BY_VM`'s entry: `stacktrace()`
+        // needs call-frame-name + call-site-column tracking neither the
+        // VM nor the JIT's VM-fallback path implements.
+        "error_stack_traces.rz",
+        "showcase_actors.rz",
+    ];
+
+    #[test]
+    fn unsupported_by_jit_entries_reference_real_files_with_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for example in UNSUPPORTED_BY_JIT {
+            let path = format!("examples/{example}");
+            assert!(
+                std::path::Path::new(&path).exists(),
+                "UNSUPPORTED_BY_JIT references missing file: {path}"
+            );
+            assert!(
+                seen.insert(*example),
+                "UNSUPPORTED_BY_JIT lists {example} more than once"
+            );
+        }
+    }
+
+    #[test]
+    fn at_least_four_hundred_examples_are_covered_by_default_under_jit() {
+        // Mirrors the VM sweep's coverage floor (RES-3990) so a future
+        // change can't silently gut the JIT differential pass down to a
+        // handful of examples without anyone noticing.
+        let denylist: std::collections::HashSet<&str> =
+            UNSUPPORTED_BY_JIT.iter().copied().collect();
+        let covered = discover_examples()
+            .iter()
+            .filter(|name| !denylist.contains(name.as_str()))
+            .count();
+        assert!(
+            covered >= 400,
+            "only {covered} examples covered by default under --jit (denylist has {} \
+             entries) — RES-4111 requires \u{2265} 400",
+            UNSUPPORTED_BY_JIT.len()
+        );
+    }
+
+    #[test]
+    fn interpreter_and_jit_agree_on_all_examples() {
+        let denylist: std::collections::HashSet<&str> =
+            UNSUPPORTED_BY_JIT.iter().copied().collect();
+        let examples = discover_examples();
+        assert!(
+            !examples.is_empty(),
+            "discovered zero examples — examples/ directory misconfigured?"
+        );
+        let mut failures: Vec<String> = Vec::new();
+        let mut covered = 0usize;
+        for example in &examples {
+            if denylist.contains(example.as_str()) {
+                continue;
+            }
+            covered += 1;
+            let interp = super::run_interpreter(example);
+            let jit = run_jit(example);
+            if let Err(diff) = compare_outputs("interpreter", &interp, "jit", &jit) {
+                failures.push(format!("\n--- {example} ---\n{diff}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {covered} covered example(s) diverged between interpreter and --jit \
+             (see UNSUPPORTED_BY_JIT if this is a known, ticketed gap that needs a \
+             denylist entry):{}",
+            failures.len(),
+            failures.join("")
         );
     }
 }
