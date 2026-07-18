@@ -643,15 +643,29 @@ mod tests {
 ///
 /// ## Scope of this module
 ///
-/// RES-206a lands only the initial seed registry (the ~10 codes
-/// below) plus sample docs pages. Auditing every existing
-/// diagnostic call site and assigning them codes is RES-206b;
-/// writing the remaining docs pages is RES-206c.
+/// RES-206a landed the initial seed registry (10 codes) plus
+/// sample docs pages. RES-4115 (E-E4, increment 1) extends the
+/// registry with a second batch (E0011..E0020) covering common
+/// declaration/type/runtime/verification diagnostics, each with
+/// its own `docs/errors/E00NN.md` page, and adds the `rz explain
+/// E00NN` CLI subcommand (`resilient/src/error_explain.rs`) that
+/// renders those same pages in the terminal.
 ///
-/// Until that audit lands, these constants have no in-tree
-/// callers — the module-level `#[allow(dead_code)]` keeps the
-/// build warning-clean. Remove the allow when RES-206b starts
-/// attaching codes to actual error-creation sites.
+/// Auditing every existing diagnostic call site in `lib.rs` /
+/// `typechecker.rs` and attaching a code at the point of
+/// construction (without changing the rendered string shape that
+/// `.expected.txt` goldens pin) is the next increment — most call
+/// sites build a bare `String` error today, not a `Diagnostic`, so
+/// that migration is call-site-by-call-site rather than mechanical.
+/// A CI-enforceable lint that fails on a new codeless `Diagnostic`
+/// literal, and generating `docs/errors/*.md` from this module
+/// instead of hand-authoring it, follow once enough call sites are
+/// migrated to make the lint meaningful.
+///
+/// Until that audit lands, most of these constants have no in-tree
+/// callers beyond `E0007` (`typechecker.rs`) and the `T00NN`
+/// prototype codes in `infer.rs` — the module-level
+/// `#[allow(dead_code)]` keeps the build warning-clean.
 #[allow(dead_code)]
 pub mod codes {
     use super::DiagCode;
@@ -725,6 +739,75 @@ pub mod codes {
     /// Docs: `docs/errors/E0010.html`.
     pub const E0010: DiagCode = DiagCode::new_static("E0010");
 
+    // ---- Name resolution / declarations ----
+
+    /// E0011: Duplicate function definition — two `fn` declarations
+    /// share the same name in the same scope.
+    ///
+    /// Docs: `docs/errors/E0011.html`.
+    pub const E0011: DiagCode = DiagCode::new_static("E0011");
+
+    /// E0012: Reassignment of an immutable (`let`) binding. Only
+    /// `let mut` bindings may be reassigned after initialization.
+    ///
+    /// Docs: `docs/errors/E0012.html`.
+    pub const E0012: DiagCode = DiagCode::new_static("E0012");
+
+    // ---- Type checking ----
+
+    /// E0013: Missing `return` on a code path in a function with a
+    /// non-void declared return type.
+    ///
+    /// Docs: `docs/errors/E0013.html`.
+    pub const E0013: DiagCode = DiagCode::new_static("E0013");
+
+    /// E0014: Unwrap (`!` or `try`) of an `Optional` that resolved
+    /// to `None` at runtime.
+    ///
+    /// Docs: `docs/errors/E0014.html`.
+    pub const E0014: DiagCode = DiagCode::new_static("E0014");
+
+    /// E0015: Import target not found — a `use`/`import` path
+    /// doesn't resolve to a module or package on the search path.
+    ///
+    /// Docs: `docs/errors/E0015.html`.
+    pub const E0015: DiagCode = DiagCode::new_static("E0015");
+
+    /// E0016: Generic trait bound not satisfied — a type argument
+    /// doesn't implement a bound required by the generic function
+    /// or struct it's substituted into.
+    ///
+    /// Docs: `docs/errors/E0016.html`.
+    pub const E0016: DiagCode = DiagCode::new_static("E0016");
+
+    /// E0017: Unknown or missing struct field — a struct literal or
+    /// field access names a field the struct definition doesn't have.
+    ///
+    /// Docs: `docs/errors/E0017.html`.
+    pub const E0017: DiagCode = DiagCode::new_static("E0017");
+
+    // ---- Runtime ----
+
+    /// E0018: Recursion depth / stack usage limit exceeded.
+    ///
+    /// Docs: `docs/errors/E0018.html`.
+    pub const E0018: DiagCode = DiagCode::new_static("E0018");
+
+    // ---- Contracts / verification ----
+
+    /// E0019: Z3 static verifier could not prove an `ensures` or
+    /// `requires` clause ahead of time (distinct from E0010, which
+    /// is the runtime check failing outright).
+    ///
+    /// Docs: `docs/errors/E0019.html`.
+    pub const E0019: DiagCode = DiagCode::new_static("E0019");
+
+    /// E0020: Effect/purity violation — a function annotated `pure`
+    /// (or called from one) invokes a side-effecting operation.
+    ///
+    /// Docs: `docs/errors/E0020.html`.
+    pub const E0020: DiagCode = DiagCode::new_static("E0020");
+
     // ---- Enumeration helper ----
 
     /// Every code registered in this module, in numeric order.
@@ -742,7 +825,8 @@ pub mod codes {
     /// is negligible.
     pub fn all() -> Vec<DiagCode> {
         vec![
-            E0001, E0002, E0003, E0004, E0005, E0006, E0007, E0008, E0009, E0010,
+            E0001, E0002, E0003, E0004, E0005, E0006, E0007, E0008, E0009, E0010, E0011, E0012,
+            E0013, E0014, E0015, E0016, E0017, E0018, E0019, E0020,
         ]
     }
 }
@@ -828,6 +912,10 @@ mod codes_tests {
             "E0007", // type
             "E0008", "E0009", // runtime
             "E0010", // contracts
+            "E0011", "E0012", // declarations
+            "E0013", "E0014", "E0015", "E0016", "E0017", // type checking
+            "E0018", // runtime
+            "E0019", "E0020", // contracts / verification
         ] {
             assert!(
                 strs.iter().any(|s| s == expected),
@@ -847,7 +935,7 @@ mod codes_tests {
     #[test]
     fn res206a_codes_all_count_matches_vec_len() {
         // Regression guard: `all()` must not drop entries.
-        assert_eq!(codes::all().len(), 10);
+        assert_eq!(codes::all().len(), 20);
     }
 
     #[test]

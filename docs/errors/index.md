@@ -21,10 +21,12 @@ example and the standard fix.
 Codes are grouped by the pipeline stage that can emit them:
 
 - **E0001..E0003** — parser
-- **E0004..E0006** — name resolution
-- **E0007** — type checker
-- **E0008..E0009** — runtime (interpreter / VM / JIT)
-- **E0010** — contracts (`requires` / `ensures`)
+- **E0004..E0006, E0015** — name resolution
+- **E0007, E0013, E0016, E0017** — type checker
+- **E0008, E0009, E0014, E0018** — runtime (interpreter / VM / JIT)
+- **E0010, E0019** — contracts (`requires` / `ensures`)
+- **E0011, E0012** — declarations / bindings
+- **E0020** — effects / purity
 
 Numbers are **sticky**: once assigned, a code is never reused.
 If a diagnostic is removed, its code is retired but the docs
@@ -33,10 +35,20 @@ break.
 
 ## Status
 
-RES-206a shipped the initial registry + docs pages for the ten
-codes above. The remaining ~30 existing diagnostic sites still
-emit uncoded errors; RES-206b audits each site and assigns a
-code, and RES-206c fleshes out the remaining docs pages.
+RES-206a shipped the initial registry + docs pages for the first
+ten codes. RES-4115 (E-E4, increment 1) adds a second batch,
+E0011..E0020, plus the `rz explain E00NN` CLI subcommand that
+renders these same pages in the terminal (`resilient errors list`
+prints every registered code).
+
+Most codes above are cataloged and documented but not yet attached
+to their originating `Diagnostic` construction site — `E0007` is
+the one call site wired so far. Auditing the remaining call sites
+(mostly bare `String` errors today, not `Diagnostic`s) and
+attaching codes without changing the rendered string shape that
+`.expected.txt` goldens pin is the next increment, followed by a
+CI lint that fails on a new codeless `Diagnostic` and generating
+this directory from the registry instead of hand-authoring it.
 
 ## Browse
 
@@ -52,3 +64,13 @@ See the sidebar for the full list, or jump directly:
 - [E0008 — Division by zero](./E0008)
 - [E0009 — Array index out of bounds](./E0009)
 - [E0010 — Contract violation](./E0010)
+- [E0011 — Duplicate function definition](./E0011)
+- [E0012 — Reassignment of an immutable binding](./E0012)
+- [E0013 — Missing return on a code path](./E0013)
+- [E0014 — Unwrap of a None optional](./E0014)
+- [E0015 — Import target not found](./E0015)
+- [E0016 — Generic trait bound not satisfied](./E0016)
+- [E0017 — Unknown or missing struct field](./E0017)
+- [E0018 — Recursion / stack usage limit exceeded](./E0018)
+- [E0019 — Z3 could not prove a contract clause](./E0019)
+- [E0020 — Effect/purity violation](./E0020)

@@ -711,6 +711,8 @@ mod stack_contracts;
 mod static_assert;
 // RES-2613: benchmark framework with `bench` blocks and `rz bench` subcommand.
 mod bench;
+// RES-4115: `rz explain E####` + `rz errors list` (E-E4 increment 1).
+mod error_explain;
 // RES-2618: f32 single-precision float type.
 mod float32;
 // RES-2604: Display trait — fmt(self) -> string for custom to_string formatting.
@@ -33130,6 +33132,8 @@ SUBCOMMANDS:
                         (backend-limited; requires --features z3)
     verify-all <dir>     Re-check every obligation in a manifest
                         (backend-limited; requires --features z3)
+    explain <CODE>       Print the explanation for an E#### diagnostic code
+    errors list          List every registered E#### diagnostic code
 
 Tip: run `rz` with no file argument to start REPL.
 `rz repl` is an explicit alias for the REPL.
@@ -33758,6 +33762,11 @@ pub fn run_cli() {
 
     // RES-2613: `rz bench <file>` — discover and run benchmark blocks.
     if let Some(code) = bench::dispatch_bench_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-4115: `rz explain E####` / `rz errors list`.
+    if let Some(code) = error_explain::dispatch_explain_subcommand(&args) {
         std::process::exit(code);
     }
 
