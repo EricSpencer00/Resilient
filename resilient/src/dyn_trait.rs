@@ -54,12 +54,18 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Pass 1: collect trait declarations (name -> declared method names).
     // RES-1802-style pre-size: at most one entry per top-level TraitDecl.
     let mut trait_methods: HashMap<String, HashSet<String>> = HashMap::with_capacity(4);
+    // RES-4095: name -> declared method sigs, kept alongside the name-set
+    // above so `check_object_safety_refs` can inspect `takes_self` /
+    // `returns_self` without re-walking the program.
+    let mut trait_sigs: HashMap<String, &Vec<crate::traits::TraitMethodSig>> =
+        HashMap::with_capacity(4);
     for stmt in stmts {
         if let Node::TraitDecl { name, methods, .. } = &stmt.node {
             trait_methods.insert(
                 name.clone(),
                 methods.iter().map(|m| m.name.clone()).collect(),
             );
+            trait_sigs.insert(name.clone(), methods);
         }
     }
 
@@ -111,6 +117,16 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // fn parameters, fn return types, let-bindings, struct fields.
     for stmt in stmts {
         check_unknown_trait_refs(&stmt.node, &trait_methods, source_path)?;
+    }
+
+    // RES-4095: Pass 3.5 — object-safety rejection on every `dyn X`
+    // annotation where `X` is a *known* trait (unknown traits are
+    // already rejected by Pass 3 above, so this pass only needs to
+    // reason about traits that resolved). Runs before coercion/method-
+    // call checking so an object-safety violation is reported instead
+    // of a confusing downstream coercion or method-resolution error.
+    for stmt in stmts {
+        check_object_safety_refs(&stmt.node, &trait_sigs, source_path)?;
     }
 
     // Pass 4: coercion checking at struct-literal let-bindings and
@@ -210,6 +226,113 @@ fn check_unknown_trait_refs(
                             *span,
                             &format!("unknown trait `{}` in `dyn {}`", t, t),
                         ));
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// RES-4095: object-safety rules for `dyn Trait`. Each rule below rejects
+/// only a *statically provable* shape — no vtable exists in any backend
+/// today (see this module's doc comment), so this is a pure static-
+/// analysis gate that runs ahead of the (still-deferred) codegen work in
+/// this ticket's follow-up PRs.
+///
+/// - A method with no `self` receiver (`takes_self == false`) has
+///   nothing for a `dyn Trait` call to dispatch through — there is no
+///   erased receiver value to route the call to.
+/// - A method that returns `Self` promises to hand back the callee's
+///   own concrete type, which a `dyn Trait` caller — who by definition
+///   doesn't know the concrete type — cannot be given.
+///
+/// Returns `Some((method_name, reason))` for the first violation found
+/// (declaration order), or `None` if every method is dispatchable.
+fn object_safety_violation(sigs: &[crate::traits::TraitMethodSig]) -> Option<(&str, &'static str)> {
+    for m in sigs {
+        if !m.takes_self {
+            return Some((
+                m.name.as_str(),
+                "has no `self` receiver, so it cannot be dispatched through a `dyn Trait` value",
+            ));
+        }
+        if m.returns_self {
+            return Some((
+                m.name.as_str(),
+                "returns `Self`, which a `dyn Trait` caller cannot be given \
+                 (the concrete type is erased)",
+            ));
+        }
+    }
+    None
+}
+
+fn check_object_safety_refs(
+    node: &Node,
+    trait_sigs: &HashMap<String, &Vec<crate::traits::TraitMethodSig>>,
+    source_path: &str,
+) -> Result<(), String> {
+    let mut err: Option<String> = None;
+    let report = |trait_name: &str, span: Span| -> Option<String> {
+        let sigs = trait_sigs.get(trait_name)?;
+        let (method, reason) = object_safety_violation(sigs)?;
+        Some(format_err(
+            source_path,
+            span,
+            &format!(
+                "[E0021] `dyn {}` is not object-safe: method `{}` {}",
+                trait_name, method, reason
+            ),
+        ))
+    };
+    uniqueness_walk::visit(node, &mut |n| {
+        if err.is_some() {
+            return;
+        }
+        match n {
+            Node::Function {
+                parameters,
+                return_type,
+                span,
+                ..
+            } => {
+                for (ptype, _) in parameters {
+                    if let Some(t) = dyn_trait_name(ptype)
+                        && let Some(e) = report(t, *span)
+                    {
+                        err = Some(e);
+                        return;
+                    }
+                }
+                if let Some(rt) = return_type
+                    && let Some(t) = dyn_trait_name(rt)
+                    && let Some(e) = report(t, *span)
+                {
+                    err = Some(e);
+                }
+            }
+            Node::LetStatement {
+                type_annot, span, ..
+            } => {
+                if let Some(ann) = type_annot
+                    && let Some(t) = dyn_trait_name(ann)
+                    && let Some(e) = report(t, *span)
+                {
+                    err = Some(e);
+                }
+            }
+            Node::StructDecl { fields, span, .. } => {
+                for (ftype, _) in fields {
+                    if let Some(t) = dyn_trait_name(ftype)
+                        && let Some(e) = report(t, *span)
+                    {
+                        err = Some(e);
                         return;
                     }
                 }
@@ -511,6 +634,112 @@ mod tests {
             }
             fn main() {
                 use_shape(make());
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    // RES-4095: object-safety checking.
+
+    #[test]
+    fn rejects_dyn_trait_with_no_self_method() {
+        let src = r#"
+            trait Factory {
+                fn make() -> int;
+            }
+            fn use_factory(dyn Factory f) -> int {
+                return 0;
+            }
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("[E0021]"), "{}", err);
+        assert!(err.contains("not object-safe"), "{}", err);
+        assert!(err.contains("no `self` receiver"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_dyn_trait_with_self_returning_method() {
+        let src = r#"
+            trait Cloneable {
+                fn duplicate(self) -> Self;
+            }
+            fn use_cloneable(dyn Cloneable c) -> int {
+                return 0;
+            }
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("[E0021]"), "{}", err);
+        assert!(err.contains("returns `Self`"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_object_unsafe_trait_in_return_type() {
+        let src = r#"
+            trait Cloneable {
+                fn duplicate(self) -> Self;
+            }
+            fn get_cloneable() -> dyn Cloneable {
+                return 0;
+            }
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("[E0021]"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_object_unsafe_trait_in_let_binding() {
+        let src = r#"
+            trait Cloneable {
+                fn duplicate(self) -> Self;
+            }
+            struct Widget { int id, }
+            impl Cloneable for Widget {
+                fn duplicate(self) -> Widget { return self; }
+            }
+            fn main() {
+                let w: dyn Cloneable = new Widget { id: 1 };
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("[E0021]"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_object_unsafe_trait_in_struct_field() {
+        let src = r#"
+            trait Cloneable {
+                fn duplicate(self) -> Self;
+            }
+            struct Holder {
+                dyn Cloneable inner,
+            }
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("[E0021]"), "{}", err);
+    }
+
+    #[test]
+    fn accepts_object_safe_trait_with_self_typed_impl_return() {
+        // The trait method returns the *impl*'s concrete type (`Circle`),
+        // not the literal identifier `Self` — that's a perfectly
+        // dispatchable, object-safe method (unrelated to E0021, which
+        // only fires on the bare `Self` return-type annotation on the
+        // trait declaration itself).
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn use_shape(dyn Shape s) -> int {
+                return s.area();
+            }
+            fn main() {
+                use_shape(new Circle { r: 3 });
             }
             main();
         "#;

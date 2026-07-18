@@ -808,6 +808,14 @@ pub mod codes {
     /// Docs: `docs/errors/E0020.html`.
     pub const E0020: DiagCode = DiagCode::new_static("E0020");
 
+    /// E0021: `dyn Trait` object-safety violation — the trait declares
+    /// a method that can't be dispatched through an erased trait-object
+    /// receiver (a method with no `self` receiver, or one that returns
+    /// `Self`).
+    ///
+    /// Docs: `docs/errors/E0021.html`.
+    pub const E0021: DiagCode = DiagCode::new_static("E0021");
+
     // ---- Enumeration helper ----
 
     /// Every code registered in this module, in numeric order.
@@ -826,7 +834,7 @@ pub mod codes {
     pub fn all() -> Vec<DiagCode> {
         vec![
             E0001, E0002, E0003, E0004, E0005, E0006, E0007, E0008, E0009, E0010, E0011, E0012,
-            E0013, E0014, E0015, E0016, E0017, E0018, E0019, E0020,
+            E0013, E0014, E0015, E0016, E0017, E0018, E0019, E0020, E0021,
         ]
     }
 }
@@ -935,7 +943,7 @@ mod codes_tests {
     #[test]
     fn res206a_codes_all_count_matches_vec_len() {
         // Regression guard: `all()` must not drop entries.
-        assert_eq!(codes::all().len(), 20);
+        assert_eq!(codes::all().len(), 21);
     }
 
     #[test]

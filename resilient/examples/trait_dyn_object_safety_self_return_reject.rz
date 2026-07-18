@@ -1,0 +1,21 @@
+// RES-4095 (dyn v2 increment 1): object-safety — reject case.
+//
+// `Cloneable::duplicate` returns `Self`, i.e. promises to hand back the
+// caller's own concrete type. A `dyn Cloneable` caller has, by
+// definition, erased that concrete type — so the promise can't be kept.
+// `dyn_trait::check` rejects any `dyn X` annotation where `X` declares
+// such a method.
+
+trait Cloneable {
+    fn duplicate(self) -> Self;
+}
+
+fn use_cloneable(dyn Cloneable c) -> int {
+    return 0;
+}
+
+fn main() {
+    println(0);
+}
+
+main();

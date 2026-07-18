@@ -1,0 +1,21 @@
+// RES-4095 (dyn v2 increment 1): object-safety — reject case.
+//
+// `Factory::make` has no `self` receiver, so a `dyn Factory` value has
+// no erased receiver to dispatch the call through. `dyn_trait::check`
+// rejects any `dyn X` annotation where `X` declares such a method,
+// regardless of whether the method is ever actually called through the
+// trait object — the shape alone is unsound.
+
+trait Factory {
+    fn make() -> int;
+}
+
+fn use_factory(dyn Factory f) -> int {
+    return 0;
+}
+
+fn main() {
+    println(0);
+}
+
+main();
