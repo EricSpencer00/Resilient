@@ -6894,6 +6894,9 @@ impl TypeChecker {
                 crate::struct_field_check::check(program, source_path)?;
                 // RES-2614: validate [target.X] sections in rz.toml.
                 crate::target_profiles::check(program, source_path)?;
+                // RES-4116: reject Tier-2/3 stdlib builtins reachable
+                // under a declared no_std/embedded [target.X] profile.
+                crate::stdlib_portability_lint::check(program, source_path)?;
                 // RES-2560/2561: SHA/CRC builtins (no-op check; builtins are leaf functions).
                 crate::crypto_hash::check(program, source_path)?;
                 // RES-2572: validate trait inheritance — super-traits exist and impls are complete.
