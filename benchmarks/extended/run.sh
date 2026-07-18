@@ -52,6 +52,24 @@
 # vs. fib's three, so the sample count is trimmed to keep total
 # perf-gate wall time bounded. Exit 0 on success, non-zero if any
 # backend failed to run.
+#
+# RES-4108: the two JIT rows (jit_leaf_heavy, jit_tail_rec) are
+# split into their OWN hyperfine invocation at fib's tuned 5
+# warmups / 20 runs instead of this file's shared 3/10. Both are
+# sub-10ms micro-benchmarks where per-run cost is dominated by a
+# roughly-fixed JIT-compile / first-call cost rather than the
+# workload itself, so a single hosted-runner hiccup (GC pause, CPU
+# contention) during one of only 10 samples can drag the median
+# 40x (see issue #4108: jit_tail_rec's baseline 2.618ms measured as
+# 110.284ms on one run, 2.822ms on an immediate re-run of the same
+# commit). This is exactly the failure mode issue #387 already
+# fixed for the fib(25) JIT row — bumping warmups absorbs the
+# cold-cache/contention event and bumping samples makes the median
+# itself robust to one bad sample — so the same 5/20 tuning is
+# applied here rather than inventing a new statistic. The other
+# four rows (sum/vm/contracts, all >100ms workloads where fixed
+# overhead is proportionally tiny) keep the cheaper 3/10 to bound
+# total perf-gate wall time.
 
 set -euo pipefail
 
@@ -83,20 +101,33 @@ hyperfine \
     --style none \
     --command-name "sum_interp"              "$RES --seed $SEED benchmarks/sum/sum.rs" \
     --command-name "vm_counter_loop"          "$RES --seed $SEED --vm benchmarks/vm/counter_loop.rs" \
-    --command-name "jit_leaf_heavy"           "$RES_JIT --seed $SEED --jit benchmarks/jit/leaf_heavy.rs" \
-    --command-name "jit_tail_rec"             "$RES_JIT --seed $SEED --jit benchmarks/jit/tail_rec.rs" \
     --command-name "contracts_with"           "$RES --seed $SEED benchmarks/contracts/with_contract.rs" \
     --command-name "contracts_without"        "$RES --seed $SEED benchmarks/contracts/no_contract.rs" \
+    > /dev/null
+
+# RES-4108: JIT rows get fib's tuned 5 warmups / 20 runs — see the
+# header comment above for why these two rows specifically need it.
+hyperfine \
+    --export-json "$TMP/extended-jit.json" \
+    --warmup 5 \
+    --runs 20 \
+    --style none \
+    --command-name "jit_leaf_heavy"           "$RES_JIT --seed $SEED --jit benchmarks/jit/leaf_heavy.rs" \
+    --command-name "jit_tail_rec"             "$RES_JIT --seed $SEED --jit benchmarks/jit/tail_rec.rs" \
     > /dev/null
 
 median_ms() {
     jq --arg name "$1" '.results[] | select(.command==$name) | (.median * 1000 * 1000 | round) / 1000' "$TMP/extended.json"
 }
 
+median_ms_jit() {
+    jq --arg name "$1" '.results[] | select(.command==$name) | (.median * 1000 * 1000 | round) / 1000' "$TMP/extended-jit.json"
+}
+
 sum_interp=$(median_ms "sum_interp")
 vm_counter_loop=$(median_ms "vm_counter_loop")
-jit_leaf=$(median_ms "jit_leaf_heavy")
-jit_tail=$(median_ms "jit_tail_rec")
+jit_leaf=$(median_ms_jit "jit_leaf_heavy")
+jit_tail=$(median_ms_jit "jit_tail_rec")
 contracts_with=$(median_ms "contracts_with")
 contracts_without=$(median_ms "contracts_without")
 
