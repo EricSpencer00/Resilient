@@ -362,6 +362,21 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
     }
 }
 
+/// RES-3936: run `f` on a worker thread; `None` if it doesn't complete
+/// within `timeout`. The worker is abandoned (not killed) on timeout —
+/// the accepted tradeoff for cancelling pathological input without
+/// platform-specific thread termination.
+fn run_with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(timeout).ok()
+}
+
 fn http_mcp_call(body: &str, timeout: Duration) -> String {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -394,27 +409,24 @@ fn http_mcp_call(body: &str, timeout: Duration) -> String {
     // (possibly pathological) Resilient source, so it is executed on a
     // worker thread and raced against `timeout`.
     let mcp_tool_for_thread = mcp_tool.clone();
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
+    let response = run_with_timeout(timeout, move || {
         let params = json!({ "name": mcp_tool_for_thread, "arguments": args });
-        let response = dispatch("tools/call", &json!(1), Some(&params), false)
-            .unwrap_or_else(|| error(&json!(1), -32603, "empty MCP response".to_string()));
-        let _ = tx.send(response);
+        dispatch("tools/call", &json!(1), Some(&params), false)
+            .unwrap_or_else(|| error(&json!(1), -32603, "empty MCP response".to_string()))
     });
-
-    let response = match rx.recv_timeout(timeout) {
-        Ok(response) => response,
-        Err(_) => {
-            return http_json(
-                504,
-                json!({
-                    "status": "error",
-                    "tool": tool,
-                    "mcp_tool": mcp_tool,
-                    "error": format!("tool execution exceeded {:.1}s timeout", timeout.as_secs_f64())
-                }),
-            );
-        }
+    let Some(response) = response else {
+        return http_json(
+            504,
+            json!({
+                "status": "error",
+                "tool": tool,
+                "mcp_tool": mcp_tool,
+                "error": format!(
+                    "tool execution exceeded {:.1}s timeout",
+                    timeout.as_secs_f64()
+                )
+            }),
+        );
     };
 
     if let Some(err) = response.get("error") {
@@ -3136,11 +3148,26 @@ mod tests {
     // ── RES-3936: compute timeout ────────────────────────────────────────────
 
     #[test]
+    fn run_with_timeout_returns_none_when_worker_is_slow() {
+        let result = run_with_timeout(Duration::from_millis(20), || {
+            thread::sleep(Duration::from_secs(5));
+            42
+        });
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn run_with_timeout_returns_result_when_worker_is_fast() {
+        let result = run_with_timeout(Duration::from_secs(10), || 42);
+        assert_eq!(result, Some(42));
+    }
+
+    #[test]
     fn http_mcp_call_times_out_on_slow_dispatch() {
-        // A zero-duration timeout guarantees the worker thread cannot win
-        // the race, exercising the 504 path deterministically.
-        let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
-        let resp = http_mcp_call(body, Duration::from_nanos(1));
+        // A run of 100M loop iterations cannot finish within 20ms even on
+        // fast hardware, so the 504 path is exercised deterministically.
+        let body = r#"{"tool":"rz_run","input":{"source":"fn main() { let i: int = 0; while (i < 100000000) { i = i + 1; } } main();"}}"#;
+        let resp = http_mcp_call(body, Duration::from_millis(20));
         assert!(resp.starts_with("HTTP/1.1 504"), "got: {resp}");
         assert!(resp.contains("timeout"), "got: {resp}");
     }
