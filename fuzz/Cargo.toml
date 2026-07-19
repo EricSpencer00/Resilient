@@ -49,6 +49,14 @@ tempfile = "3"
 # so this reuses an already-vetted, already-pinned crate.
 serde_json = "1"
 
+# RES-3943: `mcp_http_parse` depends on the `resilient` library directly
+# (not the shipped CLI) because the MCP HTTP wrapper's request parser has
+# no CLI-boundary equivalent to shell out to. It calls a single narrow,
+# `#[doc(hidden)] pub` seam (`resilient::mcp_server::fuzz_parse_http_request`)
+# — see that function's doc comment for the "why this one exception"
+# rationale.
+resilient = { path = "../resilient" }
+
 [[bin]]
 name = "parse"
 path = "fuzz_targets/parse.rs"
@@ -99,3 +107,13 @@ test = false
 doc = false
 bench = false
 required-features = ["z3"]
+
+# RES-3943: HTTP request-parser fuzz target for the MCP HTTP wrapper. Not
+# CLI-based (see the `resilient` dependency comment above) — this is the
+# in-process exception documented there.
+[[bin]]
+name = "mcp_http_parse"
+path = "fuzz_targets/mcp_http_parse.rs"
+test = false
+doc = false
+bench = false

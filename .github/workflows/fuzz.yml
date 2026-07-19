@@ -124,6 +124,11 @@ jobs:
             fuzz_features: "z3"
             needs_z3: true
             per_input_timeout: 5
+          - target: mcp_http_parse
+            rz_features: ""
+            fuzz_features: ""
+            needs_z3: false
+            per_input_timeout: 5
     steps:
       - uses: actions/checkout@v4
 

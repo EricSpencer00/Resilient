@@ -13,6 +13,7 @@ libFuzzer.
 | `jit`   | RES-310  | The Cranelift JIT lowering path: random bytes → UTF-8 filter → `rz --jit`. Fails on panic.  |
 | `contracts` | RES-3779 (#3779) | The contract-certificate pipeline: random bytes → UTF-8 filter → `rz --emit-contract-certificate`. Fails on panic, or on a written certificate that isn't well-formed JSON with an in-schema `"verdict"`. |
 | `z3_translate` | RES-4039 (C-E6, #3933) | The Z3 SMT translation layer (`verifier_z3.rs`'s `prove_*` entry points): seeded/fuzzed contract source → UTF-8 filter → `rz -t`, requires a `--features z3` `rz` build. Fails on panic. |
+| `mcp_http_parse` | RES-3943 (#3943) | The MCP HTTP wrapper's hand-rolled request-line/header/`Content-Length` parser: random bytes (including invalid UTF-8) → `resilient::mcp_server::fuzz_parse_http_request` in-process. Fails on panic. |
 
 Additional targets slot in by adding a file under
 `fuzz_targets/` and a `[[bin]]` entry in `fuzz/Cargo.toml`; the
@@ -36,6 +37,18 @@ millions. Still fast enough to find parser panics in a CI
 budget. Moving selected targets in-process would require committing a
 small public fuzzing API, such as stable parse/lex entry points with
 diagnostic guarantees.
+
+**Exception — `mcp_http_parse` (RES-3943):** the MCP HTTP wrapper's
+request parser has no CLI-boundary equivalent; `rz` never speaks raw
+HTTP. Rather than build a throwaway CLI subcommand just to shell out
+to, this one target depends on the `resilient` library directly and
+calls a single narrow, `#[doc(hidden)] pub` seam
+(`resilient::mcp_server::fuzz_parse_http_request`) that exercises only
+the parsing helpers `handle_http_stream` uses (request-line
+extraction, header/body split, `Content-Length` parsing, completeness
+check) — not tool dispatch, not the network stack. Millions of
+iterations/second are possible here since there's no subprocess spawn
+per input.
 
 ## Running locally
 
@@ -99,6 +112,12 @@ RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
     --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=5
+
+# RES-3943: mcp_http_parse target. In-process (no RESILIENT_FUZZ_BIN
+# needed) — depends on the resilient library directly.
+cargo +nightly fuzz run mcp_http_parse --manifest-path fuzz/Cargo.toml -- \
+  -max_total_time=30 \
+  -timeout=5
 ```
 
 - `-max_total_time=N` caps the fuzz run at N seconds.
