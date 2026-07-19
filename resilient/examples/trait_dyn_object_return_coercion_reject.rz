@@ -1,0 +1,24 @@
+// RES-4095 increment 4 (issue item 5): return-type coercion checking.
+// `get_shape` declares a `dyn Shape` return type but returns a direct
+// `Square { .. }` struct literal, and `Square` implements neither
+// `Shape` explicitly nor structurally — a provable coercion violation
+// checked at the `return` site, mirroring the `let`/call-argument/
+// struct-field coercion checks above.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Square {
+    int side,
+}
+
+fn get_shape() -> dyn Shape {
+    return new Square { side: 2 };
+}
+
+fn main() {
+    println(0);
+}
+
+main();

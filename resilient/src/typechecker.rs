@@ -8187,7 +8187,33 @@ impl TypeChecker {
             } => {
                 // RES-1862: track innermost span for better diagnostics.
                 self.current_span = *span;
-                let value_type = self.check_node(value)?;
+                // RES-4095 increment 4: `let x: Array<dyn Trait> = [lit,
+                // lit, ...];` — a heterogeneous array of trait objects
+                // is the entire point of `Array<dyn Trait>`, but the
+                // generic `Node::ArrayLiteral` arm below rejects any
+                // literal whose elements aren't all the *same* concrete
+                // type, which would reject this before `dyn_trait::
+                // check`'s coercion pass (RES-4095) ever runs. Detect
+                // the container annotation up front and, only in that
+                // case, type-check each element individually without
+                // the homogeneity gate — mirrors `type_satisfies`'s
+                // existing permissive `dyn `-prefix gate for a single
+                // `dyn Trait`-typed slot.
+                let dyn_array_elem_trait = type_annot.as_deref().and_then(|t| {
+                    let t = t.trim_start_matches("linear ");
+                    let inner = t.strip_prefix("Array<")?.strip_suffix('>')?;
+                    inner.strip_prefix("dyn ")
+                });
+                let value_type = if let Some(trait_name) = dyn_array_elem_trait
+                    && let Node::ArrayLiteral { items, .. } = value.as_ref()
+                {
+                    for item in items {
+                        self.check_node(item)?;
+                    }
+                    Type::TypedArray(Box::new(Type::Struct(format!("dyn {}", trait_name))))
+                } else {
+                    self.check_node(value)?
+                };
                 // RES-414: binding a void-valued expression to a named variable
                 // is always a bug. The `_`-prefixed discard convention is the
                 // expected pattern; bare `let x = void_fn()` produces a variable

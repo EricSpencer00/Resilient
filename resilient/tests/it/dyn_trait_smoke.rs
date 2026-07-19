@@ -105,3 +105,126 @@ fn check_rejects_dyn_trait_with_self_returning_method() {
         "expected object-safety diagnostic; got: {stderr}"
     );
 }
+
+// RES-4095 increment 4: `dyn Trait` in generic/container position.
+
+#[test]
+fn check_accepts_array_dyn_trait_heterogeneous_elements() {
+    let output = Command::new(bin())
+        .args(["check", "examples/trait_dyn_object_array_basic.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn check_rejects_unknown_trait_in_array_dyn_annotation() {
+    let output = Command::new(bin())
+        .args([
+            "check",
+            "examples/trait_dyn_object_array_unknown_trait_reject.rz",
+        ])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown trait `Frobnicate`"),
+        "expected unknown-trait diagnostic; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_rejects_object_unsafe_trait_in_array_dyn() {
+    let output = Command::new(bin())
+        .args(["check", "examples/trait_dyn_object_array_safety_reject.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[E0021]"),
+        "expected object-safety diagnostic; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_rejects_array_dyn_coercion_when_element_does_not_implement() {
+    let output = Command::new(bin())
+        .args([
+            "check",
+            "examples/trait_dyn_object_array_coercion_reject.rz",
+        ])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not implement `Shape`"),
+        "expected coercion diagnostic; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_rejects_struct_field_coercion_when_value_does_not_implement() {
+    let output = Command::new(bin())
+        .args([
+            "check",
+            "examples/trait_dyn_object_field_coercion_reject.rz",
+        ])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not implement `Shape`") && stderr.contains("field `inner`"),
+        "expected field-coercion diagnostic; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_rejects_return_type_coercion_when_value_does_not_implement() {
+    let output = Command::new(bin())
+        .args([
+            "check",
+            "examples/trait_dyn_object_return_coercion_reject.rz",
+        ])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not implement `Shape`") && stderr.contains("return value"),
+        "expected return-coercion diagnostic; got: {stderr}"
+    );
+}

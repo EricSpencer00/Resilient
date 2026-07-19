@@ -1,0 +1,31 @@
+// RES-4095 increment 4: `Array<dyn Trait>` coercion checking — `Square`
+// implements neither `Shape` explicitly nor structurally, so an
+// `Array<dyn Shape>`-typed `let` binding whose literal contains a
+// `Square { .. }` element is a provable coercion violation, checked
+// element-by-element exactly like the single-slot `dyn Shape` case
+// (`trait_dyn_object_coercion_reject.rz`).
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+struct Square {
+    int side,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r * self.r;
+    }
+}
+
+fn main() {
+    let shapes: Array<dyn Shape> = [new Circle { r: 2 }, new Square { side: 3 }];
+    println(shapes.len());
+}
+
+main();

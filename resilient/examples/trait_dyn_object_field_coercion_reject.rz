@@ -1,0 +1,25 @@
+// RES-4095 increment 4 (issue item 5): struct-field coercion checking.
+// `Holder`'s `inner` field is typed `dyn Shape`; assigning a
+// `Square { .. }` struct literal to it in a struct literal is a
+// provable coercion violation when `Square` implements neither `Shape`
+// explicitly nor structurally — checked the same way a `let`-binding or
+// call-argument coercion already is.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Square {
+    int side,
+}
+
+struct Holder {
+    dyn Shape inner,
+}
+
+fn main() {
+    let _h = new Holder { inner: new Square { side: 2 } };
+    println(0);
+}
+
+main();
