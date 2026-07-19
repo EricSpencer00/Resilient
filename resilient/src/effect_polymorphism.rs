@@ -108,21 +108,53 @@
 //! (e.g. stored in a struct field then invoked) — those remain out of
 //! scope below.
 //!
+//! ## Named effect-variable unification (RES-4123)
+//!
+//! `EffectSet::effect_var` (RES-4123, `lib.rs`) now preserves a fn's
+//! own `-e-> TYPE` return-type letter past the parser instead of
+//! discarding it. Separately, [`effect_arrow_letter`] extracts the
+//! per-parameter `-e->` letter that was already embedded in a
+//! function-typed parameter's type-annotation *string* (e.g.
+//! `"fn(int) -e-> int"`) since RES-193 — no parser change was needed
+//! for that half, since the letter already survives there.
+//!
+//! [`check_effect_var_unification`] uses the per-parameter letters to
+//! catch a genuinely new class of *proven* violation: two or more of a
+//! HOF's invoked, function-typed parameters that share the same
+//! effect-variable letter are required by the named-effect-variable
+//! contract to carry the *same* effect at every call site (that's what
+//! sharing a letter means — `fn combine(fn(int) -e-> int f, fn(int)
+//! -e-> int g, ...)` says "f and g have the same, as-yet-unknown,
+//! effect", not "f and g may each independently be pure or io"). A
+//! call site that binds one same-letter parameter to a provably `pure`
+//! argument and another to a provably `io` argument can never be
+//! satisfied by any single effect and is rejected with a `line:col`
+//! diagnostic. Two parameters with *different* letters (`-e->` vs
+//! `-f->`) are never compared against each other — they're
+//! independent effect variables by construction, exactly like two
+//! independent generic type parameters `T` and `U`.
+//!
+//! As with every other check in this module, this can only ever
+//! reject a *provable* violation: both arguments must independently
+//! resolve to a concrete effect (via the same identifier / local-alias
+//! / explicit-lambda-literal resolution used elsewhere in this file)
+//! before they're compared. Any call site where one or both same-letter
+//! arguments are unresolvable is left unchecked — "when uncertain,
+//! accept" applies here exactly as it does to the rescue-direction
+//! checks above. This check runs for *every* top-level fn (not just
+//! `pure`-declared ones), because the requirement comes from the
+//! callee's own named-effect-variable signature, independent of
+//! whatever the calling fn's declared effect happens to be.
+//!
 //! ## Deferred (tracked as a follow-up issue, see the PR body)
 //!
 //! - Callback parameters invoked indirectly (through a method call,
 //!   stored in a struct field, etc.) are out of scope.
-//! - A HOF's *own* return-type effect arrow (`fn run(...) -e-> int`)
-//!   is parsed but the letter is discarded (RES-193 only preserves it
-//!   on function-typed *parameter* types); [`resolves_pure_at_call_site`]
-//!   sidesteps this by inferring polymorphism structurally (any
-//!   invoked `-e->`-marked parameter) rather than requiring the HOF's
-//!   own return type to declare a matching variable name. A follow-up
-//!   could add named-variable unification across multiple
-//!   effect-variable parameters that must agree with each other —
-//!   this needs a new `Node` field (or an encoding convention) to
-//!   preserve the letter past the parser, which is out of scope for
-//!   this pass.
+//! - Unification only compares parameters *within a single call site*;
+//!   it does not attempt to unify a `let`-bound effect-polymorphic
+//!   partial application, or propagate a resolved letter's effect back
+//!   through nested HOF calls (effect-variable letters aren't threaded
+//!   transitively across HOF boundaries).
 //! - Full row-polymorphism / whole-program effect inference remains
 //!   out of scope, per the parent ticket.
 
@@ -148,6 +180,10 @@ pub(crate) fn check(
     fn_effects: &HashMap<String, EffectSet>,
     source_path: &str,
 ) -> Result<(), String> {
+    // RES-4123: named effect-variable unification. Runs for every
+    // top-level fn regardless of its own declared effect — see the
+    // module doc, "Named effect-variable unification".
+    check_effect_var_unification(statements, fn_effects, source_path)?;
     for stmt in statements {
         let Node::Function {
             name,
@@ -852,6 +888,300 @@ fn collect_local_bindings(
     }
 }
 
+/// RES-4123: named effect-variable unification across a HOF's
+/// invoked, function-typed parameters. See the module doc's "Named
+/// effect-variable unification" section.
+///
+/// For each top-level fn, groups its invoked (see
+/// [`invoked_callback_params`]) function-typed parameters by their
+/// `-e->` letter (see [`effect_arrow_letter`]) and, for every group of
+/// two or more parameters sharing a letter, checks every call site of
+/// that fn anywhere in the program: if two same-letter parameters
+/// resolve — at that specific call site — to arguments with
+/// different provable purity, that's a proven violation (no single
+/// effect could satisfy both), and is rejected. Runs for every
+/// top-level fn regardless of its own declared effect, since the
+/// requirement is intrinsic to the callee's signature.
+pub(crate) fn check_effect_var_unification(
+    statements: &[Spanned<Node>],
+    fn_effects: &HashMap<String, EffectSet>,
+    source_path: &str,
+) -> Result<(), String> {
+    for stmt in statements {
+        let Node::Function {
+            name: hof_name,
+            parameters,
+            body,
+            ..
+        } = &stmt.node
+        else {
+            continue;
+        };
+        let invoked = invoked_callback_params(parameters, body);
+        if invoked.is_empty() {
+            continue;
+        }
+
+        let mut groups: std::collections::BTreeMap<char, Vec<(usize, &str)>> =
+            std::collections::BTreeMap::new();
+        for (idx, (ty, pname)) in parameters.iter().enumerate() {
+            if !is_function_type(ty) || !invoked.contains(pname.as_str()) {
+                continue;
+            }
+            if let Some(letter) = effect_arrow_letter(ty) {
+                groups
+                    .entry(letter)
+                    .or_default()
+                    .push((idx, pname.as_str()));
+            }
+        }
+
+        for (letter, members) in groups.iter().filter(|(_, m)| m.len() >= 2) {
+            check_unification_at_call_sites(
+                statements,
+                hof_name,
+                *letter,
+                members,
+                fn_effects,
+                source_path,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Scans every call site of `hof_name` anywhere in `statements` and
+/// rejects the first one where two of `members` (parameter `(idx,
+/// name)` pairs sharing effect-variable `letter`) resolve to arguments
+/// with different provable purity.
+fn check_unification_at_call_sites(
+    statements: &[Spanned<Node>],
+    hof_name: &str,
+    letter: char,
+    members: &[(usize, &str)],
+    fn_effects: &HashMap<String, EffectSet>,
+    source_path: &str,
+) -> Result<(), String> {
+    for stmt in statements {
+        let mut sites: Vec<(crate::span::Span, &[Node])> = Vec::new();
+        collect_hof_call_sites(&stmt.node, hof_name, &mut sites);
+        for (span, args) in sites {
+            let mut resolved: Vec<(&str, EffectSet)> = Vec::new();
+            for &(idx, pname) in members {
+                if let Some(arg) = args.get(idx)
+                    && let Some(effects) = resolve_arg_effect(arg, fn_effects, &stmt.node)
+                {
+                    resolved.push((pname, effects));
+                }
+            }
+            for i in 0..resolved.len() {
+                for j in (i + 1)..resolved.len() {
+                    let (p1, e1) = resolved[i];
+                    let (p2, e2) = resolved[j];
+                    if e1.pure != e2.pure {
+                        let (line, col) = (span.start.line, span.start.column);
+                        let msg = format!(
+                            "cannot unify effect variable '{letter}' at call to `{hof_name}`: \
+                             parameter `{p1}` resolves to {} effect but parameter `{p2}` \
+                             resolves to {} effect",
+                            e1.tag(),
+                            e2.tag()
+                        );
+                        return Err(if line == 0 {
+                            msg
+                        } else {
+                            format!("{source_path}:{line}:{col}: {msg}")
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolves a call-argument `Node` to a concrete [`EffectSet`] when
+/// provable: a plain identifier naming a top-level fn (or a local
+/// variable unambiguously aliasing one, see [`resolve_local_alias`]),
+/// or an inline lambda literal carrying an *explicit* `pure`/`io`
+/// annotation (RES-4123, mirrors the resolution already used by
+/// [`find_hof_call_violations`] and [`resolves_pure_at_call_site`]).
+/// Returns `None` for anything else — an unresolvable argument is
+/// never compared against a sibling, preserving "when uncertain,
+/// accept".
+fn resolve_arg_effect(
+    arg: &Node,
+    fn_effects: &HashMap<String, EffectSet>,
+    caller_body: &Node,
+) -> Option<EffectSet> {
+    match arg {
+        Node::Identifier { name, .. } => {
+            let resolved_name = if fn_effects.contains_key(name) {
+                Some(name.clone())
+            } else {
+                resolve_local_alias(name, caller_body)
+            };
+            resolved_name.and_then(|n| fn_effects.get(&n).copied())
+        }
+        Node::FunctionLiteral {
+            explicit_effect: Some(effects),
+            ..
+        } => Some(*effects),
+        _ => None,
+    }
+}
+
+/// Collects every `(span, arguments)` pair for `CallExpression` nodes
+/// that call `hof_name` anywhere under `node`. Mirrors the node
+/// coverage of [`find_hof_call_violations`] exactly (see that
+/// function for why each variant is included), but *collects* every
+/// matching call site instead of stopping at the first proven
+/// violation for a single parameter index — [`check_unification_at_call_sites`]
+/// needs to inspect multiple parameter indices per site.
+fn collect_hof_call_sites<'a>(
+    node: &'a Node,
+    hof_name: &str,
+    out: &mut Vec<(crate::span::Span, &'a [Node])>,
+) {
+    match node {
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_hof_call_sites(s, hof_name, out);
+            }
+        }
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            collect_hof_call_sites(value, hof_name, out);
+        }
+        Node::ReturnStatement { value: Some(v), .. } => {
+            collect_hof_call_sites(v, hof_name, out);
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_hof_call_sites(condition, hof_name, out);
+            collect_hof_call_sites(consequence, hof_name, out);
+            if let Some(a) = alternative {
+                collect_hof_call_sites(a, hof_name, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_hof_call_sites(condition, hof_name, out);
+            collect_hof_call_sites(body, hof_name, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            collect_hof_call_sites(iterable, hof_name, out);
+            collect_hof_call_sites(body, hof_name, out);
+        }
+        Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
+            collect_hof_call_sites(condition, hof_name, out);
+        }
+        Node::LiveBlock { body, .. } => collect_hof_call_sites(body, hof_name, out),
+        Node::InfixExpression { left, right, .. } => {
+            collect_hof_call_sites(left, hof_name, out);
+            collect_hof_call_sites(right, hof_name, out);
+        }
+        Node::PrefixExpression { right, .. } => collect_hof_call_sites(right, hof_name, out),
+        Node::CallExpression {
+            function,
+            arguments,
+            span,
+        } => {
+            if let Node::Identifier { name, .. } = function.as_ref()
+                && name == hof_name
+            {
+                out.push((*span, arguments.as_slice()));
+            }
+            collect_hof_call_sites(function, hof_name, out);
+            for a in arguments {
+                collect_hof_call_sites(a, hof_name, out);
+            }
+        }
+        Node::FieldAccess { target, .. } => collect_hof_call_sites(target, hof_name, out),
+        Node::FieldAssignment { target, value, .. } => {
+            collect_hof_call_sites(target, hof_name, out);
+            collect_hof_call_sites(value, hof_name, out);
+        }
+        Node::Assignment { value, .. } => collect_hof_call_sites(value, hof_name, out),
+        Node::IndexExpression { target, index, .. } => {
+            collect_hof_call_sites(target, hof_name, out);
+            collect_hof_call_sites(index, hof_name, out);
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            collect_hof_call_sites(target, hof_name, out);
+            collect_hof_call_sites(index, hof_name, out);
+            collect_hof_call_sites(value, hof_name, out);
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for i in items {
+                collect_hof_call_sites(i, hof_name, out);
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(b) = base {
+                collect_hof_call_sites(b, hof_name, out);
+            }
+            for (_, v) in fields {
+                collect_hof_call_sites(v, hof_name, out);
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_hof_call_sites(scrutinee, hof_name, out);
+            for (_pat, guard, arm_body) in arms {
+                if let Some(g) = guard {
+                    collect_hof_call_sites(g, hof_name, out);
+                }
+                collect_hof_call_sites(arm_body, hof_name, out);
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => collect_hof_call_sites(expr, hof_name, out),
+        Node::TryExpression { expr, .. } => collect_hof_call_sites(expr, hof_name, out),
+        Node::OptionalChain { object, access, .. } => {
+            collect_hof_call_sites(object, hof_name, out);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    collect_hof_call_sites(a, hof_name, out);
+                }
+            }
+        }
+        Node::Function { body, .. } => collect_hof_call_sites(body, hof_name, out),
+        _ => {}
+    }
+}
+
+/// Extracts the single-letter effect-variable name from a `fn(...)`
+/// parameter type-annotation string carrying the RES-193 `-e->`
+/// arrow marker (e.g. `"fn(int) -e-> int"` → `Some('e')`), or `None`
+/// when `ty` has no effect arrow (plain `-> R`) — see
+/// [`has_effect_arrow`], which this mirrors but returns the letter
+/// itself rather than a bool.
+fn effect_arrow_letter(ty: &str) -> Option<char> {
+    ty.split_whitespace().find_map(|tok| {
+        if tok.len() >= 4 && tok.starts_with('-') && tok.ends_with("->") {
+            let mut inner = tok[1..tok.len() - 2].chars();
+            let letter = inner.next()?;
+            if inner.next().is_none() {
+                Some(letter)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
 /// True when `ty` (a `fn(...)`-shaped type-annotation string) carries
 /// the RES-193 `-e->` effect-arrow marker, i.e. was parsed from
 /// `fn(...) -e-> R` rather than the plain `fn(...) -> R` form. The
@@ -1410,5 +1740,129 @@ mod tests {
         let body = find_fn_body(&s, "caller");
         assert_eq!(resolve_local_alias("g", body), Some("add1".to_string()));
         assert_eq!(resolve_local_alias("nonexistent", body), None);
+    }
+
+    // ---------- RES-4123: named effect-variable unification ----------
+
+    #[test]
+    fn effect_arrow_letter_extracts_single_letter() {
+        assert_eq!(effect_arrow_letter("fn(int) -e-> int"), Some('e'));
+        assert_eq!(effect_arrow_letter("fn(int) -f-> int"), Some('f'));
+        assert_eq!(effect_arrow_letter("fn(int) -> int"), None);
+        assert_eq!(effect_arrow_letter("int"), None);
+    }
+
+    #[test]
+    fn unification_rejects_mismatched_same_letter_params() {
+        // `f` and `g` both share effect variable `e` — binding one to a
+        // provably-pure fn and the other to a provably-io fn at the
+        // same call site can never be satisfied by a single effect.
+        let src = "pure fn add1(int x) -> int { return x + 1; }\n\
+                   io fn noisy(int x) -> int { println(x); return x; }\n\
+                   fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {\n\
+                   \x20   return f(x) + g(x);\n\
+                   }\n\
+                   fn caller() -> int { return combine(add1, noisy, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let err = check_effect_var_unification(&s, &fe, "<t>").unwrap_err();
+        assert!(err.contains("cannot unify effect variable 'e'"), "{err}");
+        assert!(err.contains('f'), "{err}");
+        assert!(err.contains('g'), "{err}");
+    }
+
+    #[test]
+    fn unification_accepts_matching_same_letter_params_both_pure() {
+        let src = "pure fn add1(int x) -> int { return x + 1; }\n\
+                   pure fn double(int x) -> int { return x * 2; }\n\
+                   fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {\n\
+                   \x20   return f(x) + g(x);\n\
+                   }\n\
+                   fn caller() -> int { return combine(add1, double, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        check_effect_var_unification(&s, &fe, "<t>")
+            .expect("both params provably pure — must unify cleanly");
+    }
+
+    #[test]
+    fn unification_accepts_matching_same_letter_params_both_io() {
+        let src = "io fn noisy1(int x) -> int { println(x); return x; }\n\
+                   io fn noisy2(int x) -> int { println(x); return x; }\n\
+                   fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {\n\
+                   \x20   return f(x) + g(x);\n\
+                   }\n\
+                   fn caller() -> int { return combine(noisy1, noisy2, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        check_effect_var_unification(&s, &fe, "<t>")
+            .expect("both params provably io — must unify cleanly");
+    }
+
+    #[test]
+    fn unification_leaves_distinct_letters_independent() {
+        // `f` is `-e->`, `g` is `-f->` — distinct effect variables, so
+        // one being pure and the other io is not a unification error.
+        let src = "pure fn add1(int x) -> int { return x + 1; }\n\
+                   io fn noisy(int x) -> int { println(x); return x; }\n\
+                   fn combine(fn(int) -e-> int f, fn(int) -f-> int g, int x) -> int {\n\
+                   \x20   return f(x) + g(x);\n\
+                   }\n\
+                   fn caller() -> int { return combine(add1, noisy, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        check_effect_var_unification(&s, &fe, "<t>")
+            .expect("distinct effect-variable letters must not be unified against each other");
+    }
+
+    #[test]
+    fn unification_is_conservative_when_one_argument_is_unresolvable() {
+        // `g` is a fn-typed parameter of `caller` itself — its effect
+        // can't be proven, so "when uncertain, accept" applies even
+        // though `f` resolves to `pure`.
+        let src = "pure fn add1(int x) -> int { return x + 1; }\n\
+                   fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {\n\
+                   \x20   return f(x) + g(x);\n\
+                   }\n\
+                   fn caller(fn(int) -> int cb) -> int { return combine(add1, cb, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        check_effect_var_unification(&s, &fe, "<t>")
+            .expect("unresolvable sibling argument must not be flagged");
+    }
+
+    #[test]
+    fn unification_rejects_via_local_alias_and_lambda_literal() {
+        // Same-letter mismatch proven through a local-variable alias
+        // on one side and an explicit inline lambda literal on the
+        // other — both resolution paths must feed into unification.
+        let src = "pure fn add1(int x) -> int { return x + 1; }\n\
+                   fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {\n\
+                   \x20   return f(x) + g(x);\n\
+                   }\n\
+                   fn caller() -> int {\n\
+                   \x20   let h = add1;\n\
+                   \x20   return combine(h, io fn(int a) -> int { println(a); return a; }, 5);\n\
+                   }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let err = check_effect_var_unification(&s, &fe, "<t>").unwrap_err();
+        assert!(err.contains("cannot unify effect variable 'e'"), "{err}");
+    }
+
+    #[test]
+    fn unification_check_wired_into_check() {
+        // `check` (the top-level entry point) must run the
+        // unification pass too, not just the pure-HOF rescue path.
+        let src = "pure fn add1(int x) -> int { return x + 1; }\n\
+                   io fn noisy(int x) -> int { println(x); return x; }\n\
+                   fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {\n\
+                   \x20   return f(x) + g(x);\n\
+                   }\n\
+                   fn caller() -> int { return combine(add1, noisy, 5); }\n";
+        let s = stmts(src);
+        let fe = effects_of(&s);
+        let err = check(&s, &fe, "<t>").unwrap_err();
+        assert!(err.contains("cannot unify effect variable 'e'"), "{err}");
     }
 }

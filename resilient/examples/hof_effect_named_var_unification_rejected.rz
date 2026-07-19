@@ -1,0 +1,40 @@
+// RES-4123: named effect-variable unification — REJECT case.
+//
+// `combine`'s two function-typed parameters `f` and `g` both carry the
+// *same* effect-variable letter (`-e->`), which means the language
+// requires them to share the same effect at every call site — not
+// merely "each independently pure or io". Binding `f` to a provably
+// `pure` fn and `g` to a provably `io` fn in the same call can never
+// be satisfied by any single effect for `e`, so
+// `effect_polymorphism::check_effect_var_unification` rejects it with
+// a proof, the same way an ordinary type mismatch would be rejected.
+//
+// See `hof_effect_named_var_unification_accepted.rz` for the mirror
+// ACCEPT cases (both pure, both io, and distinct letters left
+// independent).
+//
+// Marked `.interactive` (matching `hof_effect_polymorphic_io_at_call_site_rejected.rz`)
+// because the golden-output harness only replays examples under the
+// default soft-typecheck mode (diagnostics on stderr, program still
+// runs — RES-1088). This example's `.expected.txt` was captured under
+// `--typecheck-strict`, which is what actually fails the build on this
+// violation.
+
+pure fn add1(int x) -> int {
+    return x + 1;
+}
+
+io fn noisy(int x) -> int {
+    println(x);
+    return x;
+}
+
+fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {
+    return f(x) + g(x);
+}
+
+fn main() -> int {
+    return combine(add1, noisy, 5);
+}
+
+main();

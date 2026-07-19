@@ -1,0 +1,6 @@
+RES-4123: negative-typecheck example, skipped by the golden-output
+harness (see hof_effect_polymorphic_io_at_call_site_rejected.interactive
+for precedent) — the default `rz <file>` invocation soft-fails
+typecheck (diagnostics on stderr, program still runs). This example's
+expected.txt was captured under --typecheck-strict, which the golden
+harness does not replay.
