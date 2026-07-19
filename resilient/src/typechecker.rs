@@ -11387,7 +11387,18 @@ impl TypeChecker {
                     && other.ends_with('>') =>
             {
                 let inner = &other[6..other.len() - 1];
-                let inner_ty = self.parse_type_name_inner(inner.trim(), seen)?;
+                // RES-4109: const-generic `array<T, N>` — `N` is a
+                // literal length, not a type, and is checked separately
+                // by `const_generic_len::check`. Split off only a
+                // *trailing* top-level `, <int literal>` so the element
+                // type resolution below still sees the whole of `T`
+                // (which may itself be a nested generic, e.g.
+                // `array<Result<int, string>, 3>`).
+                let elem_str = match inner.rsplit_once(',') {
+                    Some((elem, len)) if len.trim().parse::<usize>().is_ok() => elem.trim(),
+                    _ => inner.trim(),
+                };
+                let inner_ty = self.parse_type_name_inner(elem_str, seen)?;
                 Ok(Type::TypedArray(Box::new(inner_ty)))
             }
             // RES-3923: `[T]` / `[T; N]` — bracketed array annotation.

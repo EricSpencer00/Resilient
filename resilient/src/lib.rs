@@ -5813,6 +5813,18 @@ impl Parser {
                     // the outer call then sees a normal closing `>`.
                     while !self.at_generic_close() && self.current_token != Token::Eof {
                         let p = self.parse_type_annotation(ctx)?;
+                    while self.current_token != Token::Greater && self.current_token != Token::Eof {
+                        // RES-4109: const-generic length param, e.g. the
+                        // `N` in `array<T, N>` — a literal integer rather
+                        // than a type. Kept verbatim as its decimal string
+                        // so `const_generic_len::fixed_len` can parse it
+                        // back out of the encoded `"array<T, N>"` slot.
+                        let p = if let Token::IntLiteral(n) = self.current_token {
+                            self.next_token();
+                            n.to_string()
+                        } else {
+                            self.parse_type_annotation(ctx)?
+                        };
                         params.push(p);
                         if self.current_token == Token::Comma {
                             self.next_token();
