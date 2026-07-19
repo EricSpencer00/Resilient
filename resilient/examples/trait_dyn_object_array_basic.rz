@@ -1,0 +1,47 @@
+// RES-4095 increment 4: `dyn Trait` in container position —
+// `Array<dyn Trait>`, a heterogeneous array of trait objects. Each
+// element dispatches through its own runtime struct tag exactly like a
+// single `dyn Trait`-typed binding (see `dyn_trait.rs`'s module doc);
+// no vtable is needed because the tree-walker/VM already resolve
+// `<expr>.method(...)` by the receiver's concrete type.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+struct Square {
+    int s,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r * self.r;
+    }
+}
+
+impl Shape for Square {
+    fn area(self) -> int {
+        return self.s * self.s;
+    }
+}
+
+fn total_area(Array<dyn Shape> shapes) -> int {
+    let mut total = 0;
+    let mut i = 0;
+    while i < shapes.len() {
+        total = total + shapes[i].area();
+        i = i + 1;
+    }
+    return total;
+}
+
+fn main() {
+    let shapes: Array<dyn Shape> = [new Circle { r: 2 }, new Square { s: 3 }];
+    println(total_area(shapes));
+}
+
+main();

@@ -1,0 +1,19 @@
+// RES-4095 increment 4: object-safety (E0021) rejection reaches into
+// container position — `Array<dyn Factory>` is rejected the same way a
+// top-level `dyn Factory` annotation is, because `Factory::make` takes
+// no `self` receiver and so has nothing for element dispatch to route
+// through.
+
+trait Factory {
+    fn make() -> int;
+}
+
+fn use_factories(Array<dyn Factory> factories) -> int {
+    return 0;
+}
+
+fn main() {
+    println(0);
+}
+
+main();

@@ -178,8 +178,29 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         })
         .collect();
 
+    // RES-4095 increment 4: struct-field type map (struct -> field ->
+    // declared type), needed so `check_coercions` can verify a `dyn
+    // Trait`- or `Array<dyn Trait>`-typed field assigned in a struct
+    // literal (issue item 5).
+    let mut struct_field_types: HashMap<String, HashMap<String, String>> =
+        HashMap::with_capacity(stmts.len());
     for stmt in stmts {
-        check_coercions(&stmt.node, &fns_by_name, &satisfies, source_path)?;
+        if let Node::StructDecl { name, fields, .. } = &stmt.node {
+            let entry = struct_field_types.entry(name.clone()).or_default();
+            for (ftype, fname) in fields {
+                entry.insert(fname.clone(), ftype.clone());
+            }
+        }
+    }
+
+    for stmt in stmts {
+        check_coercions(
+            &stmt.node,
+            &fns_by_name,
+            &struct_field_types,
+            &satisfies,
+            source_path,
+        )?;
         if let Node::Function {
             parameters, body, ..
         } = &stmt.node
@@ -195,6 +216,44 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 /// (stripping the `linear ` prefix RES-385 may have added first).
 fn dyn_trait_name(annot: &str) -> Option<&str> {
     crate::linear::strip_linear(annot).strip_prefix("dyn ")
+}
+
+/// RES-4095 increment 4: like `dyn_trait_name`, but also matches `dyn
+/// Trait` nested as the first type parameter of a container annotation,
+/// e.g. `Array<dyn Shape>` or `Option<dyn Shape>` (`Name<T1, T2, ...>`
+/// is encoded verbatim by `parse_type_annotation` in lib.rs, so this is
+/// a plain string match on the first comma-separated parameter).
+///
+/// Used only for unknown-trait / object-safety rejection — safe to
+/// apply at any nesting depth, since rejecting an unknown or object-
+/// not-object-safe trait can never turn a previously-rejected program into an
+/// accepted one. Deliberately NOT used for method-call/`dyn_vars`
+/// tracking or reassignment checks: a container-typed binding is not
+/// itself a `dyn Trait` value, and treating it as one there would
+/// falsely reject legitimate container methods (`.len()`, `.push()`,
+/// …) — see `check_method_calls`'s doc comment.
+fn dyn_trait_name_any_depth(annot: &str) -> Option<&str> {
+    let stripped = crate::linear::strip_linear(annot);
+    if let Some(t) = stripped.strip_prefix("dyn ") {
+        return Some(t);
+    }
+    let inner = stripped.strip_suffix('>')?;
+    let lt = inner.find('<')?;
+    let first_param = inner[lt + 1..].split(',').next()?.trim();
+    first_param.strip_prefix("dyn ")
+}
+
+/// RES-4095 increment 4: matches `Array<dyn Trait>` specifically (not
+/// `Option<dyn Trait>` or other containers) — used by `check_coercions`
+/// to verify each element of an `Array<dyn Trait>`-typed slot's
+/// `ArrayLiteral` value, mirroring the existing struct-literal coercion
+/// checks below at the same "direct literal expression" precision.
+fn array_dyn_trait_name(annot: &str) -> Option<&str> {
+    let stripped = crate::linear::strip_linear(annot);
+    stripped
+        .strip_prefix("Array<")?
+        .strip_suffix('>')?
+        .strip_prefix("dyn ")
 }
 
 fn check_unknown_trait_refs(
@@ -215,7 +274,7 @@ fn check_unknown_trait_refs(
                 ..
             } => {
                 for (ptype, _) in parameters {
-                    if let Some(t) = dyn_trait_name(ptype)
+                    if let Some(t) = dyn_trait_name_any_depth(ptype)
                         && !trait_methods.contains_key(t)
                     {
                         err = Some(format_err(
@@ -227,7 +286,7 @@ fn check_unknown_trait_refs(
                     }
                 }
                 if let Some(rt) = return_type
-                    && let Some(t) = dyn_trait_name(rt)
+                    && let Some(t) = dyn_trait_name_any_depth(rt)
                     && !trait_methods.contains_key(t)
                 {
                     err = Some(format_err(
@@ -241,7 +300,7 @@ fn check_unknown_trait_refs(
                 type_annot, span, ..
             } => {
                 if let Some(ann) = type_annot
-                    && let Some(t) = dyn_trait_name(ann)
+                    && let Some(t) = dyn_trait_name_any_depth(ann)
                     && !trait_methods.contains_key(t)
                 {
                     err = Some(format_err(
@@ -253,7 +312,7 @@ fn check_unknown_trait_refs(
             }
             Node::StructDecl { fields, span, .. } => {
                 for (ftype, _) in fields {
-                    if let Some(t) = dyn_trait_name(ftype)
+                    if let Some(t) = dyn_trait_name_any_depth(ftype)
                         && !trait_methods.contains_key(t)
                     {
                         err = Some(format_err(
@@ -338,7 +397,7 @@ fn check_object_safety_refs(
                 ..
             } => {
                 for (ptype, _) in parameters {
-                    if let Some(t) = dyn_trait_name(ptype)
+                    if let Some(t) = dyn_trait_name_any_depth(ptype)
                         && let Some(e) = report(t, *span)
                     {
                         err = Some(e);
@@ -346,7 +405,7 @@ fn check_object_safety_refs(
                     }
                 }
                 if let Some(rt) = return_type
-                    && let Some(t) = dyn_trait_name(rt)
+                    && let Some(t) = dyn_trait_name_any_depth(rt)
                     && let Some(e) = report(t, *span)
                 {
                     err = Some(e);
@@ -356,7 +415,7 @@ fn check_object_safety_refs(
                 type_annot, span, ..
             } => {
                 if let Some(ann) = type_annot
-                    && let Some(t) = dyn_trait_name(ann)
+                    && let Some(t) = dyn_trait_name_any_depth(ann)
                     && let Some(e) = report(t, *span)
                 {
                     err = Some(e);
@@ -364,7 +423,7 @@ fn check_object_safety_refs(
             }
             Node::StructDecl { fields, span, .. } => {
                 for (ftype, _) in fields {
-                    if let Some(t) = dyn_trait_name(ftype)
+                    if let Some(t) = dyn_trait_name_any_depth(ftype)
                         && let Some(e) = report(t, *span)
                     {
                         err = Some(e);
@@ -381,9 +440,45 @@ fn check_object_safety_refs(
     }
 }
 
+/// Checks a single candidate coercion site: `value` flowing into a slot
+/// declared `dyn Trait` or `Array<dyn Trait>`. Only direct literal
+/// expressions are checked (a bare `StructLiteral`, or an `ArrayLiteral`
+/// whose elements are themselves direct `StructLiteral`s) — anything
+/// else (a call result, a variable read, …) is not statically
+/// determinable and is passed through permissively, matching this
+/// module's existing precision everywhere else.
+fn check_one_coercion(
+    declared_type: &str,
+    value: &Node,
+    satisfies: &impl Fn(&str, &str) -> bool,
+    describe: impl Fn(&str, &str) -> String,
+) -> Option<String> {
+    if let Some(trait_name) = dyn_trait_name(declared_type) {
+        if let Node::StructLiteral { name, .. } = value
+            && !satisfies(trait_name, name)
+        {
+            return Some(describe(trait_name, name));
+        }
+        return None;
+    }
+    if let Some(trait_name) = array_dyn_trait_name(declared_type)
+        && let Node::ArrayLiteral { items, .. } = value
+    {
+        for item in items {
+            if let Node::StructLiteral { name, .. } = item
+                && !satisfies(trait_name, name)
+            {
+                return Some(describe(trait_name, name));
+            }
+        }
+    }
+    None
+}
+
 fn check_coercions(
     node: &Node,
     fns_by_name: &HashMap<&str, &Node>,
+    struct_field_types: &HashMap<String, HashMap<String, String>>,
     satisfies: &impl Fn(&str, &str) -> bool,
     source_path: &str,
 ) -> Result<(), String> {
@@ -399,18 +494,13 @@ fn check_coercions(
                 span,
                 ..
             } => {
-                if let Some(trait_name) = dyn_trait_name(ann)
-                    && let Node::StructLiteral { name, .. } = value.as_ref()
-                    && !satisfies(trait_name, name)
-                {
-                    err = Some(format_err(
-                        source_path,
-                        *span,
-                        &format!(
-                            "type `{}` does not implement `{}`, required to coerce to `dyn {}`",
-                            name, trait_name, trait_name
-                        ),
-                    ));
+                if let Some(msg) = check_one_coercion(ann, value, satisfies, |trait_name, name| {
+                    format!(
+                        "type `{}` does not implement `{}`, required to coerce to `dyn {}`",
+                        name, trait_name, trait_name
+                    )
+                }) {
+                    err = Some(format_err(source_path, *span, &msg));
                 }
             }
             Node::CallExpression {
@@ -427,30 +517,98 @@ fn check_coercions(
                     return;
                 };
                 for (i, (ptype, _)) in parameters.iter().enumerate() {
-                    let Some(trait_name) = dyn_trait_name(ptype) else {
-                        continue;
-                    };
                     let Some(arg) = arguments.get(i) else {
                         continue;
                     };
-                    if let Node::StructLiteral { name, .. } = arg
-                        && !satisfies(trait_name, name)
-                    {
-                        err = Some(format_err(
-                            source_path,
-                            *span,
-                            &format!(
+                    if let Some(msg) = check_one_coercion(
+                        ptype,
+                        arg,
+                        satisfies,
+                        |trait_name, name| {
+                            format!(
                                 "type `{}` does not implement `{}`, required to coerce to `dyn {}` (argument {} of `{}`)",
                                 name,
                                 trait_name,
                                 trait_name,
                                 i + 1,
                                 callee_name
-                            ),
-                        ));
+                            )
+                        },
+                    ) {
+                        err = Some(format_err(source_path, *span, &msg));
                         return;
                     }
                 }
+            }
+            // RES-4095 increment 4 (issue item 5): a struct field typed
+            // `dyn Trait` / `Array<dyn Trait>`, assigned in a struct
+            // literal.
+            Node::StructLiteral {
+                name: struct_name,
+                fields,
+                span,
+                ..
+            } => {
+                let Some(field_types) = struct_field_types.get(struct_name) else {
+                    return;
+                };
+                for (fname, fvalue) in fields {
+                    let Some(ftype) = field_types.get(fname) else {
+                        continue;
+                    };
+                    if let Some(msg) = check_one_coercion(
+                        ftype,
+                        fvalue,
+                        satisfies,
+                        |trait_name, name| {
+                            format!(
+                                "type `{}` does not implement `{}`, required to coerce to `dyn {}` (field `{}` of `{}`)",
+                                name, trait_name, trait_name, fname, struct_name
+                            )
+                        },
+                    ) {
+                        err = Some(format_err(source_path, *span, &msg));
+                        return;
+                    }
+                }
+            }
+            // RES-4095 increment 4 (issue item 5): a fn returning `dyn
+            // Trait` / `Array<dyn Trait>`, checked against direct
+            // literal `return` expressions in its body.
+            Node::Function {
+                return_type: Some(rt),
+                body,
+                name: fn_name,
+                span,
+                ..
+            } => {
+                uniqueness_walk::visit(body, &mut |bn| {
+                    if err.is_some() {
+                        return;
+                    }
+                    if let Node::ReturnStatement {
+                        value: Some(rv),
+                        span: rspan,
+                    } = bn
+                        && let Some(msg) = check_one_coercion(
+                            rt,
+                            rv,
+                            satisfies,
+                            |trait_name, name| {
+                                format!(
+                                    "type `{}` does not implement `{}`, required to coerce to `dyn {}` (return value of `{}`)",
+                                    name, trait_name, trait_name, fn_name
+                                )
+                            },
+                        )
+                    {
+                        err = Some(format_err(
+                            source_path,
+                            if rspan.start.line == 0 { *span } else { *rspan },
+                            &msg,
+                        ));
+                    }
+                });
             }
             _ => {}
         }
@@ -876,6 +1034,210 @@ mod tests {
             fn main() {
                 let c: dyn Shape = new Circle { r: 3 };
                 c = make();
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    // RES-4095 increment 4: `dyn Trait` in generic/container position.
+
+    #[test]
+    fn rejects_unknown_trait_in_array_dyn() {
+        let src = r#"
+            fn use_shapes(Array<dyn Frobnicate> shapes) -> int {
+                return 0;
+            }
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("unknown trait `Frobnicate`"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_not_object_safe_trait_in_array_dyn() {
+        let src = r#"
+            trait Factory {
+                fn make() -> int;
+            }
+            fn use_factories(Array<dyn Factory> factories) -> int {
+                return 0;
+            }
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("[E0021]"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_not_object_safe_trait_in_array_dyn_let_binding() {
+        let src = r#"
+            trait Factory {
+                fn make() -> int;
+            }
+            fn main() {
+                let fs: Array<dyn Factory> = [];
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("[E0021]"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_array_dyn_coercion_when_element_does_not_implement_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            struct Square { int side, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn main() {
+                let shapes: Array<dyn Shape> = [new Circle { r: 2 }, new Square { side: 3 }];
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
+    }
+
+    #[test]
+    fn accepts_array_dyn_coercion_when_every_element_implements_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            struct Square { int s, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            impl Shape for Square {
+                fn area(self) -> int { return self.s; }
+            }
+            fn main() {
+                let shapes: Array<dyn Shape> = [new Circle { r: 2 }, new Square { s: 3 }];
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_array_dyn_coercion_at_call_site() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn use_shapes(Array<dyn Shape> shapes) -> int {
+                return 0;
+            }
+            fn main() {
+                use_shapes([new Square { side: 2 }]);
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_struct_field_coercion_when_value_does_not_implement_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            struct Holder {
+                dyn Shape inner,
+            }
+            fn main() {
+                let h = new Holder { inner: new Square { side: 2 } };
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(
+            err.contains("does not implement `Shape`") && err.contains("field `inner`"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn accepts_struct_field_coercion_when_value_implements_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            struct Holder {
+                dyn Shape inner,
+            }
+            fn main() {
+                let h = new Holder { inner: new Circle { r: 2 } };
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_return_type_coercion_when_value_does_not_implement_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn get_shape() -> dyn Shape {
+                return new Square { side: 2 };
+            }
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(
+            err.contains("does not implement `Shape`") && err.contains("return value"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn accepts_return_type_coercion_when_value_implements_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn get_shape() -> dyn Shape {
+                return new Circle { r: 2 };
+            }
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn permissive_on_non_literal_array_element() {
+        // Mirrors `permissive_on_non_literal_coercion`: an element that
+        // isn't a direct struct literal (a call result) isn't
+        // statically determinable — must not be rejected.
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn make() -> Square {
+                return new Square { side: 2 };
+            }
+            fn main() {
+                let shapes: Array<dyn Shape> = [make()];
             }
             main();
         "#;

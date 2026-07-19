@@ -1,0 +1,14 @@
+// RES-4095 increment 4: unknown-trait rejection reaches into container
+// position — `Array<dyn Frobnicate>` is rejected the same way a
+// top-level `dyn Frobnicate` annotation is, because no such trait is
+// declared anywhere in the program.
+
+fn use_shapes(Array<dyn Frobnicate> shapes) -> int {
+    return 0;
+}
+
+fn main() {
+    println(0);
+}
+
+main();
