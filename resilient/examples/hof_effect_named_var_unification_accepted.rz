@@ -1,0 +1,55 @@
+// RES-4123: named effect-variable unification — ACCEPT cases.
+//
+// `combine`'s two function-typed parameters `f` and `g` share the
+// effect-variable letter `e` — the language requires them to carry
+// the *same* effect at any one call site, but says nothing about
+// *which* effect that has to be:
+//   - `combine(add1, double, 5)` — both arguments provably `pure`.
+//     Unifies cleanly to `pure`.
+//   - `combine(noisy1, noisy2, 5)` — both arguments provably `io`.
+//     Unifies cleanly to `io`.
+//
+// `combine2`'s parameters `f` (`-e->`) and `g` (`-f->`) carry
+// *distinct* effect-variable letters — they are independent effect
+// variables, like two independent generic type parameters, so binding
+// one to `pure` and the other to `io` in the same call is not a
+// unification error.
+//
+// See `hof_effect_named_var_unification_rejected.rz` for the mirror
+// REJECT case: two same-letter parameters bound to conflicting
+// provable effects at one call site.
+
+pure fn add1(int x) -> int {
+    return x + 1;
+}
+
+pure fn double(int x) -> int {
+    return x * 2;
+}
+
+io fn noisy1(int x) -> int {
+    println(x);
+    return x;
+}
+
+io fn noisy2(int x) -> int {
+    println(x);
+    return x;
+}
+
+fn combine(fn(int) -e-> int f, fn(int) -e-> int g, int x) -> int {
+    return f(x) + g(x);
+}
+
+fn combine2(fn(int) -e-> int f, fn(int) -f-> int g, int x) -> int {
+    return f(x) + g(x);
+}
+
+fn main() -> int {
+    println(combine(add1, double, 5));
+    println(combine(noisy1, noisy2, 5));
+    println(combine2(add1, noisy1, 5));
+    return 0;
+}
+
+main();

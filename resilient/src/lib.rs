@@ -2386,6 +2386,16 @@ pub struct EffectSet {
     /// an unannotated fn; the permissive baseline preserves
     /// backward compatibility.
     pub io: bool,
+    /// RES-4123: the single-letter effect-variable name from this
+    /// fn's own `-e-> TYPE` return-type arrow (RES-193), e.g. `Some('e')`
+    /// for `fn run(...) -e-> int`. `None` for a fn whose return type
+    /// uses a plain `-> TYPE` arrow (or none at all) — the overwhelming
+    /// majority of fns. This is populated alongside `return_type` in
+    /// `Parser::parse_function_with_pure_and_effects` and consumed by
+    /// `effect_polymorphism.rs` to unify multiple function-typed
+    /// parameters that share the same effect-variable letter (see its
+    /// module doc, "Named effect-variable unification").
+    pub effect_var: Option<char>,
 }
 
 impl EffectSet {
@@ -2394,6 +2404,7 @@ impl EffectSet {
         EffectSet {
             pure: true,
             io: false,
+            effect_var: None,
         }
     }
 
@@ -2403,6 +2414,7 @@ impl EffectSet {
         EffectSet {
             pure: false,
             io: true,
+            effect_var: None,
         }
     }
 
@@ -4497,7 +4509,18 @@ impl Parser {
         let (parameters, defaults, param_prefix) = self.parse_function_parameters();
 
         // RES-052: optional `-> TYPE` return type, BEFORE contracts.
-        let return_type = self.parse_optional_return_type();
+        // RES-4123: also capture the fn's own `-e->` effect-variable
+        // letter (if any) so it can be preserved on `effects` for
+        // named effect-variable unification across this fn's
+        // function-typed parameters — see `effect_polymorphism.rs`.
+        let (return_type, own_effect_var) = self.parse_optional_return_type_with_effect_var();
+        let effects = match own_effect_var {
+            Some(v) => EffectSet {
+                effect_var: Some(v),
+                ..effects
+            },
+            None => effects,
+        };
 
         // RES-2535: optional `where T: A + B, U: C` clause after return type.
         let type_param_bounds =
@@ -5486,9 +5509,22 @@ impl Parser {
     /// unify the effect var with the actual effects of any fn-typed
     /// parameter sharing the same name.
     fn parse_optional_return_type(&mut self) -> Option<String> {
+        self.parse_optional_return_type_with_effect_var().0
+    }
+
+    /// RES-4123: same as [`Self::parse_optional_return_type`], but also
+    /// returns the `-e->` effect-variable letter when the fn's own
+    /// return type used the effect-arrow form (RES-193), instead of
+    /// discarding it. Used by `parse_function_with_pure_and_effects` to
+    /// preserve the letter on `EffectSet::effect_var` for named
+    /// effect-variable unification; the other two call sites (impl
+    /// methods, anonymous fn literals) go through
+    /// `parse_optional_return_type` and keep discarding it — neither
+    /// currently has a place to store it.
+    fn parse_optional_return_type_with_effect_var(&mut self) -> (Option<String>, Option<char>) {
         if self.current_token == Token::Arrow {
             self.next_token(); // skip '->'
-            return self.parse_type_annotation("after '->'");
+            return (self.parse_type_annotation("after '->'"), None);
         }
         // RES-193: `-e->` effect arrow form. Lex sequence is
         // Minus, Identifier(letter), Arrow. We consume all three on
@@ -5503,16 +5539,17 @@ impl Parser {
             self.next_token(); // current was Identifier -> next
             if self.current_token == Token::Arrow {
                 self.next_token(); // consume '->'
-                return self.parse_type_annotation("after '-e->'");
+                let letter = eff.chars().next();
+                return (self.parse_type_annotation("after '-e->'"), letter);
             }
             let tok = self.current_token.clone();
             self.record_error(format!(
                 "Expected `->` to close effect arrow `-{}->`, found {}",
                 eff, tok
             ));
-            return None;
+            return (None, None);
         }
-        None
+        (None, None)
     }
 
     /// RES-157a: parse a single type annotation starting at

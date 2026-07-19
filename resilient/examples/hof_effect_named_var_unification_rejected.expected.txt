@@ -1,0 +1,6 @@
+Type error: examples/hof_effect_named_var_unification_rejected.rz:37:20: cannot unify effect variable 'e' at call to `combine`: parameter `f` resolves to pure effect but parameter `g` resolves to io effect
+examples/hof_effect_named_var_unification_rejected.rz:37:20: cannot unify effect variable 'e' at call to `combine`: parameter `f` resolves to pure effect but parameter `g` resolves to io effect
+Type error: cannot unify effect variable 'e' at call to `combine`: parameter `f` resolves to pure effect but parameter `g` resolves to io effect
+       return combine(add1, noisy, 5);
+                      ^
+Error: Type check failed: examples/hof_effect_named_var_unification_rejected.rz:37:20: cannot unify effect variable 'e' at call to `combine`: parameter `f` resolves to pure effect but parameter `g` resolves to io effect
