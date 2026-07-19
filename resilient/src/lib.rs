@@ -33117,10 +33117,12 @@ USAGE:
     rz build --target <TRIPLE> <file> [-o <out.rzbc>]
 
 Only the no_std-representable subset is supported: Int/Bool/Float
-arithmetic, comparisons, control flow, and locals. Programs using
-`fn` declarations, strings, collections, structs, closures, or FFI
-are rejected with a diagnostic naming the unsupported construct —
-never silently miscompiled.
+arithmetic, comparisons, control flow, locals, and plain top-level
+`fn` declarations (including zero-argument closures that capture
+outer locals by value, never reassigned after capture). Programs
+using strings, collections, structs, FFI, or a closure that mutates
+a capture or is called with arguments are rejected with a diagnostic
+naming the unsupported construct — never silently miscompiled.
 
 FLAGS:
         --target TRIPLE   Target triple (required, e.g.

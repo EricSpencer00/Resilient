@@ -1,0 +1,22 @@
+// Embedded closure translation — the RES-4083 host closure-emission
+// increment's reference program (Refs #3933 Track D). See
+// docs/EMBEDDED_PIPELINE.md and rzbc_emit.rs's `transform_ops` for
+// the host-bytecode -> embedded-`Instr` story: `outer`'s `base`
+// local is captured by value into the nested `getBase` closure, and
+// since the source never reassigns `base` after the closure is
+// created, the translator can safely elide the host compiler's
+// `Cell`-boxing idiom and translate the capture as a plain scalar
+// snapshot for `resilient_runtime::vm::Instr::MakeClosure`.
+//
+// `getBase` is called with zero arguments — the only closure-call
+// shape this increment supports (see the module docs' closures
+// section for why a non-empty argument list is a follow-up).
+
+fn outer(int base) -> int {
+    fn getBase() {
+        base
+    }
+    return getBase();
+}
+
+outer(41);
