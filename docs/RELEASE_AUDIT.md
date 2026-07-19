@@ -318,11 +318,29 @@ static Z3; if the attempt fails in CI for either one, that leg silently
 degrades to the exact no-z3, `--features lsp` binary every release
 before RES-4113 shipped — the release can't be bricked by this change.
 
-**Verification.** Release infra only fully exercises on a tag push or
-`workflow_dispatch`; this PR dispatched the workflow manually off the
-feature branch (which skips the tag-gated `release` job but runs the
-full `build` matrix, including both macOS legs) to observe real CI
-behavior before merge. See the PR body for the run link and outcome —
-if either macOS leg's static-Z3 step failed in that dispatch, the
-fallback step is what CI is confirming here, and the residual risk is
-carried forward rather than newly introduced.
+**Verification (workflow_dispatch run 29672987838, this branch).**
+Release infra only fully exercises on a tag push or `workflow_dispatch`;
+this PR dispatched the workflow manually off the feature branch (which
+skips the tag-gated `release` job but runs the full 4-leg `build`
+matrix). Observed outcomes:
+
+- **`x86_64-apple-darwin` (macos-15-intel): static Z3 SUCCEEDED** — the
+  "Build (native, Z3 static-linked, macOS via GCC)" step linked, the
+  fallback step was skipped, and the **Z3 release smoke test passed**
+  (real Z3-discharged obligation, not `Unknown`). The ticket's
+  acceptance criterion is CI-proven, not just locally proven.
+- **`aarch64-apple-darwin` (macos-latest): static Z3 failed → fallback
+  shipped.** Root cause now identified from the CI log: the
+  `macos-latest` image's CommandLineTools ship the **MacOSX26 SDK**,
+  whose `mach/message.h` uses `xnu_static_assert_struct_size` macros
+  that GCC-13 cannot parse (Clang-only construct) — Z3's
+  `memory_manager.cpp` fails to *compile*, before any link step. This is
+  why #4101's recipe worked locally (older SDK) but failed at rc time.
+  The fallback step ran, the leg went green, and it ships the same no-z3
+  binary as every prior release. Fixing arm64 needs an SDK pin
+  (`-isysroot` to an older MacOSX SDK) or a Z3/toolchain bump —
+  remaining residual scope of #3985, now with a precise root cause.
+
+Net after this PR: **3 of 4 targets ship static Z3** (both Linux +
+`x86_64-apple-darwin`); `aarch64-apple-darwin` is the one no-z3 leg,
+protected by the fallback so it can never brick a release.
