@@ -745,6 +745,15 @@ pub enum JitError {
     /// (when available) for diagnostics; should never appear in a
     /// well-formed program.
     UnknownAbort(String),
+    /// RES-4171: integer `/` with a zero divisor. Same abort-shim
+    /// mechanism as `OutOfBounds` — the lowering emits an inline
+    /// zero check before `sdiv` and calls the abort shim on the
+    /// failing path instead of letting Cranelift's `sdiv` execute
+    /// UB on a zero divisor.
+    DivisionByZero,
+    /// RES-4171: integer `%` with a zero divisor. Same mechanism as
+    /// `DivisionByZero` but for `srem`.
+    ModuloByZero,
 }
 
 impl std::fmt::Display for JitError {
@@ -761,6 +770,8 @@ impl std::fmt::Display for JitError {
             ),
             JitError::EmptyPop => write!(f, "jit: pop on empty array"),
             JitError::UnknownAbort(msg) => write!(f, "jit: aborted: {}", msg),
+            JitError::DivisionByZero => write!(f, "jit: division by zero"),
+            JitError::ModuloByZero => write!(f, "jit: modulo by zero"),
         }
     }
 }
@@ -812,8 +823,15 @@ impl std::error::Error for JitError {}
 /// values with drop impls, so there are no leaks.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum JitAbort {
-    OutOfBounds { index: i64, len: usize },
+    OutOfBounds {
+        index: i64,
+        len: usize,
+    },
     EmptyPop,
+    /// RES-4171: integer `/` by zero.
+    DivisionByZero,
+    /// RES-4171: integer `%` by zero.
+    ModuloByZero,
 }
 
 // RES-380: minimal libc bindings for setjmp / longjmp. The real
@@ -918,6 +936,8 @@ fn jit_invoke_with_abort_catch<F: FnOnce() -> i64>(f: F) -> Result<i64, JitError
                     len: len as i64,
                 },
                 Some(JitAbort::EmptyPop) => JitError::EmptyPop,
+                Some(JitAbort::DivisionByZero) => JitError::DivisionByZero,
+                Some(JitAbort::ModuloByZero) => JitError::ModuloByZero,
                 None => {
                     JitError::UnknownAbort("jit abort with no payload (driver bug)".to_string())
                 }
@@ -955,6 +975,10 @@ pub(crate) struct JitRuntimeImports {
     pub res_jit_abort_oob: FuncId,
     /// RES-380: noreturn abort shim for `pop` on an empty array.
     pub res_jit_abort_empty_pop: FuncId,
+    /// RES-4171: noreturn abort shim for integer `/` by zero.
+    pub res_jit_abort_div_zero: FuncId,
+    /// RES-4171: noreturn abort shim for integer `%` by zero.
+    pub res_jit_abort_mod_zero: FuncId,
     // --- RES-jit extended runtime imports ---
     pub res_jit_alloc_float: FuncId,
     pub res_jit_float_add: FuncId,
@@ -1079,6 +1103,15 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         .declare_function("res_jit_abort_empty_pop", Linkage::Import, &sig_abort_empty)
         .map_err(|e| JitError::LinkError(e.to_string()))?;
 
+    // RES-4171: div/mod-by-zero abort shims. Same "returns i64 but
+    // never actually returns" contract as `res_jit_abort_empty_pop`.
+    let res_jit_abort_div_zero = module
+        .declare_function("res_jit_abort_div_zero", Linkage::Import, &sig_abort_empty)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_abort_mod_zero = module
+        .declare_function("res_jit_abort_mod_zero", Linkage::Import, &sig_abort_empty)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
     // --- RES-jit: extended runtime imports ---
     // Macro to reduce repetition: declare a function with a given
     // signature and bind the FuncId to a local variable of the same name.
@@ -1161,6 +1194,8 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_jit_sign,
         res_jit_abort_oob,
         res_jit_abort_empty_pop,
+        res_jit_abort_div_zero,
+        res_jit_abort_mod_zero,
         res_jit_alloc_float,
         res_jit_float_add,
         res_jit_float_sub,
@@ -1429,6 +1464,21 @@ pub(crate) mod runtime_shims {
         super::trigger_jit_abort(super::JitAbort::EmptyPop);
     }
 
+    /// RES-4171: noreturn abort shim for integer `/` by zero. Same
+    /// ABI rationale as `res_jit_abort_oob` — lowering emits an
+    /// inline zero check on the divisor and calls this on the
+    /// failing path instead of letting Cranelift's `sdiv` execute
+    /// UB (or trap the whole process) on a zero divisor.
+    pub extern "C-unwind" fn res_jit_abort_div_zero() -> i64 {
+        super::trigger_jit_abort(super::JitAbort::DivisionByZero);
+    }
+
+    /// RES-4171: noreturn abort shim for integer `%` by zero. Same
+    /// rationale as `res_jit_abort_div_zero` but for `srem`.
+    pub extern "C-unwind" fn res_jit_abort_mod_zero() -> i64 {
+        super::trigger_jit_abort(super::JitAbort::ModuloByZero);
+    }
+
     /// Free an array previously produced by `res_array_new`. A
     /// null pointer is a no-op so the JIT doesn't need to guard
     /// the call.
@@ -1484,6 +1534,15 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "res_jit_abort_empty_pop",
         runtime_shims::res_jit_abort_empty_pop as *const u8,
+    );
+    // RES-4171: div/mod-by-zero abort shims used by inline zero checks.
+    builder.symbol(
+        "res_jit_abort_div_zero",
+        runtime_shims::res_jit_abort_div_zero as *const u8,
+    );
+    builder.symbol(
+        "res_jit_abort_mod_zero",
+        runtime_shims::res_jit_abort_mod_zero as *const u8,
     );
     // RES-167a: register the JIT-side builtin shims alongside the
     // array runtime shims. Both surfaces use the same absolute-
@@ -3334,6 +3393,123 @@ fn lower_index_store(
     Ok(())
 }
 
+/// RES-4171: lower integer `/` with an inline zero check + the
+/// `i64::MIN / -1` overflow case, both of which Cranelift's `sdiv`
+/// traps on at the machine level (an uncaught SIGFPE/SIGILL —
+/// exactly the fuzzer's "deadly signal" abort, not a recoverable
+/// Rust panic). A zero divisor calls the `res_jit_abort_div_zero`
+/// shim, which `longjmp`s back to the driver the same way the
+/// RES-380 array-bounds checks do, so the JIT surfaces the same
+/// typed `JitError::DivisionByZero` the tree-walker / VM report as
+/// "Division by zero" instead of aborting the process. The
+/// `i64::MIN / -1` case is handled inline to match
+/// `OverflowMode::Wrap`'s `a.wrapping_div(b)` result (`i64::MIN`)
+/// — the JIT has no overflow-mode plumbing yet and always lowers
+/// arithmetic as `Wrap`, so this keeps `/` consistent with `+`/`-`/`*`.
+fn lower_checked_div(
+    l: Value,
+    r: Value,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Value {
+    let imp = ctx.imports;
+    let zero = bcx.ins().iconst(types::I64, 0);
+    let is_zero = bcx.ins().icmp(IntCC::Equal, r, zero);
+
+    let ok_bb = bcx.create_block();
+    let bad_bb = bcx.create_block();
+    let normal_bb = bcx.create_block();
+    let overflow_bb = bcx.create_block();
+    let merge_bb = bcx.create_block();
+    bcx.append_block_param(merge_bb, types::I64);
+    bcx.ins().brif(is_zero, bad_bb, &[], ok_bb, &[]);
+
+    bcx.switch_to_block(bad_bb);
+    bcx.seal_block(bad_bb);
+    let fabort = module.declare_func_in_func(imp.res_jit_abort_div_zero, bcx.func);
+    bcx.ins().call(fabort, &[]);
+    bcx.ins().trap(TrapCode::UnreachableCodeReached);
+
+    bcx.switch_to_block(ok_bb);
+    bcx.seal_block(ok_bb);
+    let min_v = bcx.ins().iconst(types::I64, i64::MIN);
+    let neg1 = bcx.ins().iconst(types::I64, -1);
+    let l_is_min = bcx.ins().icmp(IntCC::Equal, l, min_v);
+    let r_is_neg1 = bcx.ins().icmp(IntCC::Equal, r, neg1);
+    let is_overflow = bcx.ins().band(l_is_min, r_is_neg1);
+    bcx.ins()
+        .brif(is_overflow, overflow_bb, &[], normal_bb, &[]);
+
+    bcx.switch_to_block(overflow_bb);
+    bcx.seal_block(overflow_bb);
+    // `i64::MIN.wrapping_div(-1) == i64::MIN`.
+    bcx.ins().jump(merge_bb, &[l]);
+
+    bcx.switch_to_block(normal_bb);
+    bcx.seal_block(normal_bb);
+    let q = bcx.ins().sdiv(l, r);
+    bcx.ins().jump(merge_bb, &[q]);
+
+    bcx.switch_to_block(merge_bb);
+    bcx.seal_block(merge_bb);
+    bcx.block_params(merge_bb)[0]
+}
+
+/// RES-4171: lower integer `%` with the same zero-check + overflow
+/// handling as [`lower_checked_div`], but the overflow case yields
+/// `0` (matching `OverflowMode::Wrap`'s `rem_for_eval`) instead of
+/// `i64::MIN`.
+fn lower_checked_rem(
+    l: Value,
+    r: Value,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Value {
+    let imp = ctx.imports;
+    let zero = bcx.ins().iconst(types::I64, 0);
+    let is_zero = bcx.ins().icmp(IntCC::Equal, r, zero);
+
+    let ok_bb = bcx.create_block();
+    let bad_bb = bcx.create_block();
+    let normal_bb = bcx.create_block();
+    let overflow_bb = bcx.create_block();
+    let merge_bb = bcx.create_block();
+    bcx.append_block_param(merge_bb, types::I64);
+    bcx.ins().brif(is_zero, bad_bb, &[], ok_bb, &[]);
+
+    bcx.switch_to_block(bad_bb);
+    bcx.seal_block(bad_bb);
+    let fabort = module.declare_func_in_func(imp.res_jit_abort_mod_zero, bcx.func);
+    bcx.ins().call(fabort, &[]);
+    bcx.ins().trap(TrapCode::UnreachableCodeReached);
+
+    bcx.switch_to_block(ok_bb);
+    bcx.seal_block(ok_bb);
+    let min_v = bcx.ins().iconst(types::I64, i64::MIN);
+    let neg1 = bcx.ins().iconst(types::I64, -1);
+    let l_is_min = bcx.ins().icmp(IntCC::Equal, l, min_v);
+    let r_is_neg1 = bcx.ins().icmp(IntCC::Equal, r, neg1);
+    let is_overflow = bcx.ins().band(l_is_min, r_is_neg1);
+    bcx.ins()
+        .brif(is_overflow, overflow_bb, &[], normal_bb, &[]);
+
+    bcx.switch_to_block(overflow_bb);
+    bcx.seal_block(overflow_bb);
+    let zero_res = bcx.ins().iconst(types::I64, 0);
+    bcx.ins().jump(merge_bb, &[zero_res]);
+
+    bcx.switch_to_block(normal_bb);
+    bcx.seal_block(normal_bb);
+    let q = bcx.ins().srem(l, r);
+    bcx.ins().jump(merge_bb, &[q]);
+
+    bcx.switch_to_block(merge_bb);
+    bcx.seal_block(merge_bb);
+    bcx.block_params(merge_bb)[0]
+}
+
 /// Lower an expression to a Cranelift `Value` of type `i64`.
 fn lower_expr(
     node: &Node,
@@ -3701,10 +3877,14 @@ fn lower_expr(
         // RES-099: lower all four signed integer infix ops + RES-100:
         // the six comparison ops. Same recursive shape — recurse on
         // left + right, then emit the matching Cranelift instruction.
-        // Note: `sdiv`/`srem` exhibit UB at the IR level when rhs == 0;
-        // a future ticket should emit a runtime check that traps or
-        // returns a sentinel. For now this matches what the bytecode
-        // VM does WITHOUT line attribution on the JIT path.
+        // RES-4171: `/` and `%` route through `lower_checked_div` /
+        // `lower_checked_rem`, which guard the zero-divisor and
+        // `i64::MIN / -1` cases Cranelift's `sdiv`/`srem` otherwise
+        // trap on at the machine level (an uncaught SIGFPE, not a
+        // recoverable Rust error). A zero divisor now surfaces as
+        // `JitError::DivisionByZero` / `ModuloByZero` — still without
+        // line attribution on the JIT path, matching the VM's
+        // existing `VmError::DivideByZero` gap noted at vm.rs:123.
         Node::InfixExpression {
             left,
             operator,
@@ -3769,8 +3949,8 @@ fn lower_expr(
                 "+" => bcx.ins().iadd(l, r),
                 "-" => bcx.ins().isub(l, r),
                 "*" => bcx.ins().imul(l, r),
-                "/" => bcx.ins().sdiv(l, r),
-                "%" => bcx.ins().srem(l, r),
+                "/" => lower_checked_div(l, r, bcx, ctx, module),
+                "%" => lower_checked_rem(l, r, bcx, ctx, module),
                 // RES-100: comparisons return Cranelift's i8 0/1.
                 // uextend widens to i64 so the function signature
                 // (returns i64) stays uniform regardless of which
@@ -4459,6 +4639,53 @@ mod tests {
     fn jit_modulo() {
         let p = parse_program("return 17 % 5;");
         assert_eq!(run(&p).unwrap(), 2);
+    }
+
+    // RES-4171: fuzz found `0/0` hard-aborts the process (an
+    // uncaught SIGFPE from Cranelift's `sdiv`) instead of surfacing
+    // a typed error. These pin the fix: a zero divisor must return
+    // `Err(JitError::DivisionByZero)` / `ModuloByZero` — never abort
+    // — and normal division/modulo must stay unaffected.
+    #[test]
+    fn jit_division_by_zero_is_typed_error() {
+        let p = parse_program("return 0 / 0;");
+        assert_eq!(run(&p), Err(JitError::DivisionByZero));
+        assert!(
+            run(&p)
+                .unwrap_err()
+                .to_string()
+                .contains("division by zero")
+        );
+    }
+
+    #[test]
+    fn jit_division_by_zero_nonzero_dividend() {
+        let p = parse_program("return 7 / 0;");
+        assert_eq!(run(&p), Err(JitError::DivisionByZero));
+    }
+
+    #[test]
+    fn jit_modulo_by_zero_is_typed_error() {
+        let p = parse_program("return 5 % 0;");
+        assert_eq!(run(&p), Err(JitError::ModuloByZero));
+        assert!(run(&p).unwrap_err().to_string().contains("modulo by zero"));
+    }
+
+    #[test]
+    fn jit_division_min_by_neg_one_matches_wrapping_semantics() {
+        // i64::MIN / -1 overflows; OverflowMode::Wrap (what the JIT
+        // always uses, having no overflow-mode plumbing) yields
+        // i64::MIN via `wrapping_div`. Cranelift's `sdiv` would trap
+        // on this operand pair too, so it must route through the
+        // same inline overflow check as the zero-divisor case.
+        let p = parse_program("return (-9223372036854775807 - 1) / -1;");
+        assert_eq!(run(&p).unwrap(), i64::MIN);
+    }
+
+    #[test]
+    fn jit_modulo_min_by_neg_one_matches_wrapping_semantics() {
+        let p = parse_program("return (-9223372036854775807 - 1) % -1;");
+        assert_eq!(run(&p).unwrap(), 0);
     }
 
     #[test]
