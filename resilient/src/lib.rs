@@ -31505,6 +31505,11 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
         }
         Some("add") => {
             // `pkg add <name> <spec> [--rev X] [--tag X] [--branch X]`
+            // RES-4114: `<spec>` is now optional — `pkg add <name>`
+            // with no spec resolves `<name>` against a registry index
+            // (`--index <path-or-url>`, or a `[registry]` section
+            // already in resilient.toml), optionally pinned with
+            // `--version <v>`.
             if args.get(3).map(|s| s.as_str()) == Some("help") && args.len() == 4 {
                 print_pkg_add_help();
                 return Some(0);
@@ -31512,6 +31517,8 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
             let mut name: Option<String> = None;
             let mut spec: Option<String> = None;
             let mut opts = pkg_deps::AddOpts::default();
+            let mut index: Option<String> = None;
+            let mut version: Option<String> = None;
             let mut i = 3;
             while i < args.len() {
                 let a = &args[i];
@@ -31539,6 +31546,20 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
                         return Some(2);
                     }
                     opts.branch = Some(args[i].clone());
+                } else if a == "--index" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --index requires an argument");
+                        return Some(2);
+                    }
+                    index = Some(args[i].clone());
+                } else if a == "--version" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --version requires an argument");
+                        return Some(2);
+                    }
+                    version = Some(args[i].clone());
                 } else if a.starts_with("--") {
                     eprintln!("Error: unknown flag `{}` to `pkg add`", a);
                     return Some(2);
@@ -31554,23 +31575,75 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
             }
             let Some(name) = name else {
                 eprintln!(
-                    "Error: `rz pkg add` requires a name and a source specifier.\n\
+                    "Error: `rz pkg add` requires at least a name.\n\
                      Usage: rz pkg add <name> path:../libs/mylib\n\
-                     Usage: rz pkg add <name> git:https://... --rev abc123"
+                     Usage: rz pkg add <name> git:https://... --rev abc123\n\
+                     Usage: rz pkg add <name> [--version v] [--index <path-or-url>]"
                 );
                 return Some(2);
             };
-            let Some(spec) = spec else {
-                eprintln!(
-                    "Error: `rz pkg add` requires a source specifier.\n\
-                     Usage: rz pkg add {} path:../libs/{}\n\
-                     Usage: rz pkg add {} git:https://... --rev abc123",
-                    name, name, name
-                );
-                return Some(2);
-            };
-            match pkg_deps::add_dependency(&name, &spec, &opts) {
-                Ok(()) => Some(0),
+            match spec {
+                Some(spec) => match pkg_deps::add_dependency(&name, &spec, &opts) {
+                    Ok(()) => Some(0),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        Some(1)
+                    }
+                },
+                None => match pkg_deps::add_registry_dependency(
+                    &name,
+                    version.as_deref(),
+                    index.as_deref(),
+                ) {
+                    Ok(()) => Some(0),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        Some(1)
+                    }
+                },
+            }
+        }
+        Some("update") => {
+            // RES-4114: `pkg update [--index <path-or-url>]` —
+            // re-resolves every registry-sourced dependency to
+            // latest, checksum-verifies and refetches anything that
+            // changed, and refreshes the lockfile for all
+            // dependencies.
+            if args.get(3).map(|s| s.as_str()) == Some("help") && args.len() == 4 {
+                print_pkg_update_help();
+                return Some(0);
+            }
+            let mut index: Option<String> = None;
+            let mut i = 3;
+            while i < args.len() {
+                let a = &args[i];
+                if a == "--help" || a == "-h" {
+                    print_pkg_update_help();
+                    return Some(0);
+                } else if a == "--index" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --index requires an argument");
+                        return Some(2);
+                    }
+                    index = Some(args[i].clone());
+                } else {
+                    eprintln!("Error: unknown flag `{}` to `pkg update`", a);
+                    return Some(2);
+                }
+                i += 1;
+            }
+            match pkg_deps::update_dependencies(index.as_deref()) {
+                Ok(reports) => {
+                    if reports.is_empty() {
+                        println!("Everything is up to date.");
+                    } else {
+                        for r in &reports {
+                            println!("{}: {} -> {}", r.name, r.old_version, r.new_version);
+                        }
+                    }
+                    Some(0)
+                }
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     Some(1)
@@ -31677,8 +31750,8 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
         }
         Some(other) => {
             eprintln!(
-                "Error: unknown pkg subcommand `{}`. Known: init, publish, add, remove, search. \
-                 Run `rz pkg help` or `rz pkg --help` for usage.",
+                "Error: unknown pkg subcommand `{}`. Known: init, publish, add, remove, search, \
+                 update. Run `rz pkg help` or `rz pkg --help` for usage.",
                 other
             );
             Some(2)
@@ -31706,9 +31779,11 @@ fn print_pkg_help() {
          SUBCOMMANDS:\n    \
              init     Scaffold a new project (resilient.toml + src/main.rz + .gitignore)\n    \
              publish  (RES-342) Package the current project for upload to a registry\n    \
-             add      Add a dependency to resilient.toml\n    \
+             add      Add a dependency to resilient.toml (path:/git: spec, or a bare\n    \
+                      name resolved against a registry index)\n    \
              remove   (RES-4007) Remove a dependency from resilient.toml\n    \
              search   (RES-4007) Search locally-resolvable dependencies\n    \
+             update   (RES-4114) Refresh registry dependencies to latest + lockfile\n    \
              help     Show this message\n\
          \n\
          Run `rz pkg <subcommand> --help` or `rz pkg <subcommand> help`\n\
@@ -31733,6 +31808,7 @@ fn print_pkg_help_to_stderr() {
              add      Add a dependency to resilient.toml\n    \
              remove   Remove a dependency from resilient.toml\n    \
              search   Search locally-resolvable dependencies\n    \
+             update   Refresh registry dependencies to latest + lockfile\n    \
              help     Show this message\n\
          \n\
          Error: `rz pkg` requires a subcommand."
@@ -31789,19 +31865,54 @@ fn print_pkg_add_help() {
          \n\
          USAGE:\n    \
              rz pkg add <name> path:../libs/<name>\n    \
-             rz pkg add <name> git:https://github.com/user/repo --rev abc123\n\
+             rz pkg add <name> git:https://github.com/user/repo --rev abc123\n    \
+             rz pkg add <name> [--version <v>] [--index <path-or-url>]\n\
          \n\
          ARGS:\n    \
              <name>     Dependency name (used in `use <name>::module;` imports)\n    \
-             <spec>     Source specifier: `path:<relative-path>` or `git:<url>`\n\
+             <spec>     Source specifier: `path:<relative-path>` or `git:<url>`.\n    \
+                        Omit `<spec>` entirely to resolve `<name>` against a\n    \
+                        registry index (RES-4114) instead.\n\
          \n\
          FLAGS:\n    \
              --rev <r>      Pin to a git revision (git deps only)\n    \
              --tag <t>      Pin to a git tag (git deps only)\n    \
-             --branch <b>   Pin to a git branch (git deps only)\n\
+             --branch <b>   Pin to a git branch (git deps only)\n    \
+             --version <v>  Pin to an exact version (registry deps only,\n    \
+                            defaults to the latest version in the index)\n    \
+             --index <l>    Registry index location: a filesystem path,\n    \
+                            `file://` URI, or `http(s)://` URL. Persisted to\n    \
+                            [registry] in resilient.toml for future `pkg add`\n    \
+                            / `pkg update` calls; required on the first call\n    \
+                            unless resilient.toml already has one configured.\n\
          \n\
          Validates the dependency resolves, appends to [dependencies] in\n\
-         resilient.toml, and writes resilient.lock."
+         resilient.toml, and writes resilient.lock. Registry package\n\
+         contents are checksum-verified against the index before use —\n\
+         a mismatch is a hard error."
+    );
+}
+
+/// RES-4114: `resilient pkg update --help`.
+fn print_pkg_update_help() {
+    println!(
+        "rz pkg update — refresh registry dependencies to latest\n\
+         \n\
+         USAGE:\n    \
+             rz pkg update\n    \
+             rz pkg update --index <path-or-url>\n\
+         \n\
+         FLAGS:\n    \
+             --index <l>    Registry index location, overriding (and persisting\n    \
+                            over) any [registry] section already configured.\n\
+         \n\
+         For every `registry`-sourced dependency in [dependencies], re-resolves\n    \
+         against the index to the latest version. Anything whose version\n    \
+         changed is refetched and checksum-verified before the manifest's\n    \
+         pin is updated. Prints one `name: old -> new` line per change, or\n    \
+         \"Everything is up to date.\" if nothing moved. Always rewrites\n    \
+         resilient.lock at the end, even if no registry dependency changed\n    \
+         (path/git dependencies can also have moved, e.g. a git branch dep)."
     );
 }
 
