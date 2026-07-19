@@ -6491,7 +6491,7 @@ impl Parser {
         self.next_token(); // consume `unsafe`
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error_expected(format!("Expected '{{' after 'unsafe', found {}", tok));
+            self.record_error(format!("Expected '{{' after 'unsafe', found {}", tok));
             return Node::UnsafeBlock {
                 body: Box::new(Node::Block {
                     stmts: Vec::new(),
