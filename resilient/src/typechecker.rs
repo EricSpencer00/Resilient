@@ -1808,7 +1808,24 @@ pub struct TypeChecker {
     /// `FieldAccess` type-checks to succeed for default methods even when
     /// the impl block omits them.
     trait_default_methods: HashMap<String, HashSet<String>>,
+    /// RES-4190: depth of the `check_node` recursion, tracked by the
+    /// `check_node` wrapper around `check_node_inner`. Legally parsed
+    /// but pathologically nested ASTs (e.g. thousands of chained `!`
+    /// prefix operators) used to overflow the native stack; this
+    /// mirrors the parser's RES-4185 `expr_depth` guard so the same
+    /// input instead gets a typed diagnostic.
+    check_depth: u32,
 }
+
+/// RES-4190: `check_node` counts every recursive descent (statements
+/// *and* expressions), not just expression nesting like the parser's
+/// `expr_depth` (RES-4185, resilient/src/lib.rs, limit 500) — so a
+/// 499-deep prefix-operator expression (the deepest the parser will
+/// actually emit) costs a handful of extra `check_node` frames for
+/// the enclosing `Program`/`Function`/statement nodes. Set with
+/// headroom above 500 so anything the parser accepts is guaranteed
+/// to also typecheck instead of hitting this guard.
+const MAX_CHECK_DEPTH: u32 = 550;
 
 impl TypeChecker {
     pub fn new() -> Self {
@@ -5623,6 +5640,8 @@ impl TypeChecker {
             trait_impls: HashMap::new(),
             trait_supers: HashMap::new(),
             trait_default_methods: HashMap::new(),
+            // RES-4190: no recursion depth at construction.
+            check_depth: 0,
         }
     }
 
@@ -7353,7 +7372,31 @@ impl TypeChecker {
         result
     }
 
+    /// RES-4190: depth-guarded entry point. Delegates to
+    /// `check_node_inner` for the actual recursive-descent logic,
+    /// tracking `check_depth` around the call so a legally parsed but
+    /// pathologically nested AST (e.g. thousands of chained `!`
+    /// prefix operators) hits a typed diagnostic instead of
+    /// overflowing the native stack. Mirrors the parser's RES-4185
+    /// `parse_expression`/`parse_expression_inner` split.
     pub fn check_node(&mut self, node: &Node) -> Result<Type, String> {
+        self.check_depth += 1;
+        if self.check_depth > MAX_CHECK_DEPTH {
+            self.check_depth -= 1;
+            return Err(format!(
+                "{}:{}:{}: expression nesting too deep (limit {})",
+                self.source_path,
+                self.current_span.start.line,
+                self.current_span.start.column,
+                MAX_CHECK_DEPTH
+            ));
+        }
+        let result = self.check_node_inner(node);
+        self.check_depth -= 1;
+        result
+    }
+
+    fn check_node_inner(&mut self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Program(_statements) => self.check_program(node),
             // RES-073: `use` is resolved away before typecheck. Treat
