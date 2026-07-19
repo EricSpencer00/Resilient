@@ -226,7 +226,7 @@ fn dyn_trait_name(annot: &str) -> Option<&str> {
 ///
 /// Used only for unknown-trait / object-safety rejection — safe to
 /// apply at any nesting depth, since rejecting an unknown or object-
-/// unsafe trait can never turn a previously-rejected program into an
+/// not-object-safe trait can never turn a previously-rejected program into an
 /// accepted one. Deliberately NOT used for method-call/`dyn_vars`
 /// tracking or reassignment checks: a container-typed binding is not
 /// itself a `dyn Trait` value, and treating it as one there would
@@ -1054,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_object_unsafe_trait_in_array_dyn() {
+    fn rejects_not_object_safe_trait_in_array_dyn() {
         let src = r#"
             trait Factory {
                 fn make() -> int;
@@ -1068,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_object_unsafe_trait_in_array_dyn_let_binding() {
+    fn rejects_not_object_safe_trait_in_array_dyn_let_binding() {
         let src = r#"
             trait Factory {
                 fn make() -> int;

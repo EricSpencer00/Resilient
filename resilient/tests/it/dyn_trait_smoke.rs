@@ -145,7 +145,7 @@ fn check_rejects_unknown_trait_in_array_dyn_annotation() {
 }
 
 #[test]
-fn check_rejects_object_unsafe_trait_in_array_dyn() {
+fn check_rejects_not_object_safe_trait_in_array_dyn() {
     let output = Command::new(bin())
         .args(["check", "examples/trait_dyn_object_array_safety_reject.rz"])
         .output()
