@@ -2495,6 +2495,13 @@ fn try_lower_tail_call(
 ///     a struct hits the plain-`iadd`-family arithmetic path (structs
 ///     are heap-tagged pointers, not raw ints) and corrupts data or
 ///     crashes.
+///   - `impl int/float/string/bool { ... }` — a method call on a
+///     primitive-type `impl` block crashed intermittently in CI on
+///     the corpus sweep (not reproduced locally in >8 runs — likely
+///     depends on `HashMap` iteration order used elsewhere in method
+///     dispatch, or on heap addresses). Not root-caused in this PR;
+///     disqualified out of caution rather than shipping a native path
+///     with a rare crash.
 ///
 /// None of these are what RES-4153 set out to fix (bool/string value
 /// display); each is its own follow-up. Per repo policy ("anything
@@ -2510,9 +2517,19 @@ fn program_has_unsound_native_fallthrough_construct(stmts: &[crate::Spanned<Node
             Node::Match { .. } | Node::IndexExpression { .. } | Node::IndexAssignment { .. } => {
                 true
             }
-            Node::ImplBlock { trait_name, .. } => trait_name
-                .as_deref()
-                .is_some_and(|t| matches!(t, "Add" | "Sub" | "Mul" | "Div")),
+            Node::ImplBlock {
+                trait_name,
+                struct_name,
+                ..
+            } => {
+                trait_name
+                    .as_deref()
+                    .is_some_and(|t| matches!(t, "Add" | "Sub" | "Mul" | "Div"))
+                    || matches!(
+                        struct_name.as_str(),
+                        "int" | "float" | "string" | "bool" | "Int" | "Float" | "String" | "Bool"
+                    )
+            }
             Node::PrefixExpression { right, .. } => node_is_unsound(right),
             Node::InfixExpression { left, right, .. } => {
                 node_is_unsound(left) || node_is_unsound(right)
