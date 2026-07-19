@@ -42,10 +42,10 @@ curl -s http://127.0.0.1:8080/mcp/call \
   -d '{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}'
 ```
 
-The wrapper exposes `GET /health` and `POST /mcp/call`. Tool names may use
-the hosted aliases from RES-3782 (`rz_compile`, `rz_format`, `rz_verify`,
-and related `rz_*` names) or the native MCP names (`resilient_compile`,
-`resilient_format`, `resilient_verify`, ...).
+The wrapper exposes `GET /health`, `POST /mcp/call`, and `GET /metrics`.
+Tool names may use the hosted aliases from RES-3782 (`rz_compile`,
+`rz_format`, `rz_verify`, and related `rz_*` names) or the native MCP names
+(`resilient_compile`, `resilient_format`, `resilient_verify`, ...).
 
 ### Hardening (Phase 1, RES-3934/3935/3936/3938/3944)
 
@@ -95,6 +95,42 @@ pathological-but-syntactically-valid program cannot hang a connection
 past the deadline. The rate limiter is a token-bucket per source IP,
 implemented in the in-tree [`hardening`](../resilient/src/hardening.rs)
 module (no new dependencies).
+
+### Metrics (Phase 3, RES-3952)
+
+`GET /metrics` returns in-tree, atomic-counter-based metrics in
+[Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+(no new dependency — same "plain stdlib primitives" approach as the
+rate limiter and access log):
+
+```
+# HELP resilient_mcp_requests_total Total HTTP requests handled, by status code.
+# TYPE resilient_mcp_requests_total counter
+resilient_mcp_requests_total{status="200"} 42
+resilient_mcp_requests_total{status="429"} 3
+# HELP resilient_mcp_request_duration_seconds HTTP request handling duration.
+# TYPE resilient_mcp_request_duration_seconds histogram
+resilient_mcp_request_duration_seconds_bucket{le="0.005"} 10
+...
+resilient_mcp_request_duration_seconds_bucket{le="+Inf"} 45
+resilient_mcp_request_duration_seconds_sum 1.234000
+resilient_mcp_request_duration_seconds_count 45
+# HELP resilient_mcp_rate_limited_total Requests rejected by the per-IP rate limiter.
+# TYPE resilient_mcp_rate_limited_total counter
+resilient_mcp_rate_limited_total 3
+# HELP resilient_mcp_in_flight_requests HTTP requests currently being handled.
+# TYPE resilient_mcp_in_flight_requests gauge
+resilient_mcp_in_flight_requests 1
+```
+
+`requests_total` is a counter keyed by `status`. Duration is a fixed-bucket
+histogram (`0.005s`–`10s`, matching common Prometheus client defaults) fed
+by every request regardless of outcome. `rate_limited_total` counts only
+`429` rejections from the per-IP limiter (RES-3938), distinct from `413`
+body-size rejections. `in_flight` is a live gauge tracked via an RAII guard
+so it's accurate even on early-exit (413/429) responses. Counters are
+process-local — restart resets them, same as any single-process exporter
+without a pushgateway.
 
 Example: lower every limit for a locked-down deployment:
 
