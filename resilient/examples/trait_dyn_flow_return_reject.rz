@@ -1,0 +1,29 @@
+// RES-4095 increment 5 (dyn v2 tracker, issue item 4): flow-sensitive
+// coercion checking through a fn's declared return type — reject case.
+//
+// `make`'s *declared* return type `Square` is a concrete, non-`dyn`,
+// non-container struct name, so `make()`'s result at the `use_shape`
+// call site resolves to `Square` regardless of what `make`'s body
+// actually returns — and `Square` provably does not implement `Shape`.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Square {
+    int side,
+}
+
+fn make() -> Square {
+    return new Square { side: 2 };
+}
+
+fn use_shape(dyn Shape s) -> int {
+    return 0;
+}
+
+fn main() {
+    println(use_shape(make()));
+}
+
+main();
