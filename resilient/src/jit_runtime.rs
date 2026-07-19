@@ -204,6 +204,78 @@ fn read_string(v: i64) -> String {
     }
 }
 
+// RES-4134: single-string-argument builtins with no overload ambiguity
+// (unlike `len`/`contains`, these are only ever defined for `String` in
+// `lib.rs`'s `BUILTINS` table, so the call-site lowering doesn't need a
+// `static_kind` gate — a non-string argument would already be a
+// typechecker error before the JIT ever sees it).
+
+pub(crate) extern "C-unwind" fn res_jit_string_trim(v: i64) -> i64 {
+    let s = read_string(v);
+    let boxed = Box::new(s.trim().to_string());
+    tag_string(Box::into_raw(boxed))
+}
+
+/// RES-145: ASCII-only, matching `builtin_to_upper` in `lib.rs`.
+pub(crate) extern "C-unwind" fn res_jit_string_to_upper(v: i64) -> i64 {
+    let s = read_string(v);
+    let boxed = Box::new(s.to_ascii_uppercase());
+    tag_string(Box::into_raw(boxed))
+}
+
+/// RES-145: ASCII-only, matching `builtin_to_lower` in `lib.rs`.
+pub(crate) extern "C-unwind" fn res_jit_string_to_lower(v: i64) -> i64 {
+    let s = read_string(v);
+    let boxed = Box::new(s.to_ascii_lowercase());
+    tag_string(Box::into_raw(boxed))
+}
+
+/// RES-412: char-level reversal, matching `builtin_string_reverse`.
+pub(crate) extern "C-unwind" fn res_jit_string_reverse(v: i64) -> i64 {
+    let s = read_string(v);
+    let boxed = Box::new(s.chars().rev().collect::<String>());
+    tag_string(Box::into_raw(boxed))
+}
+
+/// RES-414: first byte index of `sub` in `s`, or -1. Matches `builtin_index_of`.
+pub(crate) extern "C-unwind" fn res_jit_string_index_of(a: i64, b: i64) -> i64 {
+    let sa = read_string(a);
+    let sb = read_string(b);
+    match sa.find(sb.as_str()) {
+        Some(idx) => idx as i64,
+        None => -1,
+    }
+}
+
+/// RES-213: matches `builtin_starts_with`. Returns a raw untagged 0/1,
+/// matching RES-100's convention for boolean results (same
+/// representation `res_jit_value_eq`/`ne` use) so the value composes
+/// correctly with `brif`/arithmetic without a heap tag.
+pub(crate) extern "C-unwind" fn res_jit_string_starts_with(a: i64, b: i64) -> i64 {
+    let sa = read_string(a);
+    let sb = read_string(b);
+    i64::from(sa.starts_with(sb.as_str()))
+}
+
+/// RES-213: matches `builtin_ends_with`. See `res_jit_string_starts_with`
+/// for the untagged-bool representation note.
+pub(crate) extern "C-unwind" fn res_jit_string_ends_with(a: i64, b: i64) -> i64 {
+    let sa = read_string(a);
+    let sb = read_string(b);
+    i64::from(sa.ends_with(sb.as_str()))
+}
+
+/// `contains(haystack, needle)` for the string/string overload only —
+/// the call site only routes here when `static_kind` confirms both
+/// arguments are `String` (the range/int overload stays on the VM).
+/// Matches `builtin_contains`'s string arm. See
+/// `res_jit_string_starts_with` for the untagged-bool representation note.
+pub(crate) extern "C-unwind" fn res_jit_string_contains(a: i64, b: i64) -> i64 {
+    let sa = read_string(a);
+    let sb = read_string(b);
+    i64::from(sa.contains(sb.as_str()))
+}
+
 // --- Struct ---
 
 pub(crate) extern "C-unwind" fn res_jit_alloc_struct(
@@ -600,6 +672,14 @@ pub(crate) fn register_jit_runtime_symbols(builder: &mut cranelift_jit::JITBuild
     reg!(res_jit_println_bool);
     reg!(res_jit_print_bool);
     reg!(res_jit_bool_to_string);
+    reg!(res_jit_string_trim);
+    reg!(res_jit_string_to_upper);
+    reg!(res_jit_string_to_lower);
+    reg!(res_jit_string_reverse);
+    reg!(res_jit_string_index_of);
+    reg!(res_jit_string_starts_with);
+    reg!(res_jit_string_ends_with);
+    reg!(res_jit_string_contains);
 }
 
 // ============================================================
