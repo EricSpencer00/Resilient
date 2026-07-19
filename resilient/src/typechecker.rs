@@ -17261,8 +17261,11 @@ mod res2693_trait_param_compat {
         let e = TypeChecker::new()
             .check_program(&prog)
             .expect_err("expected a type error but got Ok");
+        // Case-insensitive: under RESILIENT_RICH_DIAG=1 the E0007
+        // rich format emits a lowercase "type mismatch" header
+        // instead of the legacy "Type mismatch" string.
         assert!(
-            e.contains(expected_fragment),
+            e.to_lowercase().contains(&expected_fragment.to_lowercase()),
             "expected fragment {:?} not found in error: {e}",
             expected_fragment
         );
@@ -17355,8 +17358,11 @@ mod res2701_generic_fn_type_params {
         let e = TypeChecker::new()
             .check_program(&prog)
             .expect_err("expected a type error but got Ok");
+        // Case-insensitive: under RESILIENT_RICH_DIAG=1 the E0007
+        // rich format emits a lowercase "type mismatch" header
+        // instead of the legacy "Type mismatch" string.
         assert!(
-            e.contains(fragment),
+            e.to_lowercase().contains(&fragment.to_lowercase()),
             "expected {:?} in error: {e}",
             fragment
         );
@@ -17683,8 +17689,11 @@ mod res2705_array_type_annotation {
         let e = TypeChecker::new()
             .check_program(&prog)
             .expect_err("expected a type error but got Ok");
+        // Case-insensitive: under RESILIENT_RICH_DIAG=1 the E0007
+        // rich format emits a lowercase "type mismatch" header
+        // instead of the legacy "Type mismatch" string.
         assert!(
-            e.contains(fragment),
+            e.to_lowercase().contains(&fragment.to_lowercase()),
             "expected {:?} in error: {e}",
             fragment
         );
