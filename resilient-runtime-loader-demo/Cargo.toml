@@ -1,6 +1,6 @@
 [package]
 name = "resilient-runtime-loader-demo"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "RES-3987 (D-E1): thin no_std loader binary — embeds a committed `.rzbc` blob, decodes + runs it via `resilient_runtime::vm::loader::load_and_run`, and reports the result over semihosting. The QEMU-runnable target that #3987's item 4 (Cortex-M QEMU CI job) exercises."
 authors = ["Eric Spencer"]
