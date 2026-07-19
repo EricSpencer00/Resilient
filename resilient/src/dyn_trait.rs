@@ -61,14 +61,19 @@
 //!   direct struct literal that provably doesn't implement the trait,
 //!   mirroring the `let`/call-site coercion checks below.
 //!
-//! Deferred to a follow-up issue: vtable construction and codegen across
-//! the bytecode VM and JIT backends (both currently diverge from the
-//! tree-walker on the reassignment case above — see
-//! `trait_dyn_dispatch_reassign.rz`'s `UNSUPPORTED_BY_VM`/
-//! `UNSUPPORTED_BY_JIT` entries in `tests/it/differential.rs`), `dyn
-//! Trait` in generic/container position, and flow-sensitive coercion
-//! checking beyond the direct literal call/let/assignment sites above
-//! (e.g. a `dyn`-typed variable reassigned *through another variable*
+//! Increment 3 (RES-4095) fixed the VM/JIT reassignment divergence noted
+//! above: the bytecode VM's `Op::CallMethod` already dispatches by the
+//! receiver's *runtime* struct tag (matching the tree-walker), so no
+//! vtable was actually needed. The real bug was in the unrelated
+//! compile-time `devirtualize.rs` optimization pass, which rewrites a
+//! statically-known `x.method()` into a direct call and never
+//! invalidated its binding on `Node::Assignment` — see that file's
+//! `Node::Assignment` arm in `rewrite_node`.
+//!
+//! Deferred to a follow-up issue: `dyn Trait` in generic/container
+//! position, and flow-sensitive coercion checking beyond the direct
+//! literal call/let/assignment sites above (e.g. a `dyn`-typed variable
+//! reassigned *through another variable*
 //! before reaching a call site).
 
 use crate::Node;
