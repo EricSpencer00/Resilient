@@ -107,10 +107,15 @@ const TAG_TAIL_CALL: u8 = 22;
 /// RES-4083 (D-E1 tail): `Instr::EnterTry(idx)` / `Instr::ExitTry`.
 const TAG_ENTER_TRY: u8 = 23;
 const TAG_EXIT_TRY: u8 = 24;
+/// RES-4083 (D-E1 tail, closures): `Instr::MakeClosure`/`Instr::CallClosure`.
+const TAG_MAKE_CLOSURE: u8 = 25;
+const TAG_CALL_CLOSURE: u8 = 26;
 
 const VALUE_TAG_INT: u8 = 0;
 const VALUE_TAG_BOOL: u8 = 1;
 const VALUE_TAG_FLOAT: u8 = 2;
+/// RES-4083 (D-E1 tail, closures): `Value::Closure { func_idx, slab_idx }`.
+const VALUE_TAG_CLOSURE: u8 = 3;
 
 /// Errors [`encode`] can return. Every fallible write path returns
 /// one of these instead of panicking.
@@ -219,6 +224,11 @@ impl<'a> Writer<'a> {
                 self.write_u8(VALUE_TAG_FLOAT)?;
                 self.write_f64(f)
             }
+            Value::Closure { func_idx, slab_idx } => {
+                self.write_u8(VALUE_TAG_CLOSURE)?;
+                self.write_u16(func_idx)?;
+                self.write_u16(slab_idx)
+            }
         }
     }
 }
@@ -293,6 +303,10 @@ impl<'a> Reader<'a> {
                 _ => Err(DecodeError::BadOperand),
             },
             VALUE_TAG_FLOAT => Ok(Value::Float(self.read_f64()?)),
+            VALUE_TAG_CLOSURE => Ok(Value::Closure {
+                func_idx: self.read_u16()?,
+                slab_idx: self.read_u16()?,
+            }),
             _ => Err(DecodeError::BadOperand),
         }
     }
@@ -352,6 +366,15 @@ fn write_instr(w: &mut Writer<'_>, instr: Instr) -> Result<(), EncodeError> {
             w.write_u16(idx)?;
         }
         Instr::ExitTry => w.write_u8(TAG_EXIT_TRY)?,
+        Instr::MakeClosure {
+            func_idx,
+            capture_count,
+        } => {
+            w.write_u8(TAG_MAKE_CLOSURE)?;
+            w.write_u16(func_idx)?;
+            w.write_u8(capture_count)?;
+        }
+        Instr::CallClosure => w.write_u8(TAG_CALL_CLOSURE)?,
     }
     Ok(())
 }
@@ -384,6 +407,11 @@ fn read_instr(r: &mut Reader<'_>) -> Result<Instr, DecodeError> {
         TAG_TAIL_CALL => Instr::TailCall(r.read_u16()?),
         TAG_ENTER_TRY => Instr::EnterTry(r.read_u16()?),
         TAG_EXIT_TRY => Instr::ExitTry,
+        TAG_MAKE_CLOSURE => Instr::MakeClosure {
+            func_idx: r.read_u16()?,
+            capture_count: r.read_u8()?,
+        },
+        TAG_CALL_CLOSURE => Instr::CallClosure,
         other => return Err(DecodeError::BadTag(other)),
     })
 }
@@ -457,6 +485,9 @@ pub struct EncodeFunctionDef<'a> {
     /// checked-failure variant id, or `None`. See
     /// [`crate::vm::FunctionDef::fails_variant`].
     pub fails_variant: Option<u16>,
+    /// RES-4083 (D-E1 tail, closures): see
+    /// [`crate::vm::FunctionDef::capture_count`].
+    pub capture_count: u8,
 }
 
 /// One function's metadata as recovered by [`decode_program`]: an
@@ -475,6 +506,8 @@ pub struct DecodedFunctionMeta {
     pub postcheck: Option<u16>,
     /// RES-4083 (D-E1 tail): see [`EncodeFunctionDef::fails_variant`].
     pub fails_variant: Option<u16>,
+    /// RES-4083 (D-E1 tail, closures): see [`EncodeFunctionDef::capture_count`].
+    pub capture_count: u8,
 }
 
 /// How many main instructions, functions, total function-body
@@ -506,7 +539,13 @@ pub struct ProgramCounts {
 /// updated layout) — a `3`-blob has neither, so decoding it under the
 /// `4` reader (or vice versa) must be a typed
 /// [`DecodeError::UnsupportedVersion`], never a silent misread.
-pub const PROGRAM_FORMAT_VERSION: u16 = 4;
+///
+/// RES-4083 (D-E1 tail, closures): bumped `4` -> `5` to add the
+/// per-function `capture_count` field (see
+/// [`EncodeFunctionDef::capture_count`]) and the `Value::Closure` /
+/// `Instr::MakeClosure` / `Instr::CallClosure` wire tags — same
+/// version-mismatch-is-an-error rationale as the `3` -> `4` bump.
+pub const PROGRAM_FORMAT_VERSION: u16 = 5;
 
 /// Wire sentinel for `postcheck: None` / `fails_variant: None` in the
 /// function-table entry layout (see [`encode_program`]). `0xFFFF` is
@@ -531,6 +570,7 @@ const NO_POSTCHECK: u16 = u16::MAX;
 ///   [2] local_count:     u16 LE
 ///   [2] postcheck:       u16 LE (RES-4083: `NO_POSTCHECK` sentinel = None)
 ///   [2] fails_variant:   u16 LE (RES-4083: `NO_POSTCHECK` sentinel = None)
+///   [1] capture_count:   u8 (RES-4083 closures)
 ///   [4] instr_count:     u32 LE
 ///   [M] instructions,    same per-instruction encoding as `encode`
 /// [2] try_count:         u16 LE (RES-4083, D-E1 tail)
@@ -577,6 +617,7 @@ pub fn encode_program(
         w.write_u16(f.local_count)?;
         w.write_u16(f.postcheck.unwrap_or(NO_POSTCHECK))?;
         w.write_u16(f.fails_variant.unwrap_or(NO_POSTCHECK))?;
+        w.write_u8(f.capture_count)?;
         w.write_u32(instr_count)?;
         for instr in f.code {
             write_instr(&mut w, *instr)?;
@@ -617,13 +658,13 @@ pub fn encode_program(
 ///
 /// let square_body = [Instr::LoadLocal(0), Instr::LoadLocal(0), Instr::Mul, Instr::Return];
 /// let main = [Instr::PushConst(resilient_runtime::vm::Value::Int(7)), Instr::Call(0), Instr::Return];
-/// let functions = [EncodeFunctionDef { code: &square_body, arity: 1, local_count: 1, postcheck: None, fails_variant: None }];
+/// let functions = [EncodeFunctionDef { code: &square_body, arity: 1, local_count: 1, postcheck: None, fails_variant: None, capture_count: 0 }];
 ///
 /// let mut buf = [0u8; 128];
 /// let len = encode_program(&main, &functions, &[], &mut buf).unwrap();
 ///
 /// let mut out_main = [Instr::Return; 8];
-/// let mut out_func_meta = [DecodedFunctionMeta { offset: 0, len: 0, arity: 0, local_count: 0, postcheck: None, fails_variant: None }; 4];
+/// let mut out_func_meta = [DecodedFunctionMeta { offset: 0, len: 0, arity: 0, local_count: 0, postcheck: None, fails_variant: None, capture_count: 0 }; 4];
 /// let mut out_func_code = [Instr::Return; 16];
 /// let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
 /// let counts = decode_program(&buf[..len], &mut out_main, &mut out_func_meta, &mut out_func_code, &mut out_try_handlers).unwrap();
@@ -681,6 +722,7 @@ pub fn decode_program(
         } else {
             Some(fails_raw)
         };
+        let capture_count = r.read_u8()?;
         let instr_count = r.read_u32()? as usize;
 
         let end = func_code_len
@@ -700,6 +742,7 @@ pub fn decode_program(
             local_count,
             postcheck,
             fails_variant,
+            capture_count,
         };
         func_code_len = end;
     }
@@ -869,6 +912,36 @@ mod tests {
             Instr::Pop,
             Instr::TailCall(9),
             Instr::Call(2),
+            Instr::Return,
+        ];
+        let (out, count) = roundtrip(&program);
+        assert_eq!(&out[..count], &program[..]);
+    }
+
+    // ---------- RES-4083 (D-E1 tail, closures) ----------
+
+    #[test]
+    fn roundtrip_make_closure_and_call_closure() {
+        let program = [
+            Instr::PushConst(Value::Int(1)),
+            Instr::MakeClosure {
+                func_idx: 3,
+                capture_count: 2,
+            },
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let (out, count) = roundtrip(&program);
+        assert_eq!(&out[..count], &program[..]);
+    }
+
+    #[test]
+    fn roundtrip_closure_value() {
+        let program = [
+            Instr::PushConst(Value::Closure {
+                func_idx: 7,
+                slab_idx: 42,
+            }),
             Instr::Return,
         ];
         let (out, count) = roundtrip(&program);
@@ -1128,6 +1201,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
@@ -1164,6 +1238,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
 
         let mut buf = [0u8; 128];
@@ -1178,6 +1253,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
@@ -1203,11 +1279,84 @@ mod tests {
             local_count: meta.local_count,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let mut vm = crate::vm::Vm::<8, 4, 2>::new();
         assert_eq!(
             vm.run_with_functions(&decoded_functions, &out_main[..counts.main_len]),
             Ok(Value::Int(36))
+        );
+    }
+
+    #[test]
+    fn program_roundtrip_with_closure_function_and_vm_executes_it() {
+        // add_capture(arg) = capture + arg; capture_count=1, arity=1.
+        let add_capture = [
+            Instr::LoadLocal(0),
+            Instr::LoadLocal(1),
+            Instr::Add,
+            Instr::Return,
+        ];
+        let main = [
+            Instr::PushConst(Value::Int(5)),  // arg, pushed before the closure
+            Instr::PushConst(Value::Int(10)), // captured value
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let functions = [EncodeFunctionDef {
+            code: &add_capture,
+            arity: 1,
+            local_count: 2,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+
+        let mut buf = [0u8; 128];
+        let len =
+            encode_program(&main, &functions, &[], &mut buf).expect("encode_program should fit");
+
+        let mut out_main = [Instr::Return; 8];
+        let mut out_func_meta = [DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
+        let counts = decode_program(
+            &buf[..len],
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+            &mut out_try_handlers,
+        )
+        .expect("decode_program should succeed");
+
+        let meta = out_func_meta[0];
+        assert_eq!(meta.capture_count, 1);
+        let callee_code = &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize];
+
+        let decoded_functions = [crate::vm::FunctionDef {
+            code: callee_code,
+            arity: meta.arity,
+            local_count: meta.local_count,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: meta.capture_count,
+        }];
+        let mut vm = crate::vm::Vm::<8, 4, 2, 0, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&decoded_functions, &out_main[..counts.main_len]),
+            Ok(Value::Int(15))
         );
     }
 
@@ -1226,6 +1375,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
@@ -1252,6 +1402,7 @@ mod tests {
                 local_count: 0,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
             EncodeFunctionDef {
                 code: &f2,
@@ -1259,6 +1410,7 @@ mod tests {
                 local_count: 0,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let mut buf = [0u8; 128];
@@ -1272,6 +1424,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 1];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
@@ -1296,6 +1449,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let mut buf = [0u8; 128];
         let len = encode_program(&[], &functions, &[], &mut buf).unwrap();
@@ -1308,6 +1462,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 1];
         let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 1];
@@ -1334,6 +1489,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [crate::vm::TryHandlerEntry::EMPTY; 4];
