@@ -38,6 +38,7 @@ mod cluster_invariant_smoke;
 mod codeless_diagnostic_lint_smoke;
 mod compound_trait_bounds_golden;
 mod conformance;
+mod const_generic_array_type_golden;
 mod const_generic_len_golden;
 mod contract_certificate_e2e_smoke;
 mod core_touchpoint_source_lib_split_smoke;
