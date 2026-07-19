@@ -1,0 +1,6 @@
+Type error: resilient/examples/hof_effect_lambda_literal_io_rejected.rz:26:16: cannot pass io callback `<inline io fn(...)>` to pure higher-order function `run` (parameter `f` is invoked inside `run`)
+resilient/examples/hof_effect_lambda_literal_io_rejected.rz:26:16: cannot pass io callback `<inline io fn(...)>` to pure higher-order function `run` (parameter `f` is invoked inside `run`)
+Type error: cannot pass io callback `<inline io fn(...)>` to pure higher-order function `run` (parameter `f` is invoked inside `run`)
+       return run(io fn(int a) -> int { return a + 1; }, 5);
+                  ^
+Error: Type check failed: resilient/examples/hof_effect_lambda_literal_io_rejected.rz:26:16: cannot pass io callback `<inline io fn(...)>` to pure higher-order function `run` (parameter `f` is invoked inside `run`)

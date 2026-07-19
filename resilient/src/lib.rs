@@ -2879,6 +2879,17 @@ enum Node {
         /// RES-088: span of the `fn` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-3933 A-E7: explicit `pure fn(...)` / `io fn(...)`
+        /// effect annotation on an inline lambda literal, parsed by
+        /// `parse_function_literal`. `None` means the literal was
+        /// written as a bare `fn(...)` with no annotation — callers
+        /// must not infer an effect in that case (an unannotated
+        /// inline closure is neither rescued as pure nor flagged as
+        /// impure by this field alone). `effect_polymorphism.rs`
+        /// reads this to resolve a callback argument that is an
+        /// inline literal rather than a named fn.
+        #[allow(dead_code)]
+        explicit_effect: Option<EffectSet>,
     },
     /// RES-039: `match SCRUTINEE { PATTERN => EXPR, ... }` expression.
     ///
@@ -8721,6 +8732,25 @@ impl Parser {
         // Parse prefix expressions
         let tok_span = self.span_at_current();
         let mut left_expr = match &self.current_token {
+            // RES-3933 A-E7: `pure fn(...)`/`io fn(...)` as an inline
+            // lambda-literal *expression* (as opposed to the existing
+            // statement-start `pure fn name(...)` declaration form
+            // dispatched in `parse_statement`). `pure`/`io` are soft
+            // keywords lexed as identifiers, so this only fires when
+            // the very next token is `fn` — `pure` used as an ordinary
+            // identifier (e.g. a variable or argument named `pure`)
+            // is completely unaffected.
+            Token::Identifier(n)
+                if (n == "pure" || n == "io") && self.peek_token == Token::Function =>
+            {
+                let effect = if n == "pure" {
+                    EffectSet::pure()
+                } else {
+                    EffectSet::io()
+                };
+                self.next_token(); // consume 'pure'/'io', current = 'fn'
+                Some(self.parse_function_literal_with_effect(Some(effect)))
+            }
             Token::Identifier(name) => {
                 let name = name.clone();
                 // RES-360: `ns::decl` scoped lookup. If the next token is
@@ -10105,6 +10135,16 @@ impl Parser {
 
     /// Parse an anonymous `fn(params) -> TYPE? requires/ensures? { body }`.
     fn parse_function_literal(&mut self) -> Node {
+        self.parse_function_literal_with_effect(None)
+    }
+
+    /// RES-3933 A-E7: parse an anonymous fn literal, optionally
+    /// prefixed by an explicit `pure`/`io` effect annotation — the
+    /// `pure fn(...)`/`io fn(...)` expression form. `explicit_effect`
+    /// is `Some` only when the caller already consumed a `pure`/`io`
+    /// soft keyword immediately before `fn`; a bare `fn(...)` literal
+    /// always passes `None`, matching pre-A-E7 behavior exactly.
+    fn parse_function_literal_with_effect(&mut self, explicit_effect: Option<EffectSet>) -> Node {
         self.next_token(); // skip 'fn'
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
@@ -10120,6 +10160,7 @@ impl Parser {
                 recovers_to: None,
                 return_type: None,
                 span: self.span_at_current(),
+                explicit_effect,
             };
         }
         self.next_token(); // skip '('
@@ -10142,6 +10183,7 @@ impl Parser {
                 recovers_to,
                 return_type,
                 span: self.span_at_current(),
+                explicit_effect,
             };
         }
         let body = self.parse_block_statement();
@@ -10155,6 +10197,7 @@ impl Parser {
             recovers_to,
             return_type,
             span: self.span_at_current(),
+            explicit_effect,
         }
     }
 
@@ -10879,6 +10922,7 @@ impl Parser {
             recovers_to: None,
             return_type: None,
             span: bracket_span,
+            explicit_effect: None,
         };
 
         // (fn() { ... })()

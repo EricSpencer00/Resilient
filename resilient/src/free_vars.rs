@@ -774,6 +774,7 @@ mod tests {
             recovers_to: None,
             return_type: None,
             span: Span::default(),
+            explicit_effect: None,
         };
         assert_eq!(free_vars(&lit), as_set(["n"]));
     }
@@ -795,6 +796,7 @@ mod tests {
             recovers_to: None,
             return_type: None,
             span: Span::default(),
+            explicit_effect: None,
         };
         assert_eq!(free_vars(&lit), BTreeSet::new());
     }
@@ -826,6 +828,7 @@ mod tests {
             recovers_to: None,
             return_type: None,
             span: Span::default(),
+            explicit_effect: None,
         };
         assert_eq!(free_vars(&lit), as_set(["a", "b"]));
     }
@@ -917,6 +920,7 @@ mod tests {
             recovers_to: None,
             return_type: None,
             span: Span::default(),
+            explicit_effect: None,
         };
         let outer = Node::FunctionLiteral {
             parameters: vec![("int".into(), "a".into())],
@@ -932,6 +936,7 @@ mod tests {
             recovers_to: None,
             return_type: None,
             span: Span::default(),
+            explicit_effect: None,
         };
         assert_eq!(free_vars(&outer), as_set(["c"]));
     }

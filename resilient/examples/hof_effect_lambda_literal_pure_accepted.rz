@@ -1,0 +1,45 @@
+// RES-3933 A-E7: inline lambda-literal callback resolution — ACCEPT case.
+//
+// The grammar now parses `pure fn(...) { ... }` / `io fn(...) { ... }`
+// as an expression (not just as a top-level fn declaration prefix),
+// recording the explicit annotation on `Node::FunctionLiteral`'s
+// `explicit_effect` field. `effect_polymorphism` reads that field at
+// call sites the same way it reads a named fn's declared effect:
+//   - `run` is a `pure` HOF that invokes its function-typed
+//     parameter `f`. Passing an inline `pure fn(...)` literal
+//     directly (no named fn, no local-variable alias) is provably
+//     safe and must type-check.
+//   - `poly_run` never declares its own effect — it's
+//     effect-polymorphic via `f`'s `-e->` return-type arrow. Passing
+//     an inline `pure fn(...)` literal proves the whole call pure,
+//     same as passing a `pure`-declared named fn would.
+//   - An unannotated bare `fn(...) { ... }` literal (no `pure`/`io`
+//     prefix) is still never resolved — its effect can't be proven
+//     either way, so per "when uncertain, accept" it also
+//     type-checks (through the `io`-declared HOF below, which isn't
+//     constrained by this pass at all).
+//
+// See `hof_effect_lambda_literal_io_rejected.rz` for the mirror
+// REJECT case: a `pure` HOF invoked with an explicit `io fn(...)`
+// inline literal.
+
+pure fn run(fn(int) -> int f, int x) -> int {
+    return f(x);
+}
+
+fn poly_run(fn(int) -e-> int f, int x) -> int {
+    return f(x);
+}
+
+io fn run_io(fn(int) -> int f, int x) -> int {
+    return f(x);
+}
+
+fn main() -> int {
+    println(run(pure fn(int a) -> int { return a + 1; }, 5));
+    println(poly_run(pure fn(int a) -> int { return a * 2; }, 10));
+    println(run_io(fn(int a) -> int { return a - 1; }, 20));
+    return 0;
+}
+
+main();
