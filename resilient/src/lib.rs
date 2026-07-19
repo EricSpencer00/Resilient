@@ -35278,6 +35278,102 @@ mod tests {
         });
     }
 
+    /// RES-4190: runs `f` on a thread matching `main.rs`'s 96 MiB
+    /// `STACK_SIZE`. The typechecker's `check_node` match arm is much
+    /// heavier per frame than the parser's, so RES-4185's 16 MiB
+    /// prod-stack helper is not enough headroom for these tests.
+    fn run_with_typecheck_prod_stack<F: FnOnce() + Send + 'static>(f: F) {
+        const STACK_SIZE: usize = 96 * 1024 * 1024;
+        std::thread::Builder::new()
+            .stack_size(STACK_SIZE)
+            .spawn(f)
+            .expect("failed to spawn test thread")
+            .join()
+            .expect("test thread panicked");
+    }
+
+    /// RES-4190: a chain of `!` prefix operators builds real AST depth
+    /// (unlike grouping parens, which collapse into the inner node).
+    /// A parser-accepted chain (well under the parser's 500-deep
+    /// `expr_depth` limit) used to SIGABRT the default/`--typecheck`
+    /// path via a native stack overflow in the typechecker's
+    /// unguarded `check_node` recursion, at a much shallower depth
+    /// than the parser's own limit. It must now return a clean typed
+    /// diagnostic instead of crashing when a manually built AST (the
+    /// parser itself cannot produce anything this deep any more)
+    /// exceeds the typechecker's own `MAX_CHECK_DEPTH` guard.
+    #[test]
+    fn deeply_nested_prefix_expr_reports_diagnostic_instead_of_overflowing() {
+        run_with_typecheck_prod_stack(|| {
+            // Hand-build a 5000-deep `!` chain — deeper than the parser
+            // now allows — to exercise the typechecker's own guard as
+            // a defense-in-depth backstop independent of the parser's.
+            let span = span::Span::default();
+            let mut expr = Node::BooleanLiteral { value: true, span };
+            for _ in 0..5000 {
+                expr = Node::PrefixExpression {
+                    operator: "!",
+                    right: Box::new(expr),
+                    span,
+                };
+            }
+            let stmt = Node::ExpressionStatement {
+                expr: Box::new(expr),
+                span,
+            };
+            let program = Node::Program(vec![span::Spanned::new(stmt, span)]);
+            let mut tc = typechecker::TypeChecker::new();
+            let err = tc
+                .check_program(&program)
+                .expect_err("pathologically deep AST must fail typecheck cleanly");
+            assert!(
+                err.contains("nesting too deep"),
+                "expected a nesting diagnostic, got: {}",
+                err
+            );
+        });
+    }
+
+    /// RES-4190: the deepest chain the parser will actually emit (just
+    /// under its 500-deep `expr_depth` limit) must still typecheck
+    /// end-to-end without tripping the typechecker's own guard.
+    #[test]
+    fn nested_prefix_expr_under_limit_typechecks_cleanly() {
+        run_with_typecheck_prod_stack(|| {
+            let src = format!(
+                "fn main() {{ let x = {}true; println(x); }}",
+                "!".repeat(499)
+            );
+            let (program, errs) = crate::parse(&src);
+            assert!(errs.is_empty(), "unexpected parse errors: {:?}", errs);
+            let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
+            assert!(
+                tc.check_program_with_source(&program, "<test>").is_ok(),
+                "499-deep `!` chain (parser's max) should typecheck cleanly"
+            );
+        });
+    }
+
+    /// RES-4190: end-to-end regression for the original ticket repro —
+    /// a source-level attempt at a deeper-than-500 `!` chain must be
+    /// rejected by the parser's own guard (RES-4185) with a clean
+    /// diagnostic, never reaching the typechecker, and never crashing.
+    #[test]
+    fn deeply_nested_prefix_expr_source_is_parser_rejected_not_crashed() {
+        run_with_typecheck_prod_stack(|| {
+            let src = format!(
+                "fn main() {{ let x = {}true; println(x); }}",
+                "!".repeat(5000)
+            );
+            let (_program, errs) = crate::parse(&src);
+            assert!(
+                errs.iter().any(|e| e.contains("nesting too deep")),
+                "expected a parser nesting diagnostic, got: {:?}",
+                errs
+            );
+        });
+    }
+
     #[test]
     fn apply_builtin_by_name_respects_std_feature() {
         use crate::cfg_attr::CfgConfig;
