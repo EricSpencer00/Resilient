@@ -153,6 +153,16 @@ fn check_diagnostic(name: &str, flags: &[&str], source: &str) {
     // And for the Windows-style case in case a reviewer runs on
     // Windows or a different tmp root.
     settings.add_filter(r"/var/folders/[^ :\n]+\.rs", "<tmp>.rs");
+    // RES-4169: under `RESILIENT_RICH_DIAG=1` (set ambiently by a
+    // contributor's shell or by CI), some diagnostics gain an
+    // inline `[E0006]`/`[E0010]`-style error-code prefix ahead of
+    // the message text. The committed `.snap` files were captured
+    // in the legacy (code-free) format, and re-capturing per mode
+    // would just duplicate every snapshot. Strip the code prefix
+    // so the snapshot compares the same message text regardless of
+    // which mode produced it — this is an env-agnostic normalization,
+    // not a change to what's being verified.
+    settings.add_filter(r"\[E\d{4,}\] ", "");
     settings.set_snapshot_suffix(name);
     settings.set_description(source);
     settings.bind(|| {
