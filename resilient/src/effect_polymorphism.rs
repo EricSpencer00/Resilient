@@ -85,18 +85,31 @@
 //! argument unresolvable, same as before this pass existed — "when
 //! uncertain, don't rescue/reject" is preserved exactly.
 //!
+//! ## Inline lambda-literal callback resolution (RES-3933 A-E7, #4123)
+//!
+//! The grammar now parses `pure fn(...) { ... }` / `io fn(...) { ... }`
+//! as an *expression* — `parse_function_literal_with_effect` in
+//! `lib.rs` records the explicit annotation on `Node::FunctionLiteral`'s
+//! new `explicit_effect: Option<EffectSet>` field. `explicit_effect`
+//! is `None` for a bare, unannotated `fn(...) { ... }` literal — that
+//! case is deliberately left unresolved everywhere below, exactly as
+//! before this pass — and `Some(EffectSet)` only when the source wrote
+//! `pure`/`io` immediately before `fn`.
+//!
+//! Both [`find_hof_call_violations`] (the monomorphic direction) and
+//! [`resolves_pure_at_call_site`] (the effect-polymorphic direction)
+//! now inspect a call argument that is directly a `FunctionLiteral`:
+//! an explicit `io fn(...)` argument to a `pure`-declared HOF is a
+//! proven violation (same diagnostic path as a non-pure named-fn
+//! argument); an explicit `pure fn(...)` argument to an effect-
+//! polymorphic HOF is treated exactly like a pure named-fn argument
+//! for the unification check. An inline literal is still never
+//! resolved through a local-variable alias or nested one level deeper
+//! (e.g. stored in a struct field then invoked) — those remain out of
+//! scope below.
+//!
 //! ## Deferred (tracked as a follow-up issue, see the PR body)
 //!
-//! - Inline lambda-literal callback arguments are never inspected
-//!   for an explicit `pure`/`io` annotation, even though the parser
-//!   supports one — only plain-identifier arguments (now including
-//!   ones traced through a local `let` alias) are resolved. Extending
-//!   this to lambda literals requires reliably distinguishing an
-//!   *explicit* `pure`/`io` annotation on the literal from the default
-//!   (`io`) so an unannotated inline closure isn't wrongly flagged —
-//!   and today's grammar doesn't even parse `pure fn(...) { ... }` as
-//!   an expression (only bare `fn(...) { ... }`, RES-042), so this
-//!   also needs a parser change.
 //! - Callback parameters invoked indirectly (through a method call,
 //!   stored in a struct field, etc.) are out of scope.
 //! - A HOF's *own* return-type effect arrow (`fn run(...) -e-> int`)
@@ -424,29 +437,51 @@ fn find_hof_call_violations(
             if let Node::Identifier { name, .. } = function.as_ref()
                 && name == hof_name
                 && let Some(arg) = arguments.get(idx)
-                && let Node::Identifier {
-                    name: callback_name,
-                    ..
-                } = arg
             {
-                // RES-3933 A-E7 follow-up (#4097): a plain identifier
-                // argument that doesn't itself name a top-level fn
-                // might be a local variable aliasing one — trace it
-                // back through `resolve_local_alias` (sound only when
-                // the alias is unambiguous and never reassigned; see
-                // its doc comment) before falling back to treating it
-                // as unresolvable.
-                let resolved_name = if fn_effects.contains_key(callback_name) {
-                    Some(callback_name.clone())
-                } else {
-                    resolve_local_alias(callback_name, caller_body)
-                };
-                if let Some(resolved_name) = resolved_name
-                    && let Some(effects) = fn_effects.get(&resolved_name)
-                    && !effects.pure
-                {
-                    *violation = Some((*span, resolved_name));
-                    return;
+                match arg {
+                    Node::Identifier {
+                        name: callback_name,
+                        ..
+                    } => {
+                        // RES-3933 A-E7 follow-up (#4097): a plain
+                        // identifier argument that doesn't itself name
+                        // a top-level fn might be a local variable
+                        // aliasing one — trace it back through
+                        // `resolve_local_alias` (sound only when the
+                        // alias is unambiguous and never reassigned;
+                        // see its doc comment) before falling back to
+                        // treating it as unresolvable.
+                        let resolved_name = if fn_effects.contains_key(callback_name) {
+                            Some(callback_name.clone())
+                        } else {
+                            resolve_local_alias(callback_name, caller_body)
+                        };
+                        if let Some(resolved_name) = resolved_name
+                            && let Some(effects) = fn_effects.get(&resolved_name)
+                            && !effects.pure
+                        {
+                            *violation = Some((*span, resolved_name));
+                            return;
+                        }
+                    }
+                    // RES-3933 A-E7: an inline lambda literal argument
+                    // with an *explicit* `io fn(...)` annotation is a
+                    // proven violation — it's an io callback passed
+                    // straight into a pure HOF's callback slot, no
+                    // aliasing/resolution needed. An unannotated bare
+                    // `fn(...)` literal (`explicit_effect: None`) is
+                    // left unresolved, same as before this pass —
+                    // only a *pure*-declared HOF's own body inspection
+                    // could tell if the literal is safe, and that is
+                    // out of scope here.
+                    Node::FunctionLiteral {
+                        explicit_effect: Some(effects),
+                        ..
+                    } if !effects.pure => {
+                        *violation = Some((*span, "<inline io fn(...)>".to_string()));
+                        return;
+                    }
+                    _ => {}
                 }
             }
             find_hof_call_violations(function, hof_name, idx, fn_effects, caller_body, violation);
@@ -608,19 +643,32 @@ pub(crate) fn resolves_pure_at_call_site(
         if !effect_var_params.contains(pname.as_str()) {
             continue;
         }
-        let Some(Node::Identifier { name: arg_name, .. }) = call_arguments.get(idx) else {
-            return false;
-        };
-        // RES-3933 A-E7 follow-up (#4097): trace a local variable
-        // argument back to its initializer (see [`resolve_local_alias`])
-        // before giving up on it as unresolvable.
-        let resolved_name = if fn_effects.contains_key(arg_name) {
-            Some(arg_name.clone())
-        } else {
-            resolve_local_alias(arg_name, caller_body)
-        };
-        match resolved_name.and_then(|n| fn_effects.get(&n).copied()) {
-            Some(effects) if effects.pure => {}
+        match call_arguments.get(idx) {
+            Some(Node::Identifier { name: arg_name, .. }) => {
+                // RES-3933 A-E7 follow-up (#4097): trace a local
+                // variable argument back to its initializer (see
+                // [`resolve_local_alias`]) before giving up on it as
+                // unresolvable.
+                let resolved_name = if fn_effects.contains_key(arg_name) {
+                    Some(arg_name.clone())
+                } else {
+                    resolve_local_alias(arg_name, caller_body)
+                };
+                match resolved_name.and_then(|n| fn_effects.get(&n).copied()) {
+                    Some(effects) if effects.pure => {}
+                    _ => return false,
+                }
+            }
+            // RES-3933 A-E7: an inline lambda literal argument is
+            // only rescued when it carries an *explicit* `pure
+            // fn(...)` annotation. An unannotated bare `fn(...)`
+            // literal (`explicit_effect: None`) can't be proven pure
+            // here — its body isn't inspected by this pass — so it's
+            // treated the same as any other unresolvable argument.
+            Some(Node::FunctionLiteral {
+                explicit_effect: Some(effects),
+                ..
+            }) if effects.pure => {}
             _ => return false,
         }
     }
