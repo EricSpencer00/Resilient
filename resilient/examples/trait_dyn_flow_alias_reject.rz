@@ -1,0 +1,28 @@
+// RES-4095 increment 5 (dyn v2 tracker, issue item 4): flow-sensitive
+// coercion checking through a local-variable alias — reject case.
+//
+// `Square` implements neither `Shape` explicitly nor structurally, so
+// tracing `sq` back to its `let sq = new Square { .. };` initializer
+// (the only binding for `sq` in this fn, never reassigned) proves the
+// coercion into `use_shape`'s `dyn Shape`-typed parameter is unsound —
+// even though the argument at the call site isn't itself a direct
+// struct literal.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Square {
+    int side,
+}
+
+fn use_shape(dyn Shape s) -> int {
+    return 0;
+}
+
+fn main() {
+    let sq = new Square { side: 2 };
+    println(use_shape(sq));
+}
+
+main();

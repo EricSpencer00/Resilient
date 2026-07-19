@@ -70,11 +70,31 @@
 //! invalidated its binding on `Node::Assignment` — see that file's
 //! `Node::Assignment` arm in `rewrite_node`.
 //!
-//! Deferred to a follow-up issue: `dyn Trait` in generic/container
-//! position, and flow-sensitive coercion checking beyond the direct
-//! literal call/let/assignment sites above (e.g. a `dyn`-typed variable
-//! reassigned *through another variable*
-//! before reaching a call site).
+//! Increment 4 (RES-4095, PR #4181) added `dyn Trait` in
+//! generic/container position (`Array<dyn Trait>`) and struct-
+//! field/return-type coercion checking.
+//!
+//! Increment 5 (RES-4095, final increment, issue item 4) extends every
+//! coercion-checking site above with **flow-sensitive resolution**
+//! (`resolve_concrete_struct_name` below) beyond a direct struct-literal
+//! expression, in the same conservative alias-tracing style
+//! `effect_polymorphism.rs::resolve_local_alias` already uses for
+//! higher-order-function callback resolution:
+//!
+//! - A local-variable alias chain: `let s = new Square { .. }; let d:
+//!   dyn Shape = s;` — and transitively through further `let x = y;`
+//!   hops — resolves as long as each hop is an unambiguous single
+//!   binding for that name in the enclosing fn, never the target of a
+//!   plain `Assignment` anywhere in that fn.
+//! - A direct call to a fn whose *declared* return type is a concrete
+//!   (non-`dyn`, non-container) struct name — the declared type is
+//!   conservative proof regardless of what the fn's body actually
+//!   returns.
+//!
+//! Every other case (a field read, a method-call result, an
+//! ambiguous/reassigned alias, a container-returning fn, …) remains
+//! unresolvable and is passed through permissively, preserving the
+//! "provable violations only" guarantee from the module doc above.
 
 use crate::Node;
 use crate::span::Span;
@@ -205,7 +225,14 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             parameters, body, ..
         } = &stmt.node
         {
-            check_method_calls(parameters, body, &trait_methods, &satisfies, source_path)?;
+            check_method_calls(
+                parameters,
+                body,
+                &trait_methods,
+                &fns_by_name,
+                &satisfies,
+                source_path,
+            )?;
         }
     }
 
@@ -440,24 +467,142 @@ fn check_object_safety_refs(
     }
 }
 
+/// RES-4095 increment 5 (issue item 4): what a `let`/`Assignment`
+/// binding's initializer resolves to, before we know whether the chain
+/// bottoms out at a provable concrete struct. Mirrors
+/// `effect_polymorphism.rs::resolve_local_alias`'s `Option<String>`
+/// bindings vec, but needs one more variant (`Call`) since a coercion
+/// site can also be fed by a fn's declared return type.
+enum AliasTarget {
+    Struct(String),
+    Ident(String),
+    Call(String),
+}
+
+/// RES-4095 increment 5: resolves `value` to a provable concrete struct
+/// name when possible, extending `check_one_coercion`'s original
+/// direct-`StructLiteral`-only precision with two conservative, sound
+/// resolution rules (same philosophy as
+/// `effect_polymorphism.rs::resolve_local_alias`):
+///
+/// - **Local alias chain**: `value` is an `Identifier` that traces back,
+///   through zero or more `let NAME = <identifier-or-struct-literal>;`
+///   hops within `scope` (the enclosing top-level fn), to a direct
+///   `StructLiteral` — *only* when each hop's binding is unambiguous
+///   (exactly one `let` for that name in `scope`) and the name is never
+///   the target of a plain `Assignment` anywhere in `scope`. Any
+///   ambiguity or reassignment anywhere aborts resolution for that name,
+///   matching `resolve_local_alias`'s "when uncertain, don't resolve"
+///   discipline exactly.
+/// - **Fn return type**: `value` is a direct call `f(...)` (or resolves
+///   to one through the alias chain above) where `f`'s *declared*
+///   return type is a plain concrete struct name (not `dyn Trait`, not
+///   a container like `Array<T>`) — the declared type is conservative
+///   proof regardless of what `f`'s body actually returns.
+///
+/// Anything else (a field read, a method call, an unknown callee, a
+/// container-returning fn, …) stays unresolvable and is passed through
+/// permissively, exactly as before this pass existed.
+fn resolve_concrete_struct_name(
+    value: &Node,
+    fns_by_name: &HashMap<&str, &Node>,
+    scope: &Node,
+) -> Option<String> {
+    match value {
+        Node::StructLiteral { name, .. } => Some(name.clone()),
+        Node::Identifier { name, .. } => resolve_alias_chain(name, scope, fns_by_name, 0),
+        Node::CallExpression { function, .. } => {
+            let Node::Identifier { name: callee, .. } = function.as_ref() else {
+                return None;
+            };
+            resolve_call_return_struct(callee, fns_by_name)
+        }
+        _ => None,
+    }
+}
+
+fn resolve_call_return_struct(callee: &str, fns_by_name: &HashMap<&str, &Node>) -> Option<String> {
+    let Node::Function {
+        return_type: Some(rt),
+        ..
+    } = *fns_by_name.get(callee)?
+    else {
+        return None;
+    };
+    // A `dyn Trait` or container (`Array<T>`, `Option<T>`, …) return
+    // type is not a plain concrete struct — leave unresolved rather than
+    // guess.
+    if rt.starts_with("dyn ") || rt.contains('<') {
+        return None;
+    }
+    Some(rt.clone())
+}
+
+/// Depth-capped (16 hops, generously above any realistic alias chain)
+/// to guarantee termination — a cyclic `let a = b; let b = a;` pattern
+/// would otherwise be an infinite trace; capping just leaves it
+/// unresolved, same as any other ambiguity here.
+fn resolve_alias_chain(
+    var: &str,
+    scope: &Node,
+    fns_by_name: &HashMap<&str, &Node>,
+    depth: u32,
+) -> Option<String> {
+    if depth > 16 {
+        return None;
+    }
+    let mut bindings: Vec<Option<AliasTarget>> = Vec::new();
+    let mut reassigned = false;
+    uniqueness_walk::visit(scope, &mut |n| match n {
+        Node::LetStatement { name, value, .. } if name == var => {
+            bindings.push(match value.as_ref() {
+                Node::StructLiteral { name: sname, .. } => Some(AliasTarget::Struct(sname.clone())),
+                Node::Identifier { name: id, .. } => Some(AliasTarget::Ident(id.clone())),
+                Node::CallExpression { function, .. } => match function.as_ref() {
+                    Node::Identifier { name: callee, .. } => {
+                        Some(AliasTarget::Call(callee.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            });
+        }
+        Node::Assignment { name, .. } if name == var => {
+            reassigned = true;
+        }
+        _ => {}
+    });
+    if reassigned || bindings.len() != 1 {
+        return None;
+    }
+    match bindings.into_iter().next().flatten()? {
+        AliasTarget::Struct(s) => Some(s),
+        AliasTarget::Ident(id) => resolve_alias_chain(&id, scope, fns_by_name, depth + 1),
+        AliasTarget::Call(callee) => resolve_call_return_struct(&callee, fns_by_name),
+    }
+}
+
 /// Checks a single candidate coercion site: `value` flowing into a slot
-/// declared `dyn Trait` or `Array<dyn Trait>`. Only direct literal
-/// expressions are checked (a bare `StructLiteral`, or an `ArrayLiteral`
-/// whose elements are themselves direct `StructLiteral`s) — anything
-/// else (a call result, a variable read, …) is not statically
-/// determinable and is passed through permissively, matching this
-/// module's existing precision everywhere else.
+/// declared `dyn Trait` or `Array<dyn Trait>`. A direct `StructLiteral`
+/// (or an `ArrayLiteral` of direct `StructLiteral`s) is checked as
+/// before; RES-4095 increment 5 additionally resolves `value` (or each
+/// array element) through `resolve_concrete_struct_name`'s local-alias-
+/// chain and fn-return-type tracing — anything that still doesn't
+/// resolve to a provable concrete struct is passed through permissively,
+/// matching this module's existing precision everywhere else.
 fn check_one_coercion(
     declared_type: &str,
     value: &Node,
+    fns_by_name: &HashMap<&str, &Node>,
+    scope: &Node,
     satisfies: &impl Fn(&str, &str) -> bool,
     describe: impl Fn(&str, &str) -> String,
 ) -> Option<String> {
     if let Some(trait_name) = dyn_trait_name(declared_type) {
-        if let Node::StructLiteral { name, .. } = value
-            && !satisfies(trait_name, name)
+        if let Some(name) = resolve_concrete_struct_name(value, fns_by_name, scope)
+            && !satisfies(trait_name, &name)
         {
-            return Some(describe(trait_name, name));
+            return Some(describe(trait_name, &name));
         }
         return None;
     }
@@ -465,10 +610,10 @@ fn check_one_coercion(
         && let Node::ArrayLiteral { items, .. } = value
     {
         for item in items {
-            if let Node::StructLiteral { name, .. } = item
-                && !satisfies(trait_name, name)
+            if let Some(name) = resolve_concrete_struct_name(item, fns_by_name, scope)
+                && !satisfies(trait_name, &name)
             {
-                return Some(describe(trait_name, name));
+                return Some(describe(trait_name, &name));
             }
         }
     }
@@ -494,12 +639,19 @@ fn check_coercions(
                 span,
                 ..
             } => {
-                if let Some(msg) = check_one_coercion(ann, value, satisfies, |trait_name, name| {
-                    format!(
-                        "type `{}` does not implement `{}`, required to coerce to `dyn {}`",
-                        name, trait_name, trait_name
-                    )
-                }) {
+                if let Some(msg) = check_one_coercion(
+                    ann,
+                    value,
+                    fns_by_name,
+                    node,
+                    satisfies,
+                    |trait_name, name| {
+                        format!(
+                            "type `{}` does not implement `{}`, required to coerce to `dyn {}`",
+                            name, trait_name, trait_name
+                        )
+                    },
+                ) {
                     err = Some(format_err(source_path, *span, &msg));
                 }
             }
@@ -523,6 +675,8 @@ fn check_coercions(
                     if let Some(msg) = check_one_coercion(
                         ptype,
                         arg,
+                        fns_by_name,
+                        node,
                         satisfies,
                         |trait_name, name| {
                             format!(
@@ -559,6 +713,8 @@ fn check_coercions(
                     if let Some(msg) = check_one_coercion(
                         ftype,
                         fvalue,
+                        fns_by_name,
+                        node,
                         satisfies,
                         |trait_name, name| {
                             format!(
@@ -593,6 +749,8 @@ fn check_coercions(
                         && let Some(msg) = check_one_coercion(
                             rt,
                             rv,
+                            fns_by_name,
+                            body,
                             satisfies,
                             |trait_name, name| {
                                 format!(
@@ -630,6 +788,7 @@ fn check_method_calls(
     parameters: &[(String, String)],
     body: &Node,
     trait_methods: &HashMap<String, HashSet<String>>,
+    fns_by_name: &HashMap<&str, &Node>,
     satisfies: &impl Fn(&str, &str) -> bool,
     source_path: &str,
 ) -> Result<(), String> {
@@ -682,20 +841,20 @@ fn check_method_calls(
         }
         // RES-4095: reassigning a `dyn Trait`-typed binding to a new
         // concrete value is the mechanism that makes runtime dispatch
-        // actually dynamic — reject it only when the RHS is a direct
-        // struct literal (statically determinable) that provably does
-        // not implement the trait, mirroring `check_coercions`'s
-        // let-binding and call-site checks above.
+        // actually dynamic — reject it only when the RHS resolves (via
+        // a direct struct literal, or — RES-4095 increment 5 — a local
+        // alias chain / fn-return-type trace through
+        // `resolve_concrete_struct_name`) to a concrete struct that
+        // provably does not implement the trait, mirroring
+        // `check_coercions`'s let-binding and call-site checks above.
         if let Node::Assignment {
             name: var,
             value,
             span,
         } = n
             && let Some(trait_name) = dyn_vars.get(var)
-            && let Node::StructLiteral {
-                name: struct_name, ..
-            } = value.as_ref()
-            && !satisfies(trait_name, struct_name)
+            && let Some(struct_name) = resolve_concrete_struct_name(value, fns_by_name, body)
+            && !satisfies(trait_name, &struct_name)
         {
             err = Some(format_err(
                 source_path,
@@ -840,9 +999,143 @@ mod tests {
     }
 
     #[test]
-    fn permissive_on_non_literal_coercion() {
-        // The concrete type isn't statically determinable here (it's a
-        // return value from an arbitrary fn) — must NOT be rejected.
+    fn permissive_on_unresolvable_coercion() {
+        // The concrete type isn't statically determinable here — `sq` is
+        // a fn *parameter*, never a `let`-bound local or a direct call
+        // result, so RES-4095 increment 5's alias-chain/return-type
+        // tracing has nothing to resolve it through — must NOT be
+        // rejected.
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn use_shape(dyn Shape s) -> int {
+                return 0;
+            }
+            fn wrapper(Square sq) -> int {
+                return use_shape(sq);
+            }
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    // RES-4095 increment 5 (issue item 4): flow-sensitive coercion
+    // checking — a `dyn`-typed slot fed through a local-variable alias
+    // chain, or a fn call whose *declared* return type is a concrete
+    // (non-`dyn`, non-container) struct.
+
+    #[test]
+    fn accepts_coercion_through_local_alias_when_struct_implements_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn main() {
+                let c = new Circle { r: 3 };
+                let d: dyn Shape = c;
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_coercion_through_local_alias_when_struct_does_not_implement_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn main() {
+                let sq = new Square { side: 2 };
+                let d: dyn Shape = sq;
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_coercion_through_alias_chain_when_struct_does_not_implement_trait() {
+        // Two hops: `d`'s coercion check must trace `s2` -> `s1` -> the
+        // `Square` struct literal, not stop at the first identifier.
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn main() {
+                let s1 = new Square { side: 2 };
+                let s2 = s1;
+                let d: dyn Shape = s2;
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
+    }
+
+    #[test]
+    fn permissive_on_ambiguous_local_alias() {
+        // Two distinct `let sq = ...;` bindings for the same name in the
+        // same fn make the alias unresolvable (which literal it traces
+        // to depends on control flow this pass doesn't model) — must
+        // stay permissive rather than guess.
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            struct Circle { int r, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn pick(bool flag) -> int {
+                let sq = new Square { side: 2 };
+                if flag {
+                    let sq = new Circle { r: 1 };
+                    let d: dyn Shape = sq;
+                    return 1;
+                }
+                let d: dyn Shape = sq;
+                return 0;
+            }
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn accepts_coercion_through_fn_return_type_when_struct_implements_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn make() -> Circle {
+                return new Circle { r: 2 };
+            }
+            fn use_shape(dyn Shape s) -> int {
+                return 0;
+            }
+            fn main() {
+                use_shape(make());
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_coercion_through_fn_return_type_when_struct_does_not_implement_trait() {
         let src = r#"
             trait Shape {
                 fn area(self) -> int;
@@ -859,7 +1152,12 @@ mod tests {
             }
             main();
         "#;
-        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+        let err = check_source(src).unwrap_err();
+        assert!(
+            err.contains("does not implement `Shape`") && err.contains("argument"),
+            "{}",
+            err
+        );
     }
 
     // RES-4095: object-safety checking.
@@ -1016,10 +1314,10 @@ mod tests {
 
     #[test]
     fn permissive_on_non_literal_reassignment() {
-        // Mirrors `permissive_on_non_literal_coercion` above: the RHS
-        // isn't a direct struct literal (it's a call result), so its
-        // concrete type isn't statically determinable — must not be
-        // rejected.
+        // RES-4095 increment 5: the RHS isn't a direct struct literal —
+        // it's a call to `make()`, whose *declared* return type `Circle`
+        // does implement `Shape`, so the now-resolvable coercion is
+        // correctly accepted (not merely "unresolved and permissive").
         let src = r#"
             trait Shape {
                 fn area(self) -> int;
@@ -1038,6 +1336,52 @@ mod tests {
             main();
         "#;
         assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_reassignment_through_fn_return_type_when_struct_does_not_implement_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            struct Square { int side, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn make_square() -> Square {
+                return new Square { side: 4 };
+            }
+            fn main() {
+                let c: dyn Shape = new Circle { r: 3 };
+                c = make_square();
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_reassignment_through_local_alias_when_struct_does_not_implement_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            struct Square { int side, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn main() {
+                let c: dyn Shape = new Circle { r: 3 };
+                let sq = new Square { side: 4 };
+                c = sq;
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
     }
 
     // RES-4095 increment 4: `dyn Trait` in generic/container position.
@@ -1224,10 +1568,28 @@ mod tests {
     }
 
     #[test]
-    fn permissive_on_non_literal_array_element() {
-        // Mirrors `permissive_on_non_literal_coercion`: an element that
-        // isn't a direct struct literal (a call result) isn't
-        // statically determinable — must not be rejected.
+    fn permissive_on_unresolvable_array_element() {
+        // The element `sq` is a fn parameter, not a `let`-bound local or
+        // a direct call result — RES-4095 increment 5's tracing has
+        // nothing to resolve it through — must NOT be rejected.
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn wrapper(Square sq) -> int {
+                let shapes: Array<dyn Shape> = [sq];
+                return 0;
+            }
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_array_element_through_fn_return_type_when_struct_does_not_implement_trait() {
+        // RES-4095 increment 5: `make()`'s declared return type `Square`
+        // is a concrete non-implementing struct, so this is now provable
+        // (it used to be permissively accepted before this pass).
         let src = r#"
             trait Shape {
                 fn area(self) -> int;
@@ -1241,6 +1603,24 @@ mod tests {
             }
             main();
         "#;
-        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_array_element_through_local_alias_when_struct_does_not_implement_trait() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Square { int side, }
+            fn main() {
+                let sq = new Square { side: 2 };
+                let shapes: Array<dyn Shape> = [sq];
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
     }
 }

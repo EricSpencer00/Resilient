@@ -1,0 +1,34 @@
+// RES-4095 increment 5 (dyn v2 tracker, issue item 4): flow-sensitive
+// coercion checking through a local-variable alias chain.
+//
+// `dyn_trait::check`'s coercion pass previously only fired when the
+// concrete type was statically determinable from a *direct*
+// struct-literal expression at the coercion site itself. Here the
+// literal is bound to `c1`, aliased once more through `c2`, and only
+// then coerced into the `dyn Shape`-typed `d` — this now resolves
+// through the alias chain (each hop unambiguous, never reassigned) to
+// prove `Circle` implements `Shape`, instead of being passed through
+// permissively as "not statically determinable".
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r * self.r;
+    }
+}
+
+fn main() {
+    let c1 = new Circle { r: 3 };
+    let c2 = c1;
+    let d: dyn Shape = c2;
+    println(d.area());
+}
+
+main();
