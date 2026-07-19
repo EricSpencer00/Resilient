@@ -7,16 +7,16 @@
 //! the OpenAPI file itself — the goal is to catch drift between the doc
 //! and the implementation, not to build a general JSON-schema validator.
 //!
-//! RES-4204: startup and per-call connects use the shared retry-connect
-//! helper in `mcp_smoke_support` instead of a single-attempt connect, to
-//! absorb the CI startup race between spawning `rz` and its listener
-//! actually accepting connections.
+//! RES-4204: startup readiness and every request go through the shared
+//! retry helpers in `mcp_smoke_support` instead of a single attempt, to
+//! absorb both the CI startup race between spawning `rz` and its listener
+//! accepting connections, and the narrower race where a connection is
+//! accepted but reset before a response is written under CI contention.
 
 #[path = "mcp_smoke_support/mod.rs"]
 mod mcp_smoke_support;
 
 use serde_json::Value;
-use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -47,7 +47,7 @@ impl Server {
             .spawn()
             .expect("failed to spawn rz mcp --http-port");
         let server = Server { child, port };
-        if let Err(err) = mcp_smoke_support::wait_until_ready(
+        if let Err(err) = mcp_smoke_support::wait_for_health(
             server.port,
             mcp_smoke_support::DEFAULT_READY_DEADLINE,
         ) {
@@ -65,23 +65,19 @@ impl Drop for Server {
 }
 
 fn http_call(port: u16, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let mut stream = match mcp_smoke_support::connect_retrying(
-        port,
-        mcp_smoke_support::DEFAULT_READY_DEADLINE,
-    ) {
-        Ok(stream) => stream,
-        Err(err) => panic!("{err}"),
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(request.as_bytes()).unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
+    let response = match mcp_smoke_support::send_request_retrying(
+        port,
+        &request,
+        Duration::from_secs(15),
+        mcp_smoke_support::DEFAULT_READY_DEADLINE,
+    ) {
+        Ok(response) => response,
+        Err(err) => panic!("{err}"),
+    };
 
     let status = response
         .lines()
