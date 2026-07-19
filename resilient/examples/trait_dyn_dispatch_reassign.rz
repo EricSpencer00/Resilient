@@ -1,0 +1,55 @@
+// RES-4095 (dyn v2 increment 2): dynamic dispatch through `dyn Trait` —
+// reassigning a `dyn`-typed binding to a *different* concrete type
+// across its lifetime is the actual point of `dyn Trait` (a single
+// variable holding heterogeneous impls one at a time). Before this PR,
+// `Node::Assignment`'s type check compared the new value's concrete
+// type directly against the variable's *declared* type and rejected
+// any mismatch — so `c = new Square { .. }` after `let c: dyn Shape =
+// new Circle { .. }` was a hard type error, defeating `dyn Trait`
+// entirely. The typechecker now special-cases a `dyn `-prefixed
+// variable type the same way the initial `let` coercion already does
+// (RES-4068), and `dyn_trait::check`'s coercion pass still rejects a
+// reassignment to a struct-literal RHS that provably doesn't implement
+// the trait (see `trait_dyn_object_coercion_reject.rz`'s let-site
+// analogue).
+//
+// Tree-walker only: the bytecode VM's `Op::GetField`/method-call
+// lowering resolves `self`'s field layout from static analysis at
+// compile time and does not re-derive it per reassignment, so `--vm`
+// diverges here (`resilient/tests/it/differential.rs`'s
+// `UNSUPPORTED_BY_VM` / `UNSUPPORTED_BY_JIT` carry an entry for this
+// file, pointing at the VM/JIT vtable-dispatch follow-up, increment 3
+// of #4095).
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+struct Square {
+    int s,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r * self.r;
+    }
+}
+
+impl Shape for Square {
+    fn area(self) -> int {
+        return self.s * self.s;
+    }
+}
+
+fn main() {
+    let c: dyn Shape = new Circle { r: 2 };
+    println(c.area());
+    c = new Square { s: 6 };
+    println(c.area());
+}
+
+main();

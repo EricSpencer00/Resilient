@@ -1,0 +1,47 @@
+// RES-4095 (dyn v2 increment 2): dynamic dispatch through `dyn Trait` —
+// multiple impls behind one `dyn`-typed fn parameter.
+//
+// `print_area`'s parameter is typed `dyn Shape`. Two structs — `Circle`
+// and `Square` — each carry their own `Shape` impl. Because the
+// tree-walker interpreter's method dispatch already resolves
+// `<expr>.method(...)` by the *runtime* struct tag stored on the
+// `Value::Struct` (looking up the mangled `"{struct_name}${method}"`
+// function, not the static `dyn Shape` annotation), each call below
+// correctly reaches the concrete impl matching the argument actually
+// passed — real dynamic dispatch, no vtable required given Resilient's
+// value representation always carries its concrete type tag.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+struct Square {
+    int s,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r * self.r;
+    }
+}
+
+impl Shape for Square {
+    fn area(self) -> int {
+        return self.s * self.s;
+    }
+}
+
+fn print_area(dyn Shape shp) -> int {
+    return shp.area();
+}
+
+fn main() {
+    println(print_area(new Circle { r: 3 }));
+    println(print_area(new Square { s: 4 }));
+}
+
+main();

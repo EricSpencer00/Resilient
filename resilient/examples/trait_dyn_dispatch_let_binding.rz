@@ -1,0 +1,39 @@
+// RES-4095 (dyn v2 increment 2): dynamic dispatch through `dyn Trait` —
+// separate `let x: dyn Trait = ...` bindings, each holding a different
+// concrete impl. Exercises the coercion-checked `let` site (RES-4068)
+// followed by an actual method call through the binding, proving the
+// declared `dyn Shape` annotation never narrows runtime dispatch to a
+// single concrete type.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+struct Square {
+    int s,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r * self.r;
+    }
+}
+
+impl Shape for Square {
+    fn area(self) -> int {
+        return self.s * self.s;
+    }
+}
+
+fn main() {
+    let a: dyn Shape = new Circle { r: 3 };
+    println(a.area());
+    let b: dyn Shape = new Square { s: 5 };
+    println(b.area());
+}
+
+main();
