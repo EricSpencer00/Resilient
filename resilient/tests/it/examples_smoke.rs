@@ -247,6 +247,101 @@ fn bytecode_jit_runs_division() {
 
 #[test]
 #[cfg(feature = "jit")]
+fn bytecode_jit_division_by_zero_is_typed_error_not_abort() {
+    // RES-4171: cargo-fuzz's jit target found `0/0` hard-aborts the
+    // process (an uncaught SIGFPE from Cranelift's `sdiv`, reported
+    // by libFuzzer as "deadly signal") instead of the typed runtime
+    // error every other backend produces. Pins the fix at the CLI
+    // boundary: `--jit` must exit non-zero with a clean diagnostic —
+    // no signal, no panic backtrace — and the diagnostic text must
+    // mention division by zero, matching the tree-walker's own
+    // "Division by zero" / VM's "divide by zero" wording so users see
+    // the same class of error regardless of backend.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_4171_jit_divzero_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "return 0 / 0;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(
+            output.status.signal().is_none(),
+            "jit must not abort on a signal for 0/0; stdout={stdout} stderr={stderr}"
+        );
+    }
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "jit must exit non-zero on division by zero; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("division by zero"),
+        "expected a division-by-zero diagnostic in stderr; got:\n{stderr}"
+    );
+
+    // Interpreter oracle must agree it's an error (typed, not a crash).
+    let interp_output = Command::new(bin())
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient (interpreter)");
+    assert_ne!(
+        interp_output.status.code(),
+        Some(0),
+        "interpreter must also reject 0/0"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_modulo_by_zero_is_typed_error_not_abort() {
+    // RES-4171: `%` shares the same Cranelift `srem` trap hazard as
+    // `/`. Same shape as the division test above.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_4171_jit_modzero_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "return 5 % 0;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(
+            output.status.signal().is_none(),
+            "jit must not abort on a signal for 5%0; stdout={stdout} stderr={stderr}"
+        );
+    }
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "jit must exit non-zero on modulo by zero; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("modulo by zero"),
+        "expected a modulo-by-zero diagnostic in stderr; got:\n{stderr}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+#[cfg(feature = "jit")]
 fn bytecode_jit_runs_comparison() {
     // RES-100: Phase D extends the JIT to icmp + bool literals.
     // `return 7 == 7;` exercises icmp + uextend → driver gets 1
