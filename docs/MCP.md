@@ -47,6 +47,37 @@ the hosted aliases from RES-3782 (`rz_compile`, `rz_format`, `rz_verify`,
 and related `rz_*` names) or the native MCP names (`resilient_compile`,
 `resilient_format`, `resilient_verify`, ...).
 
+### Hardening (Phase 1, RES-3934/3935/3936/3938/3944)
+
+The HTTP wrapper enforces three limits, all configurable via environment
+variables, all with sane defaults so a bare `rz mcp --http-port` stays
+safe out of the box:
+
+| Limit | Env var | Default | Response on violation |
+|---|---|---|---|
+| Request body size cap | `RESILIENT_MCP_MAX_BODY_BYTES` | 10 MiB (`10 * 1024 * 1024`) | `413 Payload Too Large` |
+| Per-request compute/compile timeout | `RESILIENT_MCP_TIMEOUT_SECS` | 10 seconds | `504 Gateway Timeout` |
+| Per-IP rate limit | `RESILIENT_MCP_RATE_LIMIT_PER_MIN` | 100 requests/minute/IP | `429 Too Many Requests` |
+
+The body-size check inspects `Content-Length` (and the bytes actually
+read) before the payload is fully buffered, so an oversized request is
+rejected without allocating memory for the whole body. The compute
+timeout races tool execution (parsing, typechecking, running, verifying,
+...) against the configured wall-clock limit on a worker thread, so a
+pathological-but-syntactically-valid program cannot hang a connection
+past the deadline. The rate limiter is a token-bucket per source IP,
+implemented in the in-tree [`hardening`](../resilient/src/hardening.rs)
+module (no new dependencies).
+
+Example: lower every limit for a locked-down deployment:
+
+```sh
+RESILIENT_MCP_MAX_BODY_BYTES=1048576 \
+RESILIENT_MCP_TIMEOUT_SECS=5 \
+RESILIENT_MCP_RATE_LIMIT_PER_MIN=30 \
+rz mcp --http-port 8080
+```
+
 ---
 
 ## Tools
