@@ -59,6 +59,41 @@ safe out of the box:
 | Per-request compute/compile timeout | `RESILIENT_MCP_TIMEOUT_SECS` | 10 seconds | `504 Gateway Timeout` |
 | Per-IP rate limit | `RESILIENT_MCP_RATE_LIMIT_PER_MIN` | 100 requests/minute/IP | `429 Too Many Requests` |
 
+### Concurrency, logging, and shutdown (Phase 1, RES-3934/3937/3941/3942)
+
+| Behavior | Env var | Default |
+|---|---|---|
+| Bounded connection worker pool | `RESILIENT_MCP_MAX_CONNECTIONS` | 16 concurrent connections |
+| Shutdown drain grace period | `RESILIENT_MCP_SHUTDOWN_DRAIN_SECS` | 30 seconds |
+
+**Concurrency (RES-3937).** `run_http` accepts connections on the main
+thread and hands each one to a bounded pool of worker threads over a
+`sync_channel`. Once every worker (and the channel's queue slot) is busy,
+the accept loop backpressures — new connections wait rather than being
+dropped — instead of a single slow request blocking every other client,
+which is what a sequential accept loop does.
+
+**Access logging (RES-3941).** Every HTTP request (including ones
+rejected for size/rate-limit reasons) emits one structured line to
+stderr:
+
+```
+ts_ms=1737331200000 peer=127.0.0.1 method=POST path=/mcp/call status=200 duration_ms=42 bytes=128
+```
+
+Fields: `ts_ms` (Unix epoch milliseconds), `peer` (client IP), `method`,
+`path`, `status` (HTTP status code), `duration_ms` (request handling
+time), `bytes` (request body size). `key=value` formatting keeps it both
+human-scannable in a terminal and easy for a log shipper to parse.
+
+**Graceful shutdown (RES-3942).** On Unix, the server installs a SIGTERM
+handler. On receipt, it stops accepting new connections, waits for
+in-flight requests to finish (up to `RESILIENT_MCP_SHUTDOWN_DRAIN_SECS`,
+default 30s), then exits `0`. This lets container orchestrators (Docker,
+Kubernetes, systemd) restart or scale the service without dropping
+requests that were already in flight. See
+[MCP_DEPLOYMENT.md](MCP_DEPLOYMENT.md) for the full behavior writeup.
+
 The body-size check inspects `Content-Length` (and the bytes actually
 read) before the payload is fully buffered, so an oversized request is
 rejected without allocating memory for the whole body. The compute
