@@ -12,6 +12,10 @@
 //! top-level `tests/*.rs` file) so cargo's integration-test discovery does
 //! not treat it as its own test binary; each consumer pulls it in with
 //! `#[path = "mcp_smoke_support/mod.rs"] mod mcp_smoke_support;`.
+//!
+//! All of these return `Result`/`Option` rather than panicking directly —
+//! callers panic with test-local context (which port, which server) at the
+//! call site, keeping this module a plain library helper.
 
 #![allow(dead_code)]
 
@@ -27,24 +31,23 @@ pub const DEFAULT_READY_DEADLINE: Duration = Duration::from_secs(10);
 const RETRY_BACKOFF: Duration = Duration::from_millis(25);
 
 /// Poll `127.0.0.1:{port}` with plain TCP connects until one succeeds or
-/// `deadline` elapses, at which point it panics with a diagnostic message.
+/// `deadline` elapses.
 ///
 /// This only proves the listener is accepting connections — callers that
 /// immediately issue a real request should still treat a transient
 /// connection failure as retryable (see [`connect_retrying`]) rather than
 /// assuming readiness is permanent, since some CI sandboxes briefly reset
 /// connections around process/network setup even after the listener is up.
-pub fn wait_until_ready(port: u16, deadline: Duration) {
+pub fn wait_until_ready(port: u16, deadline: Duration) -> Result<(), String> {
     let start = Instant::now();
     loop {
         if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return;
+            return Ok(());
         }
         if start.elapsed() > deadline {
-            panic!(
-                "server on 127.0.0.1:{port} never became ready within {:?}",
-                deadline
-            );
+            return Err(format!(
+                "server on 127.0.0.1:{port} never became ready within {deadline:?}"
+            ));
         }
         std::thread::sleep(RETRY_BACKOFF);
     }
@@ -54,21 +57,20 @@ pub fn wait_until_ready(port: u16, deadline: Duration) {
 /// transient connect errors) until `deadline` elapses.
 ///
 /// Use this for the *actual* request connection in a test, not just the
-/// initial readiness check — a successful `wait_until_ready` call does not
+/// initial readiness check — a successful [`wait_until_ready`] call does not
 /// guarantee every subsequent connect succeeds immediately (accept-queue
 /// pressure, scheduler noise), and retrying here is what actually kills the
 /// class of intermittent connection-refused flake this helper exists for.
-pub fn connect_retrying(port: u16, deadline: Duration) -> TcpStream {
+pub fn connect_retrying(port: u16, deadline: Duration) -> Result<TcpStream, String> {
     let start = Instant::now();
     loop {
         match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(stream) => return stream,
+            Ok(stream) => return Ok(stream),
             Err(err) => {
                 if start.elapsed() > deadline {
-                    panic!(
-                        "could not connect to 127.0.0.1:{port} within {:?}: {err}",
-                        deadline
-                    );
+                    return Err(format!(
+                        "could not connect to 127.0.0.1:{port} within {deadline:?}: {err}"
+                    ));
                 }
                 std::thread::sleep(RETRY_BACKOFF);
             }
@@ -83,14 +85,16 @@ pub fn connect_retrying(port: u16, deadline: Duration) -> TcpStream {
 /// This is a stronger readiness signal than a bare TCP connect: it proves
 /// the server's request-handling loop is live, not just that the listener
 /// backlog will accept a SYN.
-pub fn wait_for_health(port: u16, deadline: Duration) -> String {
+pub fn wait_for_health(port: u16, deadline: Duration) -> Result<String, String> {
     let start = Instant::now();
     loop {
         if let Some(response) = try_health_once(port) {
-            return response;
+            return Ok(response);
         }
         if start.elapsed() > deadline {
-            panic!("GET /health on 127.0.0.1:{port} never succeeded within {deadline:?}");
+            return Err(format!(
+                "GET /health on 127.0.0.1:{port} never succeeded within {deadline:?}"
+            ));
         }
         std::thread::sleep(RETRY_BACKOFF);
     }

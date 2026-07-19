@@ -47,7 +47,12 @@ impl Server {
             .spawn()
             .expect("failed to spawn rz mcp --http-port");
         let server = Server { child, port };
-        mcp_smoke_support::wait_until_ready(server.port, mcp_smoke_support::DEFAULT_READY_DEADLINE);
+        if let Err(err) = mcp_smoke_support::wait_until_ready(
+            server.port,
+            mcp_smoke_support::DEFAULT_READY_DEADLINE,
+        ) {
+            panic!("{err}");
+        }
         server
     }
 }
@@ -60,8 +65,13 @@ impl Drop for Server {
 }
 
 fn http_call(port: u16, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let mut stream =
-        mcp_smoke_support::connect_retrying(port, mcp_smoke_support::DEFAULT_READY_DEADLINE);
+    let mut stream = match mcp_smoke_support::connect_retrying(
+        port,
+        mcp_smoke_support::DEFAULT_READY_DEADLINE,
+    ) {
+        Ok(stream) => stream,
+        Err(err) => panic!("{err}"),
+    };
     stream
         .set_read_timeout(Some(Duration::from_secs(15)))
         .unwrap();
