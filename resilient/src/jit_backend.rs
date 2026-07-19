@@ -1606,6 +1606,8 @@ pub(crate) mod runtime_shims {
     pub extern "C-unwind" fn res_array_sum(arr: *mut ResArray) -> i64 {
         assert!(!arr.is_null(), "res_array_sum: null array pointer");
         let arr = NonNull::new(arr).expect("res_array_sum: null array pointer");
+        // SAFETY: same as `res_array_get` — the JIT calling convention
+        // guarantees the pointer's validity for the duration of this call.
         let arr_ref = unsafe { arr.as_ref() };
         arr_ref
             .items
@@ -1620,6 +1622,7 @@ pub(crate) mod runtime_shims {
     pub extern "C-unwind" fn res_array_min(arr: *mut ResArray) -> i64 {
         assert!(!arr.is_null(), "res_array_min: null array pointer");
         let arr = NonNull::new(arr).expect("res_array_min: null array pointer");
+        // SAFETY: same as `res_array_get`.
         let arr_ref = unsafe { arr.as_ref() };
         match arr_ref.items.iter().copied().min() {
             Some(m) => m,
@@ -1631,6 +1634,7 @@ pub(crate) mod runtime_shims {
     pub extern "C-unwind" fn res_array_max(arr: *mut ResArray) -> i64 {
         assert!(!arr.is_null(), "res_array_max: null array pointer");
         let arr = NonNull::new(arr).expect("res_array_max: null array pointer");
+        // SAFETY: same as `res_array_get`.
         let arr_ref = unsafe { arr.as_ref() };
         match arr_ref.items.iter().copied().max() {
             Some(m) => m,
@@ -1644,6 +1648,7 @@ pub(crate) mod runtime_shims {
     pub extern "C-unwind" fn res_array_reverse(arr: *mut ResArray) -> i64 {
         assert!(!arr.is_null(), "res_array_reverse: null array pointer");
         let arr = NonNull::new(arr).expect("res_array_reverse: null array pointer");
+        // SAFETY: same as `res_array_get`.
         let arr_ref = unsafe { arr.as_ref() };
         let mut items = arr_ref.items.clone();
         items.reverse();
@@ -1657,6 +1662,7 @@ pub(crate) mod runtime_shims {
     pub extern "C-unwind" fn res_array_sort(arr: *mut ResArray) -> i64 {
         assert!(!arr.is_null(), "res_array_sort: null array pointer");
         let arr = NonNull::new(arr).expect("res_array_sort: null array pointer");
+        // SAFETY: same as `res_array_get`.
         let arr_ref = unsafe { arr.as_ref() };
         let mut items = arr_ref.items.clone();
         items.sort_unstable();
