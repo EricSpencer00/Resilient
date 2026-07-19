@@ -1739,7 +1739,23 @@ fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
             _ => {}
         }
     }
-    // Build a map of impl targets for mangling.
+    // RES-4159: `parse_method` (lib.rs) already mangles an impl method's
+    // `name` to `"StructName$method"` at parse time. Re-mangling it
+    // again here (via this `impl_targets` map) produces a
+    // double-mangled key (`"StructName$StructName$method"`) that
+    // diverges from the single-mangled name `devirtualize::lower`
+    // emits at call sites — which sounds like a bug (and is one, in
+    // isolation) but is currently load-bearing: `ctx.functions.get()`
+    // on the devirtualized call's single-mangled name then correctly
+    // misses, raising `Unsupported` and safely VM-falling-back, rather
+    // than resolving and running a struct method natively. Struct
+    // field access under the JIT backend has a separate, pre-existing
+    // correctness bug (tracked as a follow-up) that this double-mangle
+    // currently masks for every example in the corpus that calls a
+    // struct method — fixing the mangling alone (without first fixing
+    // that bug) flips several corpus examples from "safely VM
+    // fallback" to "run natively and print wrong output", which is
+    // strictly worse. Left as-is until the follow-up lands.
     let mut impl_targets: HashMap<*const Node, String> = HashMap::new();
     for spanned in stmts {
         if let Node::ImplBlock {
@@ -2495,13 +2511,27 @@ fn try_lower_tail_call(
 ///     a struct hits the plain-`iadd`-family arithmetic path (structs
 ///     are heap-tagged pointers, not raw ints) and corrupts data or
 ///     crashes.
-///   - `impl int/float/string/bool { ... }` — a method call on a
-///     primitive-type `impl` block crashed intermittently in CI on
-///     the corpus sweep (not reproduced locally in >8 runs — likely
-///     depends on `HashMap` iteration order used elsewhere in method
-///     dispatch, or on heap addresses). Not root-caused in this PR;
-///     disqualified out of caution rather than shipping a native path
-///     with a rare crash.
+///
+/// RES-4159 root-caused and fixed the `impl int/float/string/bool { ... }`
+/// entry this list used to carry (an intermittent crash calling a
+/// primitive-type impl's method): `lower_expr`'s `CallExpression`
+/// handling for `target.method(args)` resolved the mangled `"Type$method"`
+/// callee by scanning `ctx.functions.keys()` — a `HashMap` whose
+/// iteration order is randomized per-process — and using the *first*
+/// key ending in `$method`, without regard to the receiver's actual
+/// type. A program defining the same method name on two different
+/// types (e.g. both `impl int` and `impl string` declaring `describe`)
+/// would nondeterministically dispatch to whichever impl happened to
+/// hash first that run, passing a raw `i64` where a heap-tagged
+/// pointer was expected (or vice versa) — an intermittent segfault
+/// depending only on the process's random hash seed, exactly matching
+/// the "not reproduced locally in 8+ runs" CI symptom. Fixed by
+/// resolving the mangled name from the receiver's statically-known
+/// `ValueKind` when available, and by rejecting (as `Unsupported`,
+/// safely VM-falling-back) any call site where the receiver's type
+/// isn't statically known *and* more than one type defines that method
+/// name, instead of guessing. See the `CallExpression`/`FieldAccess`
+/// arm of `lower_expr` for the fix.
 ///
 /// None of these are what RES-4153 set out to fix (bool/string value
 /// display); each is its own follow-up. Per repo policy ("anything
@@ -2517,19 +2547,9 @@ fn program_has_unsound_native_fallthrough_construct(stmts: &[crate::Spanned<Node
             Node::Match { .. } | Node::IndexExpression { .. } | Node::IndexAssignment { .. } => {
                 true
             }
-            Node::ImplBlock {
-                trait_name,
-                struct_name,
-                ..
-            } => {
-                trait_name
-                    .as_deref()
-                    .is_some_and(|t| matches!(t, "Add" | "Sub" | "Mul" | "Div"))
-                    || matches!(
-                        struct_name.as_str(),
-                        "int" | "float" | "string" | "bool" | "Int" | "Float" | "String" | "Bool"
-                    )
-            }
+            Node::ImplBlock { trait_name, .. } => trait_name
+                .as_deref()
+                .is_some_and(|t| matches!(t, "Add" | "Sub" | "Mul" | "Div")),
             Node::PrefixExpression { right, .. } => node_is_unsound(right),
             Node::InfixExpression { left, right, .. } => {
                 node_is_unsound(left) || node_is_unsound(right)
@@ -3332,24 +3352,95 @@ fn lower_expr(
             let (callee_name, method_receiver) = match function.as_ref() {
                 Node::Identifier { name, .. } => (name.clone(), None),
                 Node::FieldAccess { target, field, .. } => {
-                    // Method call: lower the receiver, resolve mangled name
-                    let recv_v = lower_expr(target, bcx, ctx, module)?;
-                    // Check if the receiver has a struct tag to resolve method
-                    let fref_name =
-                        module.declare_func_in_func(ctx.imports.res_jit_struct_get_name, bcx.func);
-                    let _ = fref_name; // We use a naming convention: try "Type$method"
-                    // For method calls, we try all known "Type$method" patterns
-                    let mut found_mangled = None;
-                    for key in ctx.functions.keys() {
-                        if key.ends_with(&format!("${field}")) {
-                            found_mangled = Some(key.clone());
-                            break;
-                        }
+                    // RES-4159: resolve the mangled "Type$method" name
+                    // *before* lowering the receiver, and prefer an exact
+                    // match derived from the receiver's statically-known
+                    // `ValueKind` (mirrors the interpreter's `int$`/
+                    // `float$`/`string$`/`bool$` primitive dispatch —
+                    // `lib.rs`'s `prim_type_name` table). This is the fix
+                    // for RES-4159: the old code picked the *first* key
+                    // in `ctx.functions.keys()` (a `HashMap`, whose
+                    // iteration order is randomized per-process by
+                    // `RandomState`) ending in `$field`, with no regard
+                    // for the receiver's actual type. A program declaring
+                    // the same method name on two different types (e.g.
+                    // `impl int { fn describe(self) }` and
+                    // `impl string { fn describe(self) }`) would
+                    // nondeterministically dispatch every `.describe()`
+                    // call — across *every* receiver type — to whichever
+                    // impl happened to hash first that run, silently
+                    // passing a raw `i64` where a heap-tagged pointer was
+                    // expected (or vice versa): reads through a bogus
+                    // pointer, an intermittent segfault depending only on
+                    // the process's random hash seed.
+                    // Try both the single-mangled `"<ty>$<field>"` form
+                    // (the correct, final convention `parse_method`
+                    // produces) and the `"<ty>$<ty>$<field>"` form
+                    // (what a primitive impl's method is *actually*
+                    // stored under today, per the `impl_targets`
+                    // double-mangle in `run_internal`'s Pass 1/2 — see
+                    // that comment). Trying both keeps this resolution
+                    // correct independent of whichever the current
+                    // storage convention is, including once the
+                    // double-mangle is fixed.
+                    let exact_mangled = match static_kind(target, ctx) {
+                        ValueKind::Int => Some("int"),
+                        ValueKind::Float => Some("float"),
+                        ValueKind::String => Some("string"),
+                        ValueKind::Bool => Some("bool"),
+                        ValueKind::Unknown => None,
                     }
-                    if let Some(mangled) = found_mangled {
-                        (mangled, Some(recv_v))
+                    .and_then(|ty| {
+                        let single = format!("{ty}${field}");
+                        if ctx.functions.contains_key(&single) {
+                            return Some(single);
+                        }
+                        let double = format!("{ty}${ty}${field}");
+                        if ctx.functions.contains_key(&double) {
+                            return Some(double);
+                        }
+                        None
+                    });
+
+                    let resolved = if let Some(mangled) = exact_mangled {
+                        Some(mangled)
                     } else {
-                        (field.clone(), Some(recv_v))
+                        // Receiver kind isn't statically known (e.g. a
+                        // struct receiver, or a primitive whose kind
+                        // `static_kind` couldn't track). Collect *every*
+                        // "$field" candidate rather than stopping at the
+                        // first: if there's exactly one, dispatch is
+                        // unambiguous regardless of receiver type; if
+                        // there's more than one, guessing would repeat
+                        // RES-4159, so this call site is rejected as
+                        // unsupported instead — a precompile error that
+                        // safely VM-falls-back the whole program rather
+                        // than risking a wrong (or crashing) native
+                        // dispatch.
+                        let suffix = format!("${field}");
+                        let mut candidates: Vec<&String> = ctx
+                            .functions
+                            .keys()
+                            .filter(|k| k.ends_with(&suffix))
+                            .collect();
+                        match candidates.len() {
+                            0 => None,
+                            1 => Some(candidates.remove(0).clone()),
+                            _ => {
+                                return Err(JitError::Unsupported(
+                                    "ambiguous method dispatch: multiple types define a method \
+                                     with this name and the receiver's type isn't statically known",
+                                ));
+                            }
+                        }
+                    };
+
+                    // Method call: lower the receiver only after dispatch
+                    // is resolved (or rejected) above.
+                    let recv_v = lower_expr(target, bcx, ctx, module)?;
+                    match resolved {
+                        Some(mangled) => (mangled, Some(recv_v)),
+                        None => (field.clone(), Some(recv_v)),
                     }
                 }
                 _ => {
@@ -4147,6 +4238,79 @@ mod tests {
     // both work now. The test that was here pinning the
     // unsupported case was retired; the equivalent positive
     // test (jit_let_and_use, below) replaces it.
+
+    #[test]
+    fn jit_res4159_primitive_impl_method_name_collision_dispatches_correctly() {
+        // RES-4159 regression: `impl int` and `impl string` both declare
+        // a `tag` method. Before the fix, `lower_expr`'s method-call
+        // resolution picked the *first* `"...$tag"` key it found while
+        // iterating `ctx.functions.keys()` (a `HashMap`, randomized
+        // iteration order per process) — with no regard to which type
+        // the receiver actually was. Every `.tag()` call site in the
+        // program, on every receiver, would dispatch to the *same*
+        // (arbitrary) impl that run. That means either both receivers
+        // wrongly hit `int$tag` (giving 1 + 1 = 2), both wrongly hit
+        // `string$tag` (giving 2 + 2 = 4), or — the intermittent-crash
+        // case not exercisable in a single-run unit test — a receiver's
+        // raw representation got fed to the *wrong* impl's compiled
+        // code (e.g. an int's raw i64 passed to code that treats `self`
+        // as a heap-tagged string pointer). With the fix, each `.tag()`
+        // call resolves via the receiver's statically-known `ValueKind`
+        // to the correct impl every time, giving 1 + 2 = 3.
+        let p = parse_program(
+            r#"
+            impl int {
+                fn tag(self) -> int {
+                    return 1;
+                }
+            }
+            impl string {
+                fn tag(self) -> int {
+                    return 2;
+                }
+            }
+            fn combine() -> int {
+                let x = 5;
+                let s = "hi";
+                return x.tag() + s.tag();
+            }
+            return combine();
+            "#,
+        );
+        assert_eq!(run(&p).unwrap(), 3);
+    }
+
+    #[test]
+    fn jit_res4159_ambiguous_method_dispatch_is_rejected_not_guessed() {
+        // RES-4159: when the receiver's `ValueKind` isn't statically
+        // known (here, a parameter typed `x: int` — `type_text_to_kind`
+        // only classifies `bool`/`String`/`float` aliases, not `int`,
+        // so `static_kind` reports `Unknown` for it) *and* more than one
+        // type declares a method with the same name, the call site is
+        // rejected as `Unsupported` (a safe, precompile VM-fallback)
+        // rather than silently guessing which impl to call — which is
+        // exactly the guess that produced RES-4159's intermittent crash.
+        let p = parse_program(
+            r#"
+            impl int {
+                fn tag(self) -> int {
+                    return 1;
+                }
+            }
+            impl string {
+                fn tag(self) -> int {
+                    return 2;
+                }
+            }
+            fn call_tag(int x) -> int {
+                return x.tag();
+            }
+            return call_tag(5);
+            "#,
+        );
+        let err = run(&p).unwrap_err();
+        assert!(err.is_precompile(), "{err}");
+    }
 
     #[test]
     fn jit_undeclared_identifier_unsupported() {
