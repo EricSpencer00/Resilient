@@ -241,6 +241,12 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
             local_count: func.local_count,
             postcheck: func.postcheck,
             fails_variant: *fails_variant,
+            // RES-4083 (D-E1 tail, closures): the host compiler does
+            // not emit `Instr::MakeClosure`/`Instr::CallClosure` yet
+            // (tracked as a follow-up on issue #4083) — every function
+            // this emitter produces is an ordinary, non-closure
+            // function, so `capture_count` is always `0` here.
+            capture_count: 0,
         })
         .collect();
 
@@ -666,6 +672,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
@@ -689,6 +696,7 @@ mod tests {
             local_count: meta.local_count,
             postcheck: meta.postcheck,
             fails_variant: meta.fails_variant,
+            capture_count: 0,
         }];
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 2>::new();
         assert_eq!(
@@ -766,6 +774,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 4];
@@ -788,6 +797,7 @@ mod tests {
             local_count: out_func_meta[0].local_count,
             postcheck: out_func_meta[0].postcheck,
             fails_variant: out_func_meta[0].fails_variant,
+            capture_count: 0,
         }];
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 1>::new();
         assert_eq!(
@@ -877,6 +887,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
@@ -901,6 +912,7 @@ mod tests {
                 local_count: meta.local_count,
                 postcheck: meta.postcheck,
                 fails_variant: meta.fails_variant,
+                capture_count: 0,
             })
             .collect();
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();
@@ -943,6 +955,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }; 4];
         let mut out_func_code = [Instr::Return; 16];
         let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
@@ -964,6 +977,7 @@ mod tests {
                 local_count: meta.local_count,
                 postcheck: meta.postcheck,
                 fails_variant: meta.fails_variant,
+                capture_count: 0,
             })
             .collect();
         let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();

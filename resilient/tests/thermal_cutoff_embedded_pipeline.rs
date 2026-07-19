@@ -58,6 +58,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     let mut out_func_code = [Instr::Return; 128];
     let mut out_try_handlers = [TryHandlerEntry::EMPTY; 1];
@@ -77,6 +78,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -89,6 +91,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
             local_count: meta.local_count,
             postcheck: meta.postcheck,
             fails_variant: meta.fails_variant,
+            capture_count: 0,
         };
     }
 

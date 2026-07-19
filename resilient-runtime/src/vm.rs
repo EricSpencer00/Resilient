@@ -88,6 +88,22 @@ pub enum Value {
     Int(i64),
     Bool(bool),
     Float(f64),
+    /// RES-4083 (D-E1 tail, closures): a closure over function-table
+    /// index `func_idx`, whose by-value-captured scalars live at
+    /// `closure_slab[slab_idx]` (see [`Vm`]'s `CLOSURES` const
+    /// generic). Deliberately flat/non-recursive — captured values
+    /// are *not* stored inline in this variant (a `[Value; N]` field
+    /// on `Value` itself would make `Value` an infinitely-sized
+    /// recursive type), so the captures live in a separate
+    /// fixed-capacity arena the `Vm` owns, and this variant only
+    /// carries the two indices needed to find them. See the
+    /// `Instr::MakeClosure`/`Instr::CallClosure` docs for the capture
+    /// semantics (by-value only — no live-shared upvalues, since this
+    /// VM has no heap-bearing value to share through).
+    Closure {
+        func_idx: u16,
+        slab_idx: u16,
+    },
 }
 
 impl Value {
@@ -155,7 +171,7 @@ impl Value {
         match self {
             Value::Int(a) => Ok(Value::Int(a.wrapping_neg())),
             Value::Float(a) => Ok(Value::Float(-a)),
-            Value::Bool(_) => Err(VmError::TypeMismatch("neg")),
+            Value::Bool(_) | Value::Closure { .. } => Err(VmError::TypeMismatch("neg")),
         }
     }
 
@@ -318,6 +334,37 @@ pub enum Instr {
     /// (never an error) if the try stack happens to already be empty,
     /// mirroring the host VM's tolerant `Op::ExitTry`.
     ExitTry,
+    /// RES-4083 (D-E1 tail, closures): pop `capture_count` values off
+    /// the operand stack (rightmost popped first, matching
+    /// [`Instr::Call`]'s argument-popping convention — the caller
+    /// pushes captured values in declaration order, `v0, v1, ...`),
+    /// store them into a fresh slot of the `Vm`'s fixed-capacity
+    /// closure-capture arena (see `CLOSURES`/`closure_slab` on
+    /// [`Vm`]), and push a `Value::Closure { func_idx, slab_idx }`
+    /// referencing that slot. `func_idx` is a function-table index
+    /// exactly like [`Instr::Call`]'s operand — it is *not*
+    /// validated at `MakeClosure` time (mirrors `Call`'s own
+    /// lazy validation), only when the closure is actually invoked
+    /// via [`Instr::CallClosure`]. Captures are always by-value
+    /// copies taken at this instant; mutating the source local
+    /// afterward never changes what the closure sees (see the
+    /// module-level closures section for why this VM cannot offer
+    /// live-shared upvalues).
+    MakeClosure {
+        func_idx: u16,
+        capture_count: u8,
+    },
+    /// RES-4083 (D-E1 tail, closures): pop a `Value::Closure` off the
+    /// top of the operand stack, then pop `functions[func_idx].arity`
+    /// further arguments beneath it (same rightmost-popped-first order
+    /// as [`Instr::Call`]) and invoke `func_idx`'s body. The callee's
+    /// locals slab is seeded with the closure's captured values first
+    /// (`locals[0..capture_count]`), then the call's own arguments
+    /// (`locals[capture_count..capture_count + arity]`) — see
+    /// [`FunctionDef::capture_count`]. A TOS value that is not a
+    /// `Value::Closure` is [`VmError::TypeMismatch`]; an invalid
+    /// `func_idx`/`slab_idx` is [`VmError::FunctionOutOfBounds`].
+    CallClosure,
 }
 
 /// RES-4083 (D-E1 tail): one `catch Variant { }` arm — `variant` is a
@@ -340,6 +387,15 @@ pub struct CatchArm {
 /// wanting more arms is a typed [`crate::vm::VmError`]-adjacent
 /// `rzbc_emit::EmitError` at compile time, not a silent truncation.
 pub const MAX_CATCH_ARMS: usize = 4;
+
+/// RES-4083 (D-E1 tail, closures): the maximum number of scalars a
+/// single [`Instr::MakeClosure`] can capture. A fixed bound (rather
+/// than a const generic) for the same reason as [`MAX_CATCH_ARMS`] —
+/// it keeps the per-slot storage in `Vm::closure_slab` a plain
+/// `Copy` array. A closure wanting more captures is a typed
+/// `rzbc_emit::EmitError` at compile time on the host side, not a
+/// silent truncation here.
+pub const MAX_CLOSURE_CAPTURES: usize = 4;
 
 /// RES-4083 (D-E1 tail): one `try { }` block's catch-arm table, as
 /// referenced by [`Instr::EnterTry`]. Stored in the flat table passed
@@ -395,6 +451,16 @@ pub struct FunctionDef<'a> {
     /// checked-failure injection only ever raises `func.fails[0]`, so
     /// there's no need to carry the whole list.
     pub fails_variant: Option<u16>,
+    /// RES-4083 (D-E1 tail, closures): the number of leading local
+    /// slots ([`Instr::CallClosure`] fills `locals[0..capture_count]`
+    /// from the invoked closure's capture arena, then the call's own
+    /// arguments at `locals[capture_count..capture_count + arity]`.
+    /// `0` for every ordinary (non-closure) function — a plain
+    /// [`Instr::Call`] never reads this field, so it's harmless
+    /// noise there. Must satisfy `capture_count as u16 + arity as
+    /// u16 <= local_count`, mirroring the existing `arity <=
+    /// local_count` invariant `Instr::Call` already relies on.
+    pub capture_count: u8,
 }
 
 /// Errors the VM can surface. Every fallible dispatch step returns
@@ -456,6 +522,15 @@ pub enum VmError {
     /// the host VM's `VmError::CheckedFailure`. Always aborts the
     /// whole run, matching an uncaught checked failure on the host.
     CheckedFailure(u16),
+    /// RES-4083 (D-E1 tail, closures): `Instr::MakeClosure` would
+    /// allocate more capture-arena slots than the VM's `CLOSURES`
+    /// capacity allows. The typed substitute for unbounded closure
+    /// creation (e.g. inside a hot loop) — the arena is a simple
+    /// bump allocator that is never reclaimed within a `Vm`
+    /// instance's lifetime, so a program creating closures without
+    /// bound will eventually hit this rather than grow unbounded
+    /// memory or panic.
+    ClosureCapacityExceeded,
 }
 
 /// RES-4077 (D-E1 fn-support): who to resume, and where, once the
@@ -508,6 +583,7 @@ pub struct Vm<
     const LOCALS: usize,
     const CALLS: usize = 1,
     const TRIES: usize = 0,
+    const CLOSURES: usize = 0,
 > {
     stack: [Value; STACK],
     sp: usize,
@@ -542,18 +618,35 @@ pub struct Vm<
     /// blocks.
     try_stack: [TryFrame; TRIES],
     try_sp: usize,
+    /// RES-4083 (D-E1 tail, closures): fixed-capacity capture arena —
+    /// `closure_slab[i]` holds the up-to-`MAX_CLOSURE_CAPTURES`
+    /// scalars captured by the closure created at slab index `i`.
+    /// Simple bump allocator (`closure_top`, never reclaimed within a
+    /// `Vm` instance's lifetime); see [`VmError::ClosureCapacityExceeded`].
+    closure_slab: [[Value; MAX_CLOSURE_CAPTURES]; CLOSURES],
+    closure_top: usize,
 }
 
-impl<const STACK: usize, const LOCALS: usize, const CALLS: usize, const TRIES: usize> Default
-    for Vm<STACK, LOCALS, CALLS, TRIES>
+impl<
+    const STACK: usize,
+    const LOCALS: usize,
+    const CALLS: usize,
+    const TRIES: usize,
+    const CLOSURES: usize,
+> Default for Vm<STACK, LOCALS, CALLS, TRIES, CLOSURES>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const STACK: usize, const LOCALS: usize, const CALLS: usize, const TRIES: usize>
-    Vm<STACK, LOCALS, CALLS, TRIES>
+impl<
+    const STACK: usize,
+    const LOCALS: usize,
+    const CALLS: usize,
+    const TRIES: usize,
+    const CLOSURES: usize,
+> Vm<STACK, LOCALS, CALLS, TRIES, CLOSURES>
 {
     /// A fresh VM: empty operand stack, locals zero-initialised to
     /// `Value::Int(0)`, no active call frames beyond the implicit
@@ -575,6 +668,8 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize, const TRIES: u
                 stack_depth: 0,
             }; TRIES],
             try_sp: 0,
+            closure_slab: [[Value::Int(0); MAX_CLOSURE_CAPTURES]; CLOSURES],
+            closure_top: 0,
         }
     }
 
@@ -815,6 +910,105 @@ impl<const STACK: usize, const LOCALS: usize, const CALLS: usize, const TRIES: u
                     if self.try_sp > 0 {
                         self.try_sp -= 1;
                     }
+                }
+                Instr::MakeClosure {
+                    func_idx,
+                    capture_count,
+                } => {
+                    let n = capture_count as usize;
+                    if n > MAX_CLOSURE_CAPTURES {
+                        return Err(VmError::TypeMismatch("closure capture_count"));
+                    }
+                    if self.sp < n {
+                        return Err(VmError::StackUnderflow);
+                    }
+                    if self.closure_top >= CLOSURES {
+                        return Err(VmError::ClosureCapacityExceeded);
+                    }
+                    let slab_idx = self.closure_top;
+                    let slab_idx_u16 =
+                        u16::try_from(slab_idx).map_err(|_| VmError::ClosureCapacityExceeded)?;
+                    let mut captures = [Value::Int(0); MAX_CLOSURE_CAPTURES];
+                    for slot in captures.iter_mut().take(n).rev() {
+                        *slot = self.pop()?;
+                    }
+                    let dest = self
+                        .closure_slab
+                        .get_mut(slab_idx)
+                        .ok_or(VmError::ClosureCapacityExceeded)?;
+                    *dest = captures;
+                    self.closure_top += 1;
+                    self.push(Value::Closure {
+                        func_idx,
+                        slab_idx: slab_idx_u16,
+                    })?;
+                }
+                Instr::CallClosure => {
+                    let closure = self.pop()?;
+                    let (func_idx, slab_idx) = match closure {
+                        Value::Closure { func_idx, slab_idx } => (func_idx, slab_idx),
+                        _ => return Err(VmError::TypeMismatch("call closure")),
+                    };
+                    let f = functions
+                        .get(func_idx as usize)
+                        .copied()
+                        .ok_or(VmError::FunctionOutOfBounds(func_idx))?;
+                    let captures = self
+                        .closure_slab
+                        .get(slab_idx as usize)
+                        .copied()
+                        .ok_or(VmError::FunctionOutOfBounds(func_idx))?;
+                    let arity = f.arity as usize;
+                    let capture_count = f.capture_count as usize;
+                    if self.try_sp > 0
+                        && let Some(variant) = f.fails_variant
+                    {
+                        if self.sp < arity {
+                            return Err(VmError::StackUnderflow);
+                        }
+                        self.sp -= arity;
+                        pc = self.dispatch_checked_failure(
+                            variant,
+                            try_handlers,
+                            &mut current_func,
+                            &mut code,
+                            functions,
+                            program,
+                        )?;
+                        continue;
+                    }
+                    if self.sp < arity {
+                        return Err(VmError::StackUnderflow);
+                    }
+                    let next_frame = self.frame + 1;
+                    if next_frame >= CALLS {
+                        return Err(VmError::CallStackOverflow);
+                    }
+                    for slot in self.locals[next_frame].iter_mut() {
+                        *slot = Value::Int(0);
+                    }
+                    for i in (0..arity).rev() {
+                        let v = self.pop()?;
+                        let slot = self.locals[next_frame]
+                            .get_mut(capture_count + i)
+                            .ok_or(VmError::LocalsOutOfBounds)?;
+                        *slot = v;
+                    }
+                    for (i, captured) in captures.iter().take(capture_count).enumerate() {
+                        let slot = self.locals[next_frame]
+                            .get_mut(i)
+                            .ok_or(VmError::LocalsOutOfBounds)?;
+                        *slot = *captured;
+                    }
+                    self.returns[next_frame] = ReturnInfo {
+                        caller_func: current_func,
+                        ret_pc: pc,
+                    };
+                    current_func = Some(func_idx);
+                    self.frame_func[next_frame] = Some(func_idx);
+                    code = f.code;
+                    pc = 0;
+                    self.frame = next_frame;
                 }
                 Instr::Pop => {
                     self.pop()?;
@@ -1415,6 +1609,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let program = [
             Instr::Call(0),
@@ -1458,6 +1653,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let program = [
             Instr::PushConst(Value::Int(100)),
@@ -1495,6 +1691,7 @@ mod tests {
                 local_count: 1,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &g,
@@ -1502,6 +1699,7 @@ mod tests {
                 local_count: 1,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let program = [
@@ -1529,6 +1727,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let program = [Instr::Call(0), Instr::Return];
         let mut vm = Vm::<8, 4, 2>::new();
@@ -1547,6 +1746,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         // Call f with its one arg; f then TailCalls itself with an
         // empty operand stack.
@@ -1575,6 +1775,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let program = [Instr::Call(0), Instr::Return];
         let mut vm = Vm::<8, 4, 2>::new();
@@ -1600,6 +1801,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let program = [
             Instr::PushConst(Value::Int(7)),
@@ -1630,6 +1832,7 @@ mod tests {
             local_count: 2,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let program = [
             Instr::PushConst(Value::Int(10)),
@@ -1668,6 +1871,7 @@ mod tests {
                 local_count: 1,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &double_inc,
@@ -1675,6 +1879,7 @@ mod tests {
                 local_count: 1,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let program = [
@@ -1712,6 +1917,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let program = [
             Instr::PushConst(Value::Int(3)),
@@ -1746,6 +1952,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         // CALLS == 3 only allows 2 nested frames (main + 2 callees);
         // recursing 100 deep must surface a typed error, never
@@ -1798,6 +2005,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         // No PushConst before Call(0) — the operand stack is empty
         // but the callee wants 1 argument.
@@ -1835,6 +2043,7 @@ mod tests {
                 local_count: 1,
                 postcheck: Some(1),
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &postcheck,
@@ -1842,6 +2051,7 @@ mod tests {
                 local_count: 2,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let program = [
@@ -1873,6 +2083,7 @@ mod tests {
                 local_count: 1,
                 postcheck: Some(1),
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &postcheck,
@@ -1880,6 +2091,7 @@ mod tests {
                 local_count: 2,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let program = [
@@ -1908,6 +2120,7 @@ mod tests {
                 local_count: 1,
                 postcheck: Some(1),
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &postcheck,
@@ -1915,6 +2128,7 @@ mod tests {
                 local_count: 2,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let program = [
@@ -1947,6 +2161,7 @@ mod tests {
                 local_count: 1,
                 postcheck: Some(1),
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &postcheck,
@@ -1954,6 +2169,7 @@ mod tests {
                 local_count: 2,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let program = [
@@ -1992,6 +2208,7 @@ mod tests {
                 local_count: 1,
                 postcheck: Some(1),
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &postcheck,
@@ -1999,6 +2216,7 @@ mod tests {
                 local_count: 2,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
             FunctionDef {
                 code: &is_positive,
@@ -2006,6 +2224,7 @@ mod tests {
                 local_count: 1,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let program = [
@@ -2034,6 +2253,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: Some(0),
+            capture_count: 0,
         }];
         let program = [Instr::Call(0), Instr::Return];
         let mut vm = Vm::<8, 4, 2>::new();
@@ -2053,6 +2273,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: Some(0),
+            capture_count: 0,
         }];
         let mut arms = [None; MAX_CATCH_ARMS];
         arms[0] = Some(CatchArm {
@@ -2087,6 +2308,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: Some(7),
+            capture_count: 0,
         }];
         let mut arms = [None; MAX_CATCH_ARMS];
         arms[0] = Some(CatchArm {
@@ -2118,6 +2340,7 @@ mod tests {
             local_count: 0,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let try_handlers = [TryHandlerEntry::EMPTY];
         let program = [
@@ -2150,6 +2373,7 @@ mod tests {
                 local_count: 0,
                 postcheck: None,
                 fails_variant: Some(0),
+                capture_count: 0,
             },
             FunctionDef {
                 code: &outer,
@@ -2157,6 +2381,7 @@ mod tests {
                 local_count: 0,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let mut arms = [None; MAX_CATCH_ARMS];
@@ -2217,5 +2442,231 @@ mod tests {
         ];
         let mut vm = Vm::<8, 0>::new();
         assert_eq!(vm.run(&program), Ok(Value::Int(1)));
+    }
+
+    // ---------- RES-4083 (D-E1 tail, closures): MakeClosure/CallClosure ----------
+
+    // add_capture(arg) = capture + arg — capture is locals[0], arg is
+    // locals[1] (capture_count=1, arity=1, local_count=2).
+    fn add_capture_function() -> [Instr; 4] {
+        [
+            Instr::LoadLocal(0),
+            Instr::LoadLocal(1),
+            Instr::Add,
+            Instr::Return,
+        ]
+    }
+
+    #[test]
+    fn make_closure_and_call_closure_adds_capture_and_arg() {
+        let f = add_capture_function();
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 1,
+            local_count: 2,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(5)), // arg, pushed before the closure value
+            Instr::PushConst(Value::Int(10)), // captured value
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 0, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(15))
+        );
+    }
+
+    #[test]
+    fn closure_capture_is_by_value_not_live_shared() {
+        // x = 10; closure = || x + arg; x = 99; closure(5) still uses
+        // the *captured* 10, not the mutated 99 — by-value capture,
+        // not a live upvalue.
+        let f = add_capture_function();
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 1,
+            local_count: 2,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(10)),
+            Instr::StoreLocal(0),            // x = 10
+            Instr::PushConst(Value::Int(5)), // arg, pushed before the closure value
+            Instr::LoadLocal(0),
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::PushConst(Value::Int(99)),
+            Instr::StoreLocal(0), // x = 99, after capture
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 0, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(15))
+        );
+    }
+
+    #[test]
+    fn closure_stored_in_local_and_called_later_is_first_class() {
+        let f = add_capture_function();
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 1,
+            local_count: 2,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(3)),
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::StoreLocal(0), // closure now lives in a local, like any other value
+            Instr::PushConst(Value::Int(4)),
+            Instr::LoadLocal(0),
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 0, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Ok(Value::Int(7))
+        );
+    }
+
+    #[test]
+    fn make_closure_beyond_closures_capacity_is_typed_error_not_a_panic() {
+        let f = add_capture_function();
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 1,
+            local_count: 2,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(1)),
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::Pop,
+            Instr::PushConst(Value::Int(2)),
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::Pop,
+            Instr::PushConst(Value::Int(0)),
+            Instr::Return,
+        ];
+        // Only 1 closure slot available; the second MakeClosure must
+        // fail rather than silently overwrite/panic.
+        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::ClosureCapacityExceeded)
+        );
+    }
+
+    #[test]
+    fn call_closure_on_non_closure_value_is_type_mismatch_not_a_panic() {
+        let program = [Instr::PushConst(Value::Int(1)), Instr::CallClosure];
+        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        assert_eq!(
+            vm.run_with_functions(&[], &program),
+            Err(VmError::TypeMismatch("call closure"))
+        );
+    }
+
+    #[test]
+    fn make_closure_with_capture_count_over_max_is_type_mismatch_not_a_panic() {
+        let program = [
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: (MAX_CLOSURE_CAPTURES + 1) as u8,
+            },
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        assert_eq!(
+            vm.run_with_functions(&[], &program),
+            Err(VmError::TypeMismatch("closure capture_count"))
+        );
+    }
+
+    #[test]
+    fn call_closure_with_bad_func_idx_is_function_out_of_bounds() {
+        let program = [
+            Instr::MakeClosure {
+                func_idx: 99,
+                capture_count: 0,
+            },
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        assert_eq!(
+            vm.run_with_functions(&[], &program),
+            Err(VmError::FunctionOutOfBounds(99))
+        );
+    }
+
+    #[test]
+    fn closure_calling_fails_declaring_function_inside_try_dispatches_to_catch() {
+        // f(_capture) fails Variant(0); caught by an enclosing try/catch.
+        let f = [Instr::PushConst(Value::Int(0)), Instr::Return];
+        let functions = [FunctionDef {
+            code: &f,
+            arity: 0,
+            local_count: 1,
+            postcheck: None,
+            fails_variant: Some(0),
+            capture_count: 1,
+        }];
+        let arms = {
+            let mut a = [None; MAX_CATCH_ARMS];
+            a[0] = Some(CatchArm {
+                variant: 0,
+                handler_pc: 6,
+            });
+            a
+        };
+        let try_handlers = [TryHandlerEntry { arms }];
+        let program = [
+            Instr::EnterTry(0),
+            Instr::PushConst(Value::Int(1)),
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::CallClosure,
+            Instr::ExitTry,
+            Instr::Jump(7),
+            Instr::PushConst(Value::Int(-1)), // pc 6: catch arm
+            Instr::Return,                    // pc 7
+        ];
+        let mut vm = Vm::<8, 4, 2, 1, 1>::new();
+        assert_eq!(
+            vm.run_with_tries(&functions, &try_handlers, &program),
+            Ok(Value::Int(-1))
+        );
     }
 }

@@ -149,7 +149,7 @@ pub fn load_and_run<const N: usize, const STACK: usize, const LOCALS: usize>(
 ///     Instr::Call(0),
 ///     Instr::Return,
 /// ];
-/// let functions = [EncodeFunctionDef { code: &square, arity: 1, local_count: 1, postcheck: None, fails_variant: None }];
+/// let functions = [EncodeFunctionDef { code: &square, arity: 1, local_count: 1, postcheck: None, fails_variant: None, capture_count: 0 }];
 ///
 /// let mut buf = [0u8; 128];
 /// let len = encode_program(&main, &functions, &[], &mut buf).unwrap();
@@ -175,6 +175,7 @@ pub fn load_and_run_with_functions<
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; FUNC_META_N];
     let mut func_code = [Instr::Return; FUNC_CODE_N];
     let mut try_handlers: [TryHandlerEntry; 0] = [];
@@ -193,6 +194,7 @@ pub fn load_and_run_with_functions<
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; FUNC_META_N];
     for (slot, meta) in functions_buf
         .iter_mut()
@@ -205,6 +207,7 @@ pub fn load_and_run_with_functions<
             local_count: meta.local_count,
             postcheck: meta.postcheck,
             fails_variant: meta.fails_variant,
+            capture_count: meta.capture_count,
         };
     }
 
@@ -240,7 +243,7 @@ pub fn load_and_run_with_functions<
 ///     Instr::ExitTry,
 ///     Instr::Return,
 /// ];
-/// let functions = [EncodeFunctionDef { code: &risky, arity: 0, local_count: 0, postcheck: None, fails_variant: Some(0) }];
+/// let functions = [EncodeFunctionDef { code: &risky, arity: 0, local_count: 0, postcheck: None, fails_variant: Some(0), capture_count: 0 }];
 /// let mut arms = [None; resilient_runtime::vm::MAX_CATCH_ARMS];
 /// arms[0] = Some(CatchArm { variant: 0, handler_pc: 5 });
 /// let try_handlers = [TryHandlerEntry { arms }];
@@ -272,6 +275,7 @@ pub fn load_and_run_with_functions_and_tries<
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; FUNC_META_N];
     let mut func_code = [Instr::Return; FUNC_CODE_N];
     let mut try_handlers_buf = [TryHandlerEntry::EMPTY; TRY_META_N];
@@ -290,6 +294,7 @@ pub fn load_and_run_with_functions_and_tries<
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; FUNC_META_N];
     for (slot, meta) in functions_buf
         .iter_mut()
@@ -302,6 +307,7 @@ pub fn load_and_run_with_functions_and_tries<
             local_count: meta.local_count,
             postcheck: meta.postcheck,
             fails_variant: meta.fails_variant,
+            capture_count: meta.capture_count,
         };
     }
 
@@ -441,6 +447,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let mut buf = [0u8; 128];
         let len = serde::encode_program(&main, &functions, &[], &mut buf).unwrap();
@@ -490,6 +497,7 @@ mod tests {
             local_count: 1,
             postcheck: None,
             fails_variant: None,
+            capture_count: 0,
         }];
         let mut buf = [0u8; 256];
         let len = serde::encode_program(&main, &functions, &[], &mut buf).unwrap();
@@ -524,6 +532,7 @@ mod tests {
                 local_count: 0,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
             serde::EncodeFunctionDef {
                 code: &f2,
@@ -531,6 +540,7 @@ mod tests {
                 local_count: 0,
                 postcheck: None,
                 fails_variant: None,
+                capture_count: 0,
             },
         ];
         let mut buf = [0u8; 128];

@@ -236,6 +236,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
     let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
@@ -255,6 +256,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -267,6 +269,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
             local_count: meta.local_count,
             postcheck: meta.postcheck,
             fails_variant: meta.fails_variant,
+            capture_count: 0,
         };
     }
     let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
@@ -302,6 +305,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
     let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
@@ -320,6 +324,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -332,6 +337,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
             local_count: meta.local_count,
             postcheck: meta.postcheck,
             fails_variant: meta.fails_variant,
+            capture_count: 0,
         };
     }
     let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
@@ -354,6 +360,7 @@ fn run_fn_blob_with_tries(blob: &[u8]) -> resilient_runtime::vm::Value {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     let mut out_func_code = [resilient_runtime::vm::Instr::Return; 64];
     let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 4];
@@ -372,6 +379,7 @@ fn run_fn_blob_with_tries(blob: &[u8]) -> resilient_runtime::vm::Value {
         local_count: 0,
         postcheck: None,
         fails_variant: None,
+        capture_count: 0,
     }; 8];
     for (slot, meta) in functions
         .iter_mut()
@@ -384,6 +392,7 @@ fn run_fn_blob_with_tries(blob: &[u8]) -> resilient_runtime::vm::Value {
             local_count: meta.local_count,
             postcheck: meta.postcheck,
             fails_variant: meta.fails_variant,
+            capture_count: 0,
         };
     }
     let mut vm = resilient_runtime::vm::Vm::<32, 8, 4, 2>::new();
