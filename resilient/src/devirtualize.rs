@@ -12,10 +12,20 @@
 //! 1. The receiver is a `StructLiteral` — the struct name is embedded in the
 //!    AST node itself.
 //! 2. The receiver is an `Identifier` whose most-recent binding in the current
-//!    scope was a `LetStatement { value: StructLiteral { name, .. }, .. }`.
+//!    scope was a `LetStatement { value: StructLiteral { name, .. }, .. }` —
+//!    or, since RES-4095 increment 3, the most recent `Node::Assignment` to
+//!    it, if that reassignment's RHS is also a direct `StructLiteral`. A
+//!    reassignment whose RHS is *not* a struct literal (a variable, a call
+//!    result, etc.) invalidates the binding rather than leaving the stale
+//!    entry in place — see the `Node::Assignment` arm in `rewrite_node`.
 //!
 //! Case 2 is the common case after monomorphization: generic functions become
 //! monomorphic clones where every parameter is bound to a concrete literal.
+//! It's also how a `dyn Trait`-typed local holding heterogeneous concrete
+//! types over its lifetime (RES-4095) stays correctly dispatched: this pass
+//! is agnostic to `dyn` annotations and only ever devirtualizes a call site
+//! when the *current* binding is a concrete struct literal, so each call
+//! after a reassignment lands on the new concrete type's mangled method.
 //!
 //! The pass is purely structural — it rewrites AST nodes; it does not produce
 //! diagnostics. Because it runs after `traits::check`, all impl coverage
@@ -292,11 +302,34 @@ fn rewrite_node(node: &Node, ctx: &mut DevirtCtx) -> Node {
             span: *span,
             label: label.clone(),
         },
-        Node::Assignment { name, value, span } => Node::Assignment {
-            name: name.clone(),
-            value: Box::new(rewrite_node(value, ctx)),
-            span: *span,
-        },
+        Node::Assignment { name, value, span } => {
+            let new_value = rewrite_node(value, ctx);
+            // RES-4095 increment 3: a reassignment changes (or erases) the
+            // statically-known struct type this local holds. Before this
+            // fix, `ctx` was never updated on `Node::Assignment`, so a
+            // `dyn Trait`-typed (or any) local reassigned to a different
+            // concrete struct kept resolving `.method()` calls to the
+            // *original* binding's mangled function — silently wrong
+            // dispatch under `--vm`/`--jit`, not just a missed
+            // optimization. Mirror `LetStatement`'s handling: record the
+            // new struct type when the RHS is a literal, otherwise drop
+            // the stale entry so later call sites fall back to the
+            // runtime-checked `Op::CallMethod` dispatch instead of
+            // reusing a now-invalid mangled name.
+            if let Node::StructLiteral {
+                name: struct_name, ..
+            } = &new_value
+            {
+                ctx.record(name, struct_name);
+            } else {
+                ctx.local_struct_types.remove(name);
+            }
+            Node::Assignment {
+                name: name.clone(),
+                value: Box::new(new_value),
+                span: *span,
+            }
+        }
         Node::InfixExpression {
             left,
             operator,
@@ -349,6 +382,7 @@ fn rewrite_node(node: &Node, ctx: &mut DevirtCtx) -> Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Value;
     use crate::parse;
 
     fn parse_prog(src: &str) -> Node {
@@ -558,5 +592,92 @@ main();
             }
             _ => false,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // RES-4095 increment 3: reassignment invalidates/updates the binding.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reassignment_to_new_struct_literal_updates_binding() {
+        let mut ctx = DevirtCtx::new();
+        ctx.record("c", "Circle");
+        // Simulate rewriting `c = new Square { .. };` through the compiler's
+        // `Node::Assignment` handling.
+        let reassigned_value = Node::StructLiteral {
+            name: "Square".to_string(),
+            fields: vec![],
+            base: None,
+            span: Default::default(),
+        };
+        if let Node::StructLiteral { name, .. } = &reassigned_value {
+            ctx.record("c", name);
+        }
+        let target = Node::Identifier {
+            name: "c".to_string(),
+            span: Default::default(),
+        };
+        assert_eq!(
+            ctx.resolve_method(&target, "area"),
+            Some("Square$area".to_string())
+        );
+    }
+
+    #[test]
+    fn reassignment_through_devirtualized_dyn_binding_dispatches_correctly() {
+        // The exact shape of `trait_dyn_dispatch_reassign.rz`: a `dyn
+        // Trait`-typed local reassigned mid-function to a different
+        // concrete struct. Before the RES-4095 increment-3 fix, the
+        // devirtualize pass never updated `ctx` on `Node::Assignment`, so
+        // `c.area()` after the reassignment stayed rewritten to the
+        // *original* `Circle$area` — a silent wrong-dispatch bug under
+        // `--vm`, not merely a missed optimization. Assert the lowered
+        // program actually runs `Square$area` (returns 36, not `Circle$area`
+        // on a Square receiver, which would runtime-error on the missing
+        // `r` field).
+        let src = r#"
+trait Shape { fn area(self) -> int; }
+struct Circle { int r, }
+struct Square { int s, }
+impl Shape for Circle { fn area(self) -> int { return self.r * self.r; } }
+impl Shape for Square { fn area(self) -> int { return self.s * self.s; } }
+fn main() -> int {
+    let c: dyn Shape = new Circle { r: 2 };
+    c = new Square { s: 6 };
+    return c.area();
+}
+main();
+"#;
+        let prog = parse_prog(src);
+        let lowered = lower(&prog);
+        // Confirm the second call site was devirtualized to Square$area,
+        // not left pointing at the stale Circle$area.
+        assert!(
+            find_direct_call(&lowered, "Square$area"),
+            "expected the post-reassignment call to devirtualize to Square$area"
+        );
+        let bc = crate::compiler::compile(&lowered).expect("compile devirtualized");
+        let result = crate::vm::run(&bc).expect("VM devirtualized");
+        assert!(
+            matches!(result, Value::Int(36)),
+            "expected Value::Int(36), got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn reassignment_to_non_literal_invalidates_binding() {
+        // `c = some_fn_result;` can't be statically resolved, so the
+        // binding must be dropped rather than left stale — otherwise a
+        // later `.method()` call would keep resolving to the type from
+        // before the reassignment.
+        let mut ctx = DevirtCtx::new();
+        ctx.record("c", "Circle");
+        ctx.local_struct_types.remove("c");
+        let target = Node::Identifier {
+            name: "c".to_string(),
+            span: Default::default(),
+        };
+        assert_eq!(ctx.resolve_method(&target, "area"), None);
     }
 }

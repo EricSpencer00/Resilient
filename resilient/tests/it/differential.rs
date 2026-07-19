@@ -468,17 +468,17 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // list once those independently-filed, non-live-block bugs were
     // fixed.
     //
-    // RES-4095 (dyn v2 increment 2): `trait_dyn_dispatch_reassign.rz`
-    // reassigns a `dyn Trait`-typed variable to a *different* concrete
-    // struct mid-function. The tree-walker dispatches `x.method(...)`
-    // by the runtime struct tag on `Value::Struct`, so this "just
-    // works" there — but the bytecode VM's method-call compilation
-    // resolves the receiver's field/method layout statically, and does
-    // not re-derive it across a reassignment, so `--vm` errors on the
-    // second call ("struct Square has no field 'r'"). Vtable-aware VM
-    // dispatch is increment 3 of #4095; remove this entry once that
-    // lands.
-    "trait_dyn_dispatch_reassign.rz",
+    // `trait_dyn_dispatch_reassign.rz` (RES-4095 dyn v2 increment 2) was
+    // removed from this list in increment 3: the actual bug wasn't
+    // "the VM lacks vtable dispatch" — `Op::CallMethod` already resolves
+    // methods dynamically by the receiver's runtime struct tag, matching
+    // the tree-walker. The real bug was in `devirtualize.rs`'s
+    // compile-time optimization pass, which rewrites a statically-known
+    // `x.method()` call into a direct `Op::Call` and never invalidated
+    // its `local_struct_types` binding on `Node::Assignment` — so a
+    // reassigned local kept devirtualizing to the *original* struct's
+    // mangled method. Fixed by updating/invalidating the binding on
+    // reassignment (see `devirtualize.rs`'s `Node::Assignment` arm).
 ];
 
 /// Every `examples/*.rz` file, sorted, read fresh from disk each run so
@@ -2075,11 +2075,11 @@ mod jit_differential {
         // `Node::Spawn`/actor constructs its own lowering doesn't
         // support, so it inherits the fix unchanged.
         //
-        // RES-4095 (dyn v2 increment 2): `--jit` falls back to `--vm`
-        // for struct method calls through a `dyn Trait`-typed binding,
-        // so it inherits `UNSUPPORTED_BY_VM`'s `trait_dyn_dispatch_
-        // reassign.rz` divergence unchanged — not a JIT-specific bug.
-        "trait_dyn_dispatch_reassign.rz",
+        // `trait_dyn_dispatch_reassign.rz` (RES-4095 dyn v2 increment 2)
+        // was removed from this list in increment 3 alongside the
+        // `UNSUPPORTED_BY_VM` entry — the underlying `devirtualize.rs`
+        // fix applies identically to the lowering `--jit` shares with
+        // `--vm`.
     ];
 
     #[test]

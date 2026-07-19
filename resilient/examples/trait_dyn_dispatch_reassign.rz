@@ -13,13 +13,15 @@
 // the trait (see `trait_dyn_object_coercion_reject.rz`'s let-site
 // analogue).
 //
-// Tree-walker only: the bytecode VM's `Op::GetField`/method-call
-// lowering resolves `self`'s field layout from static analysis at
-// compile time and does not re-derive it per reassignment, so `--vm`
-// diverges here (`resilient/tests/it/differential.rs`'s
-// `UNSUPPORTED_BY_VM` / `UNSUPPORTED_BY_JIT` carry an entry for this
-// file, pointing at the VM/JIT vtable-dispatch follow-up, increment 3
-// of #4095).
+// RES-4095 increment 3: this used to diverge under `--vm`/`--jit`
+// ("struct Square has no field 'r'") — not because the VM lacks a
+// vtable (`Op::CallMethod` already dispatches by the receiver's
+// runtime struct tag, matching the tree-walker), but because the
+// unrelated compile-time `devirtualize.rs` optimization pass rewrote
+// the statically-known `c.area()` call into a direct call to
+// `Circle$area` and never invalidated that binding across the
+// `c = new Square { .. }` reassignment. Fixed in `devirtualize.rs`'s
+// `Node::Assignment` handling; all three backends now agree.
 
 trait Shape {
     fn area(self) -> int;
