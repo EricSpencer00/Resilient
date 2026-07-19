@@ -119,6 +119,39 @@ re-landed the fallthrough:
 test) is green with zero denylist additions — every one of the bugs
 above was root-caused and fixed rather than papered over.
 
+**RES-4166: struct-method calls unlocked (24 → 25 native, 3.8% →
+4.0%).** `impl` methods on a *struct* (as opposed to the
+`impl int/float/string/bool { ... }` primitive impls RES-4159 covers)
+were rejected as `Unsupported` and VM-fell-back unconditionally: Pass
+1/2 of `run_internal` re-mangled a method's already-mangled name
+(`parse_method` in `lib.rs` produces `"StructName$method"`) a second
+time via a `target`-prefix map, producing a double-mangled key
+(`"StructName$StructName$method"`) that could never match the
+single-mangled name `devirtualize::lower` emits at call sites — every
+struct-method call missed `ctx.functions.get()` and fell back. Fixing
+that mangling in isolation would have flipped those same calls from
+safe VM-fallback to running natively with a *wrong* answer, because a
+second, independent bug in `try_lower_inline_call`'s trivial-leaf
+inliner bakes a raw pointer into a `StructLiteral`/`FieldAccess`/
+`FieldAssignment` node's field/struct name from a call-site-local
+*clone* of the callee's AST (`ctx.fn_asts.get(&callee_name).cloned()`)
+— the exact same use-after-free class RES-4153 fixed for
+`StringLiteral`/`StringInternLiteral`/`FloatLiteral`, just never
+triggered before because no struct-method call ever reached the
+inliner. Confirmed via instrumentation: `self.value`-style field
+reads on an inlined receiver read back garbage field-name bytes, so
+`struct_get_field`'s lookup missed and silently returned `0`. Fixed
+both in the correctness-preserving order the ticket requires — the
+struct-field/inliner bug first (disqualifying
+`StructLiteral`/`FieldAccess`/`FieldAssignment` from inlining, same
+shape as RES-4153's fix), then the mangling (removing the
+double-mangle re-prefix) — keeping
+`interpreter_and_jit_agree_on_all_examples` green throughout. Net
+corpus effect: one example (`vm_impl_methods.rz`) moved from
+VM-fallback to correct native execution; the rest of the coverage
+gap is the same `program_has_unsound_native_fallthrough_construct`
+conservatism RES-4153 already documented above.
+
 ## Reproducing
 
 ```bash
