@@ -123,12 +123,20 @@ Response:
 ## Production Checklist
 
 - Put HTTPS and auth in front of the service before advertising a public URL.
-- Limit request bodies at the proxy; the server has a 10 MiB request cap.
-- Set provider-level request timeouts and restart policy.
+- Request bodies are capped server-side (default 10 MiB, `413` past the
+  limit); tune with `RESILIENT_MCP_MAX_BODY_BYTES`. A proxy-level cap is
+  still good defense in depth.
+- Tool execution is capped server-side (default 10s, `504` past the
+  deadline); tune with `RESILIENT_MCP_TIMEOUT_SECS`. Set provider-level
+  request timeouts and restart policy on top of this.
+- The server rate-limits per source IP (default 100 req/min, `429` past
+  the limit); tune with `RESILIENT_MCP_RATE_LIMIT_PER_MIN`. See
+  [MCP.md](MCP.md#hardening-phase-1-res-393439353936393839444) for the
+  full table.
 - Monitor `GET /health` from outside the provider.
 - Keep Z3 installed in the runtime image for verifier-backed tools.
-- Start with `rz_format`, `rz_compile`, and `rz_verify`; add auth/rate limits
-  before opening broader tool access.
+- Start with `rz_format`, `rz_compile`, and `rz_verify`; add auth before
+  opening broader tool access.
 
 ## First Deployment Target
 

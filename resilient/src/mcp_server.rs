@@ -60,10 +60,74 @@
 //! Notification messages (no `id` field) receive no response.
 
 use std::io::{self, BufRead, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
+use std::net::{IpAddr, TcpListener, TcpStream};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+use crate::hardening::{RateLimiterRegistry, SizeLimiter};
+
+// ── RES-3935/3936/3938: hardening configuration ─────────────────────────────
+
+/// Default request body size cap: 10 MiB (RES-3935).
+const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+/// Default per-request compute/compile wall-time cap: 10s (RES-3936).
+const DEFAULT_TIMEOUT_SECS: u64 = 10;
+/// Default per-IP rate limit: 100 requests/minute (RES-3938).
+const DEFAULT_RATE_LIMIT_PER_MIN: u32 = 100;
+
+/// Runtime-configurable hardening limits for the MCP HTTP wrapper.
+///
+/// Overridable via environment variables so operators can tune limits
+/// without a rebuild:
+/// - `RESILIENT_MCP_MAX_BODY_BYTES` (default 10 MiB)
+/// - `RESILIENT_MCP_TIMEOUT_SECS` (default 10s)
+/// - `RESILIENT_MCP_RATE_LIMIT_PER_MIN` (default 100 req/min/IP)
+#[derive(Debug, Clone, Copy)]
+struct HttpHardeningConfig {
+    max_body_bytes: usize,
+    timeout: Duration,
+    rate_limit_per_min: u32,
+}
+
+impl HttpHardeningConfig {
+    fn from_env() -> Self {
+        HttpHardeningConfig {
+            max_body_bytes: env_var_usize("RESILIENT_MCP_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES),
+            timeout: Duration::from_secs(env_var_u64(
+                "RESILIENT_MCP_TIMEOUT_SECS",
+                DEFAULT_TIMEOUT_SECS,
+            )),
+            rate_limit_per_min: env_var_u32(
+                "RESILIENT_MCP_RATE_LIMIT_PER_MIN",
+                DEFAULT_RATE_LIMIT_PER_MIN,
+            ),
+        }
+    }
+}
+
+fn env_var_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_var_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_var_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -120,10 +184,14 @@ pub fn run_http(bind_addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(bind_addr)?;
     eprintln!("MCP HTTP listening on http://{}", listener.local_addr()?);
 
+    let config = HttpHardeningConfig::from_env();
+    let limiter = RateLimiterRegistry::new(config.rate_limit_per_min, config.rate_limit_per_min);
+    let clock = Instant::now();
+
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                if let Err(e) = handle_http_stream(&mut stream) {
+                if let Err(e) = handle_http_stream(&mut stream, &config, &limiter, &clock) {
                     eprintln!("warning: MCP HTTP request failed: {e}");
                 }
             }
@@ -134,10 +202,22 @@ pub fn run_http(bind_addr: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn handle_http_stream(stream: &mut TcpStream) -> io::Result<()> {
+fn handle_http_stream(
+    stream: &mut TcpStream,
+    config: &HttpHardeningConfig,
+    limiter: &RateLimiterRegistry,
+    clock: &Instant,
+) -> io::Result<()> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let peer_ip = stream
+        .peer_addr()
+        .map(|a| a.ip())
+        .unwrap_or(IpAddr::from([127, 0, 0, 1]));
+
+    let size_limiter = SizeLimiter::new(config.max_body_bytes);
     let mut buf = [0_u8; 8192];
     let mut request = Vec::new();
+    let mut checked_content_length = false;
 
     loop {
         let n = stream.read(&mut buf)?;
@@ -145,14 +225,74 @@ fn handle_http_stream(stream: &mut TcpStream) -> io::Result<()> {
             break;
         }
         request.extend_from_slice(&buf[..n]);
-        if http_request_complete(&request) || request.len() > 10 * 1024 * 1024 {
+
+        // RES-3935: reject oversized bodies as soon as Content-Length is
+        // known, before buffering the whole payload.
+        if !checked_content_length
+            && let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n")
+        {
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            if let Some(content_len) = parse_content_length(&headers)
+                && size_limiter.check(content_len).is_err()
+            {
+                let response = http_json(
+                    413,
+                    json!({
+                        "status": "error",
+                        "error": format!(
+                            "request body of {content_len} bytes exceeds the {}-byte limit",
+                            config.max_body_bytes
+                        )
+                    }),
+                );
+                return stream.write_all(response.as_bytes());
+            }
+            checked_content_length = true;
+        }
+
+        if size_limiter.check(request.len()).is_err() {
+            let response = http_json(
+                413,
+                json!({
+                    "status": "error",
+                    "error": format!(
+                        "request body exceeds the {}-byte limit",
+                        config.max_body_bytes
+                    )
+                }),
+            );
+            return stream.write_all(response.as_bytes());
+        }
+
+        if http_request_complete(&request) {
             break;
         }
     }
 
+    // RES-3938: per-IP rate limiting. Checked after the request is fully
+    // read (so well-behaved small requests don't trigger a TCP reset from
+    // closing the socket with unread bytes still in flight) but before any
+    // dispatch/tool-execution work happens.
+    if !limiter.allow(peer_ip, clock.elapsed().as_millis() as u64) {
+        let response = http_json(
+            429,
+            json!({ "status": "error", "error": "rate limit exceeded" }),
+        );
+        return stream.write_all(response.as_bytes());
+    }
+
     let request = String::from_utf8_lossy(&request);
-    let response = http_response_for_request(&request);
+    let response = http_response_for_request(&request, config);
     stream.write_all(response.as_bytes())
+}
+
+fn parse_content_length(headers: &str) -> Option<usize> {
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    })
 }
 
 fn http_request_complete(request: &[u8]) -> bool {
@@ -160,20 +300,12 @@ fn http_request_complete(request: &[u8]) -> bool {
         return false;
     };
     let headers = String::from_utf8_lossy(&request[..header_end]);
-    let content_len = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
+    let content_len = parse_content_length(&headers).unwrap_or(0);
 
     request.len() >= header_end + 4 + content_len
 }
 
-fn http_response_for_request(request: &str) -> String {
+fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> String {
     let Some((headers, body)) = request.split_once("\r\n\r\n") else {
         return http_json(
             400,
@@ -191,6 +323,24 @@ fn http_response_for_request(request: &str) -> String {
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
 
+    // RES-3935: defense-in-depth size check for callers that hand a
+    // fully-buffered request straight to this function (the streaming
+    // `handle_http_stream` path already short-circuits earlier).
+    if let Some(content_len) = parse_content_length(headers)
+        && let Err(e) = SizeLimiter::new(config.max_body_bytes).check(content_len)
+    {
+        return http_json(
+            413,
+            json!({
+                "status": "error",
+                "error": format!(
+                    "request body of {} bytes exceeds the {}-byte limit",
+                    e.actual, e.limit
+                )
+            }),
+        );
+    }
+
     match (method, path) {
         ("GET", "/health") => http_json(
             200,
@@ -201,7 +351,7 @@ fn http_response_for_request(request: &str) -> String {
                 "version": env!("CARGO_PKG_VERSION")
             }),
         ),
-        ("POST", "/mcp/call") => http_mcp_call(body),
+        ("POST", "/mcp/call") => http_mcp_call(body, config.timeout),
         _ => http_json(
             404,
             json!({
@@ -212,7 +362,7 @@ fn http_response_for_request(request: &str) -> String {
     }
 }
 
-fn http_mcp_call(body: &str) -> String {
+fn http_mcp_call(body: &str, timeout: Duration) -> String {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
@@ -232,15 +382,40 @@ fn http_mcp_call(body: &str) -> String {
             json!({ "status": "error", "error": "missing tool name" }),
         );
     };
-    let mcp_tool = http_tool_alias(tool);
+    let tool = tool.to_string();
+    let mcp_tool = http_tool_alias(&tool).to_string();
     let args = req
         .get("input")
         .or_else(|| req.get("arguments"))
         .cloned()
         .unwrap_or(Value::Null);
-    let params = json!({ "name": mcp_tool, "arguments": args });
-    let response = dispatch("tools/call", &json!(1), Some(&params), false)
-        .unwrap_or_else(|| error(&json!(1), -32603, "empty MCP response".to_string()));
+
+    // RES-3936: bound tool execution wall-time. `dispatch` runs arbitrary
+    // (possibly pathological) Resilient source, so it is executed on a
+    // worker thread and raced against `timeout`.
+    let mcp_tool_for_thread = mcp_tool.clone();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let params = json!({ "name": mcp_tool_for_thread, "arguments": args });
+        let response = dispatch("tools/call", &json!(1), Some(&params), false)
+            .unwrap_or_else(|| error(&json!(1), -32603, "empty MCP response".to_string()));
+        let _ = tx.send(response);
+    });
+
+    let response = match rx.recv_timeout(timeout) {
+        Ok(response) => response,
+        Err(_) => {
+            return http_json(
+                504,
+                json!({
+                    "status": "error",
+                    "tool": tool,
+                    "mcp_tool": mcp_tool,
+                    "error": format!("tool execution exceeded {:.1}s timeout", timeout.as_secs_f64())
+                }),
+            );
+        }
+    };
 
     if let Some(err) = response.get("error") {
         return http_json(
@@ -295,6 +470,9 @@ fn http_json(status: u16, body: Value) -> String {
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
+        504 => "Gateway Timeout",
         _ => "Internal Server Error",
     };
     let body = body.to_string();
@@ -2898,9 +3076,20 @@ mod tests {
         assert!(resp["result"]["resources"].is_array());
     }
 
+    fn test_config() -> HttpHardeningConfig {
+        HttpHardeningConfig {
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            rate_limit_per_min: DEFAULT_RATE_LIMIT_PER_MIN,
+        }
+    }
+
     #[test]
     fn http_health_reports_ready_json() {
-        let resp = http_response_for_request("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let resp = http_response_for_request(
+            "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            &test_config(),
+        );
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
         assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
         assert!(resp.contains("\"transport\":\"http\""), "got: {resp}");
@@ -2914,10 +3103,84 @@ mod tests {
             body.len(),
             body
         );
-        let resp = http_response_for_request(&req);
+        let resp = http_response_for_request(&req, &test_config());
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
         assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
         assert!(resp.contains("fn f(int x) -> int"), "got: {resp}");
+    }
+
+    // ── RES-3935: body size cap ──────────────────────────────────────────────
+
+    #[test]
+    fn http_mcp_call_rejects_oversized_content_length() {
+        let mut config = test_config();
+        config.max_body_bytes = 16;
+        let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
+        assert!(body.len() > config.max_body_bytes);
+        let req = format!(
+            "POST /mcp/call HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let resp = http_response_for_request(&req, &config);
+        assert!(resp.starts_with("HTTP/1.1 413"), "got: {resp}");
+    }
+
+    #[test]
+    fn size_limiter_check_matches_http_behavior() {
+        let limiter = crate::hardening::SizeLimiter::new(10);
+        assert!(limiter.check(10).is_ok());
+        assert!(limiter.check(11).is_err());
+    }
+
+    // ── RES-3936: compute timeout ────────────────────────────────────────────
+
+    #[test]
+    fn http_mcp_call_times_out_on_slow_dispatch() {
+        // A zero-duration timeout guarantees the worker thread cannot win
+        // the race, exercising the 504 path deterministically.
+        let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
+        let resp = http_mcp_call(body, Duration::from_nanos(1));
+        assert!(resp.starts_with("HTTP/1.1 504"), "got: {resp}");
+        assert!(resp.contains("timeout"), "got: {resp}");
+    }
+
+    // ── RES-3938: per-IP rate limiting ───────────────────────────────────────
+
+    #[test]
+    fn rate_limiter_blocks_after_capacity_exhausted() {
+        let limiter = RateLimiterRegistry::new(1, 1);
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(limiter.allow(ip, 0));
+        assert!(!limiter.allow(ip, 0));
+    }
+
+    #[test]
+    fn http_server_rate_limits_second_request_from_same_ip() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("read local addr");
+        let mut config = test_config();
+        config.rate_limit_per_min = 1;
+        let limiter =
+            RateLimiterRegistry::new(config.rate_limit_per_min, config.rate_limit_per_min);
+        let clock = Instant::now();
+
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let mut stream = listener.accept().expect("accept test connection").0;
+                handle_http_stream(&mut stream, &config, &limiter, &clock)
+                    .expect("serve test connection");
+            }
+        });
+
+        let health_req = "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let first = round_trip(addr, health_req);
+        assert!(first.starts_with("HTTP/1.1 200 OK"), "got: {first}");
+
+        let second = round_trip(addr, health_req);
+        assert!(second.starts_with("HTTP/1.1 429"), "got: {second}");
+
+        server.join().expect("join test server thread");
     }
 
     fn round_trip(addr: std::net::SocketAddr, request: &str) -> String {
@@ -2940,10 +3203,15 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let addr = listener.local_addr().expect("read local addr");
 
+        let config = test_config();
+        let limiter =
+            RateLimiterRegistry::new(config.rate_limit_per_min, config.rate_limit_per_min);
+        let clock = Instant::now();
         let server = std::thread::spawn(move || {
             for _ in 0..2 {
                 let mut stream = listener.accept().expect("accept test connection").0;
-                handle_http_stream(&mut stream).expect("serve test connection");
+                handle_http_stream(&mut stream, &config, &limiter, &clock)
+                    .expect("serve test connection");
             }
         });
 

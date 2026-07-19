@@ -136,6 +136,9 @@ mod lsp_server;
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_server;
+// RES-3944: in-tree rate-limit + size-limit primitives used by the MCP
+// HTTP wrapper's hardening (body size cap, per-IP rate limiting).
+mod hardening;
 // DAP server: Debug Adapter Protocol over stdio for interactive debugging.
 // CLI-only (no wasm32) — same platform constraint as the LSP and MCP servers.
 #[cfg(not(target_arch = "wasm32"))]
