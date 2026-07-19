@@ -452,9 +452,9 @@ fn has_disqualifying_construct(n: &Node) -> bool {
         // real (never inlined) function call, whose pointer is baked
         // from the stable, whole-run-lived AST `compile_function` was
         // given directly — same fix shape as RES-4153.
-        Node::StructLiteral { .. }
-        | Node::FieldAccess { .. }
-        | Node::FieldAssignment { .. } => true,
+        Node::StructLiteral { .. } | Node::FieldAccess { .. } | Node::FieldAssignment { .. } => {
+            true
+        }
         Node::PrefixExpression { right, .. } => has_disqualifying_construct(right),
         Node::InfixExpression { left, right, .. } => {
             has_disqualifying_construct(left) || has_disqualifying_construct(right)
