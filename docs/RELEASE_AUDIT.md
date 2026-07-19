@@ -32,9 +32,9 @@ targets — both Linux — ship static Z3.
 **RES-4113 follow-up:** both macOS legs now *attempt* static Z3 again — see
 section 6 below. `x86_64-apple-darwin` moved to a native `macos-15-intel` (Intel)
 runner instead of cross-compiling from `macos-latest` (arm64), and both
-macOS Z3 build steps gained a `continue-on-error` + automatic no-z3 fallback
-step so a link failure (the failure mode RES-4102 hit) degrades to today's
-known-good no-z3 binary instead of bricking the release.
+macOS Z3 build steps gained an in-step, in-shell no-z3 fallback so a
+failure (the failure mode RES-4102 hit) degrades to today's known-good
+no-z3 binary instead of bricking the release.
 
 ## 1. Tag inventory vs manifest versions
 
@@ -308,12 +308,12 @@ host.
 **Fallback, not a hard revert.** RES-4102 previously had to *drop*
 `z3: true` from `aarch64-apple-darwin` entirely because the static-Z3
 build step failing in CI (despite working locally) hard-failed the whole
-job with no fallback. This PR instead gives the macOS Z3 build step
-`continue-on-error: true` and an `id: build_macos_z3`, and adds a new
-"Build (native, macOS no-z3 fallback)" step gated on
-`steps.build_macos_z3.outcome == 'failure'`. The Z3 smoke test step is
-likewise gated on that outcome so it doesn't run against a fallback
-binary that never linked Z3. Net effect: both macOS legs *attempt*
+job with no fallback. This PR instead makes the macOS Z3 build step
+(`id: build_macos_z3`) fall back *in-shell*: if the static-Z3 `cargo
+build` fails, the same step emits a workflow warning, rebuilds with
+plain `--features lsp`, and records `z3_linked=false` as a step output.
+The Z3 smoke test is gated on `z3_linked == 'true'` (macOS only) so it
+doesn't run against a fallback binary that never linked Z3. Net effect: both macOS legs *attempt*
 static Z3; if the attempt fails in CI for either one, that leg silently
 degrades to the exact no-z3, `--features lsp` binary every release
 before RES-4113 shipped — the release can't be bricked by this change.
@@ -325,8 +325,8 @@ skips the tag-gated `release` job but runs the full 4-leg `build`
 matrix). Observed outcomes:
 
 - **`x86_64-apple-darwin` (macos-15-intel): static Z3 SUCCEEDED** — the
-  "Build (native, Z3 static-linked, macOS via GCC)" step linked, the
-  fallback step was skipped, and the **Z3 release smoke test passed**
+  static-Z3 build linked on the first try (no fallback taken) and the
+  **Z3 release smoke test passed**
   (real Z3-discharged obligation, not `Unknown`). The ticket's
   acceptance criterion is CI-proven, not just locally proven.
 - **`aarch64-apple-darwin` (macos-latest): static Z3 failed → fallback
@@ -337,7 +337,8 @@ matrix). Observed outcomes:
   `memory_manager.cpp` fails to *compile*, before any link step. This is
   why #4101's recipe worked locally (older SDK) but failed at rc time.
   The fallback step ran, the leg went green, and it ships the same no-z3
-  binary as every prior release. Fixing arm64 needs an SDK pin
+  binary as every prior release (the in-step fallback ran). Fixing
+  arm64 needs an SDK pin
   (`-isysroot` to an older MacOSX SDK) or a Z3/toolchain bump —
   remaining residual scope of #3985, now with a precise root cause.
 
