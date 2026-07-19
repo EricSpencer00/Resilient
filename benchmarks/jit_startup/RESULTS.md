@@ -55,8 +55,8 @@ split):
 
 | | Count | % of runnable (523) |
 |---|---:|---:|
-| Native (no fallback) | 24 | 3.8% |
-| Fallback to VM | 499 | 96.2% |
+| Native (no fallback) | 23 | 3.7% |
+| Fallback to VM | 500 | 96.3% |
 
 **Off zero (RES-4153).** The previous revision of this doc diagnosed
 the dominant blocker as "zero examples have a top-level `return`" and
@@ -96,18 +96,21 @@ re-landed the fallthrough:
    lowers non-terminating top-level fallthrough (the
    `fn main() { ... } main();` shape) to an implicit `return 0`,
    matching the walker/VM (RES-3991) — but only when
-   `program_has_unsound_native_fallthrough_construct` finds none of
-   `Match`, `IndexExpression`/`IndexAssignment` (negative-index
-   handling), or an `impl Add/Sub/Mul/Div for T` operator-overload
-   block anywhere in the program. Enabling fallthrough surfaced these
-   three as separate, pre-existing, unrelated JIT-lowering
-   correctness gaps (wrong match-arm selection, negative-index
-   mishandling, and operator-overload dispatch corrupting/crashing on
-   heap-tagged struct operands) that are each their own follow-up
-   ticket, not RES-4153's scope. Programs touching any of them keep
-   raising `EmptyProgram` and transparently VM-fall-back, per repo
-   policy ("anything that diverges must fall back to VM, not
-   denylist") — this is why coverage is 3.8%, not higher: it is
+   `program_has_unsound_native_fallthrough_construct` finds none of:
+   `Match`; `IndexExpression`/`IndexAssignment` (negative-index
+   handling); an `impl Add/Sub/Mul/Div for T` operator-overload block;
+   or an `impl int/float/string/bool { ... }` primitive-type impl
+   block (a method call on one crashed intermittently in CI — not
+   reproduced locally in 8+ runs, not root-caused, disqualified out
+   of caution). Enabling fallthrough surfaced all four as separate,
+   pre-existing, unrelated JIT-lowering correctness gaps (wrong
+   match-arm selection, negative-index mishandling, operator-overload
+   dispatch corrupting/crashing on heap-tagged struct operands, and
+   the intermittent primitive-impl crash) that are each their own
+   follow-up ticket, not RES-4153's scope. Programs touching any of
+   them keep raising `EmptyProgram` and transparently VM-fall-back,
+   per repo policy ("anything that diverges must fall back to VM, not
+   denylist") — this is why coverage is 3.7%, not higher: it is
    deliberately conservative (whole-program, not
    reachable-from-`main`) in favor of never running natively with a
    wrong answer.
