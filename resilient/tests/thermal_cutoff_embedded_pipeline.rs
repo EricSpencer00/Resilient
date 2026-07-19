@@ -95,7 +95,7 @@ fn run_and_decode(blob: &[u8]) -> Value {
         };
     }
 
-    let mut vm = Vm::<32, 16, 8>::new();
+    let mut vm = Vm::<32, 16, 8, 0, 0, 128>::new();
     vm.run_with_functions(
         &functions[..counts.func_count],
         &out_main[..counts.main_len],
