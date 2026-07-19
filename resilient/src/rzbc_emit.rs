@@ -1151,7 +1151,7 @@ mod tests {
             fails_variant: meta.fails_variant,
             capture_count: 0,
         }];
-        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2>::new();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &out_main[..counts.main_len]),
             Ok(RtValue::Int(36))
@@ -1257,7 +1257,7 @@ mod tests {
             fails_variant: meta.fails_variant,
             capture_count: meta.capture_count,
         }];
-        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 0, 2>::new();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 0, 2, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &out_main[..counts.main_len]),
             Ok(RtValue::Int(41))
@@ -1387,7 +1387,7 @@ mod tests {
             fails_variant: meta.fails_variant,
             capture_count: meta.capture_count,
         }];
-        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 0, 2>::new();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 0, 2, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &out_main[..counts.main_len]),
             Ok(RtValue::Int(42))
@@ -1591,7 +1591,7 @@ mod tests {
             fails_variant: out_func_meta[0].fails_variant,
             capture_count: 0,
         }];
-        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 1>::new();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 1, 0, 8>::new();
         assert_eq!(
             vm.run_with_tries(
                 &functions,
@@ -1707,7 +1707,7 @@ mod tests {
                 capture_count: 0,
             })
             .collect();
-        let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 4, 0, 0, 16>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &out_main[..counts.main_len]),
             Ok(RtValue::Int(6))
@@ -1772,7 +1772,7 @@ mod tests {
                 capture_count: 0,
             })
             .collect();
-        let mut vm = resilient_runtime::vm::Vm::<8, 4, 4>::new();
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 4, 0, 0, 16>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &out_main[..counts.main_len]),
             Err(resilient_runtime::vm::VmError::PostcheckViolation)
