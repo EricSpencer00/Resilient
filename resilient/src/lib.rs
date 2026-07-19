@@ -3568,6 +3568,34 @@ impl Parser {
         self.errors.push(full);
     }
 
+    /// RES-4115: funnel for the parser's dominant "Expected X, found Y"
+    /// / grammar-mismatch diagnostic shape — by far the highest-traffic
+    /// class of parse error (~50 call sites). Maps to the registry's
+    /// `E0001` generic-parse-error code, documented as the catch-all
+    /// for "the parser can't reconcile the token stream with any valid
+    /// grammar production and no more-specific code applies".
+    ///
+    /// Default output is byte-identical to the plain `record_error`
+    /// call it replaces (no golden churn); `RESILIENT_RICH_DIAG=1`
+    /// prefixes the message with `[E0001] ` before the existing
+    /// `line:col: ` header is added by `record_error`.
+    fn record_error_expected(&mut self, msg: String) {
+        let prefix = if rich_diag_enabled() { "[E0001] " } else { "" };
+        self.record_error(format!("{}{}", prefix, msg));
+    }
+
+    /// RES-4115: funnel for parser diagnostics reporting an
+    /// unexpected/premature EOF while a construct (block, match arm,
+    /// delimited group, …) was still open — the closest parser-side
+    /// analogue to the registry's `E0003` "unclosed delimiter" code.
+    ///
+    /// Default output is byte-identical to the plain `record_error`
+    /// call it replaces; `RESILIENT_RICH_DIAG=1` prefixes `[E0003] `.
+    fn record_error_unclosed(&mut self, msg: String) {
+        let prefix = if rich_diag_enabled() { "[E0003] " } else { "" };
+        self.record_error(format!("{}{}", prefix, msg));
+    }
+
     /// RES-307: recover at top-level after a parse error.
     ///
     /// Advances tokens until the cursor is positioned at:
@@ -4198,7 +4226,10 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             other => {
                 let tok = other.clone();
-                self.record_error(format!("Expected attribute name after '@', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected attribute name after '@', found {}",
+                    tok
+                ));
                 // Best-effort: ignore the broken attribute, try to
                 // parse whatever follows as a normal statement.
                 return self.parse_statement().unwrap_or(Node::IntegerLiteral {
@@ -4332,7 +4363,7 @@ impl Parser {
     fn parse_repr_attribute(&mut self) -> Node {
         if !matches!(self.current_token, Token::LeftParen) {
             let tok = self.current_token.clone();
-            self.record_error(format!("expected `(` after `@repr`, found {}", tok));
+            self.record_error_expected(format!("expected `(` after `@repr`, found {}", tok));
             return self.parse_statement().unwrap_or(Node::IntegerLiteral {
                 value: 0,
                 span: span::Span::default(),
@@ -4442,7 +4473,10 @@ impl Parser {
             Token::Identifier(name) => name.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'fn', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected identifier after 'fn', found {}",
+                    tok
+                ));
                 // Return a placeholder to allow parsing to continue
                 String::from("error_function")
             }
@@ -4467,9 +4501,9 @@ impl Parser {
         if self.current_token != Token::LeftParen {
             // For better error messages, provide more context
             if name == "main" {
-                self.record_error(format!("Expected '(' after function name '{}'. Functions in Resilient must have parameters, even if unused. Try: fn main(int dummy) {{ ... }}", name));
+                self.record_error_expected(format!("Expected '(' after function name '{}'. Functions in Resilient must have parameters, even if unused. Try: fn main(int dummy) {{ ... }}", name));
             } else {
-                self.record_error(format!("Expected '(' after function name '{}'", name));
+                self.record_error_expected(format!("Expected '(' after function name '{}'", name));
             }
 
             // Try to recover by skipping to the opening brace
@@ -4680,7 +4714,7 @@ impl Parser {
                 Some(t) => format!("impl {} for {}", t, struct_name),
                 None => format!("impl {}", struct_name),
             };
-            self.record_error(format!("Expected '{{' after '{}', found {}", header, tok));
+            self.record_error_expected(format!("Expected '{{' after '{}', found {}", header, tok));
         } else {
             self.next_token(); // skip '{'
         }
@@ -5289,7 +5323,7 @@ impl Parser {
         self.next_token(); // skip name
 
         if self.current_token != Token::LeftParen {
-            self.record_error(format!("Expected '(' after method name '{}'", method_name));
+            self.record_error_expected(format!("Expected '(' after method name '{}'", method_name));
         } else {
             self.next_token(); // skip '('
         }
@@ -5385,7 +5419,10 @@ impl Parser {
         let name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             other => {
-                self.record_error(format!("Expected alias name after 'type', found {}", other));
+                self.record_error_expected(format!(
+                    "Expected alias name after 'type', found {}",
+                    other
+                ));
                 String::new()
             }
         };
@@ -5393,7 +5430,10 @@ impl Parser {
 
         if self.current_token != Token::Assign {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '=' after 'type {}', found {}", name, tok));
+            self.record_error_expected(format!(
+                "Expected '=' after 'type {}', found {}",
+                name, tok
+            ));
         } else {
             self.next_token(); // skip '='
         }
@@ -6011,7 +6051,7 @@ impl Parser {
             }
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected type name {}, found {}", ctx, tok));
+                self.record_error_expected(format!("Expected type name {}, found {}", ctx, tok));
                 None
             }
         };
@@ -6369,7 +6409,7 @@ impl Parser {
                     && self.current_token != Token::Eof
                 {
                     let tok_syntax = self.current_token.display_syntax();
-                    self.record_error(format!(
+                    self.record_error_expected(format!(
                         "after struct pattern parameter: {}",
                         format_expected(&["`,`", "`)`"], &tok_syntax)
                     ));
@@ -6382,7 +6422,7 @@ impl Parser {
                 Token::Identifier(name) => name.clone(),
                 _ => {
                     let tok = self.current_token.clone();
-                    self.record_error(format!("Expected parameter name, found {}", tok));
+                    self.record_error_expected(format!("Expected parameter name, found {}", tok));
                     break;
                 }
             };
@@ -6413,7 +6453,7 @@ impl Parser {
             } else if self.current_token != Token::RightParen {
                 // RES-118: multi-alternative form via `format_expected`.
                 let tok_syntax = self.current_token.display_syntax();
-                self.record_error(format!(
+                self.record_error_expected(format!(
                     "after parameter: {}",
                     format_expected(&["`,`", "`)`"], &tok_syntax)
                 ));
@@ -6541,14 +6581,20 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'for', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected identifier after 'for', found {}",
+                    tok
+                ));
                 String::new()
             }
         };
         self.next_token(); // skip name
         if self.current_token != Token::In {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected 'in' after 'for {}', found {}", name, tok));
+            self.record_error_expected(format!(
+                "Expected 'in' after 'for {}', found {}",
+                name, tok
+            ));
             return Node::ForInStatement {
                 name,
                 iterable: Box::new(Node::ArrayLiteral {
@@ -6592,7 +6638,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after for-iterable, found {}", tok));
+            self.record_error_expected(format!("Expected '{{' after for-iterable, found {}", tok));
             return Node::ForInStatement {
                 name,
                 iterable: Box::new(iterable),
@@ -6690,7 +6736,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after for-iterable, found {}", tok));
+            self.record_error_expected(format!("Expected '{{' after for-iterable, found {}", tok));
             return Node::ForInStatement {
                 name: String::new(),
                 iterable: Box::new(iterable),
@@ -6811,7 +6857,10 @@ impl Parser {
             self.next_token();
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected ')' after while condition, found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected ')' after while condition, found {}",
+                    tok
+                ));
             } else {
                 self.next_token();
             }
@@ -6862,7 +6911,7 @@ impl Parser {
         self.next_token(); // Skip 'static'
         if self.current_token != Token::Let {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected 'let' after 'static', found {}", tok));
+            self.record_error_expected(format!("Expected 'let' after 'static', found {}", tok));
             return Node::StaticLet {
                 name: String::new(),
                 value: Box::new(Node::IntegerLiteral {
@@ -6894,7 +6943,10 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'const', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected identifier after 'const', found {}",
+                    tok
+                ));
                 return Node::Const {
                     name: String::new(),
                     value: Box::new(Node::IntegerLiteral {
@@ -6965,7 +7017,10 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected module name after 'mod', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected module name after 'mod', found {}",
+                    tok
+                ));
                 String::new()
             }
         };
@@ -7018,7 +7073,10 @@ impl Parser {
             Token::Identifier(name) => name.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'let', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected identifier after 'let', found {}",
+                    tok
+                ));
                 return Node::LetStatement {
                     name: String::new(),
                     value: Box::new(Node::IntegerLiteral {
@@ -7230,7 +7288,7 @@ impl Parser {
                 break;
             }
             let tok_syntax = self.current_token.display_syntax();
-            self.record_error(format!(
+            self.record_error_expected(format!(
                 "in struct destructure: {}",
                 format_expected(&["`,`", "`}`", "`..`"], &tok_syntax)
             ));
@@ -7379,7 +7437,7 @@ impl Parser {
                 break;
             }
             let tok_syntax = self.current_token.display_syntax();
-            self.record_error(format!(
+            self.record_error_expected(format!(
                 "in struct match pattern: {}",
                 format_expected(&["`,`", "`}`", "`..`"], &tok_syntax)
             ));
@@ -7603,7 +7661,7 @@ impl Parser {
         // `fn`
         if !matches!(self.current_token, Token::Function) {
             let tok = self.current_token.clone();
-            self.record_error(format!("expected `fn` inside extern block, got {}", tok));
+            self.record_error_expected(format!("expected `fn` inside extern block, got {}", tok));
             return None;
         }
         self.next_token(); // skip `fn`
@@ -7617,7 +7675,7 @@ impl Parser {
             }
             other => {
                 let tok = other.clone();
-                self.record_error(format!("expected fn name, got {}", tok));
+                self.record_error_expected(format!("expected fn name, got {}", tok));
                 return None;
             }
         };
@@ -7756,7 +7814,10 @@ impl Parser {
                 }
                 other => {
                     let tok = other.clone();
-                    self.record_error(format!("expected parameter name in extern fn, got {}", tok));
+                    self.record_error_expected(format!(
+                        "expected parameter name in extern fn, got {}",
+                        tok
+                    ));
                     break;
                 }
             };
@@ -7799,7 +7860,7 @@ impl Parser {
                 Token::RightParen => break,
                 other => {
                     let tok_syntax = other.display_syntax();
-                    self.record_error(format!(
+                    self.record_error_expected(format!(
                         "after extern fn parameter: {}",
                         format_expected(&["`,`", "`)`"], &tok_syntax)
                     ));
@@ -8095,7 +8156,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after `loop`, found {}", tok));
+            self.record_error_expected(format!("Expected '{{' after `loop`, found {}", tok));
             return Node::WhileStatement {
                 condition: Box::new(Node::BooleanLiteral {
                     value: true,
@@ -8193,7 +8254,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after 'live', found {}", tok));
+            self.record_error_expected(format!("Expected '{{' after 'live', found {}", tok));
             return Node::LiveBlock {
                 body: Box::new(Node::Block {
                     stmts: Vec::new(),
@@ -8233,7 +8294,7 @@ impl Parser {
         self.next_token(); // skip `retries`
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '(' after 'retries', found {}", tok));
+            self.record_error_expected(format!("Expected '(' after 'retries', found {}", tok));
             return None;
         }
         self.next_token(); // skip '('
@@ -8349,7 +8410,7 @@ impl Parser {
         self.next_token(); // skip `backoff`
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '(' after 'backoff', found {}", tok));
+            self.record_error_expected(format!("Expected '(' after 'backoff', found {}", tok));
             return (cfg, kind);
         }
         self.next_token(); // skip '('
@@ -8470,7 +8531,7 @@ impl Parser {
 
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '(' after 'assert', found {}", tok));
+            self.record_error_expected(format!("Expected '(' after 'assert', found {}", tok));
             return Node::Assert {
                 condition: Box::new(Node::BooleanLiteral {
                     value: true,
@@ -8522,7 +8583,7 @@ impl Parser {
 
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '(' after 'assume', found {}", tok));
+            self.record_error_expected(format!("Expected '(' after 'assume', found {}", tok));
             return Node::Assume {
                 condition: Box::new(Node::BooleanLiteral {
                     value: true,
@@ -8596,7 +8657,10 @@ impl Parser {
 
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected ')' after if condition, found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected ')' after if condition, found {}",
+                    tok
+                ));
             } else {
                 self.next_token(); // Skip ')'
             }
@@ -8612,7 +8676,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after if condition, found {}", tok));
+            self.record_error_expected(format!("Expected '{{' after if condition, found {}", tok));
             // Recover by returning a skeleton `if` with an empty body so
             // the rest of the file can still be parsed.
             return Node::IfStatement {
@@ -8639,7 +8703,7 @@ impl Parser {
                 Some(Box::new(self.parse_if_statement()))
             } else if self.current_token != Token::LeftBrace {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected '{{' after 'else', found {}", tok));
+                self.record_error_expected(format!("Expected '{{' after 'else', found {}", tok));
                 None
             } else {
                 Some(Box::new(self.parse_block_statement()))
@@ -8726,7 +8790,7 @@ impl Parser {
                 Some(self.parse_if_statement())
             } else if self.current_token != Token::LeftBrace {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected '{{' after 'else', found {}", tok));
+                self.record_error_expected(format!("Expected '{{' after 'else', found {}", tok));
                 None
             } else {
                 Some(self.parse_block_statement())
@@ -9360,7 +9424,7 @@ impl Parser {
 
         if self.peek_token != Token::RightParen {
             let tok = self.peek_token.clone();
-            self.record_error(format!("Expected ')' after call arguments, found {}", tok));
+            self.record_error_expected(format!("Expected ')' after call arguments, found {}", tok));
         } else {
             self.next_token(); // Skip to ')'
         }
@@ -9446,7 +9510,10 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'struct', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected identifier after 'struct', found {}",
+                    tok
+                ));
                 String::new()
             }
         };
@@ -9504,7 +9571,7 @@ impl Parser {
             } else if self.current_token != Token::RightBrace {
                 // RES-118: multi-alternative form via `format_expected`.
                 let tok_syntax = self.current_token.display_syntax();
-                self.record_error(format!(
+                self.record_error_expected(format!(
                     "after struct field: {}",
                     format_expected(&["`,`", "`}`"], &tok_syntax)
                 ));
@@ -9610,7 +9677,10 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'actor', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected identifier after 'actor', found {}",
+                    tok
+                ));
                 String::new()
             }
         };
@@ -9618,7 +9688,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after actor name, found {}", tok));
+            self.record_error_expected(format!("Expected '{{' after actor name, found {}", tok));
             return Node::Actor {
                 name,
                 state_type: String::new(),
@@ -9829,7 +9899,7 @@ impl Parser {
         self.next_token(); // skip name
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected `{{` after cluster name, found {}", tok));
+            self.record_error_expected(format!("Expected `{{` after cluster name, found {}", tok));
             return Node::ClusterDecl {
                 name,
                 members: Vec::new(),
@@ -9922,7 +9992,10 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected struct name after 'new', found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected struct name after 'new', found {}",
+                    tok
+                ));
                 String::new()
             }
         };
@@ -10104,7 +10177,7 @@ impl Parser {
             } else {
                 // RES-118: multi-alternative form via `format_expected`.
                 let tok_syntax = self.current_token.display_syntax();
-                self.record_error(format!(
+                self.record_error_expected(format!(
                     "in struct literal: {}",
                     format_expected(&["`,`", "`}`"], &tok_syntax)
                 ));
@@ -10191,7 +10264,7 @@ impl Parser {
                 break;
             } else {
                 let tok_syntax = self.current_token.display_syntax();
-                self.record_error(format!(
+                self.record_error_expected(format!(
                     "in anonymous struct literal: {}",
                     format_expected(&["`,`", "`}`"], &tok_syntax)
                 ));
@@ -10221,7 +10294,7 @@ impl Parser {
         self.next_token(); // skip 'fn'
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '(' after anonymous 'fn', found {}", tok));
+            self.record_error_expected(format!("Expected '(' after anonymous 'fn', found {}", tok));
             return Node::FunctionLiteral {
                 parameters: Vec::new(),
                 body: Box::new(Node::Block {
@@ -10244,7 +10317,7 @@ impl Parser {
         let (requires, ensures, recovers_to) = self.parse_function_contracts();
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' in anonymous fn, found {}", tok));
+            self.record_error_expected(format!("Expected '{{' in anonymous fn, found {}", tok));
             return Node::FunctionLiteral {
                 parameters,
                 body: Box::new(Node::Block {
@@ -10330,7 +10403,10 @@ impl Parser {
 
             if self.current_token != Token::FatArrow {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected '=>' after match pattern, found {}", tok));
+                self.record_error_expected(format!(
+                    "Expected '=>' after match pattern, found {}",
+                    tok
+                ));
                 break;
             }
             self.next_token(); // skip '=>'
@@ -10354,7 +10430,7 @@ impl Parser {
                 break;
             }
             if matches!(self.current_token, Token::Eof) {
-                self.record_error("Unexpected EOF inside match expression".to_string());
+                self.record_error_unclosed("Unexpected EOF inside match expression".to_string());
                 break;
             }
         }
@@ -10761,7 +10837,7 @@ impl Parser {
             Token::IntLiteral(n) if *n >= 0 => n.to_string(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected field name after '.', found {}", tok));
+                self.record_error_expected(format!("Expected field name after '.', found {}", tok));
                 return Some(target);
             }
         };
@@ -11042,7 +11118,10 @@ impl Parser {
         }
         if self.peek_token != Token::RightBrace {
             let tok = self.peek_token.clone();
-            self.record_error(format!("Expected '}}' to close map literal, found {}", tok));
+            self.record_error_expected(format!(
+                "Expected '}}' to close map literal, found {}",
+                tok
+            ));
         } else {
             self.next_token(); // to '}'
         }
@@ -11069,7 +11148,10 @@ impl Parser {
         }
         if self.peek_token != Token::RightBrace {
             let tok = self.peek_token.clone();
-            self.record_error(format!("Expected '}}' to close map literal, found {}", tok));
+            self.record_error_expected(format!(
+                "Expected '}}' to close map literal, found {}",
+                tok
+            ));
         } else {
             self.next_token(); // to '}'
         }
@@ -11112,7 +11194,10 @@ impl Parser {
         }
         if self.peek_token != Token::RightBrace {
             let tok = self.peek_token.clone();
-            self.record_error(format!("Expected '}}' to close set literal, found {}", tok));
+            self.record_error_expected(format!(
+                "Expected '}}' to close set literal, found {}",
+                tok
+            ));
         } else {
             self.next_token(); // to `}`
         }
@@ -11219,7 +11304,7 @@ impl Parser {
 
         if !matches!(self.current_token, Token::RightBracket) {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected ']' to close slice, found {}", tok));
+            self.record_error_expected(format!("Expected ']' to close slice, found {}", tok));
         }
         // current_token is on `]`; caller will advance past it.
 
@@ -35904,6 +35989,52 @@ mod tests {
         // Expand textual macros declared with `#[macro(...)]`.
         crate::macros::lower_program(&mut program);
         (program, errs)
+    }
+
+    /// RES-4115: `record_error_expected`'s default output stays
+    /// byte-identical to the legacy "Expected X, found Y" message (no
+    /// golden churn); `RESILIENT_RICH_DIAG=1` prefixes `[E0001]`.
+    /// Checks whichever branch the ambient environment is actually
+    /// in, mirroring `typechecker.rs`'s `assert_gated_code` helper.
+    #[test]
+    fn unclosed_paren_error_carries_e0001_when_gated() {
+        // Missing `)` after the parameter list — falls through the
+        // parser's dominant "Expected X, found Y" grammar-mismatch
+        // shape, funneled through `record_error_expected`.
+        let (_program, errors) = parse("fn main(int x { return x; }\nmain(1);\n");
+        assert!(!errors.is_empty(), "expected a parse error");
+        let joined = errors.join("\n");
+        assert!(joined.contains("Expected"), "got: {joined}");
+        if std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1") {
+            assert!(joined.contains("E0001"), "got: {joined}");
+        } else {
+            assert!(
+                !joined.contains("E0001"),
+                "code leaked into default: {joined}"
+            );
+        }
+    }
+
+    /// RES-4115: `record_error_unclosed`'s default output stays
+    /// byte-identical to the legacy "Unexpected EOF inside match
+    /// expression" message; `RESILIENT_RICH_DIAG=1` prefixes `[E0003]`.
+    #[test]
+    fn unclosed_match_error_carries_e0003_when_gated() {
+        let (_program, errors) = parse("fn main() { match 1 { 1 => 2");
+        assert!(!errors.is_empty(), "expected a parse error");
+        let joined = errors.join("\n");
+        assert!(
+            joined.contains("Unexpected EOF inside match expression"),
+            "got: {joined}"
+        );
+        if std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1") {
+            assert!(joined.contains("E0003"), "got: {joined}");
+        } else {
+            assert!(
+                !joined.contains("E0003"),
+                "code leaked into default: {joined}"
+            );
+        }
     }
 
     #[test]

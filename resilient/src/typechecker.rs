@@ -1566,6 +1566,26 @@ fn render_div_by_zero_error(op_name: &str) -> String {
     )
 }
 
+/// RES-4115: format the "Undefined variable" error — the typechecker's
+/// name-resolution funnel, which also covers unresolved call-site
+/// callees (a `CallExpression`'s `function` field is itself checked
+/// through the `Node::Identifier` arm, so there's no separately
+/// reachable "unknown function" site distinct from this one). Maps to
+/// the registry's `E0004` (unknown identifier). Default output is
+/// byte-identical to the pre-existing plain message;
+/// `RESILIENT_RICH_DIAG=1` prefixes the `[E0004]` code.
+fn render_undefined_variable_error(name: &str, line: usize, col: usize, hint: &str) -> String {
+    let prefix = if rich_diag_enabled() { "[E0004] " } else { "" };
+    if line == 0 {
+        format!("{}Undefined variable: {}{}", prefix, name, hint)
+    } else {
+        format!(
+            "{}Undefined variable '{}' at {}:{}{}",
+            prefix, name, line, col, hint
+        )
+    }
+}
+
 /// RES-217: format + print the partial-proof warning to stderr.
 /// The message follows the ticket's mandated shape:
 ///
@@ -10294,14 +10314,12 @@ impl TypeChecker {
                             name.as_str(),
                             names.iter().map(String::as_str),
                         );
-                        if span.start.line == 0 {
-                            Err(format!("Undefined variable: {}{}", name, hint))
-                        } else {
-                            Err(format!(
-                                "Undefined variable '{}' at {}:{}{}",
-                                name, span.start.line, span.start.column, hint
-                            ))
-                        }
+                        Err(render_undefined_variable_error(
+                            name,
+                            span.start.line,
+                            span.start.column,
+                            &hint,
+                        ))
                     }
                 }
             }
@@ -14464,6 +14482,22 @@ mod res340_rich_type_mismatch_tests {
             &out,
             "integer division by zero — denominator is a compile-time constant 0",
             "E0008",
+        );
+    }
+
+    #[test]
+    fn undefined_variable_error_carries_e0004_when_gated_with_span() {
+        let out = render_undefined_variable_error("foo", 3, 5, "");
+        assert_gated_code(&out, "Undefined variable 'foo' at 3:5", "E0004");
+    }
+
+    #[test]
+    fn undefined_variable_error_carries_e0004_when_gated_without_span() {
+        let out = render_undefined_variable_error("foo", 0, 0, " (did you mean `bar`?)");
+        assert_gated_code(
+            &out,
+            "Undefined variable: foo (did you mean `bar`?)",
+            "E0004",
         );
     }
 
