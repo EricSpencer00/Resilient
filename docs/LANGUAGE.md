@@ -13,6 +13,12 @@ Features in the **Stable** tier are:
 - Safe for users to depend on long-term in production systems
 - Guaranteed to work on Cortex-M, RISC-V, and other supported embedded targets
 
+**Binding mutability (RES-4197):** `let` bindings are reassignable — there
+is no mutability enforcement today, and this is a guaranteed-stable
+behavior, not an oversight. See `docs/IMMUTABILITY.md` for the current
+semantics, corpus evidence, and the phased plan for an opt-in
+`let const` immutability check.
+
 **Graduation criteria:**
 - Must have comprehensive test coverage (≥80%)
 - Must work identically across all backends
@@ -213,4 +219,5 @@ When evaluating Resilient for a project, check that your required features are i
 - **RES-3506**: Define the backend architecture contract
 - **RES-3510**: Reconcile `STABILITY.md` and `docs/STABILITY_POLICY.md` into one doc — will also resolve the "evidence-based; not yet in `STABILITY.md`" rows above
 - **RES-3648** (this document, RES-3501.1): create `LANGUAGE.md` with the feature-tier classification framework and populate the classification table
+- **RES-4197**: document `let`-binding mutability semantics, resolve the orphaned `E0012` diagnostic, and lay out a phased opt-in immutability plan — see `docs/IMMUTABILITY.md`
 - **F-E1** (RES-3933 roadmap, Track F): conformance/spec suite for the stable surface — see [Relationship to the Conformance Suite](#relationship-to-the-conformance-suite-f-e1-and-the-backend-matrix) above
