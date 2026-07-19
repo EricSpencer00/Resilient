@@ -1,9 +1,10 @@
-//! Integration smoke tests for RES-3937 (bounded concurrency) and
-//! RES-3941 (structured request logging) on the MCP HTTP wrapper.
+//! Integration smoke tests for RES-3937 (bounded concurrency), RES-3941
+//! (structured request logging), and RES-3942 (graceful SIGTERM shutdown)
+//! on the MCP HTTP wrapper.
 //!
 //! These spawn the real `rz` binary and talk to it over a real TCP
-//! socket, so they exercise the same code path a deployed instance
-//! would.
+//! socket / real OS process signal, so they exercise the same code
+//! path a deployed instance would.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -61,6 +62,26 @@ impl Server {
     fn take_stderr(&mut self) -> std::process::ChildStderr {
         self.child.stderr.take().expect("stderr was piped")
     }
+
+    /// Send SIGTERM to the child process (Unix only — this whole hardening
+    /// batch targets the host HTTP wrapper, which only ships for Unix
+    /// hosts today).
+    #[cfg(unix)]
+    fn terminate(&self) {
+        unsafe {
+            libc_kill(self.child.id() as i32, 15 /* SIGTERM */);
+        }
+    }
+}
+
+// RES-3942: minimal raw FFI binding to `kill(2)`, mirroring the
+// production code's no-new-deps approach to signal delivery — this is
+// test-only code, sending the signal a real deployment's process
+// supervisor (systemd, Docker, Kubernetes) would send on shutdown.
+#[cfg(unix)]
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
 impl Drop for Server {
@@ -195,5 +216,51 @@ fn log_line_shape_has_expected_fields() {
             log_line.contains(field),
             "log line missing `{field}`: {log_line}"
         );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn shutdown_drains_in_flight_request() {
+    let mut server = Server::spawn(&[
+        ("RESILIENT_MCP_TIMEOUT_SECS", "30"),
+        ("RESILIENT_MCP_SHUTDOWN_DRAIN_SECS", "20"),
+    ]);
+    let port = server.port;
+    let body = slow_call_body();
+
+    // Kick off a slow request in the background, give it a moment to be
+    // accepted by a worker, then send SIGTERM. The in-flight request
+    // should still complete successfully (drained, not dropped), and the
+    // process should exit cleanly afterward.
+    let handle = std::thread::spawn(move || http_call(port, "POST", "/mcp/call", &body));
+    std::thread::sleep(Duration::from_millis(300));
+    server.terminate();
+
+    let response = handle.join().expect("request thread panicked");
+    assert_eq!(
+        status_of(&response),
+        "200",
+        "in-flight request was dropped instead of drained: {response}"
+    );
+
+    // The process should exit on its own (not need to be killed) within
+    // the drain deadline plus slack. `Server::drop`'s `kill()` on an
+    // already-exited pid is a harmless no-op, so no special teardown is
+    // needed here.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match server.child.try_wait().expect("try_wait") {
+            Some(status) => {
+                assert!(status.success(), "server exited non-zero: {status:?}");
+                break;
+            }
+            None => {
+                if Instant::now() > deadline {
+                    panic!("server did not exit within the drain deadline after SIGTERM");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
     }
 }
