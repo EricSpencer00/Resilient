@@ -17,23 +17,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # RES-3979/RES-3985/RES-4102: two of four release targets ship Z3
-          # statically linked (`x86_64-unknown-linux-gnu`,
+          # RES-3979/RES-3985/RES-4102/RES-4113: both Linux release targets
+          # ship Z3 statically linked (`x86_64-unknown-linux-gnu`,
           # `aarch64-unknown-linux-gnu`) — see the per-target
           # "Build (..., Z3 static-linked...)" steps below for why each one
-          # works. Both macOS legs are a documented no-z3 fallback: the
-          # Homebrew-GCC static-Z3 recipe #4101 added for
-          # `aarch64-apple-darwin` compiled locally but fails to link in CI
-          # (the `Build (native, Z3 static-linked, macOS via GCC)` step), so
-          # RES-4102 reverted that leg to the plain `--features lsp` build to
-          # keep the release green; macOS static Z3 stays deferred as the
-          # residual item on #3985. `x86_64-apple-darwin` was already no-z3:
-          # it's a cross-arch build from the arm64 `macos-latest` runner, and
-          # Homebrew's arm64-native GCC bottle can't cross-compile it. The
-          # macOS binaries still work fine, they just report `Unknown` for
-          # obligations the hand-rolled folder (RES-060..065) can't
-          # discharge, same as every release before
-          # this one.
+          # works. Both macOS legs now *attempt* the same Homebrew-GCC
+          # static-Z3 recipe #4101 proved out locally, but the
+          # "Build (native, Z3 static-linked, macOS via GCC)" step has
+          # `continue-on-error: true` and a "Build (native, macOS no-z3
+          # fallback)" step runs only if it failed — RES-4102 previously had
+          # to hard-revert the `aarch64-apple-darwin` leg to plain
+          # `--features lsp` because the static-Z3 step's *hard* failure
+          # skipped the whole release; the fallback step means a link
+          # failure on either macOS leg degrades to the pre-RES-4113
+          # no-z3 binary instead of bricking the release. `x86_64-apple-
+          # darwin` moved off the arm64 `macos-latest` runner onto the
+          # native-Intel `macos-15-intel` runner so this is a real (non-cross)
+          # build — Homebrew's arm64-native GCC bottle can't cross-compile
+          # to x86_64, which is why that leg couldn't attempt Z3 before.
+          # Whichever path a macOS leg takes, it still ships a working
+          # binary; a no-z3 fallback just reports `Unknown` for obligations
+          # the hand-rolled folder (RES-060..065) can't discharge, same as
+          # every release before this one.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
@@ -44,11 +49,13 @@ jobs:
             cross: true
             z3: true
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
             archive: tar.gz
+            z3: true
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
+            z3: true
 
     steps:
       - uses: actions/checkout@v4
@@ -153,8 +160,20 @@ jobs:
       # 13.4.0): `otool -L` shows no `libz3` runtime dependency and
       # `scripts/release-smoke-test.sh` passes — `rz --audit` genuinely
       # discharges the fixture's obligation via Z3, not just links it in.
+      #
+      # RES-4113: this step is allowed to fail (`continue-on-error`) rather
+      # than hard-failing the job. RES-4102 had to hard-*revert*
+      # `aarch64-apple-darwin`'s `z3: true` after this recipe (proven out
+      # locally) failed to link in CI — with no fallback, that CI failure
+      # skipped the whole release. The "Build (native, macOS no-z3
+      # fallback)" step below now catches exactly that case per-leg, so a
+      # link failure degrades to the pre-existing no-z3 binary instead of
+      # bricking the release; `id: build_macos_z3` lets later steps key off
+      # `steps.build_macos_z3.outcome`.
       - name: Build (native, Z3 static-linked, macOS via GCC)
+        id: build_macos_z3
         if: matrix.z3 && !matrix.cross && runner.os == 'macOS'
+        continue-on-error: true
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           CC: gcc-13
@@ -163,6 +182,17 @@ jobs:
         run: |
           export RUSTFLAGS="-L ${Z3_MACOS_STATIC_CXX_LIBDIR} -l emutls_w"
           cargo build --release --locked --target ${{ matrix.target }} --features lsp,z3,z3-static
+        working-directory: resilient
+
+      # RES-4113: fallback for the case above — mirrors the plain
+      # `Build (native)` step but is scoped to the `matrix.z3 &&
+      # runner.os == 'macOS'` legs so it only ever runs when the static-Z3
+      # attempt failed. Keeps the release green with the same no-z3,
+      # `Unknown`-verdict binary every macOS release shipped before
+      # RES-4113 attempted static Z3 here.
+      - name: Build (native, macOS no-z3 fallback)
+        if: matrix.z3 && !matrix.cross && runner.os == 'macOS' && steps.build_macos_z3.outcome == 'failure'
+        run: cargo build --release --locked --target ${{ matrix.target }} --features lsp
         working-directory: resilient
 
       - name: Build (cross)
@@ -197,8 +227,11 @@ jobs:
       # is built via QEMU/Docker cross-compilation on an x86_64 runner
       # and can't execute on the build host, same reason the LSP smoke
       # test below is scoped off it.
+      # RES-4113: `runner.os == 'macOS'` legs only run this when the
+      # static-Z3 build actually succeeded (`steps.build_macos_z3` is
+      # unset on Linux/cross legs, so `!= 'failure'` stays true there).
       - name: Z3 release smoke test
-        if: matrix.z3 && !matrix.cross
+        if: matrix.z3 && !matrix.cross && steps.build_macos_z3.outcome != 'failure'
         run: scripts/release-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz
 
       # RES-4002: every release target now ships `--features lsp` (see
@@ -208,9 +241,9 @@ jobs:
       # `aarch64-unknown-linux-gnu` is cross-compiled via QEMU on an
       # x86_64 runner (`matrix.cross`) — that binary can't execute on
       # the build host, same reason the z3 smoke test above is scoped
-      # off it. Skip only there; the macOS legs run natively (arm64
-      # host) or under Rosetta 2 (x86_64 leg, preinstalled on GitHub's
-      # macOS images).
+      # off it. Skip only there; both macOS legs now run natively
+      # (`aarch64-apple-darwin` on the arm64 `macos-latest` host,
+      # `x86_64-apple-darwin` on the Intel `macos-15-intel` host — RES-4113).
       - name: LSP release smoke test
         if: "!matrix.cross"
         run: scripts/release-lsp-smoke-test.sh resilient/target/${{ matrix.target }}/release/rz

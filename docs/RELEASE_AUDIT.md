@@ -29,6 +29,13 @@ retired for the SemVer commitment (F-E6), and the extension bumped to `1.7.0`
 (the static-Z3-on-macOS link failure stays deferred as #3985); two of four
 targets — both Linux — ship static Z3.
 
+**RES-4113 follow-up:** both macOS legs now *attempt* static Z3 again — see
+section 6 below. `x86_64-apple-darwin` moved to a native `macos-15-intel` (Intel)
+runner instead of cross-compiling from `macos-latest` (arm64), and both
+macOS Z3 build steps gained a `continue-on-error` + automatic no-z3 fallback
+step so a link failure (the failure mode RES-4102 hit) degrades to today's
+known-good no-z3 binary instead of bricking the release.
+
 ## 1. Tag inventory vs manifest versions
 
 ```
@@ -276,3 +283,46 @@ to validate an `x86_64-apple-darwin` cross-build's link step without
 running it. Left as the residual scope of #3985; the README and
 `release.yml` matrix comment both document the current 3-of-4 state
 precisely rather than overclaiming.
+
+## 6. RES-4113 follow-up: `x86_64-apple-darwin` + a real macOS fallback
+
+This closes the remaining `x86_64-apple-darwin` gap from section 5, and
+also fixes the underlying reason RES-4102 had to hard-revert
+`aarch64-apple-darwin`'s Z3 attempt instead of just letting it fail
+gracefully.
+
+**Runner change.** `x86_64-apple-darwin` now builds on `macos-15-intel`
+(GitHub's Intel runner image) instead of `macos-latest` (arm64). This
+makes it a native build rather than a cross-arch one — the actual reason
+Homebrew GCC couldn't produce an x86_64 object before (`gcc@13` on an
+arm64 host is arm64-native only; `-arch x86_64` is silently ignored, per
+section 5's `t.cpp` repro). On `macos-15-intel`, Homebrew's default prefix is
+`/usr/local` and `brew install gcc@13` installs an x86_64-native
+toolchain, so the existing "Install Z3 static-link build deps (macOS via
+Homebrew GCC)" step and the "Build (native, Z3 static-linked, macOS via
+GCC)" step need **no target-arch-specific changes** — both already only
+ever shell out to `gcc-13`/`g++-13` by name and stage whatever
+`-print-file-name` resolves to, which is architecture-correct on either
+host.
+
+**Fallback, not a hard revert.** RES-4102 previously had to *drop*
+`z3: true` from `aarch64-apple-darwin` entirely because the static-Z3
+build step failing in CI (despite working locally) hard-failed the whole
+job with no fallback. This PR instead gives the macOS Z3 build step
+`continue-on-error: true` and an `id: build_macos_z3`, and adds a new
+"Build (native, macOS no-z3 fallback)" step gated on
+`steps.build_macos_z3.outcome == 'failure'`. The Z3 smoke test step is
+likewise gated on that outcome so it doesn't run against a fallback
+binary that never linked Z3. Net effect: both macOS legs *attempt*
+static Z3; if the attempt fails in CI for either one, that leg silently
+degrades to the exact no-z3, `--features lsp` binary every release
+before RES-4113 shipped — the release can't be bricked by this change.
+
+**Verification.** Release infra only fully exercises on a tag push or
+`workflow_dispatch`; this PR dispatched the workflow manually off the
+feature branch (which skips the tag-gated `release` job but runs the
+full `build` matrix, including both macOS legs) to observe real CI
+behavior before merge. See the PR body for the run link and outcome —
+if either macOS leg's static-Z3 step failed in that dispatch, the
+fallback step is what CI is confirming here, and the residual risk is
+carried forward rather than newly introduced.
