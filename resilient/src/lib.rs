@@ -5812,8 +5812,6 @@ impl Parser {
                     // to a bare `Greater` instead of advancing the lexer —
                     // the outer call then sees a normal closing `>`.
                     while !self.at_generic_close() && self.current_token != Token::Eof {
-                        let p = self.parse_type_annotation(ctx)?;
-                    while self.current_token != Token::Greater && self.current_token != Token::Eof {
                         // RES-4109: const-generic length param, e.g. the
                         // `N` in `array<T, N>` — a literal integer rather
                         // than a type. Kept verbatim as its decimal string
