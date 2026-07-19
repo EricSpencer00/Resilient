@@ -152,6 +152,45 @@ VM-fallback to correct native execution; the rest of the coverage
 gap is the same `program_has_unsound_native_fallthrough_construct`
 conservatism RES-4153 already documented above.
 
+**RES-4134: string-op builtin lowering (25 native, still 3.9% —
+gated by the same `EmptyProgram`/unknown-fn coexistence issue below).**
+Re-swept `call to unknown function` (the single largest fallback
+reason at 241/510 fallback causes — ahead of `EmptyProgram`'s 135 and
+the long tail of unimplemented AST shapes) and found it's a long tail
+of ~213 distinct unimplemented builtin names, dominated by array/actor
+helpers, with a smaller cluster of ASCII/Unicode string operations.
+Landed native lowering (`jit_backend.rs` call-site dispatch +
+`jit_runtime.rs` shims, both call forms — `trim(s)` and `s.trim()`)
+for the 8 most common no-array-dependency string builtins: `trim`,
+`to_upper`, `to_lower`, `string_reverse` (single-string-arg, no
+overload ambiguity) and `index_of`, `starts_with`, `ends_with`,
+`contains` (two-string-arg; `contains` is also overloaded with a
+`(range, int)` membership form in the interpreter, so its call site
+only routes natively when `static_kind` confirms both operands are
+statically `String` — anything else, including `Unknown`, falls back
+to the VM rather than risk misreading a range as a string). The
+boolean-returning shims (`starts_with`/`ends_with`/`contains`) return
+a raw untagged 0/1 `i64`, matching RES-100's existing convention for
+comparison results (`res_jit_value_eq`/`ne`) rather than the heap-tagged
+`TAG_BOOL` representation, so the result composes correctly with
+`brif`/arithmetic without an extra untag step; `static_kind`'s
+`CallExpression` arm was extended so these builtins still classify as
+`Bool`/`String` for the `println`/`print`/`to_string` bool-aware
+display dispatch. Net corpus effect: one example
+(`edge_string_operators.rz`) exercises `.trim()` at the AST level now,
+but the file as a whole still VM-falls-back on its final `.repeat(3)`
+call (`repeat`/`string_repeat` weren't in this batch — the negative-count
+error case needs a `JitAbort`-style abort shim like RES-4171's
+div/mod-by-zero guards, deferred as a follow-up rather than risking a
+silent divergence via clamping). Confirms the RES-4153/RES-4166
+pattern: because native-vs-fallback is a whole-program decision, a
+single per-builtin fix rarely flips an example on its own when most
+corpus files combine several unimplemented constructs — the string-op
+work here is necessary-but-not-sufficient plumbing for future PRs that
+also land `repeat`/array-builtin lowering on the same files.
+`interpreter_and_jit_agree_on_all_examples` stayed green throughout
+(no denylist additions).
+
 ## Reproducing
 
 ```bash

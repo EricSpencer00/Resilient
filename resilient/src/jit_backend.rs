@@ -286,6 +286,23 @@ fn static_kind(node: &Node, ctx: &LowerCtx) -> ValueKind {
         },
         Node::Identifier { name, .. } => ctx.local_kind_of(name),
         Node::CallExpression { function, .. } => match function.as_ref() {
+            // RES-4134: builtins with a fixed, unambiguous return kind
+            // (checked before user-defined functions since none of these
+            // names can be shadowed by a same-named top-level `fn` —
+            // the parser/typechecker reject builtin-name redeclaration).
+            Node::Identifier { name, .. }
+                if matches!(name.as_str(), "starts_with" | "ends_with" | "contains") =>
+            {
+                ValueKind::Bool
+            }
+            Node::Identifier { name, .. }
+                if matches!(
+                    name.as_str(),
+                    "trim" | "to_upper" | "to_lower" | "string_reverse"
+                ) =>
+            {
+                ValueKind::String
+            }
             Node::Identifier { name, .. } => ctx
                 .function_kind
                 .get(name)
@@ -1039,6 +1056,16 @@ pub(crate) struct JitRuntimeImports {
     pub res_jit_println_bool: FuncId,
     pub res_jit_print_bool: FuncId,
     pub res_jit_bool_to_string: FuncId,
+    /// RES-4134: single-string-argument builtins (no overload ambiguity).
+    pub res_jit_string_trim: FuncId,
+    pub res_jit_string_to_upper: FuncId,
+    pub res_jit_string_to_lower: FuncId,
+    pub res_jit_string_reverse: FuncId,
+    /// RES-4134: two-string-argument builtins.
+    pub res_jit_string_index_of: FuncId,
+    pub res_jit_string_starts_with: FuncId,
+    pub res_jit_string_ends_with: FuncId,
+    pub res_jit_string_contains: FuncId,
 }
 
 fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImports, JitError> {
@@ -1159,6 +1186,10 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
     let res_jit_print_bool = decl_import!("res_jit_print_bool", sig1r);
     let res_jit_bool_to_string = decl_import!("res_jit_bool_to_string", sig1r);
     let res_jit_struct_get_name = decl_import!("res_jit_struct_get_name", sig1r);
+    let res_jit_string_trim = decl_import!("res_jit_string_trim", sig1r);
+    let res_jit_string_to_upper = decl_import!("res_jit_string_to_upper", sig1r);
+    let res_jit_string_to_lower = decl_import!("res_jit_string_to_lower", sig1r);
+    let res_jit_string_reverse = decl_import!("res_jit_string_reverse", sig1r);
 
     // sig2r: (i64, i64) -> i64
     let res_jit_float_add = decl_import!("res_jit_float_add", sig2r);
@@ -1171,6 +1202,10 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
     let res_jit_string_concat = decl_import!("res_jit_string_concat", sig2r);
     let res_jit_value_eq = decl_import!("res_jit_value_eq", sig2r);
     let res_jit_value_ne = decl_import!("res_jit_value_ne", sig2r);
+    let res_jit_string_index_of = decl_import!("res_jit_string_index_of", sig2r);
+    let res_jit_string_starts_with = decl_import!("res_jit_string_starts_with", sig2r);
+    let res_jit_string_ends_with = decl_import!("res_jit_string_ends_with", sig2r);
+    let res_jit_string_contains = decl_import!("res_jit_string_contains", sig2r);
 
     // sig3r: (i64, i64, i64) -> i64 (3 params WITH return)
     let mut sig3r = module.make_signature();
@@ -1249,6 +1284,14 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_jit_println_bool,
         res_jit_print_bool,
         res_jit_bool_to_string,
+        res_jit_string_trim,
+        res_jit_string_to_upper,
+        res_jit_string_to_lower,
+        res_jit_string_reverse,
+        res_jit_string_index_of,
+        res_jit_string_starts_with,
+        res_jit_string_ends_with,
+        res_jit_string_contains,
     })
 }
 
@@ -3784,6 +3827,81 @@ fn lower_expr(
                 return Ok(bcx.inst_results(call)[0]);
             }
 
+            // RES-4134: single-string-argument builtins. Unlike `len`,
+            // these have no non-string overload in `lib.rs`'s `BUILTINS`
+            // table, so a well-typed call always has a string argument
+            // and no `static_kind` gate is needed. Callable either as a
+            // free function (`trim(s)`) or, since these are strings'
+            // only "methods", as `s.trim()` — `method_receiver` stands
+            // in for the sole argument in the latter form.
+            if let Some(shim) = match callee_name.as_str() {
+                "trim" => Some(ctx.imports.res_jit_string_trim),
+                "to_upper" => Some(ctx.imports.res_jit_string_to_upper),
+                "to_lower" => Some(ctx.imports.res_jit_string_to_lower),
+                "string_reverse" => Some(ctx.imports.res_jit_string_reverse),
+                _ => None,
+            } {
+                let arg = match (method_receiver, arguments.as_slice()) {
+                    (Some(recv), []) => recv,
+                    (None, [a]) => lower_expr(a, bcx, ctx, module)?,
+                    _ => {
+                        return Err(JitError::Unsupported("string builtin: expected 1 argument"));
+                    }
+                };
+                let fref = module.declare_func_in_func(shim, bcx.func);
+                let call = bcx.ins().call(fref, &[arg]);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+
+            // RES-4134: two-string-argument builtins. `contains` is
+            // overloaded with a `(range, int)` form in the interpreter, so
+            // it's only routed here when both operands are statically
+            // known `String`; anything else (including `Unknown`) falls
+            // back to the VM to preserve the range-membership semantics.
+            // Callable as `index_of(s, sub)` or `s.index_of(sub)`.
+            if matches!(
+                callee_name.as_str(),
+                "index_of" | "starts_with" | "ends_with" | "contains"
+            ) {
+                let (recv_kind, arg_node) = match (method_receiver, arguments.as_slice()) {
+                    (Some(_), [a]) => {
+                        let recv_kind = match function.as_ref() {
+                            Node::FieldAccess { target, .. } => static_kind(target, ctx),
+                            _ => ValueKind::Unknown,
+                        };
+                        (recv_kind, a)
+                    }
+                    (None, [a, b]) => (static_kind(a, ctx), b),
+                    _ => {
+                        return Err(JitError::Unsupported(
+                            "string builtin: expected 2 arguments",
+                        ));
+                    }
+                };
+                let both_strings = recv_kind == ValueKind::String
+                    && static_kind(arg_node, ctx) == ValueKind::String;
+                if callee_name == "contains" && !both_strings {
+                    return Err(JitError::Unsupported(
+                        "contains: non-string operand (possible range overload)",
+                    ));
+                }
+                let shim = match callee_name.as_str() {
+                    "index_of" => ctx.imports.res_jit_string_index_of,
+                    "starts_with" => ctx.imports.res_jit_string_starts_with,
+                    "ends_with" => ctx.imports.res_jit_string_ends_with,
+                    "contains" => ctx.imports.res_jit_string_contains,
+                    _ => unreachable!(),
+                };
+                let a = match method_receiver {
+                    Some(recv) => recv,
+                    None => lower_expr(&arguments[0], bcx, ctx, module)?,
+                };
+                let b = lower_expr(arg_node, bcx, ctx, module)?;
+                let fref = module.declare_func_in_func(shim, bcx.func);
+                let call = bcx.ins().call(fref, &[a, b]);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+
             if callee_name == "push" {
                 if arguments.len() != 2 {
                     return Err(JitError::Unsupported(
@@ -3834,7 +3952,6 @@ fn lower_expr(
                 return Ok(bcx.block_params(merge_bb)[0]);
             }
 
-            eprintln!("DEBUG unknown callee_name={callee_name:?}");
             Err(JitError::Unsupported("call to unknown function"))
         }
         Node::ArrayLiteral { items, .. } => {
