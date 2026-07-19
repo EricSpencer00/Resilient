@@ -219,6 +219,106 @@ pub fn load_and_run_with_functions<
     Ok(result)
 }
 
+/// RES-4083 (host closure emission): the closure-capable counterpart
+/// of [`load_and_run_with_functions`] — additionally sizes the VM's
+/// fixed-capacity closure-capture arena (`CLOSURES` — see
+/// [`super::MAX_CLOSURE_CAPTURES`] for the per-closure cap this
+/// arena's *slots* are made of). `rzbc_emit`'s closure translation
+/// (`resilient/src/rzbc_emit.rs`) is what actually produces a
+/// `.rzbc` blob containing `Instr::MakeClosure`/`Instr::CallClosure`
+/// in the first place — this loader has no closure-specific decode
+/// logic of its own, since `Vm::run_with_functions` already dispatches
+/// both instructions.
+///
+/// ```
+/// use resilient_runtime::vm::Instr;
+/// use resilient_runtime::vm::serde::{encode_program, EncodeFunctionDef};
+/// use resilient_runtime::vm::loader::load_and_run_with_functions_and_closures;
+///
+/// // fn getBase() { <capture> } ; main: base = 41; f = closure(getBase, [base]); f()
+/// let get_base = [Instr::LoadLocal(0), Instr::Return];
+/// let main = [
+///     Instr::PushConst(resilient_runtime::vm::Value::Int(41)),
+///     Instr::StoreLocal(0),
+///     Instr::LoadLocal(0),
+///     Instr::MakeClosure { func_idx: 0, capture_count: 1 },
+///     Instr::StoreLocal(1),
+///     Instr::LoadLocal(1),
+///     Instr::CallClosure,
+///     Instr::Return,
+/// ];
+/// let functions = [EncodeFunctionDef { code: &get_base, arity: 0, local_count: 1, postcheck: None, fails_variant: None, capture_count: 1 }];
+///
+/// let mut buf = [0u8; 128];
+/// let len = encode_program(&main, &functions, &[], &mut buf).unwrap();
+///
+/// let result = load_and_run_with_functions_and_closures::<8, 4, 16, 8, 4, 2, 2>(&buf[..len]);
+/// assert_eq!(result, Ok(resilient_runtime::vm::Value::Int(41)));
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn load_and_run_with_functions_and_closures<
+    const MAIN_N: usize,
+    const FUNC_META_N: usize,
+    const FUNC_CODE_N: usize,
+    const STACK: usize,
+    const LOCALS: usize,
+    const CALLS: usize,
+    const CLOSURES: usize,
+>(
+    blob: &[u8],
+) -> Result<Value, LoaderError> {
+    let mut main_instrs = [Instr::Return; MAIN_N];
+    let mut func_meta = [serde::DecodedFunctionMeta {
+        offset: 0,
+        len: 0,
+        arity: 0,
+        local_count: 0,
+        postcheck: None,
+        fails_variant: None,
+        capture_count: 0,
+    }; FUNC_META_N];
+    let mut func_code = [Instr::Return; FUNC_CODE_N];
+    let mut try_handlers: [TryHandlerEntry; 0] = [];
+
+    let counts = serde::decode_program(
+        blob,
+        &mut main_instrs,
+        &mut func_meta,
+        &mut func_code,
+        &mut try_handlers,
+    )?;
+
+    let mut functions_buf = [FunctionDef {
+        code: &[],
+        arity: 0,
+        local_count: 0,
+        postcheck: None,
+        fails_variant: None,
+        capture_count: 0,
+    }; FUNC_META_N];
+    for (slot, meta) in functions_buf
+        .iter_mut()
+        .zip(func_meta.iter())
+        .take(counts.func_count)
+    {
+        *slot = FunctionDef {
+            code: &func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+            arity: meta.arity,
+            local_count: meta.local_count,
+            postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
+            capture_count: meta.capture_count,
+        };
+    }
+
+    let mut vm = Vm::<STACK, LOCALS, CALLS, 0, CLOSURES>::new();
+    let result = vm.run_with_functions(
+        &functions_buf[..counts.func_count],
+        &main_instrs[..counts.main_len],
+    )?;
+    Ok(result)
+}
+
 /// RES-4083 (D-E1 tail): the `try`/`fails` counterpart of
 /// [`load_and_run_with_functions`] — additionally bounds the
 /// try-handler table (`TRY_META_N` entries) and the VM's try-nesting
@@ -334,6 +434,21 @@ mod tests {
     fn load_and_run_committed_fixture_round_trips_through_real_decoder_and_vm() {
         let result = load_and_run::<16, 8, 0>(ARITHMETIC_DEMO_RZBC);
         assert_eq!(result, Ok(Value::Int(21)));
+    }
+
+    /// RES-4083 (host closure emission): `resilient/examples/closures_embedded.rz`
+    /// compiled by `rz build` — `outer(base)` defines a nested `getBase()`
+    /// closure that captures `base` by value (never reassigned after
+    /// capture), calls it with zero arguments, and returns the result.
+    /// `resilient-runtime-loader-demo` embeds the identical bytes for the
+    /// on-device / QEMU run.
+    const CLOSURES_DEMO_RZBC: &[u8] = include_bytes!("../../fixtures/closures_demo.rzbc");
+
+    #[test]
+    fn load_and_run_committed_closure_fixture_round_trips_through_real_decoder_and_vm() {
+        let result =
+            load_and_run_with_functions_and_closures::<32, 4, 32, 8, 4, 4, 2>(CLOSURES_DEMO_RZBC);
+        assert_eq!(result, Ok(Value::Int(41)));
     }
 
     #[test]

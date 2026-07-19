@@ -44,7 +44,8 @@ use cortex_m_rt::entry;
 use cortex_m_semihosting::{debug, hprintln};
 use resilient_runtime::vm::Value;
 use resilient_runtime::vm::loader::{
-    load_and_run, load_and_run_with_functions, load_and_run_with_functions_and_tries,
+    load_and_run, load_and_run_with_functions, load_and_run_with_functions_and_closures,
+    load_and_run_with_functions_and_tries,
 };
 
 /// `(2 + 3) * 4 + 1 == 21` — see
@@ -99,6 +100,24 @@ const FAILS_TRY_CALLS: usize = 3;
 const FAILS_TRY_TRIES: usize = 1;
 
 const FAILS_TRY_EXPECTED: Value = Value::Int(-1);
+
+/// RES-4083 (host closure emission): `resilient/examples/closures_embedded.rz`
+/// — `outer(base)` defines a nested `getBase()` closure that captures
+/// `base` by value (never reassigned after capture — see
+/// `rzbc_emit.rs`'s `transform_ops` for the box/unbox-idiom elision
+/// this relies on) and calls it with zero arguments.
+static CLOSURES_RZBC_BLOB: &[u8] =
+    include_bytes!("../../resilient-runtime/fixtures/closures_demo.rzbc");
+
+const CLOSURES_MAIN_N: usize = 32;
+const CLOSURES_FUNC_META_N: usize = 4;
+const CLOSURES_FUNC_CODE_N: usize = 32;
+const CLOSURES_STACK: usize = 8;
+const CLOSURES_LOCALS: usize = 4;
+const CLOSURES_CALLS: usize = 4;
+const CLOSURES_SLOTS: usize = 2;
+
+const CLOSURES_EXPECTED: Value = Value::Int(41);
 
 #[entry]
 fn main() -> ! {
@@ -163,14 +182,43 @@ fn main() -> ! {
     {
         Ok(v) if v == FAILS_TRY_EXPECTED => {
             hprintln!("fails/try loader ok: {:?}", v);
-            debug::exit(debug::EXIT_SUCCESS);
         }
         Ok(v) => {
             hprintln!("fails/try loader produced unexpected value: {:?}", v);
             debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
         }
         Err(e) => {
             hprintln!("fails/try loader error: {:?}", e);
+            debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
+        }
+    }
+
+    match load_and_run_with_functions_and_closures::<
+        CLOSURES_MAIN_N,
+        CLOSURES_FUNC_META_N,
+        CLOSURES_FUNC_CODE_N,
+        CLOSURES_STACK,
+        CLOSURES_LOCALS,
+        CLOSURES_CALLS,
+        CLOSURES_SLOTS,
+    >(CLOSURES_RZBC_BLOB)
+    {
+        Ok(v) if v == CLOSURES_EXPECTED => {
+            hprintln!("closures loader ok: {:?}", v);
+            debug::exit(debug::EXIT_SUCCESS);
+        }
+        Ok(v) => {
+            hprintln!("closures loader produced unexpected value: {:?}", v);
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(e) => {
+            hprintln!("closures loader error: {:?}", e);
             debug::exit(debug::EXIT_FAILURE);
         }
     }
