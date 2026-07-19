@@ -8,13 +8,70 @@ a bare package name (e.g. `rz pkg add mylib`) without requiring a
 `path:`/`git:` source specifier, and the checksum-verification rules
 applied to anything resolved from it.
 
-This is **increment 1** of the registry protocol: the index format
-and integrity verification, implemented in
-`resilient/src/pkg_registry.rs`. It is deliberately network-free and
-testable hermetically. Fetching an index (or package contents) over
-HTTP for `rz pkg add <name>` / `rz pkg update` is later work — this
-document only specifies the shape of the index and how its checksums
-are checked once bytes are in hand, from whatever source.
+**Increment 1** built the index format and integrity verification
+(`resilient/src/pkg_registry.rs`), deliberately network-free and
+testable hermetically.
+
+**Increment 2** (this update) wires the index up to the CLI:
+`rz pkg add <name>` (no `path:`/`git:` spec) resolves a bare name
+against a configured index, and `rz pkg update` re-resolves every
+registry dependency to latest. See "Fetching" and "CLI usage" below.
+
+## Fetching
+
+`fetch_bytes` (`resilient/src/pkg_registry.rs`) accepts three kinds of
+location, used for both the index itself and each package's `source`:
+
+- A bare filesystem path or `file://` URI — read directly with no
+  network I/O. This is what every hermetic test in this crate uses.
+- An `http://`/`https://` URL — fetched by shelling out to the
+  system `curl` binary (`curl -sSL --fail <url>`). This mirrors the
+  existing `git` dependency-resolution pattern in
+  `pkg_deps::resolve_git_dep` (which already shells out to the
+  system `git`) rather than adding an HTTP client crate — see the
+  supply-chain hygiene rule in `CLAUDE.md`.
+
+Package contents fetched this way are an uncompressed USTAR archive
+(the same format `pkg_publish::make_tarball` produces — no gzip
+layer). `pkg_registry::extract_ustar` unpacks it, stripping the
+archive's single top-level directory component, after
+`verify_checksum` has passed.
+
+## CLI usage
+
+```text
+# Resolve `mylib` (latest, or --version <v>) against an index.
+rz pkg add mylib --index https://example.com/index.json
+rz pkg add mylib --version 1.2.3
+
+# Re-resolve every registry dependency to latest; prints one
+# `name: old -> new` line per version change, refreshes resilient.lock.
+rz pkg update
+```
+
+The first `--index` passed to `pkg add`/`pkg update` is persisted to
+a `[registry]` section in `resilient.toml`:
+
+```toml
+[registry]
+index = "https://example.com/index.json"
+```
+
+so subsequent invocations don't have to repeat it. A dependency
+resolved this way is recorded as an **exact, already-resolved**
+version pin:
+
+```toml
+[dependencies]
+mylib = { registry = "1.2.3" }
+```
+
+Resolution never re-hits the network for a version that's already
+cached at `~/.resilient/cache/registry/<name>/<version>/` with a
+valid manifest + `src/` — a plain build/`resolve_all` reuses the
+cache. `pkg add`/`pkg update` always re-resolve against the index
+(to catch "latest" moving or an unknown package/version), but a
+cache hit for the resolved version still skips the network fetch.
 
 ## Index schema
 
@@ -92,10 +149,12 @@ and a "package not in index" error.
 
 ## What this increment does *not* do
 
-- No network fetch of the index or of package contents (`rz pkg
-  update` and index-backed `rz pkg add <name>` resolution are
-  follow-up increments on #4114).
 - No index signing (only content-integrity checksums, not
   provenance/trust).
 - No real semver range matching (`^1.0`, `~1.2`, etc.) — only exact
   version pins or "latest" (lexicographic-max version string).
+- No `rz pkg publish` integration with a registry index — publishing
+  and this consumer-side index are independent; wiring `pkg publish`
+  to write index entries is unscoped future work.
+- No retry/mirror-fallback on fetch failure — a `curl` failure or a
+  checksum mismatch is a hard error, not silently retried elsewhere.

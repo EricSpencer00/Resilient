@@ -38,6 +38,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
+use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
@@ -106,6 +108,12 @@ pub enum PkgRegistryError {
         expected: String,
         actual: String,
     },
+    /// Fetching bytes from a `source`/index location failed (bad
+    /// path, non-zero `curl`, missing `curl` binary, etc).
+    FetchFailed { location: String, detail: String },
+    /// The fetched package contents did not parse as a valid USTAR
+    /// archive produced by `pkg_publish::make_tarball`.
+    ExtractFailed { detail: String },
 }
 
 impl fmt::Display for PkgRegistryError {
@@ -139,6 +147,12 @@ impl fmt::Display for PkgRegistryError {
                  — refusing to use possibly-corrupted or tampered package contents",
                 name, version, expected, actual
             ),
+            Self::FetchFailed { location, detail } => {
+                write!(f, "failed to fetch `{}`: {}", location, detail)
+            }
+            Self::ExtractFailed { detail } => {
+                write!(f, "failed to extract package archive: {}", detail)
+            }
         }
     }
 }
@@ -316,6 +330,163 @@ pub fn verify_checksum(
     }
 }
 
+/// Fetch raw bytes from `location`, which is either:
+///
+/// - a bare filesystem path or `file://` URI (read directly, no
+///   network I/O) — used for local indexes/packages and all hermetic
+///   tests; or
+/// - an `http://`/`https://` URL, fetched by shelling out to the
+///   system `curl` binary.
+///
+/// Shelling out to `curl` (rather than adding an HTTP client crate)
+/// mirrors the existing `git` dependency-resolution pattern in
+/// `pkg_deps::resolve_git_dep` — see the supply-chain hygiene rule in
+/// CLAUDE.md: prefer what's already on the system over a new
+/// dependency for something this crate does rarely (fetching a
+/// handful of index/package files, not serving high-throughput
+/// traffic).
+pub fn fetch_bytes(location: &str) -> Result<Vec<u8>, PkgRegistryError> {
+    if let Some(path) = location.strip_prefix("file://") {
+        return std::fs::read(path).map_err(|e| PkgRegistryError::FetchFailed {
+            location: location.to_string(),
+            detail: e.to_string(),
+        });
+    }
+    if location.starts_with("http://") || location.starts_with("https://") {
+        let output = Command::new("curl")
+            .args(["-sSL", "--fail", location])
+            .output()
+            .map_err(|e| PkgRegistryError::FetchFailed {
+                location: location.to_string(),
+                detail: format!("failed to run curl (is it installed?): {}", e),
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PkgRegistryError::FetchFailed {
+                location: location.to_string(),
+                detail: if stderr.trim().is_empty() {
+                    format!("curl exited with {}", output.status)
+                } else {
+                    stderr.trim().to_string()
+                },
+            });
+        }
+        return Ok(output.stdout);
+    }
+    // Bare path — no scheme prefix. Treat as a plain filesystem path,
+    // which covers both absolute paths and paths relative to the
+    // process's current directory.
+    std::fs::read(location).map_err(|e| PkgRegistryError::FetchFailed {
+        location: location.to_string(),
+        detail: e.to_string(),
+    })
+}
+
+/// Extract a USTAR archive (as produced by
+/// `pkg_publish::make_tarball` — no compression, regular files only)
+/// into `dest`. The archive's single top-level directory component
+/// (e.g. `mylib-1.0.0/`) is stripped, so `dest` directly contains the
+/// package's `resilient.toml` and `src/`.
+pub fn extract_ustar(bytes: &[u8], dest: &Path) -> Result<(), PkgRegistryError> {
+    std::fs::create_dir_all(dest).map_err(|e| PkgRegistryError::ExtractFailed {
+        detail: format!("creating {}: {}", dest.display(), e),
+    })?;
+
+    let mut offset = 0usize;
+    let mut wrote_any = false;
+    while offset + 512 <= bytes.len() {
+        let header = &bytes[offset..offset + 512];
+        if header.iter().all(|&b| b == 0) {
+            // End-of-archive marker (two consecutive zero blocks).
+            break;
+        }
+        let name = parse_header_str(&header[0..100])?;
+        let size = parse_octal(&header[124..136])?;
+        let typeflag = header[156];
+        offset += 512;
+        let body_end =
+            offset
+                .checked_add(size as usize)
+                .ok_or_else(|| PkgRegistryError::ExtractFailed {
+                    detail: format!("archive entry `{}` has an invalid size", name),
+                })?;
+        if body_end > bytes.len() {
+            return Err(PkgRegistryError::ExtractFailed {
+                detail: format!("archive entry `{}` is truncated", name),
+            });
+        }
+        let body = &bytes[offset..body_end];
+        // Only regular files ('\0' or '0') are expected; make_tarball
+        // never emits directories or links.
+        if typeflag == b'0' || typeflag == 0 {
+            // Strip the leading `<prefix>/` component so callers get
+            // package contents rooted at `dest` directly.
+            let rel = name
+                .split_once('/')
+                .map(|(_, rest)| rest)
+                .unwrap_or(name.as_str());
+            if !rel.is_empty() {
+                let out_path = safe_join(dest, rel)?;
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        PkgRegistryError::ExtractFailed {
+                            detail: format!("creating {}: {}", parent.display(), e),
+                        }
+                    })?;
+                }
+                std::fs::write(&out_path, body).map_err(|e| PkgRegistryError::ExtractFailed {
+                    detail: format!("writing {}: {}", out_path.display(), e),
+                })?;
+                wrote_any = true;
+            }
+        }
+        // Body is padded to the next 512-byte boundary.
+        let pad = (512 - (size as usize % 512)) % 512;
+        offset = body_end + pad;
+    }
+    if !wrote_any {
+        return Err(PkgRegistryError::ExtractFailed {
+            detail: "archive contained no regular files".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Join `rel` onto `dest`, rejecting any component that would escape
+/// `dest` (`..` or an absolute path) — an archive should never be
+/// able to write outside the directory it's being extracted into.
+fn safe_join(dest: &Path, rel: &str) -> Result<std::path::PathBuf, PkgRegistryError> {
+    let rel_path = Path::new(rel);
+    if rel_path.is_absolute() || rel_path.components().any(|c| c.as_os_str() == "..") {
+        return Err(PkgRegistryError::ExtractFailed {
+            detail: format!("archive entry path escapes destination: `{}`", rel),
+        });
+    }
+    Ok(dest.join(rel_path))
+}
+
+fn parse_header_str(field: &[u8]) -> Result<String, PkgRegistryError> {
+    let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+    String::from_utf8(field[..end].to_vec()).map_err(|e| PkgRegistryError::ExtractFailed {
+        detail: format!("non-UTF8 archive entry name: {}", e),
+    })
+}
+
+fn parse_octal(field: &[u8]) -> Result<u64, PkgRegistryError> {
+    let s = std::str::from_utf8(field)
+        .map_err(|e| PkgRegistryError::ExtractFailed {
+            detail: format!("non-UTF8 size field: {}", e),
+        })?
+        .trim_matches(char::from(0))
+        .trim();
+    if s.is_empty() {
+        return Ok(0);
+    }
+    u64::from_str_radix(s, 8).map_err(|e| PkgRegistryError::ExtractFailed {
+        detail: format!("malformed octal size field `{}`: {}", s, e),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +619,77 @@ mod tests {
         let idx = parse_index(json).unwrap();
         let err = resolve_package(&idx, "mylib", None).unwrap_err();
         assert!(matches!(err, PkgRegistryError::NoVersions { .. }));
+    }
+
+    // ── fetch_bytes / extract_ustar (RES-4114 increment 2) ────────
+
+    #[test]
+    fn fetch_bytes_reads_a_bare_path() {
+        let dir = std::env::temp_dir().join(format!("rz-fetch-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("index.json");
+        std::fs::write(&file, b"hello registry").unwrap();
+        let bytes = fetch_bytes(file.to_str().unwrap()).unwrap();
+        assert_eq!(bytes, b"hello registry");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fetch_bytes_reads_a_file_uri() {
+        let dir = std::env::temp_dir().join(format!("rz-fetch-uri-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("index.json");
+        std::fs::write(&file, b"file uri contents").unwrap();
+        let uri = format!("file://{}", file.to_str().unwrap());
+        let bytes = fetch_bytes(&uri).unwrap();
+        assert_eq!(bytes, b"file uri contents");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fetch_bytes_missing_path_is_an_error() {
+        let err = fetch_bytes("/definitely/not/a/real/path/index.json").unwrap_err();
+        assert!(matches!(err, PkgRegistryError::FetchFailed { .. }));
+    }
+
+    #[test]
+    fn extract_ustar_round_trips_a_tarball() {
+        use crate::pkg_publish::{PublishManifest, make_tarball};
+        let manifest = PublishManifest {
+            name: "mylib".to_string(),
+            version: "1.0.0".to_string(),
+            description: None,
+            entry: std::path::PathBuf::from("src/lib.rz"),
+        };
+        let src_dir = std::env::temp_dir().join(format!("rz-extract-src-{}", std::process::id()));
+        std::fs::create_dir_all(src_dir.join("src")).unwrap();
+        std::fs::write(src_dir.join("resilient.toml"), "[package]\n").unwrap();
+        std::fs::write(src_dir.join("src/lib.rz"), "pub fn hello() { return 1; }").unwrap();
+        let files = vec![
+            std::path::PathBuf::from("resilient.toml"),
+            std::path::PathBuf::from("src/lib.rz"),
+        ];
+        let tarball = make_tarball(&src_dir, &manifest, &files).unwrap();
+
+        let dest = std::env::temp_dir().join(format!("rz-extract-dest-{}", std::process::id()));
+        extract_ustar(&tarball, &dest).unwrap();
+        assert!(dest.join("resilient.toml").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("src/lib.rz")).unwrap(),
+            "pub fn hello() { return 1; }"
+        );
+
+        let _ = std::fs::remove_dir_all(&src_dir);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn extract_ustar_rejects_empty_archive() {
+        let dest =
+            std::env::temp_dir().join(format!("rz-extract-empty-dest-{}", std::process::id()));
+        let empty = vec![0u8; 1024];
+        let err = extract_ustar(&empty, &dest).unwrap_err();
+        assert!(matches!(err, PkgRegistryError::ExtractFailed { .. }));
+        let _ = std::fs::remove_dir_all(&dest);
     }
 }

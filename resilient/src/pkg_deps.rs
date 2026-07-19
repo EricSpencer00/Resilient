@@ -71,6 +71,14 @@ pub enum DepSource {
         tag: Option<String>,
         branch: Option<String>,
     },
+    /// RES-4114: resolved from a static JSON registry index (see
+    /// `pkg_registry.rs`). Always an exact, already-resolved version
+    /// pin — "latest" is resolved to a concrete version at `pkg add`
+    /// / `pkg update` time, never re-resolved implicitly on a plain
+    /// build, so builds stay reproducible without a network call.
+    Registry {
+        version: String,
+    },
 }
 
 /// A resolved dependency — we know where its source lives on disk.
@@ -152,6 +160,18 @@ pub enum PkgDepsError {
         context: String,
         source: io::Error,
     },
+    /// RES-4114: a `registry = "..."` dependency (or `pkg add`/`pkg
+    /// update` with no source specifier) needs an index location, but
+    /// none was given via `--index` and none is configured in
+    /// `[registry]` in `resilient.toml`.
+    RegistryNotConfigured,
+    /// Wraps a `pkg_registry::PkgRegistryError` (malformed index,
+    /// package/version not found, checksum mismatch, fetch/extract
+    /// failure) with the offending index/package location for
+    /// context.
+    RegistryError {
+        detail: String,
+    },
 }
 
 impl fmt::Display for PkgDepsError {
@@ -205,6 +225,20 @@ impl fmt::Display for PkgDepsError {
                 name
             ),
             Self::Io { context, source } => write!(f, "{}: {}", context, source),
+            Self::RegistryNotConfigured => write!(
+                f,
+                "no registry index configured — pass `--index <path-or-url>` or add \
+                 `[registry]\\nindex = \"...\"` to resilient.toml"
+            ),
+            Self::RegistryError { detail } => write!(f, "registry error: {}", detail),
+        }
+    }
+}
+
+impl From<pkg_registry::PkgRegistryError> for PkgDepsError {
+    fn from(e: pkg_registry::PkgRegistryError) -> Self {
+        PkgDepsError::RegistryError {
+            detail: e.to_string(),
         }
     }
 }
@@ -327,9 +361,14 @@ fn dep_source_from_fields(
             branch: fields.get("branch").cloned(),
         });
     }
+    if let Some(version) = fields.get("registry") {
+        return Ok(DepSource::Registry {
+            version: version.clone(),
+        });
+    }
     Err(PkgDepsError::MalformedDependency {
         name: name.to_string(),
-        detail: "expected `path` or `git` key in dependency table".to_string(),
+        detail: "expected `path`, `git`, or `registry` key in dependency table".to_string(),
     })
 }
 
@@ -341,15 +380,23 @@ fn dep_source_from_fields(
 pub fn resolve_all(manifest_path: &Path) -> Result<Vec<ResolvedDep>, PkgDepsError> {
     let deps = parse_dependencies(manifest_path)?;
     let project_root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let registry_index = read_registry_index(manifest_path);
     let mut resolved = Vec::with_capacity(deps.len());
     for dep in deps {
-        resolved.push(resolve_one(project_root, &dep)?);
+        resolved.push(resolve_one(project_root, &dep, registry_index.as_deref())?);
     }
     Ok(resolved)
 }
 
 /// Resolve a single dependency relative to `project_root`.
-fn resolve_one(project_root: &Path, dep: &Dependency) -> Result<ResolvedDep, PkgDepsError> {
+/// `registry_index` is the configured `[registry]` index location
+/// (from `resilient.toml`), needed only for `DepSource::Registry`
+/// deps.
+fn resolve_one(
+    project_root: &Path,
+    dep: &Dependency,
+    registry_index: Option<&str>,
+) -> Result<ResolvedDep, PkgDepsError> {
     match &dep.source {
         DepSource::Path { path } => resolve_path_dep(project_root, &dep.name, path),
         DepSource::Git {
@@ -364,6 +411,11 @@ fn resolve_one(project_root: &Path, dep: &Dependency) -> Result<ResolvedDep, Pkg
             tag.as_deref(),
             branch.as_deref(),
         ),
+        DepSource::Registry { version } => {
+            let index = registry_index.ok_or(PkgDepsError::RegistryNotConfigured)?;
+            let cache_root = default_registry_cache_dir()?;
+            resolve_registry_dep(&cache_root, &dep.name, version, index)
+        }
     }
 }
 
@@ -527,6 +579,393 @@ fn simple_hash(s: &str) -> String {
     format!("{:016x}", h)
 }
 
+// ── Registry-index dependency resolution (RES-4114 increment 2) ──
+
+/// Default cache root for registry-resolved packages:
+/// `~/.resilient/cache/registry/`. Callers that need testability
+/// without touching `$HOME` should call [`resolve_registry_dep`]
+/// directly with their own cache root instead.
+pub fn default_registry_cache_dir() -> Result<PathBuf, PkgDepsError> {
+    let home = home_dir().ok_or_else(|| PkgDepsError::Io {
+        context: "could not determine home directory".to_string(),
+        source: io::Error::new(io::ErrorKind::NotFound, "HOME not set"),
+    })?;
+    Ok(home.join(".resilient").join("cache").join("registry"))
+}
+
+/// Read the `[registry]` section's `index = "..."` value out of a
+/// manifest, if present. Uses the same hand-rolled line-based TOML
+/// approach as `parse_dependencies_from_str`.
+pub fn read_registry_index(manifest_path: &Path) -> Option<String> {
+    let contents = fs::read_to_string(manifest_path).ok()?;
+    read_registry_index_from_str(&contents)
+}
+
+fn read_registry_index_from_str(contents: &str) -> Option<String> {
+    let mut in_registry = false;
+    for raw in contents.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix('[') {
+            if rest.starts_with('[') {
+                in_registry = false;
+                continue;
+            }
+            let header = rest.trim_end_matches(']').trim();
+            in_registry = header == "registry";
+            continue;
+        }
+        if !in_registry {
+            continue;
+        }
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "index"
+            && let Some(v) = extract_quoted_string(val.trim())
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Write (or update in place) the `[registry]\nindex = "..."` section
+/// of a manifest so a `--index` passed to `pkg add`/`pkg update`
+/// doesn't have to be repeated on every invocation.
+fn set_registry_index(manifest_path: &Path, index: &str) -> Result<(), PkgDepsError> {
+    let contents =
+        fs::read_to_string(manifest_path).map_err(|e| PkgDepsError::ManifestUnreadable {
+            path: manifest_path.to_path_buf(),
+            source: e,
+        })?;
+    if read_registry_index_from_str(&contents).as_deref() == Some(index) {
+        return Ok(()); // Already configured with this exact value.
+    }
+
+    let mut lines: Vec<String> = contents.lines().map(str::to_string).collect();
+    let mut in_registry = false;
+    let mut header_at: Option<usize> = None;
+    let mut index_line_at: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            if rest.starts_with('[') {
+                in_registry = false;
+                continue;
+            }
+            let header = rest.trim_end_matches(']').trim();
+            in_registry = header == "registry";
+            if in_registry {
+                header_at = Some(i);
+            }
+            continue;
+        }
+        if in_registry
+            && trimmed
+                .split_once('=')
+                .map(|(k, _)| k.trim() == "index")
+                .unwrap_or(false)
+        {
+            index_line_at = Some(i);
+        }
+    }
+
+    let new_line = format!("index = \"{}\"", index);
+    if let Some(i) = index_line_at {
+        lines[i] = new_line;
+    } else if let Some(h) = header_at {
+        lines.insert(h + 1, new_line);
+    } else {
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            lines.push(String::new());
+        }
+        lines.push(String::new());
+        lines.push("[registry]".to_string());
+        lines.push(new_line);
+    }
+
+    let mut joined = lines.join("\n");
+    if !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    fs::write(manifest_path, joined).map_err(|e| PkgDepsError::ManifestWriteError {
+        path: manifest_path.to_path_buf(),
+        source: e,
+    })
+}
+
+/// Resolve a `registry` dependency: reuse the on-disk cache at
+/// `cache_root/<name>/<version>/` if it already has a valid
+/// manifest+src (no network I/O), otherwise fetch the index, resolve
+/// `name@version` against it, fetch the package bytes, checksum-verify
+/// them, and extract into the cache.
+pub fn resolve_registry_dep(
+    cache_root: &Path,
+    name: &str,
+    version: &str,
+    index_location: &str,
+) -> Result<ResolvedDep, PkgDepsError> {
+    let dest = cache_root.join(name).join(version);
+    let manifest = dest.join(pkg_init::MANIFEST_FILENAME);
+    let src_dir = dest.join("src");
+    if manifest.exists() && src_dir.is_dir() {
+        return Ok(ResolvedDep {
+            name: name.to_string(),
+            source: DepSource::Registry {
+                version: version.to_string(),
+            },
+            root: dest,
+            src_dir,
+        });
+    }
+
+    let index_bytes = pkg_registry::fetch_bytes(index_location)?;
+    let index_json = String::from_utf8(index_bytes).map_err(|e| PkgDepsError::RegistryError {
+        detail: format!(
+            "registry index at `{}` is not valid UTF-8: {}",
+            index_location, e
+        ),
+    })?;
+    let index = pkg_registry::parse_index(&index_json)?;
+    let (resolved_version, pv) = pkg_registry::resolve_package(&index, name, Some(version))?;
+    let resolved_version = resolved_version.to_string();
+
+    let contents = pkg_registry::fetch_bytes(&pv.source)?;
+    pkg_registry::verify_checksum(name, &resolved_version, pv, &contents)?;
+    pkg_registry::extract_ustar(&contents, &dest)?;
+
+    if !manifest.exists() {
+        return Err(PkgDepsError::PathDepMissingManifest {
+            name: name.to_string(),
+            path: dest,
+        });
+    }
+    if !src_dir.is_dir() {
+        return Err(PkgDepsError::PathDepMissingSrc {
+            name: name.to_string(),
+            path: dest,
+        });
+    }
+    Ok(ResolvedDep {
+        name: name.to_string(),
+        source: DepSource::Registry {
+            version: resolved_version,
+        },
+        root: dest,
+        src_dir,
+    })
+}
+
+/// `rz pkg add <name>` with no `path:`/`git:` spec — resolve a bare
+/// package name against a registry index. `version` pins an exact
+/// version; `None` resolves "latest" (lexicographically-greatest
+/// version string, see `pkg_registry::resolve_package`).
+/// `index_override` takes precedence over any `[registry]` section
+/// already in `resilient.toml`, and is persisted there for future
+/// `pkg add`/`pkg update` calls that don't repeat `--index`.
+pub fn add_registry_dependency(
+    name: &str,
+    version: Option<&str>,
+    index_override: Option<&str>,
+) -> Result<(), PkgDepsError> {
+    let cwd = env::current_dir().map_err(|e| PkgDepsError::Io {
+        context: "reading current directory".to_string(),
+        source: e,
+    })?;
+    let manifest_path =
+        pkg_init::find_manifest_upwards(&cwd).ok_or_else(|| PkgDepsError::ManifestNotFound {
+            searched_from: cwd.clone(),
+        })?;
+    let project_root = manifest_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or(cwd);
+
+    let configured = read_registry_index(&manifest_path);
+    let index_location = index_override
+        .map(str::to_string)
+        .or(configured)
+        .ok_or(PkgDepsError::RegistryNotConfigured)?;
+
+    let cache_root = default_registry_cache_dir()?;
+    // Resolve against the index first (even on a cache hit for an
+    // already-pinned exact version) so "latest" resolves to a
+    // concrete version and unknown packages/versions fail fast.
+    let index_bytes = pkg_registry::fetch_bytes(&index_location)?;
+    let index_json = String::from_utf8(index_bytes).map_err(|e| PkgDepsError::RegistryError {
+        detail: format!(
+            "registry index at `{}` is not valid UTF-8: {}",
+            index_location, e
+        ),
+    })?;
+    let index = pkg_registry::parse_index(&index_json)?;
+    let (resolved_version, _pv) = pkg_registry::resolve_package(&index, name, version)?;
+    let resolved_version = resolved_version.to_string();
+
+    let resolved = resolve_registry_dep(&cache_root, name, &resolved_version, &index_location)?;
+
+    let dep = Dependency {
+        name: name.to_string(),
+        source: DepSource::Registry {
+            version: resolved_version.clone(),
+        },
+    };
+    append_dep_to_manifest(&manifest_path, &dep)?;
+    if index_override.is_some() {
+        set_registry_index(&manifest_path, &index_location)?;
+    }
+
+    let all = resolve_all(&manifest_path)?;
+    write_lockfile(&project_root, &all)?;
+
+    println!(
+        "Added `{}@{}` from registry {} (resolved to {})",
+        name,
+        resolved_version,
+        index_location,
+        resolved.src_dir.display()
+    );
+    Ok(())
+}
+
+/// One reported version change from `rz pkg update`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateReport {
+    pub name: String,
+    pub old_version: String,
+    pub new_version: String,
+}
+
+/// `rz pkg update` — re-resolve every `registry`-sourced dependency
+/// against the configured (or overridden) index to "latest", refetch
+/// and checksum-verify anything whose version changed, rewrite the
+/// manifest's version pins, and refresh the lockfile for every
+/// dependency (path/git included, since their resolution can also
+/// have moved, e.g. a git dependency tracking a branch).
+pub fn update_dependencies(
+    index_override: Option<&str>,
+) -> Result<Vec<UpdateReport>, PkgDepsError> {
+    let cwd = env::current_dir().map_err(|e| PkgDepsError::Io {
+        context: "reading current directory".to_string(),
+        source: e,
+    })?;
+    let manifest_path =
+        pkg_init::find_manifest_upwards(&cwd).ok_or_else(|| PkgDepsError::ManifestNotFound {
+            searched_from: cwd.clone(),
+        })?;
+    let project_root = manifest_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or(cwd);
+
+    let deps = parse_dependencies(&manifest_path)?;
+    let registry_deps: Vec<&Dependency> = deps
+        .iter()
+        .filter(|d| matches!(d.source, DepSource::Registry { .. }))
+        .collect();
+
+    let mut reports = Vec::new();
+
+    if !registry_deps.is_empty() {
+        let configured = read_registry_index(&manifest_path);
+        let index_location = index_override
+            .map(str::to_string)
+            .or(configured)
+            .ok_or(PkgDepsError::RegistryNotConfigured)?;
+
+        let index_bytes = pkg_registry::fetch_bytes(&index_location)?;
+        let index_json =
+            String::from_utf8(index_bytes).map_err(|e| PkgDepsError::RegistryError {
+                detail: format!(
+                    "registry index at `{}` is not valid UTF-8: {}",
+                    index_location, e
+                ),
+            })?;
+        let index = pkg_registry::parse_index(&index_json)?;
+        let cache_root = default_registry_cache_dir()?;
+
+        for dep in &registry_deps {
+            let DepSource::Registry { version: old } = &dep.source else {
+                unreachable!("filtered to Registry sources above");
+            };
+            let (latest, _pv) = pkg_registry::resolve_package(&index, &dep.name, None)?;
+            let latest = latest.to_string();
+            if &latest != old {
+                resolve_registry_dep(&cache_root, &dep.name, &latest, &index_location)?;
+                update_manifest_dep_version(&manifest_path, &dep.name, &latest)?;
+                reports.push(UpdateReport {
+                    name: dep.name.clone(),
+                    old_version: old.clone(),
+                    new_version: latest,
+                });
+            }
+        }
+
+        if index_override.is_some() {
+            set_registry_index(&manifest_path, &index_location)?;
+        }
+    }
+
+    let all = resolve_all(&manifest_path)?;
+    write_lockfile(&project_root, &all)?;
+    Ok(reports)
+}
+
+/// Rewrite the single `<name> = { registry = "..." }` line in
+/// `[dependencies]` to pin `new_version` instead.
+fn update_manifest_dep_version(
+    manifest_path: &Path,
+    name: &str,
+    new_version: &str,
+) -> Result<(), PkgDepsError> {
+    let contents =
+        fs::read_to_string(manifest_path).map_err(|e| PkgDepsError::ManifestUnreadable {
+            path: manifest_path.to_path_buf(),
+            source: e,
+        })?;
+    let new_entry = format_dep_entry(&Dependency {
+        name: name.to_string(),
+        source: DepSource::Registry {
+            version: new_version.to_string(),
+        },
+    });
+
+    let mut in_deps = false;
+    let mut lines: Vec<String> = contents.lines().map(str::to_string).collect();
+    let mut replaced = false;
+    for line in &mut lines {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            in_deps = !rest.starts_with('[') && rest.trim_end_matches(']').trim() == "dependencies";
+            continue;
+        }
+        if !in_deps {
+            continue;
+        }
+        if let Some((key, _)) = trimmed.split_once('=')
+            && key.trim() == name
+        {
+            *line = new_entry.clone();
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        return Err(PkgDepsError::DependencyNotFound {
+            name: name.to_string(),
+        });
+    }
+
+    let mut joined = lines.join("\n");
+    if contents.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    fs::write(manifest_path, joined).map_err(|e| PkgDepsError::ManifestWriteError {
+        path: manifest_path.to_path_buf(),
+        source: e,
+    })
+}
+
 // ── Lockfile ─────────────────────────────────────────────────────
 
 /// Name of the lockfile.
@@ -557,6 +996,10 @@ pub fn render_lockfile(deps: &[ResolvedDep]) -> String {
                 if let Some(r) = rev {
                     out.push_str(&format!("rev = \"{}\"\n", r));
                 }
+            }
+            DepSource::Registry { version } => {
+                out.push_str(&format!("source = \"registry:{}\"\n", dep.name));
+                out.push_str(&format!("rev = \"{}\"\n", version));
             }
         }
         out.push('\n');
@@ -670,7 +1113,8 @@ pub fn add_dependency(name: &str, spec: &str, opts: &AddOpts) -> Result<(), PkgD
     };
 
     // Validate the dep resolves before writing.
-    let resolved = resolve_one(&project_root, &dep)?;
+    let registry_index = read_registry_index(&manifest_path);
+    let resolved = resolve_one(&project_root, &dep, registry_index.as_deref())?;
 
     // Append to manifest.
     append_dep_to_manifest(&manifest_path, &dep)?;
@@ -808,6 +1252,9 @@ fn format_dep_entry(dep: &Dependency) -> String {
             }
             s.push_str(" }");
             s
+        }
+        DepSource::Registry { version } => {
+            format!("{} = {{ registry = \"{}\" }}", dep.name, version)
         }
     }
 }
@@ -965,6 +1412,7 @@ fn dep_source_display(source: &DepSource) -> String {
             Some(r) => format!("git:{} (rev {})", url, r),
             None => format!("git:{}", url),
         },
+        DepSource::Registry { version } => format!("registry:{}", version),
     }
 }
 
@@ -1000,7 +1448,9 @@ pub fn resolve_dep_module(
         None => return Ok(None),
     };
     let project_root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let resolved = resolve_one(project_root, dep).map_err(|e| e.to_string())?;
+    let registry_index = read_registry_index(&manifest_path);
+    let resolved =
+        resolve_one(project_root, dep, registry_index.as_deref()).map_err(|e| e.to_string())?;
     let mut module_file = resolved.src_dir.clone();
     let segments: Vec<&str> = module.split("::").collect();
     let (last, dirs) = segments.split_last().expect("split on non-empty str");
@@ -1020,6 +1470,7 @@ pub fn resolve_dep_module(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn tmp_dir(tag: &str) -> PathBuf {
@@ -1739,6 +2190,324 @@ lib = { git = \"https://ex.com/lib\", branch = \"develop\" }
         let matches = search_dependencies_in(&manifest, "a").unwrap();
         let names: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "zeta"]);
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    // ── Registry dependency tests (RES-4114 increment 2) ─────────
+
+    fn make_registry_package_tarball(name: &str, version: &str, body: &str) -> Vec<u8> {
+        use crate::pkg_publish::{PublishManifest, make_tarball};
+        let src_dir = tmp_dir(&format!("registry_pkg_src_{}_{}", name, version));
+        fs::create_dir_all(src_dir.join("src")).unwrap();
+        fs::write(
+            src_dir.join("resilient.toml"),
+            format!(
+                "[package]\nname = \"{}\"\nversion = \"{}\"\n",
+                name, version
+            ),
+        )
+        .unwrap();
+        fs::write(src_dir.join("src/main.rz"), body).unwrap();
+        let manifest = PublishManifest {
+            name: name.to_string(),
+            version: version.to_string(),
+            description: None,
+            entry: PathBuf::from("src/main.rz"),
+        };
+        let files = vec![
+            PathBuf::from("resilient.toml"),
+            PathBuf::from("src/main.rz"),
+        ];
+        let tarball = make_tarball(&src_dir, &manifest, &files).unwrap();
+        let _ = fs::remove_dir_all(&src_dir);
+        tarball
+    }
+
+    fn write_registry_index(dir: &Path, entries: &[(&str, &str, &Path)]) -> PathBuf {
+        let mut packages = serde_json::Map::new();
+        for (name, version, tarball_path) in entries {
+            let bytes = fs::read(tarball_path).unwrap();
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let sha = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
+            let versions = packages
+                .entry(name.to_string())
+                .or_insert_with(|| serde_json::json!({ "versions": {} }));
+            versions["versions"][*version] = serde_json::json!({
+                "source": tarball_path.to_string_lossy(),
+                "sha256": sha,
+            });
+        }
+        let index_json = serde_json::json!({ "packages": packages }).to_string();
+        let index_path = dir.join("index.json");
+        fs::write(&index_path, index_json).unwrap();
+        index_path
+    }
+
+    #[test]
+    fn resolve_registry_dep_fetches_verifies_and_extracts() {
+        let project = tmp_dir("registry_resolve");
+        let tarball = make_registry_package_tarball("mylib", "1.0.0", "pub fn hi() { return 1; }");
+        let tarball_path = project.join("mylib-1.0.0.tar");
+        fs::write(&tarball_path, &tarball).unwrap();
+        let index_path = write_registry_index(&project, &[("mylib", "1.0.0", &tarball_path)]);
+
+        let cache_root = project.join("cache");
+        let resolved =
+            resolve_registry_dep(&cache_root, "mylib", "1.0.0", index_path.to_str().unwrap())
+                .unwrap();
+        assert_eq!(resolved.name, "mylib");
+        assert!(resolved.src_dir.join("main.rz").exists());
+        assert_eq!(
+            resolved.source,
+            DepSource::Registry {
+                version: "1.0.0".to_string()
+            }
+        );
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn resolve_registry_dep_reuses_cache_without_refetch() {
+        let project = tmp_dir("registry_cache_reuse");
+        let tarball = make_registry_package_tarball("mylib", "1.0.0", "pub fn hi() { return 1; }");
+        let tarball_path = project.join("mylib-1.0.0.tar");
+        fs::write(&tarball_path, &tarball).unwrap();
+        let index_path = write_registry_index(&project, &[("mylib", "1.0.0", &tarball_path)]);
+        let cache_root = project.join("cache");
+
+        resolve_registry_dep(&cache_root, "mylib", "1.0.0", index_path.to_str().unwrap()).unwrap();
+        // Delete the tarball and index — a cache hit must not need
+        // either of them again.
+        fs::remove_file(&tarball_path).unwrap();
+        fs::remove_file(&index_path).unwrap();
+        let resolved =
+            resolve_registry_dep(&cache_root, "mylib", "1.0.0", index_path.to_str().unwrap())
+                .unwrap();
+        assert!(resolved.src_dir.join("main.rz").exists());
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn resolve_registry_dep_rejects_checksum_mismatch() {
+        let project = tmp_dir("registry_checksum_mismatch");
+        let tarball = make_registry_package_tarball("mylib", "1.0.0", "pub fn hi() { return 1; }");
+        let tarball_path = project.join("mylib-1.0.0.tar");
+        fs::write(&tarball_path, &tarball).unwrap();
+        let index_json = format!(
+            r#"{{"packages":{{"mylib":{{"versions":{{"1.0.0":{{"source":"{}","sha256":"{}"}}}}}}}}}}"#,
+            tarball_path.to_string_lossy(),
+            "0".repeat(64),
+        );
+        let index_path = project.join("index.json");
+        fs::write(&index_path, index_json).unwrap();
+
+        let cache_root = project.join("cache");
+        let err = resolve_registry_dep(&cache_root, "mylib", "1.0.0", index_path.to_str().unwrap())
+            .unwrap_err();
+        assert!(matches!(err, PkgDepsError::RegistryError { .. }));
+        assert!(err.to_string().contains("checksum mismatch"));
+        // No cache directory should have been left behind with valid
+        // contents from the rejected fetch.
+        assert!(!cache_root.join("mylib/1.0.0/resilient.toml").exists());
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn resolve_registry_dep_missing_package_is_an_error() {
+        let project = tmp_dir("registry_missing_pkg");
+        let tarball = make_registry_package_tarball("mylib", "1.0.0", "pub fn hi() { return 1; }");
+        let tarball_path = project.join("mylib-1.0.0.tar");
+        fs::write(&tarball_path, &tarball).unwrap();
+        let index_path = write_registry_index(&project, &[("mylib", "1.0.0", &tarball_path)]);
+        let cache_root = project.join("cache");
+
+        let err = resolve_registry_dep(
+            &cache_root,
+            "does-not-exist",
+            "1.0.0",
+            index_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PkgDepsError::RegistryError { .. }));
+        assert!(err.to_string().contains("does-not-exist"));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn parse_registry_dep_from_manifest() {
+        let toml = "\
+[dependencies]
+mylib = { registry = \"1.2.3\" }
+";
+        let deps = parse_dependencies_from_str(toml).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(
+            deps[0].source,
+            DepSource::Registry {
+                version: "1.2.3".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn format_registry_dep_entry() {
+        let dep = Dependency {
+            name: "mylib".to_string(),
+            source: DepSource::Registry {
+                version: "1.2.3".to_string(),
+            },
+        };
+        assert_eq!(format_dep_entry(&dep), "mylib = { registry = \"1.2.3\" }");
+    }
+
+    #[test]
+    fn read_registry_index_from_manifest() {
+        let toml = "\
+[package]
+name = \"proj\"
+
+[registry]
+index = \"https://example.com/index.json\"
+
+[dependencies]
+mylib = { registry = \"1.0.0\" }
+";
+        assert_eq!(
+            read_registry_index_from_str(toml),
+            Some("https://example.com/index.json".to_string())
+        );
+    }
+
+    #[test]
+    fn read_registry_index_absent_is_none() {
+        let toml = "[package]\nname = \"proj\"\n";
+        assert_eq!(read_registry_index_from_str(toml), None);
+    }
+
+    #[test]
+    fn set_registry_index_appends_new_section() {
+        let project = tmp_dir("set_registry_index_new");
+        let manifest = project.join("resilient.toml");
+        fs::write(&manifest, "[package]\nname = \"proj\"\n").unwrap();
+        set_registry_index(&manifest, "https://example.com/index.json").unwrap();
+        let content = fs::read_to_string(&manifest).unwrap();
+        assert_eq!(
+            read_registry_index_from_str(&content),
+            Some("https://example.com/index.json".to_string())
+        );
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn set_registry_index_updates_existing_value() {
+        let project = tmp_dir("set_registry_index_update");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[registry]\nindex = \"old-location\"\n",
+        )
+        .unwrap();
+        set_registry_index(&manifest, "new-location").unwrap();
+        let content = fs::read_to_string(&manifest).unwrap();
+        assert_eq!(
+            read_registry_index_from_str(&content),
+            Some("new-location".to_string())
+        );
+        assert!(!content.contains("old-location"));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn update_manifest_dep_version_rewrites_pin() {
+        let project = tmp_dir("update_manifest_version");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\n\
+             mylib = { registry = \"1.0.0\" }\nother = { path = \"../other\" }\n",
+        )
+        .unwrap();
+        update_manifest_dep_version(&manifest, "mylib", "1.1.0").unwrap();
+        let deps = parse_dependencies(&manifest).unwrap();
+        let mylib = deps.iter().find(|d| d.name == "mylib").unwrap();
+        assert_eq!(
+            mylib.source,
+            DepSource::Registry {
+                version: "1.1.0".to_string()
+            }
+        );
+        // Untouched sibling dependency.
+        let other = deps.iter().find(|d| d.name == "other").unwrap();
+        assert_eq!(
+            other.source,
+            DepSource::Path {
+                path: "../other".to_string()
+            }
+        );
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn update_manifest_dep_version_missing_dep_is_an_error() {
+        let project = tmp_dir("update_manifest_missing");
+        let manifest = project.join("resilient.toml");
+        fs::write(&manifest, "[package]\nname = \"proj\"\n\n[dependencies]\n").unwrap();
+        let err = update_manifest_dep_version(&manifest, "nope", "1.0.0").unwrap_err();
+        assert!(matches!(err, PkgDepsError::DependencyNotFound { .. }));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn registry_dep_end_to_end_resolve_and_lockfile() {
+        // Mirrors `remove_dependency_end_to_end_updates_lockfile`'s
+        // approach: exercise the pure core (`resolve_all` +
+        // `write_lockfile`) rather than the CWD-driven CLI entry
+        // point, since `add_registry_dependency` depends on
+        // `env::current_dir()`.
+        let project = tmp_dir("registry_e2e");
+        let tarball = make_registry_package_tarball("mylib", "2.0.0", "pub fn hi() { return 1; }");
+        let tarball_path = project.join("mylib-2.0.0.tar");
+        fs::write(&tarball_path, &tarball).unwrap();
+        let index_path = write_registry_index(&project, &[("mylib", "2.0.0", &tarball_path)]);
+
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            format!(
+                "[package]\nname = \"proj\"\n\n[registry]\nindex = \"{}\"\n\n\
+                 [dependencies]\nmylib = {{ registry = \"2.0.0\" }}\n",
+                index_path.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let resolved = resolve_all(&manifest).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].src_dir.join("main.rz").exists());
+        write_lockfile(&project, &resolved).unwrap();
+
+        let lock_content = fs::read_to_string(project.join(LOCKFILE_NAME)).unwrap();
+        assert!(lock_content.contains("source = \"registry:mylib\""));
+        assert!(lock_content.contains("rev = \"2.0.0\""));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn resolve_all_registry_dep_without_configured_index_errors() {
+        let project = tmp_dir("registry_no_index");
+        let manifest = project.join("resilient.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"proj\"\n\n[dependencies]\nmylib = { registry = \"1.0.0\" }\n",
+        )
+        .unwrap();
+        let err = resolve_all(&manifest).unwrap_err();
+        assert!(matches!(err, PkgDepsError::RegistryNotConfigured));
         let _ = fs::remove_dir_all(&project);
     }
 }
