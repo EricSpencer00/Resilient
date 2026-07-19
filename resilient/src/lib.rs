@@ -3505,7 +3505,19 @@ struct Parser {
     /// legal identifier char in user code, so user bindings
     /// can't collide).
     comprehension_counter: u32,
+    /// RES-4185: current recursive-expression nesting depth. Incremented
+    /// on entry to `parse_expression` and decremented on exit; guards
+    /// against a stack overflow (SIGABRT) on adversarial deeply-nested
+    /// input (e.g. thousands of nested parens) by returning a typed
+    /// diagnostic instead of recursing without bound.
+    expr_depth: u32,
 }
+
+/// RES-4185: maximum recursive-descent expression nesting depth.
+/// Chosen well above any nesting found in `resilient/examples/` (deepest
+/// legitimate expression nesting there is well under 100) while staying
+/// far below the depth that risks a native stack overflow.
+const MAX_EXPR_DEPTH: u32 = 500;
 
 impl Parser {
     fn new(lexer: Lexer) -> Self {
@@ -3528,6 +3540,7 @@ impl Parser {
             errors: Vec::new(),
             emit_errors,
             comprehension_counter: 0,
+            expr_depth: 0,
         };
 
         parser.next_token();
@@ -8768,7 +8781,27 @@ impl Parser {
         span::Span::new(pos, pos)
     }
 
+    /// RES-4185: depth-guarded entry point. Delegates to
+    /// `parse_expression_inner` for the actual recursive-descent logic,
+    /// tracking `expr_depth` around the call so pathological input
+    /// (e.g. thousands of nested parens) hits a typed diagnostic instead
+    /// of overflowing the native stack.
     fn parse_expression(&mut self, precedence: u8) -> Option<Node> {
+        self.expr_depth += 1;
+        if self.expr_depth > MAX_EXPR_DEPTH {
+            self.expr_depth -= 1;
+            self.record_error(format!(
+                "expression nesting too deep (limit {})",
+                MAX_EXPR_DEPTH
+            ));
+            return None;
+        }
+        let result = self.parse_expression_inner(precedence);
+        self.expr_depth -= 1;
+        result
+    }
+
+    fn parse_expression_inner(&mut self, precedence: u8) -> Option<Node> {
         // Parse prefix expressions
         let tok_span = self.span_at_current();
         let mut left_expr = match &self.current_token {
@@ -35195,6 +35228,54 @@ mod tests {
             }
             other => panic!("expected Node::Extern, got {:?}", other),
         }
+    }
+
+    /// RES-4185: runs `f` on a thread with a production-sized stack
+    /// (matching `main.rs`'s 16 MiB `STACK_SIZE`), so these depth-guard
+    /// tests reflect real CLI behavior rather than the default test
+    /// thread's much smaller stack.
+    fn run_with_prod_stack<F: FnOnce() + Send + 'static>(f: F) {
+        const STACK_SIZE: usize = 16 * 1024 * 1024;
+        std::thread::Builder::new()
+            .stack_size(STACK_SIZE)
+            .spawn(f)
+            .expect("failed to spawn test thread")
+            .join()
+            .expect("test thread panicked");
+    }
+
+    /// RES-4185: ~5000 nested parens used to SIGABRT the parser via a
+    /// native stack overflow. It must now return a clean typed
+    /// diagnostic instead of crashing.
+    #[test]
+    fn deeply_nested_parens_reports_diagnostic_instead_of_overflowing() {
+        run_with_prod_stack(|| {
+            let src = format!(
+                "fn main() {{ let x = {}1{}; }}",
+                "(".repeat(5000),
+                ")".repeat(5000)
+            );
+            let (_program, errs) = crate::parse(&src);
+            assert!(
+                errs.iter().any(|e| e.contains("nesting too deep")),
+                "expected a nesting diagnostic, got: {:?}",
+                errs
+            );
+        });
+    }
+
+    /// RES-4185: nesting just under the limit must still parse cleanly.
+    #[test]
+    fn nested_parens_under_limit_parse_cleanly() {
+        run_with_prod_stack(|| {
+            let src = format!(
+                "fn main() {{ let x = {}1{}; }}",
+                "(".repeat(490),
+                ")".repeat(490)
+            );
+            let (_program, errs) = crate::parse(&src);
+            assert!(errs.is_empty(), "unexpected parse errors: {:?}", errs);
+        });
     }
 
     #[test]
