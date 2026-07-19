@@ -6473,6 +6473,9 @@ impl TypeChecker {
                 // Add new compiler pass calls here (append-only).
                 // Pattern: crate::your_feature::check(program, source_path)?;
                 // Merge conflicts: keep ALL calls from both sides.
+                // RES-4197: `let const` immutability — rejects any
+                // reassignment of a `let const` binding with E0012.
+                crate::immutability::check(program, source_path)?;
                 // RES-1612 gate: pass scans for `Node::TryCatch`.
                 if markers.has_try_catch {
                     crate::try_catch::check(program, source_path)?;
@@ -8247,6 +8250,7 @@ impl TypeChecker {
                 value,
                 type_annot,
                 span,
+                is_const: _,
             } => {
                 // RES-1862: track innermost span for better diagnostics.
                 self.current_span = *span;

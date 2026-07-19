@@ -201,6 +201,7 @@ fn rewrite_node(node: &Node, ctx: &mut DevirtCtx) -> Node {
             value,
             type_annot,
             span,
+            is_const,
         } => {
             let new_value = rewrite_node(value, ctx);
             // Record the struct type of this binding if the RHS is a struct literal.
@@ -215,6 +216,7 @@ fn rewrite_node(node: &Node, ctx: &mut DevirtCtx) -> Node {
                 value: Box::new(new_value),
                 type_annot: type_annot.clone(),
                 span: *span,
+                is_const: *is_const,
             }
         }
         Node::CallExpression {

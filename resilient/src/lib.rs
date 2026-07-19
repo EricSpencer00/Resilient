@@ -420,6 +420,10 @@ mod generic_inference;
 // to specialized clones (e.g. `identity(42)` → `identity$Int(42)`).
 // Runs after typecheck, before `compiler::compile`.
 mod monomorph;
+// RES-4197: `let const NAME = expr;` immutability enforcement —
+// rejects any later plain reassignment of a `let const` binding with
+// `E0012`. See docs/IMMUTABILITY.md for the phased design.
+mod immutability;
 // RES-2615: type variance inference — classifies each generic type
 // parameter as covariant (+T), contravariant (-T), or invariant.
 // Stores results in a thread-local registry for downstream subtyping.
@@ -2642,6 +2646,14 @@ enum Node {
         /// keyword vs the whole enclosing statement).
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-4197: opt-in `let const NAME = expr;` form. When `true`,
+        /// `check_immutability` (typechecker.rs `<EXTENSION_PASSES>`)
+        /// rejects any later plain reassignment of `name` in the same
+        /// function with `E0012`. Defaults to `false` for every
+        /// pre-existing `let` construction site — purely additive,
+        /// see docs/IMMUTABILITY.md Phase 2/3.
+        #[allow(dead_code)]
+        is_const: bool,
     },
     /// RES-013: `static let NAME = EXPR;` — like let, but stored in a
     /// per-interpreter statics map so the binding survives across
@@ -7053,6 +7065,21 @@ impl Parser {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'let'
 
+        // RES-4197: opt-in `let const NAME = expr;` — reuses the
+        // existing top-level `const` keyword as a per-binding
+        // modifier (see docs/IMMUTABILITY.md "Alternatives
+        // considered"). Only recognized in the simple-name form;
+        // `let const (a, b) = ...` / `let const Struct { .. } = ...`
+        // fall through to the tuple/struct destructure parsers below
+        // with the modifier silently dropped — those combos are
+        // undocumented and out of scope for RES-4197 Phase 2.
+        let is_const = if self.current_token == Token::Const {
+            self.next_token();
+            true
+        } else {
+            false
+        };
+
         // RES-922: accept and ignore `let mut x = ...`. Resilient bindings
         // are always reassignable today (`let x = 1; x = 2;` works);
         // the `mut` marker is purely syntactic sugar for Rust users'
@@ -7085,6 +7112,7 @@ impl Parser {
                     }),
                     type_annot: None,
                     span: stmt_span,
+                    is_const,
                 };
             }
         };
@@ -7124,6 +7152,7 @@ impl Parser {
                 }),
                 type_annot,
                 span: stmt_span,
+                is_const,
             };
         }
 
@@ -7178,6 +7207,7 @@ impl Parser {
             value: Box::new(value),
             type_annot,
             span: stmt_span,
+            is_const,
         }
     }
 
@@ -11045,6 +11075,7 @@ impl Parser {
             }),
             type_annot: None,
             span: default(),
+            is_const: false,
         };
 
         // return _r;
@@ -37934,6 +37965,65 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 10),
             other => panic!("expected Int(10), got {:?}", other),
         }
+    }
+
+    /// RES-4197 Phase 2: `let const NAME = expr;` parses as a
+    /// `Node::LetStatement` with `is_const: true` and evaluates
+    /// exactly like a plain `let` — the opt-in modifier only affects
+    /// typechecking (see `immutability.rs`), never runtime behavior.
+    #[test]
+    fn let_const_keyword_is_accepted_and_evaluates_like_let() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let const x = 5;\n\
+                return x;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let Node::Program(stmts) = &program else {
+            panic!("expected Program");
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!("expected Function");
+        };
+        let Node::Block { stmts: block, .. } = body.as_ref() else {
+            panic!("expected Block");
+        };
+        let Node::LetStatement { is_const, .. } = &block[0] else {
+            panic!("expected LetStatement");
+        };
+        assert!(*is_const, "expected `let const` to set is_const: true");
+
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5),
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    /// RES-4197: a plain (non-`const`) `let` binding still parses with
+    /// `is_const: false` — the additive default every pre-existing
+    /// construction site relies on.
+    #[test]
+    fn plain_let_has_is_const_false() {
+        let src = "fn main(int _d) -> int { let x = 5; return x; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let Node::Program(stmts) = &program else {
+            panic!("expected Program");
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!("expected Function");
+        };
+        let Node::Block { stmts: block, .. } = body.as_ref() else {
+            panic!("expected Block");
+        };
+        let Node::LetStatement { is_const, .. } = &block[0] else {
+            panic!("expected LetStatement");
+        };
+        assert!(!*is_const);
     }
 
     /// RES-921: negative array indices wrap from the end. `arr[-1]` is

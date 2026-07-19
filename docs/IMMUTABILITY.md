@@ -115,17 +115,56 @@ shape is:
 
 ## Phased implementation plan / tickets to file
 
-| Phase | Scope | Ticket |
-|---|---|---|
-| 0 | This document — honest current-state doc + design decision (this PR) | RES-4197 |
-| 1 | `STABILITY.md`: add explicit line under Stable core syntax stating `let` reassignment is a guaranteed-stable behavior | follow-up, small |
-| 2 | Lexer/parser: accept `let const NAME = expr;` as a distinct `Node` variant (or a bool flag on the existing let-binding node) | follow-up |
-| 3 | Typechecker: track per-binding immutability in scope; emit `E0012` on any bare assignment (`=`, `+=`, `-=`, `*=`, `/=`, etc.) to a `let const` binding, with an `.expected.txt` conformance golden | follow-up, depends on Phase 2 |
-| 4 | Opt-in lint pass (`immutable-by-default` suggestion) gated behind a flag, off by default; instrumentation to gather real corpus/usage stats | follow-up, depends on Phase 3 |
-| 5 (tentative) | Revisit default-immutability for a 2.0 major version based on Phase 4 data | not filed — explicitly deferred, requires maintainer sign-off per STABILITY.md major-version process |
+| Phase | Scope | Status | Ticket |
+|---|---|---|---|
+| 0 | This document — honest current-state doc + design decision (this PR) | ✅ done | RES-4197 |
+| 1 | `STABILITY.md`: add explicit line under Stable core syntax stating `let` reassignment is a guaranteed-stable behavior | ☐ open | follow-up, small |
+| 2 | Lexer/parser: accept `let const NAME = expr;` — a `bool` `is_const` flag added to the existing `Node::LetStatement` variant (see "Alternatives considered" — the flag shape was chosen over a new `Node` variant to avoid touching the ~70 files that pattern-match `Node::LetStatement`) | ✅ done | shipped this PR |
+| 3 | Typechecker: track per-binding immutability, path-insensitive, same-function; emit `E0012` on any bare assignment (`=`, or a compound assign — the parser already desugars those to a plain assignment) to a `let const` binding. Lives in `resilient/src/immutability.rs`, wired via the `typechecker.rs` `<EXTENSION_PASSES>` block. Shadowing via a new `let` in the same or a nested scope is allowed and ends enforcement for that name from that point on. `RESILIENT_RICH_DIAG` gates the `[E0012]` label, matching every other registry code. | ✅ done | shipped this PR |
+| 4 | Opt-in lint pass (`immutable-by-default` suggestion) gated behind a flag, off by default; instrumentation to gather real corpus/usage stats | ☐ open | follow-up, depends on Phase 3 |
+| 5 (tentative) | Revisit default-immutability for a 2.0 major version based on Phase 4 data | ☐ open, not filed | explicitly deferred, requires maintainer sign-off per STABILITY.md major-version process |
 
 Phases 1-4 are each independently shippable, additive-only PRs consistent
-with the incremental-PR guidance in `CLAUDE.md`.
+with the incremental-PR guidance in `CLAUDE.md`. Phases 2 and 3 shipped
+together in the PR that added this note (RES-4197) — see
+`resilient/src/immutability.rs` for the enforcement pass and
+`resilient/src/lib.rs`'s `parse_let_statement` for the opt-in grammar.
+Phases 1, 4, and 5 stay open; Phase 1 and 4 are tracked under the
+original `#4197` issue (`Refs #4197`) for follow-up.
+
+### Phase 2/3 syntax and semantics (shipped)
+
+```resilient
+fn calibrate() -> int {
+    let const limit = 10;   // opt-in immutable binding
+    let total = limit + 5;  // reading a `let const` is unrestricted
+    // limit = 20;           // rejected: E0012 — cannot reassign `limit`
+    if total > limit {
+        let limit = 99;      // a fresh `let` (const or not) shadows —
+        // limit = 100;       //   this reassignment targets the *new*,
+                              //   non-const `limit` and is allowed.
+    }
+    total
+}
+```
+
+- Enforcement is **same-function**: a `let const` in one function has
+  no effect on any other function (each `fn` body — and each
+  `ImplBlock` method body — gets a fresh scope stack).
+- Enforcement is **path-insensitive**: a reassignment inside an
+  `if`/`while`/`for`/`match` arm is rejected the same as one at the top
+  of the function, regardless of whether the branches are jointly
+  reachable.
+- Enforcement is **provable-only**: the pass proves "this name was
+  declared `let const` in an enclosing lexical scope, and this
+  statement writes to it with no intervening shadowing `let`." It does
+  not attempt aliasing or indirect-mutation analysis (e.g. mutation
+  through a struct field or a reference) — those are out of scope for
+  RES-4197.
+- `let const (a, b) = ...;` (tuple destructure) and
+  `let const Struct { .. } = ...;` (struct destructure) are **not**
+  supported — the modifier is silently dropped for those forms, which
+  matches the pre-existing behavior of the `let mut` sugar (RES-922).
 
 ## Reproducing the corpus measurement
 
