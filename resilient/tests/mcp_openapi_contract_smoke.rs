@@ -6,12 +6,20 @@
 //! response shape against the hand-written schemas rather than parsing
 //! the OpenAPI file itself — the goal is to catch drift between the doc
 //! and the implementation, not to build a general JSON-schema validator.
+//!
+//! RES-4204: startup and per-call connects use the shared retry-connect
+//! helper in `mcp_smoke_support` instead of a single-attempt connect, to
+//! absorb the CI startup race between spawning `rz` and its listener
+//! actually accepting connections.
+
+#[path = "mcp_smoke_support/mod.rs"]
+mod mcp_smoke_support;
 
 use serde_json::Value;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
@@ -39,21 +47,8 @@ impl Server {
             .spawn()
             .expect("failed to spawn rz mcp --http-port");
         let server = Server { child, port };
-        server.wait_ready();
+        mcp_smoke_support::wait_until_ready(server.port, mcp_smoke_support::DEFAULT_READY_DEADLINE);
         server
-    }
-
-    fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
-            }
-            if Instant::now() > deadline {
-                panic!("server on port {} never became ready", self.port);
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
     }
 }
 
@@ -65,7 +60,8 @@ impl Drop for Server {
 }
 
 fn http_call(port: u16, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to MCP HTTP server");
+    let mut stream =
+        mcp_smoke_support::connect_retrying(port, mcp_smoke_support::DEFAULT_READY_DEADLINE);
     stream
         .set_read_timeout(Some(Duration::from_secs(15)))
         .unwrap();
