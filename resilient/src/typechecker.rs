@@ -1532,6 +1532,40 @@ fn render_impure_builtin_error(callee: &str) -> String {
     format!("{}calls impure builtin `{}`", prefix, callee)
 }
 
+/// RES-4115: format the "io call from a `pure` context" error. Same
+/// E0020 code as `render_impure_builtin_error` — both are the same
+/// error class (a `pure`-annotated function reaching a side-effecting
+/// operation), just detected at different call sites in
+/// `check_body_purity`. Default output is byte-identical to the
+/// pre-existing plain message; `RESILIENT_RICH_DIAG=1` prefixes the
+/// `[E0020]` code.
+fn render_io_from_pure_context_error(callee: &str) -> String {
+    let prefix = if rich_diag_enabled() { "[E0020] " } else { "" };
+    format!(
+        "{}cannot call io function `{}` from pure context",
+        prefix, callee
+    )
+}
+
+/// RES-4115: format the call-arity-mismatch error. Default output is
+/// byte-identical to the pre-existing plain message; `RESILIENT_RICH_DIAG=1`
+/// prefixes the `[E0006]` code.
+fn render_arity_mismatch_error(expected: usize, got: usize) -> String {
+    let prefix = if rich_diag_enabled() { "[E0006] " } else { "" };
+    format!("{}Expected {} arguments, got {}", prefix, expected, got)
+}
+
+/// RES-4115: format the static division/modulo-by-zero error. Default
+/// output is byte-identical to the pre-existing plain message;
+/// `RESILIENT_RICH_DIAG=1` prefixes the `[E0008]` code.
+fn render_div_by_zero_error(op_name: &str) -> String {
+    let prefix = if rich_diag_enabled() { "[E0008] " } else { "" };
+    format!(
+        "{}integer {} by zero — denominator is a compile-time constant 0",
+        prefix, op_name
+    )
+}
+
 /// RES-217: format + print the partial-proof warning to stderr.
 /// The message follows the ticket's mandated shape:
 ///
@@ -10375,14 +10409,11 @@ impl TypeChecker {
                             && let Some(divisor) = fold_const_i64(right, &self.const_bindings)
                             && divisor == 0
                         {
-                            return Err(format!(
-                                "integer {} by zero — denominator is a compile-time constant 0",
-                                if *operator == "/" {
-                                    "division"
-                                } else {
-                                    "modulo"
-                                }
-                            ));
+                            return Err(render_div_by_zero_error(if *operator == "/" {
+                                "division"
+                            } else {
+                                "modulo"
+                            }));
                         }
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
@@ -10844,10 +10875,9 @@ impl TypeChecker {
 
                         // Check argument count
                         if arguments.len() != explicit_params {
-                            return Err(format!(
-                                "Expected {} arguments, got {}",
+                            return Err(render_arity_mismatch_error(
                                 explicit_params,
-                                arguments.len()
+                                arguments.len(),
                             ));
                         }
 
@@ -13086,18 +13116,12 @@ fn check_body_effects(
                     ) {
                         return Ok(());
                     }
-                    return Err(format!(
-                        "cannot call io function `{}` from pure context",
-                        callee
-                    ));
+                    return Err(render_io_from_pure_context_error(callee));
                 }
                 // Builtins: pure-by-default list passes; anything
                 // flagged impure by RES-191 is also implicitly io.
                 if IMPURE_BUILTINS.contains(&callee.as_str()) {
-                    return Err(format!(
-                        "cannot call io function `{}` from pure context",
-                        callee
-                    ));
+                    return Err(render_io_from_pure_context_error(callee));
                 }
                 if is_known_pure_builtin(callee) {
                     return Ok(());
@@ -13123,10 +13147,7 @@ fn check_body_effects(
                 // Unknown callee (not in BUILTINS and not a
                 // declared user fn) — conservatively reject so a
                 // `pure` annotation remains meaningful.
-                return Err(format!(
-                    "cannot call io function `{}` from pure context",
-                    callee
-                ));
+                return Err(render_io_from_pure_context_error(callee));
             }
             // Method / computed callee — can't resolve statically;
             // same conservative rejection as the purity pass.
@@ -14349,6 +14370,32 @@ mod res340_rich_type_mismatch_tests {
     fn impure_builtin_error_carries_e0020_when_gated() {
         let out = render_impure_builtin_error("println");
         assert_gated_code(&out, "calls impure builtin `println`", "E0020");
+    }
+
+    #[test]
+    fn io_from_pure_context_error_carries_e0020_when_gated() {
+        let out = render_io_from_pure_context_error("println");
+        assert_gated_code(
+            &out,
+            "cannot call io function `println` from pure context",
+            "E0020",
+        );
+    }
+
+    #[test]
+    fn arity_mismatch_error_carries_e0006_when_gated() {
+        let out = render_arity_mismatch_error(2, 1);
+        assert_gated_code(&out, "Expected 2 arguments, got 1", "E0006");
+    }
+
+    #[test]
+    fn div_by_zero_error_carries_e0008_when_gated() {
+        let out = render_div_by_zero_error("division");
+        assert_gated_code(
+            &out,
+            "integer division by zero — denominator is a compile-time constant 0",
+            "E0008",
+        );
     }
 
     #[test]
