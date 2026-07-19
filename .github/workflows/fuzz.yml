@@ -47,8 +47,12 @@
 #     crate's own `z3` feature, AND libz3 on the runner (`apt-get
 #     install libz3-dev z3 clang`, same as `ci.yml`'s `z3_ci` job).
 #     A Z3 solver call can legitimately run longer than a lex/parse
-#     pass, so this target alone uses a 5s (not 1s) per-input
-#     libFuzzer timeout (`matrix.per_input_timeout`).
+#     pass, so this target uses a 5s per-input libFuzzer timeout
+#     (`matrix.per_input_timeout`) — as of RES-4182, every target in
+#     the matrix uses the same 5s budget, since the CLI-boundary
+#     targets fork+exec `rz` per input and that spawn latency alone
+#     can exceed 1s on a noisy shared runner (see the "Run" step below
+#     for the full RES-4182 writeup).
 # Without its required compiler feature, a target's `[[bin]]` simply
 # wouldn't build — the matrix always builds `rz` and the fuzz crate
 # with the right features for each target, so every entry here is
@@ -99,22 +103,22 @@ jobs:
             rz_features: ""
             fuzz_features: ""
             needs_z3: false
-            per_input_timeout: 1
+            per_input_timeout: 5
           - target: lex
             rz_features: ""
             fuzz_features: ""
             needs_z3: false
-            per_input_timeout: 1
+            per_input_timeout: 5
           - target: contracts
             rz_features: ""
             fuzz_features: ""
             needs_z3: false
-            per_input_timeout: 1
+            per_input_timeout: 5
           - target: jit
             rz_features: "jit"
             fuzz_features: "jit"
             needs_z3: false
-            per_input_timeout: 1
+            per_input_timeout: 5
           - target: z3_translate
             rz_features: "z3"
             fuzz_features: "z3"
@@ -190,11 +194,26 @@ jobs:
         working-directory: fuzz
         run: |
           # Per-input timeout is target-specific (`matrix.per_input_timeout`):
-          # 1 second for the CLI-boundary lex/parse/contracts/jit
-          # targets, 5 seconds for `z3_translate` since a Z3 solver
-          # call can legitimately take longer. libFuzzer records
-          # inputs that exceed the timeout as timeouts (surfaced as
-          # crashes).
+          # 5 seconds for every target here. libFuzzer records inputs
+          # that exceed the timeout as timeouts (surfaced as crashes).
+          #
+          # RES-4182: the CLI-boundary lex/parse/contracts/jit targets
+          # used to run at `-timeout=1`. That fired intermittently on
+          # shared GitHub-hosted runners (#4180, #4183) even though the
+          # captured "timeout" artifact turned out to be an unmodified
+          # (or single-byte-mutated) seed-corpus program that parses in
+          # low single-digit milliseconds locally — there is no known
+          # pathological O(n^2)+ input class in the parser/lexer. Each
+          # iteration of these targets forks+execs a fresh `rz`
+          # subprocess (see the harnesses' doc comments), and that
+          # process-spawn latency is what occasionally blows past a
+          # 1-second budget under noisy-neighbor CI load, not algorithmic
+          # complexity in the compiler. `z3_translate` already used 5s
+          # for the analogous reason (a real SMT call can legitimately
+          # be slow); the other four targets get the same budget so the
+          # gate reflects "did this hang", not "was this runner busy".
+          # This workflow is advisory-only (not in required-status-checks),
+          # so widening the budget doesn't relax anything CI-blocking.
           if [[ -n "${{ matrix.fuzz_features }}" ]]; then
             cargo +nightly fuzz run ${{ matrix.target }} --features "${{ matrix.fuzz_features }}" -- \
               -max_total_time=${{ steps.duration.outputs.seconds }} \
