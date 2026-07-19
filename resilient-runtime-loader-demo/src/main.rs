@@ -119,6 +119,25 @@ const CLOSURES_SLOTS: usize = 2;
 
 const CLOSURES_EXPECTED: Value = Value::Int(41);
 
+/// RES-4083 (closure call-site arguments): `resilient/examples/
+/// closures_embedded_args.rz` — `outer(base)` defines a nested
+/// `addBase(x)` closure that captures `base` by value and calls it
+/// with one call-site argument, exercising `rzbc_emit.rs`'s
+/// `bridge_closure_call_args` host-`[closure, arg]` ->
+/// embedded-`[arg, closure]` stack-order bridge on real hardware.
+static CLOSURES_ARGS_RZBC_BLOB: &[u8] =
+    include_bytes!("../../resilient-runtime/fixtures/closures_args_demo.rzbc");
+
+const CLOSURES_ARGS_MAIN_N: usize = 32;
+const CLOSURES_ARGS_FUNC_META_N: usize = 4;
+const CLOSURES_ARGS_FUNC_CODE_N: usize = 32;
+const CLOSURES_ARGS_STACK: usize = 8;
+const CLOSURES_ARGS_LOCALS: usize = 4;
+const CLOSURES_ARGS_CALLS: usize = 4;
+const CLOSURES_ARGS_SLOTS: usize = 2;
+
+const CLOSURES_ARGS_EXPECTED: Value = Value::Int(42);
+
 #[entry]
 fn main() -> ! {
     match load_and_run::<MAX_INSTRS, STACK_SLOTS, LOCALS_SLOTS>(RZBC_BLOB) {
@@ -211,14 +230,46 @@ fn main() -> ! {
     {
         Ok(v) if v == CLOSURES_EXPECTED => {
             hprintln!("closures loader ok: {:?}", v);
-            debug::exit(debug::EXIT_SUCCESS);
         }
         Ok(v) => {
             hprintln!("closures loader produced unexpected value: {:?}", v);
             debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
         }
         Err(e) => {
             hprintln!("closures loader error: {:?}", e);
+            debug::exit(debug::EXIT_FAILURE);
+            loop {
+                cortex_m::asm::nop();
+            }
+        }
+    }
+
+    match load_and_run_with_functions_and_closures::<
+        CLOSURES_ARGS_MAIN_N,
+        CLOSURES_ARGS_FUNC_META_N,
+        CLOSURES_ARGS_FUNC_CODE_N,
+        CLOSURES_ARGS_STACK,
+        CLOSURES_ARGS_LOCALS,
+        CLOSURES_ARGS_CALLS,
+        CLOSURES_ARGS_SLOTS,
+    >(CLOSURES_ARGS_RZBC_BLOB)
+    {
+        Ok(v) if v == CLOSURES_ARGS_EXPECTED => {
+            hprintln!("closures-with-args loader ok: {:?}", v);
+            debug::exit(debug::EXIT_SUCCESS);
+        }
+        Ok(v) => {
+            hprintln!(
+                "closures-with-args loader produced unexpected value: {:?}",
+                v
+            );
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(e) => {
+            hprintln!("closures-with-args loader error: {:?}", e);
             debug::exit(debug::EXIT_FAILURE);
         }
     }
