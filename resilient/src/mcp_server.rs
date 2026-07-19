@@ -59,10 +59,11 @@
 //!
 //! Notification messages (no `id` field) receive no response.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -191,6 +192,160 @@ pub fn run() {
     }
 }
 
+// ── RES-3952: Prometheus /metrics ────────────────────────────────────────────
+
+/// Bucket upper bounds (seconds) for the request-duration histogram, matching
+/// the Prometheus client library defaults commonly used for sub-second HTTP
+/// handlers.
+const DURATION_BUCKETS_SECS: [f64; 11] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+/// In-tree, dependency-free Prometheus metrics for the MCP HTTP wrapper.
+/// Deliberately atomic-counter-based (no `prometheus`/`metrics` crate) per
+/// the "no new deps" constraint — this crate already avoids adding
+/// observability dependencies for the same reason the access log uses plain
+/// `eprintln!` instead of `tracing`.
+struct Metrics {
+    requests_by_status: Mutex<HashMap<u16, u64>>,
+    duration_bucket_counts: [AtomicU64; DURATION_BUCKETS_SECS.len()],
+    duration_sum_ms: AtomicU64,
+    duration_count: AtomicU64,
+    rate_limited_total: AtomicU64,
+    in_flight: AtomicI64,
+}
+
+static METRICS: OnceLock<Metrics> = OnceLock::new();
+
+fn metrics() -> &'static Metrics {
+    METRICS.get_or_init(|| Metrics {
+        requests_by_status: Mutex::new(HashMap::new()),
+        duration_bucket_counts: std::array::from_fn(|_| AtomicU64::new(0)),
+        duration_sum_ms: AtomicU64::new(0),
+        duration_count: AtomicU64::new(0),
+        rate_limited_total: AtomicU64::new(0),
+        in_flight: AtomicI64::new(0),
+    })
+}
+
+/// RAII in-flight gauge: incremented when a request starts being handled,
+/// decremented on every exit path (including early 413/429 returns) via
+/// `Drop`, so no return site needs to remember to decrement manually.
+struct InFlightGuard;
+
+impl InFlightGuard {
+    fn new() -> Self {
+        metrics().in_flight.fetch_add(1, Ordering::Relaxed);
+        InFlightGuard
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        metrics().in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Records one completed HTTP request: status-code counter and the
+/// request-duration histogram. Called once per request from `log_request`,
+/// which already runs on every exit path of `handle_http_stream`.
+fn record_request(status: u16, duration: Duration) {
+    let m = metrics();
+    {
+        let mut map = m
+            .requests_by_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *map.entry(status).or_insert(0) += 1;
+    }
+    let seconds = duration.as_secs_f64();
+    m.duration_sum_ms
+        .fetch_add((seconds * 1000.0) as u64, Ordering::Relaxed);
+    m.duration_count.fetch_add(1, Ordering::Relaxed);
+    for (i, le) in DURATION_BUCKETS_SECS.iter().enumerate() {
+        if seconds <= *le {
+            m.duration_bucket_counts[i].fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    }
+    // Exceeds every finite bucket — only the `+Inf` bucket (== total count,
+    // rendered separately) needs to account for it.
+}
+
+/// Renders all registered metrics in Prometheus text exposition format
+/// (https://prometheus.io/docs/instrumenting/exposition_formats/).
+fn render_prometheus_metrics() -> String {
+    let m = metrics();
+    let mut out = String::new();
+
+    out.push_str(
+        "# HELP resilient_mcp_requests_total Total HTTP requests handled, by status code.\n",
+    );
+    out.push_str("# TYPE resilient_mcp_requests_total counter\n");
+    {
+        let map = m
+            .requests_by_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut statuses: Vec<(&u16, &u64)> = map.iter().collect();
+        statuses.sort_by_key(|(status, _)| **status);
+        for (status, count) in statuses {
+            out.push_str(&format!(
+                "resilient_mcp_requests_total{{status=\"{status}\"}} {count}\n"
+            ));
+        }
+    }
+
+    out.push_str("# HELP resilient_mcp_request_duration_seconds HTTP request handling duration.\n");
+    out.push_str("# TYPE resilient_mcp_request_duration_seconds histogram\n");
+    let mut cumulative = 0u64;
+    for (i, le) in DURATION_BUCKETS_SECS.iter().enumerate() {
+        cumulative += m.duration_bucket_counts[i].load(Ordering::Relaxed);
+        out.push_str(&format!(
+            "resilient_mcp_request_duration_seconds_bucket{{le=\"{le}\"}} {cumulative}\n"
+        ));
+    }
+    let total_count = m.duration_count.load(Ordering::Relaxed);
+    out.push_str(&format!(
+        "resilient_mcp_request_duration_seconds_bucket{{le=\"+Inf\"}} {total_count}\n"
+    ));
+    out.push_str(&format!(
+        "resilient_mcp_request_duration_seconds_sum {:.6}\n",
+        m.duration_sum_ms.load(Ordering::Relaxed) as f64 / 1000.0
+    ));
+    out.push_str(&format!(
+        "resilient_mcp_request_duration_seconds_count {total_count}\n"
+    ));
+
+    out.push_str(
+        "# HELP resilient_mcp_rate_limited_total Requests rejected by the per-IP rate limiter.\n",
+    );
+    out.push_str("# TYPE resilient_mcp_rate_limited_total counter\n");
+    out.push_str(&format!(
+        "resilient_mcp_rate_limited_total {}\n",
+        m.rate_limited_total.load(Ordering::Relaxed)
+    ));
+
+    out.push_str(
+        "# HELP resilient_mcp_in_flight_requests HTTP requests currently being handled.\n",
+    );
+    out.push_str("# TYPE resilient_mcp_in_flight_requests gauge\n");
+    out.push_str(&format!(
+        "resilient_mcp_in_flight_requests {}\n",
+        m.in_flight.load(Ordering::Relaxed).max(0)
+    ));
+
+    out
+}
+
+fn metrics_response() -> String {
+    let body = render_prometheus_metrics();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 /// RES-3937: run the HTTP listener with a bounded worker pool. The accept
 /// loop hands each connection to `RESILIENT_MCP_MAX_CONNECTIONS` worker
 /// threads over a bounded channel, so one slow request no longer blocks
@@ -259,6 +414,7 @@ fn handle_http_stream(
     clock: &Instant,
 ) -> io::Result<()> {
     let start = Instant::now();
+    let _in_flight = InFlightGuard::new();
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let peer_ip = stream
         .peer_addr()
@@ -331,6 +487,7 @@ fn handle_http_stream(
     // closing the socket with unread bytes still in flight) but before any
     // dispatch/tool-execution work happens.
     if !limiter.allow(peer_ip, clock.elapsed().as_millis() as u64) {
+        metrics().rate_limited_total.fetch_add(1, Ordering::Relaxed);
         let response = http_json(
             429,
             json!({ "status": "error", "error": "rate limit exceeded" }),
@@ -398,6 +555,7 @@ fn log_request(
         "ts_ms={ts_ms} peer={peer_ip} method={method} path={path} status={status} duration_ms={} bytes={body_bytes}",
         duration.as_millis()
     );
+    record_request(status, duration);
 }
 
 fn parse_content_length(headers: &str) -> Option<usize> {
@@ -407,6 +565,23 @@ fn parse_content_length(headers: &str) -> Option<usize> {
             .then(|| value.trim().parse::<usize>().ok())
             .flatten()
     })
+}
+
+/// RES-3943: public seam for the out-of-tree `fuzz/fuzz_targets/mcp_http_parse.rs`
+/// harness. Exercises the same hand-rolled request-line / header /
+/// `Content-Length` parsing used by `handle_http_stream` on arbitrary bytes,
+/// without needing a live TCP connection or touching tool dispatch. Every
+/// function called here already returns `Option`/`bool` on malformed input
+/// (no `unwrap`/`expect`/indexing panics) — this must never panic, on any
+/// input, including invalid UTF-8.
+#[doc(hidden)]
+pub fn fuzz_parse_http_request(bytes: &[u8]) {
+    let _ = request_line_of(bytes);
+    let _ = http_request_complete(bytes);
+    if let Some(header_end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+        let _ = parse_content_length(&headers);
+    }
 }
 
 fn http_request_complete(request: &[u8]) -> bool {
@@ -466,6 +641,7 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
             }),
         ),
         ("POST", "/mcp/call") => http_mcp_call(body, config.timeout),
+        ("GET", "/metrics") => metrics_response(),
         _ => http_json(
             404,
             json!({
@@ -610,7 +786,10 @@ fn http_json(status: u16, body: Value) -> String {
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
-fn dispatch(
+/// RES-3945: `pub(crate)` handler seam. Stdio (`run`), the HTTP wrapper
+/// (`http_mcp_call`), and tests all re-enter the server through this single
+/// function instead of ad-hoc duplicated dispatch paths.
+pub(crate) fn dispatch(
     method: &str,
     id: &Value,
     params: Option<&Value>,
@@ -2684,6 +2863,54 @@ mod tests {
         assert!(resp.is_some());
         let resp = resp.unwrap();
         assert!(resp.get("error").is_some());
+    }
+
+    // ── RES-3943: HTTP request-parser fuzz seam ───────────────────────────────
+
+    #[test]
+    fn fuzz_parse_http_request_never_panics_on_pathological_input() {
+        let cases: &[&[u8]] = &[
+            b"",
+            b"\r\n\r\n",
+            b"GET / HTTP/1.1\r\n\r\n",
+            b"GET /health HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc",
+            b"\xff\xfe\x00garbage not utf8 \x80\x81",
+            b"Content-Length: -1\r\n\r\n",
+            b"Content-Length: 99999999999999999999999\r\n\r\n",
+            b"\r\n\r\n\r\n\r\n",
+        ];
+        for case in cases {
+            fuzz_parse_http_request(case);
+        }
+    }
+
+    // ── RES-3952: Prometheus /metrics ─────────────────────────────────────────
+
+    #[test]
+    fn metrics_response_is_200_with_prometheus_content_type() {
+        let response = metrics_response();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: text/plain"));
+    }
+
+    #[test]
+    fn render_prometheus_metrics_reflects_recorded_requests() {
+        record_request(200, Duration::from_millis(5));
+        metrics().rate_limited_total.fetch_add(1, Ordering::Relaxed);
+        let body = render_prometheus_metrics();
+        assert!(body.contains("resilient_mcp_requests_total{status=\"200\"}"));
+        assert!(body.contains("resilient_mcp_request_duration_seconds_bucket"));
+        assert!(body.contains("resilient_mcp_request_duration_seconds_sum"));
+        assert!(body.contains("resilient_mcp_rate_limited_total"));
+        assert!(body.contains("resilient_mcp_in_flight_requests"));
+    }
+
+    #[test]
+    fn http_response_for_request_serves_metrics_route() {
+        let config = HttpHardeningConfig::from_env();
+        let response = http_response_for_request("GET /metrics HTTP/1.1\r\n\r\n", &config);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("resilient_mcp_requests_total"));
     }
 
     #[test]

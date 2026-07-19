@@ -134,8 +134,11 @@ mod jit_runtime;
 mod lsp_server;
 // MCP server: exposes the Resilient compiler as MCP tools over stdio.
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
+// RES-3943: `pub` (not `mod`) so the out-of-tree `fuzz/` crate can drive the
+// HTTP request parser in-process via `resilient::mcp_server::fuzz_parse_http_request`.
+// Nothing else outside the crate is expected to depend on this module.
 #[cfg(not(target_arch = "wasm32"))]
-mod mcp_server;
+pub mod mcp_server;
 // RES-3944: in-tree rate-limit + size-limit primitives used by the MCP
 // HTTP wrapper's hardening (body size cap, per-IP rate limiting).
 mod hardening;
