@@ -9565,22 +9565,58 @@ impl TypeChecker {
                 // node is used as the callee in a CallExpression; returning a
                 // Function type here lets the call site infer the correct return.
                 if is_array_ty(&tgt_ty) {
+                    // RES-3977: methods that provably preserve (or merely
+                    // select from) the target's element type — `filter`,
+                    // `slice`, `sort`/`sort_desc`, `reverse`, `dedup`,
+                    // `collect`, `find` — return `TypedArray(elem)` /
+                    // `Option(elem)` instead of erasing to untyped
+                    // `Array`/`Option(Any)` when the target itself is
+                    // element-tracked. `map`/`flat_map`/`push`/`flatten`
+                    // are excluded: their result element type can differ
+                    // from the input (callback return type, appended
+                    // value, or nested-array unwrapping), which this
+                    // call site — seeing only the target, not the
+                    // argument — cannot prove.
+                    let elem_array_ret = match &tgt_ty {
+                        Type::TypedArray(elem) => Type::TypedArray(elem.clone()),
+                        _ => Type::Array,
+                    };
+                    let elem_option_ret = match &tgt_ty {
+                        Type::TypedArray(elem) => Type::Option(elem.clone()),
+                        _ => Type::Option(Box::new(Type::Any)),
+                    };
                     let ret = match field.as_str() {
                         // HOF methods: take a callback / element as the extra arg.
-                        "map" | "filter" | "push" | "flat_map" => Type::Function {
+                        "map" | "push" | "flat_map" => Type::Function {
                             params: vec![Type::Any],
                             return_type: Box::new(Type::Array),
+                        },
+                        // RES-3977: `filter` never changes element type —
+                        // it only removes elements, so the result is
+                        // `TypedArray(elem)` when the target is.
+                        "filter" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(elem_array_ret.clone()),
                         },
                         // RES-2734: zero-extra-arg array transformations. `pop`,
                         // `sort`, `reverse` etc. were previously grouped with the
                         // HOF methods (1 param), causing a false arity error when
                         // called without arguments. Fixed here.
-                        "pop" | "sort" | "sort_desc" | "reverse" | "flatten" | "dedup" => {
-                            Type::Function {
-                                params: vec![],
-                                return_type: Box::new(Type::Array),
-                            }
-                        }
+                        // RES-3977: `pop`/`sort`/`sort_desc`/`reverse`/`dedup`
+                        // reorder or drop elements but never change their
+                        // type, so they preserve the tracked element type.
+                        "pop" | "sort" | "sort_desc" | "reverse" | "dedup" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(elem_array_ret.clone()),
+                        },
+                        // `flatten` unwraps one level of nesting
+                        // (`array<array<T>>` -> `array<T>`), which this
+                        // call site cannot prove without inspecting the
+                        // target's element type further — left untyped.
+                        "flatten" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Array),
+                        },
                         // RES-2707: `reduce` accepts 1 arg (fn, uses first elem as init)
                         // or 2 args (init, fn). Return Type::Any so the call site skips
                         // strict arity checking and both forms are accepted.
@@ -9589,9 +9625,12 @@ impl TypeChecker {
                             params: vec![Type::Any],
                             return_type: Box::new(Type::Void),
                         },
+                        // RES-3977: `find` returns the first matching
+                        // element (or `None`) — the element type is
+                        // preserved, not widened to `Any`.
                         "find" => Type::Function {
                             params: vec![Type::Any],
-                            return_type: Box::new(Type::Option(Box::new(Type::Any))),
+                            return_type: Box::new(elem_option_ret.clone()),
                         },
                         "any" | "all" => Type::Function {
                             params: vec![Type::Any],
@@ -9601,9 +9640,11 @@ impl TypeChecker {
                             params: vec![],
                             return_type: Box::new(Type::Int),
                         },
+                        // RES-3977: `collect` re-materializes the same
+                        // iterator/array — same element type as the target.
                         "collect" => Type::Function {
                             params: vec![],
-                            return_type: Box::new(Type::Array),
+                            return_type: Box::new(elem_array_ret.clone()),
                         },
                         // RES-2734: `has` is the array-element membership method;
                         // `contains` is kept for backward compat.
@@ -9615,10 +9656,11 @@ impl TypeChecker {
                             params: vec![Type::String],
                             return_type: Box::new(Type::String),
                         },
-                        // RES-2734: slice(start, end) — sub-array extraction.
+                        // RES-2734 / RES-3977: slice(start, end) — sub-array
+                        // extraction; preserves the element type.
                         "slice" => Type::Function {
                             params: vec![Type::Int, Type::Int],
-                            return_type: Box::new(Type::Array),
+                            return_type: Box::new(elem_array_ret),
                         },
                         _ => Type::Any,
                     };

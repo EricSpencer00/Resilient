@@ -1,0 +1,6 @@
+Type error: resilient/examples/array_method_return_reject_type_mismatch.rz:16:34: let mismatched: string — value has type int
+resilient/examples/array_method_return_reject_type_mismatch.rz:16:34: let mismatched: string — value has type int
+Type error: let mismatched: string — value has type int
+       let mismatched: string = tail[0];
+                                    ^
+Error: Type check failed: resilient/examples/array_method_return_reject_type_mismatch.rz:16:34: let mismatched: string — value has type int

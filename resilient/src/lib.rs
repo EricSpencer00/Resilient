@@ -5637,6 +5637,27 @@ impl Parser {
     /// Returns `None` and records an error when the tokens don't form
     /// a valid type annotation. `ctx` is a short phrase for error
     /// messages (e.g. `"after ':'"`, `"in struct field"`).
+    /// RES-3977: true when the current token can close a `<...>` generic
+    /// type-argument list — either a bare `>` or a `>>` produced by lexing
+    /// two adjacent closing angle brackets (nested generics like
+    /// `Option<array<int>>`) as a single `ShiftRight` token.
+    fn at_generic_close(&self) -> bool {
+        matches!(self.current_token, Token::Greater | Token::ShiftRight)
+    }
+
+    /// RES-3977: consume one level of generic-argument closing bracket.
+    /// A bare `>` is consumed normally. A `>>` is *not* advanced past —
+    /// it's rewritten in place to a bare `>` so the enclosing `<...>`
+    /// parse (which called this one recursively) sees a normal close on
+    /// its next check, without the lexer needing to re-tokenize.
+    fn consume_one_generic_close(&mut self) {
+        match self.current_token {
+            Token::Greater => self.next_token(),
+            Token::ShiftRight => self.current_token = Token::Greater,
+            _ => {}
+        }
+    }
+
     fn parse_type_annotation(&mut self, ctx: &str) -> Option<String> {
         // RES-385: optional `linear` prefix. `linear T` becomes the
         // encoded string `"linear T"`; downstream (parse_type_name)
@@ -5782,12 +5803,20 @@ impl Parser {
                     // RES-1780: pre-size to 2 — most generic types have
                     // 1-2 params (`Vec<T>`, `Result<T, E>`).
                     let mut params: Vec<String> = Vec::with_capacity(2);
-                    while self.current_token != Token::Greater && self.current_token != Token::Eof {
+                    // RES-3977: nested generic type annotations
+                    // (`Option<array<int>>`) lex the trailing `>>` as a
+                    // single `Token::ShiftRight`, not two `Token::Greater`.
+                    // `at_generic_close`/`consume_one_generic_close` treat
+                    // `ShiftRight` as "one level closes here, one remains
+                    // for the enclosing `<...>`" by rewriting it in place
+                    // to a bare `Greater` instead of advancing the lexer —
+                    // the outer call then sees a normal closing `>`.
+                    while !self.at_generic_close() && self.current_token != Token::Eof {
                         let p = self.parse_type_annotation(ctx)?;
                         params.push(p);
                         if self.current_token == Token::Comma {
                             self.next_token();
-                        } else if self.current_token != Token::Greater {
+                        } else if !self.at_generic_close() {
                             let tok = self.current_token.clone();
                             self.record_error(format!(
                                 "Expected ',' or '>' inside `{}<...>` {}, found {}",
@@ -5796,7 +5825,7 @@ impl Parser {
                             return None;
                         }
                     }
-                    if self.current_token != Token::Greater {
+                    if !self.at_generic_close() {
                         let tok = self.current_token.clone();
                         self.record_error(format!(
                             "Expected '>' to close `{}<...>` {}, found {}",
@@ -5804,7 +5833,7 @@ impl Parser {
                         ));
                         return None;
                     }
-                    self.next_token(); // consume `>`
+                    self.consume_one_generic_close(); // consume `>` (or split one `>` off `>>`)
                     Some(format!("{}<{}>", ty, params.join(", ")))
                 } else {
                     Some(ty)

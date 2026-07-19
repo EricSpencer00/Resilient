@@ -1,0 +1,24 @@
+// RES-3977: REJECT case — `Option<array<int>>`'s payload keeps the
+// `int` element type through a `match`/`Some(arr)` unwrap, so binding
+// `arr[0]` to a mismatched `string` annotation is a provable type
+// error, not an `Any`-erased pass-through.
+//
+// Marked `.interactive`; `.expected.txt` captured under
+// `--typecheck-strict` (see `array_method_return_reject_type_mismatch.rz`
+// for the sibling convention).
+
+fn find_it() -> Option<array<int>> {
+    return Some([1, 2, 3]);
+}
+
+fn main() {
+    match find_it() {
+        Some(arr) => {
+            let mismatched: string = arr[0];
+            println(mismatched);
+        }
+        None => {}
+    }
+}
+
+main();
