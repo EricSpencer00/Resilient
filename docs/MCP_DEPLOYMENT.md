@@ -68,6 +68,56 @@ docker build -t resilient-mcp .
 docker run --rm -p 8080:8080 resilient-mcp mcp --http-port 8080
 ```
 
+## Docker Image (RES-3946 / RES-3947)
+
+The image is a multi-stage build (`Dockerfile` at repo root):
+
+- **builder**: `rust:1.90-bookworm` + `libz3-dev`/`clang`, compiles
+  `rz` with `--features z3,lsp --locked`, then strips debug symbols
+  (`strip --strip-all`).
+- **runtime**: `debian:bookworm-slim` with the `z3` CLI package (used
+  by `resilient_verify`/`rz verify-all --z3`), `libz3-4` (the shared
+  lib the release binary dynamically linked against), `ca-certificates`,
+  and `curl` (backs the `HEALTHCHECK`). Runs as a non-root `resilient`
+  user. Measured size: **~238 MB** (`docker images resilient-mcp:test
+  --format '{{.Size}}'`, linux/arm64 build).
+
+Build and run locally:
+
+```sh
+docker build -t resilient-mcp .
+docker run --rm -p 8080:8080 resilient-mcp mcp --http-port 8080
+```
+
+The image declares a `HEALTHCHECK` that polls `GET /health` every 30s
+(3s timeout, 5s start period, 3 retries) — meaningful when the
+container's command is `mcp --http-port 8080`; harmless no-op
+otherwise.
+
+### Docker-relevant environment knobs
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `Z3_BINARY` | `/usr/bin/z3` (baked into the image) | Path/name of the `z3` executable that `rz verify-all --z3` and `resilient_verify` shell out to. Override with `-e Z3_BINARY=/path/to/z3` if you mount a different Z3 build. |
+| `RESILIENT_MCP_MAX_BODY_BYTES` | `10485760` (10 MiB) | See Production Checklist below. |
+| `RESILIENT_MCP_TIMEOUT_SECS` | `10` | See Production Checklist below. |
+| `RESILIENT_MCP_RATE_LIMIT_PER_MIN` | `100` | See Production Checklist below. |
+| `RESILIENT_MCP_MAX_CONNECTIONS` | `16` | See Production Checklist below. |
+
+Example with overrides:
+
+```sh
+docker run --rm -p 8080:8080 \
+  -e RESILIENT_MCP_TIMEOUT_SECS=20 \
+  -e RESILIENT_MCP_RATE_LIMIT_PER_MIN=300 \
+  resilient-mcp mcp --http-port 8080
+```
+
+CI builds this image (no push) on every PR/push touching the
+Dockerfile or compiler sources — see `.github/workflows/docker-build.yml`
+— so a broken Dockerfile fails fast instead of surfacing only at the
+next tagged release (`release_image.yml` builds+pushes on `v*` tags).
+
 ## Platform Notes
 
 | Platform | Fit | Notes |

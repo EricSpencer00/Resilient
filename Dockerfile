@@ -1,15 +1,19 @@
-# RES-203: Docker image for the Resilient compiler + runtime.
+# RES-203/RES-3946/RES-3947: Docker image for the Resilient compiler
+# + runtime + MCP server.
 #
 # Multi-stage build:
-#   - builder:  rust:1.85-bookworm + libz3-dev + clang — compiles
-#               `resilient/target/release/rz` with `--features z3`.
-#   - runtime:  debian:bookworm-slim + libz3-4 — carries just the
-#               compiled binary and the shared-library dep that
-#               Z3's runtime needs.
+#   - builder:  rust:1.90-bookworm + libz3-dev + clang — compiles
+#               `resilient/target/release/rz` with
+#               `--features z3,lsp`, then strips debug symbols.
+#   - runtime:  debian:bookworm-slim + the z3 CLI package (which
+#               pulls in libz3-4) — carries the stripped binary,
+#               the z3 solver `resilient_verify`/`--z3` shell out
+#               to, and a HEALTHCHECK against the MCP HTTP wrapper.
 #
 # The resulting image's ENTRYPOINT is the `rz` binary, so
 # `docker run ghcr.io/ericspencer00/resilient:latest --help` (and
-# `rz src/main.rs`) "just work".
+# `rz src/main.rs`) "just work". Run the MCP server with
+# `docker run -p 8080:8080 ... mcp --http-port 8080`.
 #
 # Builder base: rust:1.90-bookworm. Edition 2024 (used by every crate
 # in this workspace) requires Rust 1.85+, and one of our transitive
@@ -44,8 +48,12 @@ COPY . .
 RUN cargo build \
         --release \
         --manifest-path resilient/Cargo.toml \
-        --features z3 \
+        --features z3,lsp \
         --locked
+
+# RES-3947: strip debug symbols from the release binary before it
+# crosses into the runtime stage — smaller COPY, smaller final image.
+RUN strip --strip-all resilient/target/release/rz
 
 # ---------- runtime ----------
 FROM debian:bookworm-slim AS runtime
@@ -58,17 +66,31 @@ FROM debian:bookworm-slim AS runtime
 # case of the username, so the namespace here must match exactly.
 LABEL io.modelcontextprotocol.server.name="io.github.EricSpencer00/resilient"
 
-# libz3-4 provides libz3.so.4 at the system-library path the
-# binary linked against. ca-certificates is a defensive add for
-# anyone piping certs through the binary later; small and
-# useful. `--no-install-recommends` keeps the final image lean.
+# RES-3946: `z3` ships the CLI binary (`/usr/bin/z3`) that
+# `rz verify-all --z3` and the MCP `resilient_verify` tool shell
+# out to — Debian's `z3` package links it statically, so it does
+# NOT pull in libz3-4 as a dependency. `libz3-4` is listed
+# explicitly for the *shared* lib the release binary itself
+# dynamically linked against (via libz3-dev in the builder stage).
+# ca-certificates is a defensive add for anyone piping certs
+# through the binary later; small and useful.
+# curl backs the HEALTHCHECK below. `--no-install-recommends`
+# keeps the final image lean.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
+      z3 \
       libz3-4 \
       ca-certificates \
+      curl \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/resilient/target/release/rz /usr/local/bin/rz
+
+# RES-3946: Z3_BINARY lets deployments point at a differently-named
+# or non-PATH z3 install; defaulted here to the CLI installed above
+# so `resilient_verify` works out of the box. Override at `docker run`
+# time with `-e Z3_BINARY=/path/to/z3` if needed.
+ENV Z3_BINARY=/usr/bin/z3
 
 EXPOSE 8080
 
@@ -77,5 +99,11 @@ EXPOSE 8080
 RUN useradd --create-home --shell /bin/bash --uid 1001 resilient
 USER resilient
 WORKDIR /home/resilient
+
+# RES-3947: liveness/readiness probe for the MCP HTTP wrapper. Only
+# meaningful when the container is run as `rz mcp --http-port 8080`;
+# harmless (and simply unused) for other `rz` invocations.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://127.0.0.1:8080/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/rz"]

@@ -32461,17 +32461,31 @@ fn short_label(fn_name: &str, kind: &str, idx: usize) -> String {
     format!("{}::{}[{}]", fn_name, kind, idx)
 }
 
-/// Check whether `z3` is on PATH without shelling out at this
-/// point. Uses `which`-equivalent by walking `PATH`.
+/// Resolve the z3 binary to invoke: `Z3_BINARY` overrides the bare
+/// `z3` name when set, so containers/hosts that install the CLI
+/// under a non-PATH location (RES-3946) can point at it explicitly.
+#[cfg(feature = "z3")]
+fn z3_binary_name() -> std::ffi::OsString {
+    env::var_os("Z3_BINARY").unwrap_or_else(|| std::ffi::OsString::from("z3"))
+}
+
+/// Check whether the configured z3 binary is on PATH (or, when
+/// `Z3_BINARY` is set to an absolute/relative path, exists at that
+/// path directly) without shelling out at this point.
 ///
 /// RES-1202: only called from the z3-gated verify-all dispatcher.
 #[cfg(feature = "z3")]
 fn which_z3() -> bool {
+    let bin = z3_binary_name();
+    let bin_path = Path::new(&bin);
+    if bin_path.is_absolute() || bin_path.components().count() > 1 {
+        return bin_path.is_file();
+    }
     let Some(path_env) = env::var_os("PATH") else {
         return false;
     };
     for p in env::split_paths(&path_env) {
-        let candidate = p.join("z3");
+        let candidate = p.join(&bin);
         if candidate.is_file() {
             return true;
         }
@@ -32479,13 +32493,15 @@ fn which_z3() -> bool {
     false
 }
 
-/// Run `z3 -smt2 <path>` and return `Ok(true)` iff the first line
-/// of stdout is `unsat`. Used by `--z3` under `verify-all`.
+/// Run `<z3_binary> -smt2 <path>` and return `Ok(true)` iff the
+/// first line of stdout is `unsat`. Used by `--z3` under
+/// `verify-all`. The binary defaults to `z3` on PATH but honors
+/// `Z3_BINARY` (RES-3946) for containerized deployments.
 ///
 /// RES-1202: only called from the z3-gated verify-all dispatcher.
 #[cfg(feature = "z3")]
 fn run_z3_on(cert_path: &Path) -> RResult<bool> {
-    let out = std::process::Command::new("z3")
+    let out = std::process::Command::new(z3_binary_name())
         .arg("-smt2")
         .arg(cert_path)
         .output()

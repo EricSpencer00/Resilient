@@ -1,0 +1,66 @@
+# RES-3947: keep the Docker image buildable without waiting for a
+# release tag. `release_image.yml` only builds+pushes on `v*` tags,
+# so a Dockerfile bit-rot (e.g. a builder/runtime dependency drifting
+# out from under `cargo build --features z3,lsp`) would go unnoticed
+# until the next release. This job runs `docker build` (no push, no
+# registry credentials needed) on every PR/push that touches the
+# image inputs, so a broken Dockerfile fails CI instead of a release.
+
+name: docker-build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "resilient/**"
+      - "resilient-runtime/**"
+      - "resilient-span/**"
+      - "Cargo.lock"
+      - ".github/workflows/docker-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "resilient/**"
+      - "resilient-runtime/**"
+      - "resilient-span/**"
+      - "Cargo.lock"
+      - ".github/workflows/docker-build.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: docker build (smoke, no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (single platform, no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: resilient-mcp:ci-smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the built image
+        run: |
+          set -euo pipefail
+          docker run --rm resilient-mcp:ci-smoke --version
+          docker run --rm --entrypoint /bin/sh resilient-mcp:ci-smoke -c 'z3 --version'
