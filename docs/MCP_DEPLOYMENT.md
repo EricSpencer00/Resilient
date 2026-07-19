@@ -133,6 +133,13 @@ Response:
   the limit); tune with `RESILIENT_MCP_RATE_LIMIT_PER_MIN`. See
   [MCP.md](MCP.md#hardening-phase-1-res-393439353936393839444) for the
   full table.
+- Connections are served by a bounded worker pool (default 16 concurrent
+  connections; tune with `RESILIENT_MCP_MAX_CONNECTIONS`) rather than one
+  at a time — a slow request no longer blocks unrelated clients.
+- Every request emits a structured access-log line to stderr
+  (`ts_ms=... peer=... method=... path=... status=... duration_ms=...
+  bytes=...`) — point your platform's log collector at the container's
+  stderr stream.
 - Monitor `GET /health` from outside the provider.
 - Keep Z3 installed in the runtime image for verifier-backed tools.
 - Start with `rz_format`, `rz_compile`, and `rz_verify`; add auth before
