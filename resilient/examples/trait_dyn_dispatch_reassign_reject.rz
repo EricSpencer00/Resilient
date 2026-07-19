@@ -1,0 +1,35 @@
+// RES-4095 (dyn v2 increment 2): reassigning a `dyn Trait`-typed binding
+// to a struct-literal RHS that provably does not implement the trait is
+// still a rejected coercion — the permissive `dyn `-prefix reassignment
+// gate added by this PR only relaxes the *type-shape* check
+// (`Node::Assignment`'s `var_ty`/`val_ty` comparison); `dyn_trait::check`
+// still runs its own coercion pass over every `dyn`-typed variable's
+// reassignment sites and rejects a direct struct literal that doesn't
+// implement the trait, mirroring the existing let-binding/call-site
+// coercion checks from RES-4068.
+
+trait Shape {
+    fn area(self) -> int;
+}
+
+struct Circle {
+    int r,
+}
+
+struct NotAShape {
+    int x,
+}
+
+impl Shape for Circle {
+    fn area(self) -> int {
+        return self.r;
+    }
+}
+
+fn main() {
+    let c: dyn Shape = new Circle { r: 3 };
+    c = new NotAShape { x: 1 };
+    println(0);
+}
+
+main();

@@ -9964,6 +9964,19 @@ impl TypeChecker {
                     // RES-2693: reassigning a struct to a trait-typed variable is
                     // valid when the struct implements that trait.
                     && !self.satisfies_trait_param(&var_ty, &val_ty)
+                    // RES-4095: reassigning through a `dyn Trait`-typed variable
+                    // is the entire point of the annotation — a `dyn Shape`
+                    // binding must accept any concrete struct across its
+                    // lifetime, not just the type of its first assignment.
+                    // Mirrors `type_satisfies`'s permissive `dyn `-prefix gate
+                    // for the initial `let` binding; `dyn_trait::check`'s
+                    // coercion pass is the precise "does it actually implement
+                    // the trait" gate for statically-determinable RHS values.
+                    && !matches!(
+                        (&var_ty, &val_ty),
+                        (Type::Struct(vn), Type::Struct(_) | Type::AnonymousStruct(_))
+                            if vn.starts_with("dyn ")
+                    )
                 {
                     return Err(format!(
                         "cannot assign {} to variable `{}` of type {}",

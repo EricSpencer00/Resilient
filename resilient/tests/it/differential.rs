@@ -467,6 +467,18 @@ const UNSUPPORTED_BY_VM: &[&str] = &[
     // function-contract postconditions at all) were removed from this
     // list once those independently-filed, non-live-block bugs were
     // fixed.
+    //
+    // RES-4095 (dyn v2 increment 2): `trait_dyn_dispatch_reassign.rz`
+    // reassigns a `dyn Trait`-typed variable to a *different* concrete
+    // struct mid-function. The tree-walker dispatches `x.method(...)`
+    // by the runtime struct tag on `Value::Struct`, so this "just
+    // works" there — but the bytecode VM's method-call compilation
+    // resolves the receiver's field/method layout statically, and does
+    // not re-derive it across a reassignment, so `--vm` errors on the
+    // second call ("struct Square has no field 'r'"). Vtable-aware VM
+    // dispatch is increment 3 of #4095; remove this entry once that
+    // lands.
+    "trait_dyn_dispatch_reassign.rz",
 ];
 
 /// Every `examples/*.rz` file, sorted, read fresh from disk each run so
@@ -2062,6 +2074,12 @@ mod jit_differential {
         // actor scheduler) — `--jit` falls back to `--vm` for the
         // `Node::Spawn`/actor constructs its own lowering doesn't
         // support, so it inherits the fix unchanged.
+        //
+        // RES-4095 (dyn v2 increment 2): `--jit` falls back to `--vm`
+        // for struct method calls through a `dyn Trait`-typed binding,
+        // so it inherits `UNSUPPORTED_BY_VM`'s `trait_dyn_dispatch_
+        // reassign.rz` divergence unchanged — not a JIT-specific bug.
+        "trait_dyn_dispatch_reassign.rz",
     ];
 
     #[test]

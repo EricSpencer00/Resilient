@@ -34,12 +34,42 @@
 //! accepted program is rejected by this pass, because before this PR
 //! `dyn Trait` was a hard parse error and no program using it compiled.
 //!
-//! Deferred to a follow-up issue (filed alongside this PR): object-safety
-//! checking, vtable construction and codegen across the tree-walker, VM,
-//! and JIT backends, `dyn Trait` in generic/container position, and
-//! flow-sensitive coercion checking beyond the direct literal call/let
-//! sites above (e.g. a `dyn`-typed variable reassigned through several
-//! bindings before reaching a call site).
+//! RES-4095 increment 1 (PR #4143) added object-safety checking (see
+//! `check_object_safety_refs` below). Increment 2 (this PR) covers
+//! **dynamic dispatch execution in the tree-walker interpreter**:
+//!
+//! - Method calls through a `dyn Trait`-typed fn parameter or
+//!   `let`-binding already reached the right concrete impl at runtime,
+//!   because the tree-walker's method dispatch
+//!   (`Interpreter::eval`'s `CallExpression`/`FieldAccess` arm in
+//!   `lib.rs`) resolves `<expr>.method(...)` by looking up
+//!   `"{runtime_struct_tag}${method}"` — the value's own concrete type,
+//!   never the static `dyn Trait` annotation. No vtable was needed for
+//!   this to already be correct multi-impl dynamic dispatch.
+//! - What *didn't* work: reassigning a `dyn`-typed variable to a
+//!   *different* concrete type mid-function. `Node::Assignment`'s type
+//!   check compared the new value's type directly against the
+//!   variable's declared type and rejected any mismatch, so `c = new
+//!   Square {..}` after `let c: dyn Shape = new Circle {..}` was a hard
+//!   type error — defeating the entire point of `dyn Trait` (holding
+//!   heterogeneous impls in one binding over time). Fixed by extending
+//!   `typechecker.rs`'s `Node::Assignment` arm with the same
+//!   `dyn `-prefix permissive gate `type_satisfies` already applies to
+//!   the initial `let` binding, and extending this module's
+//!   `check_method_calls` (renamed in spirit, not in name — it now also
+//!   covers reassignment) to reject a reassignment whose RHS is a
+//!   direct struct literal that provably doesn't implement the trait,
+//!   mirroring the `let`/call-site coercion checks below.
+//!
+//! Deferred to a follow-up issue: vtable construction and codegen across
+//! the bytecode VM and JIT backends (both currently diverge from the
+//! tree-walker on the reassignment case above — see
+//! `trait_dyn_dispatch_reassign.rz`'s `UNSUPPORTED_BY_VM`/
+//! `UNSUPPORTED_BY_JIT` entries in `tests/it/differential.rs`), `dyn
+//! Trait` in generic/container position, and flow-sensitive coercion
+//! checking beyond the direct literal call/let/assignment sites above
+//! (e.g. a `dyn`-typed variable reassigned *through another variable*
+//! before reaching a call site).
 
 use crate::Node;
 use crate::span::Span;
@@ -149,7 +179,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             parameters, body, ..
         } = &stmt.node
         {
-            check_method_calls(parameters, body, &trait_methods, source_path)?;
+            check_method_calls(parameters, body, &trait_methods, &satisfies, source_path)?;
         }
     }
 
@@ -427,15 +457,17 @@ fn check_coercions(
 }
 
 /// Method-call resolution against `dyn Trait`-typed parameters and
-/// let-bindings inside a single function. Deliberately flat and
-/// non-scoped (every `dyn`-typed binding in the whole function body is
-/// collected into one map, regardless of nested-block shadowing) —
-/// under-checking a shadowed rebind is acceptable (permissive), never
-/// over-rejecting.
+/// let-bindings inside a single function, plus reassignment-coercion
+/// checking (RES-4095) on the same `dyn`-typed bindings. Deliberately
+/// flat and non-scoped (every `dyn`-typed binding in the whole function
+/// body is collected into one map, regardless of nested-block
+/// shadowing) — under-checking a shadowed rebind is acceptable
+/// (permissive), never over-rejecting.
 fn check_method_calls(
     parameters: &[(String, String)],
     body: &Node,
     trait_methods: &HashMap<String, HashSet<String>>,
+    satisfies: &impl Fn(&str, &str) -> bool,
     source_path: &str,
 ) -> Result<(), String> {
     let mut dyn_vars: HashMap<String, String> = HashMap::new();
@@ -483,6 +515,33 @@ fn check_method_calls(
                     ),
                 ));
             }
+            return;
+        }
+        // RES-4095: reassigning a `dyn Trait`-typed binding to a new
+        // concrete value is the mechanism that makes runtime dispatch
+        // actually dynamic — reject it only when the RHS is a direct
+        // struct literal (statically determinable) that provably does
+        // not implement the trait, mirroring `check_coercions`'s
+        // let-binding and call-site checks above.
+        if let Node::Assignment {
+            name: var,
+            value,
+            span,
+        } = n
+            && let Some(trait_name) = dyn_vars.get(var)
+            && let Node::StructLiteral {
+                name: struct_name, ..
+            } = value.as_ref()
+            && !satisfies(trait_name, struct_name)
+        {
+            err = Some(format_err(
+                source_path,
+                *span,
+                &format!(
+                    "type `{}` does not implement `{}`, required to coerce to `dyn {}`",
+                    struct_name, trait_name, trait_name
+                ),
+            ));
         }
     });
     match err {
@@ -740,6 +799,78 @@ mod tests {
             }
             fn main() {
                 use_shape(new Circle { r: 3 });
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    // RES-4095 increment 2: reassignment through a `dyn Trait` binding.
+
+    #[test]
+    fn accepts_reassigning_dyn_binding_to_different_implementing_struct() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            struct Square { int s, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            impl Shape for Square {
+                fn area(self) -> int { return self.s; }
+            }
+            fn main() {
+                let c: dyn Shape = new Circle { r: 3 };
+                c = new Square { s: 4 };
+            }
+            main();
+        "#;
+        assert!(check_source(src).is_ok(), "{:?}", check_source(src));
+    }
+
+    #[test]
+    fn rejects_reassigning_dyn_binding_to_non_implementing_struct() {
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            struct NotAShape { int x, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn main() {
+                let c: dyn Shape = new Circle { r: 3 };
+                c = new NotAShape { x: 1 };
+            }
+            main();
+        "#;
+        let err = check_source(src).unwrap_err();
+        assert!(err.contains("does not implement `Shape`"), "{}", err);
+    }
+
+    #[test]
+    fn permissive_on_non_literal_reassignment() {
+        // Mirrors `permissive_on_non_literal_coercion` above: the RHS
+        // isn't a direct struct literal (it's a call result), so its
+        // concrete type isn't statically determinable — must not be
+        // rejected.
+        let src = r#"
+            trait Shape {
+                fn area(self) -> int;
+            }
+            struct Circle { int r, }
+            impl Shape for Circle {
+                fn area(self) -> int { return self.r; }
+            }
+            fn make() -> Circle {
+                return new Circle { r: 5 };
+            }
+            fn main() {
+                let c: dyn Shape = new Circle { r: 3 };
+                c = make();
             }
             main();
         "#;
