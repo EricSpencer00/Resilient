@@ -224,7 +224,7 @@ mod infer;
 // RES-117: shared diagnostic rendering (caret underlines under
 // the offending source span). Used by the driver when formatting
 // parser / typechecker / interpreter / VM errors.
-mod diag;
+pub mod diag;
 // RES-205: `resilient pkg init <name>` — project scaffolding.
 // Standalone from the compiler pipeline; lives here so the single
 // `resilient` binary carries it alongside the runtime.
