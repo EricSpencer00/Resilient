@@ -161,6 +161,7 @@ fn walk(
             value,
             type_annot,
             span,
+            is_const: _,
         } => {
             // Walking the RHS first models left-to-right eval order:
             // any linear identifier referenced here is consumed

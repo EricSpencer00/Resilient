@@ -1,0 +1,11 @@
+// RES-4197 Phase 2: opt-in `let const NAME = expr;` binding form.
+// Parses and evaluates exactly like a plain `let` — the immutability
+// enforcement (E0012) only fires under the typechecker, see
+// docs/IMMUTABILITY.md.
+fn main(int _d) -> int {
+    let const limit = 10;
+    let total = limit + 5;
+    return total;
+}
+
+println(main(0));

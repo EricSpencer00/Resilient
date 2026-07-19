@@ -721,6 +721,7 @@ mod tests {
                     value: Box::new(int_lit(5)),
                     type_annot: None,
                     span: Span::default(),
+                    is_const: false,
                 },
                 Node::ExpressionStatement {
                     expr: Box::new(ident("n")),
@@ -746,6 +747,7 @@ mod tests {
                 }),
                 type_annot: None,
                 span: Span::default(),
+                is_const: false,
             }],
             span: Span::default(),
         };
@@ -981,6 +983,7 @@ mod tests {
                     value: Box::new(int_lit(1)),
                     type_annot: None,
                     span: Span::default(),
+                    is_const: false,
                 }],
                 span: Span::default(),
             }),
@@ -990,6 +993,7 @@ mod tests {
                     value: Box::new(int_lit(2)),
                     type_annot: None,
                     span: Span::default(),
+                    is_const: false,
                 }],
                 span: Span::default(),
             })),
