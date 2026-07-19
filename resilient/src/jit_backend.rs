@@ -433,6 +433,28 @@ fn has_disqualifying_construct(n: &Node) -> bool {
         Node::StringLiteral { .. }
         | Node::StringInternLiteral { .. }
         | Node::FloatLiteral { .. } => true,
+        // RES-4166: `Node::StructLiteral`/`FieldAccess`/`FieldAssignment`
+        // bake a raw pointer into their field/struct *name* the same
+        // way (`name.as_ptr()` / `field.as_ptr()`) — the same
+        // dangling-pointer-from-a-cloned-temporary hazard RES-4153
+        // fixed for string/float literals just above, just not caught
+        // then because no corpus example exercised a trivial-leaf
+        // struct method until RES-4166's mangling fix stopped every
+        // such call from precompile-rejecting (`Unsupported`) and
+        // falling back to the VM before reaching this inliner at all.
+        // Once calls started resolving, `self.value`-style getters
+        // (trivial leaves) were inlined from `ctx.fn_asts`'s cloned
+        // body, baking a pointer to the clone's field-name bytes that
+        // was freed by the time the compiled code ran — read as
+        // garbage, so `struct_get_field`'s `HashMap` lookup missed and
+        // silently returned the `0` fallback. Disqualifying these
+        // three from inlining routes struct field access through a
+        // real (never inlined) function call, whose pointer is baked
+        // from the stable, whole-run-lived AST `compile_function` was
+        // given directly — same fix shape as RES-4153.
+        Node::StructLiteral { .. }
+        | Node::FieldAccess { .. }
+        | Node::FieldAssignment { .. } => true,
         Node::PrefixExpression { right, .. } => has_disqualifying_construct(right),
         Node::InfixExpression { left, right, .. } => {
             has_disqualifying_construct(left) || has_disqualifying_construct(right)
@@ -1817,36 +1839,18 @@ fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
             _ => {}
         }
     }
-    // RES-4159: `parse_method` (lib.rs) already mangles an impl method's
-    // `name` to `"StructName$method"` at parse time. Re-mangling it
-    // again here (via this `impl_targets` map) produces a
-    // double-mangled key (`"StructName$StructName$method"`) that
-    // diverges from the single-mangled name `devirtualize::lower`
-    // emits at call sites — which sounds like a bug (and is one, in
-    // isolation) but is currently load-bearing: `ctx.functions.get()`
-    // on the devirtualized call's single-mangled name then correctly
-    // misses, raising `Unsupported` and safely VM-falling-back, rather
-    // than resolving and running a struct method natively. Struct
-    // field access under the JIT backend has a separate, pre-existing
-    // correctness bug (tracked as a follow-up) that this double-mangle
-    // currently masks for every example in the corpus that calls a
-    // struct method — fixing the mangling alone (without first fixing
-    // that bug) flips several corpus examples from "safely VM
-    // fallback" to "run natively and print wrong output", which is
-    // strictly worse. Left as-is until the follow-up lands.
-    let mut impl_targets: HashMap<*const Node, String> = HashMap::new();
-    for spanned in stmts {
-        if let Node::ImplBlock {
-            struct_name,
-            methods,
-            ..
-        } = &spanned.node
-        {
-            for method_node in methods {
-                impl_targets.insert(method_node as *const Node, struct_name.clone());
-            }
-        }
-    }
+    // RES-4166: `parse_method` (lib.rs) already mangles an impl method's
+    // `name` to `"StructName$method"` at parse time, and
+    // `devirtualize::lower` emits calls against that same single-mangled
+    // name. A previous version of this pass re-mangled `name` again here
+    // (via a `target-prefix` map), producing a double-mangled key
+    // (`"StructName$StructName$method"`) that could never match a
+    // devirtualized call site — every struct-method call was rejected as
+    // `Unsupported` and fell back to the VM. RES-4166 fixed the
+    // struct-field-access bug in native lowering first (so this
+    // no-longer-double-mangled key doesn't just flip those calls from
+    // safe VM-fallback to native-with-wrong-output), then removed the
+    // re-mangling below: `name` is used as-is.
     for fn_node in &all_fn_nodes {
         if let Node::Function {
             name,
@@ -1858,12 +1862,7 @@ fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
             ..
         } = fn_node
         {
-            let effective_name = if let Some(target) = impl_targets.get(&(*fn_node as *const Node))
-            {
-                format!("{target}${name}")
-            } else {
-                name.clone()
-            };
+            let effective_name = name.clone();
             // RES-175: stash the AST up-front — independent of
             // whether this fn becomes a cache alias or a primary.
             fn_asts.insert(
@@ -1912,12 +1911,7 @@ fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
             ..
         } = fn_node
         {
-            let effective_name = if let Some(target) = impl_targets.get(&(*fn_node as *const Node))
-            {
-                format!("{target}${name}")
-            } else {
-                name.clone()
-            };
+            let effective_name = name.clone();
             if !primaries.contains(&effective_name) {
                 continue;
             }
@@ -3568,16 +3562,11 @@ fn lower_expr(
                     // expected (or vice versa): reads through a bogus
                     // pointer, an intermittent segfault depending only on
                     // the process's random hash seed.
-                    // Try both the single-mangled `"<ty>$<field>"` form
-                    // (the correct, final convention `parse_method`
-                    // produces) and the `"<ty>$<ty>$<field>"` form
-                    // (what a primitive impl's method is *actually*
-                    // stored under today, per the `impl_targets`
-                    // double-mangle in `run_internal`'s Pass 1/2 — see
-                    // that comment). Trying both keeps this resolution
-                    // correct independent of whichever the current
-                    // storage convention is, including once the
-                    // double-mangle is fixed.
+                    // RES-4166: `run_internal`'s Pass 1/2 now store impl
+                    // methods under the single-mangled `"<ty>$<field>"`
+                    // key `parse_method` produces (the double-mangle this
+                    // used to also try for is gone), matching the name
+                    // `devirtualize::lower` emits at call sites.
                     let exact_mangled = match static_kind(target, ctx) {
                         ValueKind::Int => Some("int"),
                         ValueKind::Float => Some("float"),
@@ -3587,14 +3576,7 @@ fn lower_expr(
                     }
                     .and_then(|ty| {
                         let single = format!("{ty}${field}");
-                        if ctx.functions.contains_key(&single) {
-                            return Some(single);
-                        }
-                        let double = format!("{ty}${ty}${field}");
-                        if ctx.functions.contains_key(&double) {
-                            return Some(double);
-                        }
-                        None
+                        ctx.functions.contains_key(&single).then_some(single)
                     });
 
                     let resolved = if let Some(mangled) = exact_mangled {
@@ -3852,6 +3834,7 @@ fn lower_expr(
                 return Ok(bcx.block_params(merge_bb)[0]);
             }
 
+            eprintln!("DEBUG unknown callee_name={callee_name:?}");
             Err(JitError::Unsupported("call to unknown function"))
         }
         Node::ArrayLiteral { items, .. } => {
