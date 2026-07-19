@@ -215,8 +215,27 @@ enum ValueKind {
 fn type_text_to_kind(ty: &str) -> ValueKind {
     match ty {
         "bool" | "Bool" | "boolean" => ValueKind::Bool,
-        "String" | "str" => ValueKind::String,
+        // RES-4159: `"string"` (lowercase) is the primitive type's own
+        // keyword spelling — it's what `self`'s synthesized type
+        // annotation carries in `impl string { fn f(self) ... }`
+        // (`parse_method` sets `self`'s type to `struct_name`
+        // verbatim), and the common spelling for ordinary parameters
+        // (`fn f(string s)`) per `typechecker.rs`'s `"String" |
+        // "string" => Type::String`. Missing it here meant `self`
+        // inside every `impl string` method — and any parameter
+        // written `string x` rather than `String x` — fell back to
+        // `ValueKind::Unknown`, silently disabling both the
+        // `is_bool_expr`-style display fixes and the `len`
+        // array/string dispatch fix below for the single most common
+        // way to write a string-typed parameter in this language.
+        "String" | "string" | "str" => ValueKind::String,
         "float" | "Float" | "double" => ValueKind::Float,
+        // RES-4159: same gap as `string` above, but for `self` inside
+        // `impl int { ... }` methods (and any `int`/`Int`-typed
+        // parameter) — previously always `Unknown`, which routed every
+        // such receiver through the ambiguous-dispatch fallback instead
+        // of the exact-match fast path.
+        "int" | "Int" => ValueKind::Int,
         _ => ValueKind::Unknown,
     }
 }
@@ -3519,6 +3538,23 @@ fn lower_expr(
                 if arguments.len() != b.arity {
                     return Err(JitError::Unsupported("call arity mismatch for JIT builtin"));
                 }
+                // RES-4159: `len(x)` is polymorphic (array or string) at
+                // the language level, but `res_jit_len_array` assumes
+                // its argument is a `*mut ResArray` and dereferences it
+                // unconditionally. Calling it on a heap-tagged *string*
+                // value (e.g. `impl string { fn is_empty(self) -> bool {
+                // return len(self) == 0; } }`, from the RES-2553
+                // primitive-impl corpus example) reinterprets the
+                // string's tag/pointer bits as an array header and reads
+                // through them — undefined behavior whose outcome (wrong
+                // number vs. segfault) depends on whatever garbage bytes
+                // happen to sit at that offset, i.e. an intermittent
+                // crash keyed to heap layout. When the argument is
+                // statically known to be a `String`, route through the
+                // dedicated `res_jit_string_len` shim instead; `Unknown`
+                // (e.g. an actual array) keeps the existing behavior.
+                let len_is_string =
+                    callee_name == "len" && static_kind(&arguments[0], ctx) == ValueKind::String;
                 let mut arg_vals: Vec<Value> = Vec::with_capacity(arguments.len());
                 for arg in arguments {
                     arg_vals.push(lower_expr(arg, bcx, ctx, module)?);
@@ -3526,6 +3562,7 @@ fn lower_expr(
                 let fid = match callee_name.as_str() {
                     "abs" => ctx.imports.res_jit_abs,
                     "abs_diff" => ctx.imports.res_jit_abs_diff,
+                    "len" if len_is_string => ctx.imports.res_jit_string_len,
                     "len" => ctx.imports.res_jit_len_array,
                     "max" => ctx.imports.res_jit_max,
                     "min" => ctx.imports.res_jit_min,
@@ -4283,15 +4320,19 @@ mod tests {
     #[test]
     fn jit_res4159_ambiguous_method_dispatch_is_rejected_not_guessed() {
         // RES-4159: when the receiver's `ValueKind` isn't statically
-        // known (here, a parameter typed `x: int` — `type_text_to_kind`
-        // only classifies `bool`/`String`/`float` aliases, not `int`,
-        // so `static_kind` reports `Unknown` for it) *and* more than one
-        // type declares a method with the same name, the call site is
-        // rejected as `Unsupported` (a safe, precompile VM-fallback)
+        // known (here, a parameter of a custom struct type — none of
+        // `int`/`float`/`string`/`bool`, so `static_kind`/
+        // `type_text_to_kind` report `Unknown` for it) *and* more than
+        // one type declares a method with the same name, the call site
+        // is rejected as `Unsupported` (a safe, precompile VM-fallback)
         // rather than silently guessing which impl to call — which is
-        // exactly the guess that produced RES-4159's intermittent crash.
+        // exactly the guess that produced RES-4159's intermittent
+        // crash.
         let p = parse_program(
             r#"
+            struct Widget {
+                int id,
+            }
             impl int {
                 fn tag(self) -> int {
                     return 1;
@@ -4302,14 +4343,56 @@ mod tests {
                     return 2;
                 }
             }
-            fn call_tag(int x) -> int {
+            fn call_tag(Widget x) -> int {
                 return x.tag();
             }
-            return call_tag(5);
+            return call_tag(new Widget { id: 0 });
             "#,
         );
         let err = run(&p).unwrap_err();
         assert!(err.is_precompile(), "{err}");
+    }
+
+    #[test]
+    fn jit_res4159_len_on_string_receiver_uses_string_shim() {
+        // RES-4159: `len(x)` is polymorphic (array or string) at the
+        // language level, but the JIT builtin dispatch unconditionally
+        // routed every `len(...)` call through `res_jit_len_array`,
+        // which reinterprets its `i64` argument as a `*mut ResArray`
+        // and dereferences it. Calling `len(self)` from inside a
+        // `impl string` method (e.g. `is_empty`, from the RES-2553
+        // `primitive_impl.rz` corpus example) passed a heap-tagged
+        // *string* value through that array-shaped read — undefined
+        // behavior whose result (wrong number vs. segfault) depends on
+        // whatever bytes happen to sit at the reinterpreted offset,
+        // i.e. an intermittent crash keyed to heap layout. `len` on a
+        // statically-`String` argument now routes through the
+        // dedicated `res_jit_string_len` shim instead.
+        let p = parse_program(
+            r#"
+            impl string {
+                fn is_empty(self) -> bool {
+                    return len(self) == 0;
+                }
+            }
+            fn check(string s) -> bool {
+                return s.is_empty();
+            }
+            fn combine() -> int {
+                let a = check("");
+                let b = check("hi");
+                if a {
+                    if b {
+                        return 0;
+                    }
+                    return 1;
+                }
+                return 0;
+            }
+            return combine();
+            "#,
+        );
+        assert_eq!(run(&p).unwrap(), 1);
     }
 
     #[test]
