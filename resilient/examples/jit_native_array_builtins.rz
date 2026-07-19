@@ -1,0 +1,23 @@
+// RES-4134: exercises the array-builtin native JIT lowering
+// (array_sum/array_min/array_max/array_reverse/array_sort, plus the
+// `arr.sort()`/`arr.reverse()` dot-call aliases). Written as bare
+// top-level statements (no wrapping `fn main() { ... } main();`) so
+// RES-4153's implicit top-level `return 0` fallthrough applies and
+// the file compiles natively under `--jit` instead of falling back to
+// the VM — that fallthrough only covers top-level statement
+// fallthrough, not a user function body falling through without an
+// explicit `return`, which is why the `fn main() {...}` idiom most of
+// the corpus uses stays VM-only. A bare top-level explicit `return`
+// would also work for JIT but diverges from the walker/VM (which
+// never auto-prints a top-level return value per RES-3991) — see
+// RES-4153's note on `had_explicit_return` — so this file relies on
+// fallthrough instead.
+println(array_sum([3, 1, 4, 1, 5]));
+println(array_min([3, 1, 4, 1, 5]));
+println(array_max([3, 1, 4, 1, 5]));
+println(array_sort([3, 1, 4, 1, 5]));
+println(array_reverse([3, 1, 4, 1, 5]));
+
+let xs = [5, 2, 8, 1];
+println(xs.sort());
+println(xs.reverse());

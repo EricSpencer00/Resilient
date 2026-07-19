@@ -48,15 +48,15 @@ by the presence/absence of the `note: --jit fell back to the VM for
 ...` line RES-4019 emits (see that script's header for exact
 detection logic and its caveats).
 
-Current numbers (619 examples swept; 96 error out under `--verbose`'s
+Current numbers (635 examples swept; 104 error out under `--verbose`'s
 implied `--typecheck` for reasons unrelated to the JIT — deliberately
 non-type-clean examples — and are excluded from the native/fallback
 split):
 
-| | Count | % of runnable (523) |
+| | Count | % of runnable (531) |
 |---|---:|---:|
-| Native (no fallback) | 23 | 3.7% |
-| Fallback to VM | 500 | 96.3% |
+| Native (no fallback) | 26 | 4.0% |
+| Fallback to VM | 505 | 96.0% |
 
 **Off zero (RES-4153).** The previous revision of this doc diagnosed
 the dominant blocker as "zero examples have a top-level `return`" and
@@ -190,6 +190,59 @@ work here is necessary-but-not-sufficient plumbing for future PRs that
 also land `repeat`/array-builtin lowering on the same files.
 `interpreter_and_jit_agree_on_all_examples` stayed green throughout
 (no denylist additions).
+
+**RES-4134: array-builtin lowering (25 → 26 native, 3.9% → 4.0%).**
+Per this PR's own re-triage, `array`/actor helpers dominate the
+`call to unknown function` long tail the string-op PR above
+identified. Landed native lowering for the five most common
+no-closure array builtins: `array_sum`, `array_min`, `array_max`
+(reduction, single array argument, free-fn-only — no dot-call alias
+exists for these three in `lib.rs`'s BUILTINS table) and
+`array_reverse`/`reverse`, `array_sort`/`sort` (transform, returning a
+new array; both the `array_`-prefixed free-fn spelling and the
+dot-call short-name alias, e.g. `arr.sort()`, route through the same
+shim). `array_min`/`array_max` on an empty array abort with a new
+`JitAbort::EmptyReduce` variant — same post-execution-abort mechanism
+as `EmptyPop` — matching the interpreter's typed "empty array has no
+minimum/maximum" error (exit code diverges from success but the exact
+message doesn't need to match: `compare_outputs` only checks stdout +
+exit code, and neither backend prints anything before the error).
+`get`/`set` needed no new work — `arr[i]`/`arr[i] = v` already lower
+through `Node::IndexExpression`/`IndexAssignment`, landed in an
+earlier PR.
+
+Also fixed a latent display gap the ticket surfaced along the way:
+`array_reverse`/`array_sort` (and, looking ahead, any future
+array-returning builtin) hand back a raw untagged `*mut ResArray`
+pointer, and `println`/`print`/`to_string` had no way to distinguish
+that from a plain int — printing it natively would have shown a raw
+heap address instead of `[1, 2, 3]`, a silent divergence from the
+interpreter's `Value::Array` `Display` impl. Added `ValueKind::Array`
+to `static_kind`'s classifier (recognizing `ArrayLiteral`, the
+array-returning builtin call forms above, and the `.sort()`/`.reverse()`
+dot-call shape) and three array-aware shims
+(`res_jit_println_array`/`res_jit_print_array`/`res_jit_array_to_string`,
+the last tagging its result as a JIT string via `jit_runtime::tag_string`)
+that render `[e0, e1, ...]` exactly like the interpreter.
+
+Net corpus effect: every existing example using these builtins
+(`array_min_max.rz`, `array_sort.rz`, `reverse_builtins.rz`, etc.) is
+written in the `fn main() { ... } main();` idiom, which — as RES-4153
+already documented — doesn't qualify for the implicit top-level
+`return 0` fallthrough (that only covers a *top-level* statement
+falling through, not a user function body doing so), so none of them
+flip to native on their own; this is the same "necessary but not
+sufficient" plumbing situation the string-op PR hit. Added
+`examples/jit_native_array_builtins.rz` (bare top-level statements, no
+wrapping `fn main`) plus its `.expected.txt` golden sidecar
+specifically so this PR's lowering is exercised by
+`interpreter_and_jit_agree_on_all_examples` and confirmed running
+natively (verified directly with `--jit --verbose`: no "fell back to
+the VM" note) rather than silently VM-falling-back like the other
+array examples — this is the one net new native example (25 → 26).
+`interpreter_and_jit_agree_on_all_examples` stayed green throughout
+(no denylist additions); full `cargo test`/`cargo test --features
+jit`/clippy/fmt all pass.
 
 ## Reproducing
 

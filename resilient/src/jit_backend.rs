@@ -205,6 +205,11 @@ enum ValueKind {
     Bool,
     Float,
     String,
+    /// RES-4134: an array value (`*mut ResArray`, untagged). Only
+    /// tracked well enough to route `println`/`print`/`to_string`
+    /// through the array-aware display shim — arithmetic/comparison
+    /// ops never need to distinguish `Array` from `Unknown`.
+    Array,
     Unknown,
 }
 
@@ -248,6 +253,10 @@ fn static_kind(node: &Node, ctx: &LowerCtx) -> ValueKind {
         Node::IntegerLiteral { .. } => ValueKind::Int,
         Node::FloatLiteral { .. } => ValueKind::Float,
         Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => ValueKind::String,
+        // RES-4134: an array literal's kind is unambiguous. Used to
+        // route `println`/`print`/`to_string` through the
+        // array-aware display shim.
+        Node::ArrayLiteral { .. } => ValueKind::Array,
         Node::PrefixExpression {
             operator, right, ..
         } => {
@@ -303,11 +312,34 @@ fn static_kind(node: &Node, ctx: &LowerCtx) -> ValueKind {
             {
                 ValueKind::String
             }
+            // RES-4134: array-returning builtins, unambiguous free-fn
+            // names (both the `array_*`-prefixed spelling and the
+            // dot-call short-name alias registered in `lib.rs`'s
+            // BUILTINS table).
+            Node::Identifier { name, .. }
+                if matches!(
+                    name.as_str(),
+                    "array_reverse" | "reverse" | "array_sort" | "sort"
+                ) =>
+            {
+                ValueKind::Array
+            }
+            Node::Identifier { name, .. }
+                if matches!(name.as_str(), "array_sum" | "array_min" | "array_max") =>
+            {
+                ValueKind::Int
+            }
             Node::Identifier { name, .. } => ctx
                 .function_kind
                 .get(name)
                 .copied()
                 .unwrap_or(ValueKind::Unknown),
+            // RES-4134: array dot-call methods (`arr.sort()`, `arr.reverse()`)
+            // — checked before the generic user-function lookup below since
+            // these builtin method names aren't in `ctx.function_kind`.
+            Node::FieldAccess { field, .. } if matches!(field.as_str(), "sort" | "reverse") => {
+                ValueKind::Array
+            }
             // RES-4153: method call (`recv.method(args)`, including
             // primitive-type `impl` blocks like `impl int { fn is_even
             // (self) -> bool ... }`). Mirrors the mangled-name lookup
@@ -335,6 +367,16 @@ fn static_kind(node: &Node, ctx: &LowerCtx) -> ValueKind {
 /// only care about the bool/non-bool distinction.
 fn is_bool_expr(node: &Node, ctx: &LowerCtx) -> bool {
     static_kind(node, ctx) == ValueKind::Bool
+}
+
+/// RES-4134: is `node` statically an array? Same rationale as
+/// `is_bool_expr` — `println`/`print`/`to_string` need to route an
+/// array argument through the array-aware display shim, since a raw
+/// `*mut ResArray` pointer would otherwise print as its own integer
+/// address (`jit_value_display` has no way to distinguish an
+/// untagged array pointer from a large int at runtime).
+fn is_array_expr(node: &Node, ctx: &LowerCtx) -> bool {
+    static_kind(node, ctx) == ValueKind::Array
 }
 
 /// RES-4153: if `value` is a `StructLiteral`, compute its field →
@@ -793,6 +835,10 @@ pub enum JitError {
     /// RES-4171: integer `%` with a zero divisor. Same mechanism as
     /// `DivisionByZero` but for `srem`.
     ModuloByZero,
+    /// RES-4134: `array_min`/`array_max` called on an empty array,
+    /// matching the interpreter's `builtin_array_min`/`_max` typed
+    /// error. Same post-execution-abort mechanism as `EmptyPop`.
+    EmptyReduce(&'static str),
 }
 
 impl std::fmt::Display for JitError {
@@ -811,6 +857,7 @@ impl std::fmt::Display for JitError {
             JitError::UnknownAbort(msg) => write!(f, "jit: aborted: {}", msg),
             JitError::DivisionByZero => write!(f, "jit: division by zero"),
             JitError::ModuloByZero => write!(f, "jit: modulo by zero"),
+            JitError::EmptyReduce(op) => write!(f, "jit: {op}: empty array"),
         }
     }
 }
@@ -871,6 +918,9 @@ pub(crate) enum JitAbort {
     DivisionByZero,
     /// RES-4171: integer `%` by zero.
     ModuloByZero,
+    /// RES-4134: `array_min`/`array_max` called on an empty array.
+    /// `op` is `"array_min"` or `"array_max"` for diagnostics.
+    EmptyReduce(&'static str),
 }
 
 // RES-380: minimal libc bindings for setjmp / longjmp. The real
@@ -977,6 +1027,7 @@ fn jit_invoke_with_abort_catch<F: FnOnce() -> i64>(f: F) -> Result<i64, JitError
                 Some(JitAbort::EmptyPop) => JitError::EmptyPop,
                 Some(JitAbort::DivisionByZero) => JitError::DivisionByZero,
                 Some(JitAbort::ModuloByZero) => JitError::ModuloByZero,
+                Some(JitAbort::EmptyReduce(op)) => JitError::EmptyReduce(op),
                 None => {
                     JitError::UnknownAbort("jit abort with no payload (driver bug)".to_string())
                 }
@@ -1004,6 +1055,16 @@ pub(crate) struct JitRuntimeImports {
     pub res_array_set_unchecked: FuncId,
     pub res_array_push_copy: FuncId,
     pub res_array_pop_copy: FuncId,
+    /// RES-4134: array-reduction / transform builtins.
+    pub res_array_sum: FuncId,
+    pub res_array_min: FuncId,
+    pub res_array_max: FuncId,
+    pub res_array_reverse: FuncId,
+    pub res_array_sort: FuncId,
+    /// RES-4134: array-aware `println`/`print`/`to_string`.
+    pub res_jit_println_array: FuncId,
+    pub res_jit_print_array: FuncId,
+    pub res_jit_array_to_string: FuncId,
     pub res_jit_abs: FuncId,
     pub res_jit_len_array: FuncId,
     pub res_jit_max: FuncId,
@@ -1106,6 +1167,32 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
 
     let res_array_pop_copy = module
         .declare_function("res_array_pop_copy", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    // RES-4134: array-reduction / transform builtins, all `(i64) -> i64`.
+    let res_array_sum = module
+        .declare_function("res_array_sum", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_array_min = module
+        .declare_function("res_array_min", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_array_max = module
+        .declare_function("res_array_max", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_array_reverse = module
+        .declare_function("res_array_reverse", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_array_sort = module
+        .declare_function("res_array_sort", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_println_array = module
+        .declare_function("res_jit_println_array", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_print_array = module
+        .declare_function("res_jit_print_array", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_array_to_string = module
+        .declare_function("res_jit_array_to_string", Linkage::Import, &sig1r)
         .map_err(|e| JitError::LinkError(e.to_string()))?;
 
     let res_jit_abs = module
@@ -1243,6 +1330,14 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_array_set_unchecked,
         res_array_push_copy,
         res_array_pop_copy,
+        res_array_sum,
+        res_array_min,
+        res_array_max,
+        res_array_reverse,
+        res_array_sort,
+        res_jit_println_array,
+        res_jit_print_array,
+        res_jit_array_to_string,
         res_jit_abs,
         res_jit_len_array,
         res_jit_max,
@@ -1503,6 +1598,115 @@ pub(crate) mod runtime_shims {
         Box::into_raw(Box::new(ResArray { items })) as i64
     }
 
+    /// RES-4134: `array_sum(arr)`. Matches `builtin_array_sum`'s
+    /// wrapping-add semantics over an all-int array (the JIT's
+    /// `ResArray` is i64-only by construction, so the "expected all
+    /// int elements" error case in the interpreter's version can
+    /// never trigger here).
+    pub extern "C-unwind" fn res_array_sum(arr: *mut ResArray) -> i64 {
+        assert!(!arr.is_null(), "res_array_sum: null array pointer");
+        let arr = NonNull::new(arr).expect("res_array_sum: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
+        arr_ref
+            .items
+            .iter()
+            .fold(0i64, |acc, n| acc.wrapping_add(*n))
+    }
+
+    /// RES-4134: `array_min(arr)`. Matches `builtin_array_min`;
+    /// empty array aborts with `JitAbort::EmptyReduce` (translated to
+    /// `JitError::EmptyReduce` by the driver), matching the
+    /// interpreter's typed "empty array has no minimum" error.
+    pub extern "C-unwind" fn res_array_min(arr: *mut ResArray) -> i64 {
+        assert!(!arr.is_null(), "res_array_min: null array pointer");
+        let arr = NonNull::new(arr).expect("res_array_min: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
+        match arr_ref.items.iter().copied().min() {
+            Some(m) => m,
+            None => super::trigger_jit_abort(super::JitAbort::EmptyReduce("array_min")),
+        }
+    }
+
+    /// RES-4134: `array_max(arr)`. See `res_array_min`.
+    pub extern "C-unwind" fn res_array_max(arr: *mut ResArray) -> i64 {
+        assert!(!arr.is_null(), "res_array_max: null array pointer");
+        let arr = NonNull::new(arr).expect("res_array_max: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
+        match arr_ref.items.iter().copied().max() {
+            Some(m) => m,
+            None => super::trigger_jit_abort(super::JitAbort::EmptyReduce("array_max")),
+        }
+    }
+
+    /// RES-4134: `array_reverse(arr)` / `arr.reverse()`. Returns a
+    /// new array (clone-and-reverse), matching `builtin_array_reverse`
+    /// and `res_array_push_copy`'s copy-on-write convention.
+    pub extern "C-unwind" fn res_array_reverse(arr: *mut ResArray) -> i64 {
+        assert!(!arr.is_null(), "res_array_reverse: null array pointer");
+        let arr = NonNull::new(arr).expect("res_array_reverse: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
+        let mut items = arr_ref.items.clone();
+        items.reverse();
+        Box::into_raw(Box::new(ResArray { items })) as i64
+    }
+
+    /// RES-4134: `array_sort(arr)` / `sort(arr)` / `arr.sort()`.
+    /// Returns a new ascending-sorted array, matching
+    /// `builtin_array_sort` (the JIT's `ResArray` is i64-only, so
+    /// there's no "expected all int elements" error case to mirror).
+    pub extern "C-unwind" fn res_array_sort(arr: *mut ResArray) -> i64 {
+        assert!(!arr.is_null(), "res_array_sort: null array pointer");
+        let arr = NonNull::new(arr).expect("res_array_sort: null array pointer");
+        let arr_ref = unsafe { arr.as_ref() };
+        let mut items = arr_ref.items.clone();
+        items.sort_unstable();
+        Box::into_raw(Box::new(ResArray { items })) as i64
+    }
+
+    /// RES-4134: array display for `println`/`print`/`to_string`.
+    /// Matches `Value::Array`'s `Display` impl in `lib.rs`:
+    /// `[e0, e1, ...]` with plain (untagged) int elements, since
+    /// `ResArray` only ever holds raw i64s.
+    pub fn res_array_display(arr: *mut ResArray) -> String {
+        if arr.is_null() {
+            return "[]".to_string();
+        }
+        // SAFETY: the JIT calling convention guarantees the
+        // pointer's validity for the duration of this call.
+        let arr_ref = unsafe { &*arr };
+        let mut out = String::from("[");
+        for (i, v) in arr_ref.items.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&v.to_string());
+        }
+        out.push(']');
+        out
+    }
+
+    /// RES-4134: `println(arr)` for a statically-known array argument
+    /// (`is_array_expr` gates the call site). See `res_array_display`.
+    pub extern "C-unwind" fn res_jit_println_array(arr: i64) -> i64 {
+        println!("{}", res_array_display(arr as *mut ResArray));
+        0
+    }
+
+    /// RES-4134: `print(arr)`. See `res_jit_println_array`.
+    pub extern "C-unwind" fn res_jit_print_array(arr: i64) -> i64 {
+        print!("{}", res_array_display(arr as *mut ResArray));
+        0
+    }
+
+    /// RES-4134: `to_string(arr)`. See `res_jit_println_array`. Returns
+    /// a heap-tagged JIT string (`crate::jit_runtime`'s `TAG_STRING`
+    /// scheme), matching `res_jit_value_to_string`'s convention.
+    pub extern "C-unwind" fn res_jit_array_to_string(arr: i64) -> i64 {
+        let s = res_array_display(arr as *mut ResArray);
+        let boxed = Box::new(s);
+        crate::jit_runtime::tag_string(Box::into_raw(boxed))
+    }
+
     /// RES-380: noreturn abort shim invoked from the JIT when an
     /// inline bounds check fails. Cranelift has no native way to
     /// raise a structured error, so lowering calls this function
@@ -1590,6 +1794,28 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "res_array_pop_copy",
         runtime_shims::res_array_pop_copy as *const u8,
+    );
+    // RES-4134: array-reduction / transform builtins + array-aware
+    // println/print/to_string.
+    builder.symbol("res_array_sum", runtime_shims::res_array_sum as *const u8);
+    builder.symbol("res_array_min", runtime_shims::res_array_min as *const u8);
+    builder.symbol("res_array_max", runtime_shims::res_array_max as *const u8);
+    builder.symbol(
+        "res_array_reverse",
+        runtime_shims::res_array_reverse as *const u8,
+    );
+    builder.symbol("res_array_sort", runtime_shims::res_array_sort as *const u8);
+    builder.symbol(
+        "res_jit_println_array",
+        runtime_shims::res_jit_println_array as *const u8,
+    );
+    builder.symbol(
+        "res_jit_print_array",
+        runtime_shims::res_jit_print_array as *const u8,
+    );
+    builder.symbol(
+        "res_jit_array_to_string",
+        runtime_shims::res_jit_array_to_string as *const u8,
     );
     // RES-380: abort shims used by inline bounds checks.
     builder.symbol(
@@ -3615,7 +3841,7 @@ fn lower_expr(
                         ValueKind::Float => Some("float"),
                         ValueKind::String => Some("string"),
                         ValueKind::Bool => Some("bool"),
-                        ValueKind::Unknown => None,
+                        ValueKind::Array | ValueKind::Unknown => None,
                     }
                     .and_then(|ty| {
                         let single = format!("{ty}${field}");
@@ -3786,9 +4012,12 @@ fn lower_expr(
                     return Err(JitError::Unsupported("println: expected 1 argument"));
                 }
                 let is_bool = is_bool_expr(&arguments[0], ctx);
+                let is_array = is_array_expr(&arguments[0], ctx);
                 let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
                 let shim = if is_bool {
                     ctx.imports.res_jit_println_bool
+                } else if is_array {
+                    ctx.imports.res_jit_println_array
                 } else {
                     ctx.imports.res_jit_println
                 };
@@ -3801,9 +4030,12 @@ fn lower_expr(
                     return Err(JitError::Unsupported("print: expected 1 argument"));
                 }
                 let is_bool = is_bool_expr(&arguments[0], ctx);
+                let is_array = is_array_expr(&arguments[0], ctx);
                 let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
                 let shim = if is_bool {
                     ctx.imports.res_jit_print_bool
+                } else if is_array {
+                    ctx.imports.res_jit_print_array
                 } else {
                     ctx.imports.res_jit_print
                 };
@@ -3816,9 +4048,12 @@ fn lower_expr(
                     return Err(JitError::Unsupported("to_string: expected 1 argument"));
                 }
                 let is_bool = is_bool_expr(&arguments[0], ctx);
+                let is_array = is_array_expr(&arguments[0], ctx);
                 let arg = lower_expr(&arguments[0], bcx, ctx, module)?;
                 let shim = if is_bool {
                     ctx.imports.res_jit_bool_to_string
+                } else if is_array {
+                    ctx.imports.res_jit_array_to_string
                 } else {
                     ctx.imports.res_jit_value_to_string
                 };
@@ -3950,6 +4185,54 @@ fn lower_expr(
                 bcx.switch_to_block(merge_bb);
                 bcx.seal_block(merge_bb);
                 return Ok(bcx.block_params(merge_bb)[0]);
+            }
+
+            // RES-4134: single-array-argument reduction builtins.
+            // `array_sum`/`array_min`/`array_max` have no dot-call
+            // alias in `lib.rs`'s BUILTINS table (only the
+            // `array_`-prefixed free-fn form), so only that call
+            // shape needs handling. `array_min`/`array_max` on an
+            // empty array abort via `JitAbort::EmptyReduce` inside
+            // the shim itself (see `res_array_min`/`res_array_max`).
+            if let Some(fid) = match callee_name.as_str() {
+                "array_sum" => Some(ctx.imports.res_array_sum),
+                "array_min" => Some(ctx.imports.res_array_min),
+                "array_max" => Some(ctx.imports.res_array_max),
+                _ => None,
+            } {
+                if arguments.len() != 1 {
+                    return Err(JitError::Unsupported(
+                        "array reduction builtin: expected exactly 1 argument",
+                    ));
+                }
+                let arr = lower_expr(&arguments[0], bcx, ctx, module)?;
+                let fref = module.declare_func_in_func(fid, bcx.func);
+                let call = bcx.ins().call(fref, &[arr]);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+
+            // RES-4134: `array_reverse`/`reverse`/`arr.reverse()` and
+            // `array_sort`/`sort`/`arr.sort()` — both the `array_`-
+            // prefixed free-fn spelling and the short-name alias
+            // (usable as either a free function or a dot-call method,
+            // per `lib.rs`'s BUILTINS table) return a new array.
+            if let Some(fid) = match callee_name.as_str() {
+                "array_reverse" | "reverse" => Some(ctx.imports.res_array_reverse),
+                "array_sort" | "sort" => Some(ctx.imports.res_array_sort),
+                _ => None,
+            } {
+                let arr = match (method_receiver, arguments.as_slice()) {
+                    (Some(recv), []) => recv,
+                    (None, [a]) => lower_expr(a, bcx, ctx, module)?,
+                    _ => {
+                        return Err(JitError::Unsupported(
+                            "array transform builtin: expected exactly 1 argument",
+                        ));
+                    }
+                };
+                let fref = module.declare_func_in_func(fid, bcx.func);
+                let call = bcx.ins().call(fref, &[arr]);
+                return Ok(bcx.inst_results(call)[0]);
             }
 
             Err(JitError::Unsupported("call to unknown function"))
