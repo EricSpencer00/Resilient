@@ -440,18 +440,34 @@ fn try_prove(_goal: &Node, _axioms: &[Node]) -> Option<bool> {
     None
 }
 
+/// RES-4115: gate for attaching the `E0009` registry code to the
+/// out-of-bounds-index message. Default output stays the pre-existing
+/// `error[bounds-check]` label (goldens + integration tests pin that
+/// literal string); `RESILIENT_RICH_DIAG=1` switches the label to
+/// `error[E0009]`, mirroring `typechecker.rs`'s `rich_diag_enabled`.
+fn rich_diag_enabled() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1"));
+    *ENABLED
+}
+
 fn format_error(source_path: &str, span: Span, msg: &str) -> String {
     let file = if source_path.is_empty() || source_path == "<unknown>" {
         "<unknown>".to_string()
     } else {
         source_path.to_string()
     };
+    let label = if rich_diag_enabled() {
+        "error[E0009]"
+    } else {
+        "error[bounds-check]"
+    };
     if span.start.line == 0 {
-        format!("{}: error[bounds-check]: {}", file, msg)
+        format!("{}: {}: {}", file, label, msg)
     } else {
         format!(
-            "{}:{}:{}: error[bounds-check]: {}",
-            file, span.start.line, span.start.column, msg
+            "{}:{}:{}: {}: {}",
+            file, span.start.line, span.start.column, label, msg
         )
     }
 }
@@ -508,6 +524,33 @@ main();
         let program = parse(src);
         let r = check_array_bounds(&program, "<test>");
         assert!(r.is_err(), "expected error for xs[5] where len=3");
+    }
+
+    /// RES-4115: default output stays the legacy `error[bounds-check]`
+    /// label (no golden churn); `RESILIENT_RICH_DIAG=1` switches the
+    /// label to `error[E0009]`. Checks whichever branch the ambient
+    /// environment is actually in, mirroring `typechecker.rs`'s
+    /// `assert_gated_code` helper.
+    #[test]
+    fn out_of_bounds_error_carries_e0009_when_gated() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(false);
+        let src = r#"
+fn main() {
+    let xs = [1, 2, 3];
+    let y = xs[5];
+}
+main();
+"#;
+        let program = parse(src);
+        let err = check_array_bounds(&program, "<test>")
+            .expect_err("expected error for xs[5] where len=3");
+        if std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1") {
+            assert!(err.contains("error[E0009]"), "got: {err}");
+        } else {
+            assert!(err.contains("error[bounds-check]"), "got: {err}");
+            assert!(!err.contains("E0009"), "code leaked into default: {err}");
+        }
     }
 
     #[test]

@@ -12052,6 +12052,44 @@ fn set_nested_field(root: Value, path: &[String], new_val: Value) -> RResult<Val
     }
 }
 
+/// RES-4115: gate for attaching the `E0010` registry code to runtime
+/// contract-violation messages. Default output stays byte-identical to
+/// the pre-existing plain message (goldens stay pinned);
+/// `RESILIENT_RICH_DIAG=1` prefixes the `[E0010]` code, mirroring
+/// `typechecker.rs`'s `rich_diag_enabled`.
+fn rich_diag_enabled() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1"));
+    *ENABLED
+}
+
+/// RES-4115: format the `requires`-clause-failed runtime contract
+/// violation. Default output is byte-identical to the pre-existing
+/// plain message; `RESILIENT_RICH_DIAG=1` prefixes the `[E0010]` code.
+fn render_requires_violation_error(name: &str, clause: &Node) -> String {
+    let prefix = if rich_diag_enabled() { "[E0010] " } else { "" };
+    format!(
+        "{}Contract violation in fn {}: requires {} failed",
+        prefix,
+        name,
+        format_contract_expr(clause)
+    )
+}
+
+/// RES-4115: format the `ensures`-clause-failed runtime contract
+/// violation. Default output is byte-identical to the pre-existing
+/// plain message; `RESILIENT_RICH_DIAG=1` prefixes the `[E0010]` code.
+fn render_ensures_violation_error(name: &str, clause: &Node, return_value: &Value) -> String {
+    let prefix = if rich_diag_enabled() { "[E0010] " } else { "" };
+    format!(
+        "{}Contract violation in fn {}: ensures {} failed (result = {})",
+        prefix,
+        name,
+        format_contract_expr(clause),
+        return_value
+    )
+}
+
 /// Human-readable rendering of a contract clause for the error message.
 /// Deliberately lossy: we just want the user to recognize which clause
 /// fired, not reconstruct the full AST.
@@ -28245,11 +28283,7 @@ impl Interpreter {
                 for clause in requires {
                     let v = interpreter.eval(clause)?;
                     if !interpreter.is_truthy(&v) {
-                        return Err(format!(
-                            "Contract violation in fn {}: requires {} failed",
-                            name,
-                            format_contract_expr(clause)
-                        ));
+                        return Err(render_requires_violation_error(name, clause));
                     }
                 }
 
@@ -28421,11 +28455,10 @@ impl Interpreter {
                     for clause in ensures {
                         let v = interpreter.eval(clause)?;
                         if !interpreter.is_truthy(&v) {
-                            return Err(format!(
-                                "Contract violation in fn {}: ensures {} failed (result = {})",
+                            return Err(render_ensures_violation_error(
                                 name,
-                                format_contract_expr(clause),
-                                return_value
+                                clause,
+                                &return_value,
                             ));
                         }
                     }
@@ -61799,6 +61832,34 @@ mod tests {
         );
         assert!(result.ok, "errors: {:?}", result.errors);
         assert_eq!(result.stdout, "42\n");
+    }
+
+    /// RES-4115: a `requires` clause violated at runtime (the argument
+    /// is not a compile-time constant, so the typecheck-time fold in
+    /// `typechecker.rs` can't reject it early — it must reach this
+    /// module's interpreter path). Default output stays the legacy
+    /// "Contract violation in fn ..." message (no golden churn);
+    /// `RESILIENT_RICH_DIAG=1` prefixes the `[E0010]` code.
+    #[test]
+    fn requires_violation_carries_e0010_when_gated() {
+        let result = crate::run_program(
+            r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn main(int n) { return pos(n); }
+            main(-3);
+            "#,
+        );
+        assert!(!result.ok);
+        let joined = result.errors.join("\n");
+        assert!(
+            joined.contains("Contract violation in fn pos: requires"),
+            "got: {joined}"
+        );
+        if std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1") {
+            assert!(joined.contains("E0010"), "got: {joined}");
+        } else {
+            assert!(!joined.contains("E0010"), "code leaked: {joined}");
+        }
     }
 }
 
