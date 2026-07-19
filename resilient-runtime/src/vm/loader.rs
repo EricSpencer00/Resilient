@@ -451,6 +451,22 @@ mod tests {
         assert_eq!(result, Ok(Value::Int(41)));
     }
 
+    /// RES-4083 (closure call-site arguments): `resilient/examples/
+    /// closures_embedded_args.rz` compiled by `rz build` — `outer(base)`
+    /// defines a nested `addBase(x)` closure that captures `base` by
+    /// value and calls it with one call-site argument (`addBase(1)`),
+    /// exercising `rzbc_emit.rs`'s `bridge_closure_call_args` stack-
+    /// order bridge end to end through the real compiler.
+    const CLOSURES_ARGS_DEMO_RZBC: &[u8] = include_bytes!("../../fixtures/closures_args_demo.rzbc");
+
+    #[test]
+    fn load_and_run_committed_closure_with_arguments_fixture() {
+        let result = load_and_run_with_functions_and_closures::<32, 4, 32, 8, 4, 4, 2>(
+            CLOSURES_ARGS_DEMO_RZBC,
+        );
+        assert_eq!(result, Ok(Value::Int(42)));
+    }
+
     #[test]
     fn load_and_run_inline_encoded_program() {
         let program = [

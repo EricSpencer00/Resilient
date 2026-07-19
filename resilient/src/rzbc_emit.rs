@@ -44,15 +44,19 @@
 //!   the embedded VM's captures are `Copy` snapshots taken once at
 //!   `MakeClosure` time, with no live-shared cell to keep them
 //!   consistent with a later host-side mutation, so that divergence is
-//!   rejected rather than silently emulated. A closure call site is
-//!   only supported when it is a plain `name(args)` call through a
-//!   named local (`Op::CallClosure { source_slot: Some(_), .. }`, never
-//!   an inline/anonymous callee expression) **with zero call-site
-//!   arguments** — the host bytecode pushes the closure value *before*
-//!   its arguments, while [`Instr::CallClosure`] expects the closure on
-//!   top of the operand stack, and bridging that reordering for a
-//!   non-empty argument list is left for a follow-up (tracked on
-//!   issue #4083). A closure capturing more than
+//!   rejected rather than silently emulated. Both a closure call
+//!   through a named local and an inline/anonymous callee expression
+//!   are supported, with any number of call-site arguments:
+//!   [`bridge_closure_call_args`] finds each `Op::CallClosure`'s
+//!   argument-evaluation block and its callee-evaluation block by
+//!   static operand-stack-effect accounting ([`op_stack_effect`]) and
+//!   rotates the callee block to sit directly before the call, so the
+//!   host's `[closure, arg0, .., argN]` push order becomes the
+//!   `[arg0, .., argN, closure]` order [`Instr::CallClosure`] expects
+//!   (it pops the closure first, then `arity` args in reverse). A
+//!   callee or argument expression built from an opcode this bridge's
+//!   stack-effect table doesn't cover is a typed [`EmitError`], not a
+//!   miscompile. A closure capturing more than
 //!   [`MAX_CLOSURE_CAPTURES`] values, or capturing a `static` binding,
 //!   is also a typed [`EmitError`].
 //! - (RES-4083, D-E1 tail) a function declaring `fails` is
@@ -188,12 +192,19 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
     // `func.fails[0]` and every `catch Variant` arm referencing the
     // same name agree on the same id regardless of translation order.
     let variant_map = build_variant_map(program);
+    // RES-4083 (closure call-site arguments): `Op::Call(idx)` doesn't
+    // carry its own arity — the callee's declared arity is what the
+    // VM pops — so `bridge_closure_call_args`'s stack-effect
+    // accounting needs this table to walk backward across a `Call`
+    // inside a closure call's argument or callee expression.
+    let arities: Vec<u16> = program.functions.iter().map(|f| f.arity as u16).collect();
 
     let mut global_try_handlers: Vec<RtTryHandlerEntry> = Vec::new();
     let main_try_base = global_try_handlers.len();
     let main_handlers = flatten_try_handlers(&program.main.try_handlers, &variant_map, target)?;
     global_try_handlers.extend(main_handlers);
-    let main_instrs = translate_chunk_transformed(&program.main, target, main_try_base, None)?;
+    let main_instrs =
+        translate_chunk_transformed(&program.main, target, main_try_base, None, &arities)?;
 
     if program.functions.is_empty() {
         if !global_try_handlers.is_empty() {
@@ -280,6 +291,7 @@ pub fn compile_to_rzbc(program: &Program, target: &str) -> Result<Vec<u8>, EmitE
             target,
             try_base,
             shift,
+            &arities,
         )?);
     }
 
@@ -500,38 +512,17 @@ fn translate_chunk(chunk: &Chunk, target: &str, try_base: usize) -> Result<Vec<I
                 func_idx: fn_idx,
                 capture_count: upvalue_count,
             },
-            // RES-4083 (host closure emission): only the named-local
-            // call form with zero call-site arguments is supported —
-            // see the module docs' closures section for why
-            // `source_slot == u16::MAX` (an inline/anonymous callee
-            // expression) and `arity != 0` (the host's closure-then-
-            // args push order vs. the embedded VM's closure-on-top pop
-            // order) are out of scope for this translation.
-            Op::CallClosure { arity, source_slot } => {
-                if source_slot == u16::MAX {
-                    return Err(unsupported(
-                        target,
-                        "calling a closure that isn't bound to a named local (an inline/anonymous \
-                         closure expression called immediately) is not supported for embedded \
-                         targets — only `fn name(...) { .. }`-style closures called through their \
-                         name are translated (RES-4083)"
-                            .to_string(),
-                    ));
-                }
-                if arity != 0 {
-                    return Err(unsupported(
-                        target,
-                        format!(
-                            "calling a closure with {arity} call-site argument(s) is not supported \
-                             for embedded targets yet — the host bytecode pushes the closure value \
-                             before its arguments, while the embedded VM's `Instr::CallClosure` \
-                             expects the closure on top of the operand stack; only zero-argument \
-                             closure calls translate today (RES-4083)"
-                        ),
-                    ));
-                }
-                Instr::CallClosure
-            }
+            // RES-4083 (closure call-site arguments): any call-site
+            // argument list, and any callee expression shape (a named
+            // local *or* an inline/anonymous closure expression), is
+            // supported now — [`bridge_closure_call_args`] already
+            // rotated the callee-expression ops to sit directly before
+            // this op by the time `transform_ops` hands the chunk to
+            // this function, so the operand stack is already in the
+            // `[..., arg0, .., argN, closure]` shape
+            // [`resilient_runtime::vm::Instr::CallClosure`] expects —
+            // this arm has nothing left to validate.
+            Op::CallClosure { .. } => Instr::CallClosure,
             // Everything else is (b)-class or otherwise absent from
             // `Instr` (bitwise ops, `IncLocal`,
             // FFI, builtins, arrays/structs/enums/tuples,
@@ -572,8 +563,9 @@ fn translate_chunk_transformed(
     target: &str,
     try_base: usize,
     shift: Option<(u16, u16)>,
+    arities: &[u16],
 ) -> Result<Vec<Instr>, EmitError> {
-    let transformed_code = transform_ops(&chunk.code, chunk, target, shift)?;
+    let transformed_code = transform_ops(&chunk.code, chunk, target, shift, arities)?;
     let mut transformed_chunk = chunk.clone();
     transformed_chunk.code = transformed_code;
     translate_chunk(&transformed_chunk, target, try_base)
@@ -589,6 +581,138 @@ fn find_string_const(chunk: &Chunk, s: &str) -> Option<u16> {
         .iter()
         .position(|v| matches!(v, HostValue::String(x) if x.as_str() == s))
         .map(|i| i as u16)
+}
+
+/// RES-4083 (closure call-site arguments): net operand-stack effect
+/// (values pushed minus values popped) of a single `Op`, covering
+/// exactly the opcodes [`translate_chunk`] accepts in this no_std
+/// subset plus `MakeClosure`/`CallClosure` — used only by
+/// [`bridge_closure_call_args`]'s backward scan to locate the
+/// boundary between a closure call's argument block, its callee
+/// expression, and whatever precedes both. Returns `None` for any
+/// other opcode; the caller turns that into a typed [`EmitError`]
+/// rather than guessing at an unknown effect.
+fn op_stack_effect(op: &Op, arities: &[u16]) -> Option<i32> {
+    Some(match *op {
+        Op::Const(_) | Op::LoadLocal(_) | Op::LoadUpvalue(_) => 1,
+        Op::StoreLocal(_) | Op::StoreUpvalue { .. } | Op::Pop => -1,
+        Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::Mod
+        | Op::Eq
+        | Op::Neq
+        | Op::Lt
+        | Op::Le
+        | Op::Gt
+        | Op::Ge => -1,
+        Op::Neg | Op::Not | Op::IncLocal(_) | Op::Jump(_) | Op::EnterTry(_) | Op::ExitTry => 0,
+        Op::JumpIfFalse(_) | Op::JumpIfTrue(_) => -1,
+        Op::MakeClosure { upvalue_count, .. } => 1 - upvalue_count as i32,
+        // Pops the closure plus `arity` args, pushes one result —
+        // regardless of `source_slot`, which only affects upvalue
+        // write-back on the host, not the stack shape.
+        Op::CallClosure { arity, .. } => -(arity as i32),
+        Op::Call(idx) => 1 - *arities.get(idx as usize)? as i32,
+        _ => return None,
+    })
+}
+
+/// RES-4083 (closure call-site arguments): rewrite `code` so every
+/// `Op::CallClosure { arity, .. }` with `arity > 0` has its callee
+/// expression's ops moved to sit directly before it, turning the host
+/// compiler's `[closure_expr…, arg0_expr…, .., argN_expr…]` evaluation
+/// order into `[arg0_expr…, .., argN_expr…, closure_expr…]` — the
+/// order [`resilient_runtime::vm::Instr::CallClosure`] needs, since it
+/// pops the closure value first and the args after. This is sound
+/// because a *rotation* of a contiguous op range changes no op's
+/// stack effect and, since every `Jump*` inside the rotated range
+/// still targets another instruction inside the same range at the
+/// same *relative* distance (both source and destination shift left
+/// by the same amount), no jump offset needs recomputing either.
+///
+/// The boundary between "callee expression", "argument block", and
+/// "the rest of the chunk" is found by walking backward from the
+/// `CallClosure` op and summing [`op_stack_effect`]: the argument
+/// block is the shortest suffix (ending just before `CallClosure`)
+/// whose total effect is exactly `arity` (each of the `arity`
+/// arguments leaves exactly one value on the stack), and the callee
+/// expression is the next block back whose total effect is exactly
+/// `1` (it must leave exactly the closure value). An opcode this
+/// function's stack-effect table doesn't cover, or a boundary that
+/// can't be found this way, is a typed [`EmitError`] — never a silent
+/// miscompile.
+fn bridge_closure_call_args(
+    code: &[Op],
+    arities: &[u16],
+    target: &str,
+) -> Result<Vec<Op>, EmitError> {
+    let mut code = code.to_vec();
+    let mut call_idx = 0;
+    while call_idx < code.len() {
+        let Op::CallClosure { arity, source_slot } = code[call_idx] else {
+            call_idx += 1;
+            continue;
+        };
+        if arity == 0 {
+            call_idx += 1;
+            continue;
+        }
+        let target_arity = arity as i32;
+
+        let find_boundary = |from: usize, want: i32, what: &str| -> Result<usize, EmitError> {
+            let mut acc = 0i32;
+            let mut k = from;
+            while k > 0 {
+                k -= 1;
+                let eff = op_stack_effect(&code[k], arities).ok_or_else(|| {
+                    unsupported(
+                        target,
+                        format!(
+                            "a closure call's {what} uses opcode `{:?}` that the embedded \
+                             call-site argument bridge doesn't understand (RES-4083)",
+                            code[k]
+                        ),
+                    )
+                })?;
+                acc += eff;
+                if acc == want {
+                    return Ok(k);
+                }
+            }
+            Err(unsupported(
+                target,
+                format!(
+                    "internal error: could not locate the start of this closure call's {what} by \
+                     stack-effect accounting — this is a bug in rzbc_emit's closure-call bridge, \
+                     not a property of the source program"
+                ),
+            ))
+        };
+
+        let args_start = find_boundary(call_idx, target_arity, "argument block")?;
+        let closure_start = find_boundary(args_start, 1, "callee expression")?;
+
+        if source_slot != u16::MAX
+            && !(closure_start + 1 == args_start
+                && matches!(code[closure_start], Op::LoadLocal(slot) if slot == source_slot))
+        {
+            return Err(unsupported(
+                target,
+                format!(
+                    "closure call at index {call_idx} expected a plain `LoadLocal({source_slot})` \
+                     as its whole callee expression but found a more complex shape — the embedded \
+                     call-site argument bridge only understands the exact shape `compiler.rs`'s \
+                     named-local closure-call path emits (RES-4083)"
+                ),
+            ));
+        }
+
+        code[closure_start..call_idx].rotate_left(args_start - closure_start);
+        call_idx += 1;
+    }
+    Ok(code)
 }
 
 /// RES-4083 (host closure emission): rewrite `code` so it is safe and
@@ -628,7 +752,11 @@ fn transform_ops(
     chunk: &Chunk,
     target: &str,
     shift: Option<(u16, u16)>,
+    arities: &[u16],
 ) -> Result<Vec<Op>, EmitError> {
+    let bridged_code = bridge_closure_call_args(code, arities, target)?;
+    let code: &[Op] = &bridged_code;
+
     let get_idx = find_string_const(chunk, "get");
     let set_idx = find_string_const(chunk, "set");
     let cell_idx = find_string_const(chunk, "cell");
@@ -1156,37 +1284,150 @@ mod tests {
     }
 
     #[test]
-    fn rejects_closure_call_with_arguments() {
-        // Same shape as `compiles_and_executes_zero_arg_closure_over_one_capture`
-        // but `CallClosure { arity: 1, .. }` — out of scope until the
-        // closure-then-args vs. embedded closure-on-top stack-order
-        // mismatch is bridged (see the module docs).
-        let get_base = chunk_from(vec![Op::LoadLocal(0), Op::ReturnFromCall], vec![]);
-        let mut get_base_fn = function_from("getBase", 1, 1, get_base);
-        get_base_fn.upvalue_source_slots = vec![].into_boxed_slice();
+    fn compiles_and_executes_closure_called_with_arguments() {
+        // RES-4083 (closure call-site arguments): a closure called
+        // with call-site arguments now bridges the host's
+        // `[closure, arg…]` push order to the embedded VM's
+        // `[arg…, closure]` pop order:
+        //   let base = 41;
+        //   fn addBase(int x) { base + x }
+        //   addBase(1)  // -> 42
+        let add_base = chunk_from(
+            vec![
+                Op::LoadUpvalue(0),
+                Op::StoreUpvalue {
+                    upvalue_idx: 0,
+                    local_slot: 1,
+                },
+                Op::LoadLocal(1), // captured base (boxed)
+                Op::CallMethod {
+                    method_const: 0,
+                    arity: 0,
+                }, // .get()
+                Op::LoadLocal(0), // x
+                Op::Add,
+                Op::ReturnFromCall,
+            ],
+            vec![HostValue::String("get".to_string())],
+        );
+        let mut add_base_fn = function_from("addBase", 1, 2, add_base);
+        add_base_fn.upvalue_source_slots = vec![0u16].into_boxed_slice();
+
+        let main = chunk_from(
+            vec![
+                Op::Const(0),      // 0: push 41
+                Op::StoreLocal(0), // 1: base = 41
+                Op::LoadLocal(0),  // 2: box base ->
+                Op::CallBuiltin {
+                    name_const: 1,
+                    arity: 1,
+                }, // 3:   cell(base)
+                Op::StoreLocal(0), // 4:   base = Cell(41)
+                Op::LoadLocal(0),  // 5: push captured Cell handle
+                Op::MakeClosure {
+                    fn_idx: 0,
+                    upvalue_count: 1,
+                }, // 6: f = closure(addBase, [base])
+                Op::StoreLocal(1), // 7: f = ...
+                Op::LoadLocal(1),  // 8: push f
+                Op::Const(2),      // 9: push 1
+                Op::CallClosure {
+                    arity: 1,
+                    source_slot: 1,
+                }, // 10: f(1)
+                Op::Return,        // 11
+            ],
+            vec![
+                HostValue::Int(41),
+                HostValue::String("cell".to_string()),
+                HostValue::Int(1),
+            ],
+        );
+
+        let program = Program {
+            main,
+            functions: vec![add_base_fn],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+
+        let blob = compile_to_rzbc(&program, "thumbv6m-none-eabi")
+            .expect("closure called with a call-site argument should translate");
+
+        let mut out_main = [Instr::Return; 16];
+        let mut out_func_meta = [rzbc_serde::DecodedFunctionMeta {
+            offset: 0,
+            len: 0,
+            arity: 0,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }; 4];
+        let mut out_func_code = [Instr::Return; 16];
+        let mut out_try_handlers = [resilient_runtime::vm::TryHandlerEntry::EMPTY; 1];
+        let counts = rzbc_serde::decode_program(
+            &blob,
+            &mut out_main,
+            &mut out_func_meta,
+            &mut out_func_code,
+            &mut out_try_handlers,
+        )
+        .expect("should decode as the function-table format");
+        assert_eq!(counts.func_count, 1);
+
+        let meta = out_func_meta[0];
+        assert_eq!(meta.arity, 1);
+        assert_eq!(meta.capture_count, 1);
+        let functions = [resilient_runtime::vm::FunctionDef {
+            code: &out_func_code[meta.offset as usize..(meta.offset + meta.len) as usize],
+            arity: meta.arity,
+            local_count: meta.local_count,
+            postcheck: meta.postcheck,
+            fails_variant: meta.fails_variant,
+            capture_count: meta.capture_count,
+        }];
+        let mut vm = resilient_runtime::vm::Vm::<8, 4, 2, 0, 2>::new();
+        assert_eq!(
+            vm.run_with_functions(&functions, &out_main[..counts.main_len]),
+            Ok(RtValue::Int(42))
+        );
+    }
+
+    #[test]
+    fn rejects_closure_call_argument_using_unsupported_opcode() {
+        // Same shape as `compiles_and_executes_closure_called_with_arguments`
+        // but the argument expression is a bitwise op that the
+        // embedded call-site argument bridge's stack-effect table
+        // doesn't cover — a typed `EmitError`, not a miscompile.
+        let add_base = chunk_from(vec![Op::LoadLocal(0), Op::ReturnFromCall], vec![]);
+        let mut add_base_fn = function_from("addBase", 1, 1, add_base);
+        add_base_fn.upvalue_source_slots = vec![].into_boxed_slice();
         let main = chunk_from(
             vec![
                 Op::Const(0),
                 Op::StoreLocal(0),
                 Op::LoadLocal(0),
                 Op::Const(1),
+                Op::Const(2),
+                Op::Band,
                 Op::CallClosure {
                     arity: 1,
                     source_slot: 0,
                 },
                 Op::Return,
             ],
-            vec![HostValue::Int(0), HostValue::Int(1)],
+            vec![HostValue::Int(0), HostValue::Int(1), HostValue::Int(2)],
         );
         let program = Program {
             main,
-            functions: vec![get_base_fn],
+            functions: vec![add_base_fn],
             #[cfg(feature = "ffi")]
             foreign_syms: Vec::new(),
         };
         let err = compile_to_rzbc(&program, "thumbv6m-none-eabi").unwrap_err();
         assert!(
-            err.reason.contains("call-site argument"),
+            err.reason.contains("closure call's argument block"),
             "reason was: {}",
             err.reason
         );
