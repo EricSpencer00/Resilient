@@ -1013,11 +1013,13 @@ fn inline_consts(node: &Node, resolved: &HashMap<String, Value>) -> Node {
             value,
             type_annot,
             span,
+            is_const,
         } => Node::LetStatement {
             name: name.clone(),
             value: Box::new(inline_consts(value, resolved)),
             type_annot: type_annot.clone(),
             span: *span,
+            is_const: *is_const,
         },
         Node::ExpressionStatement { expr, span } => Node::ExpressionStatement {
             expr: Box::new(inline_consts(expr, resolved)),

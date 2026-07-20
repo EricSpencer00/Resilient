@@ -1281,7 +1281,7 @@ mod tests {
             fails_variant: None,
             capture_count: 0,
         }];
-        let mut vm = crate::vm::Vm::<8, 4, 2>::new();
+        let mut vm = crate::vm::Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&decoded_functions, &out_main[..counts.main_len]),
             Ok(Value::Int(36))
@@ -1353,7 +1353,7 @@ mod tests {
             fails_variant: None,
             capture_count: meta.capture_count,
         }];
-        let mut vm = crate::vm::Vm::<8, 4, 2, 0, 2>::new();
+        let mut vm = crate::vm::Vm::<8, 4, 2, 0, 2, 8>::new();
         assert_eq!(
             vm.run_with_functions(&decoded_functions, &out_main[..counts.main_len]),
             Ok(Value::Int(15))

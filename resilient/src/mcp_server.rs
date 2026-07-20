@@ -61,9 +61,10 @@
 
 use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
@@ -77,6 +78,9 @@ const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 /// Default per-IP rate limit: 100 requests/minute (RES-3938).
 const DEFAULT_RATE_LIMIT_PER_MIN: u32 = 100;
+/// Default bounded worker-pool size for concurrent HTTP connections
+/// (RES-3937).
+const DEFAULT_MAX_CONNECTIONS: usize = 16;
 
 /// Runtime-configurable hardening limits for the MCP HTTP wrapper.
 ///
@@ -90,6 +94,8 @@ struct HttpHardeningConfig {
     max_body_bytes: usize,
     timeout: Duration,
     rate_limit_per_min: u32,
+    /// RES-3937: bounded worker-pool size.
+    max_connections: usize,
 }
 
 impl HttpHardeningConfig {
@@ -104,6 +110,11 @@ impl HttpHardeningConfig {
                 "RESILIENT_MCP_RATE_LIMIT_PER_MIN",
                 DEFAULT_RATE_LIMIT_PER_MIN,
             ),
+            max_connections: env_var_usize(
+                "RESILIENT_MCP_MAX_CONNECTIONS",
+                DEFAULT_MAX_CONNECTIONS,
+            )
+            .max(1),
         }
     }
 }
@@ -180,19 +191,58 @@ pub fn run() {
     }
 }
 
+/// RES-3937: run the HTTP listener with a bounded worker pool. The accept
+/// loop hands each connection to `RESILIENT_MCP_MAX_CONNECTIONS` worker
+/// threads over a bounded channel, so one slow request no longer blocks
+/// every other client — a full pool simply backpressures new accepts.
 pub fn run_http(bind_addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(bind_addr)?;
     eprintln!("MCP HTTP listening on http://{}", listener.local_addr()?);
 
     let config = HttpHardeningConfig::from_env();
-    let limiter = RateLimiterRegistry::new(config.rate_limit_per_min, config.rate_limit_per_min);
-    let clock = Instant::now();
+    let limiter = Arc::new(RateLimiterRegistry::new(
+        config.rate_limit_per_min,
+        config.rate_limit_per_min,
+    ));
+    let clock = Arc::new(Instant::now());
+    let active = Arc::new(AtomicUsize::new(0));
+
+    // RES-3937: bounded worker pool. `sync_channel` with a small buffer is
+    // itself the backpressure mechanism — once every worker and the queue
+    // slot are busy, `send` blocks the accept loop until a worker frees up.
+    let (tx, rx) = mpsc::sync_channel::<TcpStream>(config.max_connections);
+    let rx = Arc::new(std::sync::Mutex::new(rx));
+    for _ in 0..config.max_connections {
+        let rx = Arc::clone(&rx);
+        let limiter = Arc::clone(&limiter);
+        let clock = Arc::clone(&clock);
+        let active = Arc::clone(&active);
+        thread::spawn(move || {
+            loop {
+                let stream = {
+                    let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
+                    rx.recv()
+                };
+                let Ok(mut stream) = stream else {
+                    // Sender dropped — pool is shutting down.
+                    break;
+                };
+                // `active` counts in-flight requests; RES-3942 (follow-up)
+                // uses it to drain the pool on graceful shutdown.
+                active.fetch_add(1, Ordering::SeqCst);
+                if let Err(e) = handle_http_stream(&mut stream, &config, &limiter, &clock) {
+                    eprintln!("warning: MCP HTTP request failed: {e}");
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+    }
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
-                if let Err(e) = handle_http_stream(&mut stream, &config, &limiter, &clock) {
-                    eprintln!("warning: MCP HTTP request failed: {e}");
+            Ok(stream) => {
+                if tx.send(stream).is_err() {
+                    break;
                 }
             }
             Err(e) => eprintln!("warning: MCP HTTP accept failed: {e}"),
@@ -208,6 +258,7 @@ fn handle_http_stream(
     limiter: &RateLimiterRegistry,
     clock: &Instant,
 ) -> io::Result<()> {
+    let start = Instant::now();
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let peer_ip = stream
         .peer_addr()
@@ -235,6 +286,7 @@ fn handle_http_stream(
             if let Some(content_len) = parse_content_length(&headers)
                 && size_limiter.check(content_len).is_err()
             {
+                let (method, path) = request_line_of(&request);
                 let response = http_json(
                     413,
                     json!({
@@ -245,12 +297,14 @@ fn handle_http_stream(
                         )
                     }),
                 );
+                log_request(peer_ip, &method, &path, 413, start.elapsed(), request.len());
                 return stream.write_all(response.as_bytes());
             }
             checked_content_length = true;
         }
 
         if size_limiter.check(request.len()).is_err() {
+            let (method, path) = request_line_of(&request);
             let response = http_json(
                 413,
                 json!({
@@ -261,6 +315,7 @@ fn handle_http_stream(
                     )
                 }),
             );
+            log_request(peer_ip, &method, &path, 413, start.elapsed(), request.len());
             return stream.write_all(response.as_bytes());
         }
 
@@ -268,6 +323,8 @@ fn handle_http_stream(
             break;
         }
     }
+
+    let (method, path) = request_line_of(&request);
 
     // RES-3938: per-IP rate limiting. Checked after the request is fully
     // read (so well-behaved small requests don't trigger a TCP reset from
@@ -278,12 +335,69 @@ fn handle_http_stream(
             429,
             json!({ "status": "error", "error": "rate limit exceeded" }),
         );
+        log_request(peer_ip, &method, &path, 429, start.elapsed(), request.len());
         return stream.write_all(response.as_bytes());
     }
 
+    let body_bytes = request.len();
     let request = String::from_utf8_lossy(&request);
     let response = http_response_for_request(&request, config);
+    let status = response_status(&response);
+    log_request(peer_ip, &method, &path, status, start.elapsed(), body_bytes);
     stream.write_all(response.as_bytes())
+}
+
+/// Best-effort `(method, path)` extraction for logging, used both on the
+/// happy path and on early-exit (413/429) responses. Returns `"-"` parts
+/// when the request line isn't available yet (e.g. a client that never
+/// sends a complete header block).
+fn request_line_of(request: &[u8]) -> (String, String) {
+    let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return ("-".to_string(), "-".to_string());
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let Some(request_line) = headers.lines().next() else {
+        return ("-".to_string(), "-".to_string());
+    };
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("-").to_string();
+    let path = parts.next().unwrap_or("-").to_string();
+    (method, path)
+}
+
+/// RES-3941: parse the numeric status code back out of a rendered
+/// `http_json` response (`"HTTP/1.1 <code> <reason>\r\n..."`), so the
+/// access-log line doesn't need a second code path duplicating the status
+/// decision already made when building the response body.
+fn response_status(response: &str) -> u16 {
+    response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+/// RES-3941: emit one structured, single-line access-log entry per HTTP
+/// request. Written to stderr via `eprintln!`, matching this module's
+/// existing warning-log convention (no `log`/`tracing` dependency is
+/// in-tree) — `key=value` fields keep it both human-scannable and
+/// trivially parseable by a log aggregator.
+fn log_request(
+    peer_ip: IpAddr,
+    method: &str,
+    path: &str,
+    status: u16,
+    duration: Duration,
+    body_bytes: usize,
+) {
+    let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    eprintln!(
+        "ts_ms={ts_ms} peer={peer_ip} method={method} path={path} status={status} duration_ms={} bytes={body_bytes}",
+        duration.as_millis()
+    );
 }
 
 fn parse_content_length(headers: &str) -> Option<usize> {
@@ -3093,6 +3207,7 @@ mod tests {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             rate_limit_per_min: DEFAULT_RATE_LIMIT_PER_MIN,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
         }
     }
 

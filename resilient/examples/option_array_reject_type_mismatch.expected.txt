@@ -1,0 +1,6 @@
+Type error: resilient/examples/option_array_reject_type_mismatch.rz:17:41: let mismatched: string — value has type int
+resilient/examples/option_array_reject_type_mismatch.rz:17:41: let mismatched: string — value has type int
+Type error: let mismatched: string — value has type int
+               let mismatched: string = arr[0];
+                                           ^
+Error: Type check failed: resilient/examples/option_array_reject_type_mismatch.rz:17:41: let mismatched: string — value has type int

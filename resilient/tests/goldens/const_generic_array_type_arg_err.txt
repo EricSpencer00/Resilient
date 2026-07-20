@@ -1,0 +1,15 @@
+exit=1
+<tmp>.rz:0:0: warning[resilience]: `sum3` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+<tmp>.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+<tmp>.rz:0:0: warning[contract_infer]: `sum3` — inferred suggestion: requires len(v) > 0
+mutation: 20 total mutation site(s) across 2 function(s)
+mutation:   `main`: 9 site(s) [literal]
+mutation:   `sum3`: 11 site(s) [arithmetic, literal, return]
+<tmp>.rz:0:0: warning[mutation]: 20/20 mutation site(s) (100%) are in functions with no contracts — the Z3 verifier cannot kill them
+<tmp>.rz:0:0: warning[mutation]: `main`: 9 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+<tmp>.rz:0:0: warning[mutation]: `sum3`: 11 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+<tmp>.rz:2:30: array literal has 2 element(s) but parameter `v` of `sum3` is declared `array<int, 3>` (expected 3)
+<tmp>.rz:2:30: array literal has 2 element(s) but parameter `v` of `sum3` is declared `array<int, 3>` (expected 3)
+error: array literal has 2 element(s) but parameter `v` of `sum3` is declared `array<int, 3>` (expected 3)
+   fn main() { println(sum3(1, [1, 2])); }
+                                ^

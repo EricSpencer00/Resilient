@@ -122,6 +122,7 @@ mod tests {
                 value: Box::new(ident("v")),
                 type_annot: None,
                 span: Span::default(),
+                is_const: false,
             },
             assume_stmt("b"),
         ]);

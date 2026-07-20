@@ -1566,6 +1566,26 @@ fn render_div_by_zero_error(op_name: &str) -> String {
     )
 }
 
+/// RES-4115: format the "Undefined variable" error — the typechecker's
+/// name-resolution funnel, which also covers unresolved call-site
+/// callees (a `CallExpression`'s `function` field is itself checked
+/// through the `Node::Identifier` arm, so there's no separately
+/// reachable "unknown function" site distinct from this one). Maps to
+/// the registry's `E0004` (unknown identifier). Default output is
+/// byte-identical to the pre-existing plain message;
+/// `RESILIENT_RICH_DIAG=1` prefixes the `[E0004]` code.
+fn render_undefined_variable_error(name: &str, line: usize, col: usize, hint: &str) -> String {
+    let prefix = if rich_diag_enabled() { "[E0004] " } else { "" };
+    if line == 0 {
+        format!("{}Undefined variable: {}{}", prefix, name, hint)
+    } else {
+        format!(
+            "{}Undefined variable '{}' at {}:{}{}",
+            prefix, name, line, col, hint
+        )
+    }
+}
+
 /// RES-217: format + print the partial-proof warning to stderr.
 /// The message follows the ticket's mandated shape:
 ///
@@ -1808,7 +1828,24 @@ pub struct TypeChecker {
     /// `FieldAccess` type-checks to succeed for default methods even when
     /// the impl block omits them.
     trait_default_methods: HashMap<String, HashSet<String>>,
+    /// RES-4190: depth of the `check_node` recursion, tracked by the
+    /// `check_node` wrapper around `check_node_inner`. Legally parsed
+    /// but pathologically nested ASTs (e.g. thousands of chained `!`
+    /// prefix operators) used to overflow the native stack; this
+    /// mirrors the parser's RES-4185 `expr_depth` guard so the same
+    /// input instead gets a typed diagnostic.
+    check_depth: u32,
 }
+
+/// RES-4190: `check_node` counts every recursive descent (statements
+/// *and* expressions), not just expression nesting like the parser's
+/// `expr_depth` (RES-4185, resilient/src/lib.rs, limit 500) — so a
+/// 499-deep prefix-operator expression (the deepest the parser will
+/// actually emit) costs a handful of extra `check_node` frames for
+/// the enclosing `Program`/`Function`/statement nodes. Set with
+/// headroom above 500 so anything the parser accepts is guaranteed
+/// to also typecheck instead of hitting this guard.
+const MAX_CHECK_DEPTH: u32 = 550;
 
 impl TypeChecker {
     pub fn new() -> Self {
@@ -5623,6 +5660,8 @@ impl TypeChecker {
             trait_impls: HashMap::new(),
             trait_supers: HashMap::new(),
             trait_default_methods: HashMap::new(),
+            // RES-4190: no recursion depth at construction.
+            check_depth: 0,
         }
     }
 
@@ -6434,6 +6473,9 @@ impl TypeChecker {
                 // Add new compiler pass calls here (append-only).
                 // Pattern: crate::your_feature::check(program, source_path)?;
                 // Merge conflicts: keep ALL calls from both sides.
+                // RES-4197: `let const` immutability — rejects any
+                // reassignment of a `let const` binding with E0012.
+                crate::immutability::check(program, source_path)?;
                 // RES-1612 gate: pass scans for `Node::TryCatch`.
                 if markers.has_try_catch {
                     crate::try_catch::check(program, source_path)?;
@@ -7353,7 +7395,31 @@ impl TypeChecker {
         result
     }
 
+    /// RES-4190: depth-guarded entry point. Delegates to
+    /// `check_node_inner` for the actual recursive-descent logic,
+    /// tracking `check_depth` around the call so a legally parsed but
+    /// pathologically nested AST (e.g. thousands of chained `!`
+    /// prefix operators) hits a typed diagnostic instead of
+    /// overflowing the native stack. Mirrors the parser's RES-4185
+    /// `parse_expression`/`parse_expression_inner` split.
     pub fn check_node(&mut self, node: &Node) -> Result<Type, String> {
+        self.check_depth += 1;
+        if self.check_depth > MAX_CHECK_DEPTH {
+            self.check_depth -= 1;
+            return Err(format!(
+                "{}:{}:{}: expression nesting too deep (limit {})",
+                self.source_path,
+                self.current_span.start.line,
+                self.current_span.start.column,
+                MAX_CHECK_DEPTH
+            ));
+        }
+        let result = self.check_node_inner(node);
+        self.check_depth -= 1;
+        result
+    }
+
+    fn check_node_inner(&mut self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Program(_statements) => self.check_program(node),
             // RES-073: `use` is resolved away before typecheck. Treat
@@ -8184,6 +8250,7 @@ impl TypeChecker {
                 value,
                 type_annot,
                 span,
+                is_const: _,
             } => {
                 // RES-1862: track innermost span for better diagnostics.
                 self.current_span = *span;
@@ -9498,22 +9565,58 @@ impl TypeChecker {
                 // node is used as the callee in a CallExpression; returning a
                 // Function type here lets the call site infer the correct return.
                 if is_array_ty(&tgt_ty) {
+                    // RES-3977: methods that provably preserve (or merely
+                    // select from) the target's element type — `filter`,
+                    // `slice`, `sort`/`sort_desc`, `reverse`, `dedup`,
+                    // `collect`, `find` — return `TypedArray(elem)` /
+                    // `Option(elem)` instead of erasing to untyped
+                    // `Array`/`Option(Any)` when the target itself is
+                    // element-tracked. `map`/`flat_map`/`push`/`flatten`
+                    // are excluded: their result element type can differ
+                    // from the input (callback return type, appended
+                    // value, or nested-array unwrapping), which this
+                    // call site — seeing only the target, not the
+                    // argument — cannot prove.
+                    let elem_array_ret = match &tgt_ty {
+                        Type::TypedArray(elem) => Type::TypedArray(elem.clone()),
+                        _ => Type::Array,
+                    };
+                    let elem_option_ret = match &tgt_ty {
+                        Type::TypedArray(elem) => Type::Option(elem.clone()),
+                        _ => Type::Option(Box::new(Type::Any)),
+                    };
                     let ret = match field.as_str() {
                         // HOF methods: take a callback / element as the extra arg.
-                        "map" | "filter" | "push" | "flat_map" => Type::Function {
+                        "map" | "push" | "flat_map" => Type::Function {
                             params: vec![Type::Any],
                             return_type: Box::new(Type::Array),
+                        },
+                        // RES-3977: `filter` never changes element type —
+                        // it only removes elements, so the result is
+                        // `TypedArray(elem)` when the target is.
+                        "filter" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(elem_array_ret.clone()),
                         },
                         // RES-2734: zero-extra-arg array transformations. `pop`,
                         // `sort`, `reverse` etc. were previously grouped with the
                         // HOF methods (1 param), causing a false arity error when
                         // called without arguments. Fixed here.
-                        "pop" | "sort" | "sort_desc" | "reverse" | "flatten" | "dedup" => {
-                            Type::Function {
-                                params: vec![],
-                                return_type: Box::new(Type::Array),
-                            }
-                        }
+                        // RES-3977: `pop`/`sort`/`sort_desc`/`reverse`/`dedup`
+                        // reorder or drop elements but never change their
+                        // type, so they preserve the tracked element type.
+                        "pop" | "sort" | "sort_desc" | "reverse" | "dedup" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(elem_array_ret.clone()),
+                        },
+                        // `flatten` unwraps one level of nesting
+                        // (`array<array<T>>` -> `array<T>`), which this
+                        // call site cannot prove without inspecting the
+                        // target's element type further — left untyped.
+                        "flatten" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Array),
+                        },
                         // RES-2707: `reduce` accepts 1 arg (fn, uses first elem as init)
                         // or 2 args (init, fn). Return Type::Any so the call site skips
                         // strict arity checking and both forms are accepted.
@@ -9522,9 +9625,12 @@ impl TypeChecker {
                             params: vec![Type::Any],
                             return_type: Box::new(Type::Void),
                         },
+                        // RES-3977: `find` returns the first matching
+                        // element (or `None`) — the element type is
+                        // preserved, not widened to `Any`.
                         "find" => Type::Function {
                             params: vec![Type::Any],
-                            return_type: Box::new(Type::Option(Box::new(Type::Any))),
+                            return_type: Box::new(elem_option_ret.clone()),
                         },
                         "any" | "all" => Type::Function {
                             params: vec![Type::Any],
@@ -9534,9 +9640,11 @@ impl TypeChecker {
                             params: vec![],
                             return_type: Box::new(Type::Int),
                         },
+                        // RES-3977: `collect` re-materializes the same
+                        // iterator/array — same element type as the target.
                         "collect" => Type::Function {
                             params: vec![],
-                            return_type: Box::new(Type::Array),
+                            return_type: Box::new(elem_array_ret.clone()),
                         },
                         // RES-2734: `has` is the array-element membership method;
                         // `contains` is kept for backward compat.
@@ -9548,10 +9656,11 @@ impl TypeChecker {
                             params: vec![Type::String],
                             return_type: Box::new(Type::String),
                         },
-                        // RES-2734: slice(start, end) — sub-array extraction.
+                        // RES-2734 / RES-3977: slice(start, end) — sub-array
+                        // extraction; preserves the element type.
                         "slice" => Type::Function {
                             params: vec![Type::Int, Type::Int],
-                            return_type: Box::new(Type::Array),
+                            return_type: Box::new(elem_array_ret),
                         },
                         _ => Type::Any,
                     };
@@ -10251,14 +10360,12 @@ impl TypeChecker {
                             name.as_str(),
                             names.iter().map(String::as_str),
                         );
-                        if span.start.line == 0 {
-                            Err(format!("Undefined variable: {}{}", name, hint))
-                        } else {
-                            Err(format!(
-                                "Undefined variable '{}' at {}:{}{}",
-                                name, span.start.line, span.start.column, hint
-                            ))
-                        }
+                        Err(render_undefined_variable_error(
+                            name,
+                            span.start.line,
+                            span.start.column,
+                            &hint,
+                        ))
                     }
                 }
             }
@@ -11280,7 +11387,18 @@ impl TypeChecker {
                     && other.ends_with('>') =>
             {
                 let inner = &other[6..other.len() - 1];
-                let inner_ty = self.parse_type_name_inner(inner.trim(), seen)?;
+                // RES-4109: const-generic `array<T, N>` — `N` is a
+                // literal length, not a type, and is checked separately
+                // by `const_generic_len::check`. Split off only a
+                // *trailing* top-level `, <int literal>` so the element
+                // type resolution below still sees the whole of `T`
+                // (which may itself be a nested generic, e.g.
+                // `array<Result<int, string>, 3>`).
+                let elem_str = match inner.rsplit_once(',') {
+                    Some((elem, len)) if len.trim().parse::<usize>().is_ok() => elem.trim(),
+                    _ => inner.trim(),
+                };
+                let inner_ty = self.parse_type_name_inner(elem_str, seen)?;
                 Ok(Type::TypedArray(Box::new(inner_ty)))
             }
             // RES-3923: `[T]` / `[T; N]` — bracketed array annotation.
@@ -14421,6 +14539,22 @@ mod res340_rich_type_mismatch_tests {
             &out,
             "integer division by zero — denominator is a compile-time constant 0",
             "E0008",
+        );
+    }
+
+    #[test]
+    fn undefined_variable_error_carries_e0004_when_gated_with_span() {
+        let out = render_undefined_variable_error("foo", 3, 5, "");
+        assert_gated_code(&out, "Undefined variable 'foo' at 3:5", "E0004");
+    }
+
+    #[test]
+    fn undefined_variable_error_carries_e0004_when_gated_without_span() {
+        let out = render_undefined_variable_error("foo", 0, 0, " (did you mean `bar`?)");
+        assert_gated_code(
+            &out,
+            "Undefined variable: foo (did you mean `bar`?)",
+            "E0004",
         );
     }
 

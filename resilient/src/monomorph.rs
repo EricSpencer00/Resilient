@@ -391,11 +391,13 @@ fn rewrite_node(
             value,
             type_annot,
             span,
+            is_const,
         } => Node::LetStatement {
             name: name.clone(),
             value: Box::new(rewrite_node(value, generic_fns, instantiations)),
             type_annot: type_annot.clone(),
             span: *span,
+            is_const: *is_const,
         },
         Node::StaticLet { name, value, span } => Node::StaticLet {
             name: name.clone(),

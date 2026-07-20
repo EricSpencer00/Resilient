@@ -1,0 +1,37 @@
+// RES-3977 (follow-up to RES-3923 / #3974): built-in array methods that
+// provably preserve their target's element type now propagate it
+// instead of erasing the result to untyped `Array`. `filter` only
+// removes elements, `slice` extracts a contiguous sub-range, `sort` /
+// `reverse` / `dedup` reorder or drop elements, and `find` returns one
+// matching element (or `None`) — none of these can change the element
+// type, so each keeps `TypedArray(elem)` when the target is tracked.
+
+fn main() {
+    let xs: array<int> = [5, 1, 4, 2, 3];
+
+    // `filter` preserves the element type: `evens[0]` types as `int`.
+    let evens = xs.filter(fn(int x) -> bool { return x % 2 == 0; });
+    let first_even: int = evens[0];
+    println(first_even);
+
+    // `slice` preserves the element type.
+    let mid = xs.slice(1, 3);
+    let mid0: int = mid[0];
+    println(mid0);
+
+    // `sort` preserves the element type.
+    let sorted = xs.sort();
+    let smallest: int = sorted[0];
+    println(smallest);
+
+    // `find` returns `Option<int>`, not `Option<Any>`.
+    match xs.find(fn(int x) -> bool { return x > 3; }) {
+        Some(v) => {
+            let found: int = v;
+            println(found);
+        }
+        None => println(-1),
+    }
+}
+
+main();

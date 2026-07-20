@@ -224,7 +224,11 @@ pub fn check_tla_file(tla_path: &Path, tlc_jar_override: Option<&str>) -> TlaChe
             "-cp",
             jar.to_str().unwrap_or("tla2tools.jar"),
             "tlc2.TLC",
-            "-noGenerateSpecTE",
+            // RES-3930: current tla2tools (2.16+) doesn't generate a SpecTE
+            // file unless `-generateSpecTE` is passed explicitly, so there
+            // is nothing to opt out of; older releases accepted
+            // `-noGenerateSpecTE` but current ones reject it as an unknown
+            // flag, which made every invocation fail. Omit it.
             "-workers",
             "auto",
             tla_path.to_str().unwrap_or(tla_name),

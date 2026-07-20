@@ -745,12 +745,31 @@ pub mod codes {
     /// share the same name in the same scope.
     ///
     /// Docs: `docs/errors/E0011.html`.
+    ///
+    /// RES-4115: audited for other "duplicate X" one-off parser
+    /// messages that might trivially share this code — `Duplicate
+    /// named argument \`{}\` in call` (`lib.rs`'s call-argument
+    /// parser) is a distinct error class (a call-site shape error,
+    /// not a declaration-scope collision) and doesn't fit E0011's
+    /// docs page or example without confusing the two. It has no
+    /// registered code yet; left as a plain parser `String` per this
+    /// ticket's scope (a codeless-but-documented gap, not a silent
+    /// omission).
     pub const E0011: DiagCode = DiagCode::new_static("E0011");
 
     /// E0012: Reassignment of an immutable (`let`) binding. Only
     /// `let mut` bindings may be reassigned after initialization.
     ///
     /// Docs: `docs/errors/E0012.html`.
+    ///
+    /// RES-4115: re-confirmed (after #4162's initial audit) that no
+    /// call site enforces this today — `Node::Assignment` only
+    /// typechecks value-type compatibility on reassignment, it never
+    /// consults a mutability/`let mut` flag. This is a real language
+    /// gap (Resilient currently allows reassigning a plain `let`), not
+    /// just a missing diagnostic; wiring E0012 needs the mutability
+    /// check itself, which is a typechecker feature addition and out
+    /// of scope for the diagnostic-code migration this ticket covers.
     pub const E0012: DiagCode = DiagCode::new_static("E0012");
 
     // ---- Type checking ----
@@ -771,6 +790,11 @@ pub mod codes {
     /// doesn't resolve to a module or package on the search path.
     ///
     /// Docs: `docs/errors/E0015.html`.
+    ///
+    /// RES-4115: #4162 reported no call site found for this code, but
+    /// there is one — `imports.rs::resolve_use_path`'s
+    /// `use "..." could not be resolved` error, which is now wired
+    /// (see `imports.rs`'s `render_use_path_not_found_error`).
     pub const E0015: DiagCode = DiagCode::new_static("E0015");
 
     /// E0016: Generic trait bound not satisfied — a type argument

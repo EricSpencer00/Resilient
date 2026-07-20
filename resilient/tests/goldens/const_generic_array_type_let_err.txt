@@ -1,0 +1,11 @@
+exit=1
+<tmp>.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+mutation: 7 total mutation site(s) across 1 function(s)
+mutation:   `main`: 7 site(s) [literal]
+<tmp>.rz:0:0: warning[mutation]: 7/7 mutation site(s) (100%) are in functions with no contracts — the Z3 verifier cannot kill them
+<tmp>.rz:0:0: warning[mutation]: `main`: 7 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+<tmp>.rz:1:38: array literal has 2 element(s) but `xs` is declared `array<int, 3>` (expected 3)
+<tmp>.rz:1:38: array literal has 2 element(s) but `xs` is declared `array<int, 3>` (expected 3)
+error: array literal has 2 element(s) but `xs` is declared `array<int, 3>` (expected 3)
+   fn main() { let xs: array<int, 3> = [1, 2]; println(xs[0]); }
+                                        ^

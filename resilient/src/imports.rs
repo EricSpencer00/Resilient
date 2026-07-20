@@ -324,14 +324,35 @@ fn append_imported_stmts(
     }
 }
 
+/// RES-4115: gate for attaching the `E0015` registry code to the
+/// import-target-not-found message. Default output stays byte-identical
+/// to the pre-existing plain message (goldens stay pinned);
+/// `RESILIENT_RICH_DIAG=1` prefixes the `[E0015]` code, mirroring
+/// `typechecker.rs`'s `rich_diag_enabled`.
+fn rich_diag_enabled() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1"));
+    *ENABLED
+}
+
+/// RES-4115: format the "use path could not be resolved" error —
+/// the registry's `E0015` (import target not found). Default output
+/// is byte-identical to the pre-existing plain message;
+/// `RESILIENT_RICH_DIAG=1` prefixes the `[E0015]` code.
+fn render_use_path_not_found_error(path: &str, base_dir: &Path) -> String {
+    let prefix = if rich_diag_enabled() { "[E0015] " } else { "" };
+    format!(
+        "{}use \"{}\" could not be resolved (looked in {})",
+        prefix,
+        path,
+        base_dir.display()
+    )
+}
+
 fn resolve_use_path(base_dir: &Path, path: &str) -> Result<PathBuf, String> {
     let candidate = base_dir.join(path);
     if !candidate.exists() {
-        return Err(format!(
-            "use \"{}\" could not be resolved (looked in {})",
-            path,
-            base_dir.display()
-        ));
+        return Err(render_use_path_not_found_error(path, base_dir));
     }
     Ok(candidate)
 }
@@ -366,6 +387,26 @@ mod tests {
 
     fn cleanup_temp_dir(dir: &Path) {
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// RES-4115: default output stays byte-identical to the legacy
+    /// "use ... could not be resolved" message (no golden churn);
+    /// `RESILIENT_RICH_DIAG=1` prefixes `[E0015]`. Checks whichever
+    /// branch the ambient environment is actually in, mirroring
+    /// `typechecker.rs`'s `assert_gated_code` helper.
+    #[test]
+    fn use_path_not_found_error_carries_e0015_when_gated() {
+        let base = Path::new("/does/not/exist/base");
+        let err = resolve_use_path(base, "missing.rz").expect_err("path should not resolve");
+        if std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1") {
+            assert!(err.contains("E0015"), "got: {err}");
+        } else {
+            assert!(
+                err.contains("use \"missing.rz\" could not be resolved"),
+                "got: {err}"
+            );
+            assert!(!err.contains("E0015"), "code leaked into default: {err}");
+        }
     }
 
     #[test]

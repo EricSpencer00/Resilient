@@ -1098,6 +1098,7 @@ mod tests {
                 }),
                 type_annot: Some("Either<int,string>".to_string()),
                 span: Span::default(),
+                is_const: false,
             },
             Span::default(),
         )]);
