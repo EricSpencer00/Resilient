@@ -154,7 +154,7 @@ pub fn load_and_run<const N: usize, const STACK: usize, const LOCALS: usize>(
 /// let mut buf = [0u8; 128];
 /// let len = encode_program(&main, &functions, &[], &mut buf).unwrap();
 ///
-/// let result = load_and_run_with_functions::<8, 4, 16, 8, 4, 2>(&buf[..len]);
+/// let result = load_and_run_with_functions::<8, 4, 16, 8, 4, 2, 8>(&buf[..len]);
 /// assert_eq!(result, Ok(resilient_runtime::vm::Value::Int(81)));
 /// ```
 pub fn load_and_run_with_functions<
@@ -164,6 +164,7 @@ pub fn load_and_run_with_functions<
     const STACK: usize,
     const LOCALS: usize,
     const CALLS: usize,
+    const SLAB: usize,
 >(
     blob: &[u8],
 ) -> Result<Value, LoaderError> {
@@ -211,7 +212,7 @@ pub fn load_and_run_with_functions<
         };
     }
 
-    let mut vm = Vm::<STACK, LOCALS, CALLS>::new();
+    let mut vm = Vm::<STACK, LOCALS, CALLS, 0, 0, SLAB>::new();
     let result = vm.run_with_functions(
         &functions_buf[..counts.func_count],
         &main_instrs[..counts.main_len],
@@ -252,7 +253,7 @@ pub fn load_and_run_with_functions<
 /// let mut buf = [0u8; 128];
 /// let len = encode_program(&main, &functions, &[], &mut buf).unwrap();
 ///
-/// let result = load_and_run_with_functions_and_closures::<8, 4, 16, 8, 4, 2, 2>(&buf[..len]);
+/// let result = load_and_run_with_functions_and_closures::<8, 4, 16, 8, 4, 2, 2, 8>(&buf[..len]);
 /// assert_eq!(result, Ok(resilient_runtime::vm::Value::Int(41)));
 /// ```
 #[allow(clippy::too_many_arguments)]
@@ -264,6 +265,7 @@ pub fn load_and_run_with_functions_and_closures<
     const LOCALS: usize,
     const CALLS: usize,
     const CLOSURES: usize,
+    const SLAB: usize,
 >(
     blob: &[u8],
 ) -> Result<Value, LoaderError> {
@@ -311,7 +313,7 @@ pub fn load_and_run_with_functions_and_closures<
         };
     }
 
-    let mut vm = Vm::<STACK, LOCALS, CALLS, 0, CLOSURES>::new();
+    let mut vm = Vm::<STACK, LOCALS, CALLS, 0, CLOSURES, SLAB>::new();
     let result = vm.run_with_functions(
         &functions_buf[..counts.func_count],
         &main_instrs[..counts.main_len],
@@ -351,7 +353,7 @@ pub fn load_and_run_with_functions_and_closures<
 /// let mut buf = [0u8; 256];
 /// let len = encode_program(&main, &functions, &try_handlers, &mut buf).unwrap();
 ///
-/// let result = load_and_run_with_functions_and_tries::<9, 4, 16, 1, 8, 4, 2, 1>(&buf[..len]);
+/// let result = load_and_run_with_functions_and_tries::<9, 4, 16, 1, 8, 4, 2, 1, 8>(&buf[..len]);
 /// assert_eq!(result, Ok(resilient_runtime::vm::Value::Int(-1)));
 /// ```
 #[allow(clippy::too_many_arguments)]
@@ -364,6 +366,7 @@ pub fn load_and_run_with_functions_and_tries<
     const LOCALS: usize,
     const CALLS: usize,
     const TRIES: usize,
+    const SLAB: usize,
 >(
     blob: &[u8],
 ) -> Result<Value, LoaderError> {
@@ -411,7 +414,7 @@ pub fn load_and_run_with_functions_and_tries<
         };
     }
 
-    let mut vm = Vm::<STACK, LOCALS, CALLS, TRIES>::new();
+    let mut vm = Vm::<STACK, LOCALS, CALLS, TRIES, 0, SLAB>::new();
     let result = vm.run_with_tries(
         &functions_buf[..counts.func_count],
         &try_handlers_buf[..counts.try_count],
@@ -446,9 +449,26 @@ mod tests {
 
     #[test]
     fn load_and_run_committed_closure_fixture_round_trips_through_real_decoder_and_vm() {
-        let result =
-            load_and_run_with_functions_and_closures::<32, 4, 32, 8, 4, 4, 2>(CLOSURES_DEMO_RZBC);
+        let result = load_and_run_with_functions_and_closures::<32, 4, 32, 8, 4, 4, 2, 16>(
+            CLOSURES_DEMO_RZBC,
+        );
         assert_eq!(result, Ok(Value::Int(41)));
+    }
+
+    /// RES-4083 (closure call-site arguments): `resilient/examples/
+    /// closures_embedded_args.rz` compiled by `rz build` — `outer(base)`
+    /// defines a nested `addBase(x)` closure that captures `base` by
+    /// value and calls it with one call-site argument (`addBase(1)`),
+    /// exercising `rzbc_emit.rs`'s `bridge_closure_call_args` stack-
+    /// order bridge end to end through the real compiler.
+    const CLOSURES_ARGS_DEMO_RZBC: &[u8] = include_bytes!("../../fixtures/closures_args_demo.rzbc");
+
+    #[test]
+    fn load_and_run_committed_closure_with_arguments_fixture() {
+        let result = load_and_run_with_functions_and_closures::<32, 4, 32, 8, 4, 4, 2, 16>(
+            CLOSURES_ARGS_DEMO_RZBC,
+        );
+        assert_eq!(result, Ok(Value::Int(42)));
     }
 
     #[test]
@@ -567,7 +587,7 @@ mod tests {
         let mut buf = [0u8; 128];
         let len = serde::encode_program(&main, &functions, &[], &mut buf).unwrap();
 
-        let result = load_and_run_with_functions::<8, 4, 16, 8, 4, 2>(&buf[..len]);
+        let result = load_and_run_with_functions::<8, 4, 16, 8, 4, 2, 8>(&buf[..len]);
         assert_eq!(result, Ok(Value::Int(81)));
     }
 
@@ -582,7 +602,7 @@ mod tests {
         let mut buf = [0u8; 64];
         let len = serde::encode_program(&main, &[], &[], &mut buf).unwrap();
 
-        let result = load_and_run_with_functions::<8, 0, 0, 8, 0, 1>(&buf[..len]);
+        let result = load_and_run_with_functions::<8, 0, 0, 8, 0, 1, 0>(&buf[..len]);
         assert_eq!(result, Ok(Value::Int(5)));
     }
 
@@ -618,7 +638,7 @@ mod tests {
         let len = serde::encode_program(&main, &functions, &[], &mut buf).unwrap();
 
         // CALLS == 3 caps recursion well short of depth 50.
-        let result = load_and_run_with_functions::<8, 4, 32, 8, 4, 3>(&buf[..len]);
+        let result = load_and_run_with_functions::<8, 4, 32, 8, 4, 3, 12>(&buf[..len]);
         assert_eq!(
             result,
             Err(LoaderError::VmError(VmError::CallStackOverflow))
@@ -629,7 +649,7 @@ mod tests {
     fn load_and_run_with_functions_bad_magic_is_decode_failed_not_a_panic() {
         let mut buf = [0u8; serde::HEADER_LEN];
         buf[..4].copy_from_slice(b"NOPE");
-        let result = load_and_run_with_functions::<4, 4, 4, 8, 0, 1>(&buf);
+        let result = load_and_run_with_functions::<4, 4, 4, 8, 0, 1, 0>(&buf);
         assert_eq!(
             result,
             Err(LoaderError::DecodeFailed(DecodeError::BadMagic))
@@ -662,7 +682,7 @@ mod tests {
         let len = serde::encode_program(&[], &functions, &[], &mut buf).unwrap();
 
         // FUNC_META_N == 1 can't hold 2 function-table entries.
-        let result = load_and_run_with_functions::<4, 1, 8, 8, 0, 1>(&buf[..len]);
+        let result = load_and_run_with_functions::<4, 1, 8, 8, 0, 1, 0>(&buf[..len]);
         assert_eq!(result, Err(LoaderError::TooManyFuncs));
     }
 }

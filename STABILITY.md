@@ -117,6 +117,12 @@ deprecation cycle before any breaking change, even pre-1.0:
 - **`unsafe` blocks** — required wrapper for volatile MMIO intrinsics; the `unsafe { ... }` syntax and the compile-time gate (calling `volatile_read_*`/`volatile_write_*` outside `unsafe` is an error) are stable.
 - **Region annotation syntax** — `region NAME;` declarations, `&[NAME] T` shared-reference parameters, `&mut[NAME] T` exclusive-mutable-reference parameters, and the compile-time borrow check that rejects two `&mut[A]` params with the same label in the same function. Stable; the syntactic alias-rejection rule and diagnostic format are part of the stable surface.
 - **Region-polymorphic function syntax** — `fn f<R, S>(…)` with region type parameters in angle brackets; call-site substitution and aliasing check (two callee region params resolving to the same mutable region is a compile-time error). Stable for the V1 single-label inference model.
+- **`let`-binding reassignability (RES-4197)** — every `let` binding is
+  reassignable; the compiler performs no mutability enforcement. This is a
+  guaranteed-stable behavior, not an open question. See
+  `docs/IMMUTABILITY.md` for the design record; a future opt-in
+  `let const` immutability check is additive and does not change this
+  guarantee for existing programs.
 
 Where a change is unavoidable, the compiler will emit a deprecation warning
 for at least one release before the construct stops compiling.

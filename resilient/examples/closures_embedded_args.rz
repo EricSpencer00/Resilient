@@ -1,0 +1,13 @@
+// RES-4083 (closure call-site arguments): a closure captures `base`
+// by value and is called with a call-site argument — exercises the
+// host `[closure, arg]` -> embedded `[arg, closure]` stack-order
+// bridge in rzbc_emit.rs's `bridge_closure_call_args`.
+
+fn outer(int base) -> int {
+    fn addBase(int x) {
+        base + x
+    }
+    return addBase(1);
+}
+
+outer(41);

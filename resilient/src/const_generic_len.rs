@@ -20,17 +20,35 @@
 //! design: zero false positives, every previously-compiling program
 //! keeps compiling. Runtime bounds checks (E0009) remain the backstop
 //! for lengths this pass cannot see.
+//!
+//! RES-4109 (A-E2 follow-up): the same provable-site checks also cover
+//! the const-generic spelling `array<T, N>` — `parse_type_annotation`'s
+//! generic-args parser (RES-402) accepts a bare integer literal as a
+//! generic argument (see `lib.rs`, `Token::IntLiteral` arm in the
+//! `<...>` loop) and encodes it verbatim, e.g. `"array<int, 3>"`. Only a
+//! **literal** `N` is meaningful here — `array<T, N>` where `N` is a
+//! type parameter of the enclosing generic function is left alone
+//! (nothing to compare against; conservative-permissive by design).
 
 use crate::Node;
 use resilient_span::Span;
 use std::collections::HashMap;
 
-/// Parse a canonical fixed-size array annotation `[elem; N]` (the
-/// exact shape `parse_type_annotation` serializes) into `N`.
-/// Returns `None` for every other type string.
+/// Parse a fixed-size array length out of either supported spelling:
+/// the bracket form `[elem; N]` (the exact shape `parse_type_annotation`
+/// serializes for RES-157a) or the const-generic form `array<elem, N>`
+/// (RES-4109). Returns `None` for every other type string, including
+/// `array<T, N>` where the length slot is not a literal integer.
 fn fixed_len(ty: &str) -> Option<usize> {
-    let inner = ty.trim().strip_prefix('[')?.strip_suffix(']')?;
-    let (_, len) = inner.rsplit_once(';')?;
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        let (_, len) = inner.rsplit_once(';')?;
+        return len.trim().parse::<usize>().ok();
+    }
+    let inner = ty
+        .strip_prefix("array<")
+        .and_then(|s| s.strip_suffix('>'))?;
+    let (_, len) = inner.rsplit_once(',')?;
     len.trim().parse::<usize>().ok()
 }
 
@@ -297,5 +315,58 @@ mod tests {
         let err = typecheck("fn main() { let xs: [int; 0] = [1]; }\nmain();\n").unwrap_err();
         assert!(err.contains("expected 0"), "got: {err}");
         typecheck("fn main() { let xs: [int; 0] = []; }\nmain();\n").unwrap();
+    }
+
+    // --- RES-4109: const-generic `array<T, N>` spelling ---
+
+    #[test]
+    fn fixed_len_parses_const_generic_form() {
+        assert_eq!(fixed_len("array<int, 3>"), Some(3));
+        assert_eq!(fixed_len("array<int, 0>"), Some(0));
+        assert_eq!(fixed_len("Array<float, 12>"), None); // capitalised prefix not matched by design; see note below
+        assert_eq!(fixed_len("array<int>"), None);
+        assert_eq!(fixed_len("array<T, N>"), None); // N not a literal — conservative
+    }
+
+    #[test]
+    fn const_generic_let_literal_mismatch_rejected() {
+        let err =
+            typecheck("fn main() { let xs: array<int, 3> = [1, 2]; }\nmain();\n").unwrap_err();
+        assert!(err.contains("array literal has 2 element(s)"), "got: {err}");
+        assert!(err.contains("array<int, 3>"), "got: {err}");
+    }
+
+    #[test]
+    fn const_generic_let_literal_exact_accepted() {
+        typecheck("fn main() { let xs: array<int, 3> = [1, 2, 3]; }\nmain();\n").unwrap();
+    }
+
+    #[test]
+    fn const_generic_call_arg_literal_mismatch_rejected() {
+        let err = typecheck(
+            "fn sum(int a, array<int, 3> v) -> int { return a; }\nfn main() { sum(1, [1, 2]); }\nmain();\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("parameter `v` of `sum`"), "got: {err}");
+        assert!(err.contains("expected 3"), "got: {err}");
+    }
+
+    #[test]
+    fn const_generic_return_literal_mismatch_rejected() {
+        let err = typecheck(
+            "fn make() -> array<int, 3> { return [1, 2]; }\nfn main() { make(); }\nmain();\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("`make` returns `array<int, 3>`"), "got: {err}");
+    }
+
+    #[test]
+    fn const_generic_non_literal_n_permissive() {
+        // `N` is a type parameter here, not a literal length — nothing
+        // to compare against, so the pass stays silent.
+        typecheck(
+            "fn<T> make(int n) -> array<T, n> { return [1, 2]; }\nfn main() { make(3); }\nmain();\n",
+        )
+        .unwrap();
     }
 }

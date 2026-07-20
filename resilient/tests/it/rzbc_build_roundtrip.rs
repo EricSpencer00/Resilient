@@ -272,7 +272,7 @@ fn build_decode_run_matches_interpreter_for_fn_declarations() {
             capture_count: 0,
         };
     }
-    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
+    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4, 0, 0, 32>::new();
     let embedded_result = vm
         .run_with_functions(
             &functions[..counts.func_count],
@@ -340,7 +340,7 @@ fn run_fn_blob(blob: &[u8]) -> resilient_runtime::vm::Value {
             capture_count: 0,
         };
     }
-    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4>::new();
+    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4, 0, 0, 32>::new();
     vm.run_with_functions(
         &functions[..counts.func_count],
         &out_main[..counts.main_len],
@@ -395,7 +395,7 @@ fn run_fn_blob_with_tries(blob: &[u8]) -> resilient_runtime::vm::Value {
             capture_count: 0,
         };
     }
-    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4, 2>::new();
+    let mut vm = resilient_runtime::vm::Vm::<32, 8, 4, 2, 0, 32>::new();
     vm.run_with_tries(
         &functions[..counts.func_count],
         &out_try_handlers[..counts.try_count],

@@ -23,3 +23,6 @@ docs/.DS_Store
 # RES-355: incremental compilation cache (local, per-source-dir)
 **/.resilient_cache/
 .DS_Store
+
+# TLC model-checker run artifacts (states/, *.out) from `rz tla check`
+resilient-runtime/tla/states/

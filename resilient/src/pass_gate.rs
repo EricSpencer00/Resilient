@@ -599,6 +599,7 @@ mod tests {
             }),
             type_annot: None,
             span: span::Span::default(),
+            is_const: false,
         }
     }
 
@@ -845,6 +846,7 @@ mod tests {
             }),
             type_annot: Some(type_annot.to_string()),
             span: span::Span::default(),
+            is_const: false,
         }
     }
 

@@ -228,3 +228,59 @@ fn check_rejects_return_type_coercion_when_value_does_not_implement() {
         "expected return-coercion diagnostic; got: {stderr}"
     );
 }
+
+// RES-4095 increment 5: flow-sensitive coercion checking (issue item 4)
+// — a `dyn`-typed slot fed through a local-variable alias chain, or a
+// fn call whose declared return type is a concrete struct.
+
+#[test]
+fn check_accepts_dyn_trait_coercion_through_alias_chain() {
+    let output = Command::new(bin())
+        .args(["check", "examples/trait_dyn_flow_alias_basic.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn check_rejects_dyn_trait_coercion_through_local_alias() {
+    let output = Command::new(bin())
+        .args(["check", "examples/trait_dyn_flow_alias_reject.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("type `Square` does not implement `Shape`"),
+        "expected alias-coercion diagnostic; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_rejects_dyn_trait_coercion_through_fn_return_type() {
+    let output = Command::new(bin())
+        .args(["check", "examples/trait_dyn_flow_return_reject.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("type `Square` does not implement `Shape`"),
+        "expected return-type-coercion diagnostic; got: {stderr}"
+    );
+}

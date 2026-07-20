@@ -531,6 +531,13 @@ pub enum VmError {
     /// bound will eventually hit this rather than grow unbounded
     /// memory or panic.
     ClosureCapacityExceeded,
+    /// RES-4083 (D-E1 tail, packed locals slab): a new frame's
+    /// locals window would run past the `Vm`'s shared `SLAB`
+    /// capacity. The typed substitute for growing the packed pool —
+    /// mirrors `CallStackOverflow`/`TryStackOverflow`'s bounded-
+    /// resource pattern. Recoverable by re-instantiating the `Vm`
+    /// with a larger `SLAB`.
+    LocalsSlabExhausted,
 }
 
 /// RES-4077 (D-E1 fn-support): who to resume, and where, once the
@@ -573,21 +580,44 @@ struct TryFrame {
 /// there is no second frame slot. Programs that call functions
 /// pick a `CALLS > 1` and use [`Vm::run_with_functions`].
 ///
-/// Every frame gets the same `LOCALS`-sized slab regardless of its
-/// declared local count — simpler and still zero-heap, at the cost
-/// of some wasted memory relative to a tightly-packed bump
-/// allocator (acceptable for v1; see RES-4077's PR description for
-/// the follow-up note).
+/// RES-4083 (D-E1 tail, packed locals slab): every frame gets a
+/// packed window `[base, base + n_locals)` into one shared,
+/// flat `SLAB`-sized pool rather than its own fixed `LOCALS`-sized
+/// array — `n_locals` comes from [`FunctionDef::local_count`] for a
+/// called function, or from `LOCALS` itself for the entry/`program`
+/// frame (frame 0, which has no `FunctionDef`). This packs deep call
+/// chains far tighter than the old `LOCALS * CALLS` flat allocation,
+/// since a chain's simultaneously-live frames typically declare far
+/// fewer locals than the widest function in the program. `SLAB`
+/// defaults to `LOCALS` (exactly the old single-frame budget) so
+/// every existing `Vm::<STACK, LOCALS>` call site (`CALLS` defaults
+/// to `1`, i.e. no callees) keeps compiling and behaving unchanged;
+/// a caller using `CALLS > 1` picks `SLAB` explicitly, sized to the
+/// sum of local counts along its program's deepest simultaneous call
+/// chain (plus `LOCALS` for the entry frame) — see
+/// `resilient-runtime-loader-demo/src/main.rs`'s `THERMAL_SLAB` for a
+/// worked example and its doc comment for the before/after RAM math.
+/// Slab exhaustion is a typed [`VmError::LocalsSlabExhausted`], never
+/// a panic.
 pub struct Vm<
     const STACK: usize,
     const LOCALS: usize,
     const CALLS: usize = 1,
     const TRIES: usize = 0,
     const CLOSURES: usize = 0,
+    const SLAB: usize = LOCALS,
 > {
     stack: [Value; STACK],
     sp: usize,
-    locals: [[Value; LOCALS]; CALLS],
+    locals: [Value; SLAB],
+    /// RES-4083 (D-E1 tail, packed locals slab): `frame_base[i]` is
+    /// frame `i`'s starting offset into `locals`. `frame_base[0]` is
+    /// always `0`. `frame_base[i]` for `i > 0` is set when frame `i`
+    /// is pushed (`Call`/`CallClosure`/the postcheck's nested call)
+    /// to its caller's base plus the caller's own `n_locals` — i.e.
+    /// frames pack back-to-back with no gaps, never overlapping
+    /// while both are live.
+    frame_base: [usize; CALLS],
     /// Index of the currently active frame; `0` is always `program`
     /// (the entry/main chunk).
     frame: usize,
@@ -633,7 +663,8 @@ impl<
     const CALLS: usize,
     const TRIES: usize,
     const CLOSURES: usize,
-> Default for Vm<STACK, LOCALS, CALLS, TRIES, CLOSURES>
+    const SLAB: usize,
+> Default for Vm<STACK, LOCALS, CALLS, TRIES, CLOSURES, SLAB>
 {
     fn default() -> Self {
         Self::new()
@@ -646,7 +677,8 @@ impl<
     const CALLS: usize,
     const TRIES: usize,
     const CLOSURES: usize,
-> Vm<STACK, LOCALS, CALLS, TRIES, CLOSURES>
+    const SLAB: usize,
+> Vm<STACK, LOCALS, CALLS, TRIES, CLOSURES, SLAB>
 {
     /// A fresh VM: empty operand stack, locals zero-initialised to
     /// `Value::Int(0)`, no active call frames beyond the implicit
@@ -655,7 +687,8 @@ impl<
         Self {
             stack: [Value::Int(0); STACK],
             sp: 0,
-            locals: [[Value::Int(0); LOCALS]; CALLS],
+            locals: [Value::Int(0); SLAB],
+            frame_base: [0usize; CALLS],
             frame: 0,
             returns: [ReturnInfo {
                 caller_func: None,
@@ -673,13 +706,60 @@ impl<
         }
     }
 
+    /// This frame's declared local-slot count: `LOCALS` for the
+    /// entry/`program` frame (`frame_func[frame] == None`), or
+    /// `functions[idx].local_count` for a called function's frame.
+    /// Never panics — an out-of-range `frame_func` index (which
+    /// should not be reachable) degrades to `0` rather than
+    /// indexing out of bounds.
+    fn frame_local_count(&self, frame: usize, functions: &[FunctionDef<'_>]) -> usize {
+        match self.frame_func[frame] {
+            Some(idx) => functions
+                .get(idx as usize)
+                .map(|f| f.local_count as usize)
+                .unwrap_or(0),
+            None => LOCALS,
+        }
+    }
+
+    /// Compute the packed base offset and validate the capacity for
+    /// a new frame with `n_locals` locals, packed right after
+    /// `cur_frame`'s own window. Returns `LocalsSlabExhausted` if the
+    /// new window would run past `SLAB` — the typed substitute for
+    /// growing the pool, mirroring `CallStackOverflow`/
+    /// `TryStackOverflow`'s bounded-resource pattern.
+    fn next_frame_base(
+        &self,
+        cur_frame: usize,
+        n_locals: usize,
+        functions: &[FunctionDef<'_>],
+    ) -> Result<usize, VmError> {
+        let cur_count = self.frame_local_count(cur_frame, functions);
+        let base = self.frame_base[cur_frame] + cur_count;
+        let end = base
+            .checked_add(n_locals)
+            .ok_or(VmError::LocalsSlabExhausted)?;
+        if end > SLAB {
+            return Err(VmError::LocalsSlabExhausted);
+        }
+        Ok(base)
+    }
+
     /// Overwrite a slot in the *current* frame's locals slab before
     /// a run (e.g. to seed top-level `let`s or, before calling
     /// `run`/`run_with_functions`, the entry frame's initial
     /// state). Returns `LocalsOutOfBounds` if `idx >= LOCALS`
     /// instead of panicking.
     pub fn set_local(&mut self, idx: u16, value: Value) -> Result<(), VmError> {
-        match self.locals[self.frame].get_mut(idx as usize) {
+        // `set_local` is only meaningful before a run starts, so
+        // `self.frame` is always `0` (the entry frame) here — its
+        // window size is always `LOCALS`, independent of any function
+        // table, matching the pre-slab behaviour exactly.
+        if idx as usize >= LOCALS {
+            return Err(VmError::LocalsOutOfBounds);
+        }
+        let abs = self.frame_base[self.frame] + idx as usize;
+        match self.locals.get_mut(abs) {
             Some(slot) => {
                 *slot = value;
                 Ok(())
@@ -794,16 +874,20 @@ impl<
             match instr {
                 Instr::PushConst(v) => self.push(v)?,
                 Instr::LoadLocal(idx) => {
-                    let v = *self.locals[self.frame]
-                        .get(idx as usize)
-                        .ok_or(VmError::LocalsOutOfBounds)?;
+                    if idx as usize >= self.frame_local_count(self.frame, functions) {
+                        return Err(VmError::LocalsOutOfBounds);
+                    }
+                    let abs = self.frame_base[self.frame] + idx as usize;
+                    let v = *self.locals.get(abs).ok_or(VmError::LocalsOutOfBounds)?;
                     self.push(v)?;
                 }
                 Instr::StoreLocal(idx) => {
                     let v = self.pop()?;
-                    let slot = self.locals[self.frame]
-                        .get_mut(idx as usize)
-                        .ok_or(VmError::LocalsOutOfBounds)?;
+                    if idx as usize >= self.frame_local_count(self.frame, functions) {
+                        return Err(VmError::LocalsOutOfBounds);
+                    }
+                    let abs = self.frame_base[self.frame] + idx as usize;
+                    let slot = self.locals.get_mut(abs).ok_or(VmError::LocalsOutOfBounds)?;
                     *slot = v;
                 }
                 Instr::Add => self.binary(Value::add)?,
@@ -872,13 +956,17 @@ impl<
                     if next_frame >= CALLS {
                         return Err(VmError::CallStackOverflow);
                     }
-                    for slot in self.locals[next_frame].iter_mut() {
+                    let n_locals = f.local_count as usize;
+                    let base = self.next_frame_base(self.frame, n_locals, functions)?;
+                    self.frame_base[next_frame] = base;
+                    for slot in self.locals[base..base + n_locals].iter_mut() {
                         *slot = Value::Int(0);
                     }
                     for i in (0..arity).rev() {
                         let v = self.pop()?;
-                        let slot = self.locals[next_frame]
-                            .get_mut(i)
+                        let slot = self
+                            .locals
+                            .get_mut(base + i)
                             .ok_or(VmError::LocalsOutOfBounds)?;
                         *slot = v;
                     }
@@ -984,19 +1072,24 @@ impl<
                     if next_frame >= CALLS {
                         return Err(VmError::CallStackOverflow);
                     }
-                    for slot in self.locals[next_frame].iter_mut() {
+                    let n_locals = f.local_count as usize;
+                    let base = self.next_frame_base(self.frame, n_locals, functions)?;
+                    self.frame_base[next_frame] = base;
+                    for slot in self.locals[base..base + n_locals].iter_mut() {
                         *slot = Value::Int(0);
                     }
                     for i in (0..arity).rev() {
                         let v = self.pop()?;
-                        let slot = self.locals[next_frame]
-                            .get_mut(capture_count + i)
+                        let slot = self
+                            .locals
+                            .get_mut(base + capture_count + i)
                             .ok_or(VmError::LocalsOutOfBounds)?;
                         *slot = v;
                     }
                     for (i, captured) in captures.iter().take(capture_count).enumerate() {
-                        let slot = self.locals[next_frame]
-                            .get_mut(i)
+                        let slot = self
+                            .locals
+                            .get_mut(base + i)
                             .ok_or(VmError::LocalsOutOfBounds)?;
                         *slot = *captured;
                     }
@@ -1022,20 +1115,32 @@ impl<
                     if self.sp < arity {
                         return Err(VmError::StackUnderflow);
                     }
-                    // Reuse the current frame: pop args into its
-                    // first `arity` slots, zero the rest (same
-                    // fresh-frame hygiene as `Call`), and jump to
-                    // the callee at pc 0. No `returns` push — the
-                    // eventual `Return` resumes this frame's
-                    // original caller.
+                    // Reuse the current frame's base (tail position —
+                    // no frames above `self.frame` are live, so the
+                    // base itself never needs to move, only the
+                    // window size may change to the tail callee's own
+                    // `local_count`). Pop args into its first `arity`
+                    // slots, zero the rest (same fresh-frame hygiene
+                    // as `Call`), and jump to the callee at pc 0. No
+                    // `returns` push — the eventual `Return` resumes
+                    // this frame's original caller.
+                    let n_locals = f.local_count as usize;
+                    let base = self.frame_base[self.frame];
+                    let end = base
+                        .checked_add(n_locals)
+                        .ok_or(VmError::LocalsSlabExhausted)?;
+                    if end > SLAB {
+                        return Err(VmError::LocalsSlabExhausted);
+                    }
                     for i in (0..arity).rev() {
                         let v = self.pop()?;
-                        let slot = self.locals[self.frame]
-                            .get_mut(i)
+                        let slot = self
+                            .locals
+                            .get_mut(base + i)
                             .ok_or(VmError::LocalsOutOfBounds)?;
                         *slot = v;
                     }
-                    for slot in self.locals[self.frame].iter_mut().skip(arity) {
+                    for slot in self.locals[base + arity..end].iter_mut() {
                         *slot = Value::Int(0);
                     }
                     current_func = Some(idx);
@@ -1066,21 +1171,35 @@ impl<
                             if next_frame >= CALLS {
                                 return Err(VmError::CallStackOverflow);
                             }
+                            let postcheck_local_count = functions
+                                .get(postcheck_idx as usize)
+                                .ok_or(VmError::FunctionOutOfBounds(postcheck_idx))?
+                                .local_count
+                                as usize;
+                            let base =
+                                self.next_frame_base(self.frame, postcheck_local_count, functions)?;
+                            self.frame_base[next_frame] = base;
+                            let callee_base = self.frame_base[self.frame];
                             for i in 0..arity {
-                                let arg = self.locals[self.frame]
-                                    .get(i)
+                                let arg = self
+                                    .locals
+                                    .get(callee_base + i)
                                     .copied()
                                     .ok_or(VmError::LocalsOutOfBounds)?;
-                                let slot = self.locals[next_frame]
-                                    .get_mut(i)
+                                let slot = self
+                                    .locals
+                                    .get_mut(base + i)
                                     .ok_or(VmError::LocalsOutOfBounds)?;
                                 *slot = arg;
                             }
-                            let ret_slot = self.locals[next_frame]
-                                .get_mut(arity)
+                            let ret_slot = self
+                                .locals
+                                .get_mut(base + arity)
                                 .ok_or(VmError::LocalsOutOfBounds)?;
                             *ret_slot = v;
-                            for slot in self.locals[next_frame].iter_mut().skip(arity + 1) {
+                            for slot in self.locals[base + arity + 1..base + postcheck_local_count]
+                                .iter_mut()
+                            {
                                 *slot = Value::Int(0);
                             }
                             let postcheck_code = functions
@@ -1617,7 +1736,7 @@ mod tests {
             Instr::PushConst(Value::Int(9)),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(9))
@@ -1660,7 +1779,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(0))
@@ -1711,7 +1830,7 @@ mod tests {
             Instr::Add,
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 3>::new();
+        let mut vm = Vm::<8, 4, 3, 0, 0, 12>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(18))
@@ -1730,7 +1849,7 @@ mod tests {
             capture_count: 0,
         }];
         let program = [Instr::Call(0), Instr::Return];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::FunctionOutOfBounds(7))
@@ -1755,7 +1874,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::StackUnderflow)
@@ -1778,7 +1897,7 @@ mod tests {
             capture_count: 0,
         }];
         let program = [Instr::Call(0), Instr::Return];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(42))
@@ -1808,7 +1927,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(49))
@@ -1840,7 +1959,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(7))
@@ -1887,7 +2006,7 @@ mod tests {
             Instr::Call(1),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 3>::new();
+        let mut vm = Vm::<8, 4, 3, 0, 0, 12>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(7))
@@ -1924,7 +2043,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 8>::new();
+        let mut vm = Vm::<8, 4, 8, 0, 0, 32>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(0))
@@ -1962,7 +2081,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 3>::new();
+        let mut vm = Vm::<8, 4, 3, 0, 0, 12>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::CallStackOverflow)
@@ -1976,7 +2095,7 @@ mod tests {
             Instr::Call(5),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 0, 2>::new();
+        let mut vm = Vm::<8, 0, 2, 0, 0, 0>::new();
         assert_eq!(
             vm.run_with_functions(&[], &program),
             Err(VmError::FunctionOutOfBounds(5))
@@ -2010,7 +2129,7 @@ mod tests {
         // No PushConst before Call(0) — the operand stack is empty
         // but the callee wants 1 argument.
         let program = [Instr::Call(0), Instr::Return];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::StackUnderflow)
@@ -2059,7 +2178,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 4>::new();
+        let mut vm = Vm::<8, 4, 4, 0, 0, 16>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(6))
@@ -2099,7 +2218,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 4>::new();
+        let mut vm = Vm::<8, 4, 4, 0, 0, 16>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::PostcheckViolation)
@@ -2136,7 +2255,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 4>::new();
+        let mut vm = Vm::<8, 4, 4, 0, 0, 16>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::PostcheckViolation)
@@ -2177,7 +2296,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::CallStackOverflow)
@@ -2232,7 +2351,7 @@ mod tests {
             Instr::Call(0),
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 5>::new();
+        let mut vm = Vm::<8, 4, 5, 0, 0, 20>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(5))
@@ -2256,7 +2375,7 @@ mod tests {
             capture_count: 0,
         }];
         let program = [Instr::Call(0), Instr::Return];
-        let mut vm = Vm::<8, 4, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 0, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(42))
@@ -2292,7 +2411,7 @@ mod tests {
             Instr::ExitTry,                   // 7
             Instr::Return,                    // 8
         ];
-        let mut vm = Vm::<8, 4, 2, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 1, 0, 8>::new();
         assert_eq!(
             vm.run_with_tries(&functions, &try_handlers, &program),
             Ok(Value::Int(-1))
@@ -2322,7 +2441,7 @@ mod tests {
             Instr::ExitTry,
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 1, 0, 8>::new();
         assert_eq!(
             vm.run_with_tries(&functions, &try_handlers, &program),
             Err(VmError::CheckedFailure(7))
@@ -2349,7 +2468,7 @@ mod tests {
             Instr::ExitTry,
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 1, 0, 8>::new();
         assert_eq!(
             vm.run_with_tries(&functions, &try_handlers, &program),
             Ok(Value::Int(9))
@@ -2400,7 +2519,7 @@ mod tests {
             Instr::ExitTry,                   // 6
             Instr::Return,                    // 7
         ];
-        let mut vm = Vm::<8, 4, 3, 1>::new();
+        let mut vm = Vm::<8, 4, 3, 1, 0, 12>::new();
         assert_eq!(
             vm.run_with_tries(&functions, &try_handlers, &program),
             Ok(Value::Int(-1))
@@ -2478,7 +2597,7 @@ mod tests {
             Instr::CallClosure,
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2, 0, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 2, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(15))
@@ -2513,7 +2632,7 @@ mod tests {
             Instr::CallClosure,
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2, 0, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 2, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(15))
@@ -2543,7 +2662,7 @@ mod tests {
             Instr::CallClosure,
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2, 0, 2>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 2, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Ok(Value::Int(7))
@@ -2579,7 +2698,7 @@ mod tests {
         ];
         // Only 1 closure slot available; the second MakeClosure must
         // fail rather than silently overwrite/panic.
-        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 1, 8>::new();
         assert_eq!(
             vm.run_with_functions(&functions, &program),
             Err(VmError::ClosureCapacityExceeded)
@@ -2589,7 +2708,7 @@ mod tests {
     #[test]
     fn call_closure_on_non_closure_value_is_type_mismatch_not_a_panic() {
         let program = [Instr::PushConst(Value::Int(1)), Instr::CallClosure];
-        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 1, 8>::new();
         assert_eq!(
             vm.run_with_functions(&[], &program),
             Err(VmError::TypeMismatch("call closure"))
@@ -2605,7 +2724,7 @@ mod tests {
             },
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 1, 8>::new();
         assert_eq!(
             vm.run_with_functions(&[], &program),
             Err(VmError::TypeMismatch("closure capture_count"))
@@ -2622,7 +2741,7 @@ mod tests {
             Instr::CallClosure,
             Instr::Return,
         ];
-        let mut vm = Vm::<8, 4, 2, 0, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 0, 1, 8>::new();
         assert_eq!(
             vm.run_with_functions(&[], &program),
             Err(VmError::FunctionOutOfBounds(99))
@@ -2663,7 +2782,7 @@ mod tests {
             Instr::PushConst(Value::Int(-1)), // pc 6: catch arm
             Instr::Return,                    // pc 7
         ];
-        let mut vm = Vm::<8, 4, 2, 1, 1>::new();
+        let mut vm = Vm::<8, 4, 2, 1, 1, 8>::new();
         assert_eq!(
             vm.run_with_tries(&functions, &try_handlers, &program),
             Ok(Value::Int(-1))

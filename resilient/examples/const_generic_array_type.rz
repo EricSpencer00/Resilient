@@ -1,0 +1,26 @@
+// RES-4109 (A-E2 follow-up): const-generic `array<T, N>` — the
+// angle-bracket spelling of a fixed-length array type, alongside the
+// existing `[T; N]` bracket form. Length checking (src/const_generic_len.rs)
+// covers both spellings identically: a direct array literal against a
+// wrong-length `array<T, N>` annotation is a typecheck-time error; a
+// non-literal initializer (a variable, a call result) stays permissive
+// because its length is not syntactically knowable.
+
+fn sum3(int base, array<int, 3> v) -> int {
+    return base + v[0] + v[1] + v[2];
+}
+
+fn axes() -> array<string, 2> {
+    return ["x", "y"];
+}
+
+fn main() {
+    let xs: array<int, 3> = [10, 20, 30];
+    println(sum3(1, xs));
+    println(sum3(0, [1, 2, 3]));
+    let names = axes();
+    println(names[0]);
+    println(names[1]);
+}
+
+main();

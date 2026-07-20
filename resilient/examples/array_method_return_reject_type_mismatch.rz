@@ -1,0 +1,20 @@
+// RES-3977: REJECT case — before this fix, `xs.slice(...)` erased to
+// untyped `Array`, so binding its indexed result to a mismatched
+// `string` annotation silently passed the typechecker (a soundness
+// hole). `slice` provably preserves the element type of an
+// element-tracked target, so this is now caught statically.
+//
+// Marked `.interactive` (see `array_element_type.rz` /
+// `hof_effect_io_callback_rejected.rz` for precedent) because the
+// golden-output harness only replays examples under the default soft
+// typecheck mode; this `.expected.txt` was captured under
+// `--typecheck-strict`, which is what actually fails the build here.
+
+fn main() {
+    let xs: array<int> = [1, 2, 3, 4];
+    let tail = xs.slice(1, 3);
+    let mismatched: string = tail[0];
+    println(mismatched);
+}
+
+main();

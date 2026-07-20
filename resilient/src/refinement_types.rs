@@ -535,6 +535,7 @@ mod tests {
             }),
             type_annot: Some(ty_name.to_string()),
             span: Default::default(),
+            is_const: false,
         };
         // Wrap in a Block so the traversal descends into it.
         let block = Node::Block {
@@ -612,6 +613,7 @@ mod tests {
             }),
             type_annot: Some("Positive".to_string()),
             span: sp,
+            is_const: false,
         };
 
         let body = Node::Block {
@@ -670,6 +672,7 @@ mod tests {
             }),
             type_annot: Some("Positive".to_string()),
             span: sp,
+            is_const: false,
         };
 
         let body = Node::Block {
