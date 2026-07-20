@@ -79,6 +79,31 @@ const THERMAL_FUNC_CODE_N: usize = 96;
 const THERMAL_STACK: usize = 16;
 const THERMAL_LOCALS: usize = 8;
 const THERMAL_CALLS: usize = 6;
+/// RES-4083 (D-E1 tail, packed locals slab): the packed pool's total
+/// capacity, sized to the deepest simultaneous call chain in
+/// `thermal_cutoff_embedded.rz` rather than the flat
+/// `THERMAL_LOCALS * THERMAL_CALLS` the old per-frame-fixed-array VM
+/// required. The entry/`program` frame's window is always the full
+/// `THERMAL_LOCALS` (8) — it has no `FunctionDef` to report a tighter
+/// declared count — then `control_step` (3 params + `let temp` = 4),
+/// `safe_temp` (2 params), and `is_plausible` (1 param) pack in after
+/// it along the deepest live chain
+/// `main -> control_step -> safe_temp -> is_plausible`: a minimum of
+/// 8 + 4 + 2 + 1 = 15 `Value` slots (verified empirically: `16` was
+/// tried first and hit `LocalsSlabExhausted`, confirming the compiler
+/// reserves a couple of extra temporary slots beyond the
+/// hand-counted `let`/param locals — `24` covers that margin).
+///
+/// RAM math: the old flat scheme reserved
+/// `THERMAL_LOCALS * THERMAL_CALLS` = 8 * 6 = 48 `Value` slots
+/// regardless of call depth (`size_of::<Value>()` is 16 bytes: an
+/// 8-byte tag-bearing enum discriminant plus an 8-byte payload) = 768
+/// bytes. The packed slab needs only 24 slots = 384 bytes — a 50%
+/// reduction for this program, and the gap only widens for deeper or
+/// wider call graphs since the old scheme scaled with
+/// `LOCALS * CALLS` while the packed scheme scales with the sum of
+/// locals actually live at once.
+const THERMAL_SLAB: usize = 24;
 
 const THERMAL_EXPECTED: Value = Value::Int(180);
 
@@ -98,6 +123,13 @@ const FAILS_TRY_STACK: usize = 8;
 const FAILS_TRY_LOCALS: usize = 4;
 const FAILS_TRY_CALLS: usize = 3;
 const FAILS_TRY_TRIES: usize = 1;
+/// RES-4083 (D-E1 tail, packed locals slab): conservative
+/// `FAILS_TRY_LOCALS * FAILS_TRY_CALLS` upper bound — this program's
+/// call chain is shallow enough that the packed savings aren't the
+/// point here (see `THERMAL_SLAB`'s doc comment for the worked RAM
+/// example); this bound is guaranteed sufficient regardless of the
+/// actual per-function local counts.
+const FAILS_TRY_SLAB: usize = FAILS_TRY_LOCALS * FAILS_TRY_CALLS;
 
 const FAILS_TRY_EXPECTED: Value = Value::Int(-1);
 
@@ -116,6 +148,12 @@ const CLOSURES_STACK: usize = 8;
 const CLOSURES_LOCALS: usize = 4;
 const CLOSURES_CALLS: usize = 4;
 const CLOSURES_SLOTS: usize = 2;
+/// RES-4083 (D-E1 tail, packed locals slab): conservative
+/// `CLOSURES_LOCALS * CLOSURES_CALLS` upper bound (see
+/// `THERMAL_SLAB`'s doc comment for the worked packed-savings
+/// example — this program's call depth is too shallow to be an
+/// interesting case).
+const CLOSURES_SLAB: usize = CLOSURES_LOCALS * CLOSURES_CALLS;
 
 const CLOSURES_EXPECTED: Value = Value::Int(41);
 
@@ -135,6 +173,9 @@ const CLOSURES_ARGS_STACK: usize = 8;
 const CLOSURES_ARGS_LOCALS: usize = 4;
 const CLOSURES_ARGS_CALLS: usize = 4;
 const CLOSURES_ARGS_SLOTS: usize = 2;
+/// RES-4083 (D-E1 tail, packed locals slab): conservative upper bound
+/// — see `CLOSURES_SLAB`.
+const CLOSURES_ARGS_SLAB: usize = CLOSURES_ARGS_LOCALS * CLOSURES_ARGS_CALLS;
 
 const CLOSURES_ARGS_EXPECTED: Value = Value::Int(42);
 
@@ -167,6 +208,7 @@ fn main() -> ! {
         THERMAL_STACK,
         THERMAL_LOCALS,
         THERMAL_CALLS,
+        THERMAL_SLAB,
     >(THERMAL_RZBC_BLOB)
     {
         Ok(v) if v == THERMAL_EXPECTED => {
@@ -197,6 +239,7 @@ fn main() -> ! {
         FAILS_TRY_LOCALS,
         FAILS_TRY_CALLS,
         FAILS_TRY_TRIES,
+        FAILS_TRY_SLAB,
     >(FAILS_TRY_RZBC_BLOB)
     {
         Ok(v) if v == FAILS_TRY_EXPECTED => {
@@ -226,6 +269,7 @@ fn main() -> ! {
         CLOSURES_LOCALS,
         CLOSURES_CALLS,
         CLOSURES_SLOTS,
+        CLOSURES_SLAB,
     >(CLOSURES_RZBC_BLOB)
     {
         Ok(v) if v == CLOSURES_EXPECTED => {
@@ -255,6 +299,7 @@ fn main() -> ! {
         CLOSURES_ARGS_LOCALS,
         CLOSURES_ARGS_CALLS,
         CLOSURES_ARGS_SLOTS,
+        CLOSURES_ARGS_SLAB,
     >(CLOSURES_ARGS_RZBC_BLOB)
     {
         Ok(v) if v == CLOSURES_ARGS_EXPECTED => {

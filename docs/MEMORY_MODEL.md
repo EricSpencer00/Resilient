@@ -321,11 +321,13 @@ Grounded in `resilient/src/region_inference.rs` and the
 
 **What does not exist (yet)** (tracked in
 [#4070](https://github.com/EricSpencer00/Resilient/issues/4070)):
-- No use-after-move detection for unannotated (non-`linear`) bindings.
-  The language has no Copy/Move type distinction outside `linear T`
-  (`resilient/src/linear.rs`), so there is no sound way yet to tell
-  whether re-reading a plain local after passing it somewhere is a
-  genuine violation or an ordinary value copy.
+- No use-after-move detection for unannotated (non-`linear`) bindings,
+  **and none is planned** — see
+  [`COPY_MOVE.md`](COPY_MOVE.md) (RES-4079). Every non-`linear`,
+  non-reference type is Copy by design decision, matching what the
+  interpreter has always done; `linear T` remains the sole
+  move-semantics surface, enforced by `check_linear_usage`
+  (`resilient/src/linear.rs`).
 - Conditional-path aliasing detection is *partial*. The let-alias pass
   above handles `if`/`while`/`for` path merging by intersection, but
   there is no Z3-backed branch-condition disjointness reasoning, no

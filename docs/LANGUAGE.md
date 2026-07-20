@@ -13,6 +13,13 @@ Features in the **Stable** tier are:
 - Safe for users to depend on long-term in production systems
 - Guaranteed to work on Cortex-M, RISC-V, and other supported embedded targets
 
+**Binding mutability (RES-4197):** plain `let` bindings are reassignable —
+there is no mutability enforcement on them, and this is a
+guaranteed-stable behavior, not an oversight. See `docs/IMMUTABILITY.md`
+for the current semantics, corpus evidence, and the phased plan. The
+opt-in `let const NAME = expr;` form (Phases 2/3 of that plan) now
+exists and is enforced — see the Experimental-tier row below.
+
 **Graduation criteria:**
 - Must have comprehensive test coverage (≥80%)
 - Must work identically across all backends
@@ -116,6 +123,7 @@ writing and will drift as the source moves; treat them as pointers, not pins.
 | Nominal-look traits (`trait`/`impl Trait for T`, structural enforcement) | Stable (evidence-based; not yet in `STABILITY.md`) | `traits.rs`, dispatched from `typechecker.rs` (`crate::traits::check`); 14 example files under `resilient/examples/trait_*` | Dispatch is via the existing `<TypeName>$<method>` mangling — there is no vtable (see Trait objects, below). |
 | Default trait method bodies | Stable (evidence-based; not yet in `STABILITY.md`) | `default_trait_methods.rs`, `mod default_trait_methods` in `lib.rs` | `traits.rs`'s own module doc still lists this as "out of scope" — that comment is **stale**; the feature shipped in a later file. |
 | Blanket impls (`impl<T: Bound> Trait for T`) | Stable (evidence-based; not yet in `STABILITY.md`) | `blanket_impl.rs`, dispatched from `typechecker.rs` (`crate::blanket_impl::check`, gated on `markers.has_blanket_impl`) | Same stale-comment caveat as default trait methods. |
+| `let const NAME = expr;` opt-in immutable binding | Experimental — enforced | `resilient/src/immutability.rs` (RES-4197 Phase 3), grammar in `lib.rs`'s `parse_let_statement` (RES-4197 Phase 2), dispatched from `typechecker.rs`'s mandatory `<EXTENSION_PASSES>` block unconditionally | Purely additive — plain `let` is untouched (see the Stable note above). Any later bare reassignment (`NAME = ...`, or a compound assign, which the parser desugars to a plain assignment) of a `let const` binding is rejected with `E0012`, same-function / path-insensitive / provable-only; a shadowing `let` of the same name (const or not) ends enforcement for that name from that point on. Tuple/struct destructure forms (`let const (a, b) = ...`) silently drop the modifier — unsupported, same as the pre-existing `let mut` sugar (RES-922). See `docs/IMMUTABILITY.md` for the full design and phased plan. |
 | `@require_contracts` module directive | Experimental | `STABILITY.md` does not list it; RES-3854 | Enrols every function in the file into non-vacuous-contract and loop-bound verification; `(strict)` additionally mandates contract presence. See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
 | `@ai_generated` function attribute | Experimental | RES-3858 | Pure provenance alias of `#[generated]`; records audit metadata, grants no verification behaviour. See [How-To: Provably Correct AI Code](HOWTO_PROVABLY_CORRECT_AI_CODE.md). |
 | `live` blocks (retry/backoff/timeout) | Experimental | `STABILITY.md` § Experimental | Keyword spellings and telemetry counter names may change without notice (RES-138..142). |
@@ -213,4 +221,5 @@ When evaluating Resilient for a project, check that your required features are i
 - **RES-3506**: Define the backend architecture contract
 - **RES-3510**: Reconcile `STABILITY.md` and `docs/STABILITY_POLICY.md` into one doc — will also resolve the "evidence-based; not yet in `STABILITY.md`" rows above
 - **RES-3648** (this document, RES-3501.1): create `LANGUAGE.md` with the feature-tier classification framework and populate the classification table
+- **RES-4197**: document `let`-binding mutability semantics, resolve the orphaned `E0012` diagnostic, and lay out a phased opt-in immutability plan — see `docs/IMMUTABILITY.md`
 - **F-E1** (RES-3933 roadmap, Track F): conformance/spec suite for the stable surface — see [Relationship to the Conformance Suite](#relationship-to-the-conformance-suite-f-e1-and-the-backend-matrix) above

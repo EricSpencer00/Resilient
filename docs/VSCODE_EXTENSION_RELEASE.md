@@ -48,10 +48,38 @@ That test enforces:
   the compiler (see the Marketplace reconciliation below) but must never
   fall behind it
 
-As of RES-4102 the extension is at **`1.6.0`** and the compiler at
-**`1.0.0-rc.1`**: the version numbers are intentionally decoupled, so the
-extension's own CHANGELOG — not the number — is the source of truth for
-which compiler version a given extension release targets.
+As of the `v1.1.0` release the extension is at **`1.8.0`** and the compiler at
+**`1.1.0`**: the version numbers are still decoupled (see the convergence plan
+below), so the extension's own CHANGELOG — not the number — is the source of
+truth for which compiler version a given extension release targets.
+
+## Version convergence plan: unify at `v2.0.0`
+
+**Decision (maintainer, 2026-07-19):** stop bumping the extension's minor
+version on compiler-only releases, and **converge both version lines at
+`v2.0.0`** — from `v2.0.0` onward the extension and the compiler share one
+version number and bump in lockstep.
+
+Rationale: the `>= compiler` decoupling (RES-4102) was a one-time fix to
+publish *past* the stale Marketplace `1.5.3` line. It has since caused the
+extension to drift ahead on every release (`1.6.0 → 1.7.0 → 1.8.0`) for no
+functional reason, widening the gap it was meant to close. Freezing the
+extension line lets the compiler's own version catch up; at the `2.0.0`
+milestone both are set to `2.0.0` together and stay aligned thereafter.
+
+Concretely, through the rest of the `1.x` line:
+
+- **Do not** bump `vscode-extension/package.json` `version` for a compiler
+  release. Leave it at `1.8.0`. A `v*` tag still republishes the extension,
+  but the idempotent publish step (RES-4102) skips it when `1.8.0` is already
+  live, so compiler-only releases are a no-op for the Marketplace.
+- The `vscode_release_sync_smoke.rs` `extension core >= compiler core` guard
+  keeps holding automatically while the compiler stays below `1.8.0`. **If a
+  `1.x` compiler release would reach or exceed `1.8.0`, do not bump the
+  extension to stay ahead — instead cut `v2.0.0` and set both to `2.0.0`**,
+  which is the convergence point this plan is steering toward.
+- At `v2.0.0`: bump `vscode-extension/package.json` to `2.0.0` in the same
+  release PR as the compiler, and from then on treat the two versions as one.
 
 ## Marketplace divergence: reconciled by publishing forward (RES-4102)
 

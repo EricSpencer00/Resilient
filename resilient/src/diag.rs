@@ -745,6 +745,16 @@ pub mod codes {
     /// share the same name in the same scope.
     ///
     /// Docs: `docs/errors/E0011.html`.
+    ///
+    /// RES-4115: audited for other "duplicate X" one-off parser
+    /// messages that might trivially share this code — `Duplicate
+    /// named argument \`{}\` in call` (`lib.rs`'s call-argument
+    /// parser) is a distinct error class (a call-site shape error,
+    /// not a declaration-scope collision) and doesn't fit E0011's
+    /// docs page or example without confusing the two. It has no
+    /// registered code yet; left as a plain parser `String` per this
+    /// ticket's scope (a codeless-but-documented gap, not a silent
+    /// omission).
     pub const E0011: DiagCode = DiagCode::new_static("E0011");
 
     /// E0012: Reassignment of an immutable (`let`) binding. Only

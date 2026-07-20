@@ -224,7 +224,7 @@ mod infer;
 // RES-117: shared diagnostic rendering (caret underlines under
 // the offending source span). Used by the driver when formatting
 // parser / typechecker / interpreter / VM errors.
-mod diag;
+pub mod diag;
 // RES-205: `resilient pkg init <name>` — project scaffolding.
 // Standalone from the compiler pipeline; lives here so the single
 // `resilient` binary carries it alongside the runtime.
@@ -420,6 +420,10 @@ mod generic_inference;
 // to specialized clones (e.g. `identity(42)` → `identity$Int(42)`).
 // Runs after typecheck, before `compiler::compile`.
 mod monomorph;
+// RES-4197: `let const NAME = expr;` immutability enforcement —
+// rejects any later plain reassignment of a `let const` binding with
+// `E0012`. See docs/IMMUTABILITY.md for the phased design.
+mod immutability;
 // RES-2615: type variance inference — classifies each generic type
 // parameter as covariant (+T), contravariant (-T), or invariant.
 // Stores results in a thread-local registry for downstream subtyping.
@@ -2642,6 +2646,14 @@ enum Node {
         /// keyword vs the whole enclosing statement).
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-4197: opt-in `let const NAME = expr;` form. When `true`,
+        /// `check_immutability` (typechecker.rs `<EXTENSION_PASSES>`)
+        /// rejects any later plain reassignment of `name` in the same
+        /// function with `E0012`. Defaults to `false` for every
+        /// pre-existing `let` construction site — purely additive,
+        /// see docs/IMMUTABILITY.md Phase 2/3.
+        #[allow(dead_code)]
+        is_const: bool,
     },
     /// RES-013: `static let NAME = EXPR;` — like let, but stored in a
     /// per-interpreter statics map so the binding survives across
@@ -5625,6 +5637,27 @@ impl Parser {
     /// Returns `None` and records an error when the tokens don't form
     /// a valid type annotation. `ctx` is a short phrase for error
     /// messages (e.g. `"after ':'"`, `"in struct field"`).
+    /// RES-3977: true when the current token can close a `<...>` generic
+    /// type-argument list — either a bare `>` or a `>>` produced by lexing
+    /// two adjacent closing angle brackets (nested generics like
+    /// `Option<array<int>>`) as a single `ShiftRight` token.
+    fn at_generic_close(&self) -> bool {
+        matches!(self.current_token, Token::Greater | Token::ShiftRight)
+    }
+
+    /// RES-3977: consume one level of generic-argument closing bracket.
+    /// A bare `>` is consumed normally. A `>>` is *not* advanced past —
+    /// it's rewritten in place to a bare `>` so the enclosing `<...>`
+    /// parse (which called this one recursively) sees a normal close on
+    /// its next check, without the lexer needing to re-tokenize.
+    fn consume_one_generic_close(&mut self) {
+        match self.current_token {
+            Token::Greater => self.next_token(),
+            Token::ShiftRight => self.current_token = Token::Greater,
+            _ => {}
+        }
+    }
+
     fn parse_type_annotation(&mut self, ctx: &str) -> Option<String> {
         // RES-385: optional `linear` prefix. `linear T` becomes the
         // encoded string `"linear T"`; downstream (parse_type_name)
@@ -5770,12 +5803,30 @@ impl Parser {
                     // RES-1780: pre-size to 2 — most generic types have
                     // 1-2 params (`Vec<T>`, `Result<T, E>`).
                     let mut params: Vec<String> = Vec::with_capacity(2);
-                    while self.current_token != Token::Greater && self.current_token != Token::Eof {
-                        let p = self.parse_type_annotation(ctx)?;
+                    // RES-3977: nested generic type annotations
+                    // (`Option<array<int>>`) lex the trailing `>>` as a
+                    // single `Token::ShiftRight`, not two `Token::Greater`.
+                    // `at_generic_close`/`consume_one_generic_close` treat
+                    // `ShiftRight` as "one level closes here, one remains
+                    // for the enclosing `<...>`" by rewriting it in place
+                    // to a bare `Greater` instead of advancing the lexer —
+                    // the outer call then sees a normal closing `>`.
+                    while !self.at_generic_close() && self.current_token != Token::Eof {
+                        // RES-4109: const-generic length param, e.g. the
+                        // `N` in `array<T, N>` — a literal integer rather
+                        // than a type. Kept verbatim as its decimal string
+                        // so `const_generic_len::fixed_len` can parse it
+                        // back out of the encoded `"array<T, N>"` slot.
+                        let p = if let Token::IntLiteral(n) = self.current_token {
+                            self.next_token();
+                            n.to_string()
+                        } else {
+                            self.parse_type_annotation(ctx)?
+                        };
                         params.push(p);
                         if self.current_token == Token::Comma {
                             self.next_token();
-                        } else if self.current_token != Token::Greater {
+                        } else if !self.at_generic_close() {
                             let tok = self.current_token.clone();
                             self.record_error(format!(
                                 "Expected ',' or '>' inside `{}<...>` {}, found {}",
@@ -5784,7 +5835,7 @@ impl Parser {
                             return None;
                         }
                     }
-                    if self.current_token != Token::Greater {
+                    if !self.at_generic_close() {
                         let tok = self.current_token.clone();
                         self.record_error(format!(
                             "Expected '>' to close `{}<...>` {}, found {}",
@@ -5792,7 +5843,7 @@ impl Parser {
                         ));
                         return None;
                     }
-                    self.next_token(); // consume `>`
+                    self.consume_one_generic_close(); // consume `>` (or split one `>` off `>>`)
                     Some(format!("{}<{}>", ty, params.join(", ")))
                 } else {
                     Some(ty)
@@ -7053,6 +7104,21 @@ impl Parser {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'let'
 
+        // RES-4197: opt-in `let const NAME = expr;` — reuses the
+        // existing top-level `const` keyword as a per-binding
+        // modifier (see docs/IMMUTABILITY.md "Alternatives
+        // considered"). Only recognized in the simple-name form;
+        // `let const (a, b) = ...` / `let const Struct { .. } = ...`
+        // fall through to the tuple/struct destructure parsers below
+        // with the modifier silently dropped — those combos are
+        // undocumented and out of scope for RES-4197 Phase 2.
+        let is_const = if self.current_token == Token::Const {
+            self.next_token();
+            true
+        } else {
+            false
+        };
+
         // RES-922: accept and ignore `let mut x = ...`. Resilient bindings
         // are always reassignable today (`let x = 1; x = 2;` works);
         // the `mut` marker is purely syntactic sugar for Rust users'
@@ -7085,6 +7151,7 @@ impl Parser {
                     }),
                     type_annot: None,
                     span: stmt_span,
+                    is_const,
                 };
             }
         };
@@ -7124,6 +7191,7 @@ impl Parser {
                 }),
                 type_annot,
                 span: stmt_span,
+                is_const,
             };
         }
 
@@ -7178,6 +7246,7 @@ impl Parser {
             value: Box::new(value),
             type_annot,
             span: stmt_span,
+            is_const,
         }
     }
 
@@ -11045,6 +11114,7 @@ impl Parser {
             }),
             type_annot: None,
             span: default(),
+            is_const: false,
         };
 
         // return _r;
@@ -37950,6 +38020,65 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 10),
             other => panic!("expected Int(10), got {:?}", other),
         }
+    }
+
+    /// RES-4197 Phase 2: `let const NAME = expr;` parses as a
+    /// `Node::LetStatement` with `is_const: true` and evaluates
+    /// exactly like a plain `let` — the opt-in modifier only affects
+    /// typechecking (see `immutability.rs`), never runtime behavior.
+    #[test]
+    fn let_const_keyword_is_accepted_and_evaluates_like_let() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let const x = 5;\n\
+                return x;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let Node::Program(stmts) = &program else {
+            panic!("expected Program");
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!("expected Function");
+        };
+        let Node::Block { stmts: block, .. } = body.as_ref() else {
+            panic!("expected Block");
+        };
+        let Node::LetStatement { is_const, .. } = &block[0] else {
+            panic!("expected LetStatement");
+        };
+        assert!(*is_const, "expected `let const` to set is_const: true");
+
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5),
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    /// RES-4197: a plain (non-`const`) `let` binding still parses with
+    /// `is_const: false` — the additive default every pre-existing
+    /// construction site relies on.
+    #[test]
+    fn plain_let_has_is_const_false() {
+        let src = "fn main(int _d) -> int { let x = 5; return x; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let Node::Program(stmts) = &program else {
+            panic!("expected Program");
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!("expected Function");
+        };
+        let Node::Block { stmts: block, .. } = body.as_ref() else {
+            panic!("expected Block");
+        };
+        let Node::LetStatement { is_const, .. } = &block[0] else {
+            panic!("expected LetStatement");
+        };
+        assert!(!*is_const);
     }
 
     /// RES-921: negative array indices wrap from the end. `arr[-1]` is

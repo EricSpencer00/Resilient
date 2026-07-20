@@ -1,0 +1,154 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Resilient MCP HTTP Wrapper",
+    "description": "Machine-readable contract for the HTTP wrapper the Resilient compiler exposes over its MCP tool surface. See docs/MCP.md for prose documentation.",
+    "version": "0.2.0"
+  },
+  "servers": [
+    { "url": "http://127.0.0.1:8080", "description": "Local `rz mcp --http-port 8080`" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness check",
+        "description": "Returns 200 as soon as the HTTP server process is accepting connections. Does not indicate whether tool dispatch or optional backends (e.g. Z3) are functional — see readiness notes in docs/MCP.md.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Process is up",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/call": {
+      "post": {
+        "summary": "Invoke an MCP tool over plain HTTP",
+        "description": "Bridges a single MCP `tools/call` invocation to a synchronous HTTP request/response, for clients that cannot speak the stdio NDJSON transport.",
+        "operationId": "postMcpCall",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/McpCallRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool executed (success or a tool-level error surfaced via `status`)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/McpCallResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request body, missing tool name, or a dispatch-level error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Unsupported route",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds `RESILIENT_MCP_MAX_BODY_BYTES`",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-IP rate limit exceeded (`RESILIENT_MCP_RATE_LIMIT_PER_MIN`)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "504": {
+            "description": "Tool execution exceeded `RESILIENT_MCP_TIMEOUT_SECS`",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status", "service", "transport", "version"],
+        "properties": {
+          "status": { "type": "string", "enum": ["ok"] },
+          "service": { "type": "string", "enum": ["resilient-mcp"] },
+          "transport": { "type": "string", "enum": ["http"] },
+          "version": { "type": "string" }
+        }
+      },
+      "McpCallRequest": {
+        "type": "object",
+        "description": "`tool`/`name` and `input`/`arguments` are accepted as aliases of each other for client-compatibility.",
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "Tool name. Accepts hosted aliases (`rz_run`, `rz_format`, `rz_verify`, `rz_parse`, `rz_typecheck`, `rz_lint`, `rz_check`, `rz_compile`) or native MCP names (`resilient_run`, ...)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Alias of `tool`, checked if `tool` is absent."
+          },
+          "input": {
+            "type": "object",
+            "description": "Tool arguments, e.g. `{ \"source\": \"...\" }`."
+          },
+          "arguments": {
+            "type": "object",
+            "description": "Alias of `input`, checked if `input` is absent."
+          }
+        }
+      },
+      "McpCallResponse": {
+        "type": "object",
+        "required": ["status", "tool", "mcp_tool", "stdout", "stderr", "diagnostics", "raw_mcp"],
+        "properties": {
+          "status": { "type": "string", "enum": ["ok", "error"] },
+          "tool": { "type": "string", "description": "The tool name as sent by the caller." },
+          "mcp_tool": { "type": "string", "description": "The resolved native MCP tool name after alias translation." },
+          "stdout": { "type": "string" },
+          "stderr": { "type": "string" },
+          "diagnostics": { "type": "array", "items": {} },
+          "raw_mcp": { "type": "object", "description": "The raw MCP `result` object (`content`, `isError`)." }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["status", "error"],
+        "properties": {
+          "status": { "type": "string", "enum": ["error"] },
+          "error": { "description": "Human-readable error message or nested MCP error object." },
+          "tool": { "type": "string" },
+          "mcp_tool": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -393,6 +393,23 @@ the runtime bounds check remains the backstop. The interpreter
 and VM accept both dynamic and fixed-size arrays; the JIT uses
 this annotation for layout decisions.
 
+`array<T, N>` is an equivalent const-generic spelling of the same
+fixed-length array type (RES-4109), read the same way as `Array<T>`
+elsewhere in the type grammar:
+
+```rust
+fn sum(int a, array<int, 3> v) -> int {
+    return v[0] + v[1] + v[2];
+}
+```
+
+`N` must be a literal integer to be checked; length verification,
+error messages, and the permissive fallback for unprovable sites are
+identical to `[T; N]` above — both forms share the same underlying
+length-checking pass. `array<T, N>` where `N` is itself a generic
+type parameter (e.g. inside a `fn<T>` body referencing an outer
+const parameter) is accepted but not length-checked.
+
 ---
 
 ## Comments

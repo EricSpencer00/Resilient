@@ -1,0 +1,34 @@
+// RES-3977: nested `Option<array<T>>` element tracking. Before this
+// fix, `Option<array<int>>` failed to parse at all — the trailing
+// `>>` lexes as a single `ShiftRight` token, not two `Greater` tokens,
+// so `parse_type_annotation`'s generic-argument loop never saw its
+// closing bracket. Once parsed, `Some(arr)` binds `arr` to the tracked
+// `array<int>` payload type, so `arr[i]` still recovers `int` instead
+// of erasing to `Any`.
+
+fn find_positive(array<int> xs) -> Option<array<int>> {
+    let mut out: array<int> = [];
+    let mut i = 0;
+    while i < len(xs) {
+        if xs[i] > 0 {
+            out = out.push(xs[i]);
+        }
+        i = i + 1;
+    }
+    if len(out) > 0 {
+        return Some(out);
+    }
+    return None;
+}
+
+fn main() {
+    match find_positive([-2, 3, -1, 4]) {
+        Some(arr) => {
+            let first: int = arr[0];
+            println(first);
+        }
+        None => println(-1),
+    }
+}
+
+main();

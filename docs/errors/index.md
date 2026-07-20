@@ -27,6 +27,7 @@ Codes are grouped by the pipeline stage that can emit them:
 - **E0010, E0019** — contracts (`requires` / `ensures`)
 - **E0011, E0012** — declarations / bindings
 - **E0020** — effects / purity
+- **E0021** — trait objects (`dyn Trait`)
 
 Numbers are **sticky**: once assigned, a code is never reused.
 If a diagnostic is removed, its code is retired but the docs
@@ -36,19 +37,23 @@ break.
 ## Status
 
 RES-206a shipped the initial registry + docs pages for the first
-ten codes. RES-4115 (E-E4, increment 1) adds a second batch,
-E0011..E0020, plus the `rz explain E00NN` CLI subcommand that
-renders these same pages in the terminal (`resilient errors list`
-prints every registered code).
+ten codes. RES-4115 (E-E4) extended the registry to E0011..E0021,
+added the `rz explain E00NN` / `rz errors list` CLI subcommands,
+migrated the high-traffic typechecker/parser/runtime call sites to
+emit their code behind `RESILIENT_RICH_DIAG=1` (byte-identical
+output otherwise, so `.expected.txt` goldens stay pinned), and
+added two CI-enforced guards:
 
-Most codes above are cataloged and documented but not yet attached
-to their originating `Diagnostic` construction site — `E0007` is
-the one call site wired so far. Auditing the remaining call sites
-(mostly bare `String` errors today, not `Diagnostic`s) and
-attaching codes without changing the rendered string shape that
-`.expected.txt` goldens pin is the next increment, followed by a
-CI lint that fails on a new codeless `Diagnostic` and generating
-this directory from the registry instead of hand-authoring it.
+- `docs_error_registry_generation_smoke.rs` validates every page's
+  front matter (`title`, `parent`, `nav_order`, `permalink`) and
+  heading against `diag::codes`, and checks this index links every
+  registered code in registry order — so the registry and the docs
+  site can't silently drift apart.
+- `codeless_diagnostic_lint_smoke.rs` fails the build if a new
+  `render_*_error` funnel function (or `Diagnostic::new` call site
+  outside `diag.rs`'s own tests) is added without a registered code,
+  via a shrinking allowlist of the pre-existing legacy call sites
+  that still return a bare, codeless `String`.
 
 ## Browse
 
@@ -74,3 +79,4 @@ See the sidebar for the full list, or jump directly:
 - [E0018 — Recursion / stack usage limit exceeded](./E0018)
 - [E0019 — Z3 could not prove a contract clause](./E0019)
 - [E0020 — Effect/purity violation](./E0020)
+- [E0021 — dyn Trait object-safety violation](./E0021)

@@ -61,7 +61,7 @@
 
 use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -81,6 +81,9 @@ const DEFAULT_RATE_LIMIT_PER_MIN: u32 = 100;
 /// Default bounded worker-pool size for concurrent HTTP connections
 /// (RES-3937).
 const DEFAULT_MAX_CONNECTIONS: usize = 16;
+/// Default grace period for draining in-flight requests on shutdown
+/// (RES-3942), in seconds.
+const DEFAULT_SHUTDOWN_DRAIN_SECS: u64 = 30;
 
 /// Runtime-configurable hardening limits for the MCP HTTP wrapper.
 ///
@@ -96,6 +99,9 @@ struct HttpHardeningConfig {
     rate_limit_per_min: u32,
     /// RES-3937: bounded worker-pool size.
     max_connections: usize,
+    /// RES-3942: how long to wait for in-flight requests to finish
+    /// after a shutdown signal before exiting anyway.
+    shutdown_drain: Duration,
 }
 
 impl HttpHardeningConfig {
@@ -115,6 +121,10 @@ impl HttpHardeningConfig {
                 DEFAULT_MAX_CONNECTIONS,
             )
             .max(1),
+            shutdown_drain: Duration::from_secs(env_var_u64(
+                "RESILIENT_MCP_SHUTDOWN_DRAIN_SECS",
+                DEFAULT_SHUTDOWN_DRAIN_SECS,
+            )),
         }
     }
 }
@@ -138,6 +148,60 @@ fn env_var_u32(key: &str, default: u32) -> u32 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+// ── RES-3942: graceful shutdown ──────────────────────────────────────────────
+
+/// Flipped by the SIGTERM handler (or, on non-Unix, never). The accept
+/// loop polls this instead of blocking forever in `accept()` so it can
+/// stop taking new connections promptly after a shutdown signal.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+mod shutdown_signal {
+    use super::{Ordering, SHUTDOWN_REQUESTED};
+
+    const SIGTERM: i32 = 15;
+
+    // RES-3942: a minimal raw FFI binding to POSIX `signal(2)` instead of
+    // taking a `libc`/`signal-hook` dependency — the ticket calls for
+    // in-tree-only hardening. `signal` is part of the C standard library
+    // ABI on every Unix target this crate ships for (Linux, macOS); the
+    // symbol is provided by the platform's libc, which every Rust std
+    // binary already links against transitively.
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+
+    extern "C" fn handle_sigterm(_signum: i32) {
+        // Safety/async-signal-safety: the only operation performed inside
+        // the signal handler is a single atomic store, which is on the
+        // POSIX async-signal-safe list (no allocation, no locking, no
+        // syscalls that can reenter non-reentrant libc state).
+        SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+    }
+
+    /// Install the SIGTERM handler. Safety: `signal` is called with a
+    /// valid signal number and a valid `extern "C" fn(i32)` handler
+    /// pointer cast to `usize`, matching the platform ABI `signal(2)`
+    /// expects; the handler body upholds the async-signal-safety
+    /// contract documented above.
+    pub fn install() {
+        unsafe {
+            signal(SIGTERM, handle_sigterm as usize);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+mod shutdown_signal {
+    /// No POSIX signals on non-Unix targets; the HTTP server only ships
+    /// for host platforms today, but this keeps the crate portable.
+    pub fn install() {}
+}
+
+fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -195,9 +259,19 @@ pub fn run() {
 /// loop hands each connection to `RESILIENT_MCP_MAX_CONNECTIONS` worker
 /// threads over a bounded channel, so one slow request no longer blocks
 /// every other client — a full pool simply backpressures new accepts.
+///
+/// RES-3942: also installs a SIGTERM handler. Once the signal fires, the
+/// accept loop stops taking new connections, waits (up to
+/// `RESILIENT_MCP_SHUTDOWN_DRAIN_SECS`) for in-flight requests to finish,
+/// and returns `Ok(())` — the caller (`main`) then exits 0.
 pub fn run_http(bind_addr: &str) -> io::Result<()> {
     let listener = TcpListener::bind(bind_addr)?;
+    // Non-blocking so the accept loop can also poll the shutdown flag
+    // instead of parking forever inside `accept()`.
+    listener.set_nonblocking(true)?;
     eprintln!("MCP HTTP listening on http://{}", listener.local_addr()?);
+
+    shutdown_signal::install();
 
     let config = HttpHardeningConfig::from_env();
     let limiter = Arc::new(RateLimiterRegistry::new(
@@ -212,12 +286,13 @@ pub fn run_http(bind_addr: &str) -> io::Result<()> {
     // slot are busy, `send` blocks the accept loop until a worker frees up.
     let (tx, rx) = mpsc::sync_channel::<TcpStream>(config.max_connections);
     let rx = Arc::new(std::sync::Mutex::new(rx));
+    let mut workers = Vec::with_capacity(config.max_connections);
     for _ in 0..config.max_connections {
         let rx = Arc::clone(&rx);
         let limiter = Arc::clone(&limiter);
         let clock = Arc::clone(&clock);
         let active = Arc::clone(&active);
-        thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             loop {
                 let stream = {
                     let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
@@ -227,26 +302,46 @@ pub fn run_http(bind_addr: &str) -> io::Result<()> {
                     // Sender dropped — pool is shutting down.
                     break;
                 };
-                // `active` counts in-flight requests; RES-3942 (follow-up)
-                // uses it to drain the pool on graceful shutdown.
                 active.fetch_add(1, Ordering::SeqCst);
                 if let Err(e) = handle_http_stream(&mut stream, &config, &limiter, &clock) {
                     eprintln!("warning: MCP HTTP request failed: {e}");
                 }
                 active.fetch_sub(1, Ordering::SeqCst);
             }
-        });
+        }));
     }
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    while !shutdown_requested() {
+        match listener.accept() {
+            Ok((stream, _addr)) => {
                 if tx.send(stream).is_err() {
                     break;
                 }
             }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+            }
             Err(e) => eprintln!("warning: MCP HTTP accept failed: {e}"),
         }
+    }
+
+    // RES-3942: stop accepting, then drain. Dropping `tx` unblocks each
+    // worker's `recv()` once its current request (if any) finishes and the
+    // queue is empty, so workers exit their loops on their own; we still
+    // bound the wait so a stuck request can't hang shutdown forever.
+    eprintln!("MCP HTTP received shutdown signal — draining in-flight requests");
+    drop(tx);
+    let drain_deadline = Instant::now() + config.shutdown_drain;
+    while active.load(Ordering::SeqCst) > 0 && Instant::now() < drain_deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    let remaining = active.load(Ordering::SeqCst);
+    if remaining > 0 {
+        eprintln!(
+            "warning: MCP HTTP shutdown drain deadline hit with {remaining} request(s) still in flight"
+        );
+    } else {
+        eprintln!("MCP HTTP drained cleanly — shutting down");
     }
 
     Ok(())
@@ -3208,6 +3303,7 @@ mod tests {
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             rate_limit_per_min: DEFAULT_RATE_LIMIT_PER_MIN,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            shutdown_drain: Duration::from_secs(DEFAULT_SHUTDOWN_DRAIN_SECS),
         }
     }
 
