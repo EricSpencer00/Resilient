@@ -1,0 +1,84 @@
+name: CodeQL
+
+# Advanced setup, replacing the UI-configured default setup. Default
+# setup honours no path filters and enabled every language GitHub
+# detected — including Ruby (1.1 KB), C (1.8 KB) and TypeScript
+# (2.3 KB) against 11.9 MB of Rust — so a README-only PR spun up six
+# analyzer jobs. Here the language list tracks the real attack surface
+# and docs-only changes skip the run entirely.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  schedule:
+    # Weekly, matching the cadence default setup was configured with.
+    - cron: '17 4 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `manual` build-mode: CodeQL's autobuild would run a plain
+          # `cargo build` at the repo root, which pulls in the no_std
+          # runtime crates against the host target. Build only the
+          # compiler workspace, matching what CI actually gates on.
+          - language: rust
+            build-mode: manual
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.language == 'rust'
+
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.language == 'rust'
+        with:
+          key: codeql
+
+      - name: Build compiler workspace
+        if: matrix.language == 'rust'
+        run: cargo build --locked --manifest-path resilient/Cargo.toml
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
