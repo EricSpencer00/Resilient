@@ -971,3 +971,5 @@ cross-checks self-hosted front-end pieces against the Rust front end.
   `rz self-host-parity-report --json-out artifacts/self-host-parity.json`.
   See [`self-host/README.md`](./self-host/README.md) for the harness
   details and current coverage limits.
+
+<!-- codeql paths-ignore verification -->
