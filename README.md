@@ -10,6 +10,11 @@
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-9b7ff0.svg?style=flat-square)](CONTRIBUTING.md)
 [![GitHub Issues](https://img.shields.io/github/issues/EricSpencer00/Resilient?style=flat-square&color=664bd3)](https://github.com/EricSpencer00/Resilient/issues)
 [![Docs](https://img.shields.io/badge/docs-ericspencer.us%2FResilient-2d1f60.svg?style=flat-square)](https://ericspencer.us/Resilient/)
+[![Toolchain: stable, edition 2024](https://img.shields.io/badge/toolchain-stable%2C%20edition%202024-664bd3.svg?style=flat-square)](.github/workflows/ci.yml)
+[![unsafe: audited, not forbidden](https://img.shields.io/badge/unsafe-audited%2C%20not%20forbidden-9b7ff0.svg?style=flat-square)](CLAUDE.md)
+[![Formal spec: Lean 4, partial](https://img.shields.io/badge/formal%20spec-Lean%204%2C%20partial-2d1f60.svg?style=flat-square)](docs/LEAN_SPEC.md)
+[![Backends: interp + VM + JIT](https://img.shields.io/badge/backends-interp%20%2B%20VM%20%2B%20JIT-664bd3.svg?style=flat-square)](benchmarks/RESULTS.md)
+[![Deps: locked, 286 crates](https://img.shields.io/badge/deps-locked%2C%20286%20crates-9b7ff0.svg?style=flat-square)](Cargo.lock)
 
 [**📖 Docs**](https://ericspencer.us/Resilient/) &nbsp;·&nbsp;
 [**🛝 Playground**](https://ericspencer.us/Resilient/playground/) &nbsp;·&nbsp;
@@ -336,7 +341,7 @@ rz hello.rz
 
 ### Running an example
 
-The repo's `resilient/examples/` directory has dozens of working programs:
+The repo's `resilient/examples/` directory has 600+ working programs:
 
 ```bash
 rz resilient/examples/sensor_monitor.rz
@@ -913,7 +918,7 @@ of the form `RES-NNN: summary` closes one ticket.
 - Built-ins: `println`, `print`, `len`, `abs`, `min`, `max`, `sqrt`,
   `pow`, `floor`, `ceil`
 - Clean `line:col:` error diagnostics
-- 7,000+ passing tests covering lexer, parser, typechecker, interpreter,
+- 9,000+ passing tests covering lexer, parser, typechecker, interpreter,
   LSP, embedded cross-compile, and example programs (golden file
   sidecars in `resilient/examples/`)
 - Zero panic paths in the parser or lexer — every error is recoverable
