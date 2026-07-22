@@ -304,7 +304,15 @@ EXTENSION_ALLOWLIST=(
 if [ -x "$REPO_ROOT/agent-scripts/check-overlaps.sh" ]; then
   # Only run in orchestrator mode (network available). --pr-files speaks to gh.
   if command -v gh >/dev/null 2>&1; then
-    if ! bash "$REPO_ROOT/agent-scripts/check-overlaps.sh" --pr-files "$HEAD" >/tmp/agent-overlap.log 2>&1; then
+    # check-overlaps.sh filters the current PR out of its own results by
+    # comparing the argument against each open PR's headRefName. $HEAD
+    # defaults to the literal "HEAD", which matches no branch name — so
+    # every PR conflicted with itself. Resolve it to the branch name.
+    OVERLAP_REF="$HEAD"
+    if [ "$OVERLAP_REF" = "HEAD" ]; then
+      OVERLAP_REF="$(git rev-parse --abbrev-ref HEAD)"
+    fi
+    if ! bash "$REPO_ROOT/agent-scripts/check-overlaps.sh" --pr-files "$OVERLAP_REF" >/tmp/agent-overlap.log 2>&1; then
       # Filter out allowlisted files — overlaps there are expected and handled
       # by sync-integration.sh's auto-resolve step. Only fail on others.
       NON_ALLOWLIST_CONFLICTS=0

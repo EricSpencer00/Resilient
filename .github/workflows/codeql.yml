@@ -1,0 +1,66 @@
+name: CodeQL
+
+# Advanced setup, replacing the UI-configured default setup. Default
+# setup honours no path filters and enabled every language GitHub
+# detected — including Ruby (1.1 KB), C (1.8 KB) and TypeScript
+# (2.3 KB) against 11.9 MB of Rust — so a README-only PR spun up six
+# analyzer jobs. Here the language list tracks the real attack surface
+# and docs-only changes skip the run entirely.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  schedule:
+    # Weekly, matching the cadence default setup was configured with.
+    - cron: '17 4 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every extractor here is buildless. The Rust extractor in
+        # particular supports `none` only — it rejects `manual`
+        # outright — so the ~6 min the rust job costs is source
+        # extraction over 11.9 MB of code, not a cargo build.
+        language: [rust, actions, javascript-typescript]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
