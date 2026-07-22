@@ -45,17 +45,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # `manual` build-mode: CodeQL's autobuild would run a plain
-          # `cargo build` at the repo root, which pulls in the no_std
-          # runtime crates against the host target. Build only the
-          # compiler workspace, matching what CI actually gates on.
-          - language: rust
-            build-mode: manual
-          - language: actions
-            build-mode: none
-          - language: javascript-typescript
-            build-mode: none
+        # Every extractor here is buildless. The Rust extractor in
+        # particular supports `none` only — it rejects `manual`
+        # outright — so the ~6 min the rust job costs is source
+        # extraction over 11.9 MB of code, not a cargo build.
+        language: [rust, actions, javascript-typescript]
 
     steps:
       - uses: actions/checkout@v4
@@ -64,19 +58,7 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-
-      - uses: dtolnay/rust-toolchain@stable
-        if: matrix.language == 'rust'
-
-      - uses: Swatinem/rust-cache@v2
-        if: matrix.language == 'rust'
-        with:
-          key: codeql
-
-      - name: Build compiler workspace
-        if: matrix.language == 'rust'
-        run: cargo build --locked --manifest-path resilient/Cargo.toml
+          build-mode: none
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

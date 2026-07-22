@@ -188,7 +188,7 @@ mod shutdown_signal {
     /// contract documented above.
     pub fn install() {
         unsafe {
-            signal(SIGTERM, handle_sigterm as usize);
+            signal(SIGTERM, handle_sigterm as *const () as usize);
         }
     }
 }
