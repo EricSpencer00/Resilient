@@ -649,6 +649,10 @@ mod loop_bound;
 // through the Z3 proving path, yielding pass/fail/unknown verdicts
 // with proof certificates.
 mod contract_verify;
+// RES-4218: rejects an `ensures` clause that Z3 refutes against the
+// function's own body (counterexample in hand). Consumes
+// `contract_verify`'s body-aware path from the typechecker.
+mod ensures_refutation;
 // RES-3859 (#3854 Tier 3): `--emit-contract-certificate` — portable
 // JSON audit artifact attesting per-clause Z3 verdicts.
 mod contract_certificate;

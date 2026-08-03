@@ -91,7 +91,13 @@ fn write_canary_source(dir: &std::path::Path) -> PathBuf {
     let p = dir.join("canary.rs");
     std::fs::write(
         &p,
-        "fn add(int a, int b) requires a > 0 ensures result > a { return a + b; }\n\
+        // RES-4218: `requires b > 0` is load-bearing. Without it,
+        // `ensures result > a` is false for `b <= 0` (`add(1, 0)`
+        // returns 1, not > 1), and the body-aware `ensures` pass now
+        // refutes it at type-check time — the canary would fail to
+        // compile before this test ever reached the signing path it
+        // actually covers.
+        "fn add(int a, int b) requires a > 0 requires b > 0 ensures result > a { return a + b; }\n\
          fn main(int _d) { return add(1, 2); } main(0);\n",
     )
     .unwrap();

@@ -1,0 +1,42 @@
+// RES-4218 demo — a postcondition the compiler actually proves.
+//
+// `max` returns the larger of its two arguments, and says so:
+//
+//     ensures result >= x
+//     ensures result >= y
+//
+// Before RES-4218 both clauses were checked as *free-variable* text:
+// `result` was unconstrained, so `result >= x` was neither a tautology
+// nor a contradiction and Z3 answered Unknown. Every run printed two
+// `warning[partial-proof]: Z3 returned Unknown` lines, and a `max` that
+// wrongly returned `x` unconditionally type-checked exactly the same
+// way — the bug only surfaced as a runtime `Contract violation`.
+//
+// Now the body's return expression is substituted for `result` and the
+// grounded obligation is discharged per branch: `x >= x && x >= y`
+// under the path condition `x >= y`, and `y >= x && y >= y` under
+// `!(x >= y)`. Both are valid, so on a `--features z3` build this file
+// type-checks with **no** partial-proof warnings — and the sibling
+// smoke test (`ensures_refutation_smoke`) shows the mirror-image case
+// where a wrong body is rejected outright with a counterexample.
+//
+// stdout is identical with and without the `z3` feature: the pass only
+// ever removes a stderr warning or fails the build, so this example's
+// golden holds for both CI jobs.
+fn max(int x, int y) -> int
+    ensures result >= x
+    ensures result >= y
+{
+    if x >= y {
+        return x;
+    } else {
+        return y;
+    }
+}
+
+fn main() {
+    println(max(1, 5));
+    println(max(7, 3));
+    println(max(4, 4));
+}
+main();

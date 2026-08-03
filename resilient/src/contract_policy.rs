@@ -470,7 +470,15 @@ mod tests {
     fn typechecker_rejects_vacuous_contract_under_directive() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
-        let src = "@require_contracts\nfn f(int x) requires true ensures result >= 0 { return x; }";
+        // RES-4218: the subject of this test is the vacuous `requires
+        // true`, so the postcondition must be one the body actually
+        // satisfies. The former fixture used `ensures result >= 0` on
+        // `return x;` — genuinely false for `x < 0`, which the
+        // body-aware `ensures` pass now refutes before
+        // `contract_policy::check` ever runs. `result == x` keeps the
+        // precondition vacuous and the `ensures` present without
+        // smuggling in a second, unrelated contract violation.
+        let src = "@require_contracts\nfn f(int x) requires true ensures result == x { return x; }";
         let (prog, errs) = crate::parse(src);
         assert!(errs.is_empty(), "parse errors: {errs:?}");
         let mut tc = crate::typechecker::TypeChecker::new();

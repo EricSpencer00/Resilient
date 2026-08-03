@@ -240,7 +240,16 @@ pub fn format_report(verdicts: &[ClauseVerdict]) -> String {
 /// clause. Otherwise the free-variable clause text is proven directly —
 /// `ClauseOnly` basis — exactly the pre-RES-3969 behaviour, retained as
 /// an explicit, labeled fallback for out-of-subset bodies.
-fn prove_ensures(clause: &Node, requires: &[Node], body: &Node) -> (Verdict, ProofBasis) {
+/// RES-4218: `pub(crate)` so `crate::ensures_refutation` can reuse the
+/// exact same grounded-obligation path from the typechecker's
+/// `<EXTENSION_PASSES>` block. Keeping one implementation means the
+/// advisory report and the hard compile error can never disagree about
+/// whether a clause was refuted.
+pub(crate) fn prove_ensures(
+    clause: &Node,
+    requires: &[Node],
+    body: &Node,
+) -> (Verdict, ProofBasis) {
     if symbolic_eval::mentions_result(clause)
         && let Some(model) = symbolic_eval::model_body(body)
     {
@@ -399,6 +408,13 @@ fn parse_inferred_clause(clause: &str) -> Option<Node> {
         right: Box::new(Node::IntegerLiteral { value: 0, span: sp }),
         span: sp,
     })
+}
+
+/// RES-4218: clause rendering for the `ensures`-refutation diagnostic,
+/// so a rejected clause reads the same in the compile error as it does
+/// in [`format_report`].
+pub(crate) fn render_clause(expr: &Node) -> String {
+    render_expr(expr)
 }
 
 /// Render a clause expression for diagnostics. Falls back to the

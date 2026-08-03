@@ -106,6 +106,33 @@ fn max(int x, int y) -> int {
 - Only present in `--features z3` builds; default builds skip Z3 entirely
   and rely on the hand-rolled folder plus runtime checks
 
+**Postconditions are proven against the body (RES-3969 / RES-4218):**
+- An `ensures` clause is *not* checked as free-standing clause text. If
+  it mentions `result` and the body is inside the modelled subset —
+  `{ return E; }`, or an `if`/`else` (or `if`-then-fall-through) whose
+  branches each return a pure expression — then the body's return
+  expression is substituted for `result` and the resulting **grounded**
+  obligation is proven under the fn's `requires` clauses as axioms. A
+  branching body is discharged by case split: each branch must satisfy
+  the clause under its own path condition.
+- If Z3 finds a model of `requires ∧ ¬ensures[result := body]` — a
+  concrete input that satisfies every precondition and still falsifies
+  the postcondition — **compilation fails** with that counterexample.
+  This is a refutation, not a heuristic, so the check has no false
+  positives: a program is only rejected when the solver produced a
+  witness that the function is wrong.
+- Everything else keeps the pre-existing behaviour. A body outside the
+  modelled subset (a call, a field access, multiple statements), a
+  clause that never mentions `result`, a solver timeout, or a build
+  without `--features z3` all leave the program accepted with the
+  runtime contract check in place.
+- Because a `result`-constrained clause can never be decided by the
+  free-variable query, such clauses used to emit
+  `warning[partial-proof]: Z3 returned Unknown` even when the contract
+  was fully discharged. That warning is now suppressed for any `ensures`
+  clause proven against the body, so a surviving `partial-proof` on a
+  postcondition means what it says: *this clause was not proven.*
+
 **Theory selection — LIA by default, opt-in BV64 overflow checking (RES-4014 / RES-4112):**
 - By default, `requires`/`ensures` clauses are discharged with
   **unbounded linear integer arithmetic (LIA)** — `+`/`-`/`*` are modeled

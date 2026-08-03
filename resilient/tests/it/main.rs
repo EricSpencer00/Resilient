@@ -95,6 +95,7 @@ mod dump_source_map_help_smoke;
 mod dump_tokens_smoke;
 mod dyn_trait_smoke;
 mod effect_system_smoke;
+mod ensures_refutation_smoke;
 mod examples_golden;
 mod examples_smoke;
 mod explain_effects_cli;
