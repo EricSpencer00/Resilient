@@ -6476,6 +6476,11 @@ impl TypeChecker {
                 // RES-4197: `let const` immutability — rejects any
                 // reassignment of a `let const` binding with E0012.
                 crate::immutability::check(program, source_path)?;
+                // RES-4218: reject an `ensures` clause that Z3 refutes
+                // against the fn body (grounded counterexample). No-op
+                // without `--features z3` — the prover degrades to
+                // Unknown and nothing can reach the refuted state.
+                crate::ensures_refutation::check(program, source_path)?;
                 // RES-1612 gate: pass scans for `Node::TryCatch`.
                 if markers.has_try_catch {
                     crate::try_catch::check(program, source_path)?;
@@ -7654,7 +7659,20 @@ impl TypeChecker {
                             // can discover the specific assertion via a
                             // stable `[partial-proof]` tag. Suppressed with
                             // `--no-warn-unverified`.
-                            if verdict.is_none() && self.warn_unverified {
+                            // RES-4218: an `ensures` clause the body-aware
+                            // pass proved is not a partial proof, even
+                            // though this free-variable query can only
+                            // ever answer Unknown for it.
+                            if verdict.is_none()
+                                && self.warn_unverified
+                                && !crate::ensures_refutation::discharged_against_body(
+                                    name,
+                                    clause,
+                                    requires,
+                                    body,
+                                    decl_idx >= requires.len(),
+                                )
+                            {
                                 emit_partial_proof_warning(&self.source_path, clause);
                             }
                             decl_counterexample = cx;
