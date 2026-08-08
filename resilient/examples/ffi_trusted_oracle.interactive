@@ -1,0 +1,9 @@
+# Requires a locally-built companion library (see the header comment in
+# ffi_trusted_oracle.rz) and a binary built with `--features ffi`. The
+# library name is platform-specific (libhelper.so / libhelper.dylib), so
+# this example is exempt from the golden-file audit via this marker.
+#
+# This example is EXPECTED TO TERMINATE WITH A CONTRACT VIOLATION -- that
+# is the point. The same behaviour is asserted in CI by
+# resilient/tests/it/ffi_integration.rs, against a helper library that
+# build.rs compiles from resilient/tests/ffi/lib_testhelper.c.

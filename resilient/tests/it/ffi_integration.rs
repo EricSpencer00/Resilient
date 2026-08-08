@@ -390,3 +390,108 @@ main(0);"#,
         "diagnostic should explain why a C-allocated buffer cannot be returned: {all}"
     );
 }
+
+// ============================================================
+// RES-4227: differential-oracle extern contracts.
+//
+// An `ensures` on an extern is a runtime check, not a proof. These tests
+// pin the property that makes such a check worth writing: it can fail.
+// See docs/ffi-trust-boundary.md.
+// ============================================================
+
+#[test]
+fn extern_ensures_may_call_another_extern_as_a_reference() {
+    // The differential-oracle pattern only exists if a contract
+    // expression can call across the FFI boundary. Pin that.
+    let src = format!(
+        r#"extern "{lib}" {{
+    fn rt_isqrt_ref(n: Int) -> Int;
+    fn rt_isqrt_fast(n: Int) -> Int requires _0 >= 0 ensures result == rt_isqrt_ref(_0);
+}};
+fn main(int _d) {{
+    println(rt_isqrt_fast(144));
+    println(rt_isqrt_fast(1000000));
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == "12"),
+        "expected `12`, got stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.lines().any(|l| l.trim() == "1000"),
+        "expected `1000`, got stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
+fn differential_oracle_fires_when_the_fast_path_disagrees() {
+    // The whole point. `rt_isqrt_broken` is correct up to n = 1000 and
+    // off by one above it, so this asserts both that the clause passes
+    // when it should and fails when it should — a check that only ever
+    // passes proves nothing.
+    let src = format!(
+        r#"extern "{lib}" {{
+    fn rt_isqrt_ref(n: Int) -> Int;
+    fn rt_isqrt_broken(n: Int) -> Int requires _0 >= 0 ensures result == rt_isqrt_ref(_0);
+}};
+fn main(int _d) {{
+    println(rt_isqrt_broken(144));
+    println(rt_isqrt_broken(1000000));
+    println("unreachable");
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == "12"),
+        "call below the divergence threshold should succeed: {all}"
+    );
+    assert!(
+        all.contains("Contract violation"),
+        "diverging call must raise a contract violation: {all}"
+    );
+    assert!(
+        all.contains("rt_isqrt_broken"),
+        "diagnostic must name the offending extern: {all}"
+    );
+    assert!(
+        !stdout.lines().any(|l| l.trim() == "unreachable"),
+        "execution must stop at the violation: {all}"
+    );
+    assert_ne!(code, 0, "a contract violation must not exit 0: {all}");
+}
+
+#[test]
+fn wrapping_an_extern_keeps_the_wrappers_contract_on_our_side() {
+    // The mitigation the docs recommend: put the reasoning in a
+    // Resilient function whose body the verifier can actually see, and
+    // leave only the call itself opaque.
+    let src = format!(
+        r#"extern "{lib}" {{ fn rt_isqrt_fast(n: Int) -> Int; }};
+fn safe_isqrt(Int n) -> Int
+    requires n >= 0
+    ensures  result >= 0
+{{
+    if n == 0 {{ return 0; }}
+    return rt_isqrt_fast(n);
+}}
+fn main(int _d) {{
+    println(safe_isqrt(0));
+    println(safe_isqrt(144));
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == "12"),
+        "expected `12`, got stdout={stdout} stderr={stderr}"
+    );
+}

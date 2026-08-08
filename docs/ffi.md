@@ -204,6 +204,14 @@ Violations are caught at runtime before (or after) the C call, producing a
 
 ## `@trusted` functions
 
+> A contract on an `extern fn` is a different object from a contract on a
+> Resilient function: the compiler cannot see the callee, so `ensures` is
+> a per-call runtime check and `@trusted` turns it into an unverified Z3
+> axiom. See [The FFI Trust Boundary](ffi-trust-boundary.md) for what
+> each construct actually guarantees and how to keep the untrusted
+> surface small.
+
+
 ```
 @trusted
 fn fast_log(x: Float) -> Float requires _0 > 0.0 ensures result >= 0.0;

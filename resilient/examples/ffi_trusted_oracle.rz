@@ -1,0 +1,62 @@
+// RES-4227: making an extern postcondition falsifiable.
+//
+// Resilient cannot see inside a shared library, so `ensures` on an
+// `extern fn` is a runtime check, not a proof. That check only earns its
+// place if it can actually fail.
+//
+// The useful shape: bind a library's fast path AND its reference path,
+// and assert they agree. Many numerical and crypto libraries ship both.
+// See docs/ffi-trust-boundary.md.
+//
+// Build the companion library first:
+//
+//   cc -shared -fPIC -o libhelper.so helper.c     # Linux
+//   cc -dynamiclib  -o libhelper.dylib helper.c   # macOS
+//
+// where helper.c defines the three integer-sqrt variants below
+// (verbatim copies live in resilient/tests/ffi/lib_testhelper.c).
+
+extern "libhelper.so" {
+    // Obviously correct, deliberately not clever: binary search for the
+    // largest r with r*r <= n.
+    fn rt_isqrt_ref(n: Int) -> Int;
+
+    // The fast path (Newton's method), checked against the reference on
+    // every call. Contract expressions may call other extern fns, which
+    // is what makes the differential check expressible at all.
+    fn rt_isqrt_fast(n: Int) -> Int
+        requires _0 >= 0
+        ensures  result == rt_isqrt_ref(_0);
+
+    // Same shape, deliberately wrong above n = 1000. Present so the
+    // example demonstrates the clause FIRING, not just passing.
+    fn rt_isqrt_broken(n: Int) -> Int
+        requires _0 >= 0
+        ensures  result == rt_isqrt_ref(_0);
+}
+
+// Put the reasoning on our side of the boundary where we can. This
+// `ensures` is checked by Z3 against the body -- only the extern call
+// inside it stays opaque.
+fn safe_isqrt(Int n) -> Int
+    requires n >= 0
+    ensures  result >= 0
+{
+    if n == 0 { return 0; }
+    return rt_isqrt_fast(n);
+}
+
+fn main() {
+    println(safe_isqrt(144));
+    println(safe_isqrt(1000000));
+
+    // Below the threshold the broken variant agrees with the reference,
+    // so the postcondition passes.
+    println(rt_isqrt_broken(144));
+
+    // Above it, the two disagree and the `ensures` fires. Nothing after
+    // this line runs.
+    println(rt_isqrt_broken(1000000));
+    println("unreachable");
+}
+main();

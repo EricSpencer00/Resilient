@@ -106,3 +106,45 @@ int64_t rt_sum_two_bufs_8(const int64_t *a, int64_t na,
     for (int64_t i = 0; i < nb; i++) acc += b[i];
     return acc;
 }
+
+/* RES-4227: differential-oracle pair.
+ *
+ * Resilient cannot see inside a shared library, so an `ensures` clause on
+ * an `extern fn` is a runtime check, not a proof. That check is only
+ * worth anything if it can actually fail. The most useful shape is a
+ * library that ships both a fast path and a reference path: the
+ * postcondition then asserts they agree, which is genuinely falsifiable
+ * rather than merely asserted.
+ *
+ * Integer square root is used rather than a floating-point routine so
+ * the helper needs no libm (build.rs does not link -lm) and the
+ * comparison is exact rather than tolerance-based.
+ */
+
+/* Reference: binary search for the largest r with r*r <= n. Obviously
+ * correct, deliberately not clever. */
+int64_t rt_isqrt_ref(int64_t n) {
+    if (n < 0) return -1;
+    int64_t lo = 0, hi = 3037000499; /* floor(sqrt(INT64_MAX)) */
+    while (lo < hi) {
+        int64_t mid = lo + (hi - lo + 1) / 2;
+        if (mid <= n / mid) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+}
+
+/* Fast path: Newton's method. Agrees with the reference everywhere. */
+int64_t rt_isqrt_fast(int64_t n) {
+    if (n < 0) return -1;
+    if (n == 0) return 0;
+    int64_t x = n, y = (x + 1) / 2;
+    while (y < x) { x = y; y = (x + n / x) / 2; }
+    return x;
+}
+
+/* Same shape, deliberately wrong above a threshold. Exists so a test can
+ * prove the `ensures` clause fires instead of merely assuming it would. */
+int64_t rt_isqrt_broken(int64_t n) {
+    int64_t r = rt_isqrt_fast(n);
+    return n > 1000 ? r + 1 : r;
+}
