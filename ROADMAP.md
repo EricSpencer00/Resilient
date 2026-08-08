@@ -36,7 +36,7 @@ time, commit it, and only then move the post.
 | **G2** | Test harness | ✅ 46 unit + 1 golden + 4 smoke. RES-002 / 003 / 006 / 008 / 011 / 009 / 010 / 016 all landed. |
 | **G3** | Drop dummy parameters | ✅ RES-004 |
 | **G4** | Diagnostics | ✅ RES-005 (line:col), RES-009 + RES-010 + RES-016 (no parser/lexer panics), RES-028 (assert shows operands) |
-| **G5** | Proper lexer via `logos` | ⏳ pending — current lexer is hand-rolled but solid |
+| **G5** | Proper lexer via `logos` | 🟡 RES-108 landed `src/lexer_logos.rs` behind `--features logos-lexer`, with a unit-test parity check across every `resilient/examples/` program. The hand-rolled scanner stays the default on purpose: [`benchmarks/lex/RESULTS.md`](benchmarks/lex/RESULTS.md) measured logos *slower* on 100 KLoC, short of the ≥2.0× ratio the ticket set as the promotion bar. |
 
 ### Language sanity
 | # | Goalpost | Status |
@@ -54,18 +54,18 @@ time, commit it, and only then move the post.
 ### Stdlib / ergonomics / ecosystem
 | # | Goalpost | Status |
 |---|---|---|
-| **G11** | Stdlib primitives | 🟡 13 builtins. RES-055 made `floor`/`ceil`/`pow` type-preserving (Int→Int when lossless). Next: file I/O, input, string utilities. |
+| **G11** | Stdlib primitives | 🟡 730 builtins in the `BUILTINS` table — file I/O, input, and string utilities all landed. RES-055 made `floor`/`ceil`/`pow` type-preserving (Int→Int when lossless). See [`STDLIB.md`](STDLIB.md); the remaining gap is documentation coverage, not surface ([#4233](https://github.com/EricSpencer00/Resilient/issues/4233)). |
 | **G12** | Arrays + structs / records | 🟡 Arrays + RES-034 nested index assignment (`a[i][j] = v`) at any depth. Structs pending. |
 | **G13** | Pattern matching (`match`) | ✅ RES-039 (closed earlier; carry-over) |
 | **G14** | Static type errors at compile time | 🟡 RES-053/054 partial; full inference pending |
-| **G15** | Cranelift backend / modules / VM | 🟡 RES-073 landed `use "path";` modules. Cranelift (RES-072) and bytecode VM (RES-076) still open. |
-| **G16** | `no_std` / Cortex-M embedded target | ⏳ — RES-075 ticket open |
-| **G17** | Language Server Protocol | ⏳ — RES-074 ticket open, blocked on RES-069 |
+| **G15** | Cranelift backend / modules / VM | ✅ All three landed. RES-073 `use "path";` modules; RES-072 Cranelift JIT (`--features jit`, `rz --jit`); RES-076 bytecode VM (`rz --vm`). All three backends are exercised by the differential parity harness. |
+| **G16** | `no_std` / Cortex-M embedded target | ✅ `resilient-runtime/` is `#![no_std]` and cross-compiles to `thumbv7em-none-eabihf`, `thumbv6m-none-eabi`, and `riscv32imac-unknown-none-elf` — all three are *required* status checks on `main`, alongside a `.text` ≤ 64 KiB budget gate on the Cortex-M4F demo. |
+| **G17** | Language Server Protocol | ✅ RES-074 landed `src/lsp_server.rs` (`--features lsp`, `rz --lsp` over stdio). Workspace-wide parity — references, rename, code actions, inlay hints, cross-file go-to-definition — landed under #3135. Editor setup in [`LSP.md`](LSP.md). |
 | **G18** | Effect tracking | ✅ RES-191 (`@pure`), RES-192 (`@io` inference), RES-389 (declared effects), RES-385c (linear×effects). Actor concurrency design landed (RES-208, RES-332/333). |
 | **G19** | Proof-carrying assertions | ✅ RES-071 (`--emit-certificate`), RES-194 (Ed25519 signatures), RES-195 (`verify-all` + manifest), RES-331 (schema v1 doc). Bundle is round-trippable end-to-end. |
-| **G20** | Self-hosting | ⏳ Blocked on RES-323 (lexer in Resilient) → RES-379 (parser in Resilient). |
+| **G20** | Self-hosting | 🟡 Both prerequisites closed: RES-323 (#115) shipped `self-host/lexer.rz` and RES-379 (#171) shipped `self-host/parser.rz`. The `self_host_parity` test gates the Rust front end against both. A self-hosted typechecker and back end remain. |
 | **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19. RES-383 security audit landed 2026-04-29. |
-| **G22** | TLA+ model checking | ⏳ V2+ design locked — RES-396 (#270). Ship surface = V2.0 bridge (`rz tla check`) + V2.1 `@refines`. |
+| **G22** | TLA+ model checking | ⏳ See the V2 ladder below for the full status — this goalpost lives there. |
 | **G23** | 50-feature vibe-coded-resilience pass | ✅ PR #1076 — 51 new compiler modules. `resilience_score`, `vibe_debt`, `behavioral_fingerprint`, `contract_inference`, `anti_regression`, and 46 more. See `MISSING_FEATURES.md`. |
 | **G24** | AI-aware type system | ✅ `ai_threat_model` — 10 detections (`OffByOne`, `MissedElse`, `SwallowedError`, `MagicNumber`, `CopyPasteBlock`, `UnboundedLoop`, `GhostHandler`, `HallucinatedIdent`, `NestedConditional`, `SilentSwallow`). `--ai-threats` CLI + `#[ai_review_required]` hard gate. First production language with an explicit threat model for its own contributors. See `docs/AI_THREAT_MODEL.md`. |
 | **G25** | Lean-proven operational semantics | ✅ `lean-spec/` Lake project + Rust emitter `lean_spec`. Four proven theorems (`eval_int_lit_id`, `eval_add_comm`, `eval_const_fold_sound`, `eval_neg_involutive`). `--emit-lean-spec=FN` exports per-function theorems for downstream `lake build`. CompCert-class evidence bundle for safety-critical certification. See `docs/LEAN_SPEC.md`. |
@@ -122,7 +122,7 @@ changelog entry below.
 - 2026-04-17 — session 4 (28 tickets): G6 fully closed ✅, G15 bytecode VM
   end-to-end 🟡, G17 LSP scaffolding + 3 integration tests 🟡.
 - 2026-04-17 — G15 JIT real expression + control-flow (Phases B–E via RES-096/099/100/102).
-  G18 no_std embedded toolchain proven end-to-end ✅ (RES-075/097/098).
+  G16 no_std embedded toolchain proven end-to-end ✅ (RES-075/097/098).
 - 2026-04-19 — G21 FFI v1 shipped (tree-walker + static registry, 748 tests pass).
 - 2026-04-29 — G22 TLA+ ladder seeded (RES-396 V2+ design closure; Path B / TLC / V2.0–V2.2 ship scope confirmed).
 - 2026-04-20 — Migrated ticket tracking from `.board/` to GitHub Issues.
@@ -164,3 +164,22 @@ changelog entry below.
   (RES-3836). CI hardening: held `action_required` runs auto-rerun on a cron
   (RES-3855), and heavy gates defer until a PR leaves draft to cut Actions-minute
   spend (RES-3862).
+- 2026-07-16 — **v1.0.0 shipped.** First stable release, tagged off commit
+  `1f66c63c` after `v1.0.0-rc.1` → `rc.3`. Four platform binaries
+  (`x86_64`/`aarch64` × Linux/macOS), two of which ship a statically linked
+  Z3. [`STABILITY.md`](STABILITY.md) and
+  [`docs/STABILITY_POLICY.md`](docs/STABILITY_POLICY.md) put the **Stable**
+  feature surface under a SemVer commitment from this tag forward, gated by
+  the `conformance suite (STABILITY.md Stable surface)` required check.
+  Release mechanics and the two `release.yml` bugs the rc cycle flushed out
+  are recorded in [`docs/RELEASE_AUDIT.md`](docs/RELEASE_AUDIT.md).
+- 2026-07-18 — v1.x roadmap opened: [`docs/ROADMAP_V1X.md`](docs/ROADMAP_V1X.md)
+  and tracker [#4117](https://github.com/EricSpencer00/Resilient/issues/4117).
+  Seven tracks; `docs/ROADMAP_PHASE2.md` is retained as the historical v1.0 plan.
+- 2026-07-19 — **v1.1.0 shipped.** Backend parity was the theme: VM lowering
+  for quantifiers (`forall`/`exists`), `defer`, and nested-fn closure capture
+  closed most of the remaining interpreter/VM divergence, and the embedded VM
+  now runs `ensures`/`recovers_to` postchecks on `Return`. Also landed the
+  `E0011`–`E0020` diagnostic registry behind `rz explain` / `rz errors list`,
+  a stdlib portability lint for `no_std` targets, and graceful `Err` (rather
+  than a panic) for `file_meta`/`http`/`exec` on `wasm32`.
