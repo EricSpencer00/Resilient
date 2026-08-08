@@ -495,3 +495,175 @@ main(0);"#,
         "expected `12`, got stdout={stdout} stderr={stderr}"
     );
 }
+
+// ============================================================
+// RES-4226: `Int32` (C `int`) and `CStr` (`const char*`).
+// ============================================================
+
+#[test]
+fn int32_return_preserves_a_negative_error_code() {
+    // The regression that motivated `Int32`. A C function returning
+    // `int` writes only eax / w0; reading the full 64-bit return
+    // register yields 4294967293 instead of -3. Declaring the return as
+    // `Int32` transmutes to `-> i32` so only the defined bits are read.
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_neg_errcode() -> Int32; }};
+fn main(int _d) {{
+    println(rt_neg_errcode());
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "-3",
+    );
+}
+
+#[test]
+fn int32_round_trips_negative_and_boundary_values() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_i32_identity(v: Int32) -> Int32; }};
+fn main(int _d) {{
+    println(rt_i32_identity(-2147483648));
+    println(rt_i32_identity(2147483647));
+    println(rt_i32_identity(-1));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "-2147483648",
+    );
+}
+
+#[test]
+fn int32_argument_out_of_range_is_refused_not_truncated() {
+    // Wrapping would hand C a different number than the caller wrote —
+    // the same class of silent corruption Int32 exists to prevent.
+    let src = format!(
+        r#"extern "{lib}" {{ fn rt_i32_identity(v: Int32) -> Int32; }};
+fn main(int _d) {{
+    println(rt_i32_identity(2147483648));
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_ne!(code, 0, "out-of-range Int32 must not run: stdout={stdout}");
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        all.contains("does not fit in Int32"),
+        "diagnostic should name the range problem: {all}"
+    );
+}
+
+#[test]
+fn int32_params_and_return_compose() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_i32_add(a: Int32, b: Int32) -> Int32; }};
+fn main(int _d) {{
+    println(rt_i32_add(-10, 4));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "-6",
+    );
+}
+
+#[test]
+fn cstr_param_reaches_c_nul_terminated() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_cstr_len(s: CStr) -> Int; }};
+fn main(int _d) {{
+    println(rt_cstr_len("hello"));
+    println(rt_cstr_len(""));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "5",
+    );
+}
+
+#[test]
+fn two_cstr_params_get_two_distinct_buffers() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_cstr_eq(a: CStr, b: CStr) -> Int32; }};
+fn main(int _d) {{
+    println(rt_cstr_eq("abc", "abc"));
+    println(rt_cstr_eq("abc", "abd"));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "0",
+    );
+}
+
+#[test]
+fn cstr_with_interior_nul_is_refused_not_truncated() {
+    let src = format!(
+        r#"extern "{lib}" {{ fn rt_cstr_len(s: CStr) -> Int; }};
+fn main(int _d) {{
+    println(rt_cstr_len("a\0b"));
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    let all = format!("{stdout}{stderr}");
+    // Truncating at the NUL would silently print 1. Either the string
+    // never reaches C (clean error) or the length is the full 3 — what
+    // must not happen is a silent 1.
+    if code == 0 {
+        assert!(
+            !stdout.lines().any(|l| l.trim() == "1"),
+            "interior NUL must not silently truncate: {all}"
+        );
+    } else {
+        assert!(
+            all.contains("interior NUL"),
+            "diagnostic should name the interior NUL: {all}"
+        );
+    }
+}
+
+#[test]
+fn cstr_return_is_copied_into_a_resilient_string() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_version_string() -> CStr; }};
+fn main(int _d) {{
+    println(rt_version_string());
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "testhelper 1.0.0",
+    );
+}
+
+#[test]
+fn cstr_and_arrays_and_handles_mix_in_one_signature() {
+    // The point of the arity-only dispatch: CStr, Array<Int>, and Int
+    // are all one INTEGER-class register, so a mixed signature needs no
+    // new trampoline arm.
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{
+    fn rt_cstr_len(s: CStr) -> Int;
+    fn rt_sum_i64(xs: Array<Int>, n: Int) -> Int;
+}};
+fn main(int _d) {{
+    println(rt_cstr_len("abcd") + rt_sum_i64([1, 2, 3], 3));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "10",
+    );
+}
