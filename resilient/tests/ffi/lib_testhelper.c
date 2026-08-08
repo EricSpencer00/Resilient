@@ -54,3 +54,55 @@ int64_t rt_sum_7(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t 
 int64_t rt_sum_8(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h) {
     return a + b + c + d + e + f + g + h;
 }
+
+/* RES-4225: array (buffer) parameters.
+ *
+ * These are the shapes Resilient's `Array<Int>` / `Array<Float>` extern
+ * parameters lower to: a `const T*` paired with a caller-supplied count.
+ * `rt_sum_i64` also exercises the arity-only INTEGER-class dispatch path
+ * with a mix of pointer and integer arguments.
+ */
+int64_t rt_sum_i64(const int64_t *xs, int64_t n) {
+    int64_t acc = 0;
+    for (int64_t i = 0; i < n; i++) acc += xs[i];
+    return acc;
+}
+
+double rt_sum_f64(const double *xs, int64_t n) {
+    double acc = 0.0;
+    for (int64_t i = 0; i < n; i++) acc += xs[i];
+    return acc;
+}
+
+/* Reads one element — proves the pointer is a real contiguous buffer and
+ * not just a non-null address that happens to survive the call. */
+int64_t rt_nth_i64(const int64_t *xs, int64_t i) {
+    return xs[i];
+}
+
+/* Two buffers plus a count: a dot product. Confirms that two distinct
+ * array arguments get two distinct live buffers, not one aliased twice. */
+int64_t rt_dot_i64(const int64_t *xs, const int64_t *ys, int64_t n) {
+    int64_t acc = 0;
+    for (int64_t i = 0; i < n; i++) acc += xs[i] * ys[i];
+    return acc;
+}
+
+/* Pointer-returning, pointer-and-buffer-taking: exercises the
+ * OpaquePtr return shape through the word-class path. Returns the
+ * buffer address it was handed, so the caller can verify pass-through. */
+const int64_t *rt_echo_buf(const int64_t *xs, int64_t n) {
+    (void)n;
+    return xs;
+}
+
+/* Arity-8, all INTEGER-class, mixing buffers and counts. The upper bound
+ * of the word-class dispatch table. */
+int64_t rt_sum_two_bufs_8(const int64_t *a, int64_t na,
+                          const int64_t *b, int64_t nb,
+                          int64_t w0, int64_t w1, int64_t w2, int64_t w3) {
+    int64_t acc = w0 + w1 + w2 + w3;
+    for (int64_t i = 0; i < na; i++) acc += a[i];
+    for (int64_t i = 0; i < nb; i++) acc += b[i];
+    return acc;
+}

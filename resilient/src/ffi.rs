@@ -52,6 +52,13 @@ pub enum FfiType {
         name: String,
         fields: Vec<(String, FfiType)>,
     },
+    /// RES-4225: a Resilient `Array<T>` passed to C as a pointer to a
+    /// contiguous buffer of `T` (`const int64_t*` / `const double*`).
+    /// The buffer is a copy owned by the trampoline for the duration of
+    /// the call — see `ffi_arrays` for why the copy is unavoidable and
+    /// what it costs. Length is not implied; bindings declare their own
+    /// count parameter, matching the C header.
+    ArrayPtr(Box<FfiType>),
 }
 
 impl FfiType {
@@ -67,7 +74,14 @@ impl FfiType {
             "Void" => Some(FfiType::Void),
             "OpaquePtr" => Some(FfiType::OpaquePtr),
             "Callback" => Some(FfiType::Callback),
-            _ => None,
+            // RES-4225: `Array<Int>` / `Array<Float>`. An array spelling
+            // with an element type we cannot lay out contiguously
+            // resolves to `None` here; `from_decl_with_structs` turns
+            // that into a diagnostic that names the *element*.
+            _ => match crate::ffi_arrays::parse_array_type(name) {
+                Some(Ok(t)) => Some(t),
+                Some(Err(_)) | None => None,
+            },
         }
     }
 
@@ -103,6 +117,7 @@ impl FfiType {
             FfiType::Void => 0,
             FfiType::OpaquePtr => core::mem::size_of::<usize>(),
             FfiType::Callback => core::mem::size_of::<usize>(),
+            FfiType::ArrayPtr(_) => core::mem::size_of::<usize>(),
             FfiType::Struct { fields, .. } => struct_layout(fields).total,
         }
     }
@@ -114,7 +129,9 @@ impl FfiType {
             FfiType::Bool => 1,
             FfiType::Str => core::mem::align_of::<usize>(),
             FfiType::Void => 1,
-            FfiType::OpaquePtr | FfiType::Callback => core::mem::align_of::<usize>(),
+            FfiType::OpaquePtr | FfiType::Callback | FfiType::ArrayPtr(_) => {
+                core::mem::align_of::<usize>()
+            }
             FfiType::Struct { fields, .. } => struct_layout(fields).align,
         }
     }
@@ -216,11 +233,20 @@ impl ForeignSignature {
         for (ty, _) in &decl.parameters {
             params.push(
                 FfiType::from_resilient_with_structs(ty, structs)
-                    .ok_or_else(|| FfiError::UnsupportedType(ty.clone()))?,
+                    .ok_or_else(|| unsupported_type_error(ty))?,
             );
         }
         let ret = FfiType::from_resilient_with_structs(&decl.return_type, structs)
-            .ok_or_else(|| FfiError::UnsupportedType(decl.return_type.clone()))?;
+            .ok_or_else(|| unsupported_type_error(&decl.return_type))?;
+        // RES-4225: arrays lower to a pointer, and a pointer to a buffer
+        // C allocated is a lifetime we cannot model. Only *inbound*
+        // arrays are supported; returning one is refused outright rather
+        // than handing back a dangling `OpaquePtr`.
+        if let FfiType::ArrayPtr(_) = ret {
+            return Err(FfiError::ArrayReturnUnsupported {
+                name: decl.resilient_name.clone(),
+            });
+        }
         if params.len() > 8 {
             return Err(FfiError::ArityTooLarge {
                 name: decl.resilient_name.clone(),
@@ -228,6 +254,20 @@ impl ForeignSignature {
             });
         }
         Ok(Self { params, ret })
+    }
+}
+
+/// RES-4225: choose the most specific diagnostic for a type name that
+/// failed to resolve. An array spelling with a bad element type gets an
+/// error naming the element; anything else falls back to the generic
+/// "unsupported type".
+fn unsupported_type_error(ty: &str) -> FfiError {
+    match crate::ffi_arrays::parse_array_type(ty) {
+        Some(Err(element)) => FfiError::UnsupportedArrayElement {
+            declared: ty.to_string(),
+            element,
+        },
+        _ => FfiError::UnsupportedType(ty.to_string()),
     }
 }
 
@@ -259,6 +299,18 @@ pub enum FfiError {
     /// but cannot yet build a stable C function pointer from a
     /// Resilient closure; Phase 2 (bytecode VM) adds real trampolines.
     CallbackNotYetSupported {
+        name: String,
+    },
+    /// RES-4225: an `Array<T>` whose element type has no contiguous C
+    /// representation (`Array<String>`, `Array<Array<Int>>`, ...).
+    UnsupportedArrayElement {
+        declared: String,
+        element: String,
+    },
+    /// RES-4225: an `extern fn` declared an array *return* type. The
+    /// buffer would be owned by C with a lifetime Resilient cannot see,
+    /// so there is no sound way to copy it back.
+    ArrayReturnUnsupported {
         name: String,
     },
     /// RES-317: an `extern fn` referenced a struct type that was not
@@ -314,6 +366,20 @@ impl std::fmt::Display for FfiError {
                 write!(
                     f,
                     "FFI: extern fn `{}` uses a Callback parameter; callbacks require the trampoline feature (planned for Phase 2)",
+                    name
+                )
+            }
+            FfiError::UnsupportedArrayElement { declared, element } => {
+                write!(
+                    f,
+                    "FFI: `{}` is not supported: array element type `{}` has no contiguous C layout (supported: Array<Int>, Array<Float>)",
+                    declared, element
+                )
+            }
+            FfiError::ArrayReturnUnsupported { name } => {
+                write!(
+                    f,
+                    "FFI: extern fn `{}` returns an array; C-allocated buffers have a lifetime Resilient cannot model. Pass a caller-owned output buffer instead",
                     name
                 )
             }

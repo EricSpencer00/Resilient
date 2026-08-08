@@ -7628,9 +7628,13 @@ mod tests {
         chunk.emit(Op::Const(s), 1);
         chunk.emit(Op::Add, 1);
         chunk.emit(Op::Return, 1);
+        // `Program` grew a cfg-gated `foreign_syms` field; mirror the
+        // gate here so this literal stays valid under every feature set.
         let prog = Program {
             main: chunk,
             functions: vec![],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         };
         match run(&prog).unwrap() {
             Value::String(s) => assert_eq!(s, "1x"),

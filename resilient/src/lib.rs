@@ -271,6 +271,11 @@ mod cache;
 // `libloading` (dynamic linking); the default build compiles the
 // disabled backend that returns `FfiError::FfiDisabled` on every call.
 mod ffi;
+// RES-4225: `Array<T>` extern-parameter marshalling. Always compiled —
+// `ffi.rs` consults it during signature resolution regardless of
+// backend, so an unsupported array type is diagnosed the same way in a
+// build without `--features ffi`.
+mod ffi_arrays;
 #[cfg(feature = "ffi")]
 mod ffi_trampolines;
 // RES-385: linear-type MVP — helpers for the `linear T` encoding

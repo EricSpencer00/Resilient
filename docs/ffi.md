@@ -60,6 +60,8 @@ Only primitive types are supported in FFI Phase 1:
 | `String`    | variadic `printf`-style format strings; fixed-arity string ABI arms remain limited to implemented trampoline shapes |
 | `Void`      | `void`                                         |
 | `OpaquePtr` | `void*` (opaque)                               |
+| `Array<Int>`   | `const int64_t*` (RES-4225; in-parameter only) |
+| `Array<Float>` | `const double*` (RES-4225; in-parameter only)  |
 | `Callback`  | C function pointer (recognised in declarations; calls unsupported in Phase 1) |
 
 At most 8 parameters per extern function.
@@ -98,19 +100,71 @@ Semantics:
 - Pass-through is zero-copy: the trampoline ferries the raw
   address across the ABI unchanged.
 
-Trampoline coverage today:
+Trampoline coverage for pointer-bearing signatures is no longer
+enumerated per shape. RES-4225 added an arity-only dispatch path: on
+every ABI Resilient targets (SystemV x86-64, Windows x64, AArch64
+AAPCS), `Int`, `OpaquePtr`, and `Array<T>` are all a single 64-bit
+general-purpose argument register, assigned in declaration order. A
+signature built only from those is therefore fully described by how
+many registers it uses.
 
-| Signature | Supported |
-|-----------|-----------|
-| `() -> OpaquePtr` | yes |
-| `(OpaquePtr) -> OpaquePtr` | yes |
-| `(OpaquePtr) -> Int` | yes |
-| `(OpaquePtr) -> Float` | yes |
-| `(OpaquePtr) -> Bool` | yes |
-| `(OpaquePtr) -> Void` | yes |
+So **any** combination of `Int` / `OpaquePtr` / `Array<T>` parameters up
+to arity 8 works, returning `Int`, `Float`, `Bool`, `OpaquePtr`, or
+`Void`:
 
-Higher arities extend mechanically by adding an arm to
-`dispatch_explicit` in `ffi_trampolines.rs`.
+```
+extern "libfoo.so" {
+    fn foo(ctx: OpaquePtr, idx: Array<Int>, vals: Array<Float>, n: Int) -> Int;
+}
+```
+
+Signatures with a `Float`, `Bool`, `String`, or struct **parameter**
+still go through the explicit type-tuple table in `dispatch_explicit`,
+which is extended by adding an arm.
+
+### `Array<T>` — buffer parameters
+
+```
+extern "libsum.so" {
+    fn rt_sum_i64(xs: Array<Int>, n: Int) -> Int;
+    fn rt_sum_f64(xs: Array<Float>, n: Int) -> Float;
+}
+
+println(rt_sum_i64([1, 2, 3, 4], 4));
+```
+
+`Array<Int>` lowers to `const int64_t*`, `Array<Float>` to
+`const double*`. Element types other than `Int` and `Float` — including
+nested arrays and `Array<String>` — have no contiguous C layout and are
+rejected at compile time with a diagnostic that names the element type.
+
+**The length is not passed implicitly.** C's convention is a separate
+count parameter, and inventing a hidden one would make the Resilient
+declaration disagree with the header it binds. Declare the count
+yourself, as `n` above.
+
+Semantics:
+
+- **The buffer is a copy.** `Value::Array` is a vector of tagged enums,
+  not a contiguous run of machine words, so there is no pointer into it
+  to hand C. Each call allocates a `Vec<i64>` / `Vec<f64>`, copies the
+  elements in, and frees it when the call returns. Passing a large array
+  in a hot loop costs an O(n) copy per call.
+- **The buffer is read-only from C's perspective and is not copied
+  back.** Anything the callee writes through the pointer is discarded.
+  Caller-owned output buffers are a separate type, tracked in RES-4226.
+- **Elements must all match the declared element type.** No Int→Float
+  widening: a silent coercion would hand C a bit pattern reinterpreted
+  under a different type than the binding declares. Mismatches report
+  the offending index.
+- **Empty arrays pass a valid, non-null, aligned address with count 0.**
+  Passing `NULL` instead would break callees that assert non-null before
+  checking the count.
+- **Arrays cannot be returned.** A C-allocated buffer has a lifetime
+  Resilient cannot see, so `-> Array<Int>` is refused rather than
+  handing back something that dangles.
+
+See `resilient/examples/ffi_array_sum.rz`.
 
 ### `Callback` — declaration-only in Phase 1
 

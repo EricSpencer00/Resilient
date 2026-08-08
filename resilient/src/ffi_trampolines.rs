@@ -149,6 +149,10 @@ fn value_matches_ffi_type(v: &Value, want: &FfiType) -> bool {
         (Value::Bool(_), FfiType::Bool) => true,
         (Value::String(_), FfiType::Str) => true,
         (Value::OpaquePtr(_), FfiType::OpaquePtr) => true,
+        // RES-4225: element types are validated during marshalling so a
+        // bad element yields an index-precise error rather than the
+        // generic "type mismatch on arg #n".
+        (Value::Array(_), FfiType::ArrayPtr(_)) => true,
         // RES-317: `Value::Struct` matches `FfiType::Struct` only when
         // the declared name and field count line up. Per-field type
         // checking happens in the marshaller so a mismatch yields a
@@ -329,6 +333,9 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     let mut struct_words: [u64; 8] = [0; 8];
     // Keep string byte borrows live for the call.
     let mut live_strs: Vec<&[u8]> = Vec::with_capacity(args.len());
+    // RES-4225: owned copies of array arguments. These must outlive the
+    // foreign call — C holds raw pointers into them.
+    let mut live_arrays: Vec<crate::ffi_arrays::ArrayBuffer> = Vec::new();
     for (i, (arg, want)) in args.iter().zip(params.iter()).enumerate() {
         match (arg, want) {
             (Value::Int(v), FfiType::Int) => ints[i] = *v,
@@ -343,6 +350,11 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
                 };
             }
             (Value::OpaquePtr(h), FfiType::OpaquePtr) => ptrs[i] = h.0,
+            (Value::Array(_), FfiType::ArrayPtr(elem)) => {
+                let buf = crate::ffi_arrays::marshal_array(arg, elem, &sym.name, i)?;
+                ptrs[i] = buf.ptr();
+                live_arrays.push(buf);
+            }
             (Value::Struct { .. }, FfiType::Struct { .. }) => {
                 struct_words[i] = pack_struct_to_u64(arg, want)?;
             }
@@ -353,6 +365,21 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
                 ));
             }
         }
+    }
+
+    // RES-4225: SystemV / AArch64 INTEGER-class lowering. `Int`,
+    // `OpaquePtr`, and `ArrayPtr` all occupy exactly one 64-bit
+    // general-purpose argument register, so a signature built only from
+    // them is fully described by its *arity*. `words` is that uniform
+    // view, used by `word_class_call` when the explicit type-tuple table
+    // has no arm.
+    let mut words: [u64; 8] = [0; 8];
+    for (i, want) in params.iter().enumerate().take(8) {
+        words[i] = match want {
+            FfiType::Int => ints[i] as u64,
+            FfiType::OpaquePtr | FfiType::ArrayPtr(_) => ptrs[i] as u64,
+            _ => 0,
+        };
     }
 
     let variadic_fmt = if variadic {
@@ -394,6 +421,7 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     // unchanged and re-use the packed `u64` representation.
     if let Some(out) = dispatch_struct_signatures(sym, params, ret, &ints, &struct_words)? {
         drop(live_strs);
+        drop(live_arrays);
         let _ = strs;
         let _ = ptrs;
         let _ = struct_words;
@@ -1014,13 +1042,20 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
                     ints[0], floats[1], floats[2], floats[3]
                 )),
 
-                // Fallback.
-                _ => {
-                    return Err(format!(
-                        "FFI: no trampoline for signature ({:?}) -> {:?} (extend dispatch_explicit)",
-                        params, ret
-                    ));
-                }
+                // RES-4225: signatures the explicit type-tuple table
+                // does not name fall through to the arity-only
+                // INTEGER-class path. Anything it also declines (a
+                // `Float`/`Bool` in the mix, arity > 8) is a genuine
+                // gap and reports as one.
+                _ => match word_class_call(sym, params, ret, &words) {
+                    Some(v) => v,
+                    None => {
+                        return Err(format!(
+                            "FFI: no trampoline for signature ({:?}) -> {:?} (extend dispatch_explicit)",
+                            params, ret
+                        ));
+                    }
+                },
             }
         }
     };
@@ -1029,11 +1064,138 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     // via normal scope rules. Touch them here so optimizers can't
     // shuffle the drop earlier than the call.
     drop(live_strs);
+    drop(live_arrays);
     let _ = strs;
     let _ = ptrs;
     let _ = struct_words;
 
     Ok(out)
+}
+
+/// RES-4225: is this type carried in exactly one INTEGER-class
+/// argument register?
+///
+/// `Bool` is deliberately excluded even though it is register-passed:
+/// C's `_Bool` is one byte and the upper bits of the register are
+/// unspecified, so widening it to a `u64` slot is only valid in one
+/// direction. It keeps using the explicit table, which names the real
+/// type. `Float` is SSE-class, not INTEGER-class.
+fn is_word_class(t: &FfiType) -> bool {
+    matches!(t, FfiType::Int | FfiType::OpaquePtr | FfiType::ArrayPtr(_))
+}
+
+/// Expands to the `u64` slot type, discarding the index token. Lets one
+/// macro arm generate an `extern "C" fn(u64, u64, ...)` of the right
+/// arity from a list of argument indices.
+macro_rules! word_slot {
+    ($_i:tt) => {
+        u64
+    };
+}
+
+/// RES-4225: dispatch a signature whose parameters are all INTEGER-class
+/// on **arity alone**.
+///
+/// The explicit table in `dispatch_explicit` is keyed by the tuple of
+/// semantic types, so every new pointer-shaped type multiplies its size.
+/// That is the wrong axis. On every ABI Resilient's FFI targets —
+/// SystemV x86-64, Windows x64, AArch64 AAPCS — `int64_t`, `void*`, and
+/// a pointer-to-buffer are *the same thing* to the calling convention: a
+/// single 64-bit general-purpose register, assigned in declaration
+/// order. A signature built only from those is therefore fully
+/// determined by how many registers it uses.
+///
+/// So this covers 9 arities x 5 return shapes with 45 generated arms,
+/// and it grows by zero arms when a future ticket adds another
+/// pointer-shaped FFI type.
+///
+/// The *return* value is a separate question. Where an argument sits is
+/// decided by its own class and the classes of the arguments before it,
+/// so restricting parameters to INTEGER-class fixes the whole argument
+/// layout — but the return register is chosen independently of all of
+/// that. `Float` returning in `xmm0` / `d0` therefore composes freely
+/// with integer-class arguments, and the same holds for `Bool`.
+///
+/// Returns `None` — not an error — when the signature is outside that
+/// class (a `Float`, `Bool`, `String`, or struct *parameter*; a `String`
+/// or struct return; arity above 8), so the caller can report the gap
+/// with the diagnostic it already has.
+///
+/// SAFETY: each `transmute` produces an `extern "C"` fn pointer whose
+/// parameter list is N `u64`s. That is a sound description of the callee
+/// exactly when the callee's own parameters are each INTEGER-class and
+/// 64 bits wide, which `is_word_class` is what enforces — it admits only
+/// `Int` (`int64_t`), `OpaquePtr` (`void*`), and `ArrayPtr` (a pointer to
+/// a buffer this call owns). The register assignment is positional and
+/// identical for all three, so slot `i` of `words` lands in the register
+/// the callee reads for parameter `i`.
+///
+/// The remaining obligation is the one the whole FFI module already
+/// carries and cannot discharge locally: that the `extern` block's
+/// declared signature matches the C library's actual one. A wrong
+/// declaration is unsound here exactly as it is in every other arm of
+/// `dispatch_explicit`.
+fn word_class_call(
+    sym: &ForeignSymbol,
+    params: &[FfiType],
+    ret: &FfiType,
+    words: &[u64; 8],
+) -> Option<Value> {
+    if params.len() > 8 || !params.iter().all(is_word_class) {
+        return None;
+    }
+
+    macro_rules! call_arity {
+        ($($idx:tt),*) => {{
+            // SAFETY: see the function-level comment. `sym.ptr` came from
+            // `libloading` resolving the C symbol named by the `extern`
+            // block; the fn type below matches the INTEGER-class lowering
+            // of the declared signature.
+            unsafe {
+                match ret {
+                    FfiType::Int => Some(Value::Int(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn($(word_slot!($idx)),*) -> i64,
+                    >(sym.ptr)($(words[$idx]),*))),
+                    FfiType::OpaquePtr => Some(Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
+                        std::mem::transmute::<
+                            *const (),
+                            extern "C" fn($(word_slot!($idx)),*) -> *mut core::ffi::c_void,
+                        >(sym.ptr)($(words[$idx]),*),
+                    ))),
+                    FfiType::Float => Some(Value::Float(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn($(word_slot!($idx)),*) -> f64,
+                    >(sym.ptr)($(words[$idx]),*))),
+                    FfiType::Bool => Some(Value::Bool(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn($(word_slot!($idx)),*) -> bool,
+                    >(sym.ptr)($(words[$idx]),*))),
+                    FfiType::Void => {
+                        std::mem::transmute::<
+                            *const (),
+                            extern "C" fn($(word_slot!($idx)),*),
+                        >(sym.ptr)($(words[$idx]),*);
+                        Some(Value::Void)
+                    }
+                    _ => None,
+                }
+            }
+        }};
+    }
+
+    match params.len() {
+        0 => call_arity!(),
+        1 => call_arity!(0),
+        2 => call_arity!(0, 1),
+        3 => call_arity!(0, 1, 2),
+        4 => call_arity!(0, 1, 2, 3),
+        5 => call_arity!(0, 1, 2, 3, 4),
+        6 => call_arity!(0, 1, 2, 3, 4, 5),
+        7 => call_arity!(0, 1, 2, 3, 4, 5, 6),
+        8 => call_arity!(0, 1, 2, 3, 4, 5, 6, 7),
+        _ => None,
+    }
 }
 
 /// RES-317: dispatch the small struct signatures we support in
