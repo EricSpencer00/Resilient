@@ -1,0 +1,49 @@
+// RES-4225: passing arrays across the FFI boundary.
+//
+// `Array<Int>` lowers to `const int64_t*` and `Array<Float>` to
+// `const double*`. The length is NOT implied — C's convention is a
+// separate count, and a hidden one would make this declaration
+// disagree with the header it is binding.
+//
+// Build the companion library first:
+//
+//   cat > sumlib.c <<'EOF'
+//   #include <stdint.h>
+//   int64_t rt_sum_i64(const int64_t *xs, int64_t n) {
+//       int64_t acc = 0;
+//       for (int64_t i = 0; i < n; i++) acc += xs[i];
+//       return acc;
+//   }
+//   double rt_sum_f64(const double *xs, int64_t n) {
+//       double acc = 0.0;
+//       for (int64_t i = 0; i < n; i++) acc += xs[i];
+//       return acc;
+//   }
+//   EOF
+//   cc -shared -fPIC -o libsum.so sumlib.c      # Linux
+//   cc -dynamiclib  -o libsum.dylib sumlib.c    # macOS
+//
+// Then run with a binary built with `--features ffi`.
+
+extern "libsum.so" {
+    // The `ensures` clause is checked at runtime, not proved. The
+    // compiler cannot see inside libsum.so — see docs/ffi.md on where
+    // a foreign postcondition is a check and where it is an axiom.
+    fn rt_sum_i64(xs: Array<Int>, n: Int) -> Int;
+    fn rt_sum_f64(xs: Array<Float>, n: Int) -> Float;
+}
+
+fn main() {
+    println(rt_sum_i64([1, 2, 3, 4], 4));
+
+    // A binding works the same as a literal — the array is copied into
+    // a contiguous buffer at call time either way.
+    let xs = [10, 20, 30];
+    println(rt_sum_i64(xs, 3));
+
+    // An empty array passes a valid, non-null address with count 0.
+    println(rt_sum_i64([], 0));
+
+    println(rt_sum_f64([1.5, 2.5], 2));
+}
+main();

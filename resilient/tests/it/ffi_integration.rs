@@ -206,3 +206,187 @@ main(0);"#,
         "expected `99`, got stdout={stdout} stderr={stderr}"
     );
 }
+
+// ============================================================
+// RES-4225: `Array<Int>` / `Array<Float>` extern parameters.
+// ============================================================
+
+/// Assert that a Resilient source runs cleanly and prints `want` on some
+/// line of stdout. Every array test below has that shape.
+fn assert_prints(src: &str, want: &str) {
+    let (stdout, stderr, code) = run_resilient_src(src);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == want),
+        "expected `{want}`, got stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
+fn array_int_param_reaches_c_as_contiguous_buffer() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_sum_i64(xs: Array<Int>, n: Int) -> Int; }};
+fn main(int _d) {{
+    println(rt_sum_i64([1, 2, 3, 4], 4));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "10",
+    );
+}
+
+#[test]
+fn array_float_param_reaches_c_as_contiguous_buffer() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_sum_f64(xs: Array<Float>, n: Int) -> Float; }};
+fn main(int _d) {{
+    println(rt_sum_f64([1.5, 2.5], 2));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "4",
+    );
+}
+
+#[test]
+fn array_elements_are_in_declaration_order_not_reversed() {
+    // Summing is order-insensitive, so it cannot catch a reversed or
+    // rotated buffer. Index into it instead.
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_nth_i64(xs: Array<Int>, i: Int) -> Int; }};
+fn main(int _d) {{
+    println(rt_nth_i64([10, 20, 30], 0));
+    println(rt_nth_i64([10, 20, 30], 2));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "30",
+    );
+}
+
+#[test]
+fn two_array_params_get_two_distinct_buffers() {
+    // A single shared scratch buffer would make this print 14 (xs dotted
+    // with itself) or 56 (ys with itself) instead of 32.
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_dot_i64(xs: Array<Int>, ys: Array<Int>, n: Int) -> Int; }};
+fn main(int _d) {{
+    println(rt_dot_i64([1, 2, 3], [4, 5, 6], 3));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "32",
+    );
+}
+
+#[test]
+fn array_variable_binding_is_marshalled_the_same_as_a_literal() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_sum_i64(xs: Array<Int>, n: Int) -> Int; }};
+fn main(int _d) {{
+    let xs = [5, 7, 9];
+    println(rt_sum_i64(xs, 3));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "21",
+    );
+}
+
+#[test]
+fn empty_array_is_passed_without_dereferencing() {
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{ fn rt_sum_i64(xs: Array<Int>, n: Int) -> Int; }};
+fn main(int _d) {{
+    println(rt_sum_i64([], 0));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "0",
+    );
+}
+
+#[test]
+fn arity_eight_all_integer_class_dispatches_through_the_word_path() {
+    // 8 params, two of them buffers — the upper bound of the arity-only
+    // INTEGER-class table. (1+2) + (3+4+5) + 10+20+30+40 = 115.
+    assert_prints(
+        &format!(
+            r#"extern "{lib}" {{
+    fn rt_sum_two_bufs_8(a: Array<Int>, na: Int, b: Array<Int>, nb: Int,
+                         w0: Int, w1: Int, w2: Int, w3: Int) -> Int;
+}};
+fn main(int _d) {{
+    println(rt_sum_two_bufs_8([1, 2], 2, [3, 4, 5], 3, 10, 20, 30, 40));
+}}
+main(0);"#,
+            lib = helper_path()
+        ),
+        "115",
+    );
+}
+
+#[test]
+fn mixed_element_types_are_rejected_at_runtime_with_the_offending_index() {
+    let src = format!(
+        r#"extern "{lib}" {{ fn rt_sum_i64(xs: Array<Int>, n: Int) -> Int; }};
+fn main(int _d) {{
+    println(rt_sum_i64([1, 2.0], 2));
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_ne!(code, 0, "mixed-type array must not run: stdout={stdout}");
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        all.contains("[1]"),
+        "diagnostic should name the offending index: {all}"
+    );
+}
+
+#[test]
+fn array_of_unsupported_element_type_is_rejected_at_compile_time() {
+    let src = format!(
+        r#"extern "{lib}" {{ fn rt_sum_i64(xs: Array<String>, n: Int) -> Int; }};
+fn main(int _d) {{ println(0); }}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_ne!(code, 0, "Array<String> must be rejected: stdout={stdout}");
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        all.contains("contiguous C layout"),
+        "diagnostic should explain why the element type is unsupported: {all}"
+    );
+}
+
+#[test]
+fn array_return_type_is_rejected() {
+    let src = format!(
+        r#"extern "{lib}" {{ fn rt_sum_i64(xs: Array<Int>, n: Int) -> Array<Int>; }};
+fn main(int _d) {{ println(0); }}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_ne!(code, 0, "array return must be rejected: stdout={stdout}");
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        all.contains("lifetime") || all.contains("unsupported"),
+        "diagnostic should explain why a C-allocated buffer cannot be returned: {all}"
+    );
+}

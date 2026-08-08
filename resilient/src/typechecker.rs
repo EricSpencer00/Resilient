@@ -7444,10 +7444,27 @@ impl TypeChecker {
 
                     // Validate parameters
                     for (ty, param_name) in &d.parameters {
+                        // RES-4225: `Array<Int>` / `Array<Float>` are
+                        // parameterised, so they cannot be listed in a
+                        // flat allowlist. `crate::ffi_arrays` owns the
+                        // decision, including which element types have a
+                        // contiguous C layout.
+                        match crate::ffi_arrays::parse_array_type(ty) {
+                            Some(Ok(_)) => continue,
+                            Some(Err(element)) => {
+                                return Err(format!(
+                                    "FFI: extern fn `{}` parameter `{}` has type `{}`; \
+                                     array element type `{}` has no contiguous C layout \
+                                     (supported: Array<Int>, Array<Float>)",
+                                    fn_name, param_name, ty, element
+                                ));
+                            }
+                            None => {}
+                        }
                         if !SUPPORTED_PARAMS.contains(&ty.as_str()) {
                             return Err(format!(
                                 "FFI: extern fn `{}` parameter `{}` has unsupported type `{}`; \
-                                 supported types are: {}",
+                                 supported types are: {}, Array<Int>, Array<Float>",
                                 fn_name,
                                 param_name,
                                 ty,
