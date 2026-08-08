@@ -1,0 +1,4 @@
+12
+1000
+12
+Runtime error: Contract violation in extern fn rt_isqrt_broken: ensures result == rt_isqrt_ref(_0) failed (result = 1001)
