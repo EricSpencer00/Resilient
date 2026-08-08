@@ -7434,10 +7434,30 @@ impl TypeChecker {
             // Reject unsupported ABI shapes at compile time rather than runtime.
             Node::Extern { decls, span, .. } => {
                 self.current_span = *span;
-                const SUPPORTED_PARAMS: &[&str] =
-                    &["Int", "Float", "Bool", "String", "OpaquePtr", "Callback"];
-                const SUPPORTED_RETURNS: &[&str] =
-                    &["Int", "Float", "Bool", "String", "Void", "OpaquePtr"];
+                // RES-4226: `Int32` is C's `int`; `CStr` is a
+                // NUL-terminated `const char*`. Both are additive — `Int`
+                // still means `int64_t` and `String` still means the
+                // `(ptr, len)` variadic shape.
+                const SUPPORTED_PARAMS: &[&str] = &[
+                    "Int",
+                    "Int32",
+                    "Float",
+                    "Bool",
+                    "String",
+                    "CStr",
+                    "OpaquePtr",
+                    "Callback",
+                ];
+                const SUPPORTED_RETURNS: &[&str] = &[
+                    "Int",
+                    "Int32",
+                    "Float",
+                    "Bool",
+                    "String",
+                    "CStr",
+                    "Void",
+                    "OpaquePtr",
+                ];
 
                 for d in decls {
                     let fn_name = &d.resilient_name;

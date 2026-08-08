@@ -55,6 +55,7 @@ Only primitive types are supported in FFI Phase 1:
 | Resilient   | C ABI                                          |
 |-------------|------------------------------------------------|
 | `Int`       | `int64_t`                                      |
+| `Int32`     | `int` / `int32_t` (RES-4226)                   |
 | `Float`     | `double`                                       |
 | `Bool`      | `bool`                                         |
 | `String`    | variadic `printf`-style format strings; fixed-arity string ABI arms remain limited to implemented trampoline shapes |
@@ -62,6 +63,7 @@ Only primitive types are supported in FFI Phase 1:
 | `OpaquePtr` | `void*` (opaque)                               |
 | `Array<Int>`   | `const int64_t*` (RES-4225; in-parameter only) |
 | `Array<Float>` | `const double*` (RES-4225; in-parameter only)  |
+| `CStr`      | `const char*`, NUL-terminated (RES-4226)       |
 | `Callback`  | C function pointer (recognised in declarations; calls unsupported in Phase 1) |
 
 At most 8 parameters per extern function.
@@ -108,19 +110,74 @@ general-purpose argument register, assigned in declaration order. A
 signature built only from those is therefore fully described by how
 many registers it uses.
 
-So **any** combination of `Int` / `OpaquePtr` / `Array<T>` parameters up
-to arity 8 works, returning `Int`, `Float`, `Bool`, `OpaquePtr`, or
-`Void`:
+So **any** combination of `Int`, `Int32`, `CStr`, `OpaquePtr`, and
+`Array<T>` parameters up to arity 8 works, returning `Int`, `Int32`,
+`CStr`, `Float`, `Bool`, `OpaquePtr`, or `Void`:
 
 ```
 extern "libfoo.so" {
-    fn foo(ctx: OpaquePtr, idx: Array<Int>, vals: Array<Float>, n: Int) -> Int;
+    fn foo(ctx: OpaquePtr, name: CStr, idx: Array<Int>, n: Int32) -> Int32;
 }
 ```
+
+Adding `Int32` and `CStr` in RES-4226 required zero new dispatch arms —
+both are one register, so they were already covered by arity.
 
 Signatures with a `Float`, `Bool`, `String`, or struct **parameter**
 still go through the explicit type-tuple table in `dispatch_explicit`,
 which is extended by adding an arm.
+
+### `Int32` — C's `int`
+
+`Int` means `int64_t`. C's `int` is 32 bits, and on the **return** path
+that difference is not cosmetic:
+
+```
+extern "libfoo.so" {
+    fn foo_last_error() -> Int32;    // correct
+    // fn foo_last_error() -> Int;   // WRONG: returns 4294967293 for -3
+}
+```
+
+A C function returning `int` writes only `eax` / `w0`. The upper 32 bits
+of the return register are not defined by the ABI, so reading the full
+64 bits turns a returned `-3` into `4294967293`. Any C API that signals
+errors with negative `int` codes must be declared `Int32`.
+
+As a parameter, `Int32` range-checks the Resilient `Int` and **refuses**
+values outside `-2147483648..=2147483647` rather than wrapping — a
+silent truncation would hand C a different number than you wrote.
+
+`Int` is unchanged and still means `int64_t`; this is additive.
+
+### `CStr` — NUL-terminated `const char*`
+
+```
+extern "libfoo.so" {
+    fn foo_open(path: CStr) -> OpaquePtr;
+    fn foo_version() -> CStr;
+}
+```
+
+Distinct from `String`, which marshals to a `(ptr, len)` pair and is only
+reachable through the `printf`-style variadic path.
+
+- **As a parameter**, the Resilient string is copied into a
+  NUL-terminated buffer that lives for the duration of the call.
+  Resilient strings may contain interior NUL bytes and C strings cannot,
+  so a string containing one is **rejected**, not truncated at the first
+  NUL.
+- **As a return type**, the pointer is treated as **borrowed and
+  library-owned**: the bytes are copied into a Resilient `String` and
+  never freed. That matches `strerror()`, version strings, and any
+  pointer into a static or library-managed buffer. If the library
+  actually expected the caller to `free()` the result, this leaks — it
+  does not corrupt, but it is an assumption the compiler cannot check.
+  See [The FFI Trust Boundary](ffi-trust-boundary.md).
+- A **null** return is a clean runtime error. If null is a valid result
+  for your function, declare the return as `OpaquePtr` instead.
+- A returned string that is not valid UTF-8 is a clean runtime error
+  rather than a lossy conversion.
 
 ### `Array<T>` — buffer parameters
 

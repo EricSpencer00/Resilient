@@ -153,6 +153,10 @@ fn value_matches_ffi_type(v: &Value, want: &FfiType) -> bool {
         // bad element yields an index-precise error rather than the
         // generic "type mismatch on arg #n".
         (Value::Array(_), FfiType::ArrayPtr(_)) => true,
+        // RES-4226: range and interior-NUL checks happen during
+        // marshalling so the diagnostic can name the offending value.
+        (Value::Int(_), FfiType::Int32) => true,
+        (Value::String(_), FfiType::CStr) => true,
         // RES-317: `Value::Struct` matches `FfiType::Struct` only when
         // the declared name and field count line up. Per-field type
         // checking happens in the marshaller so a mismatch yields a
@@ -336,6 +340,9 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     // RES-4225: owned copies of array arguments. These must outlive the
     // foreign call — C holds raw pointers into them.
     let mut live_arrays: Vec<crate::ffi_arrays::ArrayBuffer> = Vec::new();
+    // RES-4226: owned NUL-terminated copies of CStr arguments, alive for
+    // the same reason.
+    let mut live_cstrs: Vec<crate::ffi_cstr::CStringBuffer> = Vec::new();
     for (i, (arg, want)) in args.iter().zip(params.iter()).enumerate() {
         match (arg, want) {
             (Value::Int(v), FfiType::Int) => ints[i] = *v,
@@ -354,6 +361,17 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
                 let buf = crate::ffi_arrays::marshal_array(arg, elem, &sym.name, i)?;
                 ptrs[i] = buf.ptr();
                 live_arrays.push(buf);
+            }
+            (Value::Int(v), FfiType::Int32) => {
+                // Sign-extend the narrowed value back into the 64-bit
+                // slot. The callee reads only the low 32 bits; the upper
+                // bits it ignores are a valid extension either way.
+                ints[i] = i64::from(crate::ffi_cstr::narrow_to_i32(*v, &sym.name, i)?);
+            }
+            (Value::String(_), FfiType::CStr) => {
+                let buf = crate::ffi_cstr::marshal_cstr(arg, &sym.name, i)?;
+                ptrs[i] = buf.ptr();
+                live_cstrs.push(buf);
             }
             (Value::Struct { .. }, FfiType::Struct { .. }) => {
                 struct_words[i] = pack_struct_to_u64(arg, want)?;
@@ -376,8 +394,8 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     let mut words: [u64; 8] = [0; 8];
     for (i, want) in params.iter().enumerate().take(8) {
         words[i] = match want {
-            FfiType::Int => ints[i] as u64,
-            FfiType::OpaquePtr | FfiType::ArrayPtr(_) => ptrs[i] as u64,
+            FfiType::Int | FfiType::Int32 => ints[i] as u64,
+            FfiType::OpaquePtr | FfiType::ArrayPtr(_) | FfiType::CStr => ptrs[i] as u64,
             _ => 0,
         };
     }
@@ -422,6 +440,7 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     if let Some(out) = dispatch_struct_signatures(sym, params, ret, &ints, &struct_words)? {
         drop(live_strs);
         drop(live_arrays);
+        drop(live_cstrs);
         let _ = strs;
         let _ = ptrs;
         let _ = struct_words;
@@ -1048,7 +1067,8 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
                 // `Float`/`Bool` in the mix, arity > 8) is a genuine
                 // gap and reports as one.
                 _ => match word_class_call(sym, params, ret, &words) {
-                    Some(v) => v,
+                    Some(Ok(v)) => v,
+                    Some(Err(e)) => return Err(e),
                     None => {
                         return Err(format!(
                             "FFI: no trampoline for signature ({:?}) -> {:?} (extend dispatch_explicit)",
@@ -1065,6 +1085,7 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     // shuffle the drop earlier than the call.
     drop(live_strs);
     drop(live_arrays);
+    drop(live_cstrs);
     let _ = strs;
     let _ = ptrs;
     let _ = struct_words;
@@ -1081,7 +1102,10 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
 /// direction. It keeps using the explicit table, which names the real
 /// type. `Float` is SSE-class, not INTEGER-class.
 fn is_word_class(t: &FfiType) -> bool {
-    matches!(t, FfiType::Int | FfiType::OpaquePtr | FfiType::ArrayPtr(_))
+    matches!(
+        t,
+        FfiType::Int | FfiType::Int32 | FfiType::OpaquePtr | FfiType::ArrayPtr(_) | FfiType::CStr
+    )
 }
 
 /// Expands to the `u64` slot type, discarding the index token. Lets one
@@ -1135,12 +1159,13 @@ macro_rules! word_slot {
 /// declared signature matches the C library's actual one. A wrong
 /// declaration is unsound here exactly as it is in every other arm of
 /// `dispatch_explicit`.
+#[allow(clippy::type_complexity)]
 fn word_class_call(
     sym: &ForeignSymbol,
     params: &[FfiType],
     ret: &FfiType,
     words: &[u64; 8],
-) -> Option<Value> {
+) -> Option<Result<Value, String>> {
     if params.len() > 8 || !params.iter().all(is_word_class) {
         return None;
     }
@@ -1153,30 +1178,45 @@ fn word_class_call(
             // of the declared signature.
             unsafe {
                 match ret {
-                    FfiType::Int => Some(Value::Int(std::mem::transmute::<
+                    FfiType::Int => Some(Ok(Value::Int(std::mem::transmute::<
                         *const (),
                         extern "C" fn($(word_slot!($idx)),*) -> i64,
-                    >(sym.ptr)($(words[$idx]),*))),
-                    FfiType::OpaquePtr => Some(Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
+                    >(sym.ptr)($(words[$idx]),*)))),
+                    // RES-4226: transmute to `-> i32` so only the 32 bits
+                    // the ABI actually defines are read, then sign-extend.
+                    // Reading this as an i64 is what turns a returned -3
+                    // into 4294967293.
+                    FfiType::Int32 => Some(Ok(Value::Int(i64::from(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn($(word_slot!($idx)),*) -> i32,
+                    >(sym.ptr)($(words[$idx]),*))))),
+                    FfiType::OpaquePtr => Some(Ok(Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
                         std::mem::transmute::<
                             *const (),
                             extern "C" fn($(word_slot!($idx)),*) -> *mut core::ffi::c_void,
                         >(sym.ptr)($(words[$idx]),*),
-                    ))),
-                    FfiType::Float => Some(Value::Float(std::mem::transmute::<
+                    )))),
+                    FfiType::CStr => {
+                        let p = std::mem::transmute::<
+                            *const (),
+                            extern "C" fn($(word_slot!($idx)),*) -> *const core::ffi::c_char,
+                        >(sym.ptr)($(words[$idx]),*);
+                        Some(crate::ffi_cstr::cstr_return_to_value(p, &sym.name))
+                    }
+                    FfiType::Float => Some(Ok(Value::Float(std::mem::transmute::<
                         *const (),
                         extern "C" fn($(word_slot!($idx)),*) -> f64,
-                    >(sym.ptr)($(words[$idx]),*))),
-                    FfiType::Bool => Some(Value::Bool(std::mem::transmute::<
+                    >(sym.ptr)($(words[$idx]),*)))),
+                    FfiType::Bool => Some(Ok(Value::Bool(std::mem::transmute::<
                         *const (),
                         extern "C" fn($(word_slot!($idx)),*) -> bool,
-                    >(sym.ptr)($(words[$idx]),*))),
+                    >(sym.ptr)($(words[$idx]),*)))),
                     FfiType::Void => {
                         std::mem::transmute::<
                             *const (),
                             extern "C" fn($(word_slot!($idx)),*),
                         >(sym.ptr)($(words[$idx]),*);
-                        Some(Value::Void)
+                        Some(Ok(Value::Void))
                     }
                     _ => None,
                 }

@@ -148,3 +148,36 @@ int64_t rt_isqrt_broken(int64_t n) {
     int64_t r = rt_isqrt_fast(n);
     return n > 1000 ? r + 1 : r;
 }
+
+/* RES-4226: width-correct `int` and NUL-terminated `const char*`.
+ *
+ * rt_neg_errcode is the regression test for the return-width bug: a C
+ * function returning `int` writes only eax / w0, so reading the full
+ * 64-bit return register turns -3 into 4294967293.
+ */
+int rt_neg_errcode(void) { return -3; }
+
+int rt_i32_add(int a, int b) { return a + b; }
+
+/* Round-trips a value through C's `int` so a Resilient-side Int32
+ * argument can be observed to have arrived intact. */
+int rt_i32_identity(int v) { return v; }
+
+/* CStr parameter: length of a NUL-terminated string. Returns int64_t so
+ * the result is unambiguous regardless of the Int32 work. */
+int64_t rt_cstr_len(const char *s) {
+    int64_t n = 0;
+    while (s[n] != '\0') n++;
+    return n;
+}
+
+/* Two CStr parameters, to confirm each gets its own live buffer. */
+int rt_cstr_eq(const char *a, const char *b) {
+    while (*a && (*a == *b)) { a++; b++; }
+    return (*a == *b) ? 1 : 0;
+}
+
+/* CStr return: a pointer to a static, library-owned string. This is the
+ * ownership shape Resilient assumes for CStr returns -- borrowed, copied,
+ * never freed. */
+const char *rt_version_string(void) { return "testhelper 1.0.0"; }

@@ -59,6 +59,16 @@ pub enum FfiType {
     /// what it costs. Length is not implied; bindings declare their own
     /// count parameter, matching the C header.
     ArrayPtr(Box<FfiType>),
+    /// RES-4226: C's `int` / `int32_t`. Distinct from `Int` (`int64_t`)
+    /// because the width is load-bearing on return: a C function
+    /// returning `int` defines only the low 32 bits of the return
+    /// register, so reading it as an `i64` turns `-3` into
+    /// `4294967293`.
+    Int32,
+    /// RES-4226: a NUL-terminated `const char*`. Distinct from `Str`,
+    /// which marshals to a `(ptr, len)` pair and is only reachable
+    /// through the `printf`-style variadic path.
+    CStr,
 }
 
 impl FfiType {
@@ -74,6 +84,8 @@ impl FfiType {
             "Void" => Some(FfiType::Void),
             "OpaquePtr" => Some(FfiType::OpaquePtr),
             "Callback" => Some(FfiType::Callback),
+            "Int32" => Some(FfiType::Int32),
+            "CStr" => Some(FfiType::CStr),
             // RES-4225: `Array<Int>` / `Array<Float>`. An array spelling
             // with an element type we cannot lay out contiguously
             // resolves to `None` here; `from_decl_with_structs` turns
@@ -117,7 +129,8 @@ impl FfiType {
             FfiType::Void => 0,
             FfiType::OpaquePtr => core::mem::size_of::<usize>(),
             FfiType::Callback => core::mem::size_of::<usize>(),
-            FfiType::ArrayPtr(_) => core::mem::size_of::<usize>(),
+            FfiType::ArrayPtr(_) | FfiType::CStr => core::mem::size_of::<usize>(),
+            FfiType::Int32 => 4,
             FfiType::Struct { fields, .. } => struct_layout(fields).total,
         }
     }
@@ -129,9 +142,10 @@ impl FfiType {
             FfiType::Bool => 1,
             FfiType::Str => core::mem::align_of::<usize>(),
             FfiType::Void => 1,
-            FfiType::OpaquePtr | FfiType::Callback | FfiType::ArrayPtr(_) => {
+            FfiType::OpaquePtr | FfiType::Callback | FfiType::ArrayPtr(_) | FfiType::CStr => {
                 core::mem::align_of::<usize>()
             }
+            FfiType::Int32 => 4,
             FfiType::Struct { fields, .. } => struct_layout(fields).align,
         }
     }
