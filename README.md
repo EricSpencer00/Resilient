@@ -14,7 +14,12 @@
 [![unsafe: audited, not forbidden](https://img.shields.io/badge/unsafe-audited%2C%20not%20forbidden-9b7ff0.svg?style=flat-square)](CLAUDE.md)
 [![Formal spec: Lean 4, partial](https://img.shields.io/badge/formal%20spec-Lean%204%2C%20partial-2d1f60.svg?style=flat-square)](docs/LEAN_SPEC.md)
 [![Backends: interp + VM + JIT](https://img.shields.io/badge/backends-interp%20%2B%20VM%20%2B%20JIT-664bd3.svg?style=flat-square)](benchmarks/RESULTS.md)
-[![Deps: locked, 286 crates](https://img.shields.io/badge/deps-locked%2C%20286%20crates-9b7ff0.svg?style=flat-square)](Cargo.lock)
+[![Deps: locked, 322 crates](https://img.shields.io/badge/deps-locked%2C%20322%20crates-9b7ff0.svg?style=flat-square)](Cargo.lock)
+<!-- Dep count = `grep -c '^\[\[package\]\]' Cargo.lock`, i.e. every locked
+     package across the whole workspace including optional features. Refresh
+     it with that command; do not eyeball it. For the default-feature build
+     alone the number is far smaller (`cargo tree -e normal` ≈ 64). -->
+
 
 [**📖 Docs**](https://ericspencer.us/Resilient/) &nbsp;·&nbsp;
 [**🛝 Playground**](https://ericspencer.us/Resilient/playground/) &nbsp;·&nbsp;

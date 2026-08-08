@@ -39,9 +39,11 @@ Welcome! Resilient is an open project for safety-critical embedded systems. Cont
   - Install: `brew install z3` (macOS) or `apt-get install libz3-dev` (Linux)
   - Compile with: `cargo build --features z3`
 
-- **LLVM**: For the JIT backend (advanced feature)
-  - Install: `brew install llvm` (macOS) or `apt-get install llvm-dev` (Linux)
+- **JIT backend** (advanced feature): the JIT lowers through
+  [Cranelift](https://cranelift.dev/), which is a pure-Rust crate — there is
+  no external toolchain to install, only a heavier dependency tree.
   - Compile with: `cargo build --features jit`
+  - Run with: `rz --jit prog.rz`
 
 - **LSP support**: Language server for IDE integration
   - Compile with: `cargo build --features lsp`

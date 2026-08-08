@@ -52,9 +52,9 @@ them — but that's an API break, not a one-liner.
 ## Method
 
 The benchmark is the `tests::lex_bench_100kloc` ignored unit test
-in `resilient/src/main.rs`. It:
+in `resilient/src/lib.rs`. It:
 
-1. Concatenates every `.rs` under `resilient/examples/` with
+1. Concatenates every `.rz` under `resilient/examples/` with
    per-copy identifier suffixes until total line count ≥ 100 000
    (100 440 lines / 2.6 MB in practice).
 2. Warms up each lexer 2×, times 10 passes, reports p50 / p99 /
