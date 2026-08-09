@@ -6262,6 +6262,19 @@ impl TypeChecker {
                                 },
                             );
                         }
+                        // RES-4246: hoist extern fn names alongside
+                        // regular ones so a call that textually precedes
+                        // its `extern` block still resolves. The
+                        // `Node::Extern` arm re-registers them during the
+                        // main walk; both sites are needed because that
+                        // arm only fires for externs the walk reaches,
+                        // and neither alone covers forward references.
+                        Node::Extern { decls, .. } => {
+                            for d in decls {
+                                let (name, ty) = crate::ffi_signatures::binding(d);
+                                self.env.set(name, ty);
+                            }
+                        }
                         Node::TypeAlias { name, target, .. } => {
                             self.type_aliases.insert(name.clone(), target.clone());
                         }
@@ -7520,6 +7533,14 @@ impl TypeChecker {
                             fn_name
                         ));
                     }
+
+                    // RES-4246: bind the declared name. Without this the
+                    // call site fails name resolution — a non-fatal
+                    // diagnostic that also meant arity and argument
+                    // types went unchecked until the trampoline saw
+                    // them at runtime.
+                    let (name, ty) = crate::ffi_signatures::binding(d);
+                    self.env.set(name, ty);
                 }
                 Ok(Type::Void)
             }

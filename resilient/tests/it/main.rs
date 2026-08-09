@@ -99,6 +99,7 @@ mod ensures_refutation_smoke;
 mod examples_golden;
 mod examples_smoke;
 mod explain_effects_cli;
+mod extern_callsite_typecheck;
 mod ffi_comment_copy_smoke;
 mod ffi_docs_callback_copy_smoke;
 mod ffi_docs_string_support_smoke;

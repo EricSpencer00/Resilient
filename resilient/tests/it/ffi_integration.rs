@@ -667,3 +667,37 @@ main(0);"#,
         "10",
     );
 }
+
+// ---------------------------------------------------------------
+// RES-4246: call sites resolve the declared extern name.
+// ---------------------------------------------------------------
+
+#[test]
+fn successful_extern_call_emits_no_undefined_variable_diagnostic() {
+    // The extern name was never bound into the type environment, so a
+    // working call printed `Undefined variable 'rt_add'` to stderr
+    // while still exiting 0 — noise on every FFI program, and proof
+    // that the call site was never type-checked at all.
+    let src = format!(
+        r#"extern "{lib}" {{ fn rt_add(a: Int, b: Int) -> Int; }};
+fn main(int _d) {{
+    println(rt_add(1, 2));
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == "3"),
+        "stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("Undefined variable"),
+        "extern call must not emit a name-resolution diagnostic: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Type error"),
+        "extern call must not emit a type error: {stderr}"
+    );
+}
