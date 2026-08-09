@@ -279,6 +279,11 @@ mod ffi_arrays;
 // RES-4226: `CStr` marshalling and `Int32` width conversion. Always
 // compiled for the same reason as `ffi_arrays`.
 mod ffi_cstr;
+// RES-4246: extern-fn signature → typechecker binding. Always compiled;
+// call sites are checked whether or not the dynamic-loading backend is
+// present, so an arity or argument-type error is a compile error in
+// every build.
+mod ffi_signatures;
 #[cfg(feature = "ffi")]
 mod ffi_trampolines;
 // RES-385: linear-type MVP — helpers for the `linear T` encoding
