@@ -62,10 +62,106 @@ This document is a human-facing summary grouped by category.
 | `leading_zeros(x)` `trailing_zeros(x)` | int → int | RES-907: count of leading / trailing zero bits; both return `64` for input `0` |
 | `to_float(x)` | int → float | explicit coercion |
 | `to_int(x)` | float → int | explicit coercion |
-| `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width |
-| `as_uint8/16/32/64(x)` | int → int | wrapping truncation to unsigned width |
+| `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width — see [Integer width casts](#integer-width-casts) |
+| `as_uint8/16/32/64(x)` | int → int | wrapping truncation to unsigned width — see [Integer width casts](#integer-width-casts) |
 | `random_int(lo, hi)` | (int, int) → int | std-only; SplitMix64 |
 | `random_float()` | () → float | std-only |
+
+### Integer width casts
+
+| Name | Signature | Notes |
+|---|---|---|
+| `as_int8(x)` | int → int | RES-366: two's-complement truncation to 8 signed bits |
+| `as_int16(x)` | int → int | RES-366: two's-complement truncation to 16 signed bits |
+| `as_int32(x)` | int → int | RES-366: two's-complement truncation to 32 signed bits |
+| `as_int64(x)` | int → int | RES-366: identity — `Int` is already 64-bit signed |
+| `as_uint8(x)` | int → int | RES-366: mask to 8 bits, zero-extended |
+| `as_uint16(x)` | int → int | RES-366: mask to 16 bits, zero-extended |
+| `as_uint32(x)` | int → int | RES-366: mask to 32 bits, zero-extended |
+| `as_uint64(x)` | int → int | RES-366: reinterprets the 64-bit pattern; see the `as_uint64` caveat below |
+
+**These casts wrap. They do not saturate, do not clamp, and do not error.**
+An out-of-range input silently becomes a different number — there is no
+diagnostic and no `Result`. If you need range enforcement, add a `requires`
+contract on the caller; the cast itself will never reject anything.
+
+```rz
+fn main() {
+    println(as_uint8(300));    // 44      (300 mod 256)
+    println(as_uint8(-1));     // 255
+    println(as_int8(200));     // -56     (200 exceeds i8::MAX)
+    println(as_int16(40000));  // -25536
+    println(as_uint32(-1));    // 4294967295
+}
+main();
+```
+
+**`as_uint64` caveat.** Resilient's `Int` *is* 64-bit signed, so there is no
+room for an unsigned 64-bit result. `as_uint64` reinterprets the bit pattern
+and hands back the same signed value: `as_uint64(-1)` is `-1`, not
+`18446744073709551615`. It is a no-op in practice — the narrower casts are
+the ones that change anything.
+
+Non-`Int` arguments (a Float, a String) are a runtime error, not a coercion.
+Use `to_int(x)` first.
+
+### Integer radix conversion
+
+| Name | Signature | Notes |
+|---|---|---|
+| `int_to_bin(n)` | int → string | RES-512: base-2 digits, **no `0b` prefix**; negatives are sign-magnitude (`-1010`) |
+| `int_to_hex(n)` | int → string | RES-495: lowercase base-16 digits, **no `0x` prefix**; negatives are sign-magnitude (`-ff`) |
+| `int_to_oct(n)` | int → string | base-8 digits, **no `0o` prefix**; negatives are 64-bit two's complement, *not* sign-magnitude |
+| `int_parse_bin(s)` | string → int | parses base-2; optional `0b`/`0B` prefix; surrounding whitespace trimmed; runtime error on malformed input |
+| `int_parse_hex(s)` | string → int | parses base-16, case-insensitive; optional `0x`/`0X` prefix; surrounding whitespace trimmed; runtime error on malformed input |
+
+```rz
+fn main() {
+    println(int_to_hex(255));       // ff
+    println(int_to_bin(10));        // 1010
+    println(int_to_oct(255));       // 377
+    println(int_parse_hex("0xFF")); // 255
+    println(int_parse_bin("1010")); // 10
+}
+main();
+```
+
+**The formatters emit bare digits.** `int_to_hex(255)` is `"ff"`, not
+`"0xff"` — prepend the prefix yourself if you need one. The parsers are the
+looser side of the pair: they accept the prefix or its absence, so
+`int_parse_hex(int_to_hex(n))` round-trips for `n >= 0`.
+
+**Negative formatting is not uniform across the three.** `int_to_hex` and
+`int_to_bin` print a minus sign followed by the magnitude; `int_to_oct`
+prints the raw 64-bit two's-complement pattern:
+
+```rz
+fn main() {
+    println(int_to_hex(-255));  // -ff
+    println(int_to_bin(-10));   // -1010
+    println(int_to_oct(-255));  // 1777777777777777777401
+}
+main();
+```
+
+Consequently `int_parse_hex(int_to_hex(n))` round-trips negatives, but no
+octal parser round-trips `int_to_oct` output. For an explicit-radix
+formatter across bases 2–36, use `int_to_base(n, base)` and its inverse
+`parse_int_base` instead.
+
+**Malformed parser input is a runtime error, not an `Option`.** Digits
+outside the radix, an empty string, or a value that overflows `Int` all
+abort with a `Runtime error: int_parse_hex: cannot parse …` diagnostic.
+When the input is untrusted, reach for `parse_int_base(s, 16)` instead — it
+returns `Result<Int, String>` and is recoverable:
+
+```rz
+fn main() {
+    println(is_err(parse_int_base("xyz", 16)));  // true
+    println(unwrap(parse_int_base("ff", 16)));   // 255
+}
+main();
+```
 
 ## Time
 
@@ -330,8 +426,8 @@ dispatched via the special StringBuilder method handler in
 | `lcm_array(arr)` | array of int → int | RES-536: lcm reduction over an integer array |
 | `as_f32(x)` | number → float | RES-2618: f32 precision cast |
 | `as_f64(x)` | number → float | RES-2618: f64 precision cast |
-| `as_int8/16/32/64(x)` | int → int | RES-366: wrapping truncation to pinned widths |
-| `as_uint8/16/32/64(x)` | int → int | RES-366: wrapping truncation to unsigned widths |
+| `as_int8/16/32/64(x)` | int → int | RES-366: wrapping truncation to pinned widths — full table under [Integer width casts](#integer-width-casts) |
+| `as_uint8/16/32/64(x)` | int → int | RES-366: wrapping truncation to unsigned widths — full table under [Integer width casts](#integer-width-casts) |
 | `isqrt(n)` | int → int | RES-1124: integer square root |
 | `ipow(base, exp)` | (int, int) → int | RES-1124: integer exponentiation |
 | `ceil_div(a, b)` | (int, int) → int | RES-518: integer division rounding toward +∞ |
