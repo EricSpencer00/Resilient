@@ -2,6 +2,45 @@
 
 Welcome! Resilient is an open project for safety-critical embedded systems. Contributions from both humans and AI agents are first-class. This guide covers the development workflow from setup through submission.
 
+## Contributing as a human — start here
+
+Most of this file documents the automation that AI agents use to claim
+tickets and drive their own PRs to merge. **You do not need any of it.**
+If you are a person who wants to send a patch, the whole process is:
+
+```bash
+git clone https://github.com/EricSpencer00/Resilient.git
+cd Resilient
+cargo test --manifest-path resilient/Cargo.toml   # should be green before you start
+```
+
+1. Find something to work on — [good first issues][gfi] are scoped to a
+   single file with a reproduction and acceptance criteria.
+2. Branch, make your change, add a test.
+3. Before pushing, run the three gates CI will run:
+   ```bash
+   cargo test --manifest-path resilient/Cargo.toml
+   cargo clippy --all-targets -- -D warnings
+   cargo fmt --all --check
+   ```
+4. Open a pull request. **Comment on the issue first if you want it
+   reserved** — otherwise an agent may pick it up in parallel.
+
+[gfi]: https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22
+
+You can ignore `agent-scripts/`, the `integration-synced` and
+`agent-vetted` labels, `ready-or-bail.sh`, and the "Agent Contributors"
+section below — those exist so unattended agents can merge safely without
+a human in the loop. A maintainer will run them for you, or simply merge
+your PR once CI is green. Z3 is optional; you do not need it unless you
+are working on contract verification.
+
+Questions are welcome in [Discussions][disc] or on the issue itself.
+
+[disc]: https://github.com/EricSpencer00/Resilient/discussions
+
+---
+
 ## Table of Contents
 
 - [Development Environment Setup](#development-environment-setup)
@@ -38,6 +77,24 @@ Welcome! Resilient is an open project for safety-critical embedded systems. Cont
 - **Z3 (SMT solver)**: For symbolic contract verification
   - Install: `brew install z3` (macOS) or `apt-get install libz3-dev` (Linux)
   - Compile with: `cargo build --features z3`
+
+  On **macOS**, `brew install z3` alone is not enough: Homebrew does not
+  symlink z3's headers into `/opt/homebrew/include`, so `z3-sys`'s build
+  script fails with ``wrapper.h:1:10: fatal error: 'z3.h' file not found``.
+  Point it at the keg first:
+
+  ```bash
+  Z3_PREFIX="$(brew --prefix z3)"
+  export Z3_SYS_Z3_HEADER="$Z3_PREFIX/include/z3.h"
+  export BINDGEN_EXTRA_CLANG_ARGS="-I$Z3_PREFIX/include"
+  export LIBRARY_PATH="$Z3_PREFIX/lib:${LIBRARY_PATH:-}"
+  export DYLD_FALLBACK_LIBRARY_PATH="$Z3_PREFIX/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+  cargo build --manifest-path resilient/Cargo.toml --features z3
+  ```
+
+  You only need this for local `--features z3` builds; CI installs z3 its
+  own way. **Z3 is optional** — `cargo test` without it is a complete,
+  green build, and the Z3 gate only affects contract-verification work.
 
 - **JIT backend** (advanced feature): the JIT lowers through
   [Cranelift](https://cranelift.dev/), which is a pure-Rust crate — there is

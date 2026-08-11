@@ -4,6 +4,7 @@ version = "1.1.0"
 edition = "2024"
 description = "A programming language designed for extreme reliability in embedded and safety-critical systems"
 authors = ["Eric Spencer"]
+license = "MIT"
 # `examples/*.rz` holds Resilient-language source files, not Rust examples.
 # Disable Cargo's auto-discovery so it doesn't try to build example sidecars
 # or future helper files as Rust examples.
