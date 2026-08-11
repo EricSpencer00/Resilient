@@ -7,60 +7,46 @@
 //! path a deployed instance would.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
+use std::net::TcpStream;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[path = "mcp_smoke_support/mod.rs"]
 mod mcp_smoke_support;
-use mcp_smoke_support::{DEFAULT_READY_DEADLINE, wait_for_health};
+use mcp_smoke_support::{ServerHandle, spawn_with_retry};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
 }
 
-/// Ask the OS for an unused port by binding to `:0`, then dropping the
-/// listener before the server binds it for real. Small TOCTOU race in
-/// theory; fine for a test running in an isolated CI sandbox.
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().unwrap().port()
-}
-
 struct Server {
-    child: Child,
-    port: u16,
+    handle: ServerHandle,
 }
 
 impl Server {
     fn spawn(extra_env: &[(&str, &str)]) -> Self {
-        let port = free_port();
-        let mut cmd = Command::new(bin());
-        cmd.arg("mcp")
-            .arg("--http-port")
-            .arg(format!("127.0.0.1:{port}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        for (k, v) in extra_env {
-            cmd.env(k, v);
-        }
-        let child = cmd.spawn().expect("failed to spawn rz mcp --http-port");
-        let server = Server { child, port };
-        server.wait_ready();
-        server
+        let handle = spawn_with_retry(|port| {
+            let mut cmd = Command::new(bin());
+            cmd.arg("mcp")
+                .arg("--http-port")
+                .arg(format!("127.0.0.1:{port}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped());
+            for (k, v) in extra_env {
+                cmd.env(k, v);
+            }
+            cmd.spawn()
+        })
+        .unwrap_or_else(|err| panic!("{err}"));
+        Server { handle }
     }
 
-    /// RES-4224: gate on a full `/health` round-trip rather than a bare TCP
-    /// connect, so a request issued right after `spawn` cannot land before
-    /// the request-handling loop behind the listener is live.
-    fn wait_ready(&self) {
-        if let Err(err) = wait_for_health(self.port, DEFAULT_READY_DEADLINE) {
-            panic!("server on port {} never became ready: {err}", self.port);
-        }
+    fn port(&self) -> u16 {
+        self.handle.port
     }
 
     fn take_stderr(&mut self) -> std::process::ChildStderr {
-        self.child.stderr.take().expect("stderr was piped")
+        self.handle.child.stderr.take().expect("stderr was piped")
     }
 
     /// Send SIGTERM to the child process (Unix only — this whole hardening
@@ -69,7 +55,7 @@ impl Server {
     #[cfg(unix)]
     fn terminate(&self) {
         unsafe {
-            libc_kill(self.child.id() as i32, 15 /* SIGTERM */);
+            libc_kill(self.handle.child.id() as i32, 15 /* SIGTERM */);
         }
     }
 }
@@ -86,8 +72,8 @@ unsafe extern "C" {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.handle.child.kill();
+        let _ = self.handle.child.wait();
     }
 }
 
@@ -104,7 +90,7 @@ impl Drop for Server {
 /// across SIGTERM is drained rather than dropped (a silent retry would
 /// reconnect and hide exactly the regression it exists to catch). The
 /// startup race those helpers guard against is handled once, up front, by
-/// `Server::wait_ready`.
+/// `spawn_with_retry`, which does not return until `/health` has answered.
 fn http_call(port: u16, method: &str, path: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to MCP HTTP server");
     stream
@@ -156,7 +142,7 @@ fn concurrent_requests_overlap() {
         ("RESILIENT_MCP_MAX_CONNECTIONS", "4"),
         ("RESILIENT_MCP_TIMEOUT_SECS", "30"),
     ]);
-    let port = server.port;
+    let port = server.port();
     let body = slow_call_body();
 
     // Time one request alone to establish a per-request baseline.
@@ -196,7 +182,7 @@ fn concurrent_requests_overlap() {
 fn log_line_shape_has_expected_fields() {
     let mut server = Server::spawn(&[]);
     let stderr = server.take_stderr();
-    let port = server.port;
+    let port = server.port();
 
     let resp = http_call(port, "GET", "/health", "");
     assert_eq!(status_of(&resp), "200", "health check failed: {resp}");
@@ -238,7 +224,7 @@ fn shutdown_drains_in_flight_request() {
         ("RESILIENT_MCP_TIMEOUT_SECS", "30"),
         ("RESILIENT_MCP_SHUTDOWN_DRAIN_SECS", "20"),
     ]);
-    let port = server.port;
+    let port = server.port();
     let body = slow_call_body();
 
     // Kick off a slow request in the background, give it a moment to be
@@ -262,7 +248,7 @@ fn shutdown_drains_in_flight_request() {
     // needed here.
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        match server.child.try_wait().expect("try_wait") {
+        match server.handle.child.try_wait().expect("try_wait") {
             Some(status) => {
                 assert!(status.success(), "server exited non-zero: {status:?}");
                 break;

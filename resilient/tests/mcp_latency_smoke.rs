@@ -20,13 +20,12 @@
 //! report (p95, min/max, per-tool breakdown) across many warmup/sample
 //! counts, use `benchmarks/mcp_latency/run.sh` instead.
 
-use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[path = "mcp_smoke_support/mod.rs"]
 mod mcp_smoke_support;
-use mcp_smoke_support::{DEFAULT_READY_DEADLINE, send_request_retrying, wait_for_health};
+use mcp_smoke_support::{ServerHandle, send_request_retrying, spawn_with_retry};
 
 /// The SLA this test enforces (matches the Live MCP Server initiative's
 /// stated <2s success metric, #3934).
@@ -42,38 +41,34 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
 }
 
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().unwrap().port()
-}
-
 struct Server {
-    child: Child,
-    port: u16,
+    handle: ServerHandle,
 }
 
 impl Server {
     fn spawn() -> Self {
-        let port = free_port();
-        let child = Command::new(bin())
-            .arg("mcp")
-            .arg("--http-port")
-            .arg(format!("127.0.0.1:{port}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to spawn rz mcp --http-port");
-        let server = Server { child, port };
-        wait_for_health(port, DEFAULT_READY_DEADLINE)
-            .unwrap_or_else(|err| panic!("server on port {} never became healthy: {err}", port));
-        server
+        let handle = spawn_with_retry(|port| {
+            Command::new(bin())
+                .arg("mcp")
+                .arg("--http-port")
+                .arg(format!("127.0.0.1:{port}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        })
+        .unwrap_or_else(|err| panic!("{err}"));
+        Server { handle }
+    }
+
+    fn port(&self) -> u16 {
+        self.handle.port
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.handle.child.kill();
+        let _ = self.handle.child.wait();
     }
 }
 
@@ -163,7 +158,7 @@ fn assert_median_under_sla(label: &str, mut durations: Vec<Duration>) {
 #[test]
 fn health_check_latency_stays_under_sla() {
     let server = Server::spawn();
-    let port = server.port;
+    let port = server.port();
 
     // Warm up: first request(s) after spawn can be slower (page faults,
     // lazy init) and would otherwise pollute the sample.
@@ -181,7 +176,7 @@ fn health_check_latency_stays_under_sla() {
 #[test]
 fn rz_parse_latency_stays_under_sla() {
     let server = Server::spawn();
-    let port = server.port;
+    let port = server.port();
     let body = tool_call_body("rz_parse");
 
     let _ = http_call(port, "POST", "/mcp/call", &body);
@@ -199,7 +194,7 @@ fn rz_parse_latency_stays_under_sla() {
 #[test]
 fn rz_typecheck_latency_stays_under_sla() {
     let server = Server::spawn();
-    let port = server.port;
+    let port = server.port();
     let body = tool_call_body("rz_typecheck");
 
     let _ = http_call(port, "POST", "/mcp/call", &body);
@@ -217,7 +212,7 @@ fn rz_typecheck_latency_stays_under_sla() {
 #[test]
 fn rz_run_latency_stays_under_sla() {
     let server = Server::spawn();
-    let port = server.port;
+    let port = server.port();
     let body = tool_call_body("rz_run");
 
     let _ = http_call(port, "POST", "/mcp/call", &body);

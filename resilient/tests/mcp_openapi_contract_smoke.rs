@@ -17,50 +17,41 @@
 mod mcp_smoke_support;
 
 use serde_json::Value;
-use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
 }
 
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().unwrap().port()
-}
-
 struct Server {
-    child: Child,
-    port: u16,
+    handle: mcp_smoke_support::ServerHandle,
 }
 
 impl Server {
     fn spawn() -> Self {
-        let port = free_port();
-        let child = Command::new(bin())
-            .arg("mcp")
-            .arg("--http-port")
-            .arg(format!("127.0.0.1:{port}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to spawn rz mcp --http-port");
-        let server = Server { child, port };
-        if let Err(err) = mcp_smoke_support::wait_for_health(
-            server.port,
-            mcp_smoke_support::DEFAULT_READY_DEADLINE,
-        ) {
-            panic!("{err}");
-        }
-        server
+        let handle = mcp_smoke_support::spawn_with_retry(|port| {
+            Command::new(bin())
+                .arg("mcp")
+                .arg("--http-port")
+                .arg(format!("127.0.0.1:{port}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        })
+        .unwrap_or_else(|err| panic!("{err}"));
+        Server { handle }
+    }
+
+    fn port(&self) -> u16 {
+        self.handle.port
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.handle.child.kill();
+        let _ = self.handle.child.wait();
     }
 }
 
@@ -115,7 +106,7 @@ fn openapi_doc_describes_health_and_mcp_call() {
 #[test]
 fn health_response_matches_schema() {
     let server = Server::spawn();
-    let (status, body) = http_call(server.port, "GET", "/health", "");
+    let (status, body) = http_call(server.port(), "GET", "/health", "");
     assert_eq!(status, 200);
 
     let doc = openapi_doc();
@@ -142,7 +133,7 @@ fn mcp_call_success_response_matches_schema() {
         "input": { "source": "println(42)" }
     })
     .to_string();
-    let (status, body) = http_call(server.port, "POST", "/mcp/call", &req_body);
+    let (status, body) = http_call(server.port(), "POST", "/mcp/call", &req_body);
     assert_eq!(status, 200, "unexpected status, body={body}");
 
     let doc = openapi_doc();
@@ -164,7 +155,7 @@ fn mcp_call_success_response_matches_schema() {
 #[test]
 fn mcp_call_missing_tool_matches_error_schema() {
     let server = Server::spawn();
-    let (status, body) = http_call(server.port, "POST", "/mcp/call", "{}");
+    let (status, body) = http_call(server.port(), "POST", "/mcp/call", "{}");
     assert_eq!(status, 400);
 
     let doc = openapi_doc();
@@ -184,7 +175,7 @@ fn mcp_call_missing_tool_matches_error_schema() {
 #[test]
 fn unsupported_route_matches_error_schema_and_404() {
     let server = Server::spawn();
-    let (status, body) = http_call(server.port, "GET", "/no-such-route", "");
+    let (status, body) = http_call(server.port(), "GET", "/no-such-route", "");
     assert_eq!(status, 404);
     assert_eq!(body["status"], "error");
     assert!(
