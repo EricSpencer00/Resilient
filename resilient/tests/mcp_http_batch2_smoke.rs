@@ -11,6 +11,10 @@ use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "mcp_smoke_support/mod.rs"]
+mod mcp_smoke_support;
+use mcp_smoke_support::{DEFAULT_READY_DEADLINE, wait_for_health};
+
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
 }
@@ -46,16 +50,12 @@ impl Server {
         server
     }
 
+    /// RES-4224: gate on a full `/health` round-trip rather than a bare TCP
+    /// connect, so a request issued right after `spawn` cannot land before
+    /// the request-handling loop behind the listener is live.
     fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
-            }
-            if Instant::now() > deadline {
-                panic!("server on port {} never became ready", self.port);
-            }
-            std::thread::sleep(Duration::from_millis(25));
+        if let Err(err) = wait_for_health(self.port, DEFAULT_READY_DEADLINE) {
+            panic!("server on port {} never became ready: {err}", self.port);
         }
     }
 
@@ -93,6 +93,18 @@ impl Drop for Server {
 
 /// Build and send a raw HTTP/1.1 request over `stream`, returning the
 /// full response text. No dependency on an HTTP client crate.
+///
+/// RES-4224: deliberately does *not* go through
+/// `mcp_smoke_support::send_request_retrying`, unlike the other MCP smoke
+/// tests. Both assertions in this file are about the timing and fate of an
+/// individual connection: `concurrent_requests_overlap` compares measured
+/// wall-clock against a solo baseline (a silent retry would inflate the
+/// measurement and invert the conclusion), and
+/// `shutdown_drains_in_flight_request` asserts that a connection open
+/// across SIGTERM is drained rather than dropped (a silent retry would
+/// reconnect and hide exactly the regression it exists to catch). The
+/// startup race those helpers guard against is handled once, up front, by
+/// `Server::wait_ready`.
 fn http_call(port: u16, method: &str, path: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to MCP HTTP server");
     stream

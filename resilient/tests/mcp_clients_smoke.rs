@@ -4,10 +4,13 @@
 //! (same pattern as `mcp_openapi_contract_smoke.rs`).
 
 use serde_json::Value;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[path = "mcp_smoke_support/mod.rs"]
+mod mcp_smoke_support;
+use mcp_smoke_support::{DEFAULT_READY_DEADLINE, send_request_retrying, wait_for_health};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
@@ -39,16 +42,13 @@ impl Server {
         server
     }
 
+    /// RES-4224: gate on a full `/health` round-trip, not a bare TCP
+    /// connect. The listener starts accepting before the request-handling
+    /// loop behind it is live, so a successful connect is not evidence
+    /// that the next request will survive to a response.
     fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
-            }
-            if Instant::now() > deadline {
-                panic!("server on port {} never became ready", self.port);
-            }
-            std::thread::sleep(Duration::from_millis(25));
+        if let Err(err) = wait_for_health(self.port, DEFAULT_READY_DEADLINE) {
+            panic!("server on port {} never became ready: {err}", self.port);
         }
     }
 }
@@ -61,17 +61,17 @@ impl Drop for Server {
 }
 
 fn http_call(port: u16, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to MCP HTTP server");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(request.as_bytes()).unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
+    let response = send_request_retrying(
+        port,
+        &request,
+        Duration::from_secs(15),
+        DEFAULT_READY_DEADLINE,
+    )
+    .unwrap_or_else(|err| panic!("{method} {path} on port {port}: {err}"));
 
     let status = response
         .lines()
