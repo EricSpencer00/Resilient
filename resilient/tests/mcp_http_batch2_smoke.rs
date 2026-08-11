@@ -25,7 +25,7 @@ struct Server {
 
 impl Server {
     fn spawn(extra_env: &[(&str, &str)]) -> Self {
-        let handle = spawn_with_retry(|port| {
+        let handle = match spawn_with_retry(|port| {
             let mut cmd = Command::new(bin());
             cmd.arg("mcp")
                 .arg("--http-port")
@@ -36,8 +36,10 @@ impl Server {
                 cmd.env(k, v);
             }
             cmd.spawn()
-        })
-        .unwrap_or_else(|err| panic!("{err}"));
+        }) {
+            Ok(handle) => handle,
+            Err(err) => panic!("{err}"),
+        };
         Server { handle }
     }
 

@@ -30,7 +30,7 @@ struct Server {
 
 impl Server {
     fn spawn() -> Self {
-        let handle = mcp_smoke_support::spawn_with_retry(|port| {
+        let handle = match mcp_smoke_support::spawn_with_retry(|port| {
             Command::new(bin())
                 .arg("mcp")
                 .arg("--http-port")
@@ -38,8 +38,10 @@ impl Server {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
-        })
-        .unwrap_or_else(|err| panic!("{err}"));
+        }) {
+            Ok(handle) => handle,
+            Err(err) => panic!("{err}"),
+        };
         Server { handle }
     }
 
