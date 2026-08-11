@@ -38,6 +38,46 @@
 
 Resilient is a statically-typed compiled language for **safety-critical embedded systems** — Z3-verified function contracts (`requires` / `ensures`) discharged at compile time, a `#![no_std]` runtime that cross-compiles to Cortex-M and RISC-V bare metal, and self-healing `live { }` blocks that recover from transient hardware faults. Compare it to [Rust embedded](https://ericspencer.us/Resilient/compare/rust-vs-resilient), [Ada / SPARK](https://ericspencer.us/Resilient/compare/ada-spark-vs-resilient), and [MISRA C](https://ericspencer.us/Resilient/compare/misra-c-vs-resilient), or read the [DO-178C](https://ericspencer.us/Resilient/standards/do-178c), [ISO 26262](https://ericspencer.us/Resilient/standards/iso-26262), and [IEC 62304](https://ericspencer.us/Resilient/standards/iec-62304) standards mappings.
 
+## Try it in 60 seconds
+
+```bash
+git clone https://github.com/EricSpencer00/Resilient.git
+cd Resilient
+cargo build --manifest-path resilient/Cargo.toml      # stable Rust 1.85+, no other deps
+
+cat > hello.rz <<'EOF'
+fn main() {
+    println("Hello, Resilient!");
+    return 0;
+}
+main();
+EOF
+
+./resilient/target/debug/rz hello.rz
+```
+
+Expect **warnings on a program this small — that is the language working, not an error**:
+
+```
+hello.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified)
+                                   — add `requires`/`ensures` contracts to improve resilience
+hello.rz:0:0: warning[mutation]: 2/2 mutation site(s) (100%) are in functions with no
+                                 contracts — the Z3 verifier cannot kill them
+Hello, Resilient!
+```
+
+Resilient grades every function on how much of it is actually *proven*. An
+uncontracted `main` scores an F by design. Add a contract and the grade
+moves. Nothing here needs Z3 installed — [SMT-backed verification](#smt-backed-verification-optional)
+is optional and layers on top.
+
+**Want to help?** [Good first issues][gfi] are scoped to a single file with a
+reproduction and acceptance criteria, and [CONTRIBUTING.md](CONTRIBUTING.md)
+opens with a human-sized path (clone → test → branch → PR). Contributions from
+humans *and* AI agents are first-class.
+
+[gfi]: https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22
+
 ## Trust model
 
 Resilient treats AI-written code as **untrusted input** to a trusted
