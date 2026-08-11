@@ -62,8 +62,9 @@ section only if you are certain there is no such trap._
 
 _At least one must be a literal command someone can run._
 
-- [ ] _e.g. `cargo test --manifest-path resilient/Cargo.toml --test it examples_golden` is green_
-- [ ] _Criterion 2 — something observable, not a description of effort_
+- [ ] _e.g. `cargo test --manifest-path resilient/Cargo.toml --test it` is green_
+- [ ] _Criterion 2 — something observable, e.g. "`foo.rz` example runs and
+      matches its `.expected.txt`" — not a description of effort_
 - [ ] _Criterion 3_
 
 ## Hints for the contributor
