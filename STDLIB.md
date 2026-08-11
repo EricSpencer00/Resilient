@@ -405,10 +405,32 @@ the same immutable-value semantics (each mutation returns a new map).
 | Name | Signature | Notes |
 |---|---|---|
 | `StringBuilder_new()` | () → StringBuilder | construct an empty builder |
+| `StringBuilder_new(capacity)` | Int → StringBuilder | legacy capacity-capped form; capacity must be >= 0 |
 
-Methods on a builder (`b.append(x)`, `b.to_string()`, etc.) are
-dispatched via the special StringBuilder method handler in
-`CallExpression` evaluation.
+Methods on a builder are dispatched via the special StringBuilder method
+handler in `CallExpression` evaluation, so they do not appear in the
+`BUILTINS` table:
+
+| Method | Signature | Notes |
+|---|---|---|
+| `b.append(s)` | String → void | append text |
+| `b.append_int(n)` | Int → void | append an integer as text |
+| `b.append_float(f)` | Float → void | append a float as text |
+| `b.append_char(cp)` | Int → void | append one Unicode codepoint |
+| `b.append_line(s)` | String → void | append text plus a newline |
+| `b.len()` | () → Int | current byte length |
+| `b.remaining()` | () → Int | bytes left before a capacity-capped builder overflows |
+| `b.clear()` | () → void | reset to empty |
+| `b.to_string()` | () → String | materialize the final string |
+| `b.build()` | () → Result<String, String> | like `to_string()`, but `Err("capacity exceeded")` instead of trapping |
+
+```rust
+let sb = StringBuilder_new();
+sb.append("hello");
+sb.append_int(42);
+sb.append_line(" world");
+let out = sb.to_string();
+```
 
 ---
 
