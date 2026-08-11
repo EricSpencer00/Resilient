@@ -140,7 +140,14 @@ for f in "${MODIFIED_FILES[@]}"; do
     resilient/tests/*.rs|resilient-runtime/tests/*.rs|fuzz/fuzz_targets/*)
       # Count assertion/test-fn lines added vs removed in the diff.
       # If more were removed than added, the test got weaker.
-      ASSERT_RX='^[+-][[:space:]]*(#\[test\]|#\[should_panic|assert(_eq|_ne)?!|panic!)'
+      # RES-4224: match the assertion token anywhere on the line, not only
+      # immediately after the leading whitespace. Anchoring to line-start
+      # meant a `panic!` in a match arm (`Err(err) => panic!(...)`), a
+      # closure (`.unwrap_or_else(|e| panic!(...))`), or any wrapped
+      # assertion counted as removed-but-never-added — so refactoring a
+      # bare `panic!` statement into an equivalent match arm read as
+      # "weakens existing test" with no override available.
+      ASSERT_RX='^[+-].*(#\[test\]|#\[should_panic|assert(_eq|_ne)?!|panic!)'
       ADDED_ASSERTS=$(git diff "${BASE}...${HEAD}" -- "$f" 2>/dev/null \
                        | grep -E "$ASSERT_RX" | grep -cE '^\+' || true)
       REMOVED_ASSERTS=$(git diff "${BASE}...${HEAD}" -- "$f" 2>/dev/null \

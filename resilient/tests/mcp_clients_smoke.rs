@@ -4,74 +4,64 @@
 //! (same pattern as `mcp_openapi_contract_smoke.rs`).
 
 use serde_json::Value;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+#[path = "mcp_smoke_support/mod.rs"]
+mod mcp_smoke_support;
+use mcp_smoke_support::{
+    DEFAULT_READY_DEADLINE, ServerHandle, send_request_retrying, spawn_with_retry,
+};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
 }
 
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().unwrap().port()
-}
-
 struct Server {
-    child: Child,
-    port: u16,
+    handle: ServerHandle,
 }
 
 impl Server {
     fn spawn() -> Self {
-        let port = free_port();
-        let child = Command::new(bin())
-            .arg("mcp")
-            .arg("--http-port")
-            .arg(format!("127.0.0.1:{port}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to spawn rz mcp --http-port");
-        let server = Server { child, port };
-        server.wait_ready();
-        server
+        let handle = match spawn_with_retry(|port| {
+            Command::new(bin())
+                .arg("mcp")
+                .arg("--http-port")
+                .arg(format!("127.0.0.1:{port}"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        }) {
+            Ok(handle) => handle,
+            Err(err) => panic!("{err}"),
+        };
+        Server { handle }
     }
 
-    fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
-            }
-            if Instant::now() > deadline {
-                panic!("server on port {} never became ready", self.port);
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
+    fn port(&self) -> u16 {
+        self.handle.port
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.handle.child.kill();
+        let _ = self.handle.child.wait();
     }
 }
 
 fn http_call(port: u16, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to MCP HTTP server");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(request.as_bytes()).unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
+    let response = send_request_retrying(
+        port,
+        &request,
+        Duration::from_secs(15),
+        DEFAULT_READY_DEADLINE,
+    )
+    .unwrap_or_else(|err| panic!("{method} {path} on port {port}: {err}"));
 
     let status = response
         .lines()
@@ -155,7 +145,7 @@ fn documented_calls() -> Vec<(&'static str, Value)> {
 #[test]
 fn health_endpoint_matches_documented_example() {
     let server = Server::spawn();
-    let (status, body) = http_call(server.port, "GET", "/health", "");
+    let (status, body) = http_call(server.port(), "GET", "/health", "");
     assert_eq!(status, 200);
     assert_eq!(body["status"], "ok");
     assert_eq!(body["service"], "resilient-mcp");
@@ -172,7 +162,7 @@ fn every_documented_tool_call_succeeds() {
     let server = Server::spawn();
     for (tool, input) in documented_calls() {
         let req_body = serde_json::json!({"tool": tool, "input": input}).to_string();
-        let (status, body) = http_call(server.port, "POST", "/mcp/call", &req_body);
+        let (status, body) = http_call(server.port(), "POST", "/mcp/call", &req_body);
         assert_eq!(status, 200, "tool {tool} unexpected status, body={body}");
         assert!(
             body["status"] == "ok" || body["status"] == "error",
@@ -197,7 +187,7 @@ fn resilient_verify_documented_call_is_handled() {
         "input": {"source": "fn div(int x, int y) -> int\n  requires y != 0\n{ x / y }"}
     })
     .to_string();
-    let (status, body) = http_call(server.port, "POST", "/mcp/call", &req_body);
+    let (status, body) = http_call(server.port(), "POST", "/mcp/call", &req_body);
     assert_eq!(status, 200, "unexpected status, body={body}");
     assert_eq!(body["tool"], "rz_verify");
 }
