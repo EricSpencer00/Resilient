@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Resilient"
+abstract: "A statically-typed compiled language for safety-critical embedded systems, with Z3-verified function contracts, a no_std runtime targeting Cortex-M and RISC-V, and self-healing runtime blocks."
+type: software
+authors:
+  - family-names: Spencer
+    given-names: Eric
+    affiliation: "Loyola University Chicago"
+    website: "https://ericspencer.us"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"  # add once the iD is registered
+repository-code: "https://github.com/EricSpencer00/Resilient"
+url: "https://ericspencer.us"
+license: MIT
+version: "1.5.3"
+date-released: "2026-08-18"
