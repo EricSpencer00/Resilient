@@ -146,6 +146,10 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
 
     // Validate dependency constraint syntax
     for (dep, constraint) in &manifest.dependencies {
+        if validate_runtime_dependency(dep, constraint, source_dir, source_path, &mut errors) {
+            continue;
+        }
+
         let (_, base) = parse_constraint(constraint);
         if !is_valid_semver(&base) {
             errors.push(format!(
@@ -357,6 +361,157 @@ utils = "latest"
         let (prog, _) = crate::parse("fn main() {}");
         let result = check(&prog, src_path.to_str().unwrap());
         assert!(result.is_err(), "expected error for invalid constraint");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_reports_malformed_dependency_table() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_malformed_table");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[dependencies]
+utils = { version = "1.0.0" }
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+
+        let err = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.contains("malformed dependency `utils`"), "{err}");
+        assert!(err.contains("expected `path` or `git` key"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_reports_missing_path_dependency_root() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_path_missing_root");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[dependencies]
+utils = { path = "vendor/utils" }
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+
+        let err = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.contains("path dependency `utils` not found"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_reports_path_dependency_missing_manifest() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_path_missing_manifest");
+        let dep_dir = dir.join("vendor/utils");
+        std::fs::create_dir_all(dep_dir.join("src")).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[dependencies]
+utils = { path = "vendor/utils" }
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+
+        let err = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.contains("path dependency `utils`"), "{err}");
+        assert!(err.contains("no resilient.toml"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_reports_path_dependency_missing_src_directory() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_path_missing_src");
+        let dep_dir = dir.join("vendor/utils");
+        std::fs::create_dir_all(&dep_dir).unwrap();
+        std::fs::write(
+            dep_dir.join("resilient.toml"),
+            "[package]\nname = \"utils\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[dependencies]
+utils = { path = "vendor/utils" }
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+
+        let err = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.contains("path dependency `utils`"), "{err}");
+        assert!(err.contains("has no src/ directory"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_reports_git_dependency_without_url() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_git_empty_url");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[dependencies]
+utils = { git = "", rev = "abc123" }
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+
+        let err = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.contains("git dependency `utils` has empty `git` URL"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_reports_unpinned_git_dependency() {
+        let dir = std::env::temp_dir().join("__resilient_pkg_git_unpinned");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[dependencies]
+utils = { git = "https://example.invalid/utils.git" }
+"#;
+        std::fs::write(dir.join("rz.toml"), manifest).unwrap();
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, b"fn main() {}").unwrap();
+        let (prog, _) = crate::parse("fn main() {}");
+
+        let err = check(&prog, src_path.to_str().unwrap()).unwrap_err();
+
+        assert!(
+            err.contains("git dependency `utils` must specify `rev`, `tag`, or `branch`"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
