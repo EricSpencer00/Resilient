@@ -84,10 +84,7 @@ fn is_interactive(example: &Path) -> bool {
 }
 
 fn is_intentionally_ungoldened(example: &Path) -> bool {
-    let name = example
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let name = example.file_name().and_then(|s| s.to_str()).unwrap_or("");
     INTENTIONALLY_UNGOLDENED.iter().any(|(n, _)| *n == name)
 }
 
