@@ -28661,7 +28661,7 @@ impl Interpreter {
                 // takes precedence (defer errors are discarded to avoid
                 // masking the original cause).
                 let deferred: Vec<(Node, Environment)> =
-                    interpreter.defer_stack.drain(..).collect();
+                    std::mem::take(&mut interpreter.defer_stack);
                 let mut first_defer_err: Option<String> = None;
                 for (deferred_expr, captured_env) in deferred.into_iter().rev() {
                     let saved = std::mem::replace(&mut interpreter.env, captured_env);
