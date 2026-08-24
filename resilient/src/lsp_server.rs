@@ -2241,7 +2241,9 @@ fn semantic_tokens_capability() -> SemanticTokensServerCapabilities {
 /// the flat u32 stream on the wire — we just need to round-trip
 /// through the struct form.
 fn semantic_tokens_from_wire(wire: Vec<u32>) -> Vec<SemanticToken> {
-    wire.chunks_exact(5)
+    wire.as_chunks::<5>()
+        .0
+        .iter()
         .map(|c| SemanticToken {
             delta_line: c[0],
             delta_start: c[1],
