@@ -1,21 +1,38 @@
 //! Golden-file tests for example programs.
 //!
-//! For every `examples/<name>.rs` that has a sibling
+//! For every `examples/<name>.rz` that has a sibling
 //! `examples/<name>.expected.txt`, this test runs the compiled
 //! `resilient` binary against it and asserts that combined stdout
 //! (plus the CLI's trailing "Program executed successfully" line)
 //! matches the expected file byte-for-byte after trimming trailing
 //! whitespace.
 //!
-//! Examples without a sibling expected-file are skipped and named in
-//! the failure output of `missing_expected_files_are_intentional` —
-//! that test is itself ignored, so missing files don't break CI; they
-//! simply show up as a line under `cargo test -- --ignored` for the
-//! manager to triage.
+//! Examples without a sibling expected-file must be accounted for:
+//! either a `<name>.interactive` marker (RES-144), or an entry in
+//! `INTENTIONALLY_UNGOLDENED` with a one-line rationale. The
+//! `missing_expected_files_are_intentional` test enforces this in CI.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Examples that intentionally lack a golden sidecar and are not
+/// interactive. Each entry is `(filename, why)` — `why` is required so
+/// the allowlist cannot accumulate unexplained exceptions.
+///
+/// Every name here must still exist on disk and must still lack both a
+/// `.expected.txt` and a `.interactive` marker; otherwise the audit
+/// test fails (stale entry).
+const INTENTIONALLY_UNGOLDENED: &[(&str, &str)] = &[
+    // Negative visibility-boundary case: expected to fail typechecking
+    // (non-pub `hidden` must not be imported). Asserted by a dedicated
+    // `#[test]` in `tests/it/examples_smoke.rs`, not the golden-success
+    // harness. Rationale also documented at the top of the .rz file.
+    (
+        "visibility_boundary_neg.rz",
+        "negative typecheck case; asserted by examples_smoke, not golden success",
+    ),
+];
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
@@ -64,6 +81,14 @@ fn is_interactive(example: &Path) -> bool {
     example
         .with_file_name(format!("{stem}.interactive"))
         .exists()
+}
+
+fn is_intentionally_ungoldened(example: &Path) -> bool {
+    let name = example
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    INTENTIONALLY_UNGOLDENED.iter().any(|(n, _)| *n == name)
 }
 
 fn run(example: &Path) -> String {
@@ -133,19 +158,52 @@ fn golden_outputs_match() {
     );
 }
 
-/// Report which examples lack an `.expected.txt` sibling. Ignored by
-/// default so CI stays green, but surfaces work for the manager to
-/// triage:
+/// Every example without a golden sidecar must be intentional: either
+/// marked `.interactive` (RES-144) or listed in
+/// `INTENTIONALLY_UNGOLDENED` with a rationale.
 ///
-///     cargo test -- --ignored missing_expected_files
+/// Also rejects stale allowlist entries (name missing on disk, or the
+/// example now has a sidecar / interactive marker).
 #[test]
-#[ignore]
 fn missing_expected_files_are_intentional() {
-    let missing: Vec<_> = list_examples()
+    let examples = list_examples();
+    let on_disk: std::collections::HashSet<String> = examples
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(str::to_owned))
+        .collect();
+
+    // Stale allowlist: every entry must exist and still lack a golden.
+    let mut stale = Vec::new();
+    for (name, _why) in INTENTIONALLY_UNGOLDENED {
+        if !on_disk.contains(*name) {
+            stale.push(format!(
+                "{name}: listed in INTENTIONALLY_UNGOLDENED but not present under examples/"
+            ));
+            continue;
+        }
+        let path = examples_dir().join(name);
+        if is_interactive(&path) {
+            stale.push(format!(
+                "{name}: allowlisted but has a .interactive marker — drop the allowlist entry"
+            ));
+        }
+        if expected_path(&path).exists() {
+            stale.push(format!(
+                "{name}: allowlisted but now has a .expected.txt sidecar — drop the allowlist entry"
+            ));
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "stale INTENTIONALLY_UNGOLDENED entries:\n  {}",
+        stale.join("\n  ")
+    );
+
+    let missing: Vec<_> = examples
         .into_iter()
-        // RES-144: interactive examples intentionally have no
-        // `.expected.txt` — they're exempt from the audit.
-        .filter(|p| !is_interactive(p) && !expected_path(p).exists())
+        .filter(|p| {
+            !is_interactive(p) && !expected_path(p).exists() && !is_intentionally_ungoldened(p)
+        })
         .collect();
     if !missing.is_empty() {
         let names: Vec<_> = missing
@@ -153,7 +211,12 @@ fn missing_expected_files_are_intentional() {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         panic!(
-            "{} example(s) have no .expected.txt sidecar:\n  {}",
+            "{} example(s) have no .expected.txt sidecar and are not accounted for.\n\
+             Resolve each by one of:\n\
+               1. add examples/<name>.expected.txt (capture real rz stdout)\n\
+               2. add examples/<name>.interactive (RES-144 opt-out)\n\
+               3. add to INTENTIONALLY_UNGOLDENED with a one-line why\n\
+             Unaccounted:\n  {}",
             names.len(),
             names.join("\n  ")
         );
