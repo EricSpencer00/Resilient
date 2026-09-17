@@ -41,6 +41,17 @@ Health check:
 curl http://127.0.0.1:8080/health
 ```
 
+Readiness check:
+
+```sh
+curl http://127.0.0.1:8080/readyz
+```
+
+`/health` is the liveness probe and stays healthy as long as the process is
+accepting connections. `/readyz` is the routing probe: it returns `200` for a
+Z3-enabled build and `503` when the optional Z3 verification backend is not
+compiled in.
+
 Tool call:
 
 ```sh
@@ -143,6 +154,23 @@ Returns:
   "version": "<rz version>"
 }
 ```
+
+### `GET /readyz`
+
+Returns `200 OK` when the build is ready to serve verification requests:
+
+```json
+{
+  "status": "ready",
+  "service": "resilient-mcp",
+  "transport": "http",
+  "z3": "available",
+  "version": "<rz version>"
+}
+```
+
+Without the `z3` feature, the same endpoint returns `503 Service Unavailable`
+with `"status": "not_ready"`, `"z3": "unavailable"`, and an `error` string.
 
 ### `POST /mcp/call`
 

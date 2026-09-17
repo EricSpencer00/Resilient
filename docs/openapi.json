@@ -26,6 +26,31 @@
         }
       }
     },
+    "/readyz": {
+      "get": {
+        "summary": "Readiness check",
+        "description": "Returns 200 when the build includes the Z3 verification backend and 503 when it does not. Use /health for liveness and /readyz for routing decisions.",
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "description": "Process is ready for verification requests",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReadyResponse" }
+              }
+            }
+          },
+          "503": {
+            "description": "Optional Z3 verification backend is unavailable",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotReadyResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/metrics": {
       "get": {
         "summary": "Prometheus metrics",
@@ -118,6 +143,29 @@
           "status": { "type": "string", "enum": ["ok"] },
           "service": { "type": "string", "enum": ["resilient-mcp"] },
           "transport": { "type": "string", "enum": ["http"] },
+          "version": { "type": "string" }
+        }
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "required": ["status", "service", "transport", "z3", "version"],
+        "properties": {
+          "status": { "type": "string", "enum": ["ready"] },
+          "service": { "type": "string", "enum": ["resilient-mcp"] },
+          "transport": { "type": "string", "enum": ["http"] },
+          "z3": { "type": "string", "enum": ["available"] },
+          "version": { "type": "string" }
+        }
+      },
+      "NotReadyResponse": {
+        "type": "object",
+        "required": ["status", "service", "transport", "z3", "error", "version"],
+        "properties": {
+          "status": { "type": "string", "enum": ["not_ready"] },
+          "service": { "type": "string", "enum": ["resilient-mcp"] },
+          "transport": { "type": "string", "enum": ["http"] },
+          "z3": { "type": "string", "enum": ["unavailable"] },
+          "error": { "type": "string" },
           "version": { "type": "string" }
         }
       },

@@ -42,7 +42,7 @@ curl -s http://127.0.0.1:8080/mcp/call \
   -d '{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}'
 ```
 
-The wrapper exposes `GET /health`, `GET /metrics`, and `POST /mcp/call`. Tool names may use
+The wrapper exposes `GET /health`, `GET /readyz`, `GET /metrics`, and `POST /mcp/call`. Tool names may use
 the hosted aliases from RES-3782 (`rz_compile`, `rz_format`, `rz_verify`,
 and related `rz_*` names) or the native MCP names (`resilient_compile`,
 `resilient_format`, `resilient_verify`, ...).
@@ -53,6 +53,13 @@ Returns process-local request counters and a Prometheus text-format latency
 histogram. The endpoint reports total requests, 4xx/5xx responses, cumulative
 latency buckets through 10 seconds, total latency, and request count. Metrics
 are reset when the MCP HTTP process restarts.
+
+### `GET /readyz`
+
+Returns `200 OK` when the build includes the Z3 verification backend and
+`503 Service Unavailable` otherwise. Use this readiness probe for scheduler
+orchestrator routing; `/health` remains a liveness check that only reports
+whether the HTTP process is accepting connections.
 
 ### Hardening (Phase 1, RES-3934/3935/3936/3938/3944)
 
