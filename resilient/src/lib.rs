@@ -35408,6 +35408,127 @@ pub fn run_cli() {
 mod tests {
     use super::*;
 
+    // RES-4239: these builtins are intentionally undocumented until their
+    // STDLIB.md/SYNTAX.md entries land. Keep this list shrinking-only: the
+    // test below rejects stale names and rejects any new undocumented name.
+    const UNDOCUMENTED_BUILTINS: &[&str] = &[
+        "is_empty",
+        "is_blank",
+        "sort_desc",
+        "flatten",
+        "is_pow2",
+        "next_pow2",
+        "parse_int_or",
+        "parse_float_or",
+        "file_open",
+        "file_read_chunk",
+        "file_write_chunk",
+        "file_seek",
+        "file_close",
+        "enumerate",
+        "mat_det",
+        "mat_inv",
+        "mat_solve",
+        "mat_rank",
+        "mat_lu",
+        "linspace",
+        "logspace",
+        "arange",
+        "csv_parse",
+        "csv_parse_tsv",
+        "csv_format",
+        "csv_format_tsv",
+        "table_format",
+        "format_float",
+        "rle_encode",
+        "rle_decode",
+        "char_to_string",
+        "exec",
+        "exec_shell",
+        "tcp_connect",
+        "tcp_listen",
+        "tcp_accept",
+        "tcp_read",
+        "tcp_write",
+        "tcp_close",
+        "tcp_set_timeout",
+        "udp_bind",
+        "udp_send_to",
+        "udp_recv_from",
+        "udp_close",
+        "mutex_new",
+        "mutex_lock",
+        "mutex_unlock",
+        "rwlock_new",
+        "rwlock_read",
+        "rwlock_write",
+        "rwlock_unlock",
+        "file_exists",
+        "file_is_dir",
+        "file_is_file",
+        "file_size",
+        "file_stat",
+        "dir_list",
+        "format_float_sci",
+        "char_is_whitespace",
+        "array_flatten_depth",
+        "format_int_width",
+        "array_sort_by_field",
+        "array_dedup_by",
+        "array_sort_by_field_desc",
+        "mutex_try_lock",
+        "char_is_alphanumeric",
+        "mat_norm_frobenius",
+    ];
+
+    fn contains_documented_word(docs: &str, name: &str) -> bool {
+        docs.match_indices(name).any(|(start, _)| {
+            let end = start + name.len();
+            let is_word_char = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+            !docs[..start].chars().next_back().is_some_and(is_word_char)
+                && !docs[end..].chars().next().is_some_and(is_word_char)
+        })
+    }
+
+    #[test]
+    fn builtin_doc_match_uses_word_boundaries() {
+        assert!(contains_documented_word("`mutex_lock`", "mutex_lock"));
+        assert!(!contains_documented_word(
+            "`mutex_lock_extra`",
+            "mutex_lock"
+        ));
+        assert!(!contains_documented_word("`as_int8`", "as_int"));
+    }
+
+    #[test]
+    fn every_builtin_is_documented_or_explicitly_allowlisted() {
+        let builtin_names: std::collections::HashSet<_> = builtin_names().collect();
+
+        for name in UNDOCUMENTED_BUILTINS {
+            assert!(
+                builtin_names.contains(name),
+                "stale undocumented-builtin allowlist entry: {name}"
+            );
+        }
+
+        let docs = concat!(
+            include_str!("../../STDLIB.md"),
+            include_str!("../../SYNTAX.md")
+        );
+        let mut missing: Vec<_> = builtin_names
+            .iter()
+            .filter(|name| !UNDOCUMENTED_BUILTINS.contains(name))
+            .filter(|name| !contains_documented_word(docs, name))
+            .copied()
+            .collect();
+        missing.sort_unstable();
+
+        assert!(
+            missing.is_empty(),
+            "undocumented builtins not in the shrinking allowlist: {missing:?}"
+        );
+    }
+
     #[test]
     fn parses_empty_extern_block() {
         let (program, errs) = crate::parse(r#"extern "libm.so.6" { }"#);
