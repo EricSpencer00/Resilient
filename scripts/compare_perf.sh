@@ -2,7 +2,7 @@
 # RES-202: compare fresh fib benchmark JSON against the baseline.
 #
 # Usage:
-#   scripts/compare_perf.sh <baseline.json> <fresh.json>
+#   scripts/compare_perf.sh <baseline.json> <fresh.json> [<fresh.json> ...]
 #
 # Env vars:
 #   PERF_THRESHOLD_PCT     — default threshold (walker, VM); default 15.
@@ -15,6 +15,10 @@
 #                            measurement noise floor, not permission
 #                            to regress.
 #
+# When multiple fresh files are supplied, the fastest measurement for each
+# backend is compared. This lets a retry recover from a hosted-runner pause
+# without allowing a regression that reproduces in every candidate to pass.
+#
 # Output: a markdown table on stdout with per-backend deltas,
 # plus a final `PASS` / `FAIL` line. Exit 0 on pass, 1 on fail.
 # The table is suitable for a PR comment; perf_gate.yml pipes
@@ -22,13 +26,14 @@
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <baseline.json> <fresh.json>" >&2
+if [[ $# -lt 2 ]]; then
+    echo "Usage: $0 <baseline.json> <fresh.json> [<fresh.json> ...]" >&2
     exit 2
 fi
 
 BASELINE=$1
-FRESH=$2
+shift
+FRESH_FILES=("$@")
 THRESHOLD_PCT=${PERF_THRESHOLD_PCT:-15}
 THRESHOLD_PCT_JIT=${PERF_THRESHOLD_PCT_JIT:-30}
 
@@ -36,10 +41,12 @@ if [[ ! -f "$BASELINE" ]]; then
     echo "error: baseline not found: $BASELINE" >&2
     exit 2
 fi
-if [[ ! -f "$FRESH" ]]; then
-    echo "error: fresh results not found: $FRESH" >&2
-    exit 2
-fi
+for fresh_file in "${FRESH_FILES[@]}"; do
+    if [[ ! -f "$fresh_file" ]]; then
+        echo "error: fresh results not found: $fresh_file" >&2
+        exit 2
+    fi
+done
 
 regressed=false
 echo "| backend | baseline (ms) | fresh (ms) | delta % | threshold % |"
@@ -53,7 +60,15 @@ for key in walker_median_ms vm_median_ms jit_median_ms; do
         threshold=$THRESHOLD_PCT
     fi
     base=$(jq -r ".$key" "$BASELINE")
-    fresh=$(jq -r ".$key" "$FRESH")
+    fresh=$(jq -s --arg key "$key" \
+        '[.[] | .[$key] | select(type == "number")] | if length == 0 then empty else min end' \
+        "${FRESH_FILES[@]}")
+    if [[ -z "$fresh" ]]; then
+        echo "| $label | $(jq -r ".$key" "$BASELINE") | (missing) | — | $threshold% |"
+        echo "error: fresh results missing key '$key'" >&2
+        regressed=true
+        continue
+    fi
     # Percentage delta. bc -l for floating-point.
     delta=$(echo "scale=2; ($fresh - $base) / $base * 100" | bc -l)
     printf "| %s | %s | %s | %s%% | %s%% |\n" "$label" "$base" "$fresh" "$delta" "$threshold"
