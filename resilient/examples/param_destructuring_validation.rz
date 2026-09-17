@@ -1,0 +1,10 @@
+// RES-4263: a valid tuple-destructured parameter must reach the compiler.
+fn add_pair((int, int) _a_b) -> int {
+    return 1;
+}
+
+fn main() {
+    println(add_pair(0));
+}
+
+main();
