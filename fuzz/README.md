@@ -22,9 +22,10 @@ should run in GitHub Actions also need an explicit matrix entry in
 
 ## Design note: subprocess and in-process targets
 
-The compiler crate now exposes a library target. The `parse`, `lex`,
-`jit`, `contracts`, and `z3_translate` targets exercise the shipped CLI
-boundary by shelling out to the built binary via `RESILIENT_FUZZ_BIN`;
+The compiler crate now exposes a library target. The CLI-boundary targets
+still exercise the shipped CLI boundary: `parse`, `lex`, `jit`,
+`contracts`, and `z3_translate` shell out to the built binary via
+`RESILIENT_FUZZ_BIN`;
 the `http` target uses a doc-hidden native seam because the HTTP parser
 is private to the MCP server and its worker threads cannot be monitored
 reliably from a separate subprocess. The subprocess harnesses re-raise
