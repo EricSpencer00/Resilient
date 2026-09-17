@@ -6957,8 +6957,15 @@ impl TypeChecker {
                 if markers.call_idents.contains("Err") {
                     crate::coverage_warnings::check(program, source_path)?;
                 }
-                // RES-1605: `param_destructuring::check` is a no-op stub;
-                // the parser handles destructured-param desugaring.
+                // RES-3236 / RES-3237: validate tuple-destructured
+                // parameter declarations and their call-site minimum arity.
+                if markers
+                    .param_types
+                    .iter()
+                    .any(|ty| ty.starts_with('(') && ty.ends_with(')'))
+                {
+                    crate::param_destructuring::check(program, source_path)?;
+                }
                 // RES-3482: validate recorded `#[format_builtin(...)]`
                 // declaration metadata. Ordinary `format(...)` call-site
                 // validation remains in `fmt_validation` below.

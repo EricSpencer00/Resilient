@@ -154,15 +154,6 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 }
             }
         }
-
-        eprintln!(
-            "note: `{}` parameter {} is a tuple destructure; lowering to \
-             `let ({}) = param;` at call sites is not yet supported — \
-             use explicit binding in the function body",
-            r.fn_name,
-            r.param_index,
-            r.locals.join(", ")
-        );
     }
 
     // RES-3236: validate call-site argument contracts for destructuring parameters
