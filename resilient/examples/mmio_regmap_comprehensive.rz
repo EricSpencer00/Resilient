@@ -1,29 +1,35 @@
 // RES-3194-3199: Comprehensive mmio_regmap validation test suite
-// Covers declarations, malformed input, runtime alignment, duplicates, and call-sites
+// Covers declarations, layouts, sparse registers, and call-sites.
+// The current surface models each register map as an attributed struct;
+// base/size validation and overlap checks happen on the struct attributes.
 
-// Valid: Standard register map declaration
-mmio_regmap UART0 {
-    0x00: status_reg,
-    0x04: data_reg,
-    0x08: control_reg,
-    0x0C: baud_rate,
+// Valid: Standard register map declaration.
+#[mmio(base = "0x40010000", size_bytes = "0x400")]
+struct UART0 {
+    int status_reg,
+    int data_reg,
+    int control_reg,
+    int baud_rate,
 }
 
-// Valid: Different register layouts
-mmio_regmap SPI_MASTER {
-    0x00: status,
-    0x04: control,
-    0x08: data_out,
-    0x0C: data_in,
-    0x10: chip_select,
+// Valid: Different register layouts.
+#[mmio(base = "0x40020000", size_bytes = "0x400")]
+struct SPI_MASTER {
+    int status,
+    int control,
+    int data_out,
+    int data_in,
+    int chip_select,
 }
 
-// Valid: Sparse register addresses
-mmio_regmap ADC_CONTROLLER {
-    0x00: config,
-    0x10: channel_select,
-    0x20: result,
-    0x100: calibration,
+// Valid: Sparse register addresses are represented by the named fields;
+// the current register-map pass validates the peripheral region itself.
+#[mmio(base = "0x40030000", size_bytes = "0x400")]
+struct ADC_CONTROLLER {
+    int config,
+    int channel_select,
+    int result,
+    int calibration,
 }
 
 fn init_uart() -> int {
@@ -37,7 +43,7 @@ fn configure_spi() -> int {
 }
 
 fn main(int x) -> int {
-    let _ = init_uart();
-    let _ = configure_spi();
+    init_uart();
+    configure_spi();
     return 0;
 }

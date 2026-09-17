@@ -5,17 +5,23 @@ fn bin() -> &'static str {
 }
 
 fn run_source(name: &str, attribute: &str) -> Output {
+    run_program(
+        name,
+        &format!(
+            "{attribute}\n\
+             struct GPIOA {{ int mode, }}\n\
+             fn main() -> int {{ return 0; }}\n\
+             main();\n"
+        ),
+    )
+}
+
+fn run_program(name: &str, source: &str) -> Output {
     let path = std::env::temp_dir().join(format!(
         "res_mmio_regmap_{}_{}.rz",
         std::process::id(),
         name
     ));
-    let source = format!(
-        "{attribute}\n\
-         struct GPIOA {{ int mode, }}\n\
-         fn main() -> int {{ return 0; }}\n\
-         main();\n"
-    );
     std::fs::write(&path, source).expect("write MMIO source");
     let output = Command::new(bin())
         .arg("--typecheck-strict")
@@ -96,5 +102,46 @@ fn valid_mmio_attribute_still_typechecks() {
     assert!(
         output.status.success(),
         "valid MMIO attribute failed:\nstdout={stdout}\nstderr={stderr}"
+    );
+}
+
+#[test]
+fn current_regmap_surface_supports_multiple_layouts_and_call_sites() {
+    let output = run_program(
+        "current-surface",
+        r#"#[mmio(base = "0x40010000", size_bytes = "0x400")]
+struct UART0 {
+    int status_reg,
+    int data_reg,
+}
+
+#[mmio(base = "0x40020000", size_bytes = "0x400")]
+struct SPI_MASTER {
+    int status,
+    int data_out,
+}
+
+fn init_uart() -> int {
+    return 0;
+}
+
+fn configure_spi() -> int {
+    return 0;
+}
+
+fn main() -> int {
+    init_uart();
+    configure_spi();
+    return 0;
+}
+
+main();
+"#,
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "current MMIO regmap surface failed:\nstdout={stdout}\nstderr={stderr}"
     );
 }
