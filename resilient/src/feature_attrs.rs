@@ -37,6 +37,7 @@
 //! | `#[atomic]` | `atomic_types` | Lock-free primitive |
 //! | `#[lock_priority(N)]` | `lock_priority` | Static lock ordering |
 //! | `#[peripheral]` | `hw_state_machine` | Hardware lifecycle type |
+//! | `#[probabilistic]` | `probabilistic_contracts` | Statistical contract |
 //! | `#[autopilot]` | `autopilot` | Mark for safety audit |
 //! | `#[format_builtin(...)]` | `format_builtin` | Format declaration metadata |
 //! | `#[overflow_checked]` | `typechecker` | BV64 overflow-safe requires/ensures |
@@ -345,6 +346,7 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "no_panic"
             | "deadlock_free"
             | "session"
+            | "probabilistic"
             | "row_poly"
             | "dependent"
             | "recursive"
