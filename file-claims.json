@@ -3,18 +3,6 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-4246-extern-callsite-typecheck",
       "claimed_at": "2026-08-08T23:53:49Z"
-    },
-    "resilient/src/mutex_rwlock.rs": {
-      "branch": "res-4270-mutex-origin",
-      "claimed_at": "2026-09-17T04:06:37Z"
-    },
-    "resilient/tests/it/mutex_rwlock_origin.rs": {
-      "branch": "res-4270-mutex-origin",
-      "claimed_at": "2026-09-17T04:18:56Z"
-    },
-    "resilient/tests/mutex_rwlock_origin.rs": {
-      "branch": "res-4270-mutex-origin",
-      "claimed_at": "2026-09-17T04:20:40Z"
     }
   }
 }
