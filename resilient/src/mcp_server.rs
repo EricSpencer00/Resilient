@@ -347,6 +347,26 @@ pub fn run_http(bind_addr: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Run the HTTP request parser against arbitrary bytes for the in-tree fuzz
+/// harness. This keeps the fuzzing seam beside the parser so the harness
+/// exercises the same request-handling path without opening a listener or
+/// reimplementing the server's private helpers.
+#[doc(hidden)]
+pub fn fuzz_http_request(data: &[u8]) -> String {
+    let config = HttpHardeningConfig {
+        max_body_bytes: 64 * 1024,
+        timeout: Duration::from_secs(1),
+        rate_limit_per_min: DEFAULT_RATE_LIMIT_PER_MIN,
+        max_connections: DEFAULT_MAX_CONNECTIONS,
+        shutdown_drain: Duration::from_secs(DEFAULT_SHUTDOWN_DRAIN_SECS),
+    };
+
+    let _ = request_line_of(data);
+    let _ = http_request_complete(data);
+    let request = String::from_utf8_lossy(data);
+    http_response_for_request(&request, &config)
+}
+
 fn handle_http_stream(
     stream: &mut TcpStream,
     config: &HttpHardeningConfig,

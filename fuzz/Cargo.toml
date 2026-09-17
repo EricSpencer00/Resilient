@@ -30,6 +30,10 @@ jit = []
 z3 = []
 
 [dependencies]
+# RES-3943: the HTTP target calls the compiler's native-only parser seam
+# directly so libFuzzer observes panics in the request-handling path.
+resilient = { path = "../resilient" }
+
 # RES-201: `libfuzzer-sys` wraps libFuzzer so we can write the
 # target as a plain Rust `fuzz_target!` macro. Tracks the cargo-
 # fuzz recommended pin.
@@ -59,6 +63,14 @@ bench = false
 [[bin]]
 name = "lex"
 path = "fuzz_targets/lex.rs"
+test = false
+doc = false
+bench = false
+
+# RES-3943: fuzz the hand-rolled MCP HTTP request parser in-process.
+[[bin]]
+name = "http"
+path = "fuzz_targets/http.rs"
 test = false
 doc = false
 bench = false

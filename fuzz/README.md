@@ -10,25 +10,26 @@ libFuzzer.
 | ------- | -------- | ------------------------------------------------------------------------------------------- |
 | `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `rz -t`. Fails on panic.                          |
 | `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `rz --dump-tokens`. Fails on panic.                |
+| `http`  | RES-3943 | The MCP HTTP request parser: arbitrary bytes → request handling. Fails on panic.             |
 | `jit`   | RES-310  | The Cranelift JIT lowering path: random bytes → UTF-8 filter → `rz --jit`. Fails on panic.  |
 | `contracts` | RES-3779 (#3779) | The contract-certificate pipeline: random bytes → UTF-8 filter → `rz --emit-contract-certificate`. Fails on panic, or on a written certificate that isn't well-formed JSON with an in-schema `"verdict"`. |
 | `z3_translate` | RES-4039 (C-E6, #3933) | The Z3 SMT translation layer (`verifier_z3.rs`'s `prove_*` entry points): seeded/fuzzed contract source → UTF-8 filter → `rz -t`, requires a `--features z3` `rz` build. Fails on panic. |
 
 Additional targets slot in by adding a file under
-`fuzz_targets/` and a `[[bin]]` entry in `fuzz/Cargo.toml`; the
-GitHub Actions matrix in `.github/workflows/fuzz.yml` picks
-them up via the `target:` key.
+`fuzz_targets/` and a `[[bin]]` entry in `fuzz/Cargo.toml`. Targets that
+should run in GitHub Actions also need an explicit matrix entry in
+`.github/workflows/fuzz.yml`.
 
-## Design note: subprocess, not in-process
+## Design note: subprocess and in-process targets
 
-The compiler crate now exposes a library target, but these fuzz
-targets still exercise the shipped CLI boundary. That keeps fuzz
-coverage aligned with the parser, lexer, feature flags, diagnostics,
-and panic hooks users reach through `rz` instead of depending on
-private parser/lexer internals as an in-process fuzzing API. The
-harness shells out to the built binary via `RESILIENT_FUZZ_BIN` and
-re-raises subprocess crashes as local panics so libFuzzer records the
-input.
+The compiler crate now exposes a library target. The `parse`, `lex`,
+`jit`, `contracts`, and `z3_translate` targets exercise the shipped CLI
+boundary by shelling out to the built binary via `RESILIENT_FUZZ_BIN`;
+the `http` target uses a doc-hidden native seam because the HTTP parser
+is private to the MCP server and its worker threads cannot be monitored
+reliably from a separate subprocess. The subprocess harnesses re-raise
+child crashes as local panics, while the in-process target lets libFuzzer
+record parser panics directly.
 
 This is slower than an in-process fuzzer would be — expect
 hundreds to a few thousand iterations per second instead of
@@ -59,6 +60,12 @@ RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
   cargo +nightly fuzz run lex --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=1
+
+# Or the HTTP request parser target. This one runs in-process and does not
+# need a running MCP server or RESILIENT_FUZZ_BIN.
+(cd fuzz && cargo +nightly fuzz run http -- \
+  -max_total_time=30 \
+  -timeout=5)
 
 # Or the contracts target (RES-3779). Works on a stock (non-z3)
 # build — verdicts just degrade to "unknown". Fails on a subprocess
