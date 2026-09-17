@@ -673,7 +673,7 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
     }
 
     match (method, path) {
-        ("OPTIONS", "/health" | "/mcp/call" | "/metrics") => http_cors_preflight(),
+        ("OPTIONS", "/health" | "/readyz" | "/mcp/call" | "/metrics") => http_cors_preflight(),
         ("GET", "/health") => http_json(
             200,
             json!({
@@ -683,6 +683,7 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
                 "version": env!("CARGO_PKG_VERSION")
             }),
         ),
+        ("GET", "/readyz") => http_readyz(),
         ("GET", "/metrics") => http_metrics_response(),
         ("POST", "/mcp/call") => http_mcp_call(body, config.timeout),
         _ => http_json(
@@ -817,6 +818,7 @@ fn http_json(status: u16, body: Value) -> String {
         404 => "Not Found",
         413 => "Payload Too Large",
         429 => "Too Many Requests",
+        503 => "Service Unavailable",
         504 => "Gateway Timeout",
         _ => "Internal Server Error",
     };
@@ -830,6 +832,33 @@ fn http_json(status: u16, body: Value) -> String {
 
 fn http_metrics_response() -> String {
     http_text(200, "text/plain; version=0.0.4", HTTP_METRICS.render())
+}
+
+fn http_readyz() -> String {
+    if cfg!(feature = "z3") {
+        http_json(
+            200,
+            json!({
+                "status": "ready",
+                "service": "resilient-mcp",
+                "transport": "http",
+                "z3": "available",
+                "version": env!("CARGO_PKG_VERSION")
+            }),
+        )
+    } else {
+        http_json(
+            503,
+            json!({
+                "status": "not_ready",
+                "service": "resilient-mcp",
+                "transport": "http",
+                "z3": "unavailable",
+                "error": "Z3 verification is not available in this build",
+                "version": env!("CARGO_PKG_VERSION")
+            }),
+        )
+    }
 }
 
 fn http_text(status: u16, content_type: &str, body: String) -> String {
