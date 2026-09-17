@@ -92,6 +92,7 @@ const DEFAULT_SHUTDOWN_DRAIN_SECS: u64 = 30;
 /// - `RESILIENT_MCP_MAX_BODY_BYTES` (default 10 MiB)
 /// - `RESILIENT_MCP_TIMEOUT_SECS` (default 10s)
 /// - `RESILIENT_MCP_RATE_LIMIT_PER_MIN` (default 100 req/min/IP)
+/// - `RESILIENT_MCP_CORS_ORIGIN` (default `*`)
 #[derive(Debug, Clone, Copy)]
 struct HttpHardeningConfig {
     max_body_bytes: usize,
@@ -571,6 +572,7 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
     }
 
     match (method, path) {
+        ("OPTIONS", "/health" | "/mcp/call") => http_cors_preflight(),
         ("GET", "/health") => http_json(
             200,
             json!({
@@ -718,9 +720,33 @@ fn http_json(status: u16, body: Value) -> String {
     };
     let body = body.to_string();
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{body}",
+        body.len(),
+        cors_headers(),
     )
+}
+
+fn http_cors_preflight() -> String {
+    format!(
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n{}\r\n",
+        cors_headers()
+    )
+}
+
+fn cors_headers() -> String {
+    format!(
+        "Access-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nVary: Origin\r\n",
+        cors_origin()
+    )
+}
+
+fn cors_origin() -> String {
+    let origin = std::env::var("RESILIENT_MCP_CORS_ORIGIN").unwrap_or_default();
+    if origin.is_empty() || origin.chars().any(|c| c == '\r' || c == '\n') {
+        "*".to_string()
+    } else {
+        origin
+    }
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

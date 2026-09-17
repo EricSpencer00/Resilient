@@ -103,6 +103,7 @@ otherwise.
 | `RESILIENT_MCP_TIMEOUT_SECS` | `10` | See Production Checklist below. |
 | `RESILIENT_MCP_RATE_LIMIT_PER_MIN` | `100` | See Production Checklist below. |
 | `RESILIENT_MCP_MAX_CONNECTIONS` | `16` | See Production Checklist below. |
+| `RESILIENT_MCP_CORS_ORIGIN` | `*` | Browser origin allowed by the HTTP wrapper; set an exact origin for a deployed playground/client. |
 
 Example with overrides:
 
