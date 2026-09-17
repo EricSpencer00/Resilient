@@ -6,15 +6,15 @@
     },
     ".github/workflows/integration-follow-main.yml": {
       "branch": "res-4220-reconcile-integration",
-      "claimed_at": "2026-09-17T22:35:13Z"
+      "claimed_at": "2026-09-17T22:35:28Z"
     },
     "agent-scripts/reconcile-integration.sh": {
       "branch": "res-4220-reconcile-integration",
-      "claimed_at": "2026-09-17T22:35:13Z"
+      "claimed_at": "2026-09-17T22:35:28Z"
     },
     "agent-scripts/test-reconcile-integration.sh": {
       "branch": "res-4220-reconcile-integration",
-      "claimed_at": "2026-09-17T22:35:13Z"
+      "claimed_at": "2026-09-17T22:35:28Z"
     }
   }
 }
