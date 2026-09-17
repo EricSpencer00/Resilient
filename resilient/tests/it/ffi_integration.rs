@@ -161,6 +161,10 @@ main(0);"#,
     let (stdout, stderr, code) = run_resilient_src(&src);
     assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
     assert!(
+        !stderr.contains("Type error"),
+        "valid repr(C) struct signature emitted a type error: {stderr}"
+    );
+    assert!(
         stdout.lines().any(|l| l.trim() == "42"),
         "expected `42`, got stdout={stdout} stderr={stderr}"
     );
@@ -182,6 +186,10 @@ main(0);"#,
     let (stdout, stderr, code) = run_resilient_src(&src);
     assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
     assert!(
+        !stderr.contains("Type error"),
+        "valid repr(C) struct signature emitted a type error: {stderr}"
+    );
+    assert!(
         stdout.lines().any(|l| l.trim() == "42"),
         "expected `42`, got stdout={stdout} stderr={stderr}"
     );
@@ -201,6 +209,10 @@ main(0);"#,
     );
     let (stdout, stderr, code) = run_resilient_src(&src);
     assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        !stderr.contains("Type error"),
+        "valid repr(C) struct signature emitted a type error: {stderr}"
+    );
     assert!(
         stdout.lines().any(|l| l.trim() == "99"),
         "expected `99`, got stdout={stdout} stderr={stderr}"
