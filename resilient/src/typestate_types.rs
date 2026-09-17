@@ -297,6 +297,375 @@ pub fn validate_call(
         })
 }
 
+#[derive(Debug, Clone)]
+struct TrackedValue {
+    struct_name: String,
+    state: String,
+}
+
+struct CallSiteAnalyzer<'a> {
+    specs: &'a [TypestateSpec],
+    bindings: HashMap<String, TrackedValue>,
+    source_path: &'a str,
+}
+
+impl<'a> CallSiteAnalyzer<'a> {
+    fn new(specs: &'a [TypestateSpec], params: &[(String, String)], source_path: &'a str) -> Self {
+        let mut analyzer = Self {
+            specs,
+            bindings: HashMap::with_capacity(params.len()),
+            source_path,
+        };
+        for (type_name, name) in params {
+            if let Some(spec) = analyzer.spec_for_type(type_name) {
+                analyzer.bindings.insert(
+                    name.clone(),
+                    TrackedValue {
+                        struct_name: spec.struct_name.clone(),
+                        state: initial_state(spec),
+                    },
+                );
+            }
+        }
+        analyzer
+    }
+
+    fn spec_for_type(&self, type_name: &str) -> Option<&TypestateSpec> {
+        let type_name = normalize_type_name(type_name);
+        self.specs.iter().find(|spec| spec.struct_name == type_name)
+    }
+
+    fn scan_body(&mut self, body: &Node) -> Result<(), String> {
+        match body {
+            Node::Block { stmts, .. } => {
+                for stmt in stmts {
+                    self.scan_stmt(stmt)?;
+                }
+            }
+            other => self.scan_stmt(other)?,
+        }
+        Ok(())
+    }
+
+    fn scan_stmt(&mut self, node: &Node) -> Result<(), String> {
+        match node {
+            Node::Block { stmts, .. } => {
+                for stmt in stmts {
+                    self.scan_stmt(stmt)?;
+                }
+            }
+            Node::LetStatement {
+                name,
+                value,
+                type_annot,
+                ..
+            } => {
+                self.scan_expr(value)?;
+                self.bindings.remove(name);
+                if let Some(struct_name) = self.struct_name_from_expr(value) {
+                    if type_annot
+                        .as_deref()
+                        .is_none_or(|ty| normalize_type_name(ty) == struct_name)
+                    {
+                        self.bindings.insert(
+                            name.clone(),
+                            TrackedValue {
+                                struct_name: struct_name.to_string(),
+                                state: self.initial_state_for(struct_name),
+                            },
+                        );
+                    }
+                }
+            }
+            Node::StaticLet { name, value, .. } | Node::Const { name, value, .. } => {
+                self.scan_expr(value)?;
+                self.bindings.remove(name);
+            }
+            Node::Assignment { name, value, .. } => {
+                self.scan_expr(value)?;
+                self.bindings.remove(name);
+                if let Some(struct_name) = self.struct_name_from_expr(value) {
+                    self.bindings.insert(
+                        name.clone(),
+                        TrackedValue {
+                            struct_name: struct_name.to_string(),
+                            state: self.initial_state_for(struct_name),
+                        },
+                    );
+                }
+            }
+            Node::LetTupleDestructure { names, value, .. } => {
+                self.scan_expr(value)?;
+                for name in names {
+                    self.bindings.remove(name);
+                }
+            }
+            Node::LetDestructureStruct { fields, value, .. } => {
+                self.scan_expr(value)?;
+                for (_, name) in fields {
+                    self.bindings.remove(name);
+                }
+            }
+            Node::ExpressionStatement { expr, .. } => self.scan_expr(expr)?,
+            Node::ReturnStatement {
+                value: Some(value), ..
+            } => self.scan_expr(value)?,
+            Node::DeferStatement { expr, .. } => {
+                self.scan_expr(expr)?;
+                self.bindings.clear();
+            }
+            Node::IfStatement { .. }
+            | Node::WhileStatement { .. }
+            | Node::ForInStatement { .. }
+            | Node::Match { .. }
+            | Node::TryCatch { .. } => {
+                // A state may be advanced on only one path, so retaining it
+                // after control flow would turn a path-dependent fact into a
+                // false compile-time error. Unknown is the safe result until
+                // a flow-sensitive typestate analysis exists.
+                self.bindings.clear();
+            }
+            other => self.scan_expr(other)?,
+        }
+        Ok(())
+    }
+
+    fn scan_expr(&mut self, node: &Node) -> Result<(), String> {
+        match node {
+            Node::CallExpression {
+                function,
+                arguments,
+                span,
+            } => {
+                let field_receiver = match function.as_ref() {
+                    Node::FieldAccess { target, field, .. } => {
+                        self.scan_expr(target)?;
+                        Some((binding_name(target).map(str::to_owned), field.as_str()))
+                    }
+                    _ => {
+                        self.scan_expr(function)?;
+                        None
+                    }
+                };
+                for argument in arguments {
+                    self.scan_expr(argument)?;
+                }
+
+                let free_function = match function.as_ref() {
+                    Node::Identifier { name, .. } => Some(name.as_str()),
+                    _ => None,
+                };
+                let direct_argument_names: Vec<String> = arguments
+                    .iter()
+                    .filter_map(binding_name)
+                    .map(str::to_owned)
+                    .collect();
+
+                let consumed = if let Some((receiver, method)) = field_receiver {
+                    receiver
+                        .as_deref()
+                        .map(|name| self.apply_transition(name, method, span))
+                        .transpose()?
+                        .flatten()
+                } else if let (Some(method), Some(receiver)) =
+                    (free_function, arguments.first().and_then(binding_name))
+                {
+                    self.apply_transition(receiver, method, span)?
+                } else {
+                    None
+                };
+
+                for name in direct_argument_names {
+                    if consumed.as_deref() != Some(name.as_str()) {
+                        self.bindings.remove(&name);
+                    }
+                }
+            }
+            Node::InfixExpression { left, right, .. } => {
+                self.scan_expr(left)?;
+                self.scan_expr(right)?;
+            }
+            Node::PrefixExpression { right, .. }
+            | Node::TryExpression { expr: right, .. }
+            | Node::NewtypeConstruct { value: right, .. } => self.scan_expr(right)?,
+            Node::FieldAccess { target, .. } => self.scan_expr(target)?,
+            Node::FieldAssignment { target, value, .. } => {
+                self.scan_expr(target)?;
+                self.scan_expr(value)?;
+                if let Some(name) = binding_name(target) {
+                    self.bindings.remove(name);
+                }
+            }
+            Node::IndexExpression { target, index, .. } => {
+                self.scan_expr(target)?;
+                self.scan_expr(index)?;
+            }
+            Node::IndexAssignment {
+                target,
+                index,
+                value,
+                ..
+            } => {
+                self.scan_expr(target)?;
+                self.scan_expr(index)?;
+                self.scan_expr(value)?;
+                if let Some(name) = binding_name(target) {
+                    self.bindings.remove(name);
+                }
+            }
+            Node::Slice { target, lo, hi, .. } => {
+                self.scan_expr(target)?;
+                if let Some(lo) = lo {
+                    self.scan_expr(lo)?;
+                }
+                if let Some(hi) = hi {
+                    self.scan_expr(hi)?;
+                }
+            }
+            Node::StructLiteral { fields, base, .. } => {
+                for (_, value) in fields {
+                    self.scan_expr(value)?;
+                }
+                if let Some(base) = base {
+                    self.scan_expr(base)?;
+                }
+            }
+            Node::ArrayLiteral { items, .. } | Node::TupleLiteral { items, .. } => {
+                for item in items {
+                    self.scan_expr(item)?;
+                }
+            }
+            Node::MapLiteral { entries, .. } => {
+                for (key, value) in entries {
+                    self.scan_expr(key)?;
+                    self.scan_expr(value)?;
+                }
+            }
+            Node::SetLiteral { items, .. } => {
+                for item in items {
+                    self.scan_expr(item)?;
+                }
+            }
+            Node::NamedArg { value, .. } => self.scan_expr(value)?,
+            Node::Assert {
+                condition, message, ..
+            }
+            | Node::Assume {
+                condition, message, ..
+            } => {
+                self.scan_expr(condition)?;
+                if let Some(message) = message {
+                    self.scan_expr(message)?;
+                }
+            }
+            Node::UnsafeBlock { body, .. } => self.scan_stmt(body)?,
+            Node::StaticAssert { condition, .. } => self.scan_expr(condition)?,
+            Node::IfStatement { .. }
+            | Node::WhileStatement { .. }
+            | Node::ForInStatement { .. }
+            | Node::Match { .. }
+            | Node::OptionalChain { .. }
+            | Node::FunctionLiteral { .. }
+            | Node::Quantifier { .. }
+            | Node::BenchBlock { .. } => self.bindings.clear(),
+            Node::Block { .. } => self.bindings.clear(),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn struct_name_from_expr<'b>(&self, value: &'b Node) -> Option<&'b str> {
+        let Node::StructLiteral { name, .. } = value else {
+            return None;
+        };
+        self.specs
+            .iter()
+            .find(|spec| spec.struct_name == *name)
+            .map(|_| name.as_str())
+    }
+
+    fn initial_state_for(&self, struct_name: &str) -> String {
+        self.specs
+            .iter()
+            .find(|spec| spec.struct_name == struct_name)
+            .map(initial_state)
+            .unwrap_or_default()
+    }
+
+    fn apply_transition(
+        &mut self,
+        binding_name: &str,
+        method: &str,
+        span: &crate::span::Span,
+    ) -> Result<Option<String>, String> {
+        let Some(value) = self.bindings.get(binding_name).cloned() else {
+            return Ok(None);
+        };
+        let Some(spec) = self
+            .specs
+            .iter()
+            .find(|spec| spec.struct_name == value.struct_name)
+        else {
+            return Ok(None);
+        };
+        if !spec
+            .transitions
+            .keys()
+            .any(|(_, transition_method)| transition_method == method)
+        {
+            return Ok(None);
+        }
+
+        let next = validate_call(&value.struct_name, &value.state, method).map_err(|msg| {
+            format!(
+                "{}:{}:{}: error: {}",
+                self.source_path, span.start.line, span.start.column, msg
+            )
+        })?;
+        if let Some(tracked) = self.bindings.get_mut(binding_name) {
+            tracked.state = next;
+        }
+        Ok(Some(binding_name.to_string()))
+    }
+}
+
+fn normalize_type_name(type_name: &str) -> &str {
+    type_name
+        .split_whitespace()
+        .last()
+        .unwrap_or(type_name)
+        .trim_start_matches('&')
+}
+
+fn initial_state(spec: &TypestateSpec) -> String {
+    spec.states.first().cloned().unwrap_or_default()
+}
+
+fn binding_name(node: &Node) -> Option<&str> {
+    match node {
+        Node::Identifier { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+fn validate_call_sites(
+    program: &Node,
+    source_path: &str,
+    specs: &[TypestateSpec],
+) -> Result<(), String> {
+    let mut first_error = None;
+    crate::uniqueness_walk::for_each_function(program, |_name, params, body| {
+        if first_error.is_some() {
+            return;
+        }
+        let mut analyzer = CallSiteAnalyzer::new(specs, params, source_path);
+        if let Err(error) = analyzer.scan_body(body) {
+            first_error = Some(error);
+        }
+    });
+    first_error.map_or(Ok(()), Err)
+}
+
 fn collect_checked(source_path: &str) -> Result<Vec<TypestateSpec>, String> {
     let attrs = crate::feature_attrs::find_kind("typestate");
     let mut out = Vec::with_capacity(attrs.len());
@@ -316,13 +685,14 @@ fn collect_checked(source_path: &str) -> Result<Vec<TypestateSpec>, String> {
     Ok(out)
 }
 
-pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let specs = collect_checked(source_path)?;
     if specs.is_empty() {
+        install(Vec::new());
         return Ok(());
     }
-    install(specs);
-    Ok(())
+    install(specs.clone());
+    validate_call_sites(program, source_path, &specs)
 }
 
 #[cfg(test)]
