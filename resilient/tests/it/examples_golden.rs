@@ -64,6 +64,15 @@ fn list_examples() -> Vec<PathBuf> {
 /// for instance — see `precision_math.expected.macos.txt`).
 fn expected_path(example: &Path) -> PathBuf {
     let stem = example.file_stem().and_then(|s| s.to_str()).unwrap();
+    // Z3 can add verifier diagnostics to an otherwise identical failing
+    // example. Keep that feature-specific stderr assertion explicit rather
+    // than weakening the failure golden's diagnostic coverage.
+    if cfg!(feature = "z3") {
+        let z3_specific = example.with_file_name(format!("{stem}.expected.z3.txt"));
+        if z3_specific.exists() {
+            return z3_specific;
+        }
+    }
     let platform_specific =
         example.with_file_name(format!("{stem}.expected.{}.txt", std::env::consts::OS));
     if platform_specific.exists() {

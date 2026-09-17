@@ -1,0 +1,16 @@
+# exit: 1
+# stderr:
+warning[partial-proof]: Z3 returned Unknown for assertion at ./examples/recovers_to_fail.rz:17:20 — proof is incomplete
+warning[bmc]: 22:12: fn `init_actuator`: `recovers_to` postcondition may not hold after crash at instruction boundary 2 (RES-392b BMC counterexample)
+./examples/recovers_to_fail.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+./examples/recovers_to_fail.rz:0:0: note[contract_infer]: `init_actuator` — inferred suggestion: ensures result == 3
+mutation: 7 total mutation site(s) across 2 function(s)
+mutation:   `init_actuator`: 4 site(s) [literal, return]
+mutation:   `main`: 3 site(s) [literal]
+./examples/recovers_to_fail.rz:0:0: warning[mutation]: 3/7 mutation site(s) (42%) are in functions with no contracts — the Z3 verifier cannot kill them
+./examples/recovers_to_fail.rz:0:0: warning[mutation]: `main`: 3 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+blame: `init_actuator` has `requires` on [id]; root caller(s) responsible: [main] (chain: main → init_actuator)
+Error: ./examples/recovers_to_fail.rz:29:5: Runtime error: Contract violation in fn init_actuator: recovers_to result == 0 failed — final-state counterexample: result = 3
+Runtime error: Contract violation in fn init_actuator: recovers_to result == 0 failed — final-state counterexample: result = 3
+   main();
+       ^
