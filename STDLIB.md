@@ -949,6 +949,34 @@ rather than being silently masked.
 | `stats_mode_int(arr)` | array of int → int | Most frequent integer; ties choose the smallest value, empty arrays error, and a single integer returns itself. |
 | `stats_iqr(arr)` | array of number → float | Interquartile range `Q3 - Q1`, using linearly interpolated 75th and 25th percentiles; empty arrays error and a single value returns 0.0. |
 
+## Complex Numbers
+
+Complex values are represented as two-element numeric arrays `[real, imaginary]`.
+The constructor and all operations that return a complex value
+produce `[float, float]`; every operation that accepts a complex value
+requires exactly two numeric elements.
+
+| Name | Signature | Notes |
+|---|---|---|
+| `complex(re, im)` | (number, number) → array of float | Construct `re + im·i`; integer and float parts are accepted. |
+| `complex_real(z)` | array of number → float | Extract the real component from `[re, im]`. |
+| `complex_imag(z)` | array of number → float | Extract the imaginary component from `[re, im]`. |
+| `complex_add(a, b)` | (array of number, array of number) → array of float | Component-wise addition. |
+| `complex_sub(a, b)` | (array of number, array of number) → array of float | Component-wise subtraction. |
+| `complex_mul(a, b)` | (array of number, array of number) → array of float | Complex multiplication: `(ac - bd) + (ad + bc)i`. |
+| `complex_div(a, b)` | (array of number, array of number) → array of float | Complex division; errors when `b` is `[0, 0]`. |
+| `complex_abs(z)` | array of number → float | Modulus `sqrt(re² + im²)`. |
+| `complex_arg(z)` | array of number → float | Phase in radians, computed as `atan2(im, re)`. |
+| `complex_conj(z)` | array of number → array of float | Conjugate `[re, -im]`. |
+| `complex_norm_sq(z)` | array of number → float | Squared modulus `re² + im²`, without the square root. |
+| `complex_exp(z)` | array of number → array of float | Exponential `e^z` using `e^re · [cos(im), sin(im)]`. |
+| `complex_ln(z)` | array of number → array of float | Principal natural logarithm `[ln|z|, arg(z)]`; errors for `[0, 0]`. |
+| `complex_pow_real(z, n)` | (array of number, number) → array of float | Raise `z` to real exponent `n` with `|z|^n · [cos(n·arg(z)), sin(n·arg(z))]`. |
+| `complex_sqrt(z)` | array of number → array of float | Principal square root. |
+| `complex_sin(z)` | array of number → array of float | Complex sine, including the hyperbolic terms for a nonzero imaginary component. |
+| `complex_cos(z)` | array of number → array of float | Complex cosine, including the hyperbolic terms for a nonzero imaginary component. |
+| `complex_from_polar(r, theta)` | (number, number) → array of float | Construct `r·e^(i·theta)` from magnitude `r` and angle `theta` in radians. |
+
 ## Number Theory
 
 | Name | Signature | Notes |
