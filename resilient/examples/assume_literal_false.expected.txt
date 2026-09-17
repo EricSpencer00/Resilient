@@ -1,0 +1,13 @@
+# exit: 1
+# stderr:
+./examples/assume_literal_false.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+mutation: 1 total mutation site(s) across 1 function(s)
+mutation:   `main`: 1 site(s) [literal]
+./examples/assume_literal_false.rz:0:0: warning[mutation]: 1/1 mutation site(s) (100%) are in functions with no contracts — the Z3 verifier cannot kill them
+./examples/assume_literal_false.rz:0:0: warning[mutation]: `main`: 1 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+Error: ./examples/assume_literal_false.rz:7:5: Runtime error: ASSUME VIOLATED: Assumption failed
+  - Condition evaluated to: false
+Runtime error: ASSUME VIOLATED: Assumption failed
+  - Condition evaluated to: false
+   main();
+       ^

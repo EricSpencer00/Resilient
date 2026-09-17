@@ -1,0 +1,63 @@
+# exit: 1
+# stderr:
+Parser error: 15:9: Expected field name after type 'addr', found `:`
+Parser error: 16:1: unexpected `}` at statement start — no enclosing block
+Parser error: 19:9: Expected field name after type 'addr', found `:`
+Parser error: 20:1: unexpected `}` at statement start — no enclosing block
+Parser error: 30:25: Expected parameter name, found `:`
+Parser error: 30:27: Expected '{' after method signature for 'write', found identifier `int`
+Parser error: 30:30: unexpected `)` at statement start — no enclosing block
+Parser error: 36:1: Expected 'fn' or 'type' inside impl block, found `impl`
+Parser error: 43:18: Expected parameter name, found `,`
+Parser error: 43:20: Expected '{' after function parameters for 'write'
+Parser error: 49:34: Expected parameter name, found `:`
+Parser error: 49:36: Expected '{' after function parameters for 'read_and_echo'
+15:9: Expected field name after type 'addr', found `:`
+Parser error: Expected field name after type 'addr', found `:`
+       addr: int;
+           ^
+16:1: unexpected `}` at statement start — no enclosing block
+Parser error: unexpected `}` at statement start — no enclosing block
+   }
+   ^
+19:9: Expected field name after type 'addr', found `:`
+Parser error: Expected field name after type 'addr', found `:`
+       addr: int;
+           ^
+20:1: unexpected `}` at statement start — no enclosing block
+Parser error: unexpected `}` at statement start — no enclosing block
+   }
+   ^
+30:25: Expected parameter name, found `:`
+Parser error: Expected parameter name, found `:`
+       fn write(self, value: int) {
+                           ^
+30:27: Expected '{' after method signature for 'write', found identifier `int`
+Parser error: Expected '{' after method signature for 'write', found identifier `int`
+       fn write(self, value: int) {
+                             ^
+30:30: unexpected `)` at statement start — no enclosing block
+Parser error: unexpected `)` at statement start — no enclosing block
+       fn write(self, value: int) {
+                                ^
+36:1: Expected 'fn' or 'type' inside impl block, found `impl`
+Parser error: Expected 'fn' or 'type' inside impl block, found `impl`
+   impl Register for Register32 {
+   ^
+43:18: Expected parameter name, found `,`
+Parser error: Expected parameter name, found `,`
+       fn write(self, value: int) {
+                    ^
+43:20: Expected '{' after function parameters for 'write'
+Parser error: Expected '{' after function parameters for 'write'
+       fn write(self, value: int) {
+                      ^
+49:34: Expected parameter name, found `:`
+Parser error: Expected parameter name, found `:`
+   fn read_and_echo<R: Register>(reg: R) {
+                                    ^
+49:36: Expected '{' after function parameters for 'read_and_echo'
+Parser error: Expected '{' after function parameters for 'read_and_echo'
+   fn read_and_echo<R: Register>(reg: R) {
+                                      ^
+Error: Failed to parse program: 12 parser error(s)

@@ -2,10 +2,11 @@
 //!
 //! For every `examples/<name>.rz` that has a sibling
 //! `examples/<name>.expected.txt`, this test runs the compiled
-//! `resilient` binary against it and asserts that combined stdout
-//! (plus the CLI's trailing "Program executed successfully" line)
-//! matches the expected file byte-for-byte after trimming trailing
-//! whitespace.
+//! `resilient` binary against it and asserts that stdout (plus the CLI's
+//! trailing "Program executed successfully" line) matches the expected
+//! file byte-for-byte after trimming trailing whitespace. Failure goldens
+//! can additionally use `# exit: N`, `# stdout:`, and `# stderr:` sections
+//! to pin the process result and diagnostic stream.
 //!
 //! Examples without a sibling expected-file must be accounted for:
 //! either a `<name>.interactive` marker (RES-144), or an entry in
@@ -88,17 +89,29 @@ fn is_intentionally_ungoldened(example: &Path) -> bool {
     INTENTIONALLY_UNGOLDENED.iter().any(|(n, _)| *n == name)
 }
 
-fn run(example: &Path) -> String {
+struct Run {
+    stdout: String,
+    stderr: String,
+    status: i32,
+}
+
+struct Expected {
+    stdout: String,
+    stderr: Option<String>,
+    status: Option<i32>,
+}
+
+fn run(example: &Path) -> Run {
     let output = Command::new(bin())
         .arg(example)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("failed to spawn resilient binary");
-    // Most examples are expected to succeed, in which case the binary
-    // prints stdout then appends its own "Program executed successfully".
-    // The expected file captures exactly that combined output so it stays
-    // truthful to what a user sees.
-    String::from_utf8_lossy(&output.stdout).into_owned()
+    Run {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        status: output.status.code().unwrap_or(-1),
+    }
 }
 
 fn normalize(s: &str) -> String {
@@ -107,6 +120,81 @@ fn normalize(s: &str) -> String {
         .map(|line| line.trim_end())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if ch == '\u{1b}' {
+            in_escape = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn normalize_output(s: &str) -> String {
+    let without_ansi = strip_ansi(s);
+    let without_repo_path = without_ansi.replace(env!("CARGO_MANIFEST_DIR"), ".");
+    let without_seed = without_repo_path
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("seed="))
+        .collect::<Vec<_>>()
+        .join("\n");
+    normalize(&without_seed)
+}
+
+fn parse_expected(raw: &str) -> Expected {
+    let Some(first) = raw.lines().next() else {
+        return Expected {
+            stdout: String::new(),
+            stderr: Some(String::new()),
+            status: Some(0),
+        };
+    };
+
+    let Some(status_text) = first.strip_prefix("# exit:") else {
+        // Existing success goldens remain stdout-only. Their format implies
+        // a zero exit status and an empty stderr stream.
+        return Expected {
+            stdout: raw.to_owned(),
+            stderr: None,
+            status: Some(0),
+        };
+    };
+    let status = status_text
+        .trim()
+        .parse::<i32>()
+        .unwrap_or_else(|e| panic!("invalid # exit: header `{first}`: {e}"));
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut section = None;
+    for line in raw.lines().skip(1) {
+        match line {
+            "# stdout:" => section = Some(&mut stdout),
+            "# stderr:" => section = Some(&mut stderr),
+            _ => {
+                if let Some(lines) = section.as_mut() {
+                    lines.push(line);
+                } else if !line.trim().is_empty() {
+                    panic!("content before a # stdout: or # stderr: section in golden");
+                }
+            }
+        }
+    }
+
+    Expected {
+        stdout: stdout.join("\n"),
+        stderr: Some(stderr.join("\n")),
+        status: Some(status),
+    }
 }
 
 #[test]
@@ -130,14 +218,30 @@ fn golden_outputs_match() {
         let expected = fs::read_to_string(&expected_file)
             .unwrap_or_else(|e| panic!("reading {}: {}", expected_file.display(), e));
         let actual = run(&example);
+        let expected = parse_expected(&expected);
 
-        let (e, a) = (normalize(&expected), normalize(&actual));
-        if e != a {
+        let expected_stdout = normalize(&expected.stdout);
+        let actual_stdout = normalize_output(&actual.stdout);
+        let expected_stderr = expected.stderr.as_deref().map(normalize);
+        let actual_stderr = normalize_output(&actual.stderr);
+        let stderr_matches = expected_stderr
+            .as_ref()
+            .is_none_or(|expected| expected == &actual_stderr);
+        let status_matches = expected
+            .status
+            .is_none_or(|expected_status| expected_status == actual.status);
+        if !status_matches || expected_stdout != actual_stdout || !stderr_matches {
             failures.push(format!(
-                "--- {}\n  expected:\n{}\n  actual:\n{}",
+                "--- {}\n  expected status{}: {}\n  actual status: {}\n  expected stdout:\n{}\n  actual stdout:\n{}\n  expected stderr{}:\n{}\n  actual stderr:\n{}",
                 example.display(),
-                e,
-                a
+                if expected.status.is_some() { "" } else { " (not pinned)" },
+                expected.status.map_or_else(|| "".to_owned(), |s| s.to_string()),
+                actual.status,
+                expected_stdout,
+                actual_stdout,
+                if expected_stderr.is_some() { "" } else { " (not pinned)" },
+                expected_stderr.as_deref().unwrap_or(""),
+                actual_stderr,
             ));
         }
     }

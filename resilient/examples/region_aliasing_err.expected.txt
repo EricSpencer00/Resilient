@@ -1,0 +1,8 @@
+# exit: 1
+# stderr:
+./examples/region_aliasing_err.rz:8:4: E: potential aliasing between `&mut[A]` parameter `a` and `&mut[A]` parameter `b` of fn `same_region_bad` — add distinct region or see docs
+./examples/region_aliasing_err.rz:8:4: E: potential aliasing between `&mut[A]` parameter `a` and `&mut[A]` parameter `b` of fn `same_region_bad` — add distinct region or see docs
+Borrow check: E: potential aliasing between `&mut[A]` parameter `a` and `&mut[A]` parameter `b` of fn `same_region_bad` — add distinct region or see docs
+   fn same_region_bad(&mut[A] int a, &mut[A] int b) {
+      ^
+Error: Borrow check failed: 1 error(s)

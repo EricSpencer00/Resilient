@@ -1,0 +1,58 @@
+# exit: 1
+# stderr:
+Parser error: 13:17: Expected '{' after 'trait Filterable', found `<`
+Parser error: 13:17: Expected 'fn' or 'type' inside trait body, found `<`
+Parser error: 18:10: Expected field name after type 'items', found `:`
+Parser error: 19:1: unexpected `}` at statement start — no enclosing block
+Parser error: 21:16: Expected '{' after 'impl Filterable', found `<`
+Parser error: 21:16: Expected 'fn' or 'type' inside impl block, found `<`
+Parser error: 31:5: unexpected `}` at statement start — no enclosing block
+Parser error: 35:13: Expected parameter name, found `:`
+Parser error: 35:15: Expected '{' after function parameters for 'is_even'
+Parser error: 40:24: Expected parameter name, found `:`
+Parser error: 40:26: Expected '{' after function parameters for 'is_above_threshold'
+13:17: Expected '{' after 'trait Filterable', found `<`
+Parser error: Expected '{' after 'trait Filterable', found `<`
+   trait Filterable<T> {
+                   ^
+13:17: Expected 'fn' or 'type' inside trait body, found `<`
+Parser error: Expected 'fn' or 'type' inside trait body, found `<`
+   trait Filterable<T> {
+                   ^
+18:10: Expected field name after type 'items', found `:`
+Parser error: Expected field name after type 'items', found `:`
+       items: [int];
+            ^
+19:1: unexpected `}` at statement start — no enclosing block
+Parser error: unexpected `}` at statement start — no enclosing block
+   }
+   ^
+21:16: Expected '{' after 'impl Filterable', found `<`
+Parser error: Expected '{' after 'impl Filterable', found `<`
+   impl Filterable<int> for IntList {
+                  ^
+21:16: Expected 'fn' or 'type' inside impl block, found `<`
+Parser error: Expected 'fn' or 'type' inside impl block, found `<`
+   impl Filterable<int> for IntList {
+                  ^
+31:5: unexpected `}` at statement start — no enclosing block
+Parser error: unexpected `}` at statement start — no enclosing block
+       }
+       ^
+35:13: Expected parameter name, found `:`
+Parser error: Expected parameter name, found `:`
+   fn is_even(n: int) -> @pure bool {
+               ^
+35:15: Expected '{' after function parameters for 'is_even'
+Parser error: Expected '{' after function parameters for 'is_even'
+   fn is_even(n: int) -> @pure bool {
+                 ^
+40:24: Expected parameter name, found `:`
+Parser error: Expected parameter name, found `:`
+   fn is_above_threshold(n: int) -> @io bool {
+                          ^
+40:26: Expected '{' after function parameters for 'is_above_threshold'
+Parser error: Expected '{' after function parameters for 'is_above_threshold'
+   fn is_above_threshold(n: int) -> @io bool {
+                            ^
+Error: Failed to parse program: 11 parser error(s)
