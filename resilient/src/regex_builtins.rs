@@ -58,10 +58,11 @@ fn fmt_loc(source_path: &str, span: Span) -> String {
     }
 }
 
-fn static_regex_pattern(node: &Node) -> Option<(String, Span)> {
+fn static_regex_pattern(node: &Node, consts: &HashMap<String, String>) -> Option<(String, Span)> {
     match node {
         Node::StringLiteral { value, span } => Some((value.clone(), *span)),
         Node::StringInternLiteral { content, span, .. } => Some((content.clone(), *span)),
+        Node::Identifier { name, span } => consts.get(name).cloned().map(|value| (value, *span)),
         Node::InterpolatedString { parts, span } => {
             let mut buf = String::new();
             for part in parts {
@@ -71,6 +72,16 @@ fn static_regex_pattern(node: &Node) -> Option<(String, Span)> {
                 }
             }
             Some((buf, *span))
+        }
+        Node::InfixExpression {
+            left,
+            operator: "+",
+            right,
+            span,
+        } => {
+            let (left, _) = static_regex_pattern(left, consts)?;
+            let (right, _) = static_regex_pattern(right, consts)?;
+            Some((format!("{left}{right}"), *span))
         }
         _ => None,
     }
@@ -250,11 +261,46 @@ pub(crate) fn builtin_regex_replace_all(args: &[Value]) -> RResult<Value> {
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let mut errors = Vec::new();
-    crate::uniqueness_walk::visit(program, &mut |node| {
+    let mut consts = HashMap::new();
+
+    let Node::Program(statements) = program else {
+        return Ok(());
+    };
+
+    for statement in statements {
+        let node = &statement.node;
+        if let Node::Const { value, .. } = node {
+            // Resolve calls in the initializer before publishing the new
+            // binding, so a forward reference cannot affect this pass.
+            check_regex_nodes(node, source_path, &consts, &mut errors);
+            if let Node::Const { name, .. } = node {
+                if let Some((value, _)) = static_regex_pattern(value, &consts) {
+                    consts.insert(name.clone(), value);
+                }
+            }
+        } else {
+            check_regex_nodes(node, source_path, &consts, &mut errors);
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+fn check_regex_nodes(
+    node: &Node,
+    source_path: &str,
+    consts: &HashMap<String, String>,
+    errors: &mut Vec<String>,
+) {
+    crate::uniqueness_walk::visit(node, &mut |node| {
         let Some((pattern_node, builtin_name)) = regex_builtin_pattern_arg(node) else {
             return;
         };
-        let Some((pattern, span)) = static_regex_pattern(pattern_node) else {
+        let Some((pattern, span)) = static_regex_pattern(pattern_node, consts) else {
             return;
         };
         if let Err(err) = Regex::new(&pattern) {
@@ -266,11 +312,6 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             ));
         }
     });
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
 }
 
 // ---------------------------------------------------------------------------
