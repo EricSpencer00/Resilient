@@ -19,6 +19,10 @@
 #                            codegen + first-call cache effects, so a
 #                            tighter threshold causes spurious
 #                            failures unrelated to the PR's diff.
+#   PERF_THRESHOLD_PCT_VM_COUNTER — `vm_counter_loop` threshold;
+#                                  default 15. CI sets this to 30 because
+#                                  issue #4245 documents runner variance
+#                                  isolated to this row.
 #
 # When multiple fresh files are supplied, the fastest measurement for each
 # benchmark is compared. This lets a retry recover from a hosted-runner pause
@@ -39,6 +43,7 @@ shift
 FRESH_FILES=("$@")
 THRESHOLD_PCT=${PERF_THRESHOLD_PCT:-15}
 THRESHOLD_PCT_JIT=${PERF_THRESHOLD_PCT_JIT:-30}
+THRESHOLD_PCT_VM_COUNTER=${PERF_THRESHOLD_PCT_VM_COUNTER:-15}
 
 if [[ ! -f "$BASELINE" ]]; then
     echo "error: baseline not found: $BASELINE" >&2
@@ -63,7 +68,9 @@ keys=$(jq -r 'keys[] | select(endswith("_median_ms"))' "$BASELINE")
 
 for key in $keys; do
     label=${key%_median_ms}
-    if [[ "$label" == jit_* ]]; then
+    if [[ "$label" == "vm_counter_loop" ]]; then
+        threshold=$THRESHOLD_PCT_VM_COUNTER
+    elif [[ "$label" == jit_* ]]; then
         threshold=$THRESHOLD_PCT_JIT
     else
         threshold=$THRESHOLD_PCT
@@ -88,7 +95,7 @@ for key in $keys; do
 done
 
 echo
-echo "Thresholds: default ${THRESHOLD_PCT}%, jit_* rows ${THRESHOLD_PCT_JIT}% (override via PERF_THRESHOLD_PCT / PERF_THRESHOLD_PCT_JIT)"
+echo "Thresholds: default ${THRESHOLD_PCT}%, jit_* rows ${THRESHOLD_PCT_JIT}%, vm_counter_loop ${THRESHOLD_PCT_VM_COUNTER}% (override via PERF_THRESHOLD_PCT / PERF_THRESHOLD_PCT_JIT / PERF_THRESHOLD_PCT_VM_COUNTER)"
 
 if $regressed; then
     echo "**FAIL** — one or more benchmarks exceed the threshold (or are missing)."

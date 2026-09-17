@@ -60,8 +60,12 @@ env:
   # hosted-runner variance (LLVM codegen + first-call cost). See
   # issue #387 for the spurious-failure history that motivated the
   # split.
+  # The counter-loop row has a separate 30% budget because #4245 records
+  # repeated hosted-runner swings on that workload while the aggregate VM
+  # benchmark remains stable. The default remains 15% outside this gate.
   PERF_THRESHOLD_PCT: "15"
   PERF_THRESHOLD_PCT_JIT: "30"
+  PERF_THRESHOLD_PCT_VM_COUNTER: "30"
 
 jobs:
   fib:
