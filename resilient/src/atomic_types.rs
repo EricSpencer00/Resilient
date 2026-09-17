@@ -1619,4 +1619,94 @@ mod tests {
         );
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn res4254_check_rejects_uncovered_atomic_declaration_shapes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let cases = [
+            (
+                "attribute arguments",
+                "#[atomic(seq_cst)]\nstatic let counter = 0;\n",
+                "<test>:2:12: error: #[atomic] on `counter` does not accept arguments; use bare #[atomic]",
+            ),
+            (
+                "non-literal initializer",
+                "#[atomic]\nstatic let counter = \"nope\";\n",
+                "<test>:2:12: error: atomic type `counter` must be initialized with an integer literal",
+            ),
+            (
+                "non-static declaration",
+                "#[atomic]\nlet counter = 0;\n",
+                "<test>:2:5: error: atomic type `counter` must be declared as `static let`, found `let` binding",
+            ),
+        ];
+
+        for (label, src, expected) in cases {
+            crate::feature_attrs::reset();
+            let (prog, errs) = crate::parse(src);
+            assert!(errs.is_empty(), "{label} parse errors: {errs:?}");
+            let err = check(&prog, "<test>").expect_err(label);
+            assert_eq!(err, expected, "{label}");
+        }
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn res4254_check_rejects_uncovered_atomic_call_shapes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        let cases = [
+            (
+                "malformed call",
+                "#[atomic]\nstatic let counter = 0;\nfn main() { atomic_load(); }\n",
+                "<test>:3:25: error: atomic_load expects 1 arguments, got 0",
+            ),
+            (
+                "non-integer binding",
+                "#[atomic]\nstatic let counter = 0;\nfn atomic_store(any target, any value) -> int { return 0; }\nfn main() {\n    let flag = true;\n    atomic_store(counter, flag);\n}\n",
+                "<test>:6:31: error: atomic_store value must be an integer expression, got boolean binding `flag`",
+            ),
+        ];
+
+        for (label, src, expected) in cases {
+            crate::feature_attrs::reset();
+            let (prog, errs) = crate::parse(src);
+            assert!(errs.is_empty(), "{label} parse errors: {errs:?}");
+            let err = check(&prog, "<test>").expect_err(label);
+            assert_eq!(err, expected, "{label}");
+        }
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn res4254_check_rejects_missing_atomic_declaration() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "orphan",
+            crate::feature_attrs::AttrRecord {
+                name: "atomic".into(),
+                args: String::new(),
+                line: 4,
+            },
+        );
+        let (prog, errs) = crate::parse("fn main() { return 0; }");
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let err = check(&prog, "<test>").expect_err("missing declaration");
+        assert_eq!(
+            err,
+            "<test>:0:0: error: atomic type `orphan` is missing a matching declaration"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn res4254_check_accepts_atomic_call_site_baseline() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "#[atomic]\nstatic let counter = 0;\nfn main() {\n    atomic_store(counter, 1);\n    let current = atomic_load(counter);\n    atomic_fetch_add(counter, 2);\n    return current;\n}\n";
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        check(&prog, "<test>").expect("well-formed atomic call sites should pass");
+        crate::feature_attrs::reset();
+    }
 }
