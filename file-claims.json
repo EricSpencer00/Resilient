@@ -7,6 +7,10 @@
     "resilient/src/mutex_rwlock.rs": {
       "branch": "res-4270-mutex-origin",
       "claimed_at": "2026-09-17T04:06:37Z"
+    },
+    "resilient/tests/it/mutex_rwlock_origin.rs": {
+      "branch": "res-4270-mutex-origin",
+      "claimed_at": "2026-09-17T04:18:56Z"
     }
   }
 }
