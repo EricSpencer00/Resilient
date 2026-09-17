@@ -171,7 +171,7 @@
       },
       "McpCallRequest": {
         "type": "object",
-        "description": "`tool`/`name` and `input`/`arguments` are accepted as aliases of each other for client-compatibility.",
+        "description": "`tool`/`name` and `input`/`arguments` are accepted as aliases of each other for client-compatibility. The `resilient_verify` tool accepts an optional boolean `contracts` input, defaulting to true.",
         "properties": {
           "tool": {
             "type": "string",

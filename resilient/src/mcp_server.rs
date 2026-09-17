@@ -783,9 +783,23 @@ fn http_mcp_call(body: &str, timeout: Duration) -> String {
         .and_then(|item| item["text"].as_str())
         .unwrap_or("");
 
-    http_json(
-        200,
-        json!({
+    let proof_status = if mcp_tool == "resilient_verify" {
+        Some(if !is_error {
+            if output.starts_with("SKIPPED") {
+                "skipped"
+            } else {
+                "proved"
+            }
+        } else if output.contains("not available") {
+            "unavailable"
+        } else {
+            "failed"
+        })
+    } else {
+        None
+    };
+
+    let mut response_body = json!({
             "status": if is_error { "error" } else { "ok" },
             "tool": tool,
             "mcp_tool": mcp_tool,
@@ -793,8 +807,11 @@ fn http_mcp_call(body: &str, timeout: Duration) -> String {
             "stderr": if is_error { output } else { "" },
             "diagnostics": [],
             "raw_mcp": result
-        }),
-    )
+    });
+    if let Some(proof_status) = proof_status {
+        response_body["proof_status"] = json!(proof_status);
+    }
+    http_json(200, response_body)
 }
 
 fn http_tool_alias(tool: &str) -> &str {
@@ -1759,6 +1776,14 @@ fn tool_verify(args: &Value) -> Result<String, String> {
         ));
     }
 
+    if !args
+        .get("contracts")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        return Ok("SKIPPED — contract verification disabled (contracts=false).".to_string());
+    }
+
     #[cfg(feature = "z3")]
     {
         let mut tc = crate::typechecker::TypeChecker::new();
@@ -2555,6 +2580,10 @@ fn tool_definitions() -> Value {
                     "source": {
                         "type": "string",
                         "description": "Resilient source code to verify"
+                    },
+                    "contracts": {
+                        "type": "boolean",
+                        "description": "Whether to run contract proof checking; defaults to true"
                     }
                 },
                 "required": ["source"]
