@@ -4,21 +4,17 @@
       "branch": "res-4246-extern-callsite-typecheck",
       "claimed_at": "2026-08-08T23:53:49Z"
     },
-    ".github/workflows/perf_gate.yml": {
-      "branch": "res-4245-perf-signal",
-      "claimed_at": "2026-09-17T06:26:33Z"
+    ".github/workflows/integration-follow-main.yml": {
+      "branch": "res-4220-reconcile-integration",
+      "claimed_at": "2026-09-17T22:35:13Z"
     },
-    "scripts/compare_perf.sh": {
-      "branch": "res-4245-perf-signal",
-      "claimed_at": "2026-09-17T06:26:33Z"
+    "agent-scripts/reconcile-integration.sh": {
+      "branch": "res-4220-reconcile-integration",
+      "claimed_at": "2026-09-17T22:35:13Z"
     },
-    "benchmarks/extended/compare.sh": {
-      "branch": "res-4245-perf-signal",
-      "claimed_at": "2026-09-17T06:26:33Z"
-    },
-    "agent-scripts/test-compare-perf.sh": {
-      "branch": "res-4245-perf-signal",
-      "claimed_at": "2026-09-17T06:30:43Z"
+    "agent-scripts/test-reconcile-integration.sh": {
+      "branch": "res-4220-reconcile-integration",
+      "claimed_at": "2026-09-17T22:35:13Z"
     }
   }
 }
