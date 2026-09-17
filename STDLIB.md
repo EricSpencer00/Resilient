@@ -310,6 +310,48 @@ match r {
 | `array_min_float(arr)` `array_max_float(arr)` | array of float → float | RES-942: float-array min/max; NaN propagates; empty errors |
 | `array_average_float(arr)` | array of float → float | RES-942: float-array mean; empty errors |
 
+## Deque
+
+Deque operations use functional value semantics: they return a new deque and
+leave the input unchanged. Always bind the returned value; discarding it
+discards the operation too.
+
+```rz
+let d = deque_new();
+deque_push_back(d, 1);       // d is still empty
+let d2 = deque_push_back(d, 1); // capture the new deque
+println(deque_len(d2));      // 1
+```
+
+| Name | Signature | Notes |
+|---|---|---|
+| `deque_new()` | () → array | Create an empty deque. |
+| `deque_push_front(dq, value)` | (array, T) → array | Return a new deque with `value` at the front; O(n). |
+| `deque_push_back(dq, value)` | (array, T) → array | Return a new deque with `value` at the back; O(1) amortized. |
+| `deque_pop_front(dq)` | array → (Option<T>, array) | Return `(Some(value), remaining)` or `(None, empty deque)`; the input is unchanged. |
+| `deque_pop_back(dq)` | array → (Option<T>, array) | Return `(Some(value), remaining)` or `(None, empty deque)`; the input is unchanged. |
+| `deque_peek_front(dq)` | array → Option<T> | Inspect the front without removing it; empty deque returns `None`. |
+| `deque_peek_back(dq)` | array → Option<T> | Inspect the back without removing it; empty deque returns `None`. |
+| `deque_len(dq)` | array → int | Number of elements; O(1). |
+| `deque_is_empty(dq)` | array → bool | Whether the deque has no elements; O(1). |
+
+## Heap
+
+Heap operations are also functional: `heap_push` and `heap_pop` return new
+heap values, so the original heap remains usable. Heap elements must be
+comparable values (`int`, `float`, or `string`; integers and floats may be
+mixed).
+
+| Name | Signature | Notes |
+|---|---|---|
+| `heap_new()` | () → array | Create an empty min-heap; `heap_pop` and `heap_peek` return the smallest element. |
+| `heap_new_max()` | () → array | Create an empty max-heap; `heap_pop` and `heap_peek` return the largest element. |
+| `heap_push(h, value)` | (array, T) → array | Return a new heap containing `value`; O(log n). |
+| `heap_pop(h)` | array → (Option<T>, array) | Return `(Some(extremal), remaining heap)` or `(None, empty heap)`; O(log n). |
+| `heap_peek(h)` | array → Option<T> | Inspect the extremal element without removing it; empty heap returns `None`; O(1). |
+| `heap_len(h)` | array → int | Number of heap elements; O(1). |
+| `heap_is_empty(h)` | array → bool | Whether the heap has no elements; O(1). |
+
 ### Maps
 
 | Name | Signature | Notes |
