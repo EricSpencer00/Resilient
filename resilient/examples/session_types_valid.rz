@@ -1,19 +1,14 @@
-// RES-3193: Valid session_types declarations
+// RES-4268: Valid session protocol declaration and call sequence
 
-session_types HTTP_SESSION {
-    init: connect,
-    connected: {send_request, recv_response},
-    recv_response: {process, disconnect},
-    process: {connected, done},
-    done: end,
-}
-
-session_types STATE_MACHINE {
-    idle: {start, error},
-    active: {pause, stop},
-    stopped: end,
-}
-
-fn main(int x) -> int {
+#[session(protocol = "send(int).recv(bool).close")]
+fn channel_step() -> int {
     return 0;
 }
+
+fn main() {
+    println(channel_step());
+    println(channel_step());
+    println(channel_step());
+}
+
+main();

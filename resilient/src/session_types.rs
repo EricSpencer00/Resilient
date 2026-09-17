@@ -1,6 +1,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
+use crate::uniqueness_walk::{any_node, for_each_function, visit};
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, RwLock};
 
@@ -217,13 +218,115 @@ pub fn validate_step(channel: &str, step: usize, op: &SessionOp) -> Result<(), S
     Ok(())
 }
 
-pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let specs = collect_checked(source_path)?;
+    install(specs.clone());
     if specs.is_empty() {
         return Ok(());
     }
-    install(specs);
+    validate_call_sites(program, source_path, &specs)
+}
+
+fn validate_call_sites(
+    program: &Node,
+    source_path: &str,
+    specs: &[(String, SessionSpec)],
+) -> Result<(), String> {
+    let channels: HashMap<&str, &[SessionOp]> = specs
+        .iter()
+        .map(|(name, spec)| (name.as_str(), spec.protocol.as_slice()))
+        .collect();
+    let mut first_error = None;
+
+    for_each_function(program, |_name, _parameters, body| {
+        if first_error.is_some() {
+            return;
+        }
+        let mut steps: HashMap<String, usize> = HashMap::with_capacity(channels.len());
+        if let Err(err) = scan_straight_line(body, source_path, &channels, &mut steps) {
+            first_error = Some(err);
+        }
+    });
+
+    first_error.map_or(Ok(()), Err)
+}
+
+fn scan_straight_line(
+    node: &Node,
+    source_path: &str,
+    channels: &HashMap<&str, &[SessionOp]>,
+    steps: &mut HashMap<String, usize>,
+) -> Result<(), String> {
+    let Node::Block { stmts, .. } = node else {
+        return scan_statement(node, source_path, channels, steps);
+    };
+
+    for statement in stmts {
+        scan_statement(statement, source_path, channels, steps)?;
+    }
     Ok(())
+}
+
+fn scan_statement(
+    statement: &Node,
+    source_path: &str,
+    channels: &HashMap<&str, &[SessionOp]>,
+    steps: &mut HashMap<String, usize>,
+) -> Result<(), String> {
+    // A call in a branch, loop, handler, defer, or nested function does not
+    // have one statically determined execution count. Leave those constructs
+    // to a future flow-sensitive pass instead of rejecting valid programs.
+    if any_node(statement, |node| {
+        matches!(
+            node,
+            Node::IfStatement { .. }
+                | Node::WhileStatement { .. }
+                | Node::ForInStatement { .. }
+                | Node::Match { .. }
+                | Node::TryCatch { .. }
+                | Node::LiveBlock { .. }
+                | Node::Quantifier { .. }
+                | Node::DeferStatement { .. }
+                | Node::FunctionLiteral { .. }
+        )
+    }) {
+        return Ok(());
+    }
+
+    let mut result = Ok(());
+    visit(statement, &mut |node| {
+        if result.is_err() {
+            return;
+        }
+        let Node::CallExpression { function, span, .. } = node else {
+            return;
+        };
+        let Node::Identifier { name, .. } = function.as_ref() else {
+            return;
+        };
+        let Some(protocol) = channels.get(name.as_str()) else {
+            return;
+        };
+        let step = steps.entry(name.clone()).or_insert(0);
+        let validation = match protocol.get(*step) {
+            Some(operation) => validate_step(name, *step, operation),
+            None => {
+                // The attempted operation is immaterial once the protocol is
+                // exhausted, but still route the error through the shared
+                // validator so all session checks use one source of truth.
+                validate_step(name, *step, &SessionOp::Close)
+            }
+        };
+        if let Err(message) = validation {
+            result = Err(format!(
+                "{}:{}:{}: error: {}",
+                source_path, span.start.line, span.start.column, message
+            ));
+            return;
+        }
+        *step += 1;
+    });
+    result
 }
 
 #[cfg(test)]
