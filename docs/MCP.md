@@ -65,6 +65,13 @@ safe out of the box:
 |---|---|---|
 | Bounded connection worker pool | `RESILIENT_MCP_MAX_CONNECTIONS` | 16 concurrent connections |
 | Shutdown drain grace period | `RESILIENT_MCP_SHUTDOWN_DRAIN_SECS` | 30 seconds |
+| CORS allow origin | `RESILIENT_MCP_CORS_ORIGIN` | `*` |
+
+Every HTTP response includes `Access-Control-Allow-Origin`, allowed methods
+(`GET, POST, OPTIONS`), and the `Content-Type` allowed header. `OPTIONS
+/mcp/call` and `OPTIONS /health` return a `204 No Content` preflight response.
+Set `RESILIENT_MCP_CORS_ORIGIN` to the exact browser origin when the service
+should not be open to every origin; values containing line breaks are ignored.
 
 **Concurrency (RES-3937).** `run_http` accepts connections on the main
 thread and hands each one to a bounded pool of worker threads over a
