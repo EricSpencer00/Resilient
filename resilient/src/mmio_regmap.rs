@@ -45,6 +45,161 @@ fn loc(source_path: &str, line: usize) -> String {
     format!("{source_path}:{line}:0")
 }
 
+fn mmio_diag(source_path: &str, line: usize, message: impl AsRef<str>) -> String {
+    format!("{}: error: {}", loc(source_path, line), message.as_ref())
+}
+
+fn parse_mmio_addr(
+    item: &str,
+    key: &str,
+    raw_value: &str,
+    source_path: &str,
+    line: usize,
+) -> Result<u64, String> {
+    let value = raw_value.trim();
+    if !(value.starts_with('"') && value.ends_with('"') && value.len() >= 2) {
+        return Err(mmio_diag(
+            source_path,
+            line,
+            format!("MMIO regmap '{item}' {key} value must be quoted: {value}"),
+        ));
+    }
+    let Some(address) = parse_addr(value) else {
+        return Err(mmio_diag(
+            source_path,
+            line,
+            format!("MMIO regmap '{item}' {key} value is not a valid address: {value}"),
+        ));
+    };
+    Ok(address)
+}
+
+fn validate_mmio_decl(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+) -> Result<MmioRegmap, String> {
+    if rec.args.trim().is_empty() {
+        return Err(mmio_diag(
+            source_path,
+            rec.line,
+            format!("MMIO regmap '{item}' requires base and size_bytes arguments"),
+        ));
+    }
+
+    let mut base = None;
+    let mut size = None;
+    for chunk in rec.args.split(',') {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            return Err(mmio_diag(
+                source_path,
+                rec.line,
+                format!("MMIO regmap '{item}' has an empty argument"),
+            ));
+        }
+        let Some((key, raw_value)) = chunk.split_once('=') else {
+            return Err(mmio_diag(
+                source_path,
+                rec.line,
+                format!("MMIO regmap '{item}' has malformed argument '{chunk}'"),
+            ));
+        };
+        let key = key.trim();
+        let value = match key {
+            "base" => {
+                if base.is_some() {
+                    return Err(mmio_diag(
+                        source_path,
+                        rec.line,
+                        format!("MMIO regmap '{item}' has duplicate base argument"),
+                    ));
+                }
+                Some(parse_mmio_addr(
+                    item,
+                    "base",
+                    raw_value,
+                    source_path,
+                    rec.line,
+                )?)
+            }
+            "size_bytes" => {
+                if size.is_some() {
+                    return Err(mmio_diag(
+                        source_path,
+                        rec.line,
+                        format!("MMIO regmap '{item}' has duplicate size_bytes argument"),
+                    ));
+                }
+                Some(parse_mmio_addr(
+                    item,
+                    "size_bytes",
+                    raw_value,
+                    source_path,
+                    rec.line,
+                )?)
+            }
+            _ => {
+                return Err(mmio_diag(
+                    source_path,
+                    rec.line,
+                    format!("MMIO regmap '{item}' has unknown argument '{key}'"),
+                ));
+            }
+        };
+        if key == "base" {
+            base = value;
+        } else {
+            size = value;
+        }
+    }
+
+    let Some(base_addr) = base else {
+        return Err(mmio_diag(
+            source_path,
+            rec.line,
+            format!("MMIO regmap '{item}' requires a base argument"),
+        ));
+    };
+    if base_addr == 0 {
+        return Err(mmio_diag(
+            source_path,
+            rec.line,
+            format!("MMIO regmap '{item}' base address 0x0 is reserved"),
+        ));
+    }
+    let Some(size_bytes) = size else {
+        return Err(mmio_diag(
+            source_path,
+            rec.line,
+            format!("MMIO regmap '{item}' requires a size_bytes argument"),
+        ));
+    };
+    if size_bytes == 0 {
+        return Err(mmio_diag(
+            source_path,
+            rec.line,
+            format!("MMIO regmap '{item}' size_bytes must be greater than zero"),
+        ));
+    }
+
+    Ok(MmioRegmap {
+        struct_name: item.to_string(),
+        base_addr,
+        size_bytes,
+        line: rec.line,
+    })
+}
+
+fn collect_checked(source_path: &str) -> Result<Vec<MmioRegmap>, String> {
+    let attrs = crate::feature_attrs::find_kind("mmio");
+    let mut out = Vec::with_capacity(attrs.len());
+    for (item, rec) in attrs {
+        out.push(validate_mmio_decl(&item, &rec, source_path)?);
+    }
+    Ok(out)
+}
+
 pub fn collect() -> Vec<MmioRegmap> {
     let attrs = crate::feature_attrs::find_kind("mmio");
     let mut out = Vec::with_capacity(attrs.len());
@@ -105,7 +260,7 @@ pub fn lookup(struct_name: &str) -> Option<MmioRegmap> {
 }
 
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
-    let maps = collect();
+    let maps = collect_checked(source_path)?;
     if maps.is_empty() {
         return Ok(());
     }
