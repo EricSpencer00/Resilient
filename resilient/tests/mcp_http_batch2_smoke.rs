@@ -6,14 +6,21 @@
 //! socket / real OS process signal, so they exercise the same code
 //! path a deployed instance would.
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[path = "mcp_smoke_support/mod.rs"]
 mod mcp_smoke_support;
-use mcp_smoke_support::{ServerHandle, spawn_with_retry};
+use mcp_smoke_support::{
+    DEFAULT_READY_DEADLINE, ServerHandle, send_request_retrying, spawn_with_retry,
+};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_rz")
@@ -79,33 +86,23 @@ impl Drop for Server {
     }
 }
 
-/// Build and send a raw HTTP/1.1 request over `stream`, returning the
-/// full response text. No dependency on an HTTP client crate.
-///
-/// RES-4224: deliberately does *not* go through
-/// `mcp_smoke_support::send_request_retrying`, unlike the other MCP smoke
-/// tests. Both assertions in this file are about the timing and fate of an
-/// individual connection: `concurrent_requests_overlap` compares measured
-/// wall-clock against a solo baseline (a silent retry would inflate the
-/// measurement and invert the conclusion), and
-/// `shutdown_drains_in_flight_request` asserts that a connection open
-/// across SIGTERM is drained rather than dropped (a silent retry would
-/// reconnect and hide exactly the regression it exists to catch). The
-/// startup race those helpers guard against is handled once, up front, by
-/// `spawn_with_retry`, which does not return until `/health` has answered.
-fn http_call(port: u16, method: &str, path: &str, body: &str) -> String {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to MCP HTTP server");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
+/// Send an HTTP/1.1 request through the shared retry helper.
+fn http_call_result(port: u16, method: &str, path: &str, body: &str) -> Result<String, String> {
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(request.as_bytes()).unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    response
+    send_request_retrying(
+        port,
+        &request,
+        Duration::from_secs(15),
+        DEFAULT_READY_DEADLINE,
+    )
+}
+
+fn http_call(port: u16, method: &str, path: &str, body: &str) -> String {
+    http_call_result(port, method, path, body)
+        .unwrap_or_else(|err| panic!("HTTP request failed: {err}"))
 }
 
 fn status_of(response: &str) -> &str {
@@ -116,26 +113,64 @@ fn status_of(response: &str) -> &str {
         .unwrap_or("?")
 }
 
-/// Resilient source that burns enough wall-clock time (a busy loop, no
-/// stdlib `sleep` dependency needed) to make overlap-vs-serial timing
-/// unambiguous, without needing a fixed-latency primitive.
-const SLOW_SOURCE: &str = r#"
-fn main() -> int {
-    let i: int = 0;
-    while i < 60000000 {
-        i = i + 1;
-    }
-    return i;
+fn marker_path(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before the Unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "resilient-mcp-batch2-{}-{label}-{nanos}",
+        std::process::id()
+    ))
 }
-main();
-"#;
 
-fn slow_call_body() -> String {
+fn rz_string(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+/// Resilient source that waits on a host-file barrier. The request cannot
+/// complete until the test releases it, making overlap independent of host
+/// scheduling speed and avoiding timing thresholds.
+fn slow_source(start_path: &Path, release_path: &Path) -> String {
+    let start_path = rz_string(start_path);
+    let release_path = rz_string(release_path);
+    format!(
+        r#"
+fn main() -> int {{
+    file_write("{start_path}", "started");
+    while file_exists("{release_path}") == false {{
+        let spin: int = 0;
+        while spin < 1000 {{
+            spin = spin + 1;
+        }}
+    }}
+    return 0;
+}}
+main();
+"#
+    )
+}
+
+fn slow_call_body(start_path: &Path, release_path: &Path) -> String {
     serde_json::json!({
         "tool": "rz_run",
-        "input": { "source": SLOW_SOURCE }
+        "input": { "source": slow_source(start_path, release_path) }
     })
     .to_string()
+}
+
+fn wait_for_marker(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        path.exists(),
+        "slow request did not reach its barrier: {}",
+        path.display()
+    );
 }
 
 #[test]
@@ -145,39 +180,66 @@ fn concurrent_requests_overlap() {
         ("RESILIENT_MCP_TIMEOUT_SECS", "30"),
     ]);
     let port = server.port();
-    let body = slow_call_body();
+    let start_path = marker_path("overlap-start");
+    let release_path = marker_path("overlap-release");
+    let _ = fs::remove_file(&start_path);
+    let _ = fs::remove_file(&release_path);
+    let body = slow_call_body(&start_path, &release_path);
 
-    // Time one request alone to establish a per-request baseline.
-    let solo_start = Instant::now();
-    let resp = http_call(port, "POST", "/mcp/call", &body);
-    let solo_elapsed = solo_start.elapsed();
-    assert_eq!(status_of(&resp), "200", "solo request failed: {resp}");
+    let slow_done = Arc::new(AtomicBool::new(false));
+    let slow_done_thread = Arc::clone(&slow_done);
+    let slow_body = body.clone();
+    let slow_handle = std::thread::spawn(move || {
+        let result = http_call_result(port, "POST", "/mcp/call", &slow_body);
+        slow_done_thread.store(true, Ordering::Release);
+        result
+    });
 
-    // Fire two more of the same slow request concurrently. If the server
-    // still served connections one-at-a-time (RES-3937 regression), the
-    // wall-clock time for both would be roughly 2x the solo baseline. A
-    // bounded worker pool overlaps them, so total time should stay much
-    // closer to the single-request baseline.
-    let body_a = body.clone();
-    let body_b = body.clone();
-    let concurrent_start = Instant::now();
-    let t1 = std::thread::spawn(move || http_call(port, "POST", "/mcp/call", &body_a));
-    let t2 = std::thread::spawn(move || http_call(port, "POST", "/mcp/call", &body_b));
-    let r1 = t1.join().unwrap();
-    let r2 = t2.join().unwrap();
-    let concurrent_elapsed = concurrent_start.elapsed();
+    wait_for_marker(&start_path);
 
-    assert_eq!(status_of(&r1), "200", "concurrent request 1 failed: {r1}");
-    assert_eq!(status_of(&r2), "200", "concurrent request 2 failed: {r2}");
+    let health_done = Arc::new(AtomicBool::new(false));
+    let health_done_thread = Arc::clone(&health_done);
+    let health_handle = std::thread::spawn(move || {
+        let result = http_call_result(port, "GET", "/health", "");
+        health_done_thread.store(true, Ordering::Release);
+        result
+    });
 
-    // Overlap evidence: two concurrent slow requests should finish in
-    // well under 2x the solo time (generous 1.6x threshold to absorb CI
-    // scheduling noise) — true serialization would land near 2x.
-    let threshold = solo_elapsed.as_secs_f64() * 1.6;
-    assert!(
-        concurrent_elapsed.as_secs_f64() < threshold,
-        "concurrent requests did not overlap: solo={solo_elapsed:?} concurrent={concurrent_elapsed:?} threshold<{threshold:?}s",
+    // The slow request is held open by the barrier. A concurrent worker must
+    // answer the independent health request before the barrier is released;
+    // a serialized server cannot do so without waiting for the slow request.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !health_done.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let overlapped = health_done.load(Ordering::Acquire) && !slow_done.load(Ordering::Acquire);
+
+    fs::write(&release_path, "release").expect("release slow request");
+    let slow_response = slow_handle
+        .join()
+        .expect("slow request thread panicked")
+        .expect("slow request failed");
+    let health_response = health_handle
+        .join()
+        .expect("health request thread panicked")
+        .expect("health request failed");
+
+    assert_eq!(
+        status_of(&slow_response),
+        "200",
+        "slow request failed: {slow_response}"
     );
+    assert_eq!(
+        status_of(&health_response),
+        "200",
+        "health request failed: {health_response}"
+    );
+    assert!(
+        overlapped,
+        "health request did not complete while slow request was in flight"
+    );
+    let _ = fs::remove_file(&start_path);
+    let _ = fs::remove_file(&release_path);
 }
 
 #[test]
@@ -227,17 +289,24 @@ fn shutdown_drains_in_flight_request() {
         ("RESILIENT_MCP_SHUTDOWN_DRAIN_SECS", "20"),
     ]);
     let port = server.port();
-    let body = slow_call_body();
+    let start_path = marker_path("shutdown-start");
+    let release_path = marker_path("shutdown-release");
+    let _ = fs::remove_file(&start_path);
+    let _ = fs::remove_file(&release_path);
+    let body = slow_call_body(&start_path, &release_path);
 
-    // Kick off a slow request in the background, give it a moment to be
-    // accepted by a worker, then send SIGTERM. The in-flight request
-    // should still complete successfully (drained, not dropped), and the
-    // process should exit cleanly afterward.
-    let handle = std::thread::spawn(move || http_call(port, "POST", "/mcp/call", &body));
-    std::thread::sleep(Duration::from_millis(300));
+    // Hold a request at a known in-flight point, then send SIGTERM. The
+    // request should still complete successfully (drained, not dropped),
+    // and the process should exit cleanly afterward.
+    let handle = std::thread::spawn(move || http_call_result(port, "POST", "/mcp/call", &body));
+    wait_for_marker(&start_path);
     server.terminate();
+    fs::write(&release_path, "release").expect("release in-flight request");
 
-    let response = handle.join().expect("request thread panicked");
+    let response = handle
+        .join()
+        .expect("request thread panicked")
+        .expect("in-flight request failed");
     assert_eq!(
         status_of(&response),
         "200",
@@ -263,4 +332,6 @@ fn shutdown_drains_in_flight_request() {
             }
         }
     }
+    let _ = fs::remove_file(&start_path);
+    let _ = fs::remove_file(&release_path);
 }
