@@ -9,7 +9,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, RwLock};
 
 #[derive(Debug, Clone)]
@@ -86,6 +86,111 @@ pub fn install(specs: Vec<PeripheralSpec>) {
     }
 }
 
+fn peripheral_diagnostic(source_path: &str, line: usize, message: &str) -> String {
+    format!("{source_path}:{line}:1: error: {message}")
+}
+
+fn validate_peripheral_decl(
+    name: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+) -> Result<PeripheralSpec, String> {
+    let mut states = None;
+    let mut transitions = None;
+    let mut seen_keys = HashSet::new();
+
+    for chunk in rec.args.split(',') {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        let Some((raw_key, raw_value)) = chunk.split_once('=') else {
+            return Err(format!(
+                "malformed #[peripheral] argument `{chunk}` on `{name}`; expected `states = \"...\"` or `transitions = \"...\"`"
+            ));
+        };
+        let key = raw_key.trim();
+        let value = raw_value.trim().trim_matches('"');
+        if !seen_keys.insert(key) {
+            return Err(format!(
+                "duplicate #[peripheral] argument `{key}` on `{name}`"
+            ));
+        }
+        match key {
+            "states" => states = Some(value),
+            "transitions" => transitions = Some(value),
+            _ => {
+                return Err(format!(
+                    "unknown #[peripheral] argument `{key}` on `{name}`; expected `states` or `transitions`"
+                ));
+            }
+        }
+    }
+
+    let state_text = states.ok_or_else(|| {
+        format!("#[peripheral] on `{name}` requires a `states = \"...\"` argument")
+    })?;
+    let state_names: Vec<String> = state_text.split_whitespace().map(str::to_owned).collect();
+    if state_names.is_empty() {
+        return Err(format!("#[peripheral] `{name}` declares no states"));
+    }
+
+    let mut state_set = HashSet::with_capacity(state_names.len());
+    for state in &state_names {
+        if !state_set.insert(state.as_str()) {
+            return Err(format!(
+                "duplicate state `{state}` in #[peripheral] `{name}`"
+            ));
+        }
+    }
+
+    let mut transition_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+    if let Some(transition_text) = transitions {
+        for token in transition_text.split_whitespace() {
+            let Some((lhs, next)) = token.split_once("->") else {
+                return Err(format!(
+                    "malformed transition `{token}` in #[peripheral] `{name}`; expected `State:method->State`"
+                ));
+            };
+            if token.matches("->").count() != 1 {
+                return Err(format!(
+                    "malformed transition `{token}` in #[peripheral] `{name}`; expected `State:method->State`"
+                ));
+            }
+            let Some((source, method)) = lhs.split_once(':') else {
+                return Err(format!(
+                    "malformed transition `{token}` in #[peripheral] `{name}`; expected `State:method->State`"
+                ));
+            };
+            if token.matches(':').count() != 1 || method.is_empty() {
+                return Err(format!(
+                    "transition `{token}` in #[peripheral] `{name}` has an empty method name"
+                ));
+            }
+            if !state_set.contains(source) {
+                return Err(format!(
+                    "#[peripheral] `{name}` transition source `{source}` is not in `states`"
+                ));
+            }
+            if !state_set.contains(next) {
+                return Err(format!(
+                    "#[peripheral] `{name}` transition targets undeclared state `{next}`"
+                ));
+            }
+            transition_map
+                .entry(source.to_owned())
+                .or_default()
+                .insert(method.to_owned(), next.to_owned());
+        }
+    }
+
+    Ok(PeripheralSpec {
+        name: name.to_owned(),
+        initial_state: state_names[0].clone(),
+        states: state_names,
+        transitions: transition_map,
+    })
+}
+
 pub fn initial_state(name: &str) -> Option<String> {
     PERIPHERALS
         .read()
@@ -114,13 +219,37 @@ pub fn transition(peripheral: &str, current: &str, method: &str) -> Result<Strin
         })
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1306: gate `install` on the non-empty case — avoids a
     // wasted RwLock write per compilation and removes the
     // wipe-on-empty test race shape documented in RES-1302.
-    let specs = collect();
-    if specs.is_empty() {
+    let mut attrs = crate::feature_attrs::find_kind("peripheral");
+    if attrs.is_empty() {
         return Ok(());
+    }
+    // Attribute records are keyed by item in the registry, so their lookup
+    // order is not guaranteed to match source order. Sorting makes duplicate
+    // diagnostics stable and ensures the first line is actually the first
+    // declaration in the file.
+    attrs.sort_by_key(|(_, rec)| rec.line);
+
+    let mut first_seen: HashMap<&str, usize> = HashMap::new();
+    let mut specs = Vec::with_capacity(attrs.len());
+    for (name, rec) in &attrs {
+        if let Some(first_line) = first_seen.get(name.as_str()) {
+            return Err(peripheral_diagnostic(
+                source_path,
+                rec.line,
+                &format!(
+                    "duplicate #[peripheral] registration for `{name}`: first registered at line {first_line}, duplicate at line {}",
+                    rec.line
+                ),
+            ));
+        }
+        first_seen.insert(name, rec.line);
+        let spec = validate_peripheral_decl(name, rec)
+            .map_err(|message| peripheral_diagnostic(source_path, rec.line, &message))?;
+        specs.push(spec);
     }
     install(specs);
     Ok(())
