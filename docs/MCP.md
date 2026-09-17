@@ -254,9 +254,15 @@ every function.
 **Input:**
 ```json
 {
-  "source": "fn div(int x, int y) -> int\n  requires y != 0\n{ x / y }"
+  "source": "fn div(int x, int y) -> int\n  requires y != 0\n{ x / y }",
+  "contracts": true
 }
 ```
+
+The optional `contracts` boolean defaults to `true`. Set it to `false` to
+skip proof checking while still validating the source. HTTP responses for
+this tool include `proof_status` (`proved`, `skipped`, `unavailable`, or
+`failed`) alongside the normal output fields.
 
 ---
 
