@@ -896,6 +896,16 @@ rather than being silently masked.
 | `stats_covariance(a, b)` | (array, array) → float | RES-2660: covariance of two sequences |
 | `stats_correlation(a, b)` | (array, array) → float | RES-2660: Pearson correlation |
 | `stats_percentile(arr, p)` | (array of number, float) → number | RES-2660: p-th percentile (0.0-1.0) |
+| `stats_zscore(arr)` | array of number → array of float | Standardize each element with the sample standard deviation; output length matches `arr`, requires at least 2 elements, and errors when all values are equal. |
+| `stats_normalize(arr)` | array of number → array of float | Map the minimum to 0 and maximum to 1 with min-max normalization; empty, constant, and single-element arrays error because the range is zero. |
+| `stats_histogram(arr, bins)` | (array of number, int) → array of int | Return exactly `bins` equal-width counts over `[min, max]`; empty input returns all-zero counts, a single/constant input puts all values in bin 0, and `bins` must be positive. |
+| `stats_linear_regression(x, y)` | (array of number, array of number) → array of float | Ordinary least-squares fit of `y` on `x`; returns exactly `[slope, intercept]`, requires equal-length arrays with at least 2 points, and rejects constant `x`. |
+| `stats_moving_average(arr, k)` | (array of number, int) → array of float | Simple sliding-window averages; output length is `len(arr) - k + 1`, `k` must be in `1..=len(arr)`, and a single value is valid only with `k = 1`. |
+| `stats_weighted_mean(arr, weights)` | (array of number, array of number) → float | Weighted arithmetic mean; arrays must have equal length and a nonzero weight sum, an empty pair errors, and a single value returns that value when its weight is nonzero. |
+| `stats_geometric_mean(arr)` | array of number → float | Geometric mean of positive values; empty arrays and non-positive elements error, while a single positive value returns itself. |
+| `stats_harmonic_mean(arr)` | array of number → float | Harmonic mean of nonzero values; empty arrays and zero elements error, while a single nonzero value returns itself. |
+| `stats_mode_int(arr)` | array of int → int | Most frequent integer; ties choose the smallest value, empty arrays error, and a single integer returns itself. |
+| `stats_iqr(arr)` | array of number → float | Interquartile range `Q3 - Q1`, using linearly interpolated 75th and 25th percentiles; empty arrays error and a single value returns 0.0. |
 
 ## Number Theory
 
