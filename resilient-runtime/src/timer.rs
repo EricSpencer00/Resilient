@@ -535,7 +535,9 @@ pub fn tick(elapsed_us: u32) {
 /// cases; safe to call on production firmware but rarely useful.
 pub fn reset_all() {
     with_registry(|reg| {
-        reg.slots.fill(TimerState::FREE);
+        for slot in &mut reg.slots {
+            *slot = TimerState::FREE;
+        }
     });
 }
 
