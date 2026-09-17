@@ -5,9 +5,8 @@
 //! rejects arithmetic between values of different phantom units
 //! (e.g. `Meters + Seconds`) but allows scaling and same-unit ops.
 //!
-//! This module records the phantom registry and provides a
-//! `compatible(lhs, rhs)` API used by the typechecker arithmetic
-//! pass.
+//! This module records the phantom registry and validates
+//! unit-aware arithmetic through its `compatible(lhs, rhs)` API.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
@@ -190,16 +189,104 @@ pub fn compatible(lhs: &str, rhs: &str) -> bool {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1308: gate `install` on the non-empty case — see RES-1302
     // for the wipe-on-empty race rationale; same pattern saves a
     // wasted RwLock write per compile in the common case.
-    let specs = collect_checked(_source_path)?;
+    let specs = collect_checked(source_path)?;
     if specs.is_empty() {
         return Ok(());
     }
     install(specs);
-    Ok(())
+    validate_unit_arithmetic(program, source_path)
+}
+
+fn validate_unit_arithmetic(program: &Node, source_path: &str) -> Result<(), String> {
+    use crate::uniqueness_walk::{for_each_function, visit};
+
+    let mut first_error = None;
+    for_each_function(program, |function_name, params, body| {
+        if first_error.is_some() {
+            return;
+        }
+
+        let mut bindings = HashMap::with_capacity(params.len() + 8);
+        for (type_name, parameter_name) in params {
+            if unit_of(type_name).is_some() {
+                bindings.insert(parameter_name.clone(), type_name.clone());
+            }
+        }
+
+        visit(body, &mut |node| {
+            if first_error.is_some() {
+                return;
+            }
+
+            if let Node::LetStatement {
+                name,
+                value,
+                type_annot,
+                ..
+            } = node
+            {
+                let annotated = type_annot
+                    .as_deref()
+                    .filter(|type_name| unit_of(type_name).is_some())
+                    .map(str::to_owned);
+                let inferred = phantom_type_from_value(value, &bindings);
+                if let Some(type_name) = annotated.or(inferred) {
+                    bindings.insert(name.clone(), type_name);
+                } else {
+                    bindings.remove(name);
+                }
+            }
+
+            let Node::InfixExpression {
+                operator,
+                left,
+                right,
+                span,
+            } = node
+            else {
+                return;
+            };
+            if !matches!(*operator, "+" | "-") {
+                return;
+            }
+
+            let Some(lhs) = phantom_type_of(left, &bindings) else {
+                return;
+            };
+            let Some(rhs) = phantom_type_of(right, &bindings) else {
+                return;
+            };
+            if !compatible(lhs, rhs) {
+                first_error = Some(format!(
+                    "{source_path}:{}:{}: error[phantom-types]: cannot combine incompatible phantom units `{lhs}` and `{rhs}` in function `{function_name}`",
+                    span.start.line, span.start.column
+                ));
+            }
+        });
+    });
+
+    first_error.map_or(Ok(()), Err)
+}
+
+fn phantom_type_from_value(value: &Node, bindings: &HashMap<String, String>) -> Option<String> {
+    match value {
+        Node::StructLiteral { name, .. } if unit_of(name).is_some() => Some(name.clone()),
+        Node::Identifier { name, .. } => bindings.get(name).cloned(),
+        Node::FieldAccess { target, .. } => phantom_type_of(target, bindings).map(str::to_owned),
+        _ => None,
+    }
+}
+
+fn phantom_type_of<'a>(node: &Node, bindings: &'a HashMap<String, String>) -> Option<&'a str> {
+    match node {
+        Node::Identifier { name, .. } => bindings.get(name).map(String::as_str),
+        Node::FieldAccess { target, .. } => phantom_type_of(target, bindings),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +449,76 @@ mod tests {
         let src = "fn f(int x) -> int { return x; }\n";
         let (prog, _) = crate::parse(src);
         assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_rejects_mixed_units_in_struct_field_arithmetic() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+#[phantom(units = "Meters")]
+struct Meters { int v, }
+
+#[phantom(units = "Seconds")]
+struct Seconds { int v, }
+
+fn add() -> int {
+    let m = new Meters { v: 5 };
+    let s = new Seconds { v: 7 };
+    return m.v + s.v;
+}
+"#;
+        let (program, parse_errors) = crate::parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+
+        let mut typechecker = crate::typechecker::TypeChecker::new();
+        let err = typechecker
+            .check_program_with_source(&program, "test.rz")
+            .expect_err("mixed units must be rejected");
+        assert!(
+            err.contains("test.rz:"),
+            "diagnostic needs a location: {err}"
+        );
+        assert!(
+            err.contains("incompatible phantom units `Meters` and `Seconds`"),
+            "diagnostic should name both units: {err}"
+        );
+        assert!(
+            err.contains("function `add`"),
+            "diagnostic should name the enclosing function: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_accepts_same_unit_and_unregistered_arithmetic() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = r#"
+#[phantom(units = "Length")]
+struct Meters { int v, }
+
+struct Plain { int v, }
+
+fn same() -> int {
+    let a = new Meters { v: 5 };
+    let b = new Meters { v: 7 };
+    return a.v + b.v;
+}
+
+fn plain() -> int {
+    let a = new Plain { v: 5 };
+    let b = new Plain { v: 7 };
+    return a.v + b.v;
+}
+"#;
+        let (program, parse_errors) = crate::parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+        assert!(
+            check(&program, "test.rz").is_ok(),
+            "same-unit and unregistered arithmetic must remain valid"
+        );
         crate::feature_attrs::reset();
     }
 
