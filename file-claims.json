@@ -7,6 +7,10 @@
     "resilient/src/bounds_check.rs": {
       "branch": "res-4272-strict-bounds-nested",
       "claimed_at": "2026-09-17T03:09:06Z"
+    },
+    "resilient-runtime/src/timer.rs": {
+      "branch": "res-4272-strict-bounds-nested",
+      "claimed_at": "2026-09-17T03:30:48Z"
     }
   }
 }
