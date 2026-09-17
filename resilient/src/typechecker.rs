@@ -1671,6 +1671,12 @@ pub struct TypeChecker {
     /// many fields, especially when entries carry `Type::Function`
     /// with their own nested Vecs).
     struct_fields: HashMap<String, std::rc::Rc<Vec<(String, Type)>>>,
+    /// RES-4247: all declared struct names and the subset explicitly marked
+    /// `@repr(C)`. FFI signature validation needs this metadata before the
+    /// main statement walk so forward references get the same ABI diagnostic
+    /// as declarations that precede their `extern` block.
+    declared_structs: HashSet<String>,
+    repr_c_structs: HashSet<String>,
     /// RES-2801: for generic structs, store type parameter names and raw
     /// field types so construction sites can infer and validate concrete
     /// type-parameter bindings.
@@ -5560,6 +5566,8 @@ impl TypeChecker {
             stats: VerificationStats::default(),
             certificates: Vec::new(),
             struct_fields: HashMap::with_capacity(PRESIZE),
+            declared_structs: HashSet::with_capacity(PRESIZE),
+            repr_c_structs: HashSet::with_capacity(PRESIZE),
             generic_struct_info: HashMap::new(),
             // RES-1398: clone the cached builtin enum_decls (Option /
             // Result) HashMap instead of rebuilding it from scratch.
@@ -6144,6 +6152,11 @@ impl TypeChecker {
         // cache is thread-local and per-`check_program_with_source`
         // call; entries accumulate during one typecheck only.
         reset_z3_prove_cache();
+        // RES-4247: these sets are derived from the current AST. Do not let
+        // a reused checker treat a later non-`repr(C)` declaration as ABI
+        // stable because an earlier compilation used the same name.
+        self.declared_structs.clear();
+        self.repr_c_structs.clear();
         match program {
             Node::Program(statements) => {
                 let direct_trait_supers: HashMap<String, Vec<String>> = statements
@@ -6273,6 +6286,15 @@ impl TypeChecker {
                             for d in decls {
                                 let (name, ty) = crate::ffi_signatures::binding(d);
                                 self.env.set(name, ty);
+                            }
+                        }
+                        // RES-4247: collect struct ABI metadata before the
+                        // main walk so an extern declaration can refer to a
+                        // struct declared later in the file.
+                        Node::StructDecl { name, repr_c, .. } => {
+                            self.declared_structs.insert(name.clone());
+                            if *repr_c {
+                                self.repr_c_structs.insert(name.clone());
                             }
                         }
                         Node::TypeAlias { name, target, .. } => {
@@ -7503,7 +7525,16 @@ impl TypeChecker {
                             }
                             None => {}
                         }
-                        if !SUPPORTED_PARAMS.contains(&ty.as_str()) {
+                        let is_declared_struct = self.declared_structs.contains(ty);
+                        let is_repr_c_struct = self.repr_c_structs.contains(ty);
+                        if is_declared_struct && !is_repr_c_struct {
+                            return Err(format!(
+                                "FFI: extern fn `{}` parameter `{}` uses struct type `{}` without `@repr(C)`; \
+                                 struct parameters require an ABI-stable `@repr(C)` declaration",
+                                fn_name, param_name, ty
+                            ));
+                        }
+                        if !SUPPORTED_PARAMS.contains(&ty.as_str()) && !is_repr_c_struct {
                             return Err(format!(
                                 "FFI: extern fn `{}` parameter `{}` has unsupported type `{}`; \
                                  supported types are: {}, Array<Int>, Array<Float>",
@@ -7524,7 +7555,16 @@ impl TypeChecker {
                     }
 
                     // Validate return type
-                    if !SUPPORTED_RETURNS.contains(&d.return_type.as_str()) {
+                    let is_declared_struct = self.declared_structs.contains(&d.return_type);
+                    let is_repr_c_struct = self.repr_c_structs.contains(&d.return_type);
+                    if is_declared_struct && !is_repr_c_struct {
+                        return Err(format!(
+                            "FFI: extern fn `{}` returns struct type `{}` without `@repr(C)`; \
+                             struct returns require an ABI-stable `@repr(C)` declaration",
+                            fn_name, d.return_type
+                        ));
+                    }
+                    if !SUPPORTED_RETURNS.contains(&d.return_type.as_str()) && !is_repr_c_struct {
                         return Err(format!(
                             "FFI: extern fn `{}` has unsupported return type `{}`; \
                              supported types are: {}",
@@ -19282,6 +19322,83 @@ mod res4011_nested_pattern_exhaustiveness {
              };\n\
              }\n",
             "Shape::Square",
+        );
+    }
+}
+
+#[cfg(test)]
+mod ffi_struct_signature_tests {
+    use super::*;
+
+    fn check_source(src: &str) -> Result<(), String> {
+        let (program, parse_errors) = crate::parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+        TypeChecker::new()
+            .check_program_with_source(&program, "ffi_test.rz")
+            .map(|_| ())
+    }
+
+    #[test]
+    fn repr_c_struct_parameter_and_return_are_accepted() {
+        let src = r#"
+@repr(C) struct OneInt { Int v }
+extern "libtesthelper" { fn rt_double_one_int(s: OneInt) -> OneInt; }
+"#;
+        check_source(src).expect("repr(C) struct FFI signatures should typecheck");
+    }
+
+    #[test]
+    fn repr_c_struct_forward_reference_is_accepted() {
+        let src = r#"
+extern "libtesthelper" { fn rt_double_one_int(s: OneInt) -> OneInt; }
+@repr(C) struct OneInt { Int v }
+"#;
+        check_source(src).expect("forward-referenced repr(C) struct should typecheck");
+    }
+
+    #[test]
+    fn non_repr_c_struct_ffi_signature_is_rejected() {
+        let src = r#"
+struct Plain { Int v }
+extern "libtesthelper" { fn rt_plain(s: Plain) -> Plain; }
+"#;
+        let error = check_source(src).expect_err("non-repr(C) struct should be rejected");
+        assert!(
+            error.contains("Plain") && error.contains("@repr(C)"),
+            "unexpected diagnostic: {error}"
+        );
+    }
+
+    #[test]
+    fn ffi_struct_metadata_does_not_leak_between_checks() {
+        let repr_src = r#"
+@repr(C) struct Shared { Int v }
+extern "libtesthelper" { fn rt_shared(s: Shared) -> Shared; }
+"#;
+        let plain_src = r#"
+extern "libtesthelper" { fn rt_shared(s: Shared) -> Shared; }
+"#;
+        let (repr_program, repr_parse_errors) = crate::parse(repr_src);
+        assert!(
+            repr_parse_errors.is_empty(),
+            "parse errors: {repr_parse_errors:?}"
+        );
+        let (plain_program, plain_parse_errors) = crate::parse(plain_src);
+        assert!(
+            plain_parse_errors.is_empty(),
+            "parse errors: {plain_parse_errors:?}"
+        );
+
+        let mut checker = TypeChecker::new();
+        checker
+            .check_program_with_source(&repr_program, "repr.rz")
+            .expect("repr(C) struct FFI signature should typecheck");
+        let error = checker
+            .check_program_with_source(&plain_program, "plain.rz")
+            .expect_err("unknown struct should be rejected on a reused checker");
+        assert!(
+            error.contains("unsupported type") && error.contains("Shared"),
+            "unexpected diagnostic: {error}"
         );
     }
 }
