@@ -4,9 +4,9 @@ name: integration-follow-main
 # open non-draft PR branches fresh so auto-merge does not stall on stale
 # bases.
 #
-# If agents/integration has diverged (shouldn't happen if agents are
-# following the sync-integration.sh protocol), we log and skip rather
-# than force-push — a human will need to reconcile.
+# If agents/integration has diverged after squash merges, reconcile it only
+# when every integration-only commit is already represented by an equivalent
+# patch on main. Unique in-flight work is left untouched for human review.
 
 on:
   push:
@@ -33,39 +33,16 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Fast-forward agents/integration to main
+      - name: Test integration ref reconciliation
+        run: bash agent-scripts/test-reconcile-integration.sh
+
+      - name: Reconcile agents/integration with main
         run: |
           set -euo pipefail
           git fetch origin main
           # agents/integration may not exist yet — tolerate failure.
           git fetch origin agents/integration 2>/dev/null || true
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          if ! git rev-parse --verify origin/agents/integration >/dev/null 2>&1; then
-            echo "agents/integration does not exist — creating from main"
-            git push origin "$(git rev-parse origin/main):refs/heads/agents/integration"
-            exit 0
-          fi
-
-          main_sha="$(git rev-parse origin/main)"
-          int_sha="$(git rev-parse origin/agents/integration)"
-
-          if [[ "$main_sha" == "$int_sha" ]]; then
-            echo "agents/integration already at main ($main_sha)"
-            exit 0
-          fi
-
-          if git merge-base --is-ancestor "$int_sha" "$main_sha"; then
-            echo "agents/integration is behind main — fast-forwarding"
-            git push origin "$main_sha:refs/heads/agents/integration"
-          elif git merge-base --is-ancestor "$main_sha" "$int_sha"; then
-            echo "agents/integration is ahead of main (expected: in-flight work)"
-          else
-            echo "::warning::agents/integration has diverged from main — skipping fast-forward"
-            echo "  main_sha=$main_sha"
-            echo "  int_sha=$int_sha"
-          fi
+          bash agent-scripts/reconcile-integration.sh
 
       - name: Refresh open PR branches against main
         env:
