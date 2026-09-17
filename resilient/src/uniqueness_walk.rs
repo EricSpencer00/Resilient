@@ -44,7 +44,103 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
                 visit(&s.node, f);
             }
         }
-        Node::Function { body, .. } => visit(body, f),
+        Node::Extern { decls, .. } => {
+            for decl in decls {
+                for clause in &decl.requires {
+                    visit(clause, f);
+                }
+                for clause in &decl.ensures {
+                    visit(clause, f);
+                }
+            }
+        }
+        Node::Function {
+            defaults,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            for default in defaults.iter().flatten() {
+                visit(default, f);
+            }
+            for clause in requires {
+                visit(clause, f);
+            }
+            visit(body, f);
+            for clause in ensures {
+                visit(clause, f);
+            }
+            if let Some(clause) = recovers_to {
+                visit(clause, f);
+            }
+        }
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            for method in methods {
+                visit(method, f);
+            }
+        }
+        Node::ModuleDecl { body, .. } => {
+            for item in body {
+                visit(item, f);
+            }
+        }
+        Node::Actor {
+            state_init,
+            concurrent_ensures,
+            handlers,
+            ..
+        } => {
+            visit(state_init, f);
+            for clause in concurrent_ensures {
+                visit(clause, f);
+            }
+            for handler in handlers {
+                for clause in &handler.ensures {
+                    visit(clause, f);
+                }
+                visit(&handler.body, f);
+            }
+        }
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            eventually_clauses,
+            receive_handlers,
+            handlers,
+            ..
+        } => {
+            for (_, _, initializer) in state_fields {
+                visit(initializer, f);
+            }
+            for clause in always_clauses {
+                visit(clause, f);
+            }
+            for clause in eventually_clauses {
+                visit(&clause.post, f);
+            }
+            for handler in receive_handlers {
+                for clause in &handler.requires {
+                    visit(clause, f);
+                }
+                for clause in &handler.ensures {
+                    visit(clause, f);
+                }
+                visit(&handler.body, f);
+            }
+            for handler in handlers {
+                for clause in &handler.ensures {
+                    visit(clause, f);
+                }
+                visit(&handler.body, f);
+            }
+        }
+        Node::ClusterDecl { invariants, .. } => {
+            for invariant in invariants {
+                visit(invariant, f);
+            }
+        }
         Node::Block { stmts, .. } => {
             for s in stmts {
                 visit(s, f);
@@ -68,13 +164,27 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
             visit(condition, f);
+            for invariant in invariants {
+                visit(invariant, f);
+            }
             visit(body, f);
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
             visit(iterable, f);
+            for invariant in invariants {
+                visit(invariant, f);
+            }
             visit(body, f);
         }
         Node::CallExpression {
@@ -120,7 +230,24 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
         }
         // RES-2510: the following were missing, causing visitors to
         // silently skip sub-nodes inside these constructs.
-        Node::FunctionLiteral { body, .. } => visit(body, f),
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            for clause in requires {
+                visit(clause, f);
+            }
+            visit(body, f);
+            for clause in ensures {
+                visit(clause, f);
+            }
+            if let Some(clause) = recovers_to {
+                visit(clause, f);
+            }
+        }
         Node::Assert {
             condition, message, ..
         }
@@ -206,14 +333,34 @@ pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
             }
         }
         Node::LiveBlock {
-            body, invariants, ..
+            body,
+            invariants,
+            timeout,
+            ..
         } => {
             visit(body, f);
             for inv in invariants {
                 visit(inv, f);
             }
+            if let Some(timeout) = timeout {
+                visit(timeout, f);
+            }
         }
-        Node::Quantifier { body, .. } => visit(body, f),
+        Node::Quantifier { range, body, .. } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    visit(lo, f);
+                    visit(hi, f);
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => visit(iterable, f),
+            }
+            visit(body, f);
+        }
+        Node::InvariantStatement { expr, .. }
+        | Node::BreakWith { value: expr, .. }
+        | Node::DeferStatement { expr, .. } => visit(expr, f),
+        Node::StaticAssert { condition, .. } => visit(condition, f),
+        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => visit(body, f),
         // Leaf nodes and declarations without expression children.
         _ => {}
     }
@@ -267,7 +414,95 @@ fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
     }
     match node {
         Node::Program(items) => items.iter().any(|s| any_node_inner(&s.node, pred)),
-        Node::Function { body, .. } => any_node_inner(body, pred),
+        Node::Extern { decls, .. } => decls.iter().any(|decl| {
+            decl.requires
+                .iter()
+                .any(|clause| any_node_inner(clause, pred))
+                || decl
+                    .ensures
+                    .iter()
+                    .any(|clause| any_node_inner(clause, pred))
+        }),
+        Node::Function {
+            defaults,
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            defaults
+                .iter()
+                .flatten()
+                .any(|default| any_node_inner(default, pred))
+                || requires.iter().any(|clause| any_node_inner(clause, pred))
+                || any_node_inner(body, pred)
+                || ensures.iter().any(|clause| any_node_inner(clause, pred))
+                || recovers_to
+                    .as_ref()
+                    .is_some_and(|clause| any_node_inner(clause, pred))
+        }
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            methods.iter().any(|method| any_node_inner(method, pred))
+        }
+        Node::ModuleDecl { body, .. } => body.iter().any(|item| any_node_inner(item, pred)),
+        Node::Actor {
+            state_init,
+            concurrent_ensures,
+            handlers,
+            ..
+        } => {
+            any_node_inner(state_init, pred)
+                || concurrent_ensures
+                    .iter()
+                    .any(|clause| any_node_inner(clause, pred))
+                || handlers.iter().any(|handler| {
+                    handler
+                        .ensures
+                        .iter()
+                        .any(|clause| any_node_inner(clause, pred))
+                        || any_node_inner(&handler.body, pred)
+                })
+        }
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            eventually_clauses,
+            receive_handlers,
+            handlers,
+            ..
+        } => {
+            state_fields
+                .iter()
+                .any(|(_, _, initializer)| any_node_inner(initializer, pred))
+                || always_clauses
+                    .iter()
+                    .any(|clause| any_node_inner(clause, pred))
+                || eventually_clauses
+                    .iter()
+                    .any(|clause| any_node_inner(&clause.post, pred))
+                || receive_handlers.iter().any(|handler| {
+                    handler
+                        .requires
+                        .iter()
+                        .any(|clause| any_node_inner(clause, pred))
+                        || handler
+                            .ensures
+                            .iter()
+                            .any(|clause| any_node_inner(clause, pred))
+                        || any_node_inner(&handler.body, pred)
+                })
+                || handlers.iter().any(|handler| {
+                    handler
+                        .ensures
+                        .iter()
+                        .any(|clause| any_node_inner(clause, pred))
+                        || any_node_inner(&handler.body, pred)
+                })
+        }
+        Node::ClusterDecl { invariants, .. } => invariants
+            .iter()
+            .any(|invariant| any_node_inner(invariant, pred)),
         Node::Block { stmts, .. } => stmts.iter().any(|s| any_node_inner(s, pred)),
         Node::LetStatement { value, .. }
         | Node::StaticLet { value, .. }
@@ -287,10 +522,28 @@ fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
                     .is_some_and(|alt| any_node_inner(alt, pred))
         }
         Node::WhileStatement {
-            condition, body, ..
-        } => any_node_inner(condition, pred) || any_node_inner(body, pred),
-        Node::ForInStatement { iterable, body, .. } => {
-            any_node_inner(iterable, pred) || any_node_inner(body, pred)
+            condition,
+            body,
+            invariants,
+            ..
+        } => {
+            any_node_inner(condition, pred)
+                || invariants
+                    .iter()
+                    .any(|invariant| any_node_inner(invariant, pred))
+                || any_node_inner(body, pred)
+        }
+        Node::ForInStatement {
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            any_node_inner(iterable, pred)
+                || invariants
+                    .iter()
+                    .any(|invariant| any_node_inner(invariant, pred))
+                || any_node_inner(body, pred)
         }
         Node::CallExpression {
             function,
@@ -319,7 +572,20 @@ fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
                         || any_node_inner(body, pred)
                 })
         }
-        Node::FunctionLiteral { body, .. } => any_node_inner(body, pred),
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            requires.iter().any(|clause| any_node_inner(clause, pred))
+                || any_node_inner(body, pred)
+                || ensures.iter().any(|clause| any_node_inner(clause, pred))
+                || recovers_to
+                    .as_ref()
+                    .is_some_and(|clause| any_node_inner(clause, pred))
+        }
         Node::Assert {
             condition, message, ..
         }
@@ -385,9 +651,35 @@ fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
                 }
         }
         Node::LiveBlock {
-            body, invariants, ..
-        } => any_node_inner(body, pred) || invariants.iter().any(|inv| any_node_inner(inv, pred)),
-        Node::Quantifier { body, .. } => any_node_inner(body, pred),
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            any_node_inner(body, pred)
+                || invariants.iter().any(|inv| any_node_inner(inv, pred))
+                || timeout
+                    .as_ref()
+                    .is_some_and(|timeout| any_node_inner(timeout, pred))
+        }
+        Node::Quantifier { range, body, .. } => {
+            let range_has_node = match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    any_node_inner(lo, pred) || any_node_inner(hi, pred)
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => {
+                    any_node_inner(iterable, pred)
+                }
+            };
+            range_has_node || any_node_inner(body, pred)
+        }
+        Node::InvariantStatement { expr, .. }
+        | Node::BreakWith { value: expr, .. }
+        | Node::DeferStatement { expr, .. } => any_node_inner(expr, pred),
+        Node::StaticAssert { condition, .. } => any_node_inner(condition, pred),
+        Node::UnsafeBlock { body, .. } | Node::BenchBlock { body, .. } => {
+            any_node_inner(body, pred)
+        }
         _ => false,
     }
 }

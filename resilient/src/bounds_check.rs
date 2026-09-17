@@ -164,27 +164,181 @@ pub fn check_array_bounds(program: &Node, source_path: &str) -> Result<(), Strin
 }
 
 fn walk_toplevel(node: &Node, source_path: &str, errors: &mut Vec<String>) {
-    if let Node::Function { body, requires, .. } = node {
-        let mut ctx = BoundsCtx::default();
-        // Every `requires` clause is an available axiom inside the body.
-        for r in requires {
-            ctx.axioms.push(r.clone());
+    match node {
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            defaults,
+            ..
+        } => {
+            walk_function(
+                body,
+                FunctionContracts {
+                    requires,
+                    ensures,
+                    recovers_to: recovers_to.as_deref(),
+                    defaults,
+                },
+                &BoundsCtx::default(),
+                source_path,
+                errors,
+            );
         }
-        // RES-133b: leading `assume(P)` predicates are also axioms.
-        // The runtime check halts before any indexing in the body if
-        // they are violated, so the bounds prover may use them.
-        ctx.axioms
-            .extend(crate::assume_axioms::collect_leading_assume_axioms(body));
-        walk_node(body, &ctx, source_path, errors);
-    } else if let Node::ImplBlock { methods, .. } = node {
-        for m in methods {
-            walk_toplevel(m, source_path, errors);
+        Node::ImplBlock { methods, .. } | Node::BlanketImpl { methods, .. } => {
+            for method in methods {
+                walk_toplevel(method, source_path, errors);
+            }
         }
+        Node::ModuleDecl { body, .. } => {
+            for item in body {
+                walk_toplevel(item, source_path, errors);
+            }
+        }
+        Node::Extern { decls, .. } => {
+            for decl in decls {
+                for clause in &decl.requires {
+                    walk_node(clause, &BoundsCtx::default(), source_path, errors);
+                }
+                for clause in &decl.ensures {
+                    walk_node(clause, &BoundsCtx::default(), source_path, errors);
+                }
+            }
+        }
+        Node::Actor {
+            state_init,
+            concurrent_ensures,
+            handlers,
+            ..
+        } => {
+            let ctx = BoundsCtx::default();
+            walk_node(state_init, &ctx, source_path, errors);
+            for clause in concurrent_ensures {
+                walk_node(clause, &ctx, source_path, errors);
+            }
+            for handler in handlers {
+                for clause in &handler.ensures {
+                    walk_node(clause, &ctx, source_path, errors);
+                }
+                walk_node(&handler.body, &ctx, source_path, errors);
+            }
+        }
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            eventually_clauses,
+            receive_handlers,
+            handlers,
+            ..
+        } => {
+            let ctx = BoundsCtx::default();
+            for (_, _, initializer) in state_fields {
+                walk_node(initializer, &ctx, source_path, errors);
+            }
+            for clause in always_clauses {
+                walk_node(clause, &ctx, source_path, errors);
+            }
+            for clause in eventually_clauses {
+                walk_node(&clause.post, &ctx, source_path, errors);
+            }
+            for handler in receive_handlers {
+                for clause in &handler.requires {
+                    walk_node(clause, &ctx, source_path, errors);
+                }
+                for clause in &handler.ensures {
+                    walk_node(clause, &ctx, source_path, errors);
+                }
+                walk_node(&handler.body, &ctx, source_path, errors);
+            }
+            for handler in handlers {
+                for clause in &handler.ensures {
+                    walk_node(clause, &ctx, source_path, errors);
+                }
+                walk_node(&handler.body, &ctx, source_path, errors);
+            }
+        }
+        Node::ClusterDecl { invariants, .. } => {
+            let ctx = BoundsCtx::default();
+            for invariant in invariants {
+                walk_node(invariant, &ctx, source_path, errors);
+            }
+        }
+        Node::Program(statements) => {
+            for statement in statements {
+                walk_toplevel(&statement.node, source_path, errors);
+            }
+        }
+        _ => walk_node(node, &BoundsCtx::default(), source_path, errors),
+    }
+}
+
+struct FunctionContracts<'a> {
+    requires: &'a [Node],
+    ensures: &'a [Node],
+    recovers_to: Option<&'a Node>,
+    defaults: &'a [Option<Box<Node>>],
+}
+
+fn walk_function(
+    body: &Node,
+    contracts: FunctionContracts<'_>,
+    parent_ctx: &BoundsCtx,
+    source_path: &str,
+    errors: &mut Vec<String>,
+) {
+    let mut ctx = parent_ctx.clone();
+    // Defaults and requires are evaluated before the function body, so
+    // they cannot use the body's local literal-length facts as axioms.
+    for default in contracts.defaults.iter().flatten() {
+        walk_node(default, parent_ctx, source_path, errors);
+    }
+    for clause in contracts.requires {
+        walk_node(clause, parent_ctx, source_path, errors);
+        ctx.axioms.push(clause.clone());
+    }
+    // RES-133b: leading `assume(P)` predicates are also axioms.
+    // The runtime check halts before any indexing in the body if
+    // they are violated, so the bounds prover may use them.
+    ctx.axioms
+        .extend(crate::assume_axioms::collect_leading_assume_axioms(body));
+    walk_node(body, &ctx, source_path, errors);
+    // Postconditions run after the body and may themselves contain
+    // indexing expressions. They can rely on the same preconditions.
+    for clause in contracts.ensures {
+        walk_node(clause, &ctx, source_path, errors);
+    }
+    if let Some(clause) = contracts.recovers_to {
+        walk_node(clause, &ctx, source_path, errors);
     }
 }
 
 fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<String>) {
     match node {
+        Node::Program(statements) => {
+            for statement in statements {
+                walk_toplevel(&statement.node, source_path, errors);
+            }
+        }
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            defaults,
+            ..
+        } => walk_function(
+            body,
+            FunctionContracts {
+                requires,
+                ensures,
+                recovers_to: recovers_to.as_deref(),
+                defaults,
+            },
+            ctx,
+            source_path,
+            errors,
+        ),
         Node::Block { stmts, .. } => {
             // Track literal-length lets introduced in this block so
             // subsequent statements can use them as a fast path.
@@ -204,6 +358,7 @@ fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<S
             name,
             iterable,
             body,
+            invariants,
             ..
         } => {
             // Canonical pattern we want to prove: for i in 0..len(arr).
@@ -238,6 +393,9 @@ fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<S
                 });
             }
             walk_node(iterable, ctx, source_path, errors);
+            for invariant in invariants {
+                walk_node(invariant, ctx, source_path, errors);
+            }
             walk_node(body, &body_ctx, source_path, errors);
         }
         Node::IfStatement {
@@ -255,9 +413,15 @@ fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<S
             }
         }
         Node::WhileStatement {
-            condition, body, ..
+            condition,
+            body,
+            invariants,
+            ..
         } => {
             walk_node(condition, ctx, source_path, errors);
+            for invariant in invariants {
+                walk_node(invariant, ctx, source_path, errors);
+            }
             let body_ctx = ctx.with_axiom((**condition).clone());
             walk_node(body, &body_ctx, source_path, errors);
         }
@@ -299,6 +463,156 @@ fn walk_node(node: &Node, ctx: &BoundsCtx, source_path: &str, errors: &mut Vec<S
             for a in arguments {
                 walk_node(a, ctx, source_path, errors);
             }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_node(scrutinee, ctx, source_path, errors);
+            for (_, guard, body) in arms {
+                if let Some(guard) = guard {
+                    walk_node(guard, ctx, source_path, errors);
+                }
+                walk_node(body, ctx, source_path, errors);
+            }
+        }
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => walk_function(
+            body,
+            FunctionContracts {
+                requires,
+                ensures,
+                recovers_to: recovers_to.as_deref(),
+                defaults: &[],
+            },
+            ctx,
+            source_path,
+            errors,
+        ),
+        Node::TryCatch { body, handlers, .. } => {
+            for statement in body {
+                walk_node(statement, ctx, source_path, errors);
+            }
+            for (_, handler_body) in handlers {
+                for statement in handler_body {
+                    walk_node(statement, ctx, source_path, errors);
+                }
+            }
+        }
+        Node::TryExpression { expr, .. }
+        | Node::NewtypeConstruct { value: expr, .. }
+        | Node::NamedArg { value: expr, .. }
+        | Node::DeferStatement { expr, .. }
+        | Node::TupleIndex { tuple: expr, .. } => walk_node(expr, ctx, source_path, errors),
+        Node::OptionalChain { object, access, .. } => {
+            walk_node(object, ctx, source_path, errors);
+            if let crate::ChainAccess::Method(_, arguments) = access {
+                for argument in arguments {
+                    walk_node(argument, ctx, source_path, errors);
+                }
+            }
+        }
+        Node::LiveBlock {
+            body,
+            invariants,
+            timeout,
+            ..
+        } => {
+            walk_node(body, ctx, source_path, errors);
+            for invariant in invariants {
+                walk_node(invariant, ctx, source_path, errors);
+            }
+            if let Some(timeout) = timeout {
+                walk_node(timeout, ctx, source_path, errors);
+            }
+        }
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            walk_node(condition, ctx, source_path, errors);
+            if let Some(message) = message {
+                walk_node(message, ctx, source_path, errors);
+            }
+        }
+        Node::FieldAccess { target, .. } => walk_node(target, ctx, source_path, errors),
+        Node::FieldAssignment { target, value, .. } => {
+            walk_node(target, ctx, source_path, errors);
+            walk_node(value, ctx, source_path, errors);
+        }
+        Node::ArrayLiteral { items, .. }
+        | Node::SetLiteral { items, .. }
+        | Node::TupleLiteral { items, .. } => {
+            for item in items {
+                walk_node(item, ctx, source_path, errors);
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (key, value) in entries {
+                walk_node(key, ctx, source_path, errors);
+                walk_node(value, ctx, source_path, errors);
+            }
+        }
+        Node::StructLiteral { fields, base, .. } => {
+            if let Some(base) = base {
+                walk_node(base, ctx, source_path, errors);
+            }
+            for (_, value) in fields {
+                walk_node(value, ctx, source_path, errors);
+            }
+        }
+        Node::Slice { target, lo, hi, .. } => {
+            walk_node(target, ctx, source_path, errors);
+            if let Some(lo) = lo {
+                walk_node(lo, ctx, source_path, errors);
+            }
+            if let Some(hi) = hi {
+                walk_node(hi, ctx, source_path, errors);
+            }
+        }
+        Node::LetDestructureStruct { value, .. } | Node::LetTupleDestructure { value, .. } => {
+            walk_node(value, ctx, source_path, errors)
+        }
+        Node::Const { value, .. } | Node::StaticLet { value, .. } => {
+            walk_node(value, ctx, source_path, errors);
+        }
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    walk_node(expr, ctx, source_path, errors);
+                }
+            }
+        }
+        Node::Quantifier { range, body, .. } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    walk_node(lo, ctx, source_path, errors);
+                    walk_node(hi, ctx, source_path, errors);
+                }
+                crate::quantifiers::QuantRange::Iterable(iterable) => {
+                    walk_node(iterable, ctx, source_path, errors);
+                }
+            }
+            walk_node(body, ctx, source_path, errors);
+        }
+        Node::Range { lo, hi, .. } => {
+            walk_node(lo, ctx, source_path, errors);
+            walk_node(hi, ctx, source_path, errors);
+        }
+        Node::InvariantStatement { expr, .. } | Node::BreakWith { value: expr, .. } => {
+            walk_node(expr, ctx, source_path, errors);
+        }
+        Node::StaticAssert { condition, .. } => {
+            walk_node(condition, ctx, source_path, errors);
+        }
+        Node::BenchBlock { body, .. } | Node::UnsafeBlock { body, .. } => {
+            walk_node(body, ctx, source_path, errors);
         }
         _ => {}
     }
@@ -675,5 +989,68 @@ main();
         assert!(is_proven_site(sites[0]));
         // A made-up span that doesn't match any access should be false.
         assert!(!is_proven_site(Span::default()));
+    }
+
+    #[test]
+    fn strict_mode_checks_indexes_inside_match_arms() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(true);
+        let program =
+            parse("fn main(int i) { let xs = [1, 2, 3]; let y = match 0 { 0 => xs[i], _ => 0 }; }");
+        let err = check_array_bounds(&program, "<test>")
+            .expect_err("match-arm index must not evade strict bounds checking");
+        set_deny_unproven_bounds(false);
+        assert!(err.contains("cannot statically prove"), "got: {err}");
+    }
+
+    #[test]
+    fn strict_mode_checks_indexes_inside_function_literals() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(true);
+        let program =
+            parse("fn main(int i) { let xs = [1, 2, 3]; let f = fn() { return xs[i]; }; }");
+        let err = check_array_bounds(&program, "<test>")
+            .expect_err("closure index must not evade strict bounds checking");
+        set_deny_unproven_bounds(false);
+        assert!(err.contains("cannot statically prove"), "got: {err}");
+    }
+
+    #[test]
+    fn strict_mode_checks_indexes_inside_try_handlers() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(true);
+        let program =
+            parse("fn main(int i) { let xs = [1, 2, 3]; try { xs[i]; } catch Timeout { xs[0]; } }");
+        let err = check_array_bounds(&program, "<test>")
+            .expect_err("try-body index must not evade strict bounds checking");
+        set_deny_unproven_bounds(false);
+        assert!(err.contains("cannot statically prove"), "got: {err}");
+    }
+
+    #[test]
+    fn strict_mode_checks_indexes_inside_loop_invariants() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(true);
+        let program = parse(
+            "fn main(int i) { let xs = [1, 2, 3]; while i < 3 { invariant xs[i] >= 0; i = i + 1; } }",
+        );
+        let err = check_array_bounds(&program, "<test>")
+            .expect_err("loop-invariant index must not evade strict bounds checking");
+        set_deny_unproven_bounds(false);
+        assert!(err.contains("cannot statically prove"), "got: {err}");
+    }
+
+    #[test]
+    fn strict_mode_pipeline_runs_for_index_only_in_loop_invariant() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(true);
+        let program = parse(
+            "fn main(int i) { let xs = [1, 2, 3]; while i < 3 { invariant xs[i] >= 0; i = i + 1; } }",
+        );
+        let result =
+            crate::typechecker::TypeChecker::new().check_program_with_source(&program, "<test>");
+        set_deny_unproven_bounds(false);
+        let err = result.expect_err("the typechecker must run bounds checking for invariants");
+        assert!(err.contains("cannot statically prove"), "got: {err}");
     }
 }
