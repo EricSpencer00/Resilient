@@ -3,18 +3,6 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-4246-extern-callsite-typecheck",
       "claimed_at": "2026-08-08T23:53:49Z"
-    },
-    "resilient/src/probabilistic_contracts.rs": {
-      "branch": "res-4265-probabilistic-validation",
-      "claimed_at": "2026-09-17T05:54:45Z"
-    },
-    "resilient/src/feature_attrs.rs": {
-      "branch": "res-4265-probabilistic-validation",
-      "claimed_at": "2026-09-17T05:54:45Z"
-    },
-    "resilient/tests/probabilistic_contracts_source.rs": {
-      "branch": "res-4265-probabilistic-validation",
-      "claimed_at": "2026-09-17T05:54:45Z"
     }
   }
 }
