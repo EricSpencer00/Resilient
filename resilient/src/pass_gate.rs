@@ -19,15 +19,11 @@
 //! that don't go through `Markers`, e.g. the LSP server's
 //! per-document re-check path).
 //!
-//! Scope: walks the program AST via `uniqueness_walk::visit`, the
-//! same recursion the per-pass `any_node` calls use. That descends
-//! into `Function` bodies, `Block` statements, `LetStatement`
-//! values, `IfStatement` arms, `CallExpression` arguments,
-//! `FieldAccess` / `FieldAssignment` targets, etc. — but stops at
-//! `ImplBlock` / `ModuleDecl` (the same boundary as the existing
-//! `walk_children` impl). Functions nested in those constructs are
-//! not visible to the existing per-pass fast-rejects either, so the
-//! gate-vs-pass equivalence holds.
+//! Scope: walks every expression-bearing field in the program AST via
+//! `uniqueness_walk::visit`, the same recursion the per-pass `any_node`
+//! calls use. This includes function contracts and defaults, loop and
+//! live-block invariants, quantifier ranges, declaration bodies, and
+//! nested functions inside `ImplBlock` / `ModuleDecl`.
 
 use crate::Node;
 use std::collections::HashSet;
