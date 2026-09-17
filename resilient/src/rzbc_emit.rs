@@ -789,7 +789,7 @@ fn transform_ops(
         ));
     }
     if let Some((arity, _)) = shift {
-        for (j, pair) in code[..prologue_len].chunks_exact(2).enumerate() {
+        for (j, pair) in code[..prologue_len].as_chunks::<2>().0.iter().enumerate() {
             let j = j as u16;
             // RES-4083 (host closure emission): `compiler.rs`'s
             // `rewrite_store_upvalues` pass runs *after* the prologue is

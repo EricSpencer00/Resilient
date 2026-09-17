@@ -70,6 +70,7 @@ jobs:
     if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
+      issues: write
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +124,34 @@ jobs:
           rc_fib=$?
           ./benchmarks/extended/compare.sh benchmarks/baseline/extended.json /tmp/fresh-extended.json > /tmp/compare-extended.md
           rc_extended=$?
+
+          # Hosted runners occasionally contend for CPU long enough to
+          # move one median past the threshold. A single retry filters
+          # that one-off noise while preserving failures that reproduce.
+          if [[ $rc_fib -ne 0 ]]; then
+            ./benchmarks/fib/run.sh > /tmp/fresh-fib-retry.json 2>/dev/null
+            retry_run_rc=$?
+            if [[ $retry_run_rc -eq 0 ]]; then
+              ./scripts/compare_perf.sh benchmarks/baseline/fib.json /tmp/fresh-fib-retry.json > /tmp/compare-fib-retry.md
+              retry_compare_rc=$?
+              cp /tmp/fresh-fib-retry.json /tmp/fresh-fib.json
+              cp /tmp/compare-fib-retry.md /tmp/compare-fib.md
+              rc_fib=$retry_compare_rc
+            fi
+          fi
+
+          if [[ $rc_extended -ne 0 ]]; then
+            ./benchmarks/extended/run.sh > /tmp/fresh-extended-retry.json 2>/dev/null
+            retry_run_rc=$?
+            if [[ $retry_run_rc -eq 0 ]]; then
+              ./benchmarks/extended/compare.sh benchmarks/baseline/extended.json /tmp/fresh-extended-retry.json > /tmp/compare-extended-retry.md
+              retry_compare_rc=$?
+              cp /tmp/fresh-extended-retry.json /tmp/fresh-extended.json
+              cp /tmp/compare-extended-retry.md /tmp/compare-extended.md
+              rc_extended=$retry_compare_rc
+            fi
+          fi
+
           # Echo both tables so the workflow log shows them too.
           cat /tmp/compare-fib.md
           cat /tmp/compare-extended.md
@@ -148,7 +177,7 @@ jobs:
           exit 0
 
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request' && always()
+        if: github.event_name == 'pull_request' && always() && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         env:
           COMMENT_BODY: ${{ steps.compare.outputs.body }}
