@@ -8,6 +8,7 @@
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation)]
 
+use crate::span::Span;
 use crate::{Node, Value};
 
 type RResult<T> = Result<T, String>;
@@ -182,6 +183,7 @@ pub(crate) fn builtin_datetime_to_unix(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_datetime_format(args: &[Value]) -> RResult<Value> {
     match args {
         [dt, Value::String(fmt)] => {
+            validate_datetime_format(fmt).map_err(|e| format!("datetime_format: {e}"))?;
             let (year, month, day, hour, minute, second, _nanos) = extract_datetime(dt)?;
             let mut result = String::with_capacity(fmt.len() + 16);
             let chars: Vec<char> = fmt.chars().collect();
@@ -264,6 +266,8 @@ pub(crate) fn builtin_datetime_parse(args: &[Value]) -> RResult<Value> {
 }
 
 fn parse_datetime_string(input: &str, fmt: &str) -> Result<(i64, i64, i64, i64, i64, i64), String> {
+    validate_datetime_format(fmt)?;
+
     let mut year: i64 = 0;
     let mut month: i64 = 1;
     let mut day: i64 = 1;
@@ -344,7 +348,23 @@ fn parse_digits(input: &[u8], start: usize, count: usize) -> Result<(i64, usize)
 }
 
 // ---------------------------------------------------------------------------
-// Feature pass (no-op)
+fn validate_datetime_format(fmt: &str) -> Result<(), String> {
+    let mut chars = fmt.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            let Some(specifier) = chars.next() else {
+                return Err("trailing '%' in format string".to_string());
+            };
+            if !matches!(specifier, 'Y' | 'm' | 'd' | 'H' | 'M' | 'S' | '%') {
+                return Err(format!("unknown format specifier %{specifier}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Feature pass
 // ---------------------------------------------------------------------------
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
@@ -352,17 +372,221 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_datetime_program(program: &Node, _source_path: &str) -> Result<(), String> {
-    if let Node::Program(stmts) = program {
-        for stmt in stmts.iter() {
-            if let Node::Function { .. } = &stmt.node {
-                // Validate that DateTime struct usage is sound.
-                // For now, accept all function definitions.
-                // RES-3160: future enhancements can add stricter DateTime field validation.
-            }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KnownKind {
+    Integer,
+    Float,
+    String,
+    Boolean,
+    Bytes,
+    Char,
+    DateTime,
+}
+
+impl KnownKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Integer => "Int",
+            Self::Float => "Float",
+            Self::String => "String",
+            Self::Boolean => "Bool",
+            Self::Bytes => "Bytes",
+            Self::Char => "Char",
+            Self::DateTime => "DateTime",
         }
     }
-    Ok(())
+}
+
+fn known_kind(node: &Node) -> Option<KnownKind> {
+    match node {
+        Node::IntegerLiteral { .. } => Some(KnownKind::Integer),
+        Node::FloatLiteral { .. } => Some(KnownKind::Float),
+        Node::StringLiteral { .. } | Node::StringInternLiteral { .. } => Some(KnownKind::String),
+        Node::BooleanLiteral { .. } => Some(KnownKind::Boolean),
+        Node::BytesLiteral { .. } => Some(KnownKind::Bytes),
+        Node::CharLiteral { .. } => Some(KnownKind::Char),
+        Node::StructLiteral { name, .. } if name == "DateTime" => Some(KnownKind::DateTime),
+        Node::PrefixExpression { right, .. } => known_kind(right),
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => match name.as_str() {
+                "datetime_now" | "datetime_from_unix" => Some(KnownKind::DateTime),
+                "datetime_to_unix" => Some(KnownKind::Integer),
+                "datetime_format" => Some(KnownKind::String),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn literal_format(node: &Node) -> Option<&str> {
+    match node {
+        Node::StringLiteral { value, .. } => Some(value),
+        Node::StringInternLiteral { content, .. } => Some(content),
+        _ => None,
+    }
+}
+
+fn datetime_diag(source_path: &str, span: Span, message: impl AsRef<str>) -> String {
+    format!(
+        "{source_path}:{}:{}: error[datetime]: {}",
+        span.start.line,
+        span.start.column,
+        message.as_ref()
+    )
+}
+
+fn validate_kind(
+    errors: &mut Vec<String>,
+    source_path: &str,
+    call_span: Span,
+    builtin: &str,
+    position: usize,
+    argument: &Node,
+    expected: KnownKind,
+) {
+    let Some(actual) = known_kind(argument) else {
+        return;
+    };
+    if actual != expected {
+        errors.push(datetime_diag(
+            source_path,
+            call_span,
+            format!(
+                "{builtin} argument {} must be {}, got {}",
+                position,
+                expected.label(),
+                actual.label()
+            ),
+        ));
+    }
+}
+
+fn validate_datetime_program(program: &Node, source_path: &str) -> Result<(), String> {
+    let mut errors = Vec::new();
+    crate::uniqueness_walk::visit(program, &mut |node| {
+        let Node::CallExpression {
+            function,
+            arguments,
+            span,
+        } = node
+        else {
+            return;
+        };
+        let Node::Identifier { name, .. } = function.as_ref() else {
+            return;
+        };
+
+        let expected_arity = match name.as_str() {
+            "datetime_now" => 0,
+            "datetime_from_unix" | "datetime_to_unix" => 1,
+            "datetime_format" | "datetime_parse" => 2,
+            _ => return,
+        };
+        if arguments.len() != expected_arity {
+            errors.push(datetime_diag(
+                source_path,
+                *span,
+                format!(
+                    "{name} expects {expected_arity} argument(s), got {}",
+                    arguments.len()
+                ),
+            ));
+            return;
+        }
+
+        match name.as_str() {
+            "datetime_from_unix" => {
+                validate_kind(
+                    &mut errors,
+                    source_path,
+                    *span,
+                    name,
+                    1,
+                    &arguments[0],
+                    KnownKind::Integer,
+                );
+            }
+            "datetime_to_unix" => {
+                validate_kind(
+                    &mut errors,
+                    source_path,
+                    *span,
+                    name,
+                    1,
+                    &arguments[0],
+                    KnownKind::DateTime,
+                );
+            }
+            "datetime_format" => {
+                validate_kind(
+                    &mut errors,
+                    source_path,
+                    *span,
+                    name,
+                    1,
+                    &arguments[0],
+                    KnownKind::DateTime,
+                );
+                validate_kind(
+                    &mut errors,
+                    source_path,
+                    *span,
+                    name,
+                    2,
+                    &arguments[1],
+                    KnownKind::String,
+                );
+                if let Some(fmt) = literal_format(&arguments[1])
+                    && let Err(error) = validate_datetime_format(fmt)
+                {
+                    errors.push(datetime_diag(
+                        source_path,
+                        *span,
+                        format!("{name} format argument is invalid: {error}"),
+                    ));
+                }
+            }
+            "datetime_parse" => {
+                validate_kind(
+                    &mut errors,
+                    source_path,
+                    *span,
+                    name,
+                    1,
+                    &arguments[0],
+                    KnownKind::String,
+                );
+                validate_kind(
+                    &mut errors,
+                    source_path,
+                    *span,
+                    name,
+                    2,
+                    &arguments[1],
+                    KnownKind::String,
+                );
+                if let Some(fmt) = literal_format(&arguments[1])
+                    && let Err(error) = validate_datetime_format(fmt)
+                {
+                    errors.push(datetime_diag(
+                        source_path,
+                        *span,
+                        format!("{name} format argument is invalid: {error}"),
+                    ));
+                }
+            }
+            "datetime_now" => {}
+            _ => unreachable!("datetime builtin arity was checked above"),
+        }
+    });
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +613,52 @@ mod tests {
             Value::Int(n) => assert_eq!(*n, expected),
             other => panic!("expected Int({expected}), got {other:?}"),
         }
+    }
+
+    fn check_source(src: &str) -> Result<(), String> {
+        let (program, _) = crate::parse(src);
+        check(&program, "datetime_test.rz")
+    }
+
+    fn typecheck_source_with_std(src: &str) -> Result<(), String> {
+        use crate::cfg_attr::{CfgConfig, with_test_config};
+
+        let (program, parse_errors) = crate::parse(src);
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+        with_test_config(CfgConfig::new(["std".to_string()], None), || {
+            crate::typechecker::TypeChecker::new()
+                .check_program_with_source(&program, "datetime_test.rz")
+                .map(|_| ())
+        })
+    }
+
+    fn assert_check_error(src: &str, expected: &str) -> String {
+        let error = check_source(src).expect_err("datetime validation should reject the source");
+        assert!(
+            error.starts_with("datetime_test.rz:") && error.contains(": error[datetime]:"),
+            "diagnostic should include source path and location: {error}"
+        );
+        let mut location = error.splitn(4, ':');
+        assert_eq!(location.next(), Some("datetime_test.rz"));
+        assert!(
+            location
+                .next()
+                .and_then(|line| line.parse::<usize>().ok())
+                .is_some_and(|line| line > 0),
+            "diagnostic should include a positive source line: {error}"
+        );
+        assert!(
+            location
+                .next()
+                .and_then(|column| column.parse::<usize>().ok())
+                .is_some_and(|column| column > 0),
+            "diagnostic should include a positive source column: {error}"
+        );
+        assert!(
+            error.contains(expected),
+            "diagnostic should contain {expected:?}: {error}"
+        );
+        error
     }
 
     #[test]
@@ -564,61 +834,43 @@ println(unix)
     #[test]
     fn check_accepts_datetime_now_call() {
         let src = "let dt = datetime_now();\nprintln(dt);\n";
-        let r = crate::run_program(src);
-        assert!(r.ok, "datetime_now() should execute: {:?}", r.errors);
+        assert!(check_source(src).is_ok());
     }
 
     #[test]
     fn check_accepts_datetime_format_call() {
         let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Y\");\nprintln(s);\n";
-        let r = crate::run_program(src);
-        assert!(r.ok, "datetime_format() should execute: {:?}", r.errors);
+        assert!(check_source(src).is_ok());
     }
 
     #[test]
     fn check_accepts_datetime_parse_call() {
-        let _src = "let result = datetime_parse(\"2024-01-15\", \"%Y-%m-%d\");\nprintln(result);\n";
-        // datetime_parse may fail at runtime for various format/input combos,
-        // but the declaration validation should pass
-        assert!(
-            check(&Node::Program(vec![]), "test").is_ok(),
-            "declaration validation should pass"
-        );
+        let src = "let result = datetime_parse(\"2024-01-15\", \"%Y-%m-%d\");\nprintln(result);\n";
+        assert!(check_source(src).is_ok());
     }
 
     #[test]
     fn check_accepts_datetime_to_unix_call() {
         let src = "let dt = datetime_now();\nlet unix = datetime_to_unix(dt);\nprintln(unix);\n";
-        let r = crate::run_program(src);
-        assert!(r.ok, "datetime_to_unix() should execute: {:?}", r.errors);
+        assert!(check_source(src).is_ok());
     }
 
     #[test]
     fn check_accepts_datetime_from_unix_call() {
         let src = "let dt = datetime_from_unix(0);\nprintln(dt);\n";
-        let r = crate::run_program(src);
-        assert!(r.ok, "datetime_from_unix() should execute: {:?}", r.errors);
+        assert!(check_source(src).is_ok());
     }
 
     #[test]
     fn check_rejects_datetime_now_with_args() {
         let src = "let dt = datetime_now(1);\n";
-        let r = crate::run_program(src);
-        assert!(
-            !r.ok || r.errors.is_empty(),
-            "datetime_now() with args should fail at runtime or validation"
-        );
+        assert_check_error(src, "datetime_now expects 0 argument(s), got 1");
     }
 
     #[test]
     fn check_accepts_multiple_datetime_calls() {
         let src = "let dt1 = datetime_now();\nlet dt2 = datetime_now();\nlet s = datetime_format(dt1, \"%Y\");\n";
-        let r = crate::run_program(src);
-        assert!(
-            r.ok,
-            "multiple datetime calls should execute: {:?}",
-            r.errors
-        );
+        assert!(check_source(src).is_ok());
     }
 
     #[test]
@@ -644,8 +896,7 @@ fn main() {
     #[test]
     fn check_accepts_datetime_with_format_placeholders() {
         let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Y-%m-%d %H:%M:%S\");\nprintln(s);\n";
-        let r = crate::run_program(src);
-        assert!(r.ok, "datetime with format placeholders should execute");
+        assert!(check_source(src).is_ok());
     }
 
     #[test]
@@ -669,54 +920,94 @@ match dt {
             "datetime struct matching must pass validation"
         );
     }
-}
 
-// ── Extended malformed-input regression corpus (RES-3164) ────────────────
+    #[test]
+    fn check_rejects_datetime_parse_with_wrong_arity() {
+        let src = "let result = datetime_parse(\"2024-01-15\");\n";
+        assert_check_error(src, "datetime_parse expects 2 argument(s), got 1");
+    }
 
-#[test]
-fn check_malformed_format_invalid_specifier() {
-    let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Z\");\n";
-    let r = crate::run_program(src);
-    assert!(!r.ok, "invalid format specifier should fail");
-}
+    #[test]
+    fn check_rejects_datetime_parse_with_wrong_types() {
+        let src = "let result = datetime_parse(2024, \"%Y\");\n";
+        assert_check_error(src, "datetime_parse argument 1 must be String, got Int");
+    }
 
-#[test]
-fn check_malformed_parse_empty_format() {
-    let src = "let result = datetime_parse(\"2024-01-15\", \"\");\n";
-    let (prog, _) = crate::parse(src);
-    assert!(check(&prog, "test").is_ok(), "empty format validates");
-}
+    #[test]
+    fn check_rejects_datetime_format_with_wrong_types() {
+        let src = "let s = datetime_format(42, 2024);\n";
+        let error = assert_check_error(src, "datetime_format argument 1 must be DateTime, got Int");
+        assert!(error.contains("datetime_format argument 2 must be String, got Int"));
+    }
 
-#[test]
-fn check_malformed_multiple_format_errors() {
-    let src = r#"
+    #[test]
+    fn check_rejects_datetime_from_unix_with_wrong_type() {
+        let src = "let dt = datetime_from_unix(1.5);\n";
+        assert_check_error(src, "datetime_from_unix argument 1 must be Int, got Float");
+    }
+
+    #[test]
+    fn check_rejects_datetime_to_unix_with_wrong_type() {
+        let src = "let unix = datetime_to_unix(\"not a datetime\");\n";
+        assert_check_error(
+            src,
+            "datetime_to_unix argument 1 must be DateTime, got String",
+        );
+    }
+
+    #[test]
+    fn typechecker_runs_datetime_validation_after_builtin_signatures() {
+        let error = typecheck_source_with_std("let unix = datetime_to_unix(\"not a datetime\");\n")
+            .expect_err("typechecker should reject a known-invalid datetime argument");
+        assert!(
+            error.contains("datetime_test.rz:1:")
+                && error.contains("datetime_to_unix argument 1 must be DateTime, got String"),
+            "unexpected diagnostic: {error}"
+        );
+    }
+
+    #[test]
+    fn check_malformed_format_invalid_specifier() {
+        let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Z\");\n";
+        assert_check_error(src, "datetime_format format argument is invalid");
+    }
+
+    #[test]
+    fn check_malformed_parse_empty_format() {
+        let src = "let result = datetime_parse(\"2024-01-15\", \"\");\n";
+        assert!(check_source(src).is_ok(), "empty format validates");
+    }
+
+    #[test]
+    fn check_malformed_multiple_format_errors() {
+        let src = r#"
 let dt1 = datetime_now();
 let dt2 = datetime_now();
 let s1 = datetime_format(dt1, "%Q");
 let s2 = datetime_format(dt2, "%@");
 "#;
-    let r = crate::run_program(src);
-    assert!(!r.ok, "multiple invalid specifiers should fail");
-}
+        let error = check_source(src).expect_err("invalid specifiers should fail validation");
+        assert_eq!(error.matches("format argument is invalid").count(), 2);
+    }
 
-#[test]
-fn check_malformed_nested_datetime_calls() {
-    let src =
-        "let s = datetime_format(datetime_from_unix(datetime_to_unix(datetime_now())), \"%Y\");\n";
-    let (prog, _) = crate::parse(src);
-    assert!(check(&prog, "test").is_ok(), "nested calls validate");
-}
+    #[test]
+    fn check_malformed_nested_datetime_calls() {
+        let src = "let s = datetime_format(datetime_from_unix(datetime_to_unix(datetime_now())), \"%Y\");\n";
+        assert!(check_source(src).is_ok(), "nested calls validate");
+    }
 
-#[test]
-fn check_datetime_all_format_placeholders() {
-    let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Y-%m-%d %H:%M:%S\");\nprintln(s);\n";
-    let r = crate::run_program(src);
-    assert!(r.ok, "all valid placeholders should work");
-}
+    #[test]
+    fn check_datetime_all_format_placeholders() {
+        let src = "let dt = datetime_now();\nlet s = datetime_format(dt, \"%Y-%m-%d %H:%M:%S %%\");\nprintln(s);\n";
+        assert!(
+            check_source(src).is_ok(),
+            "all valid placeholders should work"
+        );
+    }
 
-#[test]
-fn check_datetime_in_conditional_blocks() {
-    let src = r#"
+    #[test]
+    fn check_datetime_in_conditional_blocks() {
+        let src = r#"
 fn test() {
     if true {
         let dt = datetime_now();
@@ -724,9 +1015,9 @@ fn test() {
     }
 }
 "#;
-    let (prog, _) = crate::parse(src);
-    assert!(
-        check(&prog, "test").is_ok(),
-        "datetime in conditionals validates"
-    );
+        assert!(
+            check_source(src).is_ok(),
+            "datetime in conditionals validates"
+        );
+    }
 }
