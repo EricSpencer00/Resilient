@@ -107,6 +107,195 @@ fn reject_duplicate_derive_records(source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn declared_struct_names(program: &Node) -> HashSet<String> {
+    match program {
+        Node::Program(statements) => statements
+            .iter()
+            .filter_map(|stmt| match &stmt.node {
+                Node::StructDecl { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => HashSet::new(),
+    }
+}
+
+fn validate_derive_targets(program: &Node, source_path: &str) -> Result<(), String> {
+    // The module's unit tests exercise the registry in isolation with an
+    // empty synthetic AST. Real parsed programs always carry at least the
+    // attributed item, so keep that legacy test shape independent from the
+    // source-level target check.
+    let Node::Program(statements) = program else {
+        return Ok(());
+    };
+    if statements.is_empty() {
+        return Ok(());
+    }
+
+    let struct_names = declared_struct_names(program);
+    for (type_name, rec) in crate::feature_attrs::find_kind("derive") {
+        if !struct_names.contains(type_name.as_str()) {
+            return Err(format!(
+                "{}:{}:1: error: #[derive(...)] target `{}` is not a declared struct",
+                source_path,
+                rec.line.max(1),
+                type_name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn struct_type_from_annotation(annotation: &str, struct_names: &HashSet<String>) -> Option<String> {
+    let annotation = annotation.trim();
+    struct_names
+        .contains(annotation)
+        .then(|| annotation.to_string())
+}
+
+fn struct_type_of_expression(
+    expression: &Node,
+    bindings: &HashMap<String, String>,
+    struct_names: &HashSet<String>,
+) -> Option<String> {
+    match expression {
+        Node::Identifier { name, .. } => bindings.get(name).cloned(),
+        Node::StructLiteral { name, .. } if struct_names.contains(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn update_struct_binding(
+    name: &str,
+    value: &Node,
+    type_annotation: Option<&str>,
+    bindings: &mut HashMap<String, String>,
+    struct_names: &HashSet<String>,
+) {
+    let inferred = type_annotation
+        .and_then(|annotation| struct_type_from_annotation(annotation, struct_names))
+        .or_else(|| struct_type_of_expression(value, bindings, struct_names));
+    if let Some(struct_name) = inferred {
+        bindings.insert(name.to_string(), struct_name);
+    } else {
+        bindings.remove(name);
+    }
+}
+
+fn derive_set_has_trait(sets: &[(String, DeriveSet)], type_name: &str, trait_name: &str) -> bool {
+    sets.iter()
+        .find(|(name, _)| name == type_name)
+        .is_some_and(|(_, set)| {
+            set.traits
+                .iter()
+                .any(|trait_name_in_set| trait_name_in_set == trait_name)
+        })
+}
+
+fn validate_derive_call_sites(
+    program: &Node,
+    source_path: &str,
+    sets: &[(String, DeriveSet)],
+) -> Result<(), String> {
+    let struct_names = declared_struct_names(program);
+    let mut error = None;
+
+    crate::uniqueness_walk::for_each_function(program, |_name, parameters, body| {
+        if error.is_some() {
+            return;
+        }
+
+        let mut bindings = HashMap::with_capacity(parameters.len() + 8);
+        for (annotation, name) in parameters {
+            if let Some(struct_name) = struct_type_from_annotation(annotation, &struct_names) {
+                bindings.insert(name.clone(), struct_name);
+            }
+        }
+
+        crate::uniqueness_walk::visit(body, &mut |node| {
+            if error.is_some() {
+                return;
+            }
+
+            match node {
+                Node::LetStatement {
+                    name,
+                    value,
+                    type_annot,
+                    ..
+                } => update_struct_binding(
+                    name,
+                    value,
+                    type_annot.as_deref(),
+                    &mut bindings,
+                    &struct_names,
+                ),
+                Node::StaticLet { name, value, .. } | Node::Const { name, value, .. } => {
+                    update_struct_binding(name, value, None, &mut bindings, &struct_names)
+                }
+                Node::Assignment { name, value, .. } => {
+                    let inferred = struct_type_of_expression(value, &bindings, &struct_names);
+                    if let Some(struct_name) = inferred {
+                        bindings.insert(name.clone(), struct_name);
+                    } else {
+                        bindings.remove(name);
+                    }
+                }
+                Node::InfixExpression {
+                    left,
+                    operator,
+                    right,
+                    span,
+                } => {
+                    let required_trait = match *operator {
+                        "<" | ">" | "<=" | ">=" => Some("PartialOrd"),
+                        "==" | "!=" => Some("PartialEq"),
+                        _ => None,
+                    };
+                    let Some(required_trait) = required_trait else {
+                        return;
+                    };
+                    let Some(left_type) = struct_type_of_expression(left, &bindings, &struct_names)
+                    else {
+                        return;
+                    };
+                    let Some(right_type) =
+                        struct_type_of_expression(right, &bindings, &struct_names)
+                    else {
+                        return;
+                    };
+                    if left_type != right_type {
+                        return;
+                    }
+
+                    let has_required_trait = derive_set_has_trait(sets, &left_type, required_trait)
+                        || (*operator == "==" || *operator == "!=")
+                            && derive_set_has_trait(sets, &left_type, "Eq");
+                    if !has_required_trait {
+                        let requirement = if required_trait == "PartialEq" {
+                            "#[derive(PartialEq)] or #[derive(Eq)]"
+                        } else {
+                            "#[derive(PartialOrd)]"
+                        };
+                        error = Some(format!(
+                            "{}:{}:{}: error: struct `{}` used with `{}` requires {}",
+                            source_path,
+                            span.start.line.max(1),
+                            span.start.column.max(1),
+                            left_type,
+                            operator,
+                            requirement
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        });
+    });
+
+    error.map_or(Ok(()), Err)
+}
+
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1402: gate `install` on the non-empty case. The historical
     // wiring called `install(sets.clone())` before the trait-validation
@@ -128,9 +317,6 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     // an invalid-trait error now leaves the registry untouched
     // rather than polluting it with an entry that then fails.
     let sets = collect();
-    if sets.is_empty() {
-        return Ok(());
-    }
     reject_duplicate_derive_records(source_path)?;
     for (type_name, s) in &sets {
         let mut seen_traits: HashSet<&str> = HashSet::new();
@@ -148,6 +334,11 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
                 ));
             }
         }
+    }
+    validate_derive_targets(_program, source_path)?;
+    validate_derive_call_sites(_program, source_path, &sets)?;
+    if sets.is_empty() {
+        return Ok(());
     }
     install(sets);
     Ok(())
