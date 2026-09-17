@@ -135,6 +135,8 @@ mod lsp_server;
 // MCP server: exposes the Resilient compiler as MCP tools over stdio.
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
 #[cfg(not(target_arch = "wasm32"))]
+mod mcp_handler;
+#[cfg(not(target_arch = "wasm32"))]
 mod mcp_server;
 /// Native-only fuzzing seam for the MCP HTTP request parser.
 #[doc(hidden)]
