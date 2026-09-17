@@ -26,6 +26,23 @@
         }
       }
     },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus metrics",
+        "description": "Returns process-local HTTP request counters and a Prometheus text-format latency histogram. Metrics reset when the MCP HTTP process restarts.",
+        "operationId": "getMetrics",
+        "responses": {
+          "200": {
+            "description": "Prometheus metrics",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mcp/call": {
       "post": {
         "summary": "Invoke an MCP tool over plain HTTP",

@@ -61,7 +61,7 @@
 
 use std::io::{self, BufRead, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -157,6 +157,99 @@ fn env_var_u32(key: &str, default: u32) -> u32 {
 /// loop polls this instead of blocking forever in `accept()` so it can
 /// stop taking new connections promptly after a shutdown signal.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// ── RES-3952: Prometheus metrics ─────────────────────────────────────────────
+
+/// Process-local counters for the HTTP wrapper. Keeping these in-tree avoids
+/// adding a metrics dependency to the compiler while still exposing the
+/// standard counter and histogram primitives that a scraper expects.
+struct HttpMetrics {
+    requests_total: AtomicU64,
+    errors_total: AtomicU64,
+    duration_le_1ms: AtomicU64,
+    duration_le_10ms: AtomicU64,
+    duration_le_100ms: AtomicU64,
+    duration_le_1s: AtomicU64,
+    duration_le_10s: AtomicU64,
+    duration_over_10s: AtomicU64,
+    duration_sum_micros: AtomicU64,
+}
+
+impl HttpMetrics {
+    const fn new() -> Self {
+        Self {
+            requests_total: AtomicU64::new(0),
+            errors_total: AtomicU64::new(0),
+            duration_le_1ms: AtomicU64::new(0),
+            duration_le_10ms: AtomicU64::new(0),
+            duration_le_100ms: AtomicU64::new(0),
+            duration_le_1s: AtomicU64::new(0),
+            duration_le_10s: AtomicU64::new(0),
+            duration_over_10s: AtomicU64::new(0),
+            duration_sum_micros: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, status: u16, duration: Duration) {
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+        if status >= 400 {
+            self.errors_total.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let micros = duration.as_micros();
+        match micros {
+            0..=1_000 => self.duration_le_1ms.fetch_add(1, Ordering::Relaxed),
+            1_001..=10_000 => self.duration_le_10ms.fetch_add(1, Ordering::Relaxed),
+            10_001..=100_000 => self.duration_le_100ms.fetch_add(1, Ordering::Relaxed),
+            100_001..=1_000_000 => self.duration_le_1s.fetch_add(1, Ordering::Relaxed),
+            1_000_001..=10_000_000 => self.duration_le_10s.fetch_add(1, Ordering::Relaxed),
+            _ => self.duration_over_10s.fetch_add(1, Ordering::Relaxed),
+        };
+        self.duration_sum_micros
+            .fetch_add(micros.min(u64::MAX as u128) as u64, Ordering::Relaxed);
+    }
+
+    fn render(&self) -> String {
+        let le_1ms = self.duration_le_1ms.load(Ordering::Relaxed);
+        let le_10ms = le_1ms + self.duration_le_10ms.load(Ordering::Relaxed);
+        let le_100ms = le_10ms + self.duration_le_100ms.load(Ordering::Relaxed);
+        let le_1s = le_100ms + self.duration_le_1s.load(Ordering::Relaxed);
+        let le_10s = le_1s + self.duration_le_10s.load(Ordering::Relaxed);
+        let count = le_10s + self.duration_over_10s.load(Ordering::Relaxed);
+        let sum_seconds = self.duration_sum_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+
+        format!(
+            "# HELP resilient_mcp_http_requests_total Total HTTP requests handled by the MCP HTTP wrapper.\n\
+# TYPE resilient_mcp_http_requests_total counter\n\
+resilient_mcp_http_requests_total {}\n\
+# HELP resilient_mcp_http_errors_total Total HTTP requests handled with a 4xx or 5xx status.\n\
+# TYPE resilient_mcp_http_errors_total counter\n\
+resilient_mcp_http_errors_total {}\n\
+# HELP resilient_mcp_http_request_duration_seconds HTTP request duration in seconds.\n\
+# TYPE resilient_mcp_http_request_duration_seconds histogram\n\
+resilient_mcp_http_request_duration_seconds_bucket{{le=\"0.001\"}} {}\n\
+resilient_mcp_http_request_duration_seconds_bucket{{le=\"0.01\"}} {}\n\
+resilient_mcp_http_request_duration_seconds_bucket{{le=\"0.1\"}} {}\n\
+resilient_mcp_http_request_duration_seconds_bucket{{le=\"1\"}} {}\n\
+resilient_mcp_http_request_duration_seconds_bucket{{le=\"10\"}} {}\n\
+resilient_mcp_http_request_duration_seconds_bucket{{le=\"+Inf\"}} {}\n\
+resilient_mcp_http_request_duration_seconds_sum {}\n\
+resilient_mcp_http_request_duration_seconds_count {}\n",
+            self.requests_total.load(Ordering::Relaxed),
+            self.errors_total.load(Ordering::Relaxed),
+            le_1ms,
+            le_10ms,
+            le_100ms,
+            le_1s,
+            le_10s,
+            count,
+            sum_seconds,
+            count,
+        )
+    }
+}
+
+static HTTP_METRICS: HttpMetrics = HttpMetrics::new();
 
 #[cfg(unix)]
 mod shutdown_signal {
@@ -413,7 +506,9 @@ fn handle_http_stream(
                         )
                     }),
                 );
-                log_request(peer_ip, &method, &path, 413, start.elapsed(), request.len());
+                let duration = start.elapsed();
+                log_request(peer_ip, &method, &path, 413, duration, request.len());
+                HTTP_METRICS.record(413, duration);
                 return stream.write_all(response.as_bytes());
             }
             checked_content_length = true;
@@ -431,7 +526,9 @@ fn handle_http_stream(
                     )
                 }),
             );
-            log_request(peer_ip, &method, &path, 413, start.elapsed(), request.len());
+            let duration = start.elapsed();
+            log_request(peer_ip, &method, &path, 413, duration, request.len());
+            HTTP_METRICS.record(413, duration);
             return stream.write_all(response.as_bytes());
         }
 
@@ -451,7 +548,9 @@ fn handle_http_stream(
             429,
             json!({ "status": "error", "error": "rate limit exceeded" }),
         );
-        log_request(peer_ip, &method, &path, 429, start.elapsed(), request.len());
+        let duration = start.elapsed();
+        log_request(peer_ip, &method, &path, 429, duration, request.len());
+        HTTP_METRICS.record(429, duration);
         return stream.write_all(response.as_bytes());
     }
 
@@ -459,7 +558,9 @@ fn handle_http_stream(
     let request = String::from_utf8_lossy(&request);
     let response = http_response_for_request(&request, config);
     let status = response_status(&response);
-    log_request(peer_ip, &method, &path, status, start.elapsed(), body_bytes);
+    let duration = start.elapsed();
+    log_request(peer_ip, &method, &path, status, duration, body_bytes);
+    HTTP_METRICS.record(status, duration);
     stream.write_all(response.as_bytes())
 }
 
@@ -572,7 +673,7 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
     }
 
     match (method, path) {
-        ("OPTIONS", "/health" | "/mcp/call") => http_cors_preflight(),
+        ("OPTIONS", "/health" | "/mcp/call" | "/metrics") => http_cors_preflight(),
         ("GET", "/health") => http_json(
             200,
             json!({
@@ -582,6 +683,7 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
                 "version": env!("CARGO_PKG_VERSION")
             }),
         ),
+        ("GET", "/metrics") => http_metrics_response(),
         ("POST", "/mcp/call") => http_mcp_call(body, config.timeout),
         _ => http_json(
             404,
@@ -721,6 +823,18 @@ fn http_json(status: u16, body: Value) -> String {
     let body = body.to_string();
     format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{body}",
+        body.len(),
+        cors_headers(),
+    )
+}
+
+fn http_metrics_response() -> String {
+    http_text(200, "text/plain; version=0.0.4", HTTP_METRICS.render())
+}
+
+fn http_text(status: u16, content_type: &str, body: String) -> String {
+    format!(
+        "HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{body}",
         body.len(),
         cors_headers(),
     )
