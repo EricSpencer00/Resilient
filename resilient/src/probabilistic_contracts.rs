@@ -64,6 +64,172 @@ pub fn collect() -> Vec<(String, ProbContract)> {
     out
 }
 
+fn prob_diagnostic(source_path: &str, line: usize, message: impl AsRef<str>) -> String {
+    format!(
+        "{source_path}:{line}:0: error[probabilistic]: {}",
+        message.as_ref()
+    )
+}
+
+fn parse_prob_value(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+    key: &str,
+    raw_value: &str,
+) -> Result<String, String> {
+    let value = raw_value.trim();
+    let Some(value) = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return Err(prob_diagnostic(
+            source_path,
+            rec.line,
+            format!("probabilistic contract on {item} argument {key} must be a quoted string"),
+        ));
+    };
+    Ok(value.to_string())
+}
+
+fn validate_prob_decl(
+    item: &str,
+    rec: &crate::feature_attrs::AttrRecord,
+    source_path: &str,
+) -> Result<ProbContract, String> {
+    if rec.args.trim().is_empty() {
+        return Err(prob_diagnostic(
+            source_path,
+            rec.line,
+            format!("probabilistic contract on {item} requires clause and p arguments"),
+        ));
+    }
+
+    let mut clause = None;
+    let mut probability = None;
+    for chunk in rec.args.split(',') {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            return Err(prob_diagnostic(
+                source_path,
+                rec.line,
+                format!("probabilistic contract on {item} has an empty argument"),
+            ));
+        }
+
+        let Some((key, raw_value)) = chunk.split_once('=') else {
+            return Err(prob_diagnostic(
+                source_path,
+                rec.line,
+                format!("probabilistic contract on {item} has malformed argument {chunk}"),
+            ));
+        };
+        let key = key.trim();
+        let value = parse_prob_value(item, rec, source_path, key, raw_value)?;
+        match key {
+            "clause" => {
+                if clause.is_some() {
+                    return Err(prob_diagnostic(
+                        source_path,
+                        rec.line,
+                        format!("probabilistic contract on {item} has duplicate clause"),
+                    ));
+                }
+                if value.trim().is_empty() {
+                    return Err(prob_diagnostic(
+                        source_path,
+                        rec.line,
+                        format!("probabilistic contract on {item} requires a non-empty clause"),
+                    ));
+                }
+                clause = Some(value);
+            }
+            "p" => {
+                if probability.is_some() {
+                    return Err(prob_diagnostic(
+                        source_path,
+                        rec.line,
+                        format!("probabilistic contract on {item} has duplicate p"),
+                    ));
+                }
+                let parsed = value.parse::<f64>().map_err(|_| {
+                    prob_diagnostic(
+                        source_path,
+                        rec.line,
+                        format!(
+                            "probabilistic contract on {item} p must be a decimal probability, got {value}"
+                        ),
+                    )
+                })?;
+                if !parsed.is_finite() || !(0.0..=1.0).contains(&parsed) {
+                    return Err(prob_diagnostic(
+                        source_path,
+                        rec.line,
+                        format!(
+                            "probabilistic contract on {item} p must be in [0.0, 1.0], got {value}"
+                        ),
+                    ));
+                }
+                probability = Some(parsed);
+            }
+            _ => {
+                return Err(prob_diagnostic(
+                    source_path,
+                    rec.line,
+                    format!(
+                        "probabilistic contract on {item} has unknown argument {key}; expected clause or p"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let clause = clause.ok_or_else(|| {
+        prob_diagnostic(
+            source_path,
+            rec.line,
+            format!("probabilistic contract on {item} requires a clause argument"),
+        )
+    })?;
+    let probability = probability.ok_or_else(|| {
+        prob_diagnostic(
+            source_path,
+            rec.line,
+            format!("probabilistic contract on {item} requires a p argument"),
+        )
+    })?;
+
+    Ok(ProbContract {
+        clause,
+        probability,
+        trials: 0,
+        successes: 0,
+    })
+}
+
+fn collect_checked(source_path: &str) -> Result<Vec<(String, ProbContract)>, String> {
+    let attrs = crate::feature_attrs::find_kind("probabilistic");
+    let mut contracts = Vec::with_capacity(attrs.len());
+    let mut first_lines = HashMap::with_capacity(attrs.len());
+
+    for (item, rec) in attrs {
+        let contract = validate_prob_decl(&item, &rec, source_path)?;
+        if let Some(first_line) = first_lines.get(&item) {
+            return Err(prob_diagnostic(
+                source_path,
+                rec.line,
+                format!(
+                    "duplicate probabilistic contract on {item}; first declared at line {first_line}"
+                ),
+            ));
+        }
+        first_lines.insert(item.clone(), rec.line);
+        contracts.push((item, contract));
+    }
+
+    Ok(contracts)
+}
+
 pub fn install(contracts: Vec<(String, ProbContract)>) {
     if let Ok(mut g) = CONTRACTS.write() {
         g.clear();
@@ -98,11 +264,11 @@ pub fn empirical_rate(fn_name: &str) -> Option<f64> {
     })
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     // RES-1308: gate `install` on the non-empty case — see RES-1302
     // for the wipe-on-empty race rationale; same pattern saves a
     // wasted RwLock write per compile in the common case.
-    let contracts = collect();
+    let contracts = collect_checked(source_path)?;
     if contracts.is_empty() {
         return Ok(());
     }
