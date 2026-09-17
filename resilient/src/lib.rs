@@ -35359,8 +35359,10 @@ pub fn run_cli() {
         {
             if let Some(addr) = mcp_http_addr.as_deref() {
                 if let Err(e) = mcp_server::run_http(addr) {
-                    eprintln!("MCP HTTP server failed: {e}");
-                    std::process::exit(1);
+                    eprintln!(
+                        "MCP HTTP server failed to start at {addr}: {e}; falling back to stdio"
+                    );
+                    mcp_server::run();
                 }
             } else {
                 mcp_server::run();
