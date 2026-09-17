@@ -5,18 +5,20 @@
 # `PERF_THRESHOLD_PCT`) fails the workflow.
 #
 # RES-3933 (F-E4): the gate no longer measures fib(25) alone. The
-# same job now also runs `benchmarks/extended/run.sh`, which covers
+# The gate also runs `benchmarks/extended/run.sh`, which covers
 # the sum/vm/jit/contracts benchmark dirs (see that script's header
 # for exactly which rows and why lex/compile_time are deliberately
 # excluded as too slow for CI) and compares against
 # `benchmarks/baseline/extended.json` via
-# `benchmarks/extended/compare.sh`. Both comparisons reuse the same
-# release + `--features jit` binaries the fib step already builds,
-# so this adds ~seconds of wall time, not another full compile.
+# `benchmarks/extended/compare.sh`. Each candidate reuses the release +
+# `--features jit` binaries it already builds, while three candidates run
+# on independent hosted runners. The comparison uses the fastest value per
+# row, filtering runner-local contention while retaining failures reproduced
+# by every candidate.
 #
 # Per the ticket Notes, the gate is a VISIBLE WARNING, not a
 # required check — branch-protection can opt in separately. The
-# workflow's `fail-fast: false` on its single job keeps PRs
+# workflow's `fail-fast: false` on its candidate matrix keeps PRs
 # mergeable while the signal is noisy (hosted-runner variance). The
 # extended comparison is advisory for the same reason: the "Compare
 # vs baselines" step still exits non-zero when either comparison
@@ -63,15 +65,18 @@ env:
 
 jobs:
   fib:
-    name: perf-gate benchmarks
+    name: perf-gate candidate ${{ matrix.candidate }}
     # Defer the benchmark while the PR is a draft; it re-runs on
     # `ready_for_review`. Not a required check, so a deferred draft run
     # blocks nothing.
     if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [1, 2, 3]
     permissions:
-      issues: write
-      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -90,7 +95,7 @@ jobs:
       - name: Install hyperfine + jq
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq hyperfine jq bc
+          sudo apt-get install -y -qq hyperfine jq
 
       - name: Run fib benchmark
         run: |
@@ -109,46 +114,63 @@ jobs:
           echo "Fresh extended results:"
           cat /tmp/fresh-extended.json
 
-      # Both comparisons always run (neither can short-circuit the
-      # other), and their combined pass/fail is this step's own exit
-      # code — same "capture rc, still build the PR-comment body,
-      # exit $rc at the end" shape the original single-benchmark
-      # version of this step used, just over two scripts instead of
-      # one. The job still goes red on a regression (visible, non-
-      # required signal); nothing here suppresses that failure.
+      - name: Upload benchmark candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-candidate-${{ matrix.candidate }}
+          path: |
+            /tmp/fresh-fib.json
+            /tmp/fresh-extended.json
+          if-no-files-found: ignore
+
+  compare:
+    name: perf-gate benchmarks
+    if: always() && github.event.pull_request.draft != true
+    needs: fib
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq + bc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq bc
+
+      - name: Download benchmark candidates
+        uses: actions/download-artifact@v4
+        with:
+          pattern: perf-candidate-*
+          path: /tmp/perf-candidates
+
       - name: Compare vs baselines
         id: compare
         run: |
           set +e
-          fib_candidates=(/tmp/fresh-fib.json)
-          extended_candidates=(/tmp/fresh-extended.json)
-          attempt=0
+          mapfile -t fib_candidates < <(find /tmp/perf-candidates -name fresh-fib.json -type f | sort)
+          mapfile -t extended_candidates < <(find /tmp/perf-candidates -name fresh-extended.json -type f | sort)
 
-          # Hosted runners occasionally contend for CPU long enough to
-          # move one median past the threshold. Compare the fastest of up
-          # to three independent candidates so a one-off pause is filtered,
-          # while a regression that reproduces remains visible.
-          while true; do
+          if (( ${#fib_candidates[@]} > 0 )); then
             ./scripts/compare_perf.sh benchmarks/baseline/fib.json "${fib_candidates[@]}" > /tmp/compare-fib.md
             rc_fib=$?
+          else
+            echo "error: no fib benchmark candidates were uploaded" >&2
+            echo "**FAIL** — no fib benchmark candidates were uploaded." > /tmp/compare-fib.md
+            rc_fib=1
+          fi
+
+          if (( ${#extended_candidates[@]} > 0 )); then
             ./benchmarks/extended/compare.sh benchmarks/baseline/extended.json "${extended_candidates[@]}" > /tmp/compare-extended.md
             rc_extended=$?
-
-            if [[ ($rc_fib -eq 0 && $rc_extended -eq 0) || $attempt -ge 2 ]]; then
-              break
-            fi
-
-            attempt=$((attempt + 1))
-            fib_retry="/tmp/fresh-fib-retry-${attempt}.json"
-            if ./benchmarks/fib/run.sh > "$fib_retry" 2>/dev/null; then
-              fib_candidates+=("$fib_retry")
-            fi
-
-            extended_retry="/tmp/fresh-extended-retry-${attempt}.json"
-            if ./benchmarks/extended/run.sh > "$extended_retry" 2>/dev/null; then
-              extended_candidates+=("$extended_retry")
-            fi
-          done
+          else
+            echo "error: no extended benchmark candidates were uploaded" >&2
+            echo "**FAIL** — no extended benchmark candidates were uploaded." > /tmp/compare-extended.md
+            rc_extended=1
+          fi
 
           # Echo both tables so the workflow log shows them too.
           cat /tmp/compare-fib.md
