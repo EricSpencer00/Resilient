@@ -3,14 +3,6 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-4246-extern-callsite-typecheck",
       "claimed_at": "2026-08-08T23:53:49Z"
-    },
-    "resilient/src/phantom_types.rs": {
-      "branch": "res-4264-phantom-arithmetic",
-      "claimed_at": "2026-09-17T06:05:51Z"
-    },
-    "resilient/tests/phantom_types_arithmetic.rs": {
-      "branch": "res-4264-phantom-arithmetic",
-      "claimed_at": "2026-09-17T06:05:51Z"
     }
   }
 }
