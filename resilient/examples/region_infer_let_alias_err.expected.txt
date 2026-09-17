@@ -1,0 +1,8 @@
+# exit: 1
+# stderr:
+./examples/region_infer_let_alias_err.rz:15:14: E: call to `set_both` passes `x`, `y` as simultaneous reference arguments (at least one `&mut`) — these bindings provably refer to the same region via `let` reference aliasing
+./examples/region_infer_let_alias_err.rz:15:14: E: call to `set_both` passes `x`, `y` as simultaneous reference arguments (at least one `&mut`) — these bindings provably refer to the same region via `let` reference aliasing
+Borrow check: E: call to `set_both` passes `x`, `y` as simultaneous reference arguments (at least one `&mut`) — these bindings provably refer to the same region via `let` reference aliasing
+       set_both(x, y);
+                ^
+Error: Borrow check failed: 1 error(s)

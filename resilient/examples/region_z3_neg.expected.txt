@@ -1,0 +1,8 @@
+# exit: 1
+# stderr:
+./examples/region_z3_neg.rz:8:4: E: potential aliasing between `&mut[A]` parameter `a` and `&mut[A]` parameter `b` of fn `update_same` — add distinct region or see docs
+./examples/region_z3_neg.rz:8:4: E: potential aliasing between `&mut[A]` parameter `a` and `&mut[A]` parameter `b` of fn `update_same` — add distinct region or see docs
+Borrow check: E: potential aliasing between `&mut[A]` parameter `a` and `&mut[A]` parameter `b` of fn `update_same` — add distinct region or see docs
+   fn update_same(&mut[A] int a, &mut[A] int b) requires(a == b) {
+      ^
+Error: Borrow check failed: 1 error(s)

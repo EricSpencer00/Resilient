@@ -1,2 +1,10 @@
+# exit: 1
+# stdout:
 worker spawned, no message sent
 error: deadlock detected; 1 actor(s) blocked on receive() with empty mailboxes; PIDs: [1]
+# stderr:
+./examples/actor_deadlock.rz:0:0: warning[resilience]: `waiting_worker` scores 20/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+./examples/actor_deadlock.rz:0:0: warning[vibe_debt]: `waiting_worker` has no contracts, no effect annotation, and is unreferenced — fully vibe-coded
+./examples/actor_deadlock.rz:0:0: warning[vibe_debt]: program-wide vibe debt is 100.0% (1 of 1 function(s) have zero verification signals)
+warning: ./examples/actor_deadlock.rz:5:4: function `waiting_worker` is never called
+Error: Runtime error: error: deadlock detected; 1 actor(s) blocked on receive() with empty mailboxes; PIDs: [1]

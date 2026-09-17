@@ -1,0 +1,8 @@
+# exit: 1
+# stderr:
+./examples/region_poly_call.rz:9:4: E: call to `update` aliases mutable region `A` via args 0 and 1 — callee region params must be disjoint
+./examples/region_poly_call.rz:9:4: E: call to `update` aliases mutable region `A` via args 0 and 1 — callee region params must be disjoint
+Borrow check: E: call to `update` aliases mutable region `A` via args 0 and 1 — callee region params must be disjoint
+   fn caller(&mut[A] int a) {
+      ^
+Error: Borrow check failed: 1 error(s)

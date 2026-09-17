@@ -1,0 +1,33 @@
+# exit: 1
+# stderr:
+Parser error: 11:25: expected `fn` field in child spec
+Parser error: 11:25: expected `}}` to close child spec
+Parser error: 11:25: expected `]` to close children array
+Parser error: 11:27: expected `}}` to close supervisor block
+Parser error: 12:27: Expected identifier after 'fn', found `:`
+Parser error: 12:29: Expected '(' after function name 'error_function'
+11:25: expected `fn` field in child spec
+Parser error: expected `fn` field in child spec
+           { id: "reader", fn: read_sensor, restart: permanent },
+                           ^
+11:25: expected `}}` to close child spec
+Parser error: expected `}}` to close child spec
+           { id: "reader", fn: read_sensor, restart: permanent },
+                           ^
+11:25: expected `]` to close children array
+Parser error: expected `]` to close children array
+           { id: "reader", fn: read_sensor, restart: permanent },
+                           ^
+11:27: expected `}}` to close supervisor block
+Parser error: expected `}}` to close supervisor block
+           { id: "reader", fn: read_sensor, restart: permanent },
+                             ^
+12:27: Expected identifier after 'fn', found `:`
+Parser error: Expected identifier after 'fn', found `:`
+           { id: "writer", fn: write_log, restart: transient }
+                             ^
+12:29: Expected '(' after function name 'error_function'
+Parser error: Expected '(' after function name 'error_function'
+           { id: "writer", fn: write_log, restart: transient }
+                               ^
+Error: Failed to parse program: 6 parser error(s)

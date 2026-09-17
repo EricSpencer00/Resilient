@@ -1,0 +1,23 @@
+# exit: 1
+# stderr:
+Parser error: 10:14: Expected actor type after `members:`, found `[`
+Parser error: 49:5: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderA`, found identifier `is_leader`
+Parser error: 54:5: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderB`, found identifier `is_leader`
+Parser error: 59:5: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderC`, found identifier `is_leader`
+10:14: Expected actor type after `members:`, found `[`
+Parser error: Expected actor type after `members:`, found `[`
+       members: [A, B, C],
+                ^
+49:5: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderA`, found identifier `is_leader`
+Parser error: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderA`, found identifier `is_leader`
+       is_leader: bool = false,
+       ^
+54:5: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderB`, found identifier `is_leader`
+Parser error: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderB`, found identifier `is_leader`
+       is_leader: bool = false,
+       ^
+59:5: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderC`, found identifier `is_leader`
+Parser error: Expected `state`, `always`, `eventually`, `receive`, or `}` in actor `LeaderC`, found identifier `is_leader`
+       is_leader: bool = false,
+       ^
+Error: Failed to parse program: 4 parser error(s)

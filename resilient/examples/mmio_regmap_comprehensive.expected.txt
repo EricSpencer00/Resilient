@@ -1,0 +1,23 @@
+# exit: 1
+# stderr:
+Parser error: 6:5: Expected '->' between map key and value, found `:`
+Parser error: 6:5: Expected '}' to close map literal, found `:`
+Parser error: 40:9: Expected identifier after 'let', found `_`
+Parser error: 41:9: Expected identifier after 'let', found `_`
+6:5: Expected '->' between map key and value, found `:`
+Parser error: Expected '->' between map key and value, found `:`
+       0x00: status_reg,
+       ^
+6:5: Expected '}' to close map literal, found `:`
+Parser error: Expected '}' to close map literal, found `:`
+       0x00: status_reg,
+       ^
+40:9: Expected identifier after 'let', found `_`
+Parser error: Expected identifier after 'let', found `_`
+       let _ = init_uart();
+           ^
+41:9: Expected identifier after 'let', found `_`
+Parser error: Expected identifier after 'let', found `_`
+       let _ = configure_spi();
+           ^
+Error: Failed to parse program: 4 parser error(s)

@@ -1,0 +1,25 @@
+# exit: 1
+# stderr:
+./examples/assume_false_dead_code.rz:0:0: warning[assume-false]: dead-code region following assume(false)
+./examples/assume_false_dead_code.rz:0:0: warning[assume-false]: dead-code region following assume(false)
+./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `test_dead_code` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `test_multiple_dead` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+./examples/assume_false_dead_code.rz:0:0: warning[resilience]: `main` scores 28/100 (F — vibe-coded, unverified) — add `requires`/`ensures` contracts to improve resilience
+mutation: 9 total mutation site(s) across 2 function(s)
+mutation:   `test_dead_code`: 1 site(s) [literal]
+mutation:   `test_multiple_dead`: 8 site(s) [arithmetic, literal]
+./examples/assume_false_dead_code.rz:0:0: warning[mutation]: 9/9 mutation site(s) (100%) are in functions with no contracts — the Z3 verifier cannot kill them
+./examples/assume_false_dead_code.rz:0:0: warning[mutation]: `test_dead_code`: 1 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+./examples/assume_false_dead_code.rz:0:0: warning[mutation]: `test_multiple_dead`: 8 unconstrained mutation site(s) — add `requires`/`ensures` contracts
+Error: ./examples/assume_false_dead_code.rz:20:5: Runtime error: ASSUME VIOLATED: Assumption failed
+  - Condition evaluated to: false
+stack trace (most recent call last):
+  at main (assume_false_dead_code.rz:20:6)
+  at test_dead_code (assume_false_dead_code.rz:16:20)
+Runtime error: ASSUME VIOLATED: Assumption failed
+  - Condition evaluated to: false
+stack trace (most recent call last):
+  at main (assume_false_dead_code.rz:20:6)
+  at test_dead_code (assume_false_dead_code.rz:16:20)
+   main();
+       ^
