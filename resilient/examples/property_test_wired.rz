@@ -1,0 +1,13 @@
+// RES-4266: a well-formed property-test declaration reaches the compiler
+// validation pass and remains runnable.
+
+#[property_test(samples = 100)]
+fn add_pos(int x) requires x > 0 ensures result > 0 {
+    return x + 1;
+}
+
+fn main() {
+    println(add_pos(1));
+}
+
+main();

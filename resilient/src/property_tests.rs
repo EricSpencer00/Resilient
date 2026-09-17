@@ -624,6 +624,27 @@ mod tests {
     }
 
     #[test]
+    fn typechecker_runs_property_test_validation() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "#[property_test(samples = 25)] fn no_contracts(int x) -> int { return x + 1; }";
+        let (prog, parse_errors) = crate::parse(src);
+        assert!(
+            parse_errors.is_empty(),
+            "unexpected parse errors: {parse_errors:?}"
+        );
+
+        let err = crate::typechecker::TypeChecker::new()
+            .check_program_with_source(&prog, "wired_property_test.rz")
+            .expect_err("typechecking should validate property-test declarations");
+        assert!(
+            err.contains("invalid #[property_test] declaration `no_contracts`"),
+            "unexpected diagnostic: {err}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
     fn check_rejects_duplicate_property_test_declaration() {
         let _g = crate::feature_attrs::lock_for_test();
         crate::feature_attrs::reset();
