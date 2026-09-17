@@ -6924,8 +6924,10 @@ impl TypeChecker {
                 if markers.has_module_decl || markers.has_use {
                     crate::full_modules::check(program, source_path)?;
                 }
-                // RES-1597: `package_manager::check` is a no-op stub;
-                // manifest parsing happens elsewhere.
+                // RES-3228: validate project manifests at the same boundary
+                // where the package manager's runtime failure classes are
+                // otherwise first observable.
+                crate::package_manager::check(program, source_path)?;
                 // RES-1599 gate: pass scans for `Node::ImplBlock` with
                 // `trait_name == Some("Iterator")`. Markers already
                 // collects every `impl_trait_names` from the RES-1593
