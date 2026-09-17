@@ -16,6 +16,7 @@
 
 use crate::Node;
 use crate::span::Span;
+use std::collections::HashMap;
 
 fn diagnostic(source_path: &str, span: Span, message: &str) -> String {
     format!(
@@ -32,6 +33,145 @@ fn is_missing_initializer(node: &Node) -> bool {
             span,
         } if *span == Span::default()
     )
+}
+
+fn const_expression_key(node: &Node) -> Option<String> {
+    match node {
+        Node::IntegerLiteral { value, .. } => Some(format!("int:{value}")),
+        Node::FloatLiteral { value, .. } => Some(format!("float:{}", value.to_bits())),
+        Node::BooleanLiteral { value, .. } => Some(format!("bool:{value}")),
+        Node::StringLiteral { value, .. } => Some(format!("string:{value:?}")),
+        Node::StringInternLiteral { content, .. } => Some(format!("string:{content:?}")),
+        Node::Identifier { name, .. } => Some(format!("identifier:{name}")),
+        Node::PrefixExpression {
+            operator, right, ..
+        } => Some(format!(
+            "prefix:{operator}:{}",
+            const_expression_key(right)?
+        )),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => Some(format!(
+            "infix:{}:{operator}:{}",
+            const_expression_key(left)?,
+            const_expression_key(right)?
+        )),
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => Some(format!(
+            "if:{}:{}:{}",
+            const_expression_key(condition)?,
+            const_expression_key(consequence)?,
+            alternative
+                .as_deref()
+                .and_then(const_expression_key)
+                .unwrap_or_default()
+        )),
+        Node::ExpressionStatement { expr, .. } => const_expression_key(expr),
+        Node::Block { stmts, .. } if stmts.len() == 1 => const_expression_key(&stmts[0]),
+        Node::TupleLiteral { items, .. } => {
+            let keys = items
+                .iter()
+                .map(const_expression_key)
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!("tuple:{keys:?}"))
+        }
+        _ => None,
+    }
+}
+
+fn const_declarations_match(
+    previous_value: &Node,
+    previous_type: Option<&str>,
+    current_value: &Node,
+    current_type: Option<&str>,
+) -> bool {
+    previous_type == current_type
+        && const_expression_key(previous_value).is_some()
+        && const_expression_key(previous_value) == const_expression_key(current_value)
+}
+
+fn check_duplicate_top_level_consts(program: &Node, source_path: &str) -> Result<(), String> {
+    let Node::Program(statements) = program else {
+        return Ok(());
+    };
+
+    let mut seen: HashMap<&str, (Span, &Node, Option<&str>)> = HashMap::new();
+    for statement in statements {
+        let Node::Const {
+            name,
+            value,
+            type_annot,
+            span,
+        } = &statement.node
+        else {
+            continue;
+        };
+
+        if let Some((previous_span, previous_value, previous_type)) = seen.get(name.as_str()) {
+            let kind = if const_declarations_match(
+                previous_value,
+                *previous_type,
+                value,
+                type_annot.as_deref(),
+            ) {
+                "duplicate"
+            } else {
+                "conflicting"
+            };
+            let previous_location = format!(
+                "{}:{}:{}",
+                source_path, previous_span.start.line, previous_span.start.column
+            );
+            let current_location =
+                format!("{}:{}:{}", source_path, span.start.line, span.start.column);
+            return Err(diagnostic(
+                source_path,
+                *span,
+                &format!(
+                    "{kind} const declaration `{name}`; first declared at {previous_location}, second declared at {current_location}"
+                ),
+            ));
+        }
+
+        seen.insert(
+            name.as_str(),
+            (*span, value.as_ref(), type_annot.as_deref()),
+        );
+    }
+    Ok(())
+}
+
+fn check_nested_consts(program: &Node, source_path: &str) -> Result<(), String> {
+    let Node::Program(statements) = program else {
+        return Ok(());
+    };
+
+    for statement in statements {
+        let mut error = None;
+        crate::uniqueness_walk::walk_children(&statement.node, &mut |node| {
+            if error.is_some() {
+                return;
+            }
+            if let Node::Const { span, .. } = node {
+                error = Some(diagnostic(
+                    source_path,
+                    *span,
+                    "function-scoped `const` declarations are not supported; use `let` instead",
+                ));
+            }
+        });
+        if let Some(error) = error {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// Validate const declarations before const evaluation runs.
@@ -76,10 +216,11 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         }
     });
 
-    match error {
-        Some(err) => Err(err),
-        None => Ok(()),
+    if let Some(err) = error {
+        return Err(err);
     }
+    check_duplicate_top_level_consts(program, source_path)?;
+    check_nested_consts(program, source_path)
 }
 
 // ---------------------------------------------------------------------------
