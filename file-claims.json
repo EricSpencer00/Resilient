@@ -15,6 +15,10 @@
     "benchmarks/extended/compare.sh": {
       "branch": "res-4245-perf-signal",
       "claimed_at": "2026-09-17T06:26:33Z"
+    },
+    "agent-scripts/test-compare-perf.sh": {
+      "branch": "res-4245-perf-signal",
+      "claimed_at": "2026-09-17T06:30:43Z"
     }
   }
 }
