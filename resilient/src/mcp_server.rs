@@ -336,17 +336,18 @@ pub fn run() {
             }
         };
 
-        let id = msg.get("id").cloned().unwrap_or(Value::Null);
-        let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-
-        // Notifications (no id) — no response required.
-        let is_notification = msg.get("id").is_none();
-
-        let response = dispatch(method, &id, msg.get("params"), is_notification);
+        let response = handle_mcp_request(&msg);
         if let Some(resp) = response {
             let _ = write_response(&mut out, &resp);
         }
     }
+}
+
+/// Route one decoded MCP JSON-RPC message through the shared request seam.
+/// Both stdio and HTTP callers use this path so envelope handling and
+/// notification semantics cannot drift between transports.
+pub(crate) fn handle_mcp_request(msg: &Value) -> Option<Value> {
+    crate::mcp_handler::handle_message(msg, dispatch)
 }
 
 /// RES-3937: run the HTTP listener with a bounded worker pool. The accept
@@ -744,8 +745,13 @@ fn http_mcp_call(body: &str, timeout: Duration) -> String {
     // worker thread and raced against `timeout`.
     let mcp_tool_for_thread = mcp_tool.clone();
     let response = run_with_timeout(timeout, move || {
-        let params = json!({ "name": mcp_tool_for_thread, "arguments": args });
-        dispatch("tools/call", &json!(1), Some(&params), false)
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": mcp_tool_for_thread, "arguments": args }
+        });
+        handle_mcp_request(&request)
             .unwrap_or_else(|| error(&json!(1), -32603, "empty MCP response".to_string()))
     });
     let Some(response) = response else {
