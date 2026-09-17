@@ -508,6 +508,10 @@ let out = sb.to_string();
 
 ## Bit Manipulation (Extended)
 
+The builtins below operate on the full 64-bit two's-complement representation
+of an `int`. Bit positions are checked: out-of-range positions are errors
+rather than being silently masked.
+
 | Name | Signature | Notes |
 |---|---|---|
 | `rotate_left_int(n, shift)` | (int, int) → int | RES-1119: rotate left |
@@ -525,6 +529,15 @@ let out = sb.to_string();
 | `bit_clear(n, i)` | (int, int) → int | RES-1156: clear bit i |
 | `bit_get(n, i)` | (int, int) → int | RES-1156: get bit i (0 or 1) |
 | `bit_flip(n, i)` | (int, int) → int | RES-1156: toggle bit i |
+| `bit_count(n)` | int → int | Number of set bits in the 64-bit two's-complement representation; `bit_count(-1)` is 64. |
+| `bit_leading_zeros(n)` | int → int | Number of zero bits before the highest set bit in the 64-bit representation; 0 returns 64 and negative values return 0. |
+| `bit_trailing_zeros(n)` | int → int | Number of zero bits after the lowest set bit in the 64-bit representation; 0 returns 64 and `-1` returns 0. |
+| `bit_test(n, pos)` | (int, int) → bool | True when bit `pos` is set; `pos` must be 0..=63. |
+| `bit_toggle(n, pos)` | (int, int) → int | Flip bit `pos` with XOR; `pos` must be 0..=63. |
+| `bit_rotate_left(n, shift)` | (int, int) → int | Circularly rotate all 64 bits left; `shift` must be 0..=63. |
+| `bit_rotate_right(n, shift)` | (int, int) → int | Circularly rotate all 64 bits right; `shift` must be 0..=63. |
+| `bit_byte(n, index)` | (int, int) → int | Extract little-endian byte `index` from the 64-bit representation; `index` must be 0..=7 and the result is 0..=255. |
+| `bit_set_byte(n, index, value)` | (int, int, int) → int | Replace little-endian byte `index` with `value`; `index` must be 0..=7 and `value` must be 0..=255. |
 | `get_bit(n, i)` | (int, int) → bool | RES-1156: bit i as boolean |
 | `set_bit(n, i)` | (int, int) → int | RES-1156: set bit i to 1 |
 | `clear_bit(n, i)` | (int, int) → int | RES-1156: set bit i to 0 |
