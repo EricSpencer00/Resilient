@@ -1,0 +1,7 @@
+// RES-4259: this literal URL is rejected before the program can run.
+fn main() {
+    let result = http_get("https://example.com/api");
+    println(result);
+}
+
+main();

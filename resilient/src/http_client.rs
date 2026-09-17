@@ -34,7 +34,6 @@ fn err_val(msg: String) -> Value {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct ParsedUrl {
     host: String,
     port: u16,
@@ -56,7 +55,6 @@ impl Default for RequestOptions {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn parse_url(url: &str) -> Result<ParsedUrl, String> {
     let rest = url
         .strip_prefix("http://")
@@ -358,6 +356,54 @@ fn validate_http_options(
     Ok(())
 }
 
+fn validate_http_arity(
+    source_path: &str,
+    builtin: &str,
+    args: &[Node],
+    call_span: Span,
+    required: usize,
+    maximum: usize,
+) -> Result<(), String> {
+    if args.len() < required {
+        return Err(diagnostic(
+            source_path,
+            call_span,
+            &format!(
+                "{builtin}: expected at least {required} argument(s), got {}",
+                args.len()
+            ),
+        ));
+    }
+    if args.len() > maximum {
+        return Err(diagnostic(
+            source_path,
+            call_span,
+            &format!(
+                "{builtin}: expected {required} to {maximum} argument(s), got {}",
+                args.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_literal_url(source_path: &str, builtin: &str, arg: &Node) -> Result<(), String> {
+    let url = match arg {
+        Node::StringLiteral { value, .. } => value,
+        Node::StringInternLiteral { content, .. } => content,
+        _ => return Ok(()),
+    };
+
+    if let Err(message) = parse_url(url) {
+        return Err(diagnostic(
+            source_path,
+            span_of(arg),
+            &format!("{builtin}: invalid URL: {message}"),
+        ));
+    }
+    Ok(())
+}
+
 fn walk(node: &Node, source_path: &str) -> Result<(), String> {
     match node {
         Node::Program(stmts) => {
@@ -488,12 +534,24 @@ fn walk(node: &Node, source_path: &str) -> Result<(), String> {
         Node::CallExpression {
             function,
             arguments,
-            span: _,
+            span,
         } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 match name.as_str() {
-                    "http_get" => validate_http_options(source_path, "http_get", arguments, 1)?,
-                    "http_post" => validate_http_options(source_path, "http_post", arguments, 2)?,
+                    "http_get" => {
+                        validate_http_arity(source_path, "http_get", arguments, *span, 1, 3)?;
+                        if let Some(url) = arguments.first() {
+                            validate_literal_url(source_path, "http_get", url)?;
+                        }
+                        validate_http_options(source_path, "http_get", arguments, 1)?;
+                    }
+                    "http_post" => {
+                        validate_http_arity(source_path, "http_post", arguments, *span, 2, 4)?;
+                        if let Some(url) = arguments.first() {
+                            validate_literal_url(source_path, "http_post", url)?;
+                        }
+                        validate_http_options(source_path, "http_post", arguments, 2)?;
+                    }
                     _ => {}
                 }
             }
