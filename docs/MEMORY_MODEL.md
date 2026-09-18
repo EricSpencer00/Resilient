@@ -318,8 +318,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   provenance through a narrow interprocedural summary. A helper with a
   reference return is summarized when every explicit return returns the
   same reference parameter unchanged, including simple conditional or
-  match paths. Mixed parameters, wrapper expressions, and nested closure
-  returns remain opaque rather than being guessed.
+  match paths. A wrapper may forward through an already-proven helper
+  summary, including chains discovered in a fixed point. Mixed
+  parameters, unknown wrapper expressions, and nested closure returns
+  remain opaque rather than being guessed.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -340,9 +342,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   Alias facts established by struct fields, array elements, or closure
   captures remain invisible.
 - No general whole-program or interprocedural alias analysis. The pass
-  has only the narrow direct-reference return summary described above;
-  it does not track references through struct fields, statics, array
-  elements, closures, or ambiguous return paths.
+  has only the narrow direct-reference return summary and proven-helper
+  forwarding described above; it does not track references through
+  struct fields, statics, array elements, closures, or ambiguous return
+  paths.
 - No borrow checker over local-to-local aliasing — there is no
   expression syntax in the language today to take a reference to
   another local (`&mut` only ever appears in parameter/`let` *type*
