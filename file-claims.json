@@ -9,8 +9,8 @@
       "claimed_at": "2026-09-17T23:00:35Z"
     },
     "resilient/src/region_inference.rs": {
-      "branch": "res-4070-return-alias",
-      "claimed_at": "2026-09-18T02:30:58Z"
+      "branch": "res-4070-return-paths",
+      "claimed_at": "2026-09-18T02:45:35Z"
     }
   }
 }
