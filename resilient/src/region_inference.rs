@@ -921,10 +921,9 @@ impl<'a> AliasWalker<'a> {
             if self
                 .reference_fields
                 .contains(&(struct_name.to_string(), field.clone()))
+                && let Some(root) = self.returned_root(value, state)
             {
-                if let Some(root) = self.returned_root(value, state) {
-                    roots.push((path.clone(), root));
-                }
+                roots.push((path.clone(), root));
             }
             if let crate::Node::StructLiteral {
                 name: nested_name,
