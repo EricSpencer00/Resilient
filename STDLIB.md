@@ -321,6 +321,7 @@ match r {
 | `array_split_at(arr, n)` | (array, int) → (array, array) | RES-439: bisect into `(first n, rest)` tuple |
 | `array_chunk(arr, n)` | (array, int) → array of array | RES-435: fixed-size chunks; last may be short; n > 0 |
 | `array_flatten(arr)` | array of array → array | RES-423: concatenate inner arrays one level |
+| `array_flatten_depth(arr, depth)` | (array, int) → array | RES-2742: recursively flatten nested arrays up to `depth` levels; `0` is a no-op and negative depths error |
 | `array_join(arr, sep)` | (array, string) → string | RES-424: join string elements with separator |
 | `array_intersperse(arr, x)` | (array, T) → array | RES-437: insert x between adjacent elements |
 | `array_zip(a, b)` | (array, array) → array of tuple | RES-430: pair as 2-tuples; truncate to shorter |
@@ -342,6 +343,7 @@ match r {
 | `array_remove(arr, x)` | (array, T) → array | RES-466: drop the first element matching x; clone if absent |
 | `array_remove_all(arr, x)` | (array, T) → array | RES-467: drop every matching element |
 | `array_dedup(arr)` | array → array | RES-468: collapse adjacent duplicates (vs array_unique which dedupes globally) |
+| `array_dedup_by(arr, field)` | (array, string) → array | RES-2742: keep the first struct or map for each distinct field value; preserves input order |
 | `array_all_eq(arr, x)` | (array, T) → bool | RES-469: every element equals x; empty is vacuously true |
 | `array_any_eq(arr, x)` | (array, T) → bool | RES-469: alias for `array_contains` |
 | `array_eq(a, b)` | (array, array) → bool | RES-472: element-wise scalar equality; empty arrays equal |
@@ -766,6 +768,9 @@ rather than being silently masked.
 | `array_sort_desc(arr)` | array of int → array of int | RES-443: descending sort |
 | `array_sort_float(arr)` | array of float → array of float | RES-1146: float array sort |
 | `array_sort_string(arr)` | array of string → array of string | RES-1146: string array sort |
+| `array_sort_by_field(arr, field)` | (array, string) → array | RES-2742: ascending sort of structs/maps by field; Int, Float, and String values use natural order, with missing fields last |
+| `array_sort_by_field_desc(arr, field)` | (array, string) → array | RES-2742: descending sort of structs/maps by field; missing fields sort first because the complete ordering is reversed |
+| `sort_desc(arr)` | array of int → array of int | RES-2734: global and dot-call alias for `array_sort_desc`; returns a new descending-sorted array |
 | `array_is_sorted(arr)` | array of int → bool | RES-1146: check if sorted ascending |
 | `array_is_sorted_float(arr)` | array of float → bool | RES-1146: check if float array sorted |
 | `array_is_sorted_string(arr)` | array of string → bool | RES-1146: check if string array sorted |
@@ -776,6 +781,13 @@ rather than being silently masked.
 | `array_argmin_float(arr)` | array of float → int | RES-1160: index of min float |
 | `array_argmax_string(arr)` | array of string → int | RES-1160: index of max string |
 | `array_argmin_string(arr)` | array of string → int | RES-1160: index of min string |
+
+The field-based operations accept structs and maps and return new arrays. Field
+sorts compare Int, Float, and String values naturally; mixed field types fall
+back to their string representations. An absent field sorts after present
+fields in ascending order and before them in descending order. For
+`array_dedup_by`, items without the requested field share one absent-field key,
+so only the first such item is retained.
 
 ### Array Chunking and Windowing
 
