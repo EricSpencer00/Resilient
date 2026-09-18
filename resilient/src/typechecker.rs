@@ -6346,6 +6346,40 @@ impl TypeChecker {
         }
     }
 
+    /// Return whether a type still contains a projection whose generic base
+    /// has not been bound at this call site. Such projections are permissive
+    /// during the first argument pass, then checked again after later
+    /// arguments have had a chance to bind the base parameter.
+    fn contains_unbound_generic_projection(
+        ty: &Type,
+        type_params: &[String],
+        bindings: &HashMap<String, Type>,
+    ) -> bool {
+        match ty {
+            Type::Struct(name) => name.split_once("::").is_some_and(|(base, _)| {
+                type_params.iter().any(|param| param == base) && !bindings.contains_key(base)
+            }),
+            Type::Function {
+                params,
+                return_type,
+            } => {
+                params.iter().any(|param| {
+                    Self::contains_unbound_generic_projection(param, type_params, bindings)
+                }) || Self::contains_unbound_generic_projection(return_type, type_params, bindings)
+            }
+            Type::TypedArray(inner) | Type::Option(inner) => {
+                Self::contains_unbound_generic_projection(inner, type_params, bindings)
+            }
+            Type::Tuple(elems) => elems
+                .iter()
+                .any(|elem| Self::contains_unbound_generic_projection(elem, type_params, bindings)),
+            Type::AnonymousStruct(fields) => fields.iter().any(|(_, field_type)| {
+                Self::contains_unbound_generic_projection(field_type, type_params, bindings)
+            }),
+            _ => false,
+        }
+    }
+
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
         // Backwards-compatible thin shim: callers that don't have a
         // source path (REPL, unit tests) keep the original signature.
@@ -11395,6 +11429,7 @@ impl TypeChecker {
                         let mut tp_bindings: std::collections::HashMap<String, Type> =
                             std::collections::HashMap::new();
                         let mut checked_arg_types: Vec<Type> = Vec::with_capacity(arguments.len());
+                        let mut deferred_projection_checks: Vec<usize> = Vec::new();
 
                         // Check each argument type
                         for (i, (arg, param_type)) in arguments
@@ -11447,6 +11482,15 @@ impl TypeChecker {
                             } else {
                                 param_type
                             };
+                            if let Some(type_params) = callee_type_params.as_ref()
+                                && Self::contains_unbound_generic_projection(
+                                    param_type,
+                                    type_params,
+                                    &tp_bindings,
+                                )
+                            {
+                                deferred_projection_checks.push(i);
+                            }
                             if !self.type_satisfies(&arg_type, effective_param)
                                 && !self.satisfies_trait_param(&arg_type, effective_param)
                             {
@@ -11487,6 +11531,65 @@ impl TypeChecker {
                             if let Some(literal_val) = fold_const_i64(arg, &self.const_bindings) {
                                 check_literal_fits(effective_param, literal_val)
                                     .map_err(|e| format!("argument {}: {e}", i + 1))?;
+                            }
+                        }
+
+                        // RES-4067: a projection can precede the argument
+                        // that binds its generic base (for example,
+                        // `fn f<T: Trait>(T::Item, T)`). The first pass must
+                        // keep that argument permissive, but once all
+                        // bindings are known a concrete projection is no
+                        // longer opaque and must be checked.
+                        if let (
+                            Node::Identifier {
+                                name: callee_name, ..
+                            },
+                            Some(type_params),
+                        ) = (function.as_ref(), callee_type_params.as_ref())
+                        {
+                            for i in deferred_projection_checks {
+                                let param_type = &params[param_offset + i];
+                                let effective_param = self.substitute_generic_type(
+                                    param_type,
+                                    callee_name,
+                                    type_params,
+                                    &tp_bindings,
+                                    false,
+                                );
+                                let arg_type = &checked_arg_types[i];
+                                if !self.type_satisfies(arg_type, &effective_param)
+                                    && !self.satisfies_trait_param(arg_type, &effective_param)
+                                {
+                                    let arg = &arguments[i];
+                                    if rich_diag_enabled() {
+                                        let mut arg_span = clause_span(arg);
+                                        if arg_span.start.line == 0 {
+                                            arg_span = *call_span;
+                                        }
+                                        let decl_span =
+                                            self.fn_decl_spans.get(callee_name).copied();
+                                        return Err(render_rich_arg_type_mismatch(
+                                            &self.source_path,
+                                            arg_span,
+                                            decl_span,
+                                            i + 1,
+                                            &effective_param.to_string(),
+                                            &arg_type.to_string(),
+                                        ));
+                                    }
+                                    return Err(format!(
+                                        "Type mismatch in argument {}: expected {}, got {}",
+                                        i + 1,
+                                        effective_param,
+                                        arg_type
+                                    ));
+                                }
+                                if let Some(literal_val) =
+                                    fold_const_i64(&arguments[i], &self.const_bindings)
+                                {
+                                    check_literal_fits(&effective_param, literal_val)
+                                        .map_err(|e| format!("argument {}: {e}", i + 1))?;
+                                }
                             }
                         }
 
