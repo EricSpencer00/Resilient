@@ -393,6 +393,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   parameters carries those fields' provenance to the caller. Mixed or
   wrapped field initializers, dynamic paths, and ambiguous return shapes
   remain conservative.
+- **A-E5 increment 18 (RES-4070):** a helper that returns a direct tuple of
+  reference parameters carries each element's provenance to the caller,
+  including nested constant tuple paths. Wrapped elements, non-reference
+  expressions, and ambiguous return shapes remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
