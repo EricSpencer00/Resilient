@@ -426,6 +426,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   returned `(Holder, int)` can expose `pair.0.inner.item` when that field is
   initialized directly from a reference parameter. Wrapped, base-updated,
   dynamic, and ambiguous tuple values remain conservative.
+- **A-E5 increment 25 (RES-4070):** tuple-return summaries now preserve
+  direct array leaves below a constant tuple path, so a returned pair of
+  arrays can expose `pair.0[0]` when that element is initialized directly
+  from a reference parameter. Wrapped, dynamic, transformed, mixed, and
+  ambiguous tuple values remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
