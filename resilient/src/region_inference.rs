@@ -2365,34 +2365,73 @@ fn struct_return_aliases_for_value(
         return None;
     }
 
+    let mut aliases = Vec::new();
+    collect_struct_return_aliases(name, fields, "", parameters, reference_fields, &mut aliases)?;
+    (!aliases.is_empty()).then_some(StructReturnAliasSummary { fields: aliases })
+}
+
+fn collect_struct_return_aliases(
+    struct_name: &str,
+    fields: &[(String, crate::Node)],
+    prefix: &str,
+    parameters: &[(String, String)],
+    reference_fields: &HashSet<(String, String)>,
+    aliases: &mut Vec<(String, usize)>,
+) -> Option<()> {
     let mut reference_field_names: Vec<&str> = reference_fields
         .iter()
-        .filter_map(|(struct_name, field)| (struct_name == name).then_some(field.as_str()))
+        .filter_map(|(candidate_name, field)| {
+            (candidate_name == struct_name).then_some(field.as_str())
+        })
         .collect();
     reference_field_names.sort_unstable();
-    if reference_field_names.is_empty() {
-        return None;
-    }
 
-    let mut aliases = Vec::with_capacity(reference_field_names.len());
     for field in reference_field_names {
         let value = fields.iter().find(|(name, _)| name == field)?.1.clone();
-        let crate::Node::Identifier {
-            name: parameter, ..
-        } = value
-        else {
-            return None;
+        let parameter_idx = direct_reference_parameter_index(&value, parameters)?;
+        let path = if prefix.is_empty() {
+            field.to_owned()
+        } else {
+            format!("{prefix}.{field}")
         };
-        let parameter_idx = parameters
-            .iter()
-            .enumerate()
-            .find_map(|(idx, (ty, name))| {
-                (name == &parameter && region_from_type_str(ty).is_some()).then_some(idx)
-            })?;
-        aliases.push((field.to_owned(), parameter_idx));
+        aliases.push((path, parameter_idx));
     }
 
-    Some(StructReturnAliasSummary { fields: aliases })
+    for (field, value) in fields {
+        let crate::Node::StructLiteral {
+            name: nested_name,
+            fields: nested_fields,
+            base,
+            ..
+        } = value
+        else {
+            continue;
+        };
+        if !reference_fields
+            .iter()
+            .any(|(candidate_name, _)| candidate_name == nested_name)
+        {
+            continue;
+        }
+        if base.is_some() {
+            return None;
+        }
+        let nested_prefix = if prefix.is_empty() {
+            field.clone()
+        } else {
+            format!("{prefix}.{field}")
+        };
+        collect_struct_return_aliases(
+            nested_name,
+            nested_fields,
+            &nested_prefix,
+            parameters,
+            reference_fields,
+            aliases,
+        )?;
+    }
+
+    Some(())
 }
 
 fn tuple_return_alias_summary(
@@ -3683,6 +3722,59 @@ mod tests {
             errors[0].contains("`x`") && errors[0].contains("`h.item`"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_nested_reference_struct_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner } \
+             fn make_outer(&mut int x) -> Outer { \
+                 return new Outer { inner: new Inner { item: x } }; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let outer = make_outer(x); set_both(x, outer.inner.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`outer.inner.item`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_nested_reference_struct_forward_chain_rejected() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner } \
+             fn outer(&mut int x) -> Outer { return inner(x); } \
+             fn inner(&mut int x) -> Outer { \
+                 return new Outer { inner: new Inner { item: x } }; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let value = outer(x); set_both(x, value.inner.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn wrapped_nested_reference_struct_return_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner } \
+             fn make_outer(&mut int x) -> Outer { \
+                 let alias = x; \
+                 return new Outer { inner: new Inner { item: alias } }; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let outer = make_outer(x); set_both(x, outer.inner.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped nested struct helper returns must stay conservative: {:?}",
+            errors
         );
     }
 
