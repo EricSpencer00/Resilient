@@ -7,6 +7,11 @@ unversioned compatibility aliases), their request/response
 schemas, and every status code the wrapper can return (`200`, `400`, `404`,
 `413`, `429`, `503`, `504`).
 
+`POST /v1/mcp/call` also supports an opt-in `Accept: application/x-ndjson`
+stream. That response is chunked and emits a progress record followed by a
+final record containing the ordinary JSON response; the machine-readable
+document describes this media type alongside the default JSON response.
+
 It exists so external tooling (client SDK generators, contract tests,
 API gateways) has a machine-readable contract instead of having to read
 `resilient/src/mcp_server.rs` or the prose in [`MCP.md`](MCP.md).

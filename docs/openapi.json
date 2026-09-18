@@ -91,6 +91,12 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/McpCallResponse" }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string",
+                  "description": "Chunked newline-delimited JSON stream: a progress record followed by a result record containing the ordinary response and its http_status. Request with Accept: application/x-ndjson."
+                }
               }
             }
           },

@@ -150,6 +150,12 @@ unversioned paths remain compatibility aliases during migration. A future
 breaking contract will use a new namespace rather than silently changing
 `/v1`; clients should treat the unversioned aliases as legacy routes.
 
+For long-running tool calls, clients may opt into the streaming protocol with
+`Accept: application/x-ndjson` on `POST /v1/mcp/call`. The response uses HTTP
+chunked transfer and sends a start record before dispatch followed by a final
+record containing the normal JSON response and its `http_status`. The default
+request headers and response format remain unchanged.
+
 ### `GET /health`
 
 Returns:

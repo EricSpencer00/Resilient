@@ -568,6 +568,13 @@ fn handle_http_stream(
 
     let body_bytes = request.len();
     let request = String::from_utf8_lossy(&request);
+    if let Some((body, tool, mcp_tool)) = ndjson_request_metadata(&request, config) {
+        http_stream_mcp_call(stream, body, &tool, &mcp_tool, config.timeout)?;
+        let duration = start.elapsed();
+        log_request(peer_ip, &method, &path, 200, duration, body_bytes);
+        HTTP_METRICS.record(200, duration);
+        return Ok(());
+    }
     let response = http_response_for_request(&request, config);
     let status = response_status(&response);
     let duration = start.elapsed();
@@ -592,6 +599,100 @@ fn request_line_of(request: &[u8]) -> (String, String) {
     let method = parts.next().unwrap_or("-").to_string();
     let path = parts.next().unwrap_or("-").to_string();
     (method, path)
+}
+
+fn normalized_http_path(path: &str) -> &str {
+    path.strip_prefix(HTTP_API_V1_PREFIX)
+        .filter(|suffix| suffix.starts_with('/'))
+        .unwrap_or(path)
+}
+
+fn request_accepts_ndjson(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("accept")
+            && value.split(',').any(|media_type| {
+                media_type
+                    .trim()
+                    .eq_ignore_ascii_case("application/x-ndjson")
+            })
+    })
+}
+
+fn ndjson_request_metadata<'a>(
+    request: &'a str,
+    config: &HttpHardeningConfig,
+) -> Option<(&'a str, String, String)> {
+    let (headers, body) = request.split_once("\r\n\r\n")?;
+    if !request_accepts_ndjson(headers) || !request_has_valid_api_key(headers, config) {
+        return None;
+    }
+    let mut request_line = headers.lines().next()?.split_whitespace();
+    let method = request_line.next()?;
+    let path = request_line.next()?;
+    if method != "POST" || normalized_http_path(path) != "/mcp/call" {
+        return None;
+    }
+    let request_body: Value = serde_json::from_str(body).ok()?;
+    let tool = request_body
+        .get("tool")
+        .or_else(|| request_body.get("name"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let mcp_tool = http_tool_alias(&tool).to_string();
+    Some((body, tool, mcp_tool))
+}
+
+fn http_stream_mcp_call(
+    stream: &mut TcpStream,
+    body: &str,
+    tool: &str,
+    mcp_tool: &str,
+    timeout: Duration,
+) -> io::Result<()> {
+    stream.write_all(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n{}\r\n",
+            cors_headers()
+        )
+        .as_bytes(),
+    )?;
+    write_ndjson_chunk(
+        stream,
+        &json!({
+            "type": "progress",
+            "status": "started",
+            "tool": tool,
+            "mcp_tool": mcp_tool
+        }),
+    )?;
+
+    let response = http_mcp_call(body, timeout);
+    let status = response_status(&response);
+    let result = response
+        .split_once("\r\n\r\n")
+        .and_then(|(_, body)| serde_json::from_str::<Value>(body).ok())
+        .unwrap_or_else(|| json!({ "status": "error", "error": "invalid MCP response" }));
+    write_ndjson_chunk(
+        stream,
+        &json!({
+            "type": "result",
+            "http_status": status,
+            "result": result
+        }),
+    )?;
+    stream.write_all(b"0\r\n\r\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn write_ndjson_chunk(stream: &mut TcpStream, value: &Value) -> io::Result<()> {
+    let mut line = value.to_string();
+    line.push('\n');
+    write!(stream, "{:X}\r\n{}\r\n", line.len(), line)?;
+    stream.flush()
 }
 
 /// RES-3941: parse the numeric status code back out of a rendered
@@ -695,10 +796,7 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
 
     // RES-3940: versioned routes are canonical for new clients, while the
     // original paths remain aliases so existing deployments do not break.
-    let route_path = path
-        .strip_prefix(HTTP_API_V1_PREFIX)
-        .filter(|suffix| suffix.starts_with('/'))
-        .unwrap_or(path);
+    let route_path = normalized_http_path(path);
 
     match (method, route_path) {
         ("OPTIONS", "/health" | "/readyz" | "/mcp/call" | "/metrics") => http_cors_preflight(),
