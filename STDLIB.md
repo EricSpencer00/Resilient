@@ -239,7 +239,9 @@ main();
 | `ends_with(s, suffix)` | (string, string) → bool | empty suffix always matches |
 | `repeat(s, n)` | (string, int) → string | `n >= 0`; negative is a hard error |
 | `parse_int(s)` | string → Result<Int, String> | base 10; whitespace stripped; `Err` on invalid input — never panics |
+| `parse_int_or(s, default)` | (string, int) → int | RES-529: base-10 parse with surrounding whitespace stripped; returns `default` on invalid, empty, or overflowing input |
 | `parse_float(s)` | string → Result<Float, String> | whitespace stripped; `Err` on invalid input — never panics |
+| `parse_float_or(s, default)` | (string, float) → float | RES-532: parse with surrounding whitespace stripped; returns `default` on invalid or empty input; accepts `NaN` and infinity spellings |
 | `char_at(s, i)` | (string, int) → Result<String, String> | single-char string at Unicode-scalar index `i`; `Err` on out-of-range or negative |
 | `pad_left(s, n, c)` | (string, int, string) → string | left-pad with single char `c` until char-length ≥ `n`; multi-char or empty `c` is a hard error |
 | `pad_right(s, n, c)` | (string, int, string) → string | right-pad; same validation as `pad_left` |
