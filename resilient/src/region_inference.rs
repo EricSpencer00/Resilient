@@ -642,8 +642,9 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   provenance: straight-line `let NAME = IDENT;` copies, direct reference
 //   returns, declared reference fields initialized by concrete struct
 //   literals (including nested paths), and non-negative constant array
-//   element/slice paths, including fields inside direct array-literal struct
-//   elements and constant-bound slices of those arrays. Copying a reference
+//   element/slice paths, including nested arrays, fields inside direct
+//   array-literal struct elements, and constant-bound slices of those arrays.
+//   Copying a reference
 //   binding cannot do anything but refer to the same region — there is no
 //   address-of or re-seating expression syntax in the language today.
 // - Any construct whose effect on a binding is not fully understood
@@ -741,10 +742,12 @@ impl<'a> AliasWalker<'a> {
                 let field_roots = self.struct_field_roots(value, state);
                 let array_roots = self.array_element_roots(value, state);
                 let array_alias_roots = self.array_alias_roots(value, state);
+                let nested_array_roots = self.nested_array_literal_roots(value, state);
                 let array_field_roots = self.array_field_roots(value, state);
                 let array_slice_field_roots = self.array_slice_field_roots(value, state);
                 let array_tuple_roots = self.array_tuple_roots(value, state);
                 let array_slice_tuple_roots = self.array_slice_tuple_roots(value, state);
+                let array_slice_nested_roots = self.array_slice_nested_roots(value, state);
                 let tuple_roots = self.tuple_element_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
@@ -761,10 +764,15 @@ impl<'a> AliasWalker<'a> {
                 for (index, path, root) in array_alias_roots {
                     let place = if path.is_empty() {
                         format!("{name}[{index}]")
+                    } else if path.starts_with('[') {
+                        format!("{name}[{index}]{path}")
                     } else {
                         format!("{name}[{index}].{path}")
                     };
                     state.aliases.insert(place, root);
+                }
+                for (path, root) in nested_array_roots {
+                    state.aliases.insert(format!("{name}{path}"), root);
                 }
                 for (index, field, root) in array_field_roots {
                     state
@@ -785,6 +793,9 @@ impl<'a> AliasWalker<'a> {
                     state
                         .aliases
                         .insert(format!("{name}[{index}].{path}"), root);
+                }
+                for (path, root) in array_slice_nested_roots {
+                    state.aliases.insert(format!("{name}{path}"), root);
                 }
                 for (index, root) in tuple_roots {
                     state.aliases.insert(format!("{name}.{index}"), root);
@@ -1128,9 +1139,8 @@ impl<'a> AliasWalker<'a> {
     }
 
     /// Copy already-proven paths from an array-valued place into a new array
-    /// binding. Only one constant element index, optionally followed by a
-    /// known field or tuple path, is rebased. Nested array paths stay opaque
-    /// here so an unmodelled transformation cannot be mistaken for a copy.
+    /// binding. Only constant element indices, optionally followed by known
+    /// array, field, or tuple paths, are rebased.
     fn array_alias_roots(
         &self,
         value: &crate::Node,
@@ -1153,6 +1163,11 @@ impl<'a> AliasWalker<'a> {
             };
             let path = if suffix.is_empty() {
                 String::new()
+            } else if suffix.starts_with('[') {
+                if !Self::valid_array_suffix(suffix) {
+                    continue;
+                }
+                suffix.to_owned()
             } else {
                 let Some(path) = suffix.strip_prefix('.') else {
                     continue;
@@ -1165,6 +1180,95 @@ impl<'a> AliasWalker<'a> {
             roots.push((index, path, root.clone()));
         }
         roots
+    }
+
+    /// Collect nested reference leaves from a direct array literal. A nested
+    /// literal or an already-tracked array binding is copied only through
+    /// constant paths, so a dynamic or transformed array remains opaque.
+    fn nested_array_literal_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let crate::Node::ArrayLiteral { items, .. } = value else {
+            return Vec::new();
+        };
+        let mut roots = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            self.collect_nested_array_literal_roots(item, &format!("[{index}]"), state, &mut roots);
+        }
+        roots
+    }
+
+    fn collect_nested_array_literal_roots(
+        &self,
+        value: &crate::Node,
+        prefix: &str,
+        state: &AliasState,
+        roots: &mut Vec<(String, String)>,
+    ) {
+        match value {
+            crate::Node::ArrayLiteral { items, .. } => {
+                for (index, item) in items.iter().enumerate() {
+                    let path = format!("{prefix}[{index}]");
+                    if let Some(root) = self.returned_root(item, state) {
+                        roots.push((path.clone(), root));
+                    }
+                    self.collect_nested_array_literal_roots(item, &path, state, roots);
+                }
+            }
+            crate::Node::Identifier { .. }
+            | crate::Node::IndexExpression { .. }
+            | crate::Node::Slice { .. } => {
+                for (path, root) in self.array_paths_below(value, state) {
+                    roots.push((format!("{prefix}{path}"), root));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Return known paths below an array-valued place, retaining nested array
+    /// indices and any already-proven field or tuple suffix.
+    fn array_paths_below(&self, value: &crate::Node, state: &AliasState) -> Vec<(String, String)> {
+        let Some(source) = Self::place_name(value) else {
+            return Vec::new();
+        };
+        let mut roots = Vec::new();
+        for (place, root) in &state.aliases {
+            let Some(suffix) = place.strip_prefix(&source) else {
+                continue;
+            };
+            if suffix.starts_with('[') && Self::valid_array_suffix(suffix) {
+                roots.push((suffix.to_owned(), root.clone()));
+            }
+        }
+        roots
+    }
+
+    fn valid_array_suffix(suffix: &str) -> bool {
+        let mut rest = suffix;
+        let mut saw_index = false;
+        while rest.starts_with('[') {
+            let Some(close) = rest.find(']') else {
+                return false;
+            };
+            if rest[1..close].parse::<usize>().is_err() {
+                return false;
+            }
+            saw_index = true;
+            rest = &rest[close + 1..];
+        }
+        if !saw_index {
+            return false;
+        }
+        if rest.is_empty() {
+            return true;
+        }
+        let Some(path) = rest.strip_prefix('.') else {
+            return false;
+        };
+        !path.is_empty() && !path.split('.').any(str::is_empty)
     }
 
     fn array_field_roots(
@@ -1350,6 +1454,52 @@ impl<'a> AliasWalker<'a> {
                 continue;
             }
             roots.push((index - start, root.clone()));
+        }
+        roots
+    }
+
+    fn array_slice_nested_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let crate::Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            ..
+        } = value
+        else {
+            return Vec::new();
+        };
+        let Some(source) = Self::array_root(target) else {
+            return Vec::new();
+        };
+        let Some((start, end)) =
+            Self::constant_slice_bounds(lo.as_deref(), hi.as_deref(), *inclusive)
+        else {
+            return Vec::new();
+        };
+        let prefix = format!("{source}[");
+        let mut roots = Vec::new();
+        for (place, root) in &state.aliases {
+            let Some(rest) = place.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((index_text, suffix)) = rest.split_once(']') else {
+                continue;
+            };
+            if !suffix.starts_with('[') || !Self::valid_array_suffix(suffix) {
+                continue;
+            }
+            let Ok(index) = index_text.parse::<usize>() else {
+                continue;
+            };
+            if index < start || end.is_some_and(|end| index >= end) {
+                continue;
+            }
+            roots.push((format!("[{}]{suffix}", index - start), root.clone()));
         }
         roots
     }
@@ -3167,6 +3317,78 @@ mod tests {
             errors[0].contains("copy[0]"),
             "unexpected message: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_array_literal_alias_is_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[x]]; \
+                 set_both(x, matrix[0][0]); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "nested array literal alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("matrix[0][0]"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_array_alias_and_slice_are_rejected() {
+        let alias_errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let row = [x]; \
+                 let matrix = [row]; \
+                 let copy = matrix; \
+                 set_both(x, copy[0][0]); \
+             }",
+        );
+        assert_eq!(
+            alias_errors.len(),
+            1,
+            "nested array alias must be reported: {:?}",
+            alias_errors
+        );
+
+        let slice_errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[x], [0]]; \
+                 let selected = matrix[0..1]; \
+                 set_both(x, selected[0][0]); \
+             }",
+        );
+        assert_eq!(
+            slice_errors.len(),
+            1,
+            "nested array slice alias must be reported: {:?}",
+            slice_errors
+        );
+    }
+
+    #[test]
+    fn dynamic_nested_array_paths_stay_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int index) { \
+                 let matrix = [[x]]; \
+                 set_both(x, matrix[index][0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic nested array paths must stay conservative: {:?}",
+            errors
         );
     }
 

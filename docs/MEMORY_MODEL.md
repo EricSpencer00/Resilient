@@ -383,6 +383,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   `copy[0]` (or `copy[0].item` / `copy[0].0`) when that path was proven on
   `items`. Dynamic indices, unknown array values, and other transformations
   remain conservative.
+- **A-E5 increment 16 (RES-4070):** nested constant array paths retain
+  reference provenance through direct nested literals, aliases of tracked
+  arrays, and constant-bound outer slices. A matrix shaped as `[[x]]` still
+  exposes x through `matrix[0][0]`; dynamic indices, dynamic bounds, and
+  transformed or unknown arrays remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -406,7 +411,8 @@ Grounded in `resilient/src/region_inference.rs` and the
   elements and their constant-bound slices) and are killed on field writes.
   Closure bodies are checked using captured
   facts, while array tracking is limited to direct literals, direct aliases of
-  their known paths, constant index paths, and constant-bound slices.
+  their known paths, constant index paths (including nested array paths), and
+  constant-bound slices.
 - No general whole-program or interprocedural alias analysis. The pass
   has only the narrow direct-reference return summary and proven-helper
   forwarding described above; it does not track references through
