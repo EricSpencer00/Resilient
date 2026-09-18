@@ -395,6 +395,11 @@ match r {
 | `buffer_set(buffer, index, value)` | (buffer, int, scalar) → void | in-place typed write visible through every alias |
 | `buffer_to_array(buffer)` | buffer → array | copies the current contents into an ordinary array |
 
+For allocation-free embedded programs, `resilient-runtime` provides
+`buffer::FixedBuffer<T, N>` plus `IntBuffer` and `FloatBuffer` aliases. These
+buffers store caller-owned data inline with a compile-time capacity and use
+checked logical lengths instead of heap allocation.
+
 ## Deque
 
 Deque operations use functional value semantics: they return a new deque and
