@@ -560,9 +560,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 // - Any construct whose effect on a binding is not fully understood
 //   KILLS the fact rather than guessing: assignments kill (re-seating
 //   semantics not locked in), shadowing `let`s kill and detach the old
-//   group, `match` arms are analysed with an empty fact set (pattern
-//   bindings can shadow names invisibly), and unrecognised statement
-//   forms simply aren't descended into.
+//   group, pattern bindings kill any shadowed names in their arm, and
+//   unrecognised statement forms simply aren't descended into.
 // - Conditional paths merge by INTERSECTION: after `if`/`else` (and
 //   after loops, which may run zero times) a fact survives only if it
 //   holds on every path. A call inside a branch is checked against the
@@ -716,22 +715,39 @@ impl<'a> AliasWalker<'a> {
             } => {
                 self.walk_expr(scrutinee, state);
                 // Pattern bindings can shadow outer names without a
-                // `let`, so arm bodies are analysed with NO facts (they
-                // can still report on same-arm `let` aliases of their
-                // own — none exist without roots, so effectively arms
-                // are opaque). Any name an arm might rebind is killed
-                // from the fall-through state.
-                for (_pat, guard, arm_body) in arms {
-                    let mut arm_state = AliasState::default();
+                // `let`, so remove those names from the incoming facts
+                // before checking the arm. Facts established before the
+                // match remain valid for every arm unless that arm
+                // rebinds them.
+                let mut merged_state: Option<AliasState> = None;
+                for (pat, guard, arm_body) in arms {
+                    let mut arm_state = state.clone();
+                    let mut pattern_bindings = Vec::new();
+                    collect_pattern_bindings(pat, &mut pattern_bindings);
+                    pattern_bindings.sort_unstable();
+                    pattern_bindings.dedup();
+                    for name in pattern_bindings {
+                        self.kill_name(&mut arm_state, &name);
+                    }
                     if let Some(g) = guard {
                         self.walk_expr(g, &mut arm_state);
                     }
                     self.walk_stmt(arm_body, &mut arm_state);
                     let mut assigned = Vec::new();
                     collect_rebound_names(arm_body, &mut assigned);
-                    for n in assigned {
-                        self.kill_name(state, &n);
+                    assigned.sort_unstable();
+                    assigned.dedup();
+                    for name in assigned {
+                        self.kill_name(&mut arm_state, &name);
                     }
+                    if let Some(merged) = &mut merged_state {
+                        merged.intersect(&arm_state);
+                    } else {
+                        merged_state = Some(arm_state);
+                    }
+                }
+                if let Some(merged) = merged_state {
+                    *state = merged;
                 }
             }
             crate::Node::CallExpression {
@@ -815,6 +831,56 @@ impl<'a> AliasWalker<'a> {
                 names.join("`, `"),
             ));
         }
+    }
+}
+
+/// Collect names introduced by a match pattern. Pattern bindings are scoped
+/// to one arm, so the caller kills them in that arm's alias state before
+/// checking guards and the body. A binding is intentionally never inferred
+/// to alias the scrutinee: the pattern's value/reference semantics are not
+/// rich enough for that to be a sound conclusion here.
+fn collect_pattern_bindings(pattern: &crate::Pattern, out: &mut Vec<String>) {
+    match pattern {
+        crate::Pattern::Identifier(name) => out.push(name.clone()),
+        crate::Pattern::Bind(name, inner) => {
+            out.push(name.clone());
+            collect_pattern_bindings(inner, out);
+        }
+        crate::Pattern::Or(branches) => {
+            for branch in branches {
+                collect_pattern_bindings(branch, out);
+            }
+        }
+        crate::Pattern::Struct { fields, .. } => {
+            for (_, field) in fields {
+                collect_pattern_bindings(field, out);
+            }
+        }
+        crate::Pattern::Some(inner) | crate::Pattern::Ok(inner) | crate::Pattern::Err(inner) => {
+            collect_pattern_bindings(inner, out)
+        }
+        crate::Pattern::EnumVariant { payload, .. } => match payload {
+            crate::EnumPatternPayload::None => {}
+            crate::EnumPatternPayload::Named(fields) => {
+                for (_, field) in fields {
+                    collect_pattern_bindings(field, out);
+                }
+            }
+            crate::EnumPatternPayload::Tuple(fields) => {
+                for field in fields {
+                    collect_pattern_bindings(field, out);
+                }
+            }
+        },
+        crate::Pattern::TupleStruct { fields, .. } | crate::Pattern::Tuple(fields) => {
+            for field in fields {
+                collect_pattern_bindings(field, out);
+            }
+        }
+        crate::Pattern::Literal(_)
+        | crate::Pattern::Wildcard
+        | crate::Pattern::Range { .. }
+        | crate::Pattern::None => {}
     }
 }
 
@@ -1788,10 +1854,64 @@ mod tests {
     }
 
     #[test]
-    fn let_alias_match_arms_are_opaque() {
-        // Match arms are analysed with no facts (pattern bindings can
-        // shadow silently) and rebinding inside an arm kills the fact
-        // in fall-through state — both directions conservative.
+    fn let_alias_match_arm_alias_is_rejected() {
+        // Facts established before a match remain available inside each
+        // arm, so an alias created in one arm is checked on that path.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int c) { \
+                 match c { 0 => { let y = x; set_both(x, y); }, _ => { println(\"n\"); } } \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "match-arm alias must be rejected: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn let_alias_match_preserves_facts_across_all_arms() {
+        // A fact that survives every arm remains provable after the match.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int c) { \
+                 let y = x; \
+                 match c { 0 => { println(\"a\"); }, _ => { println(\"b\"); } } \
+                 set_both(x, y); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "match merge must preserve aliases: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn let_alias_match_pattern_binding_shadows_outer_fact() {
+        // A pattern binding named `y` shadows the outer alias only in its
+        // arm; the checker must not mistake it for the old reference.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int y) { \
+                 let alias = x; \
+                 match y { alias => { set_both(x, alias); }, _ => { println(\"n\"); } } \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "pattern shadow must not reuse outer alias: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn let_alias_match_rebound_fact_is_killed_after_match() {
+        // Rebinding in one arm means the alias is not available after the
+        // match, even though another arm leaves it untouched.
         let errors = run_alias_check(
             "fn set_both(&mut int a, &mut int b) {} \
              fn caller(&mut int x, int c) { \
