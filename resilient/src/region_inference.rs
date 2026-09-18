@@ -1909,6 +1909,24 @@ mod tests {
     }
 
     #[test]
+    fn let_alias_nested_match_pattern_binding_shadows_outer_fact() {
+        // Binding collectors must recurse through enum payload patterns as
+        // well as handling a bare identifier pattern.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, Option<int> value) { \
+                 let alias = x; \
+                 match value { Some(alias) => { set_both(x, alias); }, None => { println(\"n\"); } } \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "nested pattern shadow must not reuse outer alias: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn let_alias_match_rebound_fact_is_killed_after_match() {
         // Rebinding in one arm means the alias is not available after the
         // match, even though another arm leaves it untouched.
