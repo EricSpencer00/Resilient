@@ -6244,16 +6244,21 @@ impl TypeChecker {
 
     /// Substitute generic parameters in a type while retaining concrete
     /// `T::Assoc` projections when the call site proves them.
-    fn substitute_generic_return_type(
+    fn substitute_generic_type(
         &self,
         ty: &Type,
         fn_name: &str,
         type_params: &[String],
         bindings: &HashMap<String, Type>,
+        preserve_type_params: bool,
     ) -> Type {
         match ty {
             Type::Struct(name) if type_params.iter().any(|param| param == name) => {
-                bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
+                if preserve_type_params {
+                    bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
+                } else {
+                    Type::Any
+                }
             }
             Type::Struct(name) => {
                 let Some((base, assoc)) = name.split_once("::") else {
@@ -6275,24 +6280,41 @@ impl TypeChecker {
                 params: params
                     .iter()
                     .map(|param| {
-                        self.substitute_generic_return_type(param, fn_name, type_params, bindings)
+                        self.substitute_generic_type(
+                            param,
+                            fn_name,
+                            type_params,
+                            bindings,
+                            preserve_type_params,
+                        )
                     })
                     .collect(),
-                return_type: Box::new(self.substitute_generic_return_type(
+                return_type: Box::new(self.substitute_generic_type(
                     return_type,
                     fn_name,
                     type_params,
                     bindings,
+                    preserve_type_params,
                 )),
             },
-            Type::TypedArray(inner) => Type::TypedArray(Box::new(
-                self.substitute_generic_return_type(inner, fn_name, type_params, bindings),
-            )),
+            Type::TypedArray(inner) => Type::TypedArray(Box::new(self.substitute_generic_type(
+                inner,
+                fn_name,
+                type_params,
+                bindings,
+                preserve_type_params,
+            ))),
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .iter()
                     .map(|elem| {
-                        self.substitute_generic_return_type(elem, fn_name, type_params, bindings)
+                        self.substitute_generic_type(
+                            elem,
+                            fn_name,
+                            type_params,
+                            bindings,
+                            preserve_type_params,
+                        )
                     })
                     .collect(),
             ),
@@ -6302,21 +6324,23 @@ impl TypeChecker {
                     .map(|(name, field_type)| {
                         (
                             name.clone(),
-                            self.substitute_generic_return_type(
+                            self.substitute_generic_type(
                                 field_type,
                                 fn_name,
                                 type_params,
                                 bindings,
+                                preserve_type_params,
                             ),
                         )
                     })
                     .collect(),
             ),
-            Type::Option(inner) => Type::Option(Box::new(self.substitute_generic_return_type(
+            Type::Option(inner) => Type::Option(Box::new(self.substitute_generic_type(
                 inner,
                 fn_name,
                 type_params,
                 bindings,
+                preserve_type_params,
             ))),
             other => other.clone(),
         }
@@ -11409,11 +11433,12 @@ impl TypeChecker {
                             ) =
                                 (function.as_ref(), callee_type_params.as_ref())
                             {
-                                substituted = self.substitute_generic_return_type(
+                                substituted = self.substitute_generic_type(
                                     param_type,
                                     callee_name,
                                     type_params,
                                     &tp_bindings,
+                                    false,
                                 );
                                 &substituted
                             } else if let Some(tp) = &callee_type_params {
@@ -11477,11 +11502,12 @@ impl TypeChecker {
                         ) =
                             (function.as_ref(), callee_type_params.as_ref())
                         {
-                            self.substitute_generic_return_type(
+                            self.substitute_generic_type(
                                 &return_type,
                                 callee_name,
                                 type_params,
                                 &tp_bindings,
+                                true,
                             )
                         } else {
                             let borrowed_tp_bindings: std::collections::HashMap<&str, Type> =
