@@ -72,12 +72,17 @@
 //!    `examples/trait_associated_type_let_binding.rz`) rather than an
 //!    undocumented side effect.
 //!
+//! Third increment (RES-4067, #4067):
+//!
+//! 5. **Concrete call-site return projections.** When a generic call binds
+//!    `T` to a concrete struct and its declared bounds identify one
+//!    associated-type implementation, `T::AssocName` in the return type is
+//!    resolved to that implementation's concrete type. Unknown, unbounded,
+//!    and ambiguous projections retain the permissive `Any` fallback.
+//!
 //! Still out of scope — tracked in
 //! [issue #4067](https://github.com/EricSpencer00/Resilient/issues/4067):
 //!
-//! - Resolving `T::AssocName` to the *concrete* bound type at a
-//!   monomorphized call site (today it is opaque `Any` — permissive,
-//!   never wrong, just not maximally precise).
 //! - `Self::AssocName` in trait *default* method bodies (shared
 //!   across impls — no single binding to resolve against until
 //!   per-impl dispatch).
@@ -476,6 +481,33 @@ mod tests {
              }\n\
              fn main() {} main();";
         typecheck(src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_return_projection_resolves_at_call_site() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn get_first<T: Container>(T c) -> T::Item {{ return c.first(); }}\n\
+             fn main() {{\n\
+                 let b = new IntBox {{ v: 42 }};\n\
+                 let n: int = get_first(b);\n\
+             }} main();"
+        );
+        typecheck(&src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_return_projection_mismatch_is_rejected_at_call_site() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn get_first<T: Container>(T c) -> T::Item {{ return c.first(); }}\n\
+             fn main() {{\n\
+                 let b = new IntBox {{ v: 42 }};\n\
+                 let text: string = get_first(b);\n\
+             }} main();"
+        );
+        let error = typecheck(&src).expect_err("expected concrete projection mismatch");
+        assert!(error.contains("value has type int"), "got: {error}");
     }
 
     // --- Unknown / duplicate binding detection (this module) ---
