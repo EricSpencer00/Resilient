@@ -541,7 +541,7 @@ mod tests {
         // doesn't fire on hot paths that don't read it).
         let mut tc = TypeChecker::new()
             .with_warn_unverified(false)
-            .with_emit_certificates(true);
+            .with_proof_capture(true);
         let before = tc.loop_invariant_certificate_count();
         super::verify_and_capture(&mut tc, &p);
         tc.loop_invariant_certificate_count() - before

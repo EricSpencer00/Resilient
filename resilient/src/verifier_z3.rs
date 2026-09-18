@@ -3309,23 +3309,19 @@ mod tests {
         let cert = cert.expect("tautology must yield a certificate");
         assert!(
             cert.smt2.contains("(declare-const x Int)"),
-            "missing decl in:\n{}",
-            cert.smt2
+            "verification certificate is missing the declaration"
         );
         assert!(
             cert.smt2.contains("(check-sat)"),
-            "missing check-sat in:\n{}",
-            cert.smt2
+            "verification certificate is missing check-sat"
         );
         assert!(
             cert.smt2.contains("(set-logic"),
-            "missing set-logic in:\n{}",
-            cert.smt2
+            "verification certificate is missing set-logic"
         );
         assert!(
             cert.smt2.contains("(assert "),
-            "missing negated assertion in:\n{}",
-            cert.smt2
+            "verification certificate is missing the negated assertion"
         );
     }
 
@@ -3354,8 +3350,7 @@ mod tests {
         assert!(cert.smt2.contains("(declare-const n Int)"));
         assert!(
             cert.smt2.contains("(assert (= n 5))"),
-            "missing binding pin:\n{}",
-            cert.smt2
+            "verification certificate is missing the binding pin"
         );
     }
 
@@ -3441,11 +3436,7 @@ mod tests {
         let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
         assert_eq!(verdict, Some(false));
         let cx = cx.expect("contradiction must surface a counterexample");
-        assert!(
-            cx.contains("x ="),
-            "counterexample should name `x`; got: {:?}",
-            cx
-        );
+        assert!(cx.contains("x ="), "counterexample should name x");
     }
 
     #[test]
@@ -3458,11 +3449,7 @@ mod tests {
         let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
         assert_eq!(verdict, None);
         let cx = cx.expect("undecidable clause must surface a counterexample");
-        assert!(
-            cx.contains("x ="),
-            "counterexample should name `x`; got: {:?}",
-            cx
-        );
+        assert!(cx.contains("x ="), "counterexample should name x");
     }
 
     #[test]
@@ -3472,11 +3459,7 @@ mod tests {
         let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
         let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
         assert_eq!(verdict, Some(true));
-        assert!(
-            cx.is_none(),
-            "tautology should have no counterexample, got: {:?}",
-            cx
-        );
+        assert!(cx.is_none(), "tautology should have no counterexample");
     }
 
     #[test]
@@ -3492,8 +3475,7 @@ mod tests {
         // No free variables → no counterexample content.
         assert!(
             cx.as_deref().map(|s| !s.contains("n =")).unwrap_or(true),
-            "bound identifier should not appear in counterexample: {:?}",
-            cx,
+            "bound identifier should not appear in counterexample",
         );
     }
 
@@ -3514,8 +3496,7 @@ mod tests {
         let cx = cx.expect("undecidable clause must surface a counterexample");
         assert!(
             cx.contains("a =") || cx.contains("b ="),
-            "counterexample should name at least one free var; got: {:?}",
-            cx,
+            "counterexample should name at least one free variable",
         );
     }
 
@@ -3633,13 +3614,11 @@ mod tests {
         let smt2 = cert.expect("should produce a certificate").smt2;
         assert!(
             smt2.contains("(declare-const len_xs Int)"),
-            "missing len_xs declaration in cert:\n{}",
-            smt2
+            "verification certificate is missing the len declaration"
         );
         assert!(
             smt2.contains("(assert (>= len_xs 0))"),
-            "missing len_xs >= 0 axiom in cert:\n{}",
-            smt2
+            "verification certificate is missing the len axiom"
         );
     }
 
@@ -3674,8 +3653,7 @@ mod tests {
         assert_eq!(
             smt2.matches("(declare-const len_xs Int)").count(),
             1,
-            "expected one declaration, got cert:\n{}",
-            smt2
+            "verification certificate should declare len_xs once"
         );
     }
 
@@ -4132,18 +4110,15 @@ mod tests {
         let smt2 = cert.expect("expected cert for tautology").smt2;
         assert!(
             smt2.contains("(declare-const arr_a (Array Int Int))"),
-            "cert must declare arr_a as Array Int Int:\n{}",
-            smt2
+            "verification certificate is missing the array declaration"
         );
         assert!(
             smt2.contains("(declare-const len_a Int)"),
-            "cert must declare len_a Int (range upper bound is len(a)):\n{}",
-            smt2
+            "verification certificate is missing the len declaration"
         );
         assert!(
             smt2.contains("(assert (>= len_a 0))"),
-            "cert must include len_a >= 0 axiom:\n{}",
-            smt2
+            "verification certificate is missing the len axiom"
         );
     }
 

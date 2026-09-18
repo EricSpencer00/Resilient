@@ -1383,7 +1383,7 @@ fn z3_prove_with_cert(
 /// invariant — the recovery point is reached only after the
 /// precondition has already been checked, so requires still
 /// hold. Without `--features z3`, returns all-`None` / `false`.
-/// RES-1633: cache key for `z3_prove_with_axioms_and_cert`. Same
+/// RES-1633: cache key for the Z3 proof helper. Same
 /// shape as `prove_cache_key` (RES-1631) but folds the axioms
 /// slice's Debug repr into the hash so two distinct axiom sets
 /// can't collide. The leading `with_axioms:` tag also prevents
@@ -1416,7 +1416,7 @@ fn prove_cache_key_with_axioms(
 }
 
 #[cfg(feature = "z3")]
-fn z3_prove_with_axioms_and_cert(
+fn z3_verify_with_axioms(
     expr: &Node,
     bindings: &HashMap<String, i64>,
     axioms: &[Node],
@@ -1433,7 +1433,7 @@ fn z3_prove_with_axioms_and_cert(
     result
 }
 #[cfg(not(feature = "z3"))]
-fn z3_prove_with_axioms_and_cert(
+fn z3_verify_with_axioms(
     _expr: &Node,
     _bindings: &HashMap<String, i64>,
     _axioms: &[Node],
@@ -1683,7 +1683,7 @@ fn emit_partial_proof_warning(source_path: &str, clause: &Node) {
 /// Filename on disk: `{fn_name}__{kind}__{idx}.smt2`.
 ///
 /// RES-1202: fields are only ever read by the z3-feature-gated
-/// `emit_certificates` / `dispatch_verify_*` flows in `lib.rs`,
+/// proof artifact emission / `dispatch_verify_*` flows in `lib.rs`,
 /// so a default-feature build sees them as dead. Suppress the
 /// lint under that exact condition rather than universally.
 #[derive(Debug, Clone)]
@@ -1863,7 +1863,7 @@ pub struct TypeChecker {
     /// other invocation (default `rz prog.rz`, LSP/REPL, every
     /// `cargo test` typecheck) pushed certs onto a Vec it dropped
     /// on TypeChecker drop. Default `false`; the cert-emit driver
-    /// flips it via `with_emit_certificates(true)`.
+    /// flips it via `with_proof_capture(true)`.
     emit_certificates: bool,
     /// RES-1862: innermost span updated as `check_node` descends the
     /// AST. When an error propagates back to `check_program_with_source`
@@ -5811,7 +5811,7 @@ impl TypeChecker {
     /// path leaves the flag off so the per-push `fn_name.clone()` +
     /// Vec growth doesn't fire on hot paths that never read the
     /// certs.
-    pub fn with_emit_certificates(mut self, on: bool) -> Self {
+    pub fn with_proof_capture(mut self, on: bool) -> Self {
         self.emit_certificates = on;
         self
     }
@@ -8182,7 +8182,7 @@ impl TypeChecker {
                         // RES-1330: drop the dead `z3_prove_with_cert_theory`
                         // call that previously sat here. Its result was
                         // bound to `(_v, _cert, _c, _timed_out)` and
-                        // never read — `z3_prove_with_axioms_and_cert`
+                        // never read — the Z3 proof helper
                         // below was already the load-bearing call (it
                         // admits `requires` preconditions + leading
                         // `assume(P)` as axioms, the only correct shape
@@ -8190,7 +8190,7 @@ impl TypeChecker {
                         // theory-aware call without axioms would only
                         // ever be strictly weaker than the axioms-aware
                         // one, so dropping it doesn't change the verdict.
-                        let (v, cert, c, t) = z3_prove_with_axioms_and_cert(
+                        let (v, cert, c, t) = z3_verify_with_axioms(
                             clause,
                             &no_bindings,
                             &axioms,

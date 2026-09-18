@@ -68,8 +68,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
     assert_eq!(
         out.status.code(),
         Some(0),
-        "expected successful compile+run; stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        "expected successful compile and run"
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -85,7 +84,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
     assert_eq!(
         cert.get("schema").and_then(|v| v.as_str()),
         Some("resilient-contract-certificate/v1"),
-        "unexpected certificate: {cert}"
+        "certificate schema mismatch"
     );
     // C-E5: the schema_version field lets a consumer fail closed on a
     // future document shape it doesn't understand instead of
@@ -93,7 +92,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
     assert_eq!(
         cert.get("schema_version").and_then(|v| v.as_u64()),
         Some(1),
-        "unexpected certificate: {cert}"
+        "certificate schema version mismatch"
     );
     assert_eq!(
         cert.get("source").and_then(|v| v.as_str()),
@@ -106,13 +105,13 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
         .expect("certificate must have a functions array");
     assert!(
         !functions.is_empty(),
-        "expected at least one function in the certificate: {cert}"
+        "expected at least one function in the certificate"
     );
 
     let count_up = functions
         .iter()
         .find(|f| f.get("name").and_then(|v| v.as_str()) == Some("count_up"))
-        .unwrap_or_else(|| panic!("count_up must appear in the certificate: {cert}"));
+        .unwrap_or_else(|| panic!("count_up must appear in the certificate"));
 
     assert_eq!(
         count_up.get("enrolled").and_then(|v| v.as_bool()),
@@ -130,7 +129,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
         provenance
             .iter()
             .any(|v| v.as_str() == Some("ai_generated")),
-        "expected the ai_generated provenance tag on count_up, got {provenance:?}"
+        "expected the ai_generated provenance tag on count_up"
     );
 
     let clauses = count_up
@@ -139,7 +138,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
         .expect("count_up must have a clauses array");
     assert!(
         clauses.len() >= 3,
-        "expected the 2 requires + 1 ensures clauses declared in source, got {clauses:?}"
+        "expected at least three clauses in the certificate"
     );
 
     let valid_kinds = [
@@ -156,7 +155,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
             .expect("clause missing kind");
         assert!(
             valid_kinds.contains(&kind),
-            "unexpected clause kind {kind:?} in {clause}"
+            "unexpected clause kind in certificate"
         );
 
         let verdict = clause
@@ -165,7 +164,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
             .expect("clause missing verdict");
         assert!(
             valid_verdicts.contains(&verdict),
-            "unexpected verdict {verdict:?} — must be one of {valid_verdicts:?}; clause={clause}"
+            "unexpected verdict in certificate"
         );
 
         // A `smtlib2` replay dump or `counterexample` may only appear
@@ -173,11 +172,11 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
         // configuration, unlike the verdict value itself.
         assert!(
             !clause.as_object().unwrap().contains_key("smtlib2") || verdict == "pass",
-            "smtlib2 certificate must only appear on a pass verdict: {clause}"
+            "smtlib2 certificate must only appear on a pass verdict"
         );
         assert!(
             !clause.as_object().unwrap().contains_key("counterexample") || verdict == "fail",
-            "counterexample must only appear on a fail verdict: {clause}"
+            "counterexample must only appear on a fail verdict"
         );
     }
 
@@ -186,7 +185,7 @@ fn require_contracts_strict_loop_bound_certificate_pipeline() {
     let main_fn = functions
         .iter()
         .find(|f| f.get("name").and_then(|v| v.as_str()) == Some("main"))
-        .unwrap_or_else(|| panic!("main must appear in the certificate: {cert}"));
+        .unwrap_or_else(|| panic!("main must appear in the certificate"));
     assert_eq!(
         main_fn.get("enrolled").and_then(|v| v.as_bool()),
         Some(true),

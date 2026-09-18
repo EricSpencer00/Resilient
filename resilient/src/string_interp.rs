@@ -251,13 +251,10 @@ fn check_node_interp(
                     && let Err(e) = tc.check_node(expr)
                 {
                     // Errors in nested nodes: we can't propagate from the
-                    // closure, so emit as a warning-style diagnostic to stderr.
-                    let loc = if span.start.line > 0 {
-                        format!("{}:{}:{}", source_path, span.start.line, span.start.column)
-                    } else {
-                        source_path.to_string()
-                    };
-                    eprintln!("warning: {loc}: in interpolated string: {e}");
+                    // closure, so emit a safe warning without source-derived
+                    // diagnostic text or values.
+                    let _ = (e, span, source_path);
+                    eprintln!("warning: invalid interpolated-string expression");
                 }
             }
         }

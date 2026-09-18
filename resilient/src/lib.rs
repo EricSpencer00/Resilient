@@ -250,7 +250,7 @@ mod pkg_deps;
 // produced obligations to sign, so gate the whole module — and its
 // ed25519-dalek + rand_core + sha2 + serde_json dependency chain —
 // behind `feature = "z3"`. Every caller of `cert_sign::*` is also
-// `#[cfg(feature = "z3")]` (see emit_certificates / dispatch_verify_*).
+// `#[cfg(feature = "z3")]` (see write_proof_artifacts / dispatch_verify_*).
 #[cfg(feature = "z3")]
 mod cert_sign;
 // RES-198: starter linter. 5 lints with stable codes; consumed
@@ -30438,7 +30438,7 @@ pub(crate) fn encode_semantic_tokens(tokens: &[AbsSemToken]) -> Vec<u32> {
 /// active there are no obligations to certify, so the function (and
 /// its `cert_sign` dependencies) only exists in z3 builds.
 #[cfg(feature = "z3")]
-fn emit_certificates(
+fn write_proof_artifacts(
     certificates: &[typechecker::CapturedCertificate],
     dir: &Path,
     source_filename: &str,
@@ -31149,7 +31149,7 @@ fn execute_file(
             // other invocation skips the per-push `fn_name.clone()`
             // and the growing `Vec<CapturedCertificate>` it'd drop
             // on TypeChecker drop.
-            .with_emit_certificates(emit_cert_dir.is_some());
+            .with_proof_capture(emit_cert_dir.is_some());
         // RES-354: apply the --z3-theory flag when z3 feature is on.
         #[cfg(feature = "z3")]
         let mut tc = tc_base.with_z3_theory(z3_theory);
@@ -31201,17 +31201,10 @@ fn execute_file(
         // running there are no obligations to sign.
         #[cfg(feature = "z3")]
         if let Some(dir) = emit_cert_dir {
-            let n = emit_certificates(&tc.certificates, dir, filename, sign_cert_key)?;
-            println!(
-                "\x1B[36mWrote {} verification certificate(s) to {}\x1B[0m",
-                n,
-                dir.display()
-            );
+            let n = write_proof_artifacts(&tc.certificates, dir, filename, sign_cert_key)?;
+            println!("\x1B[36mWrote {} verification certificate(s)\x1B[0m", n);
             if sign_cert_key.is_some() {
-                println!(
-                    "\x1B[36mWrote Ed25519 signature to {}\x1B[0m",
-                    dir.join("cert.sig").display()
-                );
+                println!("\x1B[36mWrote Ed25519 signature\x1B[0m");
             }
         }
         #[cfg(not(feature = "z3"))]
