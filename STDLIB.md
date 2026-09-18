@@ -829,6 +829,10 @@ so only the first such item is retained.
 | `csv_parse_tsv(s)` | string → array of array of string | RES-2662: parse tab-delimited lines with the same quoting rules as `csv_parse` |
 | `csv_format(rows)` | array of array of string → string | RES-2662: format CSV; quotes fields containing commas, quotes, or newlines |
 | `csv_format_tsv(rows)` | array of array of string → string | RES-2662: format TSV; quotes fields containing tabs, quotes, or newlines |
+| `table_format(rows)` | array of array of string → string | RES-2662: align columns with two spaces between them; short rows are padded with empty cells |
+| `format_float(value, decimals)` | (number, int) → string | RES-2662: fixed-point formatting with exactly `decimals` places; `decimals` must be non-negative |
+| `format_float_sci(value, significant_digits)` | (number, int) → string | RES-2662: lowercase scientific notation with the requested significant digits; the count must be positive |
+| `format_int_width(value, width)` | (int, int) → string | RES-2662: right-align an integer in a space-padded field; `width` must be non-negative |
 
 Parsing is line-oriented: each input line becomes one row, no header is
 inferred, and an empty input string produces an empty outer array. Formatting
@@ -837,6 +841,12 @@ require every cell to be a string; malformed argument shapes produce a runtime
 error. The parsers decode doubled quotes inside quoted fields, while quoted
 newlines emitted by a formatter are still interpreted using the parser's
 line-oriented row boundaries.
+
+`table_format` returns an empty string for no rows, measures column widths in
+bytes, and trims padding from the final column on each row. The numeric
+formatters return strings and raise a runtime error for the wrong value types
+or invalid precision/width arguments; a requested width smaller than the
+integer's printed form does not truncate it.
 
 ## Bytes Functions (Extended)
 
