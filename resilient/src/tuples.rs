@@ -11,9 +11,10 @@
 //! - [`bind_tuple_destructure`]: interpreter helper for the
 //!   destructuring let.
 //!
-//! Type checking is inline in `typechecker.rs` (treats every tuple
-//! element as `Type::Any`); a follow-up ticket extends `Type` with a
-//! dedicated tuple shape.
+//! Type checking is inline in `typechecker.rs`; tuple expressions and
+//! annotations both use the dedicated `Type::Tuple` shape so element
+//! positions remain available to indexing, destructuring, and compatibility
+//! checks.
 //!
 //! The tuple AST is stored as three new `Node` variants and one new
 //! `Value` variant in `lib.rs` (per the feature-isolation pattern,

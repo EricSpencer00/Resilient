@@ -4,7 +4,7 @@ fn add_pair((int, int) _a_b) -> int {
 }
 
 fn main() {
-    println(add_pair(0));
+    println(add_pair((0, 0)));
 }
 
 main();
