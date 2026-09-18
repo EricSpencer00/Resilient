@@ -237,6 +237,8 @@ main();
 | `format(fmt, args)` | (string, array) → string | `{}` placeholder; `{{`/`}}` escape |
 | `starts_with(s, prefix)` | (string, string) → bool | empty prefix always matches |
 | `ends_with(s, suffix)` | (string, string) → bool | empty suffix always matches |
+| `is_empty(s)` | string → bool | RES-479: true only when `s` has no characters; whitespace is not empty |
+| `is_blank(s)` | string → bool | RES-479: true when `s` is empty or contains only Unicode whitespace |
 | `repeat(s, n)` | (string, int) → string | `n >= 0`; negative is a hard error |
 | `parse_int(s)` | string → Result<Int, String> | base 10; whitespace stripped; `Err` on invalid input — never panics |
 | `parse_int_or(s, default)` | (string, int) → int | RES-529: base-10 parse with surrounding whitespace stripped; returns `default` on invalid, empty, or overflowing input |
