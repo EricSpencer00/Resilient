@@ -74,11 +74,12 @@
 //!
 //! Third increment (RES-4067, #4067):
 //!
-//! 5. **Concrete call-site return projections.** When a generic call binds
-//!    `T` to a concrete struct and its declared bounds identify one
-//!    associated-type implementation, `T::AssocName` in the return type is
-//!    resolved to that implementation's concrete type. Unknown, unbounded,
-//!    and ambiguous projections retain the permissive `Any` fallback.
+//! 5. **Concrete call-site projections.** When a generic call binds `T` to a
+//!    concrete struct and its declared bounds identify one associated-type
+//!    implementation, `T::AssocName` is resolved to that implementation's
+//!    concrete type in both return and subsequent parameter positions.
+//!    Unknown, unbounded, and ambiguous projections retain the permissive
+//!    `Any` fallback.
 //!
 //! Still out of scope — tracked in
 //! [issue #4067](https://github.com/EricSpencer00/Resilient/issues/4067):
@@ -606,6 +607,21 @@ mod tests {
              }} main();"
         );
         typecheck(&src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_param_position_projection_mismatch_rejected_at_call_site() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn use_item<T: Container>(T c, T::Item seed) -> int {{ return 1; }}\n\
+             fn main() {{\n\
+                 let b = new IntBox {{ v: 42 }};\n\
+                 println(use_item(b, \"wrong\"));\n\
+             }} main();"
+        );
+        let error = typecheck(&src).expect_err("expected concrete parameter projection mismatch");
+        assert!(error.contains("expected int"), "got: {error}");
+        assert!(error.contains("string"), "got: {error}");
     }
 
     #[test]
