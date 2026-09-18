@@ -441,6 +441,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   wrapper can expose `items[0][0]` without re-analyzing the nested helper.
   Only plain reference-parameter forwarding is accepted; wrapped,
   transformed, mixed, recursive, and ambiguous values remain conservative.
+- **A-E5 increment 28 (RES-4070):** direct array literals now compose paths
+  from already-proven array-return helper calls placed inside their elements,
+  so `let items = [make_array(x)]` exposes `items[0][0]`. Unknown calls and
+  non-identifier arguments remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
