@@ -1,0 +1,103 @@
+// RES-4227: bind the optional HST-core embedded ABI without hiding its
+// ownership and differential-check assumptions.
+//
+// This example is intentionally interactive: it needs a locally installed
+// libhstcore and a compiled operator artifact. The community HST Studio build
+// uses an empty licence token; a metered build may require a real token.
+//
+// Before running, put the library on the platform loader path and change
+// `artifact_path` below to a local operator artifact:
+//
+//   cargo run --features ffi -- resilient/examples/ffi_hstcore.rz
+//
+// The binding does not vendor a library or an artifact. The ABI source of
+// truth is hstcore.h / abi.json in HST Studio's hstcore-abi package.
+
+extern "libhstcore.so" {
+    // macOS users should change the library name to libhstcore.dylib.
+    // hstcore's nullable char* error buffer is represented by a writable
+    // Buffer<Int> because Resilient currently exposes caller-owned mutable
+    // storage as typed 64-bit integer or double buffers. The C function only
+    // writes bytes into this region; it is never read as integers here. A
+    // 64-element buffer reserves 512 bytes while errbuf_len remains 512.
+    fn hst_open(
+        artifact_path: CStr,
+        license_token: CStr,
+        errbuf: Buffer<Int>,
+        errbuf_len: Int
+    ) -> OpaquePtr;
+
+    fn hst_close(ctx: OpaquePtr) -> Void;
+    fn hst_batch(ctx: OpaquePtr) -> Int32;
+    fn hst_input_dim(ctx: OpaquePtr) -> Int32;
+    fn hst_output_dim(ctx: OpaquePtr) -> Int32;
+    fn hst_version() -> CStr;
+
+    // hst_apply_delta is the optimized sparse update. Its output pointer is
+    // caller-owned and stays valid because Buffer<Float> holds the allocation
+    // across the foreign call. The reference recompute below writes to a
+    // separate buffer after the same update and provides the oracle arm.
+    fn hst_apply_delta(
+        ctx: OpaquePtr,
+        cols: Array<Int>,
+        vals: Array<Float>,
+        n: Int32,
+        y_out: Buffer<Float>
+    ) -> Int32
+        requires _3 >= 0
+        ensures result == 0;
+
+    // Recomputes A*x from the held input state. This is intentionally not a
+    // benchmark-only call: the example uses it as a differential reference.
+    fn hst_recompute_full(ctx: OpaquePtr, y_out: Buffer<Float>) -> Int32
+        ensures result == 0;
+}
+
+// The postcondition deliberately turns the fast/reference comparison into a
+// falsifiable runtime check. If the optimized output diverges, returning false
+// violates this function's postcondition at the call site.
+fn outputs_agree(Any fast, Any reference, Int len) -> Bool
+    requires len >= 0
+    ensures result == true
+{
+    let i = 0;
+    while i < len {
+        let diff = buffer_get(fast, i) - buffer_get(reference, i);
+        if diff > 0.000000001 || diff < -0.000000001 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn main() {
+    let artifact_path = "operator.bin";
+    let license_token = "";
+    let errbuf = buffer_int(64);
+    let ctx = hst_open(artifact_path, license_token, errbuf, 512);
+
+    println(hst_version());
+    println(hst_batch(ctx));
+    println(hst_input_dim(ctx));
+    let output_dim = hst_output_dim(ctx);
+
+    // This first probe uses one lane, one valid input column, and one delta.
+    // For a batched session, use hst_open_batched and lane-interleave vals as
+    // vals[i * batch + lane], exactly as hstcore.h specifies.
+    let fast = buffer_float(output_dim);
+    let reference = buffer_float(output_dim);
+    let rc = hst_apply_delta(ctx, [0], [1.0], 1, fast);
+    if rc == 0 {
+        let reference_rc = hst_recompute_full(ctx, reference);
+        if reference_rc == 0 {
+            println(outputs_agree(fast, reference, output_dim));
+        }
+    }
+
+    // Opaque handles are owned and released by the foreign library. The
+    // output buffers are Resilient-owned and can be inspected until this
+    // function ends; hst_state's borrowed pointer is intentionally not bound.
+    hst_close(ctx);
+}
+main();
