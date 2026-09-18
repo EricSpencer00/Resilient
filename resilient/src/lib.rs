@@ -43,6 +43,8 @@ mod array_set_helpers;
 // RES-1156: per-bit accessors on i64 — set / clear / get / flip.
 // Pure leaf builtins; module-isolated.
 mod bit_manipulation;
+// RES-4230: reference-semantics buffers for caller-owned FFI output.
+mod buffer_builtins;
 // RES-1142: array chunking + striding + rotation primitives.
 // Pure leaf builtins; module-isolated.
 mod array_chunking;
@@ -11481,6 +11483,20 @@ impl Parser {
 // Signature for native Rust functions exposed to the interpreter.
 type BuiltinFn = fn(&[Value]) -> RResult<Value>;
 
+/// RES-4230: storage behind a reference-semantics `Buffer` value.
+///
+/// The first increment is intentionally backend-independent: the tree
+/// walker and bytecode VM both carry this `Rc<RefCell<_>>`, so cloning a
+/// buffer value preserves identity while `buffer_set` updates every alias.
+#[derive(Clone)]
+enum BufferStorage {
+    Int(Vec<i64>),
+    Float(Vec<f64>),
+}
+
+#[derive(Clone)]
+struct BufferValue(Rc<RefCell<BufferStorage>>);
+
 /// Heap-allocated payload for `Value::Function`. Boxed so the Value
 /// enum stays small (~48 bytes instead of ~136 bytes), improving
 /// cache locality and clone speed for the common non-Function
@@ -11517,6 +11533,10 @@ enum Value {
     /// RES-032: dynamic array. Mixed types allowed at runtime until a
     /// real type system (G7) can enforce a single element type.
     Array(Vec<Value>),
+    /// RES-4230: explicitly allocated caller-owned storage. Unlike an
+    /// ordinary `Array`, cloned buffers retain shared identity so a future
+    /// FFI `double*`/`int64_t*` view can observe in-place writes.
+    Buffer(BufferValue),
     /// RES-038: user-defined record. Fields are stored in declaration
     /// order so Display is stable.
     Struct {
@@ -11783,6 +11803,10 @@ impl std::fmt::Debug for Value {
             }
             Value::Builtin { name, .. } => write!(f, "Builtin({})", name),
             Value::Array(items) => write!(f, "Array({} items)", items.len()),
+            Value::Buffer(buffer) => match &*buffer.0.borrow() {
+                BufferStorage::Int(items) => write!(f, "Buffer<Int>({} items)", items.len()),
+                BufferStorage::Float(items) => write!(f, "Buffer<Float>({} items)", items.len()),
+            },
             Value::Struct { name, fields } => {
                 if name == ANONYMOUS_STRUCT_NAME {
                     write!(f, "Struct(<anonymous>, {} fields)", fields.len())
@@ -11904,6 +11928,14 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Buffer(buffer) => match &*buffer.0.borrow() {
+                BufferStorage::Int(items) => {
+                    write!(f, "<buffer<int> len={}", items.len()).and_then(|_| write!(f, ">"))
+                }
+                BufferStorage::Float(items) => {
+                    write!(f, "<buffer<float> len={}", items.len()).and_then(|_| write!(f, ">"))
+                }
+            },
             // RES-401: tuples render as `(a, b, c)`. The unit value
             // (empty tuple) renders as `()` to mirror its source form.
             Value::Tuple(items) => {
@@ -13332,6 +13364,18 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // for closures that need to coordinate. Methods (.get / .set) are
     // dispatched via the special cell handler in `CallExpression` eval.
     ("cell", builtin_cell_new),
+    // RES-4230: reference-semantics output buffers. Appended with the
+    // allocation-oriented builtins so the existing builtin hot path stays
+    // stable while the future FFI pointer lowering can reuse these values.
+    ("buffer_int", crate::buffer_builtins::builtin_buffer_int),
+    ("buffer_float", crate::buffer_builtins::builtin_buffer_float),
+    ("buffer_len", crate::buffer_builtins::builtin_buffer_len),
+    ("buffer_get", crate::buffer_builtins::builtin_buffer_get),
+    ("buffer_set", crate::buffer_builtins::builtin_buffer_set),
+    (
+        "buffer_to_array",
+        crate::buffer_builtins::builtin_buffer_to_array,
+    ),
     // RES-332 PR 2: actor spawn/send/receive.
     ("spawn", builtin_spawn),
     ("send", builtin_send),
@@ -21689,6 +21733,15 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::Int(s.chars().count() as i64)),
         [Value::Array(items)] => Ok(Value::Int(items.len() as i64)),
+        // RES-4230: buffers retain shared identity but expose the same
+        // element-count query as arrays.
+        [Value::Buffer(buffer)] => {
+            let len = match &*buffer.0.borrow() {
+                BufferStorage::Int(items) => items.len(),
+                BufferStorage::Float(items) => items.len(),
+            };
+            Ok(Value::Int(len as i64))
+        }
         // RES-932: tuple length for tuple-pattern matching in the bytecode VM.
         [Value::Tuple(items)] => Ok(Value::Int(items.len() as i64)),
         [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
@@ -29209,6 +29262,7 @@ fn value_to_tc_type(v: &Value) -> crate::typechecker::Type {
         Value::Bool(_) => crate::typechecker::Type::Bool,
         Value::String(_) => crate::typechecker::Type::String,
         Value::Bytes(_) => crate::typechecker::Type::Bytes,
+        Value::Buffer(_) => crate::typechecker::Type::Struct("Buffer".to_string()),
         Value::Void => crate::typechecker::Type::Void,
         Value::Array(_) => crate::typechecker::Type::Array,
         Value::Struct { name, .. } => crate::typechecker::Type::Struct(name.clone()),

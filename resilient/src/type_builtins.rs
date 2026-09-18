@@ -14,7 +14,7 @@ type RResult<T> = Result<T, String>;
 ///
 /// Returns the runtime type of `x` as a string:
 /// `"int"`, `"float"`, `"string"`, `"bool"`, `"array"`, `"map"`, `"set"`,
-/// `"void"`, `"function"`, `"bytes"`, `"struct"`, `"tuple"`, `"enum"`,
+/// `"void"`, `"function"`, `"bytes"`, `"buffer"`, `"struct"`, `"tuple"`, `"enum"`,
 /// `"result"`, `"option"`, `"actor_pid"`, `"null"`.
 ///
 /// ```text
@@ -34,6 +34,7 @@ pub(crate) fn builtin_type_of(args: &[Value]) -> RResult<Value> {
                 Value::Bool(_) => "bool",
                 Value::Char(_) => "char",
                 Value::Array(_) => "array",
+                Value::Buffer(_) => "buffer",
                 Value::Map(_) => "map",
                 Value::Set(_) => "set",
                 Value::Void => "void",

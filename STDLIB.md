@@ -367,6 +367,7 @@ match r {
 | `array_any_eq(arr, x)` | (array, T) → bool | RES-469: alias for `array_contains` |
 | `array_eq(a, b)` | (array, array) → bool | RES-472: element-wise scalar equality; empty arrays equal |
 | `array_ne(a, b)` | (array, array) → bool | RES-474: negation of `array_eq` |
+
 | `array_fold_int(arr, init, op)` | (array, int, string) → int | RES-475: fold with named op (sum/product/min/max) starting from `init` |
 | `array_starts_with(arr, prefix)` `array_ends_with(arr, suffix)` | (array, array) → bool | RES-445: scalar value-equality on element prefixes/suffixes |
 | `array_window(arr, n)` | (array, int) → array of array | RES-455: sliding windows; n must be > 0 |
@@ -382,6 +383,17 @@ match r {
 | `array_product_float(arr)` | array of float → float | RES-942: float-array product; identity 1.0 on empty |
 | `array_min_float(arr)` `array_max_float(arr)` | array of float → float | RES-942: float-array min/max; NaN propagates; empty errors |
 | `array_average_float(arr)` | array of float → float | RES-942: float-array mean; empty errors |
+
+### Reference-semantics buffers
+
+| Name | Signature | Notes |
+|---|---|---|
+| `buffer_int(n)` | int → buffer | RES-4230: zero-filled shared integer storage; length capped at 1B |
+| `buffer_float(n)` | int → buffer | RES-4230: zero-filled shared float storage; length capped at 1B |
+| `buffer_len(buffer)` | buffer → int | element count |
+| `buffer_get(buffer, index)` | (buffer, int) → scalar | bounds-checked typed read |
+| `buffer_set(buffer, index, value)` | (buffer, int, scalar) → void | in-place typed write visible through every alias |
+| `buffer_to_array(buffer)` | buffer → array | copies the current contents into an ordinary array |
 
 ## Deque
 

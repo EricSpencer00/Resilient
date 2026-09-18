@@ -2944,6 +2944,52 @@ impl TypeChecker {
                     },
                 );
 
+                // RES-4230: reference-semantics output buffers. The
+                // storage kind is enforced by the runtime builtins until
+                // the dedicated Buffer type and FFI pointer lowering land.
+                env.set(
+                    "buffer_int".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "buffer_float".to_string(),
+                    Type::Function {
+                        params: vec![Type::Int],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "buffer_len".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Int),
+                    },
+                );
+                env.set(
+                    "buffer_get".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int],
+                        return_type: Box::new(Type::Any),
+                    },
+                );
+                env.set(
+                    "buffer_set".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any, Type::Int, Type::Any],
+                        return_type: Box::new(Type::Void),
+                    },
+                );
+                env.set(
+                    "buffer_to_array".to_string(),
+                    Type::Function {
+                        params: vec![Type::Any],
+                        return_type: Box::new(Type::Array),
+                    },
+                );
+
                 // Array builtins: any -> array / (array,int,int) -> array
                 env.set(
                     "push".to_string(),
