@@ -3,6 +3,14 @@
     "resilient/tests/mcp_http_batch2_smoke.rs": {
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
+    },
+    "resilient/src/region_inference.rs": {
+      "branch": "res-4070-array-struct-slices",
+      "claimed_at": "2026-09-18T04:55:41Z"
+    },
+    "docs/MEMORY_MODEL.md": {
+      "branch": "res-4070-array-struct-slices",
+      "claimed_at": "2026-09-18T04:55:41Z"
     }
   }
 }
