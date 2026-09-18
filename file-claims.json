@@ -3,14 +3,6 @@
     "resilient/tests/mcp_http_batch2_smoke.rs": {
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-4067-assoc-return",
-      "claimed_at": "2026-09-18T04:19:09Z"
-    },
-    "resilient/src/associated_types.rs": {
-      "branch": "res-4067-assoc-return",
-      "claimed_at": "2026-09-18T04:19:09Z"
     }
   }
 }
