@@ -742,6 +742,7 @@ impl<'a> AliasWalker<'a> {
                 let array_roots = self.array_element_roots(value, state);
                 let array_field_roots = self.array_field_roots(value, state);
                 let array_slice_field_roots = self.array_slice_field_roots(value, state);
+                let array_tuple_roots = self.array_tuple_roots(value, state);
                 let tuple_roots = self.tuple_element_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
@@ -764,6 +765,11 @@ impl<'a> AliasWalker<'a> {
                     state
                         .aliases
                         .insert(format!("{name}[{index}].{field}"), root);
+                }
+                for (index, path, root) in array_tuple_roots {
+                    state
+                        .aliases
+                        .insert(format!("{name}[{index}].{path}"), root);
                 }
                 for (index, root) in tuple_roots {
                     state.aliases.insert(format!("{name}.{index}"), root);
@@ -1123,6 +1129,25 @@ impl<'a> AliasWalker<'a> {
                 self.struct_field_roots(item, state)
                     .into_iter()
                     .map(move |(field, root)| (index, field, root))
+            })
+            .collect()
+    }
+
+    fn array_tuple_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        let crate::Node::ArrayLiteral { items, .. } = value else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .enumerate()
+            .flat_map(|(index, item)| {
+                self.tuple_element_roots(item, state)
+                    .into_iter()
+                    .map(move |(path, root)| (index, path, root))
             })
             .collect()
     }
@@ -3126,6 +3151,79 @@ mod tests {
         assert!(
             errors.is_empty(),
             "value-typed nested tuple paths must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn array_tuple_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0)]; \
+                 set_both(x, items[0].0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "array tuple element alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("items[0].0"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn array_tuple_distinct_paths_with_same_root_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0), (x, 1)]; \
+                 set_both(items[0].0, items[1].0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "array tuple paths must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn array_tuple_alias_preserves_nested_tuple_path() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let inner = ((x, 0), 1); \
+                 let items = [inner]; \
+                 set_both(x, items[0].0.0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "array tuple nested path must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn array_tuple_value_path_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(0, 1)]; \
+                 set_both(x, items[0].0); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value-typed array tuple paths must stay outside alias tracking: {:?}",
             errors
         );
     }

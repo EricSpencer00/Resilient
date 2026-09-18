@@ -368,6 +368,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   pair shaped as ((x, 0), 1) therefore still exposes x through pair.0.0.
   Tuple values, dynamic indices, and transformed tuple sources remain
   conservative.
+- **A-E5 increment 13 (RES-4070):** direct array literals of tuples retain
+  the same provenance at constant array and tuple indices. An array shaped as
+  [(x, 0)] therefore still exposes x through items[0].0. Dynamic indices,
+  transformed arrays, and unknown tuple element shapes remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
