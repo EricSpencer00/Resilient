@@ -325,7 +325,15 @@ Grounded in `resilient/src/region_inference.rs` and the
 - **A-E5 increment 4 (RES-4070):** declared reference-typed struct fields
   initialized directly from tracked references retain that provenance
   through field reads. Value fields, unknown struct shapes, field writes,
-  arrays, and closure captures remain conservative.
+  and arrays remain conservative. Closure capture analysis is described
+  below.
+- **A-E5 increment 5 (RES-4070):** anonymous function bodies are checked
+  with the reference facts captured at their construction site. Captured
+  references retain their regions because closures capture the defining
+  environment by value; closure parameters shadow captured names and,
+  when reference-typed, establish independent roots. The closure's state
+  does not flow back into the surrounding function, so creation and later
+  invocation remain conservatively separated.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -343,13 +351,14 @@ Grounded in `resilient/src/region_inference.rs` and the
 - Conditional-path aliasing detection is *partial*. The let-alias pass
   above handles `if`/`while`/`for`/`match` path merging by intersection,
   but there is no Z3-backed branch-condition disjointness reasoning.
-  Alias facts established by array elements or closure captures remain
-  invisible; known struct-field facts are limited to direct literals and
-  are killed on field writes.
+  Alias facts established by array elements remain invisible; known
+  struct-field facts are limited to direct literals and are killed on field
+  writes. Closure bodies are checked using captured facts, but references
+  stored in array elements are still opaque.
 - No general whole-program or interprocedural alias analysis. The pass
   has only the narrow direct-reference return summary and proven-helper
   forwarding described above; it does not track references through
-  statics, array elements, closures, or ambiguous return paths, and
+  statics, array elements, or ambiguous return paths, and
   struct-field tracking is limited to the direct-literal case above.
 - No borrow checker over local-to-local aliasing — there is no
   expression syntax in the language today to take a reference to

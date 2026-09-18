@@ -371,6 +371,7 @@ fn collect_calls_with_span<'a>(
             if let crate::Node::Identifier { name, .. } = function.as_ref() {
                 calls.push((name.as_str(), arguments.as_slice(), *span));
             }
+            collect_calls_with_span(function, calls);
             for arg in arguments {
                 collect_calls_with_span(arg, calls);
             }
@@ -432,6 +433,24 @@ fn collect_calls_with_span<'a>(
             collect_calls_with_span(right, calls);
         }
         crate::Node::PrefixExpression { right, .. } => collect_calls_with_span(right, calls),
+        crate::Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            recovers_to,
+            ..
+        } => {
+            for clause in requires {
+                collect_calls_with_span(clause, calls);
+            }
+            collect_calls_with_span(body, calls);
+            for clause in ensures {
+                collect_calls_with_span(clause, calls);
+            }
+            if let Some(recovers_to) = recovers_to {
+                collect_calls_with_span(recovers_to, calls);
+            }
+        }
         _ => {}
     }
 }
@@ -618,7 +637,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   path executes, the violation is real.
 //
 // Deferred (see issue #4070): Z3-backed branch-condition disjointness,
-// aliasing through arrays / closures, and ambiguous interprocedural
+// aliasing through arrays, and ambiguous interprocedural
 // paths. The tracked summaries stay sound because they require known
 // reference-typed fields, same-parameter return paths, or forwarding
 // through an already-proven helper. Use-after-move for plain bindings
@@ -880,6 +899,7 @@ impl<'a> AliasWalker<'a> {
                 arguments,
                 span,
             } => {
+                self.walk_expr(function, state);
                 for arg in arguments {
                     self.walk_expr(arg, state);
                 }
@@ -921,6 +941,36 @@ impl<'a> AliasWalker<'a> {
             crate::Node::IndexExpression { target, index, .. } => {
                 self.walk_expr(target, state);
                 self.walk_expr(index, state);
+            }
+            crate::Node::FunctionLiteral {
+                parameters,
+                body,
+                requires,
+                ensures,
+                recovers_to,
+                ..
+            } => {
+                // Function literals capture their defining environment by
+                // value. A captured reference therefore keeps the same
+                // region inside the closure, while closure parameters
+                // shadow captured names and establish their own roots.
+                let mut closure_state = state.clone();
+                for (ty, name) in parameters {
+                    self.kill_name(&mut closure_state, name);
+                    if ty.starts_with('&') {
+                        closure_state.live_roots.insert(name.clone());
+                    }
+                }
+                for clause in requires {
+                    self.walk_expr(clause, &mut closure_state);
+                }
+                self.walk_stmt(body, &mut closure_state);
+                for clause in ensures {
+                    self.walk_expr(clause, &mut closure_state);
+                }
+                if let Some(recovers_to) = recovers_to {
+                    self.walk_expr(recovers_to, &mut closure_state);
+                }
             }
             _ => {}
         }
@@ -2364,6 +2414,60 @@ mod tests {
             errors[0].contains("simultaneous reference arguments"),
             "unexpected message: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn closure_capture_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; \
+                 let f = fn() { set_both(x, y); }; \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "captured alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("set_both"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn closure_local_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let f = fn() { let y = x; set_both(x, y); }; \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "closure-local alias must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn closure_parameter_shadows_captured_name() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; \
+                 let f = fn(&mut int x) { set_both(x, y); }; \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "independent closure parameter must not alias captured reference: {:?}",
+            errors
         );
     }
 }
