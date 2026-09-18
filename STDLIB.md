@@ -51,6 +51,27 @@ operations return `Err` when the path cannot be inspected. These builtins are
 unavailable on the no-host-filesystem wasm playground: predicates return
 `false`, while metadata operations return `Err`.
 
+### TCP and UDP networking
+
+| Name | Signature | Notes |
+|---|---|---|
+| `tcp_connect(host, port)` | (string, int) → Result<TcpConn, String> | std-only; connects to a TCP server |
+| `tcp_listen(host, port)` | (string, int) → Result<TcpListener, String> | std-only; binds a TCP listener |
+| `tcp_accept(listener)` | TcpListener → Result<TcpConn, String> | std-only; blocks until the next connection arrives |
+| `tcp_read(conn, max_bytes)` | (TcpConn, int) → Result<String, String> | std-only; reads up to `max_bytes`; invalid UTF-8 is replaced with U+FFFD |
+| `tcp_write(conn, data)` | (TcpConn, string) → Result<Int, String> | std-only; writes the complete string and returns its byte count |
+| `tcp_close(conn)` | TcpConn → bool | std-only; removes the connection and returns whether it was open |
+| `tcp_set_timeout(conn, ms)` | (TcpConn, int) → bool | std-only; sets read/write timeouts; `0` disables the timeout |
+| `udp_bind(host, port)` | (string, int) → Result<UdpSocket, String> | std-only; binds a UDP socket |
+| `udp_send_to(sock, data, host, port)` | (UdpSocket, string, string, int) → Result<Int, String> | std-only; sends a string and returns its byte count |
+| `udp_recv_from(sock, max_bytes)` | (UdpSocket, int) → Result<String, String> | std-only; receives up to `max_bytes`; the sender address is not returned |
+| `udp_close(sock)` | UdpSocket → bool | std-only; removes the socket and returns whether it was open |
+
+Socket handles are returned by the corresponding `*_connect`, `*_listen`, or
+`udp_bind` calls. Network failures and closed or unknown handles are returned
+as `Err` where the operation has a `Result` return type. These builtins are
+host-only today and are unavailable on the no-host-filesystem wasm playground.
+
 ## Numeric
 
 | Name | Signature | Notes |
