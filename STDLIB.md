@@ -1086,6 +1086,22 @@ requires exactly two numeric elements.
 | `spawn(fn)` | fn() → int | RES-332: spawn actor (returns PID) |
 | `send(pid, msg)` | (int, T) → Result<Void, String> | RES-332: send message to actor |
 | `receive()` | () → T | RES-332: receive message (blocks) |
+| `mutex_new(value)` | T → Mutex<T> | RES-2583: create a mutex wrapping `value` |
+| `mutex_lock(mutex)` | Mutex<T> → T | RES-2583: acquire the mutex and return its wrapped value |
+| `mutex_try_lock(mutex)` | Mutex<T> → Option<T> | RES-2583: non-blocking acquire; returns `Some(value)` when acquired and `None` otherwise |
+| `mutex_unlock(mutex)` | Mutex<T> → void | RES-2583: release the mutex |
+| `rwlock_new(value)` | T → RwLock<T> | RES-2583: create a read-write lock wrapping `value` |
+| `rwlock_read(lock)` | RwLock<T> → T | RES-2583: acquire a shared read lock and return its wrapped value |
+| `rwlock_write(lock)` | RwLock<T> → T | RES-2583: acquire an exclusive write lock and return its wrapped value |
+| `rwlock_unlock(lock)` | RwLock<T> → void | RES-2583: release a read or write lock |
+
+The lock values are intended to be passed back to their matching operations;
+using a mutex where an `RwLock` is expected (or the reverse) is rejected by
+the advisory type-check pass. The interpreter is single-threaded, so lock and
+unlock are no-ops and `mutex_try_lock` succeeds immediately for a valid,
+non-empty handle; compiled backends may map these operations to native
+synchronization primitives. These builtins do not create threads or schedule
+work.
 
 ## Shared Mutable State
 
