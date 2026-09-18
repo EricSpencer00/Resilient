@@ -377,6 +377,12 @@ Grounded in `resilient/src/region_inference.rs` and the
   Slicing items[0..1] therefore still exposes x through selected[0].0.
   Dynamic bounds, transformed arrays, and unknown tuple shapes remain
   conservative.
+- **A-E5 increment 15 (RES-4070):** direct aliases of already-tracked arrays
+  retain known element provenance, including nested struct-field and tuple
+  paths. Copying `items` to `copy` therefore still exposes a reference at
+  `copy[0]` (or `copy[0].item` / `copy[0].0`) when that path was proven on
+  `items`. Dynamic indices, unknown array values, and other transformations
+  remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -399,8 +405,8 @@ Grounded in `resilient/src/region_inference.rs` and the
   literals (including nested declared fields and direct array-literal
   elements and their constant-bound slices) and are killed on field writes.
   Closure bodies are checked using captured
-  facts, while array tracking is limited to direct literals, constant index
-  paths, and constant-bound slices.
+  facts, while array tracking is limited to direct literals, direct aliases of
+  their known paths, constant index paths, and constant-bound slices.
 - No general whole-program or interprocedural alias analysis. The pass
   has only the narrow direct-reference return summary and proven-helper
   forwarding described above; it does not track references through
