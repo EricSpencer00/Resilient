@@ -741,6 +741,8 @@ mod session_types;
 mod snapshot_regression;
 mod stack_contracts;
 mod static_assert;
+// RES-3930 Phase B1: typed external TLA+ refinement annotations.
+mod tla_refines;
 // RES-2613: benchmark framework with `bench` blocks and `rz bench` subcommand.
 mod bench;
 // RES-4115: `rz explain E####` + `rz errors list` (E-E4 increment 1).
@@ -4291,6 +4293,15 @@ impl Parser {
             return self.parse_repr_attribute();
         }
 
+        // RES-3930: `@refines(spec = "X.tla", action = "Y")`
+        // preserves the mapping from a Resilient function to the
+        // external TLA+ action. The proof checker is a later Phase B
+        // increment; this parser step owns the syntax and records only
+        // mappings that passed its structural validation.
+        if attr_name == "refines" {
+            return self.parse_refines_attribute(attr_line);
+        }
+
         // RES-3854: `@require_contracts` is a *module-level* policy
         // directive, not a per-item annotation — it enrols every
         // function in the file into contract verification (see
@@ -4353,7 +4364,7 @@ impl Parser {
             "ai_generated" => (false, EffectSet::io()),
             other => {
                 self.record_error(format!(
-                    "Unknown attribute `@{}`. Known: @pure, @repr(C), @ai_generated, @require_contracts",
+                    "Unknown attribute `@{}`. Known: @pure, @repr(C), @refines(...), @ai_generated, @require_contracts",
                     other
                 ));
                 // Fall through — treat as if no attribute was
@@ -4398,6 +4409,194 @@ impl Parser {
             );
         }
         node
+    }
+
+    /// RES-3930: parse the locked Phase B1 annotation grammar:
+    /// `@refines(spec = "X.tla", action = "Y")`.
+    ///
+    /// Values are parsed as string literals rather than split from raw
+    /// source text, so commas and escaped characters inside a string do
+    /// not confuse the annotation parser. The feature registry receives a
+    /// normalized two-line representation consumed by `tla_refines`.
+    fn parse_refines_attribute(&mut self, attr_line: usize) -> Node {
+        let mut valid = true;
+        let mut spec: Option<String> = None;
+        let mut action: Option<String> = None;
+        let mut seen = HashSet::new();
+
+        if self.current_token != Token::LeftParen {
+            let tok = self.current_token.clone();
+            self.record_error_expected(format!("expected `(` after `@refines`, found {}", tok));
+            valid = false;
+        } else {
+            self.next_token(); // skip `(`
+            if self.current_token == Token::RightParen {
+                self.record_error("@refines requires `spec` and `action` arguments".to_string());
+                valid = false;
+                self.next_token();
+            } else {
+                loop {
+                    let key = match &self.current_token {
+                        Token::Identifier(key) => {
+                            let key = key.clone();
+                            self.next_token();
+                            key
+                        }
+                        other => {
+                            self.record_error_expected(format!(
+                                "expected @refines argument name, found {}",
+                                other
+                            ));
+                            valid = false;
+                            self.skip_refines_to_delimiter();
+                            if self.current_token == Token::RightParen {
+                                self.next_token();
+                            }
+                            break;
+                        }
+                    };
+
+                    if self.current_token != Token::Assign {
+                        let tok = self.current_token.clone();
+                        self.record_error_expected(format!(
+                            "expected `=` after @refines argument `{}`, found {}",
+                            key, tok
+                        ));
+                        valid = false;
+                        self.skip_refines_to_delimiter();
+                    } else {
+                        self.next_token(); // skip `=`
+                        let value = match &self.current_token {
+                            Token::StringLiteral(value) => {
+                                let value = value.clone();
+                                self.next_token();
+                                Some(value)
+                            }
+                            other => {
+                                self.record_error_expected(format!(
+                                    "expected string literal for @refines argument `{}`, found {}",
+                                    key, other
+                                ));
+                                valid = false;
+                                self.skip_refines_to_delimiter();
+                                None
+                            }
+                        };
+
+                        if !seen.insert(key.clone()) {
+                            self.record_error(format!("duplicate @refines argument `{}`", key));
+                            valid = false;
+                        }
+                        if !matches!(key.as_str(), "spec" | "action") {
+                            self.record_error(format!(
+                                "unknown @refines argument `{}` — known: spec, action",
+                                key
+                            ));
+                            valid = false;
+                        }
+                        if let Some(value) = value {
+                            if value.is_empty() || value.contains('\n') || value.contains('\r') {
+                                self.record_error(format!(
+                                    "@refines argument `{}` must be a non-empty single-line string",
+                                    key
+                                ));
+                                valid = false;
+                            }
+                            match key.as_str() {
+                                "spec" => spec = Some(value),
+                                "action" => action = Some(value),
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    match &self.current_token {
+                        Token::Comma => {
+                            self.next_token();
+                            if self.current_token == Token::RightParen {
+                                self.record_error(
+                                    "trailing comma is not allowed in @refines arguments"
+                                        .to_string(),
+                                );
+                                valid = false;
+                                self.next_token();
+                                break;
+                            }
+                        }
+                        Token::RightParen => {
+                            self.next_token();
+                            break;
+                        }
+                        Token::Eof => {
+                            self.record_error_unclosed(
+                                "expected `)` to close @refines(...)".to_string(),
+                            );
+                            valid = false;
+                            break;
+                        }
+                        other => {
+                            self.record_error_expected(format!(
+                                "expected `,` or `)` in @refines arguments, found {}",
+                                other
+                            ));
+                            valid = false;
+                            self.skip_refines_to_delimiter();
+                            if self.current_token == Token::RightParen {
+                                self.next_token();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if spec.is_none() {
+            self.record_error("@refines requires a `spec` string argument".to_string());
+            valid = false;
+        }
+        if action.is_none() {
+            self.record_error("@refines requires an `action` string argument".to_string());
+            valid = false;
+        }
+
+        if self.current_token != Token::Function {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "@refines may only annotate a `fn` declaration, found {}",
+                tok
+            ));
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+        }
+
+        let node = self.parse_function_with_pure_and_effects(false, EffectSet::io());
+        if valid
+            && let (Some(spec), Some(action), Node::Function { name, .. }) = (spec, action, &node)
+        {
+            crate::feature_attrs::record(
+                name,
+                crate::feature_attrs::AttrRecord {
+                    name: "refines".to_string(),
+                    args: format!("spec={}\naction={}", spec, action),
+                    line: attr_line,
+                },
+            );
+        }
+        node
+    }
+
+    /// Advance to the next comma, closing parenthesis, or EOF while
+    /// recovering from a malformed @refines argument.
+    fn skip_refines_to_delimiter(&mut self) {
+        while !matches!(
+            self.current_token,
+            Token::Comma | Token::RightParen | Token::Eof
+        ) {
+            self.next_token();
+        }
     }
 
     /// RES-317: parse `@repr(C)` immediately followed by a `struct`
@@ -36275,6 +36474,112 @@ mod tests {
         // Expand textual macros declared with `#[macro(...)]`.
         crate::macros::lower_program(&mut program);
         (program, errs)
+    }
+
+    // ---------- RES-3930: @refines parser surface ----------
+
+    #[test]
+    fn refines_annotation_records_valid_mapping() {
+        let _guard = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let (program, errs) = parse(
+            r#"@refines(spec = "counter.tla", action = "Inc")
+fn increment(int value) { return value; }"#,
+        );
+        assert!(errs.is_empty(), "unexpected parse errors: {errs:?}");
+        assert!(matches!(program, Node::Program(_)));
+        let records = crate::feature_attrs::find_kind("refines");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0, "increment");
+        assert_eq!(records[0].1.args, "spec=counter.tla\naction=Inc");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn refines_annotation_typechecks_after_preservation() {
+        let _guard = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let (program, errs) = parse(
+            r#"@refines(spec = "counter.tla", action = "Inc")
+fn increment(int value) { return value; }"#,
+        );
+        assert!(errs.is_empty(), "unexpected parse errors: {errs:?}");
+        let mut checker = typechecker::TypeChecker::new().with_warn_unverified(false);
+        checker
+            .check_program_with_source(&program, "<refines-test>")
+            .expect("a preserved @refines mapping should pass its validation pass");
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn refines_annotation_requires_both_keys() {
+        let _guard = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let (_, errs) = parse(
+            r#"@refines(spec = "counter.tla")
+fn increment(int value) { return value; }"#,
+        );
+        assert!(
+            errs.iter()
+                .any(|error| error.contains("requires an `action`")),
+            "expected missing-action diagnostic, got {errs:?}"
+        );
+        assert!(crate::feature_attrs::find_kind("refines").is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn refines_annotation_rejects_duplicate_and_unknown_keys() {
+        let _guard = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let (_, errs) = parse(
+            r#"@refines(spec = "counter.tla", spec = "other.tla", action = "Inc", mode = "strict")
+fn increment(int value) { return value; }"#,
+        );
+        assert!(
+            errs.iter()
+                .any(|error| error.contains("duplicate @refines argument `spec`")),
+            "expected duplicate-key diagnostic, got {errs:?}"
+        );
+        assert!(
+            errs.iter()
+                .any(|error| error.contains("unknown @refines argument `mode`")),
+            "expected unknown-key diagnostic, got {errs:?}"
+        );
+        assert!(crate::feature_attrs::find_kind("refines").is_empty());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn refines_annotation_requires_string_values() {
+        let _guard = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let (_, errs) = parse(
+            r#"@refines(spec = counter.tla, action = "Inc")
+fn increment(int value) { return value; }"#,
+        );
+        assert!(
+            errs.iter()
+                .any(|error| error.contains("expected string literal for @refines argument `spec`")),
+            "expected string-value diagnostic, got {errs:?}"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn refines_annotation_only_targets_functions() {
+        let _guard = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let (_, errs) = parse(
+            r#"@refines(spec = "counter.tla", action = "Inc")
+struct Counter { int value; }"#,
+        );
+        assert!(
+            errs.iter()
+                .any(|error| error.contains("@refines may only annotate a `fn`")),
+            "expected target diagnostic, got {errs:?}"
+        );
+        crate::feature_attrs::reset();
     }
 
     /// RES-4115: `record_error_expected`'s default output stays
