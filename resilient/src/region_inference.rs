@@ -609,6 +609,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
                     body,
                     parameters,
                     return_type.as_deref(),
+                    &reference_fields,
                     &tuple_return_aliases,
                 )
                 && tuple_return_aliases.get(name.as_str()) != Some(&summary)
@@ -2438,6 +2439,7 @@ fn tuple_return_alias_summary(
     body: &crate::Node,
     parameters: &[(String, String)],
     return_type: Option<&str>,
+    reference_fields: &HashSet<(String, String)>,
     known_returns: &HashMap<&str, TupleReturnAliasSummary>,
 ) -> Option<TupleReturnAliasSummary> {
     let return_type = return_type?.trim();
@@ -2446,7 +2448,13 @@ fn tuple_return_alias_summary(
     }
 
     let mut returns = Vec::new();
-    collect_tuple_return_provenance(body, parameters, known_returns, &mut returns);
+    collect_tuple_return_provenance(
+        body,
+        parameters,
+        reference_fields,
+        known_returns,
+        &mut returns,
+    );
     let Some(Some(summary)) = returns.first() else {
         return None;
     };
@@ -2462,18 +2470,25 @@ fn tuple_return_alias_summary(
 fn collect_tuple_return_provenance(
     node: &crate::Node,
     parameters: &[(String, String)],
+    reference_fields: &HashSet<(String, String)>,
     known_returns: &HashMap<&str, TupleReturnAliasSummary>,
     out: &mut Vec<Option<TupleReturnAliasSummary>>,
 ) {
     match node {
         crate::Node::ReturnStatement { value, .. } => {
             out.push(value.as_deref().and_then(|value| {
-                tuple_return_aliases_for_value(value, parameters, known_returns)
+                tuple_return_aliases_for_value(value, parameters, reference_fields, known_returns)
             }));
         }
         crate::Node::Block { stmts, .. } => {
             for stmt in stmts {
-                collect_tuple_return_provenance(stmt, parameters, known_returns, out);
+                collect_tuple_return_provenance(
+                    stmt,
+                    parameters,
+                    reference_fields,
+                    known_returns,
+                    out,
+                );
             }
         }
         crate::Node::IfStatement {
@@ -2481,17 +2496,35 @@ fn collect_tuple_return_provenance(
             alternative,
             ..
         } => {
-            collect_tuple_return_provenance(consequence, parameters, known_returns, out);
+            collect_tuple_return_provenance(
+                consequence,
+                parameters,
+                reference_fields,
+                known_returns,
+                out,
+            );
             if let Some(alternative) = alternative {
-                collect_tuple_return_provenance(alternative, parameters, known_returns, out);
+                collect_tuple_return_provenance(
+                    alternative,
+                    parameters,
+                    reference_fields,
+                    known_returns,
+                    out,
+                );
             }
         }
         crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
-            collect_tuple_return_provenance(body, parameters, known_returns, out)
+            collect_tuple_return_provenance(body, parameters, reference_fields, known_returns, out)
         }
         crate::Node::Match { arms, .. } => {
             for (_pattern, _guard, body) in arms {
-                collect_tuple_return_provenance(body, parameters, known_returns, out);
+                collect_tuple_return_provenance(
+                    body,
+                    parameters,
+                    reference_fields,
+                    known_returns,
+                    out,
+                );
             }
         }
         crate::Node::FunctionLiteral { .. } => {}
@@ -2502,6 +2535,7 @@ fn collect_tuple_return_provenance(
 fn tuple_return_aliases_for_value(
     value: &crate::Node,
     parameters: &[(String, String)],
+    reference_fields: &HashSet<(String, String)>,
     known_returns: &HashMap<&str, TupleReturnAliasSummary>,
 ) -> Option<TupleReturnAliasSummary> {
     if let crate::Node::CallExpression {
@@ -2531,7 +2565,7 @@ fn tuple_return_aliases_for_value(
     }
 
     let mut elements = Vec::new();
-    collect_tuple_return_elements(value, "", parameters, &mut elements)?;
+    collect_tuple_return_elements(value, "", parameters, reference_fields, &mut elements)?;
     (!elements.is_empty()).then_some(TupleReturnAliasSummary { elements })
 }
 
@@ -2753,6 +2787,7 @@ fn collect_tuple_return_elements(
     value: &crate::Node,
     prefix: &str,
     parameters: &[(String, String)],
+    reference_fields: &HashSet<(String, String)>,
     elements: &mut Vec<(String, usize)>,
 ) -> Option<()> {
     let crate::Node::TupleLiteral { items, .. } = value else {
@@ -2764,20 +2799,37 @@ fn collect_tuple_return_elements(
         } else {
             format!("{prefix}.{index}")
         };
-        if matches!(item, crate::Node::TupleLiteral { .. }) {
-            collect_tuple_return_elements(item, &path, parameters, elements)?;
-            continue;
+        match item {
+            crate::Node::TupleLiteral { .. } => {
+                collect_tuple_return_elements(item, &path, parameters, reference_fields, elements)?;
+            }
+            crate::Node::StructLiteral {
+                name, fields, base, ..
+            } => {
+                if base.is_some() {
+                    return None;
+                }
+                collect_struct_return_aliases(
+                    name,
+                    fields,
+                    &path,
+                    parameters,
+                    reference_fields,
+                    elements,
+                )?;
+            }
+            crate::Node::Identifier { name, .. } => {
+                let parameter_idx =
+                    parameters
+                        .iter()
+                        .enumerate()
+                        .find_map(|(idx, (ty, parameter))| {
+                            (parameter == name && region_from_type_str(ty).is_some()).then_some(idx)
+                        })?;
+                elements.push((path, parameter_idx));
+            }
+            _ => return None,
         }
-        let crate::Node::Identifier { name, .. } = item else {
-            return None;
-        };
-        let parameter_idx = parameters
-            .iter()
-            .enumerate()
-            .find_map(|(idx, (ty, parameter))| {
-                (parameter == name && region_from_type_str(ty).is_some()).then_some(idx)
-            })?;
-        elements.push((path, parameter_idx));
     }
     Some(())
 }
@@ -3823,6 +3875,62 @@ mod tests {
             errors[0].contains("`x`") && errors[0].contains("`pair.0`"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_nested_reference_struct_tuple_element_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Holder { Inner inner } \
+             fn make_pair(&mut int x) -> (Holder, Holder) { \
+                 return (new Holder { inner: new Inner { item: x } }, \
+                         new Holder { inner: new Inner { item: x } }); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = make_pair(x); set_both(x, pair.0.inner.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`pair.0.inner.item`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_nested_reference_struct_tuple_forward_chain_rejected() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Holder { Inner inner } \
+             fn outer(&mut int x) -> (Holder, Holder) { return inner(x); } \
+             fn inner(&mut int x) -> (Holder, Holder) { \
+                 return (new Holder { inner: new Inner { item: x } }, \
+                         new Holder { inner: new Inner { item: x } }); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = outer(x); set_both(x, pair.0.inner.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn wrapped_nested_reference_struct_tuple_return_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Holder { Inner inner } \
+             fn make_pair(&mut int x) -> (Holder, Holder) { \
+                 let alias = x; \
+                 return (new Holder { inner: new Inner { item: alias } }, \
+                         new Holder { inner: new Inner { item: alias } }); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = make_pair(x); set_both(x, pair.0.inner.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped nested tuple struct returns must stay conservative: {:?}",
+            errors
         );
     }
 
