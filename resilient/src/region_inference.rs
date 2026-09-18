@@ -5,7 +5,7 @@
 //               reference parameters and walks the call graph.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ============================================================
 // Region vocabulary
@@ -505,6 +505,20 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    // Keep only declared struct fields whose types are references. This
+    // lets the body walker recognize `Holder { item: x }` without treating
+    // ordinary value fields as aliases.
+    let mut reference_fields: HashSet<(String, String)> = HashSet::new();
+    for spanned in stmts {
+        if let crate::Node::StructDecl { name, fields, .. } = &spanned.node {
+            for (field_type, field_name) in fields {
+                if region_from_type_str(field_type).is_some() {
+                    reference_fields.insert((name.clone(), field_name.clone()));
+                }
+            }
+        }
+    }
+
     for spanned in stmts {
         let crate::Node::Function { body, .. } = &spanned.node else {
             continue;
@@ -561,6 +575,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         stmts,
         &callee_table,
         &return_aliases,
+        &reference_fields,
         source_path,
     ));
 
@@ -603,13 +618,12 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   path executes, the violation is real.
 //
 // Deferred (see issue #4070): Z3-backed branch-condition disjointness,
-// aliasing through struct fields / array elements / closures, and
-// ambiguous interprocedural return paths. A narrow direct-reference
-// return summary is safe because it only accepts a function body whose
-// sole statement returns one reference parameter unchanged. Use-after-
-// move for plain bindings remains deferred by the Copy/Move default-
-// semantics decision — `linear.rs` remains the only move-semantics
-// surface.
+// aliasing through arrays / closures, and ambiguous interprocedural
+// paths. The tracked summaries stay sound because they require known
+// reference-typed fields, same-parameter return paths, or forwarding
+// through an already-proven helper. Use-after-move for plain bindings
+// remains deferred by the Copy/Move default-semantics decision —
+// `linear.rs` remains the only move-semantics surface.
 
 /// Per-path alias state for [`check_unannotated_let_alias`].
 #[derive(Clone, Default)]
@@ -645,6 +659,7 @@ impl AliasState {
 struct AliasWalker<'a> {
     callee_table: &'a HashMap<&'a str, &'a [(String, String)]>,
     return_aliases: &'a HashMap<&'a str, usize>,
+    reference_fields: &'a HashSet<(String, String)>,
     source_path: &'a str,
     errors: Vec<String>,
     /// Counter for synthetic detached-root tokens (contains `\u{0}` so
@@ -657,7 +672,10 @@ impl<'a> AliasWalker<'a> {
     /// assignment, or loop/pattern binder). Its old alias group must
     /// survive under a token no new binding can join.
     fn kill_name(&mut self, state: &mut AliasState, name: &str) {
-        state.aliases.remove(name);
+        let field_prefix = format!("{name}.");
+        state
+            .aliases
+            .retain(|place, _| place != name && !place.starts_with(&field_prefix));
         if state.live_roots.remove(name) || state.aliases.values().any(|r| r == name) {
             let fresh = format!("{name}\u{0}{}", self.detached);
             self.detached += 1;
@@ -679,11 +697,15 @@ impl<'a> AliasWalker<'a> {
             crate::Node::LetStatement { name, value, .. } => {
                 self.walk_expr(value, state);
                 let new_root = self.returned_root(value, state);
+                let field_roots = self.struct_field_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
                     && root != *name
                 {
                     state.aliases.insert(name.clone(), root);
+                }
+                for (field, root) in field_roots {
+                    state.aliases.insert(format!("{name}.{field}"), root);
                 }
             }
             crate::Node::Assignment { name, value, .. } => {
@@ -693,6 +715,7 @@ impl<'a> AliasWalker<'a> {
                 self.kill_name(state, name);
             }
             crate::Node::ExpressionStatement { expr, .. } => self.walk_expr(expr, state),
+            crate::Node::FieldAssignment { .. } => self.walk_expr(node, state),
             crate::Node::ReturnStatement { value: Some(v), .. } => self.walk_expr(v, state),
             crate::Node::ReturnStatement { value: None, .. } => {}
             crate::Node::IfStatement {
@@ -751,6 +774,10 @@ impl<'a> AliasWalker<'a> {
     fn returned_root(&self, value: &crate::Node, state: &AliasState) -> Option<String> {
         match value {
             crate::Node::Identifier { name, .. } => state.root_of(name).map(str::to_owned),
+            crate::Node::FieldAccess { target, field, .. } => {
+                let place = Self::field_place(target, field)?;
+                state.aliases.get(&place).cloned()
+            }
             crate::Node::CallExpression {
                 function,
                 arguments,
@@ -767,6 +794,43 @@ impl<'a> AliasWalker<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Return a canonical place for the field paths this pass understands.
+    /// Nested computed expressions remain opaque rather than guessing their
+    /// identity.
+    fn field_place(target: &crate::Node, field: &str) -> Option<String> {
+        let crate::Node::Identifier { name, .. } = target else {
+            return None;
+        };
+        Some(format!("{name}.{field}"))
+    }
+
+    fn place_name(node: &crate::Node) -> Option<String> {
+        match node {
+            crate::Node::Identifier { name, .. } => Some(name.clone()),
+            crate::Node::FieldAccess { target, field, .. } => Self::field_place(target, field),
+            _ => None,
+        }
+    }
+
+    fn struct_field_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(String, String)> {
+        let crate::Node::StructLiteral { name, fields, .. } = value else {
+            return Vec::new();
+        };
+        fields
+            .iter()
+            .filter_map(|(field, value)| {
+                if !self
+                    .reference_fields
+                    .contains(&(name.clone(), field.clone()))
+                {
+                    return None;
+                }
+                self.returned_root(value, state)
+                    .map(|root| (field.clone(), root))
+            })
+            .collect()
     }
 
     fn walk_expr(&mut self, node: &crate::Node, state: &mut AliasState) {
@@ -828,6 +892,36 @@ impl<'a> AliasWalker<'a> {
                 self.walk_expr(right, state);
             }
             crate::Node::PrefixExpression { right, .. } => self.walk_expr(right, state),
+            crate::Node::StructLiteral { fields, base, .. } => {
+                if let Some(base) = base {
+                    self.walk_expr(base, state);
+                }
+                for (_, value) in fields {
+                    self.walk_expr(value, state);
+                }
+            }
+            crate::Node::FieldAccess { target, .. } => self.walk_expr(target, state),
+            crate::Node::FieldAssignment {
+                target,
+                field,
+                value,
+                ..
+            } => {
+                self.walk_expr(target, state);
+                self.walk_expr(value, state);
+                if let Some(place) = Self::field_place(target, field) {
+                    self.kill_name(state, &place);
+                }
+            }
+            crate::Node::ArrayLiteral { items, .. } => {
+                for item in items {
+                    self.walk_expr(item, state);
+                }
+            }
+            crate::Node::IndexExpression { target, index, .. } => {
+                self.walk_expr(target, state);
+                self.walk_expr(index, state);
+            }
             _ => {}
         }
     }
@@ -846,27 +940,31 @@ impl<'a> AliasWalker<'a> {
             return; // arity mismatch — typechecker handles it
         }
 
-        // region root → (arg names seen, any-&mut-slot flag)
-        let mut by_root: HashMap<String, (Vec<&str>, bool)> = HashMap::new();
+        // region root → (argument places seen, any-&mut-slot flag)
+        let mut by_root: HashMap<String, (Vec<String>, bool)> = HashMap::new();
         for (arg, (ty, _)) in args.iter().zip(param_types.iter()) {
-            if let crate::Node::Identifier { name, .. } = arg
-                && let Some((is_mut, _label)) = region_from_type_str(ty)
-                && let Some(root) = state.root_of(name)
+            if let Some((is_mut, _label)) = region_from_type_str(ty)
+                && let Some(root) = self.returned_root(arg, state)
+                && let Some(place) = Self::place_name(arg)
             {
                 let entry = by_root.entry(root.to_owned()).or_default();
-                entry.0.push(name.as_str());
+                entry.0.push(place);
                 entry.1 |= is_mut;
             }
         }
 
-        let mut hits: Vec<(String, Vec<&str>)> = by_root
+        let mut hits: Vec<(String, Vec<String>)> = by_root
             .into_iter()
             .filter(|(_, (names, any_mut))| {
                 // ≥2 reference slots sharing a root, at least one
                 // `&mut`, and at least two DISTINCT identifiers — the
-                // same-identifier case is already reported by the
-                // syntactic pass above (no double-reporting).
-                names.len() >= 2 && *any_mut && names.iter().any(|n| *n != names[0])
+                // A repeated plain identifier is already reported by the
+                // syntactic pass above. Repeated field places still need
+                // this path because the syntactic pass only sees identifiers.
+                let repeated_plain_identifier = names.len() >= 2
+                    && names.iter().all(|name| name == &names[0])
+                    && !names[0].contains('.');
+                names.len() >= 2 && *any_mut && !repeated_plain_identifier
             })
             .map(|(root, (mut names, _))| {
                 names.sort_unstable();
@@ -885,11 +983,17 @@ impl<'a> AliasWalker<'a> {
                     self.source_path, call_span.start.line, call_span.start.column
                 )
             };
+            let alias_detail = if names.iter().all(|name| !name.contains('.')) {
+                "these bindings provably refer to the same region via `let` reference aliasing"
+            } else {
+                "these places provably refer to the same region via tracked reference aliasing"
+            };
             self.errors.push(format!(
-                "{}call to `{}` passes `{}` as simultaneous reference arguments (at least one `&mut`) — these bindings provably refer to the same region via `let` reference aliasing",
+                "{}call to `{}` passes `{}` as simultaneous reference arguments (at least one `&mut`) — {}",
                 loc,
                 callee_name,
                 names.join("`, `"),
+                alias_detail,
             ));
         }
     }
@@ -954,6 +1058,18 @@ fn collect_rebound_names(node: &crate::Node, out: &mut Vec<String>) {
             out.push(name.clone());
             collect_rebound_names(value, out);
         }
+        crate::Node::FieldAssignment {
+            target,
+            field,
+            value,
+            ..
+        } => {
+            if let Some(place) = AliasWalker::field_place(target, field) {
+                out.push(place);
+            }
+            collect_rebound_names(target, out);
+            collect_rebound_names(value, out);
+        }
         crate::Node::Block { stmts, .. } => {
             for s in stmts {
                 collect_rebound_names(s, out);
@@ -1003,22 +1119,24 @@ fn collect_rebound_names(node: &crate::Node, out: &mut Vec<String>) {
     }
 }
 
-/// RES-4070 (A-E5 increments 2–3): flag calls where two *different*
+/// RES-4070 (A-E5 increments 2–4): flag calls where two *different*
 /// identifiers provably refer to the same region — established by
 /// straight-line `let`-copies of reference bindings or a narrow direct
-/// reference-return summary — and are passed as simultaneous reference
-/// arguments with at least one `&mut` slot.
+/// reference-return/struct-field summary — and are passed as simultaneous
+/// reference arguments with at least one `&mut` slot.
 /// Conditional paths are merged by intersection; see the module-level
 /// soundness contract above.
 fn check_unannotated_let_alias(
     stmts: &[crate::Spanned<crate::Node>],
     callee_table: &HashMap<&str, &[(String, String)]>,
     return_aliases: &HashMap<&str, usize>,
+    reference_fields: &HashSet<(String, String)>,
     source_path: &str,
 ) -> Vec<String> {
     let mut walker = AliasWalker {
         callee_table,
         return_aliases,
+        reference_fields,
         source_path,
         errors: Vec::new(),
         detached: 0,
@@ -1916,6 +2034,55 @@ mod tests {
              fn caller(&mut int x, int c) { let y = expose(x, c); set_both(x, y); }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_through_reference_struct_field_rejected() {
+        // A declared reference field initialized from x preserves the
+        // region provenance through the field access expression.
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let h = new Holder { item: x }; set_both(x, h.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`h.item`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn value_struct_field_is_not_treated_as_reference_alias() {
+        // A same-named value field must not be inferred as a reference just
+        // because another struct declares a reference field with that name.
+        let errors = run_alias_check(
+            "struct Holder { int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let h = new Holder { item: x }; set_both(x, h.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value fields must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn reassigned_reference_struct_field_is_killed_conservatively() {
+        // Field re-seating semantics are not modeled, so a write detaches
+        // the old provenance instead of claiming a new alias.
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let h = new Holder { item: x }; h.item = x; set_both(x, h.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "field writes must kill the tracked fact: {:?}",
+            errors
+        );
     }
 
     #[test]
