@@ -342,7 +342,7 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   passing it somewhere is a genuine violation or an ordinary Copy.
 ///   Enforcing that now would risk false positives on every ordinary
 ///   value type in the corpus.
-/// - No general interprocedural analysis — struct fields, arrays,
+/// - No general interprocedural analysis — struct fields, arrays, tuples,
 ///   closures, and ambiguous or wrapped return paths remain opaque.
 pub fn infer(program: &crate::Node, source_path: &str) -> Result<(), String> {
     let errors = check_unannotated_mut_alias(program, source_path);
@@ -742,6 +742,7 @@ impl<'a> AliasWalker<'a> {
                 let array_roots = self.array_element_roots(value, state);
                 let array_field_roots = self.array_field_roots(value, state);
                 let array_slice_field_roots = self.array_slice_field_roots(value, state);
+                let tuple_roots = self.tuple_element_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
                     && root != *name
@@ -763,6 +764,22 @@ impl<'a> AliasWalker<'a> {
                     state
                         .aliases
                         .insert(format!("{name}[{index}].{field}"), root);
+                }
+                for (index, root) in tuple_roots {
+                    state.aliases.insert(format!("{name}.{index}"), root);
+                }
+            }
+            crate::Node::LetTupleDestructure { names, value, .. } => {
+                self.walk_expr(value, state);
+                let tuple_roots = self.tuple_element_roots(value, state);
+                for name in names {
+                    self.kill_name(state, name);
+                }
+                for (index, root) in tuple_roots {
+                    let Some(name) = names.get(index) else {
+                        continue;
+                    };
+                    state.aliases.insert(name.clone(), root);
                 }
             }
             crate::Node::Assignment { name, value, .. } => {
@@ -854,6 +871,15 @@ impl<'a> AliasWalker<'a> {
                 let place = Self::array_place(target, index)?;
                 state.aliases.get(&place).cloned()
             }
+            crate::Node::TupleIndex { tuple, index, .. } => {
+                if let crate::Node::TupleLiteral { items, .. } = tuple.as_ref() {
+                    return items
+                        .get(*index)
+                        .and_then(|item| self.returned_root(item, state));
+                }
+                let place = Self::tuple_place(tuple, *index)?;
+                state.aliases.get(&place).cloned()
+            }
             crate::Node::CallExpression {
                 function,
                 arguments,
@@ -899,13 +925,43 @@ impl<'a> AliasWalker<'a> {
         }
     }
 
+    fn tuple_place(tuple: &crate::Node, index: usize) -> Option<String> {
+        Some(format!("{}.{index}", Self::place_name(tuple)?))
+    }
+
     fn place_name(node: &crate::Node) -> Option<String> {
         match node {
             crate::Node::Identifier { name, .. } => Some(name.clone()),
             crate::Node::FieldAccess { target, field, .. } => Self::field_place(target, field),
             crate::Node::IndexExpression { target, index, .. } => Self::array_place(target, index),
+            crate::Node::TupleIndex { tuple, index, .. } => Self::tuple_place(tuple, *index),
             _ => None,
         }
+    }
+
+    fn tuple_element_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(usize, String)> {
+        if let crate::Node::TupleLiteral { items, .. } = value {
+            return items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    self.returned_root(item, state).map(|root| (index, root))
+                })
+                .collect();
+        }
+
+        let Some(source) = Self::place_name(value) else {
+            return Vec::new();
+        };
+        let prefix = format!("{source}.");
+        state
+            .aliases
+            .iter()
+            .filter_map(|(place, root)| {
+                let index = place.strip_prefix(&prefix)?.parse().ok()?;
+                Some((index, root.clone()))
+            })
+            .collect()
     }
 
     fn struct_field_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(String, String)> {
@@ -1187,10 +1243,16 @@ impl<'a> AliasWalker<'a> {
                     self.walk_expr(item, state);
                 }
             }
+            crate::Node::TupleLiteral { items, .. } => {
+                for item in items {
+                    self.walk_expr(item, state);
+                }
+            }
             crate::Node::IndexExpression { target, index, .. } => {
                 self.walk_expr(target, state);
                 self.walk_expr(index, state);
             }
+            crate::Node::TupleIndex { tuple, .. } => self.walk_expr(tuple, state),
             crate::Node::Slice { target, lo, hi, .. } => {
                 self.walk_expr(target, state);
                 if let Some(lo) = lo {
@@ -2877,6 +2939,94 @@ mod tests {
             errors.len(),
             1,
             "array element aliases must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tuple_literal_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = (x, 0); \
+                 set_both(x, pair.0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "tuple element alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("pair.0") && errors[0].contains("tracked reference aliasing"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn tuple_literal_distinct_elements_with_same_root_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = (x, x); \
+                 set_both(pair.0, pair.1); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "tuple element aliases must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tuple_literal_value_element_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = (0, 1); \
+                 set_both(x, pair.0); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value-typed tuple elements must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tuple_destructure_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let (first, second) = (x, 0); \
+                 set_both(x, first); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "tuple destructure alias must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tuple_destructure_preserves_element_positions() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let (first, second) = (0, x); \
+                 set_both(x, first); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value element must not inherit a later tuple alias: {:?}",
             errors
         );
     }
