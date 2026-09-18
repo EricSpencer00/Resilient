@@ -501,6 +501,19 @@ fn is_array_ty(t: &Type) -> bool {
     matches!(t, Type::Array | Type::TypedArray(_))
 }
 
+/// RES-3977: preserve a tracked element type through standalone array
+/// operations whose runtime result is a subsequence or filtered view of the
+/// first argument. Operations that can change the element type intentionally
+/// keep their declared return type.
+fn preserve_tracked_array_return(callee_name: &str, arg_types: &[Type], fallback: Type) -> Type {
+    if matches!(callee_name, "slice" | "array_slice" | "array_filter")
+        && let Some(Type::TypedArray(elem)) = arg_types.first()
+    {
+        return Type::TypedArray(elem.clone());
+    }
+    fallback
+}
+
 /// RES-2713: map a literal-pattern node to its type so
 /// `match_pattern_binding_types` can validate that the literal is
 /// type-compatible with the match scrutinee.
@@ -11160,6 +11173,7 @@ impl TypeChecker {
                             .unwrap_or_default();
                         let mut tp_bindings: std::collections::HashMap<String, Type> =
                             std::collections::HashMap::new();
+                        let mut checked_arg_types: Vec<Type> = Vec::with_capacity(arguments.len());
 
                         // Check each argument type
                         for (i, (arg, param_type)) in arguments
@@ -11168,6 +11182,7 @@ impl TypeChecker {
                             .enumerate()
                         {
                             let arg_type = self.check_node(arg)?;
+                            checked_arg_types.push(arg_type.clone());
 
                             if let Node::Identifier {
                                 name: callee_name, ..
@@ -11249,6 +11264,18 @@ impl TypeChecker {
                             &callee_type_params,
                             &borrowed_tp_bindings,
                         );
+                        let effective_return = if let Node::Identifier {
+                            name: callee_name, ..
+                        } = function.as_ref()
+                        {
+                            preserve_tracked_array_return(
+                                callee_name,
+                                &checked_arg_types,
+                                effective_return,
+                            )
+                        } else {
+                            effective_return
+                        };
                         Ok(effective_return)
                     }
                     Type::Any => Ok(Type::Any),
@@ -19049,6 +19076,41 @@ mod res3923_array_element_type {
     #[test]
     fn methods_resolve_on_tracked_arrays() {
         check_ok("fn main() { let xs = [1, 2, 3]; let n: int = xs.len(); }\nmain();\n");
+    }
+
+    #[test]
+    fn standalone_slice_preserves_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = slice(xs, 1, 3); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_ok(
+            "fn main() { let xs = [1, 2, 3]; let ys = slice(xs, 1, 3); let ok: int = ys[0]; }\nmain();\n",
+        );
+    }
+
+    #[test]
+    fn array_slice_preserves_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_slice(xs, 1, 3, false); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+    }
+
+    #[test]
+    fn standalone_filter_preserves_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_filter(xs, fn(int x) -> bool { return x > 1; }); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+    }
+
+    #[test]
+    fn option_wrapping_tracked_array_preserves_element_type() {
+        check_err(
+            "fn main() { let maybe = Some([1, 2, 3]); let xs = maybe ?? [0]; let bad: string = xs[0]; }\nmain();\n",
+            "value has type int",
+        );
     }
 }
 
