@@ -740,6 +740,7 @@ impl<'a> AliasWalker<'a> {
                 let new_root = self.returned_root(value, state);
                 let field_roots = self.struct_field_roots(value, state);
                 let array_roots = self.array_element_roots(value, state);
+                let array_alias_roots = self.array_alias_roots(value, state);
                 let array_field_roots = self.array_field_roots(value, state);
                 let array_slice_field_roots = self.array_slice_field_roots(value, state);
                 let array_tuple_roots = self.array_tuple_roots(value, state);
@@ -756,6 +757,14 @@ impl<'a> AliasWalker<'a> {
                 }
                 for (index, root) in array_roots {
                     state.aliases.insert(format!("{name}[{index}]"), root);
+                }
+                for (index, path, root) in array_alias_roots {
+                    let place = if path.is_empty() {
+                        format!("{name}[{index}]")
+                    } else {
+                        format!("{name}[{index}].{path}")
+                    };
+                    state.aliases.insert(place, root);
                 }
                 for (index, field, root) in array_field_roots {
                     state
@@ -1116,6 +1125,46 @@ impl<'a> AliasWalker<'a> {
             ),
             _ => Vec::new(),
         }
+    }
+
+    /// Copy already-proven paths from an array-valued place into a new array
+    /// binding. Only one constant element index, optionally followed by a
+    /// known field or tuple path, is rebased. Nested array paths stay opaque
+    /// here so an unmodelled transformation cannot be mistaken for a copy.
+    fn array_alias_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        let Some(source) = Self::place_name(value) else {
+            return Vec::new();
+        };
+        let prefix = format!("{source}[");
+        let mut roots = Vec::new();
+        for (place, root) in &state.aliases {
+            let Some(rest) = place.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((index_text, suffix)) = rest.split_once(']') else {
+                continue;
+            };
+            let Ok(index) = index_text.parse::<usize>() else {
+                continue;
+            };
+            let path = if suffix.is_empty() {
+                String::new()
+            } else {
+                let Some(path) = suffix.strip_prefix('.') else {
+                    continue;
+                };
+                if path.is_empty() || path.split('.').any(str::is_empty) {
+                    continue;
+                }
+                path.to_owned()
+            };
+            roots.push((index, path, root.clone()));
+        }
+        roots
     }
 
     fn array_field_roots(
@@ -3095,6 +3144,64 @@ mod tests {
             1,
             "array element aliases must be reported: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn array_alias_preserves_element_alias() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [x, x]; \
+                 let copy = items; \
+                 set_both(x, copy[0]); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "array alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("copy[0]"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn array_alias_preserves_nested_field_and_tuple_paths() {
+        let field_errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [new Holder { item: x }]; \
+                 let copy = items; \
+                 set_both(x, copy[0].item); \
+             }",
+        );
+        assert_eq!(
+            field_errors.len(),
+            1,
+            "array field alias must be reported: {:?}",
+            field_errors
+        );
+
+        let tuple_errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0)]; \
+                 let copy = items; \
+                 let selected = copy[0..1]; \
+                 set_both(x, selected[0].0); \
+             }",
+        );
+        assert_eq!(
+            tuple_errors.len(),
+            1,
+            "array tuple alias must be reported: {:?}",
+            tuple_errors
         );
     }
 
