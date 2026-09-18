@@ -416,6 +416,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   composes through the same fixed-point helper chain. Wrappers forwarding a
   known summary therefore preserve paths such as `holder.item` and `pair.0`.
   Recursive, wrapped, mixed, and ambiguous returns remain conservative.
+- **A-E5 increment 23 (RES-4070):** helper-returned struct provenance now
+  includes nested concrete struct fields, so a returned `Outer` can preserve
+  a path such as `value.inner.item` when its `Inner` field is initialized
+  directly from a reference parameter. Wrapped nested fields, dynamic paths,
+  and ambiguous return shapes remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
