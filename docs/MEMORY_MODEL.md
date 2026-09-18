@@ -436,6 +436,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   wrapper can expose `pair.0[0]` without re-analyzing the helper body. Only
   plain reference-parameter forwarding is accepted; wrapped, transformed,
   mixed, recursive, and ambiguous calls remain conservative.
+- **A-E5 increment 27 (RES-4070):** array-return summaries now compose
+  already-proven array-return helpers below constant array paths, so a
+  wrapper can expose `items[0][0]` without re-analyzing the nested helper.
+  Only plain reference-parameter forwarding is accepted; wrapped,
+  transformed, mixed, recursive, and ambiguous values remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
