@@ -6242,18 +6242,23 @@ impl TypeChecker {
         resolved
     }
 
-    /// Substitute generic parameters in a return type while retaining
-    /// concrete `T::Assoc` projections when the call site proves them.
-    fn substitute_generic_return_type(
+    /// Substitute generic parameters in a type while retaining concrete
+    /// `T::Assoc` projections when the call site proves them.
+    fn substitute_generic_type(
         &self,
         ty: &Type,
         fn_name: &str,
         type_params: &[String],
-        bindings: &HashMap<&str, Type>,
+        bindings: &HashMap<String, Type>,
+        preserve_type_params: bool,
     ) -> Type {
         match ty {
             Type::Struct(name) if type_params.iter().any(|param| param == name) => {
-                bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
+                if preserve_type_params {
+                    bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
+                } else {
+                    Type::Any
+                }
             }
             Type::Struct(name) => {
                 let Some((base, assoc)) = name.split_once("::") else {
@@ -6275,24 +6280,41 @@ impl TypeChecker {
                 params: params
                     .iter()
                     .map(|param| {
-                        self.substitute_generic_return_type(param, fn_name, type_params, bindings)
+                        self.substitute_generic_type(
+                            param,
+                            fn_name,
+                            type_params,
+                            bindings,
+                            preserve_type_params,
+                        )
                     })
                     .collect(),
-                return_type: Box::new(self.substitute_generic_return_type(
+                return_type: Box::new(self.substitute_generic_type(
                     return_type,
                     fn_name,
                     type_params,
                     bindings,
+                    preserve_type_params,
                 )),
             },
-            Type::TypedArray(inner) => Type::TypedArray(Box::new(
-                self.substitute_generic_return_type(inner, fn_name, type_params, bindings),
-            )),
+            Type::TypedArray(inner) => Type::TypedArray(Box::new(self.substitute_generic_type(
+                inner,
+                fn_name,
+                type_params,
+                bindings,
+                preserve_type_params,
+            ))),
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .iter()
                     .map(|elem| {
-                        self.substitute_generic_return_type(elem, fn_name, type_params, bindings)
+                        self.substitute_generic_type(
+                            elem,
+                            fn_name,
+                            type_params,
+                            bindings,
+                            preserve_type_params,
+                        )
                     })
                     .collect(),
             ),
@@ -6302,21 +6324,23 @@ impl TypeChecker {
                     .map(|(name, field_type)| {
                         (
                             name.clone(),
-                            self.substitute_generic_return_type(
+                            self.substitute_generic_type(
                                 field_type,
                                 fn_name,
                                 type_params,
                                 bindings,
+                                preserve_type_params,
                             ),
                         )
                     })
                     .collect(),
             ),
-            Type::Option(inner) => Type::Option(Box::new(self.substitute_generic_return_type(
+            Type::Option(inner) => Type::Option(Box::new(self.substitute_generic_type(
                 inner,
                 fn_name,
                 type_params,
                 bindings,
+                preserve_type_params,
             ))),
             other => other.clone(),
         }
@@ -11397,8 +11421,27 @@ impl TypeChecker {
                             // RES-2701: substitute generic type params recursively
                             // so that composite types like `fn(T) -> T` become
                             // `fn(Any) -> Any` when T is a declared type param.
+                            // RES-4067: once an earlier argument has bound T to
+                            // a concrete struct, retain a proven `T::Assoc`
+                            // parameter projection instead of erasing it to Any.
                             let substituted;
-                            let effective_param = if let Some(tp) = &callee_type_params {
+                            let effective_param = if let (
+                                Node::Identifier {
+                                    name: callee_name, ..
+                                },
+                                Some(type_params),
+                            ) =
+                                (function.as_ref(), callee_type_params.as_ref())
+                            {
+                                substituted = self.substitute_generic_type(
+                                    param_type,
+                                    callee_name,
+                                    type_params,
+                                    &tp_bindings,
+                                    false,
+                                );
+                                &substituted
+                            } else if let Some(tp) = &callee_type_params {
                                 substituted = substitute_type_params(param_type, tp);
                                 &substituted
                             } else {
@@ -11451,11 +11494,6 @@ impl TypeChecker {
                         // type-parameter bindings collected above.
                         // Falls back to Any only when no binding was
                         // inferred (e.g. zero-arg generic, or arg was Any).
-                        let borrowed_tp_bindings: std::collections::HashMap<&str, Type> =
-                            tp_bindings
-                                .iter()
-                                .map(|(tp_name, ty)| (tp_name.as_str(), ty.clone()))
-                                .collect();
                         let effective_return = if let (
                             Node::Identifier {
                                 name: callee_name, ..
@@ -11464,13 +11502,19 @@ impl TypeChecker {
                         ) =
                             (function.as_ref(), callee_type_params.as_ref())
                         {
-                            self.substitute_generic_return_type(
+                            self.substitute_generic_type(
                                 &return_type,
                                 callee_name,
                                 type_params,
-                                &borrowed_tp_bindings,
+                                &tp_bindings,
+                                true,
                             )
                         } else {
+                            let borrowed_tp_bindings: std::collections::HashMap<&str, Type> =
+                                tp_bindings
+                                    .iter()
+                                    .map(|(tp_name, ty)| (tp_name.as_str(), ty.clone()))
+                                    .collect();
                             infer_generic_return_type(
                                 &return_type,
                                 &callee_type_params,
