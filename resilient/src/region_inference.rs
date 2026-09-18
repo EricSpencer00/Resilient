@@ -1088,11 +1088,7 @@ impl<'a> AliasWalker<'a> {
     }
 
     fn array_root(node: &crate::Node) -> Option<String> {
-        match node {
-            crate::Node::Identifier { name, .. } => Some(name.clone()),
-            crate::Node::IndexExpression { target, index, .. } => Self::array_place(target, index),
-            _ => None,
-        }
+        Self::place_name(node)
     }
 
     fn tuple_place(tuple: &crate::Node, index: usize) -> Option<String> {
@@ -2818,6 +2814,9 @@ fn collect_tuple_return_elements(
                     elements,
                 )?;
             }
+            crate::Node::ArrayLiteral { .. } => {
+                collect_array_return_paths(item, &path, parameters, reference_fields, elements);
+            }
             crate::Node::Identifier { name, .. } => {
                 let parameter_idx =
                     parameters
@@ -3930,6 +3929,51 @@ mod tests {
         assert!(
             errors.is_empty(),
             "wrapped nested tuple struct returns must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_tuple_array_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (array, array) { \
+                 return ([x], [y]); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let pair = make_pair(x, y); set_both(x, pair.0[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`pair.0[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_tuple_array_forward_chain_rejected() {
+        let errors = run_alias_check(
+            "fn outer(&mut int x, &mut int y) -> (array, array) { return inner(x, y); } \
+             fn inner(&mut int x, &mut int y) -> (array, array) { return ([x], [y]); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let pair = outer(x, y); set_both(x, pair.0[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn wrapped_reference_tuple_array_return_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (array, array) { \
+                 let alias = x; \
+                 return ([alias], [y]); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let pair = make_pair(x, y); set_both(x, pair.0[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped tuple array returns must stay conservative: {:?}",
             errors
         );
     }
