@@ -743,6 +743,7 @@ impl<'a> AliasWalker<'a> {
                 let array_field_roots = self.array_field_roots(value, state);
                 let array_slice_field_roots = self.array_slice_field_roots(value, state);
                 let array_tuple_roots = self.array_tuple_roots(value, state);
+                let array_slice_tuple_roots = self.array_slice_tuple_roots(value, state);
                 let tuple_roots = self.tuple_element_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
@@ -767,6 +768,11 @@ impl<'a> AliasWalker<'a> {
                         .insert(format!("{name}[{index}].{field}"), root);
                 }
                 for (index, path, root) in array_tuple_roots {
+                    state
+                        .aliases
+                        .insert(format!("{name}[{index}].{path}"), root);
+                }
+                for (index, path, root) in array_slice_tuple_roots {
                     state
                         .aliases
                         .insert(format!("{name}[{index}].{path}"), root);
@@ -1191,6 +1197,55 @@ impl<'a> AliasWalker<'a> {
                 continue;
             }
             roots.push((index - start, field.to_string(), root.clone()));
+        }
+        roots
+    }
+
+    fn array_slice_tuple_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        let crate::Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            ..
+        } = value
+        else {
+            return Vec::new();
+        };
+        let Some(source) = Self::array_root(target) else {
+            return Vec::new();
+        };
+        let Some((start, end)) =
+            Self::constant_slice_bounds(lo.as_deref(), hi.as_deref(), *inclusive)
+        else {
+            return Vec::new();
+        };
+        let prefix = format!("{source}[");
+        let mut roots = Vec::new();
+        for (place, root) in &state.aliases {
+            let Some(rest) = place.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((index_text, tuple_path)) = rest.split_once("].") else {
+                continue;
+            };
+            if tuple_path
+                .split('.')
+                .any(|segment| segment.parse::<usize>().is_err())
+            {
+                continue;
+            }
+            let Ok(index) = index_text.parse::<usize>() else {
+                continue;
+            };
+            if index < start || end.is_some_and(|end| index >= end) {
+                continue;
+            }
+            roots.push((index - start, tuple_path.to_owned(), root.clone()));
         }
         roots
     }
@@ -3224,6 +3279,82 @@ mod tests {
         assert!(
             errors.is_empty(),
             "value-typed array tuple paths must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn array_tuple_slice_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0)]; \
+                 let selected = items[0..1]; \
+                 set_both(x, selected[0].0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "array tuple slice alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("selected[0].0"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn inclusive_array_tuple_slice_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0), (x, 1)]; \
+                 let selected = items[0..=0]; \
+                 set_both(x, selected[0].0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "inclusive array tuple slice alias must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn dynamic_array_tuple_slice_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int hi) { \
+                 let items = [(x, 0)]; \
+                 let selected = items[0..hi]; \
+                 set_both(x, selected[0].0); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic array tuple slices must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn array_tuple_slice_preserves_nested_tuple_path() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [((x, 0), 1)]; \
+                 let selected = items[0..1]; \
+                 set_both(x, selected[0].0.0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "nested array tuple slice path must be reported: {:?}",
             errors
         );
     }
