@@ -22,6 +22,9 @@ fn resilient_type(ffi_name: &str) -> Type {
     if let Some(Ok(_)) = crate::ffi_arrays::parse_array_type(ffi_name) {
         return array_type(ffi_name);
     }
+    if let Some(Ok(_)) = crate::ffi_buffers::parse_buffer_type(ffi_name) {
+        return Type::Struct("Buffer".to_string());
+    }
     match ffi_name {
         "Int" => Type::Int,
         "Int32" => Type::Int32,
@@ -158,6 +161,25 @@ mod tests {
                 params: vec![
                     Type::TypedArray(Box::new(Type::Int)),
                     Type::TypedArray(Box::new(Type::Float)),
+                ],
+                return_type: Box::new(Type::Void),
+            }
+        );
+    }
+
+    #[test]
+    fn buffer_parameters_bind_to_the_reference_buffer_type() {
+        let (_, ty) = binding(&decl(
+            &[("Buffer<Int>", "ints"), ("Buffer<Float>", "floats")],
+            "Void",
+            false,
+        ));
+        assert_eq!(
+            ty,
+            Type::Function {
+                params: vec![
+                    Type::Struct("Buffer".to_string()),
+                    Type::Struct("Buffer".to_string()),
                 ],
                 return_type: Box::new(Type::Void),
             }

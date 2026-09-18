@@ -153,6 +153,9 @@ fn value_matches_ffi_type(v: &Value, want: &FfiType) -> bool {
         // bad element yields an index-precise error rather than the
         // generic "type mismatch on arg #n".
         (Value::Array(_), FfiType::ArrayPtr(_)) => true,
+        // RES-4230: the buffer's concrete element type is validated while
+        // the mutable borrow guard is acquired for the foreign call.
+        (Value::Buffer(_), FfiType::BufferPtr(_)) => true,
         // RES-4226: range and interior-NUL checks happen during
         // marshalling so the diagnostic can name the offending value.
         (Value::Int(_), FfiType::Int32) => true,
@@ -340,6 +343,9 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     // RES-4225: owned copies of array arguments. These must outlive the
     // foreign call — C holds raw pointers into them.
     let mut live_arrays: Vec<crate::ffi_arrays::ArrayBuffer> = Vec::new();
+    // RES-4230: mutable borrows keep caller-owned buffer storage stable and
+    // exclude a second alias for the duration of the foreign call.
+    let mut live_buffers = Vec::new();
     // RES-4226: owned NUL-terminated copies of CStr arguments, alive for
     // the same reason.
     let mut live_cstrs: Vec<crate::ffi_cstr::CStringBuffer> = Vec::new();
@@ -361,6 +367,11 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
                 let buf = crate::ffi_arrays::marshal_array(arg, elem, &sym.name, i)?;
                 ptrs[i] = buf.ptr();
                 live_arrays.push(buf);
+            }
+            (Value::Buffer(buffer), FfiType::BufferPtr(elem)) => {
+                let mut guard = crate::ffi_buffers::borrow_buffer(buffer, elem, &sym.name, i)?;
+                ptrs[i] = guard.ptr();
+                live_buffers.push(guard);
             }
             (Value::Int(v), FfiType::Int32) => {
                 // Sign-extend the narrowed value back into the 64-bit
@@ -395,7 +406,9 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     for (i, want) in params.iter().enumerate().take(8) {
         words[i] = match want {
             FfiType::Int | FfiType::Int32 => ints[i] as u64,
-            FfiType::OpaquePtr | FfiType::ArrayPtr(_) | FfiType::CStr => ptrs[i] as u64,
+            FfiType::OpaquePtr | FfiType::ArrayPtr(_) | FfiType::BufferPtr(_) | FfiType::CStr => {
+                ptrs[i] as u64
+            }
             _ => 0,
         };
     }
@@ -440,6 +453,7 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     if let Some(out) = dispatch_struct_signatures(sym, params, ret, &ints, &struct_words)? {
         drop(live_strs);
         drop(live_arrays);
+        drop(live_buffers);
         drop(live_cstrs);
         let _ = strs;
         let _ = ptrs;
@@ -1085,6 +1099,7 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
     // shuffle the drop earlier than the call.
     drop(live_strs);
     drop(live_arrays);
+    drop(live_buffers);
     drop(live_cstrs);
     let _ = strs;
     let _ = ptrs;
@@ -1104,7 +1119,12 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RRe
 fn is_word_class(t: &FfiType) -> bool {
     matches!(
         t,
-        FfiType::Int | FfiType::Int32 | FfiType::OpaquePtr | FfiType::ArrayPtr(_) | FfiType::CStr
+        FfiType::Int
+            | FfiType::Int32
+            | FfiType::OpaquePtr
+            | FfiType::ArrayPtr(_)
+            | FfiType::BufferPtr(_)
+            | FfiType::CStr
     )
 }
 
@@ -1149,9 +1169,10 @@ macro_rules! word_slot {
 /// parameter list is N `u64`s. That is a sound description of the callee
 /// exactly when the callee's own parameters are each INTEGER-class and
 /// 64 bits wide, which `is_word_class` is what enforces — it admits only
-/// `Int` (`int64_t`), `OpaquePtr` (`void*`), and `ArrayPtr` (a pointer to
-/// a buffer this call owns). The register assignment is positional and
-/// identical for all three, so slot `i` of `words` lands in the register
+/// `Int` (`int64_t`), `OpaquePtr` (`void*`), `ArrayPtr` (a pointer to
+/// a buffer this call owns), and `BufferPtr` (a pointer to caller-owned
+/// storage). The register assignment is positional and identical for all
+/// four, so slot `i` of `words` lands in the register
 /// the callee reads for parameter `i`.
 ///
 /// The remaining obligation is the one the whole FFI module already
@@ -1407,6 +1428,10 @@ mod tests {
         p as usize as i64
     }
 
+    extern "C" fn pointer_is_non_null(p: *mut core::ffi::c_void) -> i64 {
+        i64::from(!p.is_null())
+    }
+
     extern "C" fn make_ptr() -> *mut core::ffi::c_void {
         // Arbitrary non-null sentinel — the language never deref's it.
         0xDEAD_BEEF_usize as *mut core::ffi::c_void
@@ -1449,6 +1474,43 @@ mod tests {
         let sentinel = 0x42_usize as *mut core::ffi::c_void;
         let out = call_foreign(&sym, &[Value::OpaquePtr(OpaquePtrHandle(sentinel))]).expect("ok");
         assert!(matches!(out, Value::Int(0x42)), "got {:?}", out);
+    }
+
+    #[test]
+    fn call_foreign_buffer_passes_caller_owned_pointer() {
+        let buffer = crate::buffer_builtins::builtin_buffer_int(&[Value::Int(2)])
+            .expect("buffer allocation");
+        let sig = ForeignSignature {
+            params: vec![FfiType::BufferPtr(Box::new(FfiType::Int))],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "pointer_is_non_null".to_string(),
+            ptr: pointer_is_non_null as *const (),
+            sig,
+        };
+        let out = call_foreign(&sym, &[buffer]).expect("buffer pointer call should succeed");
+        assert!(matches!(out, Value::Int(1)), "got {:?}", out);
+    }
+
+    #[test]
+    fn call_foreign_buffer_rejects_the_wrong_element_type() {
+        let buffer = crate::buffer_builtins::builtin_buffer_float(&[Value::Int(2)])
+            .expect("buffer allocation");
+        let sig = ForeignSignature {
+            params: vec![FfiType::BufferPtr(Box::new(FfiType::Int))],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "pointer_is_non_null".to_string(),
+            ptr: pointer_is_non_null as *const (),
+            sig,
+        };
+        let err = call_foreign(&sym, &[buffer]).expect_err("element mismatch must fail");
+        assert!(
+            err.contains("declared as Buffer<Int> but received Buffer<Float>"),
+            "{err}"
+        );
     }
 
     #[test]
