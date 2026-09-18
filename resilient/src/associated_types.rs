@@ -77,9 +77,11 @@
 //! 5. **Concrete call-site projections.** When a generic call binds `T` to a
 //!    concrete struct and its declared bounds identify one associated-type
 //!    implementation, `T::AssocName` is resolved to that implementation's
-//!    concrete type in both return and subsequent parameter positions.
-//!    Unknown, unbounded, and ambiguous projections retain the permissive
-//!    `Any` fallback.
+//!    concrete type in both return and parameter positions. Parameter
+//!    projections that appear before the argument which binds `T` are checked
+//!    in a second pass once the complete call-site binding is known. Unknown,
+//!    unbounded, and ambiguous projections retain the permissive `Any`
+//!    fallback.
 //!
 //! Still out of scope — tracked in
 //! [issue #4067](https://github.com/EricSpencer00/Resilient/issues/4067):
@@ -620,6 +622,34 @@ mod tests {
              }} main();"
         );
         let error = typecheck(&src).expect_err("expected concrete parameter projection mismatch");
+        assert!(error.contains("expected int"), "got: {error}");
+        assert!(error.contains("string"), "got: {error}");
+    }
+
+    #[test]
+    fn generic_param_projection_before_binding_is_checked_at_call_site() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn use_item<T: Container>(T::Item seed, T c) -> int {{ return 1; }}\n\
+             fn main() {{\n\
+                 let b = new IntBox {{ v: 42 }};\n\
+                 println(use_item(5, b));\n\
+             }} main();"
+        );
+        typecheck(&src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn generic_param_projection_before_binding_mismatch_is_rejected() {
+        let src = format!(
+            "{CONTAINER_PRELUDE}\
+             fn use_item<T: Container>(T::Item seed, T c) -> int {{ return 1; }}\n\
+             fn main() {{\n\
+                 let b = new IntBox {{ v: 42 }};\n\
+                 println(use_item(\"wrong\", b));\n\
+             }} main();"
+        );
+        let error = typecheck(&src).expect_err("expected late-bound projection mismatch");
         assert!(error.contains("expected int"), "got: {error}");
         assert!(error.contains("string"), "got: {error}");
     }
