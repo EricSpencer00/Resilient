@@ -201,7 +201,12 @@ Response:
 
 ## Production Checklist
 
-- Put HTTPS and auth in front of the service before advertising a public URL.
+- Read the [MCP HTTP security posture](MCP_SECURITY.md) before deploying. Put
+  HTTPS and auth in front of the service before advertising a public URL; the
+  wrapper itself does not authenticate requests.
+- Bind the backend to loopback or a private interface when it is not directly
+  protected by the edge. The `--http-port 8080` shorthand binds all
+  interfaces (`0.0.0.0:8080`).
 - Request bodies are capped server-side (default 10 MiB, `413` past the
   limit); tune with `RESILIENT_MCP_MAX_BODY_BYTES`. A proxy-level cap is
   still good defense in depth.
@@ -227,8 +232,9 @@ Response:
   stderr stream.
 - Monitor `GET /health` from outside the provider.
 - Keep Z3 installed in the runtime image for verifier-backed tools.
-- Start with `rz_format`, `rz_compile`, and `rz_verify`; add auth before
-  opening broader tool access.
+- Start with `rz_format`, `rz_compile`, and `rz_verify`; use an edge
+  allow-list to keep execution, VM, and TLA tools private unless they are
+  explicitly required.
 
 ## First Deployment Target
 

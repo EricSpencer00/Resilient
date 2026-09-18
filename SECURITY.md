@@ -32,3 +32,18 @@ Areas of particular interest for security reports:
 Resilient programs run with the ambient authority of the host process. There is no sandboxing of the interpreter or VM. Do not run untrusted Resilient programs without an OS-level sandbox (e.g., container, seccomp, chroot).
 
 The `resilient-runtime` embedded crate has no file I/O or network surface and is not in scope for most vulnerabilities.
+
+## MCP HTTP deployments
+
+The optional MCP HTTP wrapper is an unauthenticated, plain-HTTP adapter around
+the compiler and runtime. It inherits the ambient authority of its operating
+system user, and its tool registry includes program execution, file/process
+and network-capable standard-library operations, and external verification
+tools. CORS and the built-in body, timeout, rate, and worker limits are not a
+security boundary.
+
+Keep the listener on loopback or a private network, or place it behind an
+authenticated TLS reverse proxy and an OS/container sandbox. Do not expose
+`/mcp/call` directly to the public internet. See the detailed
+[MCP HTTP security posture](docs/MCP_SECURITY.md) and
+[deployment checklist](docs/MCP_DEPLOYMENT.md#production-checklist).
