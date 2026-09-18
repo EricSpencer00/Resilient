@@ -1901,6 +1901,10 @@ pub struct TypeChecker {
     /// `FieldAccess` type-checks to succeed for default methods even when
     /// the impl block omits them.
     trait_default_methods: HashMap<String, HashSet<String>>,
+    /// RES-4067: the parsed default method definitions for each trait.
+    /// A default body is checked in the concrete impl that inherits it so
+    /// `Self::Assoc` has the impl's associated-type binding in scope.
+    trait_default_method_defs: HashMap<String, Vec<crate::traits::TraitMethodSig>>,
     /// RES-4190: depth of the `check_node` recursion, tracked by the
     /// `check_node` wrapper around `check_node_inner`. Legally parsed
     /// but pathologically nested ASTs (e.g. thousands of chained `!`
@@ -5783,6 +5787,7 @@ impl TypeChecker {
             trait_impls: HashMap::new(),
             trait_supers: HashMap::new(),
             trait_default_methods: HashMap::new(),
+            trait_default_method_defs: HashMap::new(),
             // RES-4190: no recursion depth at construction.
             check_depth: 0,
         }
@@ -6496,6 +6501,8 @@ impl TypeChecker {
                 self.assoc_type_bindings =
                     crate::traits::build_assoc_type_map(program).unwrap_or_default();
                 self.fn_type_param_bounds.clear();
+                self.trait_default_methods.clear();
+                self.trait_default_method_defs.clear();
                 crate::variance::check(program, source_path)?;
 
                 // RES-061: pre-pass to register every top-level Function
@@ -6651,6 +6658,15 @@ impl TypeChecker {
                         // default body so FieldAccess type-checks can
                         // succeed when the impl block omits them.
                         Node::TraitDecl { name, methods, .. } => {
+                            let defaults = methods
+                                .iter()
+                                .filter(|m| m.default_body.is_some())
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            if !defaults.is_empty() {
+                                self.trait_default_method_defs
+                                    .insert(name.clone(), defaults);
+                            }
                             for m in methods {
                                 if m.default_body.is_some() {
                                     self.trait_default_methods
@@ -9440,6 +9456,8 @@ impl TypeChecker {
             Node::ImplBlock {
                 methods,
                 associated_type_impls,
+                trait_name,
+                struct_name,
                 ..
             } => {
                 let saved_self_assoc_types = std::mem::take(&mut self.current_self_assoc_types);
@@ -9455,6 +9473,63 @@ impl TypeChecker {
                 let result = (|| {
                     for method in methods {
                         let _ = self.check_node(method)?;
+                    }
+                    if let Some(trait_name) = trait_name {
+                        let overridden: HashSet<&str> = methods
+                            .iter()
+                            .filter_map(|method| match method {
+                                Node::Function { name, .. } => {
+                                    name.strip_prefix(&format!("{}$", struct_name))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        let defaults = self
+                            .trait_default_method_defs
+                            .get(trait_name)
+                            .cloned()
+                            .unwrap_or_default();
+                        for default in defaults {
+                            if overridden.contains(default.name.as_str()) {
+                                continue;
+                            }
+                            let Some(body) = default.default_body else {
+                                continue;
+                            };
+                            let parameters: Vec<(String, String)> = (0..default.param_arity)
+                                .map(|index| {
+                                    let name = default
+                                        .params
+                                        .get(index)
+                                        .cloned()
+                                        .unwrap_or_else(|| format!("_arg{}", index + 1));
+                                    let type_name = if index == 0 && default.takes_self {
+                                        struct_name.clone()
+                                    } else {
+                                        "Any".to_string()
+                                    };
+                                    (type_name, name)
+                                })
+                                .collect();
+                            let synthetic = Node::Function {
+                                name: format!("{}${}", struct_name, default.name),
+                                defaults: vec![None; parameters.len()],
+                                parameters,
+                                body,
+                                requires: Vec::new(),
+                                ensures: Vec::new(),
+                                return_type: None,
+                                span: default.span,
+                                pure: false,
+                                effects: EffectSet::io(),
+                                type_params: Vec::new(),
+                                type_param_bounds: Vec::new(),
+                                fails: Vec::new(),
+                                recovers_to: None,
+                                is_pub: false,
+                            };
+                            let _ = self.check_node(&synthetic)?;
+                        }
                     }
                     Ok(Type::Void)
                 })();
