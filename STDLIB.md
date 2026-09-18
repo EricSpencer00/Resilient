@@ -841,6 +841,8 @@ so only the first such item is retained.
 | `linspace(start, stop, n)` | (number, number, int) → array of float | RES-2662: return `n` evenly spaced values including both endpoints; `n = 0` is empty and `n = 1` returns `start` |
 | `logspace(start, stop, n)` | (number, number, int) → array of float | RES-2662: return `n` values from `10^start` through `10^stop`, evenly spaced in exponent space; `n = 0` is empty |
 | `arange(start, stop, step)` | (number, number, number) → array of float | RES-2662: return values up to but excluding `stop`; positive and negative steps are supported, and `step` must be nonzero |
+| `rle_encode(arr)` | array → array of `(int, T)` pairs | RES-2662: replace consecutive equal scalar values with `[count, value]` pairs; empty input returns empty output |
+| `rle_decode(runs)` | array of `(int, T)` pairs → array | RES-2662: expand `[count, value]` pairs; zero counts emit nothing and negative or malformed counts error |
 | `table_format(rows)` | array of array of string → string | RES-2662: align columns with two spaces between them; short rows are padded with empty cells |
 | `format_float(value, decimals)` | (number, int) → string | RES-2662: fixed-point formatting with exactly `decimals` places; `decimals` must be non-negative |
 | `format_float_sci(value, significant_digits)` | (number, int) → string | RES-2662: lowercase scientific notation with the requested significant digits; the count must be positive |
@@ -865,6 +867,12 @@ count arguments must be non-negative integers; `linspace` and `logspace` use
 the first value when the count is one. `arange` follows the sign of `step`,
 returns an empty array when the direction cannot reach `stop`, and rejects
 results larger than 10,000,000 elements.
+
+Run-length encoding compares adjacent Int, Float, Bool, and String scalar
+values. Complex values such as arrays, maps, and structs are not considered
+equal by this builtin, so they form separate runs even when their contents
+match. `rle_decode` requires each run to be a two-element array whose first
+element is a non-negative Int count.
 
 ## Bytes Functions (Extended)
 
