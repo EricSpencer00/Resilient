@@ -65,6 +65,10 @@ pub mod heap;
 // Compiles under default (no-alloc) features; no heap, no libm.
 pub mod fixed;
 
+// RES-4230: fixed-capacity, allocation-free buffers for embedded hosts.
+// The explicit mutable-borrow API is suitable for caller-owned FFI storage.
+pub mod buffer;
+
 // RES-2594: DMA descriptor chains for zero-copy embedded transfers.
 // Always compiled — no heap, integrates with the `linear` annotation
 // in the surface language so DMA buffers can't be aliased.

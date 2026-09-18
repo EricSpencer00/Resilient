@@ -209,6 +209,14 @@ element type and bounds, and `buffer_to_array` makes an ordinary snapshot.
 caller-owned mutable `int64_t*` and `double*` storage. The borrow guard lasts
 through the complete call, while the allocation remains owned by Resilient.
 
+On an allocation-free embedded host, use
+`resilient_runtime::buffer::FixedBuffer<T, N>` (or its `IntBuffer` /
+`FloatBuffer` aliases). The storage is inline with a compile-time capacity;
+`with_len` sets a checked logical length, `get`/`set` are bounds-checked, and
+`as_mut_ptr` exposes only the caller-owned storage needed by a foreign call.
+No allocator or partially initialized storage is required. The foreign function is
+still responsible for honoring the pointer's `len()` element bound.
+
 ## A real-world binding: HST-core
 
 `resilient/examples/ffi_hstcore.rz` is the worked binding for the optional
