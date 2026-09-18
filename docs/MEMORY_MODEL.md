@@ -388,6 +388,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   arrays, and constant-bound outer slices. A matrix shaped as `[[x]]` still
   exposes x through `matrix[0][0]`; dynamic indices, dynamic bounds, and
   transformed or unknown arrays remain conservative.
+- **A-E5 increment 17 (RES-4070):** a helper that returns a concrete struct
+  with reference-typed fields initialized directly from its reference
+  parameters carries those fields' provenance to the caller. Mixed or
+  wrapped field initializers, dynamic paths, and ambiguous return shapes
+  remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -414,10 +419,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   their known paths, constant index paths (including nested array paths), and
   constant-bound slices.
 - No general whole-program or interprocedural alias analysis. The pass
-  has only the narrow direct-reference return summary and proven-helper
-  forwarding described above; it does not track references through
-  statics, dynamically transformed array elements, or ambiguous return paths, and
-  struct-field tracking is limited to the concrete direct-literal case above.
+  has only the narrow direct-reference and concrete-struct return summaries
+  described above; it does not track references through statics, dynamically
+  transformed array elements, or ambiguous return paths, and struct-field
+  tracking remains limited to direct literals or those proven struct returns.
 - No borrow checker over local-to-local aliasing — there is no
   expression syntax in the language today to take a reference to
   another local (`&mut` only ever appears in parameter/`let` *type*

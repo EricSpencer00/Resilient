@@ -342,8 +342,10 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   passing it somewhere is a genuine violation or an ordinary Copy.
 ///   Enforcing that now would risk false positives on every ordinary
 ///   value type in the corpus.
-/// - No general interprocedural analysis — struct fields, arrays, tuples,
-///   closures, and ambiguous or wrapped return paths remain opaque.
+/// - No general interprocedural analysis — only direct reference returns and
+///   concrete structs whose reference fields are initialized from parameters
+///   are summarized; arrays, tuples, closures, and ambiguous or wrapped
+///   return paths remain opaque across function boundaries.
 pub fn infer(program: &crate::Node, source_path: &str) -> Result<(), String> {
     let errors = check_unannotated_mut_alias(program, source_path);
     if errors.is_empty() {
@@ -557,6 +559,29 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    let mut struct_return_aliases: HashMap<&str, StructReturnAliasSummary> = HashMap::new();
+    for spanned in stmts {
+        if let crate::Node::Function {
+            name,
+            type_params,
+            parameters,
+            body,
+            return_type,
+            ..
+        } = &spanned.node
+            && type_params.is_empty()
+            && callee_table.contains_key(name.as_str())
+            && let Some(summary) = struct_return_alias_summary(
+                body,
+                parameters,
+                return_type.as_deref(),
+                &reference_fields,
+            )
+        {
+            struct_return_aliases.insert(name.as_str(), summary);
+        }
+    }
+
     for spanned in stmts {
         let crate::Node::Function { body, .. } = &spanned.node else {
             continue;
@@ -613,6 +638,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         stmts,
         &callee_table,
         &return_aliases,
+        &struct_return_aliases,
         &reference_fields,
         source_path,
     ));
@@ -677,6 +703,11 @@ struct AliasState {
     live_roots: std::collections::HashSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructReturnAliasSummary {
+    fields: Vec<(String, usize)>,
+}
+
 impl AliasState {
     /// Resolve `name` to its region root, if it is provably a reference.
     fn root_of<'s>(&'s self, name: &'s str) -> Option<&'s str> {
@@ -700,6 +731,7 @@ impl AliasState {
 struct AliasWalker<'a> {
     callee_table: &'a HashMap<&'a str, &'a [(String, String)]>,
     return_aliases: &'a HashMap<&'a str, usize>,
+    struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
     reference_fields: &'a HashSet<(String, String)>,
     source_path: &'a str,
     errors: Vec<String>,
@@ -891,16 +923,18 @@ impl<'a> AliasWalker<'a> {
 
     /// Resolve the region carried by a value expression when the pass can
     /// prove that it is a reference alias. Direct identifiers are the
-    /// existing local-copy rule. A call is additionally accepted when its
-    /// callee has a narrow summary saying that it returns one reference
-    /// parameter unchanged; the corresponding argument must itself be a
-    /// plain identifier so no unmodelled expression semantics are inferred.
+    /// existing local-copy rule. Calls are accepted only through narrow
+    /// summaries whose reference arguments are plain identifiers.
     fn returned_root(&self, value: &crate::Node, state: &AliasState) -> Option<String> {
         match value {
             crate::Node::Identifier { name, .. } => state.root_of(name).map(str::to_owned),
             crate::Node::FieldAccess { target, field, .. } => {
-                let place = Self::field_place(target, field)?;
-                state.aliases.get(&place).cloned()
+                if let Some(place) = Self::field_place(target, field) {
+                    return state.aliases.get(&place).cloned();
+                }
+                self.struct_field_roots(target, state)
+                    .into_iter()
+                    .find_map(|(path, root)| (path == *field).then_some(root))
             }
             crate::Node::IndexExpression { target, index, .. } => {
                 let place = Self::array_place(target, index)?;
@@ -1072,12 +1106,46 @@ impl<'a> AliasWalker<'a> {
     }
 
     fn struct_field_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(String, String)> {
-        let crate::Node::StructLiteral { name, fields, .. } = value else {
+        match value {
+            crate::Node::StructLiteral { name, fields, .. } => {
+                let mut roots = Vec::new();
+                self.collect_struct_field_roots(name, fields, "", state, &mut roots);
+                roots
+            }
+            crate::Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => self.struct_call_field_roots(function, arguments, state),
+            _ => Vec::new(),
+        }
+    }
+
+    fn struct_call_field_roots(
+        &self,
+        function: &crate::Node,
+        arguments: &[crate::Node],
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let crate::Node::Identifier { name: callee, .. } = function else {
             return Vec::new();
         };
-        let mut roots = Vec::new();
-        self.collect_struct_field_roots(name, fields, "", state, &mut roots);
-        roots
+        let Some(summary) = self.struct_return_aliases.get(callee.as_str()) else {
+            return Vec::new();
+        };
+        summary
+            .fields
+            .iter()
+            .filter_map(|(field, param_idx)| {
+                let crate::Node::Identifier { name: argument, .. } = arguments.get(*param_idx)?
+                else {
+                    return None;
+                };
+                state
+                    .root_of(argument)
+                    .map(|root| (field.clone(), root.to_owned()))
+            })
+            .collect()
     }
 
     fn collect_struct_field_roots(
@@ -1872,12 +1940,14 @@ fn check_unannotated_let_alias(
     stmts: &[crate::Spanned<crate::Node>],
     callee_table: &HashMap<&str, &[(String, String)]>,
     return_aliases: &HashMap<&str, usize>,
+    struct_return_aliases: &HashMap<&str, StructReturnAliasSummary>,
     reference_fields: &HashSet<(String, String)>,
     source_path: &str,
 ) -> Vec<String> {
     let mut walker = AliasWalker {
         callee_table,
         return_aliases,
+        struct_return_aliases,
         reference_fields,
         source_path,
         errors: Vec::new(),
@@ -1904,6 +1974,152 @@ fn check_unannotated_let_alias(
     }
 
     walker.errors
+}
+
+fn struct_return_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    return_type: Option<&str>,
+    reference_fields: &HashSet<(String, String)>,
+) -> Option<StructReturnAliasSummary> {
+    let return_type = return_type?.trim();
+    if return_type.is_empty()
+        || return_type
+            .chars()
+            .any(|character| matches!(character, ' ' | '<' | '&' | '['))
+    {
+        return None;
+    }
+
+    let mut returns = Vec::new();
+    collect_struct_return_provenance(
+        body,
+        parameters,
+        return_type,
+        reference_fields,
+        &mut returns,
+    );
+    let Some(Some(summary)) = returns.first() else {
+        return None;
+    };
+    if returns
+        .iter()
+        .any(|candidate| candidate.as_ref() != Some(summary))
+    {
+        return None;
+    }
+    Some(summary.clone())
+}
+
+fn collect_struct_return_provenance(
+    node: &crate::Node,
+    parameters: &[(String, String)],
+    return_type: &str,
+    reference_fields: &HashSet<(String, String)>,
+    out: &mut Vec<Option<StructReturnAliasSummary>>,
+) {
+    match node {
+        crate::Node::ReturnStatement { value, .. } => {
+            out.push(value.as_deref().and_then(|value| {
+                struct_return_aliases_for_value(value, parameters, return_type, reference_fields)
+            }));
+        }
+        crate::Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                collect_struct_return_provenance(
+                    stmt,
+                    parameters,
+                    return_type,
+                    reference_fields,
+                    out,
+                );
+            }
+        }
+        crate::Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_struct_return_provenance(
+                consequence,
+                parameters,
+                return_type,
+                reference_fields,
+                out,
+            );
+            if let Some(alternative) = alternative {
+                collect_struct_return_provenance(
+                    alternative,
+                    parameters,
+                    return_type,
+                    reference_fields,
+                    out,
+                );
+            }
+        }
+        crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
+            collect_struct_return_provenance(body, parameters, return_type, reference_fields, out)
+        }
+        crate::Node::Match { arms, .. } => {
+            for (_pattern, _guard, body) in arms {
+                collect_struct_return_provenance(
+                    body,
+                    parameters,
+                    return_type,
+                    reference_fields,
+                    out,
+                );
+            }
+        }
+        crate::Node::FunctionLiteral { .. } => {}
+        _ => {}
+    }
+}
+
+fn struct_return_aliases_for_value(
+    value: &crate::Node,
+    parameters: &[(String, String)],
+    return_type: &str,
+    reference_fields: &HashSet<(String, String)>,
+) -> Option<StructReturnAliasSummary> {
+    let crate::Node::StructLiteral {
+        name, fields, base, ..
+    } = value
+    else {
+        return None;
+    };
+    if base.is_some() || name != return_type {
+        return None;
+    }
+
+    let mut reference_field_names: Vec<&str> = reference_fields
+        .iter()
+        .filter_map(|(struct_name, field)| (struct_name == name).then_some(field.as_str()))
+        .collect();
+    reference_field_names.sort_unstable();
+    if reference_field_names.is_empty() {
+        return None;
+    }
+
+    let mut aliases = Vec::with_capacity(reference_field_names.len());
+    for field in reference_field_names {
+        let value = fields.iter().find(|(name, _)| name == field)?.1.clone();
+        let crate::Node::Identifier {
+            name: parameter, ..
+        } = value
+        else {
+            return None;
+        };
+        let parameter_idx = parameters
+            .iter()
+            .enumerate()
+            .find_map(|(idx, (ty, name))| {
+                (name == &parameter && region_from_type_str(ty).is_some()).then_some(idx)
+            })?;
+        aliases.push((field.to_owned(), parameter_idx));
+    }
+
+    Some(StructReturnAliasSummary { fields: aliases })
 }
 
 /// Resolve a return expression to one of the enclosing function's reference
@@ -2813,6 +3029,39 @@ mod tests {
             errors[0].contains("`x`") && errors[0].contains("`outer.inner.item`"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_struct_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int x) -> Holder { return new Holder { item: x }; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let h = make_holder(x); set_both(x, h.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`h.item`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn wrapped_reference_struct_return_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int x) -> Holder { \
+                 let alias = x; return new Holder { item: alias }; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let h = make_holder(x); set_both(x, h.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped helper returns must stay conservative: {:?}",
+            errors
         );
     }
 
