@@ -473,23 +473,35 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
     // This is deliberately narrower than general interprocedural analysis:
     // `fn expose(&mut int x) -> &mut int { return x; }` and branches whose
     // every explicit return is `x` are transparent, but mixed or wrapped
-    // return paths are not.
+    // return paths are not. A wrapper is accepted only when it calls a
+    // summary already proven in this table; the fixed point below keeps
+    // recursive or otherwise ambiguous cycles opaque.
     let mut return_aliases: HashMap<&str, usize> = HashMap::new();
-    for spanned in stmts {
-        if let crate::Node::Function {
-            name,
-            type_params,
-            parameters,
-            body,
-            return_type,
-            ..
-        } = &spanned.node
-            && type_params.is_empty()
-            && callee_table.contains_key(name.as_str())
-            && let Some(param_idx) =
-                direct_return_alias_summary(body, parameters, return_type.as_deref())
-        {
-            return_aliases.insert(name.as_str(), param_idx);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for spanned in stmts {
+            if let crate::Node::Function {
+                name,
+                type_params,
+                parameters,
+                body,
+                return_type,
+                ..
+            } = &spanned.node
+                && type_params.is_empty()
+                && callee_table.contains_key(name.as_str())
+                && let Some(param_idx) = direct_return_alias_summary(
+                    body,
+                    parameters,
+                    return_type.as_deref(),
+                    &return_aliases,
+                )
+                && return_aliases.get(name.as_str()).copied() != Some(param_idx)
+            {
+                return_aliases.insert(name.as_str(), param_idx);
+                changed = true;
+            }
         }
     }
 
@@ -1034,21 +1046,63 @@ fn check_unannotated_let_alias(
     walker.errors
 }
 
+/// Resolve a return expression to one of the enclosing function's reference
+/// parameters. A direct identifier is the base case; a call is accepted only
+/// when its callee already has a summary and the corresponding argument is a
+/// plain enclosing parameter.
+fn return_alias_param_index(
+    value: &crate::Node,
+    parameters: &[(String, String)],
+    known_returns: &HashMap<&str, usize>,
+) -> Option<usize> {
+    let parameter_index = |name: &str| {
+        parameters
+            .iter()
+            .enumerate()
+            .find(|(_, (_, parameter_name))| parameter_name == name)
+            .and_then(|(idx, (ty, _))| region_from_type_str(ty).map(|_| idx))
+    };
+
+    match value {
+        crate::Node::Identifier { name, .. } => parameter_index(name),
+        crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            let crate::Node::Identifier { name: callee, .. } = function.as_ref() else {
+                return None;
+            };
+            let callee_param_idx = *known_returns.get(callee.as_str())?;
+            let crate::Node::Identifier { name: argument, .. } = arguments.get(callee_param_idx)?
+            else {
+                return None;
+            };
+            parameter_index(argument)
+        }
+        _ => None,
+    }
+}
+
 /// Collect explicit return provenance without descending into nested
-/// function literals. `None` marks a bare return or a non-identifier return,
-/// both of which make the enclosing summary ineligible.
-fn collect_return_provenance(node: &crate::Node, out: &mut Vec<Option<String>>) {
+/// function literals. `None` marks a bare, wrapped, or otherwise unknown
+/// return, all of which make the enclosing summary ineligible.
+fn collect_return_provenance(
+    node: &crate::Node,
+    parameters: &[(String, String)],
+    known_returns: &HashMap<&str, usize>,
+    out: &mut Vec<Option<usize>>,
+) {
     match node {
         crate::Node::ReturnStatement { value, .. } => {
-            let name = value.as_deref().and_then(|value| match value {
-                crate::Node::Identifier { name, .. } => Some(name.clone()),
-                _ => None,
-            });
-            out.push(name);
+            let provenance = value
+                .as_deref()
+                .and_then(|value| return_alias_param_index(value, parameters, known_returns));
+            out.push(provenance);
         }
         crate::Node::Block { stmts, .. } => {
             for stmt in stmts {
-                collect_return_provenance(stmt, out);
+                collect_return_provenance(stmt, parameters, known_returns, out);
             }
         }
         crate::Node::IfStatement {
@@ -1056,17 +1110,17 @@ fn collect_return_provenance(node: &crate::Node, out: &mut Vec<Option<String>>) 
             alternative,
             ..
         } => {
-            collect_return_provenance(consequence, out);
+            collect_return_provenance(consequence, parameters, known_returns, out);
             if let Some(alternative) = alternative {
-                collect_return_provenance(alternative, out);
+                collect_return_provenance(alternative, parameters, known_returns, out);
             }
         }
         crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
-            collect_return_provenance(body, out)
+            collect_return_provenance(body, parameters, known_returns, out)
         }
         crate::Node::Match { arms, .. } => {
             for (_pattern, _guard, body) in arms {
-                collect_return_provenance(body, out);
+                collect_return_provenance(body, parameters, known_returns, out);
             }
         }
         // A nested closure returns to its own caller, not to this function.
@@ -1078,30 +1132,27 @@ fn collect_return_provenance(node: &crate::Node, out: &mut Vec<Option<String>>) 
 /// Summarize a reference-typed function when every explicit return is the
 /// same reference parameter. This remains independent of branch conditions:
 /// no matter which collected path returns, the region provenance is the same.
-/// A wrapper expression, mixed parameter return, or no explicit return makes
+/// A mixed parameter return, unknown expression, or no explicit return makes
 /// the function ineligible so ambiguous provenance remains unchecked.
 fn direct_return_alias_summary(
     body: &crate::Node,
     parameters: &[(String, String)],
     return_type: Option<&str>,
+    known_returns: &HashMap<&str, usize>,
 ) -> Option<usize> {
     return_type.and_then(region_from_type_str)?;
     let mut returns = Vec::new();
-    collect_return_provenance(body, &mut returns);
-    let Some(Some(name)) = returns.first() else {
+    collect_return_provenance(body, parameters, known_returns, &mut returns);
+    let Some(Some(param_idx)) = returns.first() else {
         return None;
     };
     if returns
         .iter()
-        .any(|return_name| return_name.as_deref() != Some(name))
+        .any(|return_idx| return_idx != &Some(*param_idx))
     {
         return None;
     }
-    let (param_idx, (param_type, _)) = parameters
-        .iter()
-        .enumerate()
-        .find(|(_, (_, param_name))| param_name == name)?;
-    region_from_type_str(param_type).map(|_| param_idx)
+    Some(*param_idx)
 }
 
 // ============================================================
@@ -1837,6 +1888,20 @@ mod tests {
             "message shape wrong: {}",
             errors[0]
         );
+    }
+
+    #[test]
+    fn let_alias_through_proven_reference_return_forward_rejected() {
+        // A wrapper may forward a reference only through a helper whose
+        // return provenance was already proven; the fixed point handles
+        // either declaration order.
+        let errors = run_alias_check(
+            "fn forward(&mut int x) -> &mut int { return expose(x); } \
+             fn expose(&mut int x) -> &mut int { return x; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let y = forward(x); set_both(x, y); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
     }
 
     #[test]
