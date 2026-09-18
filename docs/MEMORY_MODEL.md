@@ -402,6 +402,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   reference parameters to the caller. Constant element reads and later array
   aliases continue to expose those facts; wrapped elements, dynamic paths,
   and ambiguous return shapes remain conservative.
+- **A-E5 increment 20 (RES-4070):** the same direct array-return summary
+  carries proven leaves through constant tuple, struct-field, and nested-array
+  paths such as `items[0].0`, `items[0].item`, and `items[0][0]`. Wrapped
+  leaves, dynamic/transformed arrays, and ambiguous return shapes remain
+  conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
