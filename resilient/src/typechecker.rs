@@ -502,12 +502,46 @@ fn is_array_ty(t: &Type) -> bool {
 }
 
 /// RES-3977: preserve a tracked element type through standalone array
-/// operations whose runtime result is a subsequence or filtered view of the
-/// first argument. Operations that can change the element type intentionally
-/// keep their declared return type.
+/// operations whose runtime result contains only elements from the first
+/// argument. Operations that can change the element type intentionally keep
+/// their declared return type.
 fn preserve_tracked_array_return(callee_name: &str, arg_types: &[Type], fallback: Type) -> Type {
-    if matches!(callee_name, "slice" | "array_slice" | "array_filter")
-        && let Some(Type::TypedArray(elem)) = arg_types.first()
+    if matches!(
+        callee_name,
+        "slice"
+            | "array_slice"
+            | "array_filter"
+            | "array_take"
+            | "array_drop"
+            | "array_take_last"
+            | "array_drop_last"
+            | "array_step"
+            | "array_sort"
+            | "array_sort_desc"
+            | "array_shuffle"
+            | "array_reverse"
+            | "array_remove"
+            | "array_remove_all"
+            | "array_dedup"
+            | "array_unique"
+            | "array_rest"
+            | "array_init"
+            | "array_cycle"
+            | "array_rotate_left"
+            | "array_rotate_right"
+            | "array_swap"
+            | "array_remove_at"
+            | "array_sort_by"
+            | "array_take_while"
+            | "array_drop_while"
+            | "array_sort_by_field"
+            | "array_sort_by_field_desc"
+            | "array_dedup_by"
+            | "sort"
+            | "sort_desc"
+            | "reverse"
+            | "dedup"
+    ) && let Some(Type::TypedArray(elem)) = arg_types.first()
     {
         return Type::TypedArray(elem.clone());
     }
@@ -19152,6 +19186,78 @@ mod res3923_array_element_type {
         check_err(
             "fn main() { let xs = [1, 2, 3]; let ys = xs.map(fn(int x) -> bool { return x > 1; }); let bad: string = ys[0]; }\nmain();\n",
             "value has type bool",
+        );
+    }
+
+    #[test]
+    fn standalone_array_subsequence_builtins_preserve_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_take(xs, 2); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_drop(xs, 1); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_take_last(xs, 2); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_drop_last(xs, 1); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_step(xs, 1); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+    }
+
+    #[test]
+    fn standalone_array_reordering_and_dedup_preserve_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_reverse(xs); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_sort(xs); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_dedup(xs); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_unique(xs); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_rest(xs); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_init(xs); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+    }
+
+    #[test]
+    fn standalone_array_element_preserving_helpers_keep_tracking() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_remove_at(xs, 0); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_remove(xs, 2); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_rotate_left(xs, 1); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_cycle(xs, 2); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
         );
     }
 }
