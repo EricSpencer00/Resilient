@@ -1514,6 +1514,11 @@ impl<'a> AliasWalker<'a> {
                     roots.push((format!("{prefix}{path}"), root));
                 }
             }
+            crate::Node::CallExpression { .. } => {
+                for (path, root) in self.array_return_roots(value, state) {
+                    roots.push((format!("{prefix}{path}"), root));
+                }
+            }
             _ => {}
         }
     }
@@ -4399,6 +4404,45 @@ mod tests {
         assert!(
             errors.is_empty(),
             "wrapped nested array helper values must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn direct_array_literal_helper_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = [make_array(x)]; set_both(x, items[0][0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("items[0][0]"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_array_literal_helper_chain_preserves_nested_path() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x]; } \
+             fn inner(&mut int x) -> array { return [make_array(x)]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = [inner(x)]; set_both(x, items[0][0][0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn unknown_array_helper_inside_literal_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = [unknown(x)]; set_both(x, items[0][0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "unknown array helper values must stay opaque: {:?}",
             errors
         );
     }
