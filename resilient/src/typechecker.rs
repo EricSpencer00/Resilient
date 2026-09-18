@@ -1924,6 +1924,58 @@ pub struct TypeChecker {
 /// to also typecheck instead of hitting this guard.
 const MAX_CHECK_DEPTH: u32 = 550;
 
+/// RES-4369: split a comma-separated type list without treating commas in a
+/// nested generic, tuple, array, function, or anonymous-struct type as
+/// separators.
+fn split_top_level_type_list(input: &str) -> Result<Vec<&str>, String> {
+    let mut parts = Vec::with_capacity(2);
+    let mut delimiters = Vec::with_capacity(2);
+    let mut start = 0;
+
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '<' | '(' | '[' | '{' => delimiters.push(ch),
+            '>' => {
+                if delimiters.last() == Some(&'<') {
+                    delimiters.pop();
+                }
+            }
+            ')' | ']' | '}' => {
+                let expected = match ch {
+                    ')' => '(',
+                    ']' => '[',
+                    '}' => '{',
+                    _ => unreachable!(),
+                };
+                if delimiters.last() == Some(&expected) {
+                    delimiters.pop();
+                } else {
+                    return Err(format!("unbalanced type annotation near `{input}`"));
+                }
+            }
+            ',' if delimiters.is_empty() => {
+                let part = input[start..index].trim();
+                if part.is_empty() {
+                    return Err("tuple type annotation contains an empty element".to_string());
+                }
+                parts.push(part);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    if !delimiters.is_empty() {
+        return Err(format!("unbalanced type annotation near `{input}`"));
+    }
+    let tail = input[start..].trim();
+    if tail.is_empty() {
+        return Err("tuple type annotation contains an empty element".to_string());
+    }
+    parts.push(tail);
+    Ok(parts)
+}
+
 impl TypeChecker {
     pub fn new() -> Self {
         // RES-1349 + RES-2444: cache the built-in env once per
@@ -12091,13 +12143,29 @@ impl TypeChecker {
                 let elem_ty = self.parse_type_name_inner(elem_str, seen)?;
                 Ok(Type::TypedArray(Box::new(elem_ty)))
             }
-            // RES-426: tuple type `(T1, T2, ...)`. Encoded by the
-            // parser as a parenthesised comma-list; at type-check
-            // level a tuple is represented as Type::Any (the interpreter
-            // already boxes tuples as Value::Tuple at runtime; the type
-            // system will promote this to Type::Tuple once the full
-            // tuple-type variant lands in G7).
-            other if other.starts_with('(') && other.ends_with(')') => Ok(Type::Any),
+            // RES-4369: tuple type `(T1, T2, ...)`. The parser stores
+            // annotations as strings, so split only at commas belonging to
+            // this tuple; nested tuples, generics, arrays, and anonymous
+            // structs may contain their own commas.
+            other if other.starts_with('(') && other.ends_with(')') => {
+                let inner = other[1..other.len() - 1].trim();
+                if inner.is_empty() {
+                    return Ok(Type::Tuple(Vec::new()));
+                }
+                let parts = split_top_level_type_list(inner)?;
+                if parts.len() == 1 {
+                    // Parenthesised single types retain grouping semantics;
+                    // a one-element tuple is not representable in the
+                    // parser's string encoding because it drops a trailing
+                    // comma.
+                    return self.parse_type_name_inner(parts[0].trim(), seen);
+                }
+                let elements = parts
+                    .into_iter()
+                    .map(|part| self.parse_type_name_inner(part.trim(), seen))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Type::Tuple(elements))
+            }
             other if other.starts_with('{') && other.ends_with('}') => {
                 let inner = &other[1..other.len() - 1];
                 let inner = inner.trim();
@@ -18074,6 +18142,98 @@ mod res426_tuple_return_type {
                  let (q, r) = divmod(a, 3);\n\
                  return q;\n\
              }",
+        );
+    }
+}
+
+// ── RES-4369: precise tuple type annotations ───────────────────────────────
+
+#[cfg(test)]
+mod res4369_tuple_type_annotations {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("unexpected type error: {e}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected a type error but got Ok")
+    }
+
+    #[test]
+    fn matching_tuple_return_is_accepted() {
+        check_ok("fn pair() -> (int, string) { return (1, \"ok\"); }");
+    }
+
+    #[test]
+    fn tuple_return_element_mismatch_is_rejected() {
+        let err = check_err("fn pair() -> (int, string) { return (1, 2); }");
+        assert!(
+            err.contains("return type mismatch") && err.contains("string"),
+            "expected tuple element mismatch; got: {err}"
+        );
+    }
+
+    #[test]
+    fn tuple_return_arity_mismatch_is_rejected() {
+        let err = check_err("fn pair() -> (int, string) { return (1, \"ok\", true); }");
+        assert!(
+            err.contains("return type mismatch") && err.contains("3"),
+            "expected tuple arity mismatch; got: {err}"
+        );
+    }
+
+    #[test]
+    fn nested_tuple_annotation_is_checked_recursively() {
+        check_ok("fn nested() -> ((int, string), bool) { return ((1, \"ok\"), true); }");
+        let err = check_err("fn nested() -> ((int, string), bool) { return ((1, 2), true); }");
+        assert!(
+            err.contains("return type mismatch") && err.contains("string"),
+            "expected nested tuple element mismatch; got: {err}"
+        );
+    }
+
+    #[test]
+    fn generic_tuple_return_substitutes_element_types() {
+        check_ok(
+            "fn wrap<T>(T value) -> (T, int) { return (value, 0); }\n\
+             fn consume(string input) -> string {\n\
+                 let pair = wrap(input);\n\
+                 return pair.0;\n\
+             }",
+        );
+    }
+
+    #[test]
+    fn local_tuple_annotation_is_checked() {
+        check_ok(
+            "fn first() -> int {\n\
+                 let pair: (int, string) = (1, \"ok\");\n\
+                 return pair.0;\n\
+             }",
+        );
+        let err = check_err("fn bad() -> int { let pair: (int, string) = (1, 2); return 0; }");
+        assert!(
+            err.contains("let pair") && err.contains("string"),
+            "expected local tuple mismatch; got: {err}"
+        );
+    }
+
+    #[test]
+    fn unit_tuple_annotation_is_checked() {
+        check_ok("fn unit() -> int { let value: () = (); return 0; }");
+        let err = check_err("fn bad() -> int { let value: () = 1; return 0; }");
+        assert!(
+            err.contains("let value") && err.contains("()"),
+            "expected unit tuple mismatch; got: {err}"
         );
     }
 }
