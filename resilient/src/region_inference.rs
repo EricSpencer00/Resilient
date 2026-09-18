@@ -471,8 +471,9 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 
     // RES-4070: keep only an unambiguous direct-reference return summary.
     // This is deliberately narrower than general interprocedural analysis:
-    // `fn expose(&mut int x) -> &mut int { return x; }` is transparent, but
-    // a branch, wrapper expression, or multiple return paths is not.
+    // `fn expose(&mut int x) -> &mut int { return x; }` and branches whose
+    // every explicit return is `x` are transparent, but mixed or wrapped
+    // return paths are not.
     let mut return_aliases: HashMap<&str, usize> = HashMap::new();
     for spanned in stmts {
         if let crate::Node::Function {
@@ -1033,31 +1034,69 @@ fn check_unannotated_let_alias(
     walker.errors
 }
 
-/// Summarize only the smallest interprocedural case that is independent of
-/// control-flow or expression evaluation: a reference-typed function whose
-/// body consists solely of `return PARAM;`, where `PARAM` is itself a
-/// reference parameter. Any extra statement, branch, or return expression
-/// makes the function ineligible so ambiguous provenance remains unchecked.
+/// Collect explicit return provenance without descending into nested
+/// function literals. `None` marks a bare return or a non-identifier return,
+/// both of which make the enclosing summary ineligible.
+fn collect_return_provenance(node: &crate::Node, out: &mut Vec<Option<String>>) {
+    match node {
+        crate::Node::ReturnStatement { value, .. } => {
+            let name = value.as_deref().and_then(|value| match value {
+                crate::Node::Identifier { name, .. } => Some(name.clone()),
+                _ => None,
+            });
+            out.push(name);
+        }
+        crate::Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                collect_return_provenance(stmt, out);
+            }
+        }
+        crate::Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_return_provenance(consequence, out);
+            if let Some(alternative) = alternative {
+                collect_return_provenance(alternative, out);
+            }
+        }
+        crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
+            collect_return_provenance(body, out)
+        }
+        crate::Node::Match { arms, .. } => {
+            for (_pattern, _guard, body) in arms {
+                collect_return_provenance(body, out);
+            }
+        }
+        // A nested closure returns to its own caller, not to this function.
+        crate::Node::FunctionLiteral { .. } => {}
+        _ => {}
+    }
+}
+
+/// Summarize a reference-typed function when every explicit return is the
+/// same reference parameter. This remains independent of branch conditions:
+/// no matter which collected path returns, the region provenance is the same.
+/// A wrapper expression, mixed parameter return, or no explicit return makes
+/// the function ineligible so ambiguous provenance remains unchecked.
 fn direct_return_alias_summary(
     body: &crate::Node,
     parameters: &[(String, String)],
     return_type: Option<&str>,
 ) -> Option<usize> {
     return_type.and_then(region_from_type_str)?;
-    let crate::Node::Block { stmts, .. } = body else {
+    let mut returns = Vec::new();
+    collect_return_provenance(body, &mut returns);
+    let Some(Some(name)) = returns.first() else {
         return None;
     };
-    let [
-        crate::Node::ReturnStatement {
-            value: Some(value), ..
-        },
-    ] = stmts.as_slice()
-    else {
+    if returns
+        .iter()
+        .any(|return_name| return_name.as_deref() != Some(name))
+    {
         return None;
-    };
-    let crate::Node::Identifier { name, .. } = value.as_ref() else {
-        return None;
-    };
+    }
     let (param_idx, (param_type, _)) = parameters
         .iter()
         .enumerate()
@@ -1798,6 +1837,20 @@ mod tests {
             "message shape wrong: {}",
             errors[0]
         );
+    }
+
+    #[test]
+    fn let_alias_through_same_reference_return_paths_rejected() {
+        // Branching is safe to summarize when every explicit return still
+        // returns the same parameter.
+        let errors = run_alias_check(
+            "fn expose(&mut int x, int c) -> &mut int { \
+                 if (c > 0) { return x; } else { return x; } \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int c) { let y = expose(x, c); set_both(x, y); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
     }
 
     #[test]

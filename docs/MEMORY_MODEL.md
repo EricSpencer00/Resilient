@@ -306,14 +306,20 @@ Grounded in `resilient/src/region_inference.rs` and the
   one), passing `x` and `y` — or two such copies — to a plain callee's
   reference slots with at least one `&mut` is rejected. The analysis is
   path-sensitive and conservative: branch states merge by
-  *intersection* (a fact survives an `if`/loop only if it holds on
-  every path), assignments and shadowing `let`s *kill* facts rather
-  than guessing at re-seating semantics, and `match` arms are treated
-  as opaque (pattern bindings can shadow names silently). A call inside
-  a branch is checked against the facts the path reaching it provably
+  *intersection* (a fact survives an `if`/loop/match only if it holds
+  on every path), assignments and shadowing `let`s *kill* facts rather
+  than guessing at re-seating semantics, and match pattern bindings
+  kill only the names they can shadow in that arm. A call inside a
+  branch is checked against the facts the path reaching it provably
   establishes. This preserves the A-E5 zero-false-positive rule: every
   previously-compiling program keeps compiling unless it provably
   aliases on the executed path.
+- **A-E5 increment 3 (RES-4070):** the same alias pass carries
+  provenance through a narrow interprocedural summary. A helper with a
+  reference return is summarized when every explicit return returns the
+  same reference parameter unchanged, including simple conditional or
+  match paths. Mixed parameters, wrapper expressions, and nested closure
+  returns remain opaque rather than being guessed.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -329,16 +335,14 @@ Grounded in `resilient/src/region_inference.rs` and the
   move-semantics surface, enforced by `check_linear_usage`
   (`resilient/src/linear.rs`).
 - Conditional-path aliasing detection is *partial*. The let-alias pass
-  above handles `if`/`while`/`for` path merging by intersection, but
-  there is no Z3-backed branch-condition disjointness reasoning, no
-  alias facts survive into or out of `match` arms, and aliasing
-  established by anything other than a literal `let NAME = IDENT;` copy
-  of a reference binding is invisible.
-- No whole-program or interprocedural alias analysis. Both region
-  checks only look at parameter *signatures* and direct call-site
-  arguments; neither tracks whether a reference escapes into a struct
-  field, a static, a return value, an array element, or a closure
-  capture.
+  above handles `if`/`while`/`for`/`match` path merging by intersection,
+  but there is no Z3-backed branch-condition disjointness reasoning.
+  Alias facts established by struct fields, array elements, or closure
+  captures remain invisible.
+- No general whole-program or interprocedural alias analysis. The pass
+  has only the narrow direct-reference return summary described above;
+  it does not track references through struct fields, statics, array
+  elements, closures, or ambiguous return paths.
 - No borrow checker over local-to-local aliasing — there is no
   expression syntax in the language today to take a reference to
   another local (`&mut` only ever appears in parameter/`let` *type*
