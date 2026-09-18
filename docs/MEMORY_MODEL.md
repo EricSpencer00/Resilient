@@ -358,6 +358,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   struct arrays retain nested field provenance at the rebased element path,
   so `let selected = items[0..1]; set_both(x, selected[0].item)` is also
   rejected. Dynamic-bound slices and transformed sources remain opaque.
+- **A-E5 increment 11 (RES-4070):** direct tuple literals retain reference
+  provenance at constant tuple-index paths. For example, a pair built from
+  a tracked reference still exposes that reference through pair element 0,
+  and direct tuple destructuring preserves the same fact. Value elements and
+  unknown tuple sources remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
