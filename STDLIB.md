@@ -483,6 +483,8 @@ the same immutable-value semantics (each mutation returns a new map).
 | `bit_shl(a, n)` `bit_shr(a, n)` | (int, int) → int | shift amount must be 0..=63; arithmetic right shift |
 | `is_power_of_two(n)` | int → bool | RES-940: true iff `n > 0` and exactly one bit is set |
 | `next_power_of_two(n)` | int → int | RES-940: smallest power of two `>= n`; errors on negative input or overflow (`n > 2^62`) |
+| `is_pow2(n)` | int → bool | RES-493: true iff `n` is a positive power of two; zero and negative inputs return false |
+| `next_pow2(n)` | int → int | RES-494: smallest power of two `>= n`; zero and one return 1, negative inputs error, and inputs above `2^62` error |
 
 ## Live blocks (RES-138, RES-141)
 
