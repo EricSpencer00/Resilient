@@ -514,6 +514,18 @@ fn preserve_tracked_array_return(callee_name: &str, arg_types: &[Type], fallback
     fallback
 }
 
+/// RES-3977: a map callback determines the result element type even when the
+/// input array itself is untyped. An unknown callback return type remains
+/// conservative and keeps the builtin's declared untyped-array result.
+fn infer_mapped_array_return(callback_type: Option<&Type>, fallback: Type) -> Type {
+    if let Some(Type::Function { return_type, .. }) = callback_type
+        && !matches!(return_type.as_ref(), Type::Any)
+    {
+        return Type::TypedArray(return_type.clone());
+    }
+    fallback
+}
+
 /// RES-2713: map a literal-pattern node to its type so
 /// `match_pattern_binding_types` can validate that the literal is
 /// type-compatible with the match scrutinee.
@@ -11264,17 +11276,28 @@ impl TypeChecker {
                             &callee_type_params,
                             &borrowed_tp_bindings,
                         );
-                        let effective_return = if let Node::Identifier {
-                            name: callee_name, ..
-                        } = function.as_ref()
-                        {
-                            preserve_tracked_array_return(
-                                callee_name,
-                                &checked_arg_types,
-                                effective_return,
-                            )
-                        } else {
-                            effective_return
+                        let effective_return = match function.as_ref() {
+                            Node::Identifier {
+                                name: callee_name, ..
+                            } => {
+                                let preserved = preserve_tracked_array_return(
+                                    callee_name,
+                                    &checked_arg_types,
+                                    effective_return,
+                                );
+                                if callee_name == "array_map" {
+                                    infer_mapped_array_return(checked_arg_types.get(1), preserved)
+                                } else {
+                                    preserved
+                                }
+                            }
+                            Node::FieldAccess { field, .. } if field == "map" => {
+                                infer_mapped_array_return(
+                                    checked_arg_types.first(),
+                                    effective_return,
+                                )
+                            }
+                            _ => effective_return,
                         };
                         Ok(effective_return)
                     }
@@ -19110,6 +19133,25 @@ mod res3923_array_element_type {
         check_err(
             "fn main() { let maybe = Some([1, 2, 3]); let xs = maybe ?? [0]; let bad: string = xs[0]; }\nmain();\n",
             "value has type int",
+        );
+    }
+
+    #[test]
+    fn standalone_map_tracks_callback_return_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_map(xs, fn(int x) -> bool { return x > 1; }); let bad: string = ys[0]; }\nmain();\n",
+            "value has type bool",
+        );
+        check_ok(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_map(xs, fn(int x) -> bool { return x > 1; }); let ok: bool = ys[0]; }\nmain();\n",
+        );
+    }
+
+    #[test]
+    fn map_method_tracks_callback_return_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = xs.map(fn(int x) -> bool { return x > 1; }); let bad: string = ys[0]; }\nmain();\n",
+            "value has type bool",
         );
     }
 }
