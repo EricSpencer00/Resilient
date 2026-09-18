@@ -1845,6 +1845,13 @@ impl Lexer {
         }
 
         let position = self.position;
+        // A number immediately following a field-access dot is a tuple
+        // index, not the fractional tail of a float. Keeping the dot in the
+        // token stream lets chained accesses such as pair.0.0 parse as two
+        // TupleIndex nodes while preserving ordinary numeric literals.
+        let tuple_index = position > 0
+            && self.input[position - 1] == '.'
+            && (position < 2 || self.input[position - 2] != '.');
         let mut is_float = false;
 
         // RES-909: accept `_` *between* digits in decimal mantissas. The
@@ -1852,10 +1859,10 @@ impl Lexer {
         // — we only consume an underscore when a digit immediately follows,
         // never one that should start an identifier.
         while self.is_digit(self.ch)
-            || self.ch == '.'
-            || (self.ch == '_' && self.is_digit(self.peek_char()))
+            || (!tuple_index
+                && (self.ch == '.' || (self.ch == '_' && self.is_digit(self.peek_char()))))
         {
-            if self.ch == '.' {
+            if !tuple_index && self.ch == '.' {
                 // RES-330: stop on the range operator `..` so quantifier
                 // ranges like `0..n` lex as IntLiteral(0), DotDot, IDENT.
                 // Without this, the greedy float scanner would swallow
@@ -1874,7 +1881,7 @@ impl Lexer {
         // follows; this avoids ambiguity with hex digits in non-prefixed
         // contexts and produces a clean lex error if the exponent body is
         // empty.
-        if self.ch == 'e' || self.ch == 'E' {
+        if !tuple_index && (self.ch == 'e' || self.ch == 'E') {
             let next = self.peek_char();
             let exp_starts_here = self.is_digit(next)
                 || ((next == '+' || next == '-') && {

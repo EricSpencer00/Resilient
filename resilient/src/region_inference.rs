@@ -775,7 +775,10 @@ impl<'a> AliasWalker<'a> {
                 for name in names {
                     self.kill_name(state, name);
                 }
-                for (index, root) in tuple_roots {
+                for (path, root) in tuple_roots {
+                    let Ok(index) = path.parse::<usize>() else {
+                        continue;
+                    };
                     let Some(name) = names.get(index) else {
                         continue;
                     };
@@ -872,10 +875,8 @@ impl<'a> AliasWalker<'a> {
                 state.aliases.get(&place).cloned()
             }
             crate::Node::TupleIndex { tuple, index, .. } => {
-                if let crate::Node::TupleLiteral { items, .. } = tuple.as_ref() {
-                    return items
-                        .get(*index)
-                        .and_then(|item| self.returned_root(item, state));
+                if let Some(item) = Self::direct_tuple_item(tuple, *index) {
+                    return self.returned_root(item, state);
                 }
                 let place = Self::tuple_place(tuple, *index)?;
                 state.aliases.get(&place).cloned()
@@ -939,29 +940,103 @@ impl<'a> AliasWalker<'a> {
         }
     }
 
-    fn tuple_element_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(usize, String)> {
-        if let crate::Node::TupleLiteral { items, .. } = value {
-            return items
-                .iter()
-                .enumerate()
-                .filter_map(|(index, item)| {
-                    self.returned_root(item, state).map(|root| (index, root))
-                })
-                .collect();
+    /// Return the statically selected item from a tuple expression when the
+    /// complete tuple path is made of direct literals and constant indices.
+    /// This is intentionally syntax-only: an unknown tuple value remains
+    /// opaque and is handled by the canonical alias-place lookup instead.
+    fn direct_tuple_item(node: &crate::Node, index: usize) -> Option<&crate::Node> {
+        match node {
+            crate::Node::TupleLiteral { items, .. } => items.get(index),
+            crate::Node::TupleIndex {
+                tuple,
+                index: nested_index,
+                ..
+            } => {
+                let nested = Self::direct_tuple_item(tuple, *nested_index)?;
+                Self::direct_tuple_item(nested, index)
+            }
+            _ => None,
+        }
+    }
+
+    fn tuple_element_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let mut roots = Vec::new();
+        if let crate::Node::TupleLiteral { .. } = value {
+            self.collect_direct_tuple_roots(value, "", state, &mut roots);
+            return roots;
         }
 
-        let Some(source) = Self::place_name(value) else {
-            return Vec::new();
+        self.collect_tuple_alias_roots(value, "", state, &mut roots);
+        roots
+    }
+
+    /// Collect reference leaves from a direct tuple literal, including
+    /// nested tuple literals and tuple-valued aliases whose element paths are
+    /// already known. Every emitted path consists solely of constant tuple
+    /// indices, so it cannot conflate distinct runtime values.
+    fn collect_direct_tuple_roots(
+        &self,
+        value: &crate::Node,
+        prefix: &str,
+        state: &AliasState,
+        roots: &mut Vec<(String, String)>,
+    ) {
+        let crate::Node::TupleLiteral { items, .. } = value else {
+            return;
         };
-        let prefix = format!("{source}.");
-        state
-            .aliases
-            .iter()
-            .filter_map(|(place, root)| {
-                let index = place.strip_prefix(&prefix)?.parse().ok()?;
-                Some((index, root.clone()))
-            })
-            .collect()
+        for (index, item) in items.iter().enumerate() {
+            let path = if prefix.is_empty() {
+                index.to_string()
+            } else {
+                format!("{prefix}.{index}")
+            };
+            if let Some(root) = self.returned_root(item, state) {
+                roots.push((path.clone(), root));
+            }
+            if matches!(item, crate::Node::TupleLiteral { .. }) {
+                self.collect_direct_tuple_roots(item, &path, state, roots);
+            } else {
+                self.collect_tuple_alias_roots(item, &path, state, roots);
+            }
+        }
+    }
+
+    /// Copy known tuple paths from an existing tuple-valued place into a new
+    /// tuple path. Non-tuple places and paths containing fields or array
+    /// indices are deliberately ignored.
+    fn collect_tuple_alias_roots(
+        &self,
+        value: &crate::Node,
+        prefix: &str,
+        state: &AliasState,
+        roots: &mut Vec<(String, String)>,
+    ) {
+        let Some(source) = Self::place_name(value) else {
+            return;
+        };
+        let source_prefix = format!("{source}.");
+        for (place, root) in &state.aliases {
+            let Some(suffix) = place.strip_prefix(&source_prefix) else {
+                continue;
+            };
+            if suffix.is_empty()
+                || suffix
+                    .split('.')
+                    .any(|segment| segment.parse::<usize>().is_err())
+            {
+                continue;
+            }
+            let path = if prefix.is_empty() {
+                suffix.to_owned()
+            } else {
+                format!("{prefix}.{suffix}")
+            };
+            roots.push((path, root.clone()));
+        }
     }
 
     fn struct_field_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(String, String)> {
@@ -2978,6 +3053,79 @@ mod tests {
             errors.len(),
             1,
             "tuple element aliases must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn nested_tuple_literal_chained_index_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = ((x, 0), 1); \
+                 set_both(x, pair.0.0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "nested tuple element alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("pair.0.0"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_tuple_literal_distinct_paths_with_same_root_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = ((x, 0), (x, 1)); \
+                 set_both(pair.0.0, pair.1.0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "nested tuple paths must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tuple_alias_preserves_nested_element_path() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let inner = (x, 0); \
+                 let pair = (inner, 1); \
+                 set_both(x, pair.0.0); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "nested tuple alias must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn nested_tuple_value_path_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = ((0, 1), 2); \
+                 set_both(x, pair.0.0); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value-typed nested tuple paths must stay outside alias tracking: {:?}",
             errors
         );
     }
