@@ -354,6 +354,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   `let items = [new Holder { item: x }];` followed by
   `set_both(x, items[0].item)` is rejected. Dynamic indices, transformed
   arrays, and unknown element shapes remain conservative.
+- **A-E5 increment 10 (RES-4070):** constant-bound slices of those direct
+  struct arrays retain nested field provenance at the rebased element path,
+  so `let selected = items[0..1]; set_both(x, selected[0].item)` is also
+  rejected. Dynamic-bound slices and transformed sources remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -374,7 +378,8 @@ Grounded in `resilient/src/region_inference.rs` and the
   Alias facts established by dynamic or transformed array elements remain
   invisible; known struct-field facts are limited to concrete direct
   literals (including nested declared fields and direct array-literal
-  elements) and are killed on field writes. Closure bodies are checked using captured
+  elements and their constant-bound slices) and are killed on field writes.
+  Closure bodies are checked using captured
   facts, while array tracking is limited to direct literals, constant index
   paths, and constant-bound slices.
 - No general whole-program or interprocedural alias analysis. The pass
