@@ -211,9 +211,11 @@ when jar is absent.
   both string arguments, preserves the mapping, and rejects duplicate,
   unknown, empty, or non-string arguments. It does not load TLC or the
   referenced spec yet.
-- Implement the remaining checker: walk the annotated function's
-  reachable call graph, rejecting `extern fn` calls without
-  `requires`/`ensures` (Q4).
+- **B3 contract guard delivered:** the compiler walks each annotated
+  function's reachable call graph and rejects `extern fn` calls without
+  both `requires` and `ensures` clauses (Q4), with a diagnostic at the
+  offending call site. Non-refined code keeps the existing permissive
+  behavior.
 - `EXTENDS runtime` becomes valid once B2's `runtime.tla` exists to
   extend.
 - Re-evaluate "if warranted": if usage data from B2 (do maintainers

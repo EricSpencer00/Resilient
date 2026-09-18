@@ -1,10 +1,12 @@
-//! RES-3930 Phase B1 — external TLA+ refinement mappings.
+//! RES-3930 Phase B1/B3 — external TLA+ refinement mappings.
 //!
 //! The parser owns the `@refines(spec = "...", action = "...")` syntax and
 //! records validated mappings in the shared attribute registry. This module
 //! checks that the records still point at named functions and that each
-//! function has at most one mapping. TLA+ file loading, action discovery, and
-//! proof checking are intentionally left to the later Phase B increments.
+//! function has at most one mapping. For refined call paths, it also enforces
+//! the locked contract-required rule for `extern fn`: both a `requires` and an
+//! `ensures` clause must be present before the path can be modeled. TLA+ file
+//! loading, action discovery, and proof checking remain later increments.
 
 use crate::Node;
 use std::collections::{HashMap, HashSet};
@@ -17,6 +19,24 @@ struct RefinesMapping {
     spec: String,
     action: String,
     line: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CallSite {
+    callee: String,
+    line: usize,
+    column: usize,
+}
+
+#[derive(Debug, Default)]
+struct FunctionSummary {
+    calls: Vec<CallSite>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExternSummary {
+    has_requires: bool,
+    has_ensures: bool,
 }
 
 fn parse_record(
@@ -109,16 +129,122 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         mappings.push(mapping);
     }
 
-    // Keep the structured values live in this first increment. The next
-    // checker will consume this same validated representation when it starts
-    // resolving specs and actions.
-    let _ = mappings;
+    check_reachable_extern_contracts(program, source_path, &mappings)
+}
+
+fn collect_summaries(
+    program: &Node,
+) -> (
+    HashMap<String, FunctionSummary>,
+    HashMap<String, ExternSummary>,
+) {
+    let mut functions = HashMap::new();
+    crate::uniqueness_walk::for_each_function(program, |name, _parameters, body| {
+        let mut summary = FunctionSummary::default();
+        crate::uniqueness_walk::visit(body, &mut |node| {
+            if let Node::CallExpression { function, span, .. } = node
+                && let Node::Identifier { name: callee, .. } = function.as_ref()
+            {
+                summary.calls.push(CallSite {
+                    callee: callee.clone(),
+                    line: span.start.line,
+                    column: span.start.column,
+                });
+            }
+        });
+        functions.insert(name.to_string(), summary);
+    });
+
+    let mut externs = HashMap::new();
+    if let Node::Program(statements) = program {
+        for statement in statements {
+            if let Node::Extern { decls, .. } = &statement.node {
+                for decl in decls {
+                    externs.insert(
+                        decl.resilient_name.clone(),
+                        ExternSummary {
+                            has_requires: !decl.requires.is_empty(),
+                            has_ensures: !decl.ensures.is_empty(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+    (functions, externs)
+}
+
+fn check_reachable_extern_contracts(
+    program: &Node,
+    source_path: &str,
+    mappings: &[RefinesMapping],
+) -> Result<(), String> {
+    let (functions, externs) = collect_summaries(program);
+    for mapping in mappings {
+        let mut visited = HashSet::new();
+        let mut work = vec![mapping.function.clone()];
+        while let Some(function_name) = work.pop() {
+            if !visited.insert(function_name.clone()) {
+                continue;
+            }
+            let Some(summary) = functions.get(&function_name) else {
+                continue;
+            };
+            for call in &summary.calls {
+                if let Some(extern_summary) = externs.get(&call.callee) {
+                    if extern_summary.has_requires && extern_summary.has_ensures {
+                        continue;
+                    }
+                    let (missing, suggestion) =
+                        match (extern_summary.has_requires, extern_summary.has_ensures) {
+                            (false, false) => (
+                                "a `requires` and an `ensures` clause",
+                                "requires true; ensures result == result;",
+                            ),
+                            (false, true) => ("a `requires` clause", "requires true;"),
+                            (true, false) => ("an `ensures` clause", "ensures result == result;"),
+                            (true, true) => continue,
+                        };
+                    return Err(diagnostic_at(
+                        source_path,
+                        call.line,
+                        call.column,
+                        &format!(
+                            "error[refinement]: refined function `{}` reaches extern fn `{}` without {}; add `{}` so the TLA+ refinement can model its behavior",
+                            mapping.function, call.callee, missing, suggestion
+                        ),
+                    ));
+                }
+                if functions.contains_key(&call.callee) {
+                    work.push(call.callee.clone());
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+fn diagnostic_at(source_path: &str, line: usize, column: usize, message: &str) -> String {
+    if line == 0 {
+        format!("{}: {}", source_path, message)
+    } else {
+        format!("{}:{}:{}: {}", source_path, line, column.max(1), message)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_source(source: &str) -> Result<(), String> {
+        let _guard = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let (program, errors) = crate::parse(source);
+        assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
+        let result = check(&program, "refines.rz");
+        crate::feature_attrs::reset();
+        result
+    }
 
     fn record(args: &str) -> crate::feature_attrs::AttrRecord {
         crate::feature_attrs::AttrRecord {
@@ -161,5 +287,74 @@ mod tests {
         )
         .expect_err("duplicate keys must fail");
         assert!(error.contains("duplicate"), "{error}");
+    }
+
+    #[test]
+    fn rejects_refined_path_to_uncontracted_extern() {
+        let source = r#"
+            @refines(spec = "counter.tla", action = "Inc")
+            fn increment(int value) { return foreign_increment(value); }
+            extern "counter" {
+                fn foreign_increment(value: Int) -> Int;
+            };
+        "#;
+        let error = check_source(source).expect_err("uncontracted extern must be rejected");
+        assert!(error.contains("error[refinement]"), "{error}");
+        assert!(error.contains("foreign_increment"), "{error}");
+        assert!(
+            error.contains("requires") && error.contains("ensures"),
+            "{error}"
+        );
+        assert!(
+            error.contains("requires true; ensures result == result;"),
+            "{error}"
+        );
+        assert!(
+            error.contains("refines.rz:3:"),
+            "call-site diagnostic expected: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_uncontracted_extern_reached_through_helper() {
+        let source = r#"
+            @refines(spec = "counter.tla", action = "Inc")
+            fn increment(int value) { return helper(value); }
+            fn helper(int value) { return foreign_increment(value); }
+            extern "counter" {
+                fn foreign_increment(value: Int) -> Int;
+            };
+        "#;
+        let error = check_source(source).expect_err("reachable uncontracted extern must fail");
+        assert!(error.contains("foreign_increment"), "{error}");
+        assert!(
+            error.contains("refines.rz:4:"),
+            "helper call-site expected: {error}"
+        );
+    }
+
+    #[test]
+    fn accepts_refined_path_to_fully_contracted_extern() {
+        let source = r#"
+            @refines(spec = "counter.tla", action = "Inc")
+            fn increment(int value) { return foreign_increment(value); }
+            extern "counter" {
+                fn foreign_increment(value: Int) -> Int
+                    requires value >= 0
+                    ensures result >= 0;
+            };
+        "#;
+        check_source(source).expect("fully contracted extern should be modelable");
+    }
+
+    #[test]
+    fn leaves_non_refined_extern_paths_permissive() {
+        let source = r#"
+            fn increment(int value) { return foreign_increment(value); }
+            extern "counter" {
+                fn foreign_increment(value: Int) -> Int;
+            };
+        "#;
+        check_source(source).expect("contract rule is opt-in through @refines");
     }
 }
