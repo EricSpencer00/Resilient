@@ -115,6 +115,7 @@ otherwise.
 | `RESILIENT_MCP_RATE_LIMIT_PER_MIN` | `100` | See Production Checklist below. |
 | `RESILIENT_MCP_MAX_CONNECTIONS` | `16` | See Production Checklist below. |
 | `RESILIENT_MCP_CORS_ORIGIN` | `*` | Browser origin allowed by the HTTP wrapper; set an exact origin for a deployed playground/client. |
+| `RESILIENT_MCP_API_KEY` | unset | Require the exact `X-API-Key` header value on non-preflight HTTP requests; keep unset only for trusted private deployments. |
 
 Example with overrides:
 
@@ -122,6 +123,7 @@ Example with overrides:
 docker run --rm -p 8080:8080 \
   -e RESILIENT_MCP_TIMEOUT_SECS=20 \
   -e RESILIENT_MCP_RATE_LIMIT_PER_MIN=300 \
+  -e RESILIENT_MCP_API_KEY='replace-with-a-secret' \
   resilient-mcp mcp --http-port 8080
 ```
 
