@@ -7844,6 +7844,18 @@ impl TypeChecker {
                             }
                             None => {}
                         }
+                        match crate::ffi_buffers::parse_buffer_type(ty) {
+                            Some(Ok(_)) => continue,
+                            Some(Err(element)) => {
+                                return Err(format!(
+                                    "FFI: extern fn `{}` parameter `{}` has type `{}`; \
+                                     buffer element type `{}` has no contiguous C layout \
+                                     (supported: Buffer<Int>, Buffer<Float>)",
+                                    fn_name, param_name, ty, element
+                                ));
+                            }
+                            None => {}
+                        }
                         let is_declared_struct = self.declared_structs.contains(ty);
                         let is_repr_c_struct = self.repr_c_structs.contains(ty);
                         if is_declared_struct && !is_repr_c_struct {
@@ -7856,7 +7868,8 @@ impl TypeChecker {
                         if !SUPPORTED_PARAMS.contains(&ty.as_str()) && !is_repr_c_struct {
                             return Err(format!(
                                 "FFI: extern fn `{}` parameter `{}` has unsupported type `{}`; \
-                                 supported types are: {}, Array<Int>, Array<Float>",
+                                supported types are: {}, Array<Int>, Array<Float>, \
+                                 Buffer<Int>, Buffer<Float>",
                                 fn_name,
                                 param_name,
                                 ty,
@@ -7876,6 +7889,21 @@ impl TypeChecker {
                     // Validate return type
                     let is_declared_struct = self.declared_structs.contains(&d.return_type);
                     let is_repr_c_struct = self.repr_c_structs.contains(&d.return_type);
+                    if let Some(Ok(_)) = crate::ffi_buffers::parse_buffer_type(&d.return_type) {
+                        return Err(format!(
+                            "FFI: extern fn `{}` returns Buffer storage; use a caller-owned \
+                             Buffer<Int> or Buffer<Float> parameter instead",
+                            fn_name
+                        ));
+                    }
+                    if let Some(Err(element)) =
+                        crate::ffi_buffers::parse_buffer_type(&d.return_type)
+                    {
+                        return Err(format!(
+                            "FFI: extern fn `{}` has unsupported return buffer element type `{}`",
+                            fn_name, element
+                        ));
+                    }
                     if is_declared_struct && !is_repr_c_struct {
                         return Err(format!(
                             "FFI: extern fn `{}` returns struct type `{}` without `@repr(C)`; \

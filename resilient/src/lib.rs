@@ -284,6 +284,8 @@ mod ffi;
 // backend, so an unsupported array type is diagnosed the same way in a
 // build without `--features ffi`.
 mod ffi_arrays;
+// RES-4230: typed reference-semantics buffers lowered to mutable FFI pointers.
+mod ffi_buffers;
 // RES-4226: `CStr` marshalling and `Int32` width conversion. Always
 // compiled for the same reason as `ffi_arrays`.
 mod ffi_cstr;

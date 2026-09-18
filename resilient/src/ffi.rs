@@ -59,6 +59,11 @@ pub enum FfiType {
     /// what it costs. Length is not implied; bindings declare their own
     /// count parameter, matching the C header.
     ArrayPtr(Box<FfiType>),
+    /// RES-4230: a reference-semantics `Buffer<T>` passed to C as a mutable
+    /// pointer to caller-owned contiguous storage (`int64_t*` / `double*`).
+    /// The trampoline holds a mutable borrow until the foreign call returns,
+    /// so writes made by C are visible through the original Buffer value.
+    BufferPtr(Box<FfiType>),
     /// RES-4226: C's `int` / `int32_t`. Distinct from `Int` (`int64_t`)
     /// because the width is load-bearing on return: a C function
     /// returning `int` defines only the low 32 bits of the return
@@ -73,7 +78,7 @@ pub enum FfiType {
 
 impl FfiType {
     /// Resolve a Resilient surface type name to an FFI type **without**
-    /// any struct registry — i.e. only the built-in scalar types.
+    /// any struct registry — i.e. built-ins and pointer-shaped containers.
     /// Returns `None` for an unknown name (including struct names).
     pub fn from_resilient(name: &str) -> Option<Self> {
         match name {
@@ -92,7 +97,9 @@ impl FfiType {
             // that into a diagnostic that names the *element*.
             _ => match crate::ffi_arrays::parse_array_type(name) {
                 Some(Ok(t)) => Some(t),
-                Some(Err(_)) | None => None,
+                Some(Err(_)) | None => {
+                    crate::ffi_buffers::parse_buffer_type(name).and_then(Result::ok)
+                }
             },
         }
     }
@@ -129,7 +136,9 @@ impl FfiType {
             FfiType::Void => 0,
             FfiType::OpaquePtr => core::mem::size_of::<usize>(),
             FfiType::Callback => core::mem::size_of::<usize>(),
-            FfiType::ArrayPtr(_) | FfiType::CStr => core::mem::size_of::<usize>(),
+            FfiType::ArrayPtr(_) | FfiType::BufferPtr(_) | FfiType::CStr => {
+                core::mem::size_of::<usize>()
+            }
             FfiType::Int32 => 4,
             FfiType::Struct { fields, .. } => struct_layout(fields).total,
         }
@@ -142,9 +151,11 @@ impl FfiType {
             FfiType::Bool => 1,
             FfiType::Str => core::mem::align_of::<usize>(),
             FfiType::Void => 1,
-            FfiType::OpaquePtr | FfiType::Callback | FfiType::ArrayPtr(_) | FfiType::CStr => {
-                core::mem::align_of::<usize>()
-            }
+            FfiType::OpaquePtr
+            | FfiType::Callback
+            | FfiType::ArrayPtr(_)
+            | FfiType::BufferPtr(_)
+            | FfiType::CStr => core::mem::align_of::<usize>(),
             FfiType::Int32 => 4,
             FfiType::Struct { fields, .. } => struct_layout(fields).align,
         }
@@ -261,6 +272,11 @@ impl ForeignSignature {
                 name: decl.resilient_name.clone(),
             });
         }
+        if let FfiType::BufferPtr(_) = ret {
+            return Err(FfiError::BufferReturnUnsupported {
+                name: decl.resilient_name.clone(),
+            });
+        }
         if params.len() > 8 {
             return Err(FfiError::ArityTooLarge {
                 name: decl.resilient_name.clone(),
@@ -271,18 +287,23 @@ impl ForeignSignature {
     }
 }
 
-/// RES-4225: choose the most specific diagnostic for a type name that
-/// failed to resolve. An array spelling with a bad element type gets an
-/// error naming the element; anything else falls back to the generic
-/// "unsupported type".
+/// Choose the most specific diagnostic for a type name that failed to
+/// resolve. Parameterized array and buffer spellings with bad element types
+/// name the element; anything else falls back to the generic diagnostic.
 fn unsupported_type_error(ty: &str) -> FfiError {
-    match crate::ffi_arrays::parse_array_type(ty) {
-        Some(Err(element)) => FfiError::UnsupportedArrayElement {
+    if let Some(Err(element)) = crate::ffi_arrays::parse_array_type(ty) {
+        return FfiError::UnsupportedArrayElement {
             declared: ty.to_string(),
             element,
-        },
-        _ => FfiError::UnsupportedType(ty.to_string()),
+        };
     }
+    if let Some(Err(element)) = crate::ffi_buffers::parse_buffer_type(ty) {
+        return FfiError::UnsupportedBufferElement {
+            declared: ty.to_string(),
+            element,
+        };
+    }
+    FfiError::UnsupportedType(ty.to_string())
 }
 
 #[derive(Debug)]
@@ -321,10 +342,20 @@ pub enum FfiError {
         declared: String,
         element: String,
     },
+    /// RES-4230: a `Buffer<T>` whose element type has no contiguous C
+    /// representation.
+    UnsupportedBufferElement {
+        declared: String,
+        element: String,
+    },
     /// RES-4225: an `extern fn` declared an array *return* type. The
     /// buffer would be owned by C with a lifetime Resilient cannot see,
     /// so there is no sound way to copy it back.
     ArrayReturnUnsupported {
+        name: String,
+    },
+    /// RES-4230: returned buffers would have an ambiguous owner and lifetime.
+    BufferReturnUnsupported {
         name: String,
     },
     /// RES-317: an `extern fn` referenced a struct type that was not
@@ -390,10 +421,24 @@ impl std::fmt::Display for FfiError {
                     declared, element
                 )
             }
+            FfiError::UnsupportedBufferElement { declared, element } => {
+                write!(
+                    f,
+                    "FFI: `{}` is not supported: buffer element type `{}` has no contiguous C layout (supported: Buffer<Int>, Buffer<Float>)",
+                    declared, element
+                )
+            }
             FfiError::ArrayReturnUnsupported { name } => {
                 write!(
                     f,
                     "FFI: extern fn `{}` returns an array; C-allocated buffers have a lifetime Resilient cannot model. Pass a caller-owned output buffer instead",
+                    name
+                )
+            }
+            FfiError::BufferReturnUnsupported { name } => {
+                write!(
+                    f,
+                    "FFI: extern fn `{}` returns a Buffer; returned caller-owned storage has no safe Resilient owner",
                     name
                 )
             }
@@ -659,6 +704,48 @@ mod tests {
         let sig = ForeignSignature::from_decl(&d).expect("OpaquePtr arg must parse");
         assert_eq!(sig.params, vec![FfiType::OpaquePtr]);
         assert_eq!(sig.ret, FfiType::Void);
+    }
+
+    #[test]
+    fn signature_accepts_caller_owned_buffer_parameters() {
+        let d = decl(
+            "fill",
+            "fill",
+            vec![("Buffer<Int>", "ints"), ("Buffer<Float>", "floats")],
+            "Void",
+        );
+        let sig = ForeignSignature::from_decl(&d).expect("Buffer pointers must parse");
+        assert_eq!(
+            sig.params,
+            vec![
+                FfiType::BufferPtr(Box::new(FfiType::Int)),
+                FfiType::BufferPtr(Box::new(FfiType::Float)),
+            ]
+        );
+        assert_eq!(sig.ret, FfiType::Void);
+    }
+
+    #[test]
+    fn signature_rejects_unsupported_buffer_elements() {
+        let d = decl("fill", "fill", vec![("Buffer<String>", "items")], "Void");
+        let err = ForeignSignature::from_decl(&d).expect_err("Buffer<String> must be rejected");
+        assert!(
+            matches!(err, FfiError::UnsupportedBufferElement { ref declared, ref element }
+                if declared == "Buffer<String>" && element == "String"),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn signature_rejects_buffer_returns() {
+        let d = decl("make", "make", vec![], "Buffer<Int>");
+        let err = ForeignSignature::from_decl(&d).expect_err("Buffer returns must be rejected");
+        assert!(
+            matches!(err, FfiError::BufferReturnUnsupported { ref name } if name == "make"),
+            "got {:?}",
+            err
+        );
     }
 
     #[test]
