@@ -809,6 +809,23 @@ rather than being silently masked.
 | `array_stddev_int(arr)` | array of int → float | RES-1150: integer array standard deviation |
 | `array_stddev_float(arr)` | array of float → float | RES-1150: float array standard deviation |
 
+## Data Utilities
+
+| Name | Signature | Notes |
+|---|---|---|
+| `csv_parse(s)` | string → array of array of string | RES-2662: parse comma-delimited lines; quoted fields may contain commas and doubled quotes decode to one quote |
+| `csv_parse_tsv(s)` | string → array of array of string | RES-2662: parse tab-delimited lines with the same quoting rules as `csv_parse` |
+| `csv_format(rows)` | array of array of string → string | RES-2662: format CSV; quotes fields containing commas, quotes, or newlines |
+| `csv_format_tsv(rows)` | array of array of string → string | RES-2662: format TSV; quotes fields containing tabs, quotes, or newlines |
+
+Parsing is line-oriented: each input line becomes one row, no header is
+inferred, and an empty input string produces an empty outer array. Formatting
+separates rows with `\n` and does not add a trailing newline. Both formatters
+require every cell to be a string; malformed argument shapes produce a runtime
+error. The parsers decode doubled quotes inside quoted fields, while quoted
+newlines emitted by a formatter are still interpreted using the parser's
+line-oriented row boundaries.
+
 ## Bytes Functions (Extended)
 
 | Name | Signature | Notes |
