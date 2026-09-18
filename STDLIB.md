@@ -674,15 +674,18 @@ rather than being silently masked.
 | `string_byte_at(s, i)` | (string, int) → int | RES-564: byte at index (-1 if out of range) |
 | `char_to_digit(c)` | string → Result<Int, String> | RES-505: parse single char to base-36 digit |
 | `digit_to_char(d)` | int → string | RES-513: int 0..=35 to base-36 digit char |
-| `char_to_int(c)` | string → int | Unicode codepoint of single character |
-| `int_to_char(n)` | int → string | Convert unicode codepoint to single character |
-| `char_is_alpha(c)` | string → bool | RES-2619: alphabetic predicate |
-| `char_is_ascii(c)` | string → bool | RES-2619: ASCII predicate |
-| `char_is_digit(c)` | string → bool | RES-2619: numeric digit predicate |
-| `char_is_lower(c)` | string → bool | RES-2619: lowercase letter predicate |
-| `char_is_upper(c)` | string → bool | RES-2619: uppercase letter predicate |
-| `char_to_lower(c)` | string → string | RES-2619: convert char to lowercase |
-| `char_to_upper(c)` | string → string | RES-2619: convert char to uppercase |
+| `char_to_int(c)` | char → int | Unicode codepoint of a single character |
+| `int_to_char(n)` | int → char | Convert a valid Unicode scalar value to a character |
+| `char_is_alpha(c)` | char → bool | RES-2619: alphabetic predicate |
+| `char_is_ascii(c)` | char → bool | RES-2619: ASCII predicate |
+| `char_is_alphanumeric(c)` | char → bool | RES-2619: Unicode alphanumeric predicate |
+| `char_is_whitespace(c)` | char → bool | RES-2619: Unicode whitespace predicate |
+| `char_to_string(c)` | char → string | RES-2619: convert one Unicode scalar to a one-character string |
+| `char_is_digit(c)` | char → bool | RES-2619: ASCII decimal digit predicate (`0`–`9`) |
+| `char_is_lower(c)` | char → bool | RES-2619: lowercase Unicode-letter predicate |
+| `char_is_upper(c)` | char → bool | RES-2619: uppercase Unicode-letter predicate |
+| `char_to_lower(c)` | char → char | RES-2619: convert char to lowercase; uses the first scalar of a multi-scalar mapping |
+| `char_to_upper(c)` | char → char | RES-2619: convert char to uppercase; uses the first scalar of a multi-scalar mapping |
 | `is_ascii(s)` | string → bool | RES-1140: check if all chars are ASCII |
 | `is_ascii_whitespace(s)` | string → bool | RES-1140: ASCII whitespace predicate |
 | `is_ascii_hexdigit(s)` | string → bool | RES-1140: ASCII hex digit predicate |
@@ -693,6 +696,12 @@ rather than being silently masked.
 | `trim_start_chars(s, chars)` | (string, string) → string | RES-477: left-trim arbitrary char set |
 | `trim_end_chars(s, chars)` | (string, string) → string | RES-477: right-trim arbitrary char set |
 | `intern(s)` | string → string | RES-2612: intern for runtime deduplication |
+
+These `char_*` operations take a `Char` value, written as a single-quoted
+literal such as `'A'` or `'\u{1F600}'`; passing a string is a runtime type
+error. Classification follows Unicode for alphabetic, alphanumeric,
+whitespace, upper-case, and lower-case checks, while `char_is_digit` is limited
+to ASCII decimal digits.
 
 ## Array Functions (Extended)
 
