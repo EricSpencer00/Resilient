@@ -638,12 +638,13 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //
 // Soundness contract (the A-E5 "zero false positives" rule):
 //
-// - Alias facts are established ONLY by a straight-line `let NAME = IDENT;`
-//   whose right-hand side is a plain identifier currently known to be a
-//   reference (a `&`/`&mut`-typed parameter of the enclosing function,
-//   or a previous alias of one). Copying a reference binding cannot do
-//   anything but refer to the same region — there is no address-of or
-//   re-seating expression syntax in the language today.
+// - Alias facts are established only by operations with one unambiguous
+//   provenance: straight-line `let NAME = IDENT;` copies, direct reference
+//   returns, declared reference fields initialized by concrete struct
+//   literals (including nested paths), and non-negative constant array
+//   element/slice paths. Copying a reference binding cannot do anything but
+//   refer to the same region — there is no address-of or re-seating expression
+//   syntax in the language today.
 // - Any construct whose effect on a binding is not fully understood
 //   KILLS the fact rather than guessing: assignments kill (re-seating
 //   semantics not locked in), shadowing `let`s kill and detach the old
@@ -859,13 +860,11 @@ impl<'a> AliasWalker<'a> {
     }
 
     /// Return a canonical place for the field paths this pass understands.
-    /// Nested computed expressions remain opaque rather than guessing their
-    /// identity.
+    /// Nested place expressions are retained when each step has a stable
+    /// source-level name or constant index. Computed expressions remain
+    /// opaque rather than guessing their identity.
     fn field_place(target: &crate::Node, field: &str) -> Option<String> {
-        let crate::Node::Identifier { name, .. } = target else {
-            return None;
-        };
-        Some(format!("{name}.{field}"))
+        Some(format!("{}.{field}", Self::place_name(target)?))
     }
 
     /// Return a canonical path for an array element when every index in the
@@ -900,19 +899,42 @@ impl<'a> AliasWalker<'a> {
         let crate::Node::StructLiteral { name, fields, .. } = value else {
             return Vec::new();
         };
-        fields
-            .iter()
-            .filter_map(|(field, value)| {
-                if !self
-                    .reference_fields
-                    .contains(&(name.clone(), field.clone()))
-                {
-                    return None;
+        let mut roots = Vec::new();
+        self.collect_struct_field_roots(name, fields, "", state, &mut roots);
+        roots
+    }
+
+    fn collect_struct_field_roots(
+        &self,
+        struct_name: &str,
+        fields: &[(String, crate::Node)],
+        prefix: &str,
+        state: &AliasState,
+        roots: &mut Vec<(String, String)>,
+    ) {
+        for (field, value) in fields {
+            let path = if prefix.is_empty() {
+                field.clone()
+            } else {
+                format!("{prefix}.{field}")
+            };
+            if self
+                .reference_fields
+                .contains(&(struct_name.to_string(), field.clone()))
+            {
+                if let Some(root) = self.returned_root(value, state) {
+                    roots.push((path.clone(), root));
                 }
-                self.returned_root(value, state)
-                    .map(|root| (field.clone(), root))
-            })
-            .collect()
+            }
+            if let crate::Node::StructLiteral {
+                name: nested_name,
+                fields: nested_fields,
+                ..
+            } = value
+            {
+                self.collect_struct_field_roots(nested_name, nested_fields, &path, state, roots);
+            }
+        }
     }
 
     fn array_element_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(usize, String)> {
@@ -2270,6 +2292,66 @@ mod tests {
             errors[0].contains("`x`") && errors[0].contains("`h.item`"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn let_alias_through_nested_reference_struct_field_rejected() {
+        // Nested struct literals preserve provenance through each concrete
+        // declared field path, not just the outer reference field.
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let outer = new Outer { inner: new Inner { item: x } }; \
+                 set_both(x, outer.inner.item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`outer.inner.item`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn value_nested_struct_field_is_not_treated_as_reference_alias() {
+        // A value field at the nested path must not inherit the same-name
+        // reference field from a different struct.
+        let errors = run_alias_check(
+            "struct Inner { int item } \
+             struct Outer { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let outer = new Outer { inner: new Inner { item: x } }; \
+                 set_both(x, outer.inner.item); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value fields must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn reassigned_nested_reference_struct_field_is_killed_conservatively() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let outer = new Outer { inner: new Inner { item: x } }; \
+                 outer.inner.item = x; \
+                 set_both(x, outer.inner.item); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "nested field writes must kill the tracked fact: {:?}",
+            errors
         );
     }
 
