@@ -2701,7 +2701,14 @@ fn array_return_aliases_for_value(
     match value {
         crate::Node::ArrayLiteral { .. } => {
             let mut paths = Vec::new();
-            collect_array_return_paths(value, "", parameters, reference_fields, &mut paths);
+            collect_array_return_paths(
+                value,
+                "",
+                parameters,
+                reference_fields,
+                known_returns,
+                &mut paths,
+            );
             (!paths.is_empty()).then_some(ArrayReturnAliasSummary { paths })
         }
         crate::Node::CallExpression {
@@ -2744,6 +2751,7 @@ fn collect_array_return_paths(
     prefix: &str,
     parameters: &[(String, String)],
     reference_fields: &HashSet<(String, String)>,
+    known_returns: &HashMap<&str, ArrayReturnAliasSummary>,
     paths: &mut Vec<(String, usize)>,
 ) {
     match value {
@@ -2756,7 +2764,14 @@ fn collect_array_return_paths(
                 } else {
                     format!("{prefix}.{index}")
                 };
-                collect_array_return_paths(item, &path, parameters, reference_fields, paths);
+                collect_array_return_paths(
+                    item,
+                    &path,
+                    parameters,
+                    reference_fields,
+                    known_returns,
+                    paths,
+                );
             }
         }
         crate::Node::StructLiteral {
@@ -2773,9 +2788,20 @@ fn collect_array_return_paths(
                     paths.push((path.clone(), param_idx));
                 }
                 if matches!(item, crate::Node::StructLiteral { .. }) {
-                    collect_array_return_paths(item, &path, parameters, reference_fields, paths);
+                    collect_array_return_paths(
+                        item,
+                        &path,
+                        parameters,
+                        reference_fields,
+                        known_returns,
+                        paths,
+                    );
                 }
             }
+        }
+        crate::Node::CallExpression { .. } => {
+            let _ =
+                collect_array_return_call_paths(value, prefix, parameters, known_returns, paths);
         }
         crate::Node::Identifier { .. } => {
             if let Some(param_idx) = direct_reference_parameter_index(value, parameters) {
@@ -2883,7 +2909,14 @@ fn collect_tuple_return_elements(
                 )?;
             }
             crate::Node::ArrayLiteral { .. } => {
-                collect_array_return_paths(item, &path, parameters, reference_fields, elements);
+                collect_array_return_paths(
+                    item,
+                    &path,
+                    parameters,
+                    reference_fields,
+                    array_returns,
+                    elements,
+                );
             }
             crate::Node::CallExpression { .. } => {
                 collect_array_return_call_paths(item, &path, parameters, array_returns, elements)?;
@@ -4321,6 +4354,51 @@ mod tests {
         assert!(
             errors.is_empty(),
             "ambiguous array returns must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_nested_array_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x]; } \
+             fn outer(&mut int x) -> array { return [make_array(x)]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = outer(x); set_both(x, items[0][0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("items[0][0]"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_nested_array_forward_chain_rejected() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x]; } \
+             fn inner(&mut int x) -> array { return [make_array(x)]; } \
+             fn outer(&mut int x) -> array { return inner(x); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = outer(x); set_both(x, items[0][0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn wrapped_reference_nested_array_helper_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x]; } \
+             fn outer(&mut int x) -> array { \
+                 let alias = x; return [make_array(alias)]; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = outer(x); set_both(x, items[0][0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped nested array helper values must stay conservative: {:?}",
             errors
         );
     }
