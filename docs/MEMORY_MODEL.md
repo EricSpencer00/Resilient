@@ -363,6 +363,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   a tracked reference still exposes that reference through pair element 0,
   and direct tuple destructuring preserves the same fact. Value elements and
   unknown tuple sources remain conservative.
+- **A-E5 increment 12 (RES-4070):** nested direct tuple literals and tuple
+  aliases retain reference provenance through chained constant indices. A
+  pair shaped as ((x, 0), 1) therefore still exposes x through pair.0.0.
+  Tuple values, dynamic indices, and transformed tuple sources remain
+  conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
