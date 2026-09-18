@@ -84,6 +84,8 @@ const DEFAULT_MAX_CONNECTIONS: usize = 16;
 /// Default grace period for draining in-flight requests on shutdown
 /// (RES-3942), in seconds.
 const DEFAULT_SHUTDOWN_DRAIN_SECS: u64 = 30;
+/// Stable HTTP API namespace for clients that opt into versioned routes.
+const HTTP_API_V1_PREFIX: &str = "/v1";
 
 /// Runtime-configurable hardening limits for the MCP HTTP wrapper.
 ///
@@ -691,7 +693,14 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
         );
     }
 
-    match (method, path) {
+    // RES-3940: versioned routes are canonical for new clients, while the
+    // original paths remain aliases so existing deployments do not break.
+    let route_path = path
+        .strip_prefix(HTTP_API_V1_PREFIX)
+        .filter(|suffix| suffix.starts_with('/'))
+        .unwrap_or(path);
+
+    match (method, route_path) {
         ("OPTIONS", "/health" | "/readyz" | "/mcp/call" | "/metrics") => http_cors_preflight(),
         ("GET", "/health") => http_json(
             200,
@@ -3572,6 +3581,41 @@ mod tests {
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
         assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
         assert!(resp.contains("\"transport\":\"http\""), "got: {resp}");
+    }
+
+    #[test]
+    fn http_v1_routes_preserve_unversioned_compatibility_aliases() {
+        let versioned = http_response_for_request(
+            "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            &test_config(),
+        );
+        assert!(versioned.starts_with("HTTP/1.1 200 OK"), "got: {versioned}");
+        assert!(versioned.contains("\"status\":\"ok\""), "got: {versioned}");
+
+        let preflight = http_response_for_request(
+            "OPTIONS /v1/mcp/call HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            &test_config(),
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.1 204 No Content"),
+            "got: {preflight}"
+        );
+
+        let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
+        let req = format!(
+            "POST /v1/mcp/call HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let versioned_call = http_response_for_request(&req, &test_config());
+        assert!(
+            versioned_call.starts_with("HTTP/1.1 200 OK"),
+            "got: {versioned_call}"
+        );
+        assert!(
+            versioned_call.contains("fn f(int x) -> int"),
+            "got: {versioned_call}"
+        );
     }
 
     #[test]
