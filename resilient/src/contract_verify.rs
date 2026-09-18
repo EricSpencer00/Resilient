@@ -580,7 +580,7 @@ mod tests {
             match &v.verdict {
                 Verdict::Pass { certificate } => {
                     let cert = certificate.as_ref().expect("certificate emitted");
-                    assert!(cert.contains("check-sat"), "not SMT-LIB2: {cert}");
+                    assert!(cert.contains("check-sat"), "certificate is not SMT-LIB2");
                 }
                 other => panic!("expected Pass, got {other:?}"),
             }

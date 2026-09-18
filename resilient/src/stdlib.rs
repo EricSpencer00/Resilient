@@ -4967,19 +4967,19 @@ mod tests {
     fn assert_str(v: Value, expected: &str) {
         match v {
             Value::String(s) => assert_eq!(s, expected),
-            other => panic!("expected String({expected}), got {:?}", other),
+            _ => panic!("expected String value"),
         }
     }
     fn assert_int(v: Value, expected: i64) {
         match v {
             Value::Int(i) => assert_eq!(i, expected),
-            other => panic!("expected Int({expected}), got {:?}", other),
+            _ => panic!("expected Int value"),
         }
     }
     fn assert_bool(v: Value, expected: bool) {
         match v {
             Value::Bool(b) => assert_eq!(b, expected),
-            other => panic!("expected Bool({expected}), got {:?}", other),
+            _ => panic!("expected Bool value"),
         }
     }
 
