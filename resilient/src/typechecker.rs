@@ -1879,6 +1879,14 @@ pub struct TypeChecker {
     /// type, fixing the "Type mismatch in argument 1: expected T, got int"
     /// false-positive that blocked all generic-function calls.
     fn_type_params: HashMap<String, Vec<String>>,
+    /// RES-4067: generic function name -> trait bounds for each type
+    /// parameter. Used to resolve an associated-type projection only when
+    /// the function's declared bounds provide a sound trait context.
+    fn_type_param_bounds: HashMap<String, Vec<Vec<String>>>,
+    /// RES-4067: concrete associated-type implementations keyed by
+    /// (trait, implementing struct, associated type). Values remain raw
+    /// annotations until a call site has enough context to parse them.
+    assoc_type_bindings: HashMap<(String, String, String), String>,
     /// RES-2693: struct name → set of trait names the struct implements.
     /// Populated by the pre-pass when scanning `ImplBlock` declarations.
     /// Used by `satisfies_trait_param` to allow a concrete struct to satisfy
@@ -5724,6 +5732,8 @@ impl TypeChecker {
             current_span: Span::default(),
 
             fn_type_params: HashMap::new(),
+            fn_type_param_bounds: HashMap::new(),
+            assoc_type_bindings: HashMap::new(),
             trait_impls: HashMap::new(),
             trait_supers: HashMap::new(),
             trait_default_methods: HashMap::new(),
@@ -6184,6 +6194,134 @@ impl TypeChecker {
         }
     }
 
+    /// RES-4067: resolve one generic associated-type projection against the
+    /// concrete type inferred for its base parameter. Resolution is only
+    /// attempted through the callee's declared bounds and only succeeds
+    /// when those bounds provide one consistent implementation. Unknown,
+    /// unbounded, or ambiguous projections retain the existing `Any`
+    /// fallback.
+    fn resolve_generic_associated_type(
+        &self,
+        fn_name: &str,
+        type_param: &str,
+        assoc_name: &str,
+        concrete: &Type,
+    ) -> Option<Type> {
+        let Type::Struct(struct_name) = concrete else {
+            return None;
+        };
+        let type_params = self.fn_type_params.get(fn_name)?;
+        let param_index = type_params.iter().position(|name| name == type_param)?;
+        let bounds = self.fn_type_param_bounds.get(fn_name)?.get(param_index)?;
+        if bounds.is_empty() {
+            return None;
+        }
+
+        let mut reachable_traits: HashSet<String> = HashSet::new();
+        for bound in bounds {
+            reachable_traits.insert(bound.clone());
+            if let Some(supers) = self.trait_supers.get(bound) {
+                reachable_traits.extend(supers.iter().cloned());
+            }
+        }
+
+        let mut resolved: Option<Type> = None;
+        for trait_name in reachable_traits {
+            let key = (trait_name, struct_name.clone(), assoc_name.to_string());
+            let Some(raw_type) = self.assoc_type_bindings.get(&key) else {
+                continue;
+            };
+            let concrete_type = self.parse_type_name(raw_type).ok()?;
+            if let Some(previous) = &resolved
+                && previous != &concrete_type
+            {
+                return None;
+            }
+            resolved = Some(concrete_type);
+        }
+        resolved
+    }
+
+    /// Substitute generic parameters in a return type while retaining
+    /// concrete `T::Assoc` projections when the call site proves them.
+    fn substitute_generic_return_type(
+        &self,
+        ty: &Type,
+        fn_name: &str,
+        type_params: &[String],
+        bindings: &HashMap<&str, Type>,
+    ) -> Type {
+        match ty {
+            Type::Struct(name) if type_params.iter().any(|param| param == name) => {
+                bindings.get(name.as_str()).cloned().unwrap_or(Type::Any)
+            }
+            Type::Struct(name) => {
+                let Some((base, assoc)) = name.split_once("::") else {
+                    return ty.clone();
+                };
+                if !type_params.iter().any(|param| param == base) {
+                    return ty.clone();
+                }
+                let Some(concrete) = bindings.get(base) else {
+                    return Type::Any;
+                };
+                self.resolve_generic_associated_type(fn_name, base, assoc, concrete)
+                    .unwrap_or(Type::Any)
+            }
+            Type::Function {
+                params,
+                return_type,
+            } => Type::Function {
+                params: params
+                    .iter()
+                    .map(|param| {
+                        self.substitute_generic_return_type(param, fn_name, type_params, bindings)
+                    })
+                    .collect(),
+                return_type: Box::new(self.substitute_generic_return_type(
+                    return_type,
+                    fn_name,
+                    type_params,
+                    bindings,
+                )),
+            },
+            Type::TypedArray(inner) => Type::TypedArray(Box::new(
+                self.substitute_generic_return_type(inner, fn_name, type_params, bindings),
+            )),
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .iter()
+                    .map(|elem| {
+                        self.substitute_generic_return_type(elem, fn_name, type_params, bindings)
+                    })
+                    .collect(),
+            ),
+            Type::AnonymousStruct(fields) => Type::AnonymousStruct(
+                fields
+                    .iter()
+                    .map(|(name, field_type)| {
+                        (
+                            name.clone(),
+                            self.substitute_generic_return_type(
+                                field_type,
+                                fn_name,
+                                type_params,
+                                bindings,
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
+            Type::Option(inner) => Type::Option(Box::new(self.substitute_generic_return_type(
+                inner,
+                fn_name,
+                type_params,
+                bindings,
+            ))),
+            other => other.clone(),
+        }
+    }
+
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
         // Backwards-compatible thin shim: callers that don't have a
         // source path (REPL, unit tests) keep the original signature.
@@ -6247,6 +6385,13 @@ impl TypeChecker {
                         (trait_name, seen)
                     })
                     .collect();
+                // RES-4067: retain validated associated-type bindings for
+                // generic call-site return projection resolution. The map
+                // stores normalized source annotations and is only parsed
+                // once a concrete type parameter binding is available.
+                self.assoc_type_bindings =
+                    crate::traits::build_assoc_type_map(program).unwrap_or_default();
+                self.fn_type_param_bounds.clear();
                 crate::variance::check(program, source_path)?;
 
                 // RES-061: pre-pass to register every top-level Function
@@ -6267,9 +6412,15 @@ impl TypeChecker {
                             ensures,
                             fails,
                             return_type,
+                            type_params,
+                            type_param_bounds,
                             span,
                             ..
                         } => {
+                            if !type_params.is_empty() {
+                                self.fn_type_param_bounds
+                                    .insert(name.clone(), type_param_bounds.clone());
+                            }
                             // RES-1363: wrap in `Rc` so the call-site
                             // reader at typechecker.rs:5877 clones a
                             // single refcount instead of deep-cloning
@@ -11305,11 +11456,27 @@ impl TypeChecker {
                                 .iter()
                                 .map(|(tp_name, ty)| (tp_name.as_str(), ty.clone()))
                                 .collect();
-                        let effective_return = infer_generic_return_type(
-                            &return_type,
-                            &callee_type_params,
-                            &borrowed_tp_bindings,
-                        );
+                        let effective_return = if let (
+                            Node::Identifier {
+                                name: callee_name, ..
+                            },
+                            Some(type_params),
+                        ) =
+                            (function.as_ref(), callee_type_params.as_ref())
+                        {
+                            self.substitute_generic_return_type(
+                                &return_type,
+                                callee_name,
+                                type_params,
+                                &borrowed_tp_bindings,
+                            )
+                        } else {
+                            infer_generic_return_type(
+                                &return_type,
+                                &callee_type_params,
+                                &borrowed_tp_bindings,
+                            )
+                        };
                         let effective_return = match function.as_ref() {
                             Node::Identifier {
                                 name: callee_name, ..
