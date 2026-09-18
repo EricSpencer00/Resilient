@@ -372,6 +372,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   the same provenance at constant array and tuple indices. An array shaped as
   [(x, 0)] therefore still exposes x through items[0].0. Dynamic indices,
   transformed arrays, and unknown tuple element shapes remain conservative.
+- **A-E5 increment 14 (RES-4070):** constant-bound slices of direct tuple
+  arrays retain the same provenance at the rebased array and tuple paths.
+  Slicing items[0..1] therefore still exposes x through selected[0].0.
+  Dynamic bounds, transformed arrays, and unknown tuple shapes remain
+  conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
