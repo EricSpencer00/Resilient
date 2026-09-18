@@ -5,12 +5,12 @@
       "claimed_at": "2026-09-17T23:00:35Z"
     },
     "docs/MEMORY_MODEL.md": {
-      "branch": "res-4070-array-return-provenance",
-      "claimed_at": "2026-09-18T21:36:01Z"
+      "branch": "res-4070-array-return-composites",
+      "claimed_at": "2026-09-18T21:49:35Z"
     },
     "resilient/src/region_inference.rs": {
-      "branch": "res-4070-array-return-provenance",
-      "claimed_at": "2026-09-18T21:36:01Z"
+      "branch": "res-4070-array-return-composites",
+      "claimed_at": "2026-09-18T21:49:35Z"
     }
   }
 }
