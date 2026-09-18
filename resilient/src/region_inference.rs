@@ -1043,9 +1043,7 @@ fn direct_return_alias_summary(
     parameters: &[(String, String)],
     return_type: Option<&str>,
 ) -> Option<usize> {
-    if return_type.and_then(region_from_type_str).is_none() {
-        return None;
-    }
+    return_type.and_then(region_from_type_str)?;
     let crate::Node::Block { stmts, .. } = body else {
         return None;
     };
