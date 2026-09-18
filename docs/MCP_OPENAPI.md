@@ -1,8 +1,9 @@
 # MCP HTTP wrapper — OpenAPI contract
 
 `docs/openapi.json` is a hand-written OpenAPI 3.0 document describing the
-HTTP surface exposed by `rz mcp --http-port <addr>`: `GET /health`,
-`GET /readyz`, `GET /metrics`, and `POST /mcp/call`, their request/response
+HTTP surface exposed by `rz mcp --http-port <addr>`: versioned `GET /v1/health`,
+`GET /v1/readyz`, `GET /v1/metrics`, and `POST /v1/mcp/call` routes (with
+unversioned compatibility aliases), their request/response
 schemas, and every status code the wrapper can return (`200`, `400`, `404`,
 `413`, `429`, `503`, `504`).
 

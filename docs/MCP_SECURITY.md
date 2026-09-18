@@ -148,9 +148,10 @@ potentially sensitive:
 - monitor `429`, `413`, `504`, process restarts, memory pressure, and external
   solver failures.
 
-`/health` is a liveness endpoint and `/readyz` reports whether the optional Z3
-backend is available. `/metrics` exposes process-local request counters and a
-latency histogram. Keep these routes private or protect them at the edge when
+`/v1/health` is a liveness endpoint and `/v1/readyz` reports whether the
+optional Z3 backend is available. `/v1/metrics` exposes process-local request
+counters and a latency histogram. The unversioned forms remain compatibility
+aliases. Keep these routes private or protect them at the edge when
 their operational information is not intended for the public internet.
 
 ## Deployment checklist

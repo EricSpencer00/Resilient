@@ -38,13 +38,13 @@ rz --mcp-http-port 8080
 Health check:
 
 ```sh
-curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/v1/health
 ```
 
 Readiness check:
 
 ```sh
-curl http://127.0.0.1:8080/readyz
+curl http://127.0.0.1:8080/v1/readyz
 ```
 
 `/health` is the liveness probe and stays healthy as long as the process is
@@ -55,7 +55,7 @@ compiled in.
 Tool call:
 
 ```sh
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}'
 ```
@@ -100,7 +100,7 @@ docker build -t resilient-mcp .
 docker run --rm -p 8080:8080 resilient-mcp mcp --http-port 8080
 ```
 
-The image declares a `HEALTHCHECK` that polls `GET /health` every 30s
+The image declares a `HEALTHCHECK` that polls `GET /v1/health` every 30s
 (3s timeout, 5s start period, 3 retries) — meaningful when the
 container's command is `mcp --http-port 8080`; harmless no-op
 otherwise.
@@ -143,6 +143,12 @@ next tagged release (`release_image.yml` builds+pushes on `v*` tags).
 | VPS/sponsor VM | Best long-term cost | Use systemd or a container runtime plus external uptime monitoring. |
 
 ## HTTP API
+
+The versioned `/v1` namespace is the stable HTTP contract for new clients:
+`/v1/health`, `/v1/readyz`, `/v1/metrics`, and `/v1/mcp/call`. The original
+unversioned paths remain compatibility aliases during migration. A future
+breaking contract will use a new namespace rather than silently changing
+`/v1`; clients should treat the unversioned aliases as legacy routes.
 
 ### `GET /health`
 

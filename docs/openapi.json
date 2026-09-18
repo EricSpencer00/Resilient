@@ -9,6 +9,10 @@
     { "url": "http://127.0.0.1:8080", "description": "Local `rz mcp --http-port 8080`" }
   ],
   "paths": {
+    "/v1/health": { "$ref": "#/paths/~1health" },
+    "/v1/readyz": { "$ref": "#/paths/~1readyz" },
+    "/v1/metrics": { "$ref": "#/paths/~1metrics" },
+    "/v1/mcp/call": { "$ref": "#/paths/~1mcp~1call" },
     "/health": {
       "get": {
         "summary": "Liveness check",

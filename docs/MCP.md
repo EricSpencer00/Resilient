@@ -36,16 +36,23 @@ HTTP wrapper:
 
 ```sh
 rz mcp --http-port 8080
-curl http://127.0.0.1:8080/health
-curl -s http://127.0.0.1:8080/mcp/call \
+curl http://127.0.0.1:8080/v1/health
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}'
 ```
 
-The wrapper exposes `GET /health`, `GET /readyz`, `GET /metrics`, and `POST /mcp/call`. Tool names may use
+The wrapper exposes versioned `GET /v1/health`, `GET /v1/readyz`,
+`GET /v1/metrics`, and `POST /v1/mcp/call` routes. The original unversioned
+paths remain compatibility aliases. Tool names may use
 the hosted aliases from RES-3782 (`rz_compile`, `rz_format`, `rz_verify`,
 and related `rz_*` names) or the native MCP names (`resilient_compile`,
 `resilient_format`, `resilient_verify`, ...).
+
+New integrations should use the `/v1` namespace. It is the stable API
+contract for this HTTP wrapper; a future incompatible contract will use a new
+namespace such as `/v2`. The unversioned aliases are retained temporarily so
+existing clients can migrate without a flag-day change.
 
 The HTTP wrapper is not a sandbox and is unauthenticated unless
 `RESILIENT_MCP_API_KEY` is configured. Read the
@@ -90,7 +97,8 @@ safe out of the box:
 
 Every HTTP response includes `Access-Control-Allow-Origin`, allowed methods
 (`GET, POST, OPTIONS`), and the `Content-Type` allowed header. `OPTIONS
-/mcp/call` and `OPTIONS /health` return a `204 No Content` preflight response.
+/v1/mcp/call` and `OPTIONS /v1/health` return a `204 No Content` preflight
+response; the same applies to their unversioned compatibility aliases.
 Set `RESILIENT_MCP_CORS_ORIGIN` to the exact browser origin when the service
 should not be open to every origin; values containing line breaks are ignored.
 
