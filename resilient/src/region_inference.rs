@@ -642,8 +642,9 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   provenance: straight-line `let NAME = IDENT;` copies, direct reference
 //   returns, declared reference fields initialized by concrete struct
 //   literals (including nested paths), and non-negative constant array
-//   element/slice paths. Copying a reference binding cannot do anything but
-//   refer to the same region — there is no address-of or re-seating expression
+//   element/slice paths, including fields inside direct array-literal
+//   struct elements. Copying a reference binding cannot do anything but refer
+//   to the same region — there is no address-of or re-seating expression
 //   syntax in the language today.
 // - Any construct whose effect on a binding is not fully understood
 //   KILLS the fact rather than guessing: assignments kill (re-seating
@@ -739,6 +740,7 @@ impl<'a> AliasWalker<'a> {
                 let new_root = self.returned_root(value, state);
                 let field_roots = self.struct_field_roots(value, state);
                 let array_roots = self.array_element_roots(value, state);
+                let array_field_roots = self.array_field_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
                     && root != *name
@@ -750,6 +752,11 @@ impl<'a> AliasWalker<'a> {
                 }
                 for (index, root) in array_roots {
                     state.aliases.insert(format!("{name}[{index}]"), root);
+                }
+                for (index, field, root) in array_field_roots {
+                    state
+                        .aliases
+                        .insert(format!("{name}[{index}].{field}"), root);
                 }
             }
             crate::Node::Assignment { name, value, .. } => {
@@ -960,6 +967,27 @@ impl<'a> AliasWalker<'a> {
             ),
             _ => Vec::new(),
         }
+    }
+
+    fn array_field_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        // Only direct array literals are summarized. Slices and transformed
+        // arrays retain their existing opaque behavior.
+        let crate::Node::ArrayLiteral { items, .. } = value else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .enumerate()
+            .flat_map(|(index, item)| {
+                self.struct_field_roots(item, state)
+                    .into_iter()
+                    .map(move |(field, root)| (index, field, root))
+            })
+            .collect()
     }
 
     fn array_slice_element_roots(
@@ -2741,6 +2769,41 @@ mod tests {
             errors[0].contains("items[0]") && errors[0].contains("tracked reference aliasing"),
             "unexpected message: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn array_literal_struct_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [new Holder { item: x }]; \
+                 set_both(x, items[0].item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`items[0].item`"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn array_literal_value_struct_field_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Holder { int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [new Holder { item: x }]; \
+                 set_both(x, items[0].item); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value-typed array fields must stay outside alias tracking: {:?}",
+            errors
         );
     }
 
