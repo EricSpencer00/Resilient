@@ -329,24 +329,21 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 /// possible, because two occurrences of the same identifier in the same
 /// argument list *are* the same binding, full stop.
 ///
-/// Deliberately conservative / deferred (tracked in a follow-up issue,
-/// see the PR body for the number):
+/// Deliberately conservative / deferred (tracked in issue #4070):
 /// - Region-polymorphic callees (non-empty `type_params`) are skipped
 ///   here — `check_call_site_region_aliasing` already covers them via
 ///   region-label substitution, and skipping avoids double-reporting.
-/// - No cross-statement / conditional-path aliasing (e.g. an `if` that
-///   sometimes passes the same variable twice) — only literal syntactic
-///   repetition within one call's argument list.
+/// - Conditional paths use intersection merging and only retain direct
+///   `let` copies plus the narrow direct-reference return summary below;
+///   Z3-backed branch-condition disjointness is not attempted.
 /// - No use-after-move detection: the language has no Copy/Move type
 ///   distinction outside `linear T` (see `linear.rs`), so there is no
 ///   sound way yet to tell whether re-reading a plain local after
 ///   passing it somewhere is a genuine violation or an ordinary Copy.
 ///   Enforcing that now would risk false positives on every ordinary
 ///   value type in the corpus.
-/// - No whole-program / interprocedural analysis — call sites are
-///   checked against the literal argument identifiers visible at that
-///   call, not through further indirection (struct fields, arrays,
-///   closures).
+/// - No general interprocedural analysis — struct fields, arrays,
+///   closures, and ambiguous or wrapped return paths remain opaque.
 pub fn infer(program: &crate::Node, source_path: &str) -> Result<(), String> {
     let errors = check_unannotated_mut_alias(program, source_path);
     if errors.is_empty() {
@@ -472,6 +469,29 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         return errors;
     }
 
+    // RES-4070: keep only an unambiguous direct-reference return summary.
+    // This is deliberately narrower than general interprocedural analysis:
+    // `fn expose(&mut int x) -> &mut int { return x; }` is transparent, but
+    // a branch, wrapper expression, or multiple return paths is not.
+    let mut return_aliases: HashMap<&str, usize> = HashMap::new();
+    for spanned in stmts {
+        if let crate::Node::Function {
+            name,
+            type_params,
+            parameters,
+            body,
+            return_type,
+            ..
+        } = &spanned.node
+            && type_params.is_empty()
+            && callee_table.contains_key(name.as_str())
+            && let Some(param_idx) =
+                direct_return_alias_summary(body, parameters, return_type.as_deref())
+        {
+            return_aliases.insert(name.as_str(), param_idx);
+        }
+    }
+
     for spanned in stmts {
         let crate::Node::Function { body, .. } = &spanned.node else {
             continue;
@@ -527,6 +547,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
     errors.extend(check_unannotated_let_alias(
         stmts,
         &callee_table,
+        &return_aliases,
         source_path,
     ));
 
@@ -570,9 +591,12 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //
 // Deferred (see issue #4070): Z3-backed branch-condition disjointness,
 // aliasing through struct fields / array elements / closures, and
-// use-after-move for plain bindings (still blocked on the Copy/Move
-// default-semantics design decision — `linear.rs` remains the only
-// move-semantics surface).
+// ambiguous interprocedural return paths. A narrow direct-reference
+// return summary is safe because it only accepts a function body whose
+// sole statement returns one reference parameter unchanged. Use-after-
+// move for plain bindings remains deferred by the Copy/Move default-
+// semantics decision — `linear.rs` remains the only move-semantics
+// surface.
 
 /// Per-path alias state for [`check_unannotated_let_alias`].
 #[derive(Clone, Default)]
@@ -607,6 +631,7 @@ impl AliasState {
 
 struct AliasWalker<'a> {
     callee_table: &'a HashMap<&'a str, &'a [(String, String)]>,
+    return_aliases: &'a HashMap<&'a str, usize>,
     source_path: &'a str,
     errors: Vec<String>,
     /// Counter for synthetic detached-root tokens (contains `\u{0}` so
@@ -640,11 +665,7 @@ impl<'a> AliasWalker<'a> {
             }
             crate::Node::LetStatement { name, value, .. } => {
                 self.walk_expr(value, state);
-                let new_root = if let crate::Node::Identifier { name: rhs, .. } = value.as_ref() {
-                    state.root_of(rhs).map(str::to_owned)
-                } else {
-                    None
-                };
+                let new_root = self.returned_root(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
                     && root != *name
@@ -705,6 +726,33 @@ impl<'a> AliasWalker<'a> {
             | crate::Node::InfixExpression { .. }
             | crate::Node::PrefixExpression { .. } => self.walk_expr(node, state),
             _ => {}
+        }
+    }
+
+    /// Resolve the region carried by a value expression when the pass can
+    /// prove that it is a reference alias. Direct identifiers are the
+    /// existing local-copy rule. A call is additionally accepted when its
+    /// callee has a narrow summary saying that it returns one reference
+    /// parameter unchanged; the corresponding argument must itself be a
+    /// plain identifier so no unmodelled expression semantics are inferred.
+    fn returned_root(&self, value: &crate::Node, state: &AliasState) -> Option<String> {
+        match value {
+            crate::Node::Identifier { name, .. } => state.root_of(name).map(str::to_owned),
+            crate::Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
+                let crate::Node::Identifier { name: callee, .. } = function.as_ref() else {
+                    return None;
+                };
+                let param_idx = *self.return_aliases.get(callee.as_str())?;
+                let crate::Node::Identifier { name: arg, .. } = arguments.get(param_idx)? else {
+                    return None;
+                };
+                state.root_of(arg).map(str::to_owned)
+            }
+            _ => None,
         }
     }
 
@@ -942,19 +990,22 @@ fn collect_rebound_names(node: &crate::Node, out: &mut Vec<String>) {
     }
 }
 
-/// RES-4070 (A-E5 increment 2): flag calls where two *different*
+/// RES-4070 (A-E5 increments 2–3): flag calls where two *different*
 /// identifiers provably refer to the same region — established by
-/// straight-line `let`-copies of reference bindings — and are passed as
-/// simultaneous reference arguments with at least one `&mut` slot.
+/// straight-line `let`-copies of reference bindings or a narrow direct
+/// reference-return summary — and are passed as simultaneous reference
+/// arguments with at least one `&mut` slot.
 /// Conditional paths are merged by intersection; see the module-level
 /// soundness contract above.
 fn check_unannotated_let_alias(
     stmts: &[crate::Spanned<crate::Node>],
     callee_table: &HashMap<&str, &[(String, String)]>,
+    return_aliases: &HashMap<&str, usize>,
     source_path: &str,
 ) -> Vec<String> {
     let mut walker = AliasWalker {
         callee_table,
+        return_aliases,
         source_path,
         errors: Vec::new(),
         detached: 0,
@@ -980,6 +1031,40 @@ fn check_unannotated_let_alias(
     }
 
     walker.errors
+}
+
+/// Summarize only the smallest interprocedural case that is independent of
+/// control-flow or expression evaluation: a reference-typed function whose
+/// body consists solely of `return PARAM;`, where `PARAM` is itself a
+/// reference parameter. Any extra statement, branch, or return expression
+/// makes the function ineligible so ambiguous provenance remains unchecked.
+fn direct_return_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    return_type: Option<&str>,
+) -> Option<usize> {
+    if return_type.and_then(region_from_type_str).is_none() {
+        return None;
+    }
+    let crate::Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let [
+        crate::Node::ReturnStatement {
+            value: Some(value), ..
+        },
+    ] = stmts.as_slice()
+    else {
+        return None;
+    };
+    let crate::Node::Identifier { name, .. } = value.as_ref() else {
+        return None;
+    };
+    let (param_idx, (param_type, _)) = parameters
+        .iter()
+        .enumerate()
+        .find(|(_, (_, param_name))| param_name == name)?;
+    region_from_type_str(param_type).map(|_| param_idx)
 }
 
 // ============================================================
@@ -1696,6 +1781,43 @@ mod tests {
              fn caller(&mut int x) { let y = x; let z = y; set_both(x, z); }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn let_alias_through_direct_reference_return_rejected() {
+        // A helper that returns one reference parameter unchanged cannot
+        // hide the alias from the caller's region check.
+        let errors = run_alias_check(
+            "fn expose(&mut int x) -> &mut int { return x; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let y = expose(x); set_both(x, y); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("set_both")
+                && errors[0].contains("`x`")
+                && errors[0].contains("`y`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn ambiguous_reference_return_stays_conservatively_unchecked() {
+        // A conditional return may choose a different region, so the
+        // narrow direct-return summary must not claim an alias.
+        let errors = run_alias_check(
+            "fn choose(&mut int a, &mut int b, int c) -> &mut int { \
+                 if (c > 0) { return a; } else { return b; } \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int z, int c) { let y = choose(x, z, c); set_both(x, y); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "ambiguous return provenance must remain unchecked: {:?}",
+            errors
+        );
     }
 
     #[test]
