@@ -983,11 +983,17 @@ impl<'a> AliasWalker<'a> {
                     self.source_path, call_span.start.line, call_span.start.column
                 )
             };
+            let alias_detail = if names.iter().all(|name| !name.contains('.')) {
+                "these bindings provably refer to the same region via `let` reference aliasing"
+            } else {
+                "these places provably refer to the same region via tracked reference aliasing"
+            };
             self.errors.push(format!(
-                "{}call to `{}` passes `{}` as simultaneous reference arguments (at least one `&mut`) — these places provably refer to the same region via tracked reference aliasing",
+                "{}call to `{}` passes `{}` as simultaneous reference arguments (at least one `&mut`) — {}",
                 loc,
                 callee_name,
                 names.join("`, `"),
+                alias_detail,
             ));
         }
     }
