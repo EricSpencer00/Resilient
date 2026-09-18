@@ -186,6 +186,30 @@ assumption underneath every other one on this page.
 safety case. [EXPRESSIBLE_INVALID_STATES.md](EXPRESSIBLE_INVALID_STATES.md)
 is the repository-level version of the same discipline.
 
+## Caller-owned output buffers
+
+When a C function fills storage supplied by its caller, use an explicit
+buffer rather than an ordinary array. Arrays have value semantics: passing
+one to a function gives that function a value copy, so there is no storage
+for a C pointer to update. Buffers have reference semantics and keep their
+typed allocation when cloned:
+
+```resilient
+let samples = buffer_float(256);
+buffer_set(samples, 0, 1.5);
+let alias = samples;
+buffer_set(alias, 1, 2.5);
+let snapshot = buffer_to_array(samples);
+```
+
+`buffer_int` and `buffer_float` allocate zero-filled storage. `buffer_len`
+reports its element count, `buffer_get` and `buffer_set` enforce the buffer's
+element type and bounds, and `buffer_to_array` makes an ordinary snapshot.
+The buffer API is useful without FFI and deliberately keeps the C pointer
+conversion separate: the later `BufferPtr` binding will expose the same
+allocation to an `extern` function, while the buffer's lifetime remains
+owned by Resilient.
+
 ## Summary
 
 | Construct | Enforced by | Strength |
