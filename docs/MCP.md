@@ -47,6 +47,11 @@ the hosted aliases from RES-3782 (`rz_compile`, `rz_format`, `rz_verify`,
 and related `rz_*` names) or the native MCP names (`resilient_compile`,
 `resilient_format`, `resilient_verify`, ...).
 
+The HTTP wrapper is unauthenticated and is not a sandbox. Read the
+[MCP HTTP security posture](MCP_SECURITY.md) before binding it beyond a
+trusted local or private network; it covers authentication, TLS, exposed
+execution capabilities, limits, and deployment isolation.
+
 ### `GET /metrics`
 
 Returns process-local request counters and a Prometheus text-format latency
