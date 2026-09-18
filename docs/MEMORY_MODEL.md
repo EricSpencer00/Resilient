@@ -397,6 +397,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   reference parameters carries each element's provenance to the caller,
   including nested constant tuple paths. Wrapped elements, non-reference
   expressions, and ambiguous return shapes remain conservative.
+- **A-E5 increment 19 (RES-4070):** a helper that returns a direct array
+  literal carries the provenance of elements initialized directly from its
+  reference parameters to the caller. Constant element reads and later array
+  aliases continue to expose those facts; wrapped elements, dynamic paths,
+  and ambiguous return shapes remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -423,10 +428,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   their known paths, constant index paths (including nested array paths), and
   constant-bound slices.
 - No general whole-program or interprocedural alias analysis. The pass
-  has only the narrow direct-reference and concrete-struct return summaries
-  described above; it does not track references through statics, dynamically
-  transformed array elements, or ambiguous return paths, and struct-field
-  tracking remains limited to direct literals or those proven struct returns.
+  has only the narrow direct-reference, concrete-struct, tuple, and direct
+  array return summaries described above; it does not track references through
+  statics, dynamically transformed array elements, or ambiguous return paths,
+  and struct-field tracking remains limited to direct literals or those proven
+  struct returns.
 - No borrow checker over local-to-local aliasing — there is no
   expression syntax in the language today to take a reference to
   another local (`&mut` only ever appears in parameter/`let` *type*
