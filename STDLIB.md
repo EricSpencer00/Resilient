@@ -838,6 +838,9 @@ so only the first such item is retained.
 | `csv_parse_tsv(s)` | string → array of array of string | RES-2662: parse tab-delimited lines with the same quoting rules as `csv_parse` |
 | `csv_format(rows)` | array of array of string → string | RES-2662: format CSV; quotes fields containing commas, quotes, or newlines |
 | `csv_format_tsv(rows)` | array of array of string → string | RES-2662: format TSV; quotes fields containing tabs, quotes, or newlines |
+| `linspace(start, stop, n)` | (number, number, int) → array of float | RES-2662: return `n` evenly spaced values including both endpoints; `n = 0` is empty and `n = 1` returns `start` |
+| `logspace(start, stop, n)` | (number, number, int) → array of float | RES-2662: return `n` values from `10^start` through `10^stop`, evenly spaced in exponent space; `n = 0` is empty |
+| `arange(start, stop, step)` | (number, number, number) → array of float | RES-2662: return values up to but excluding `stop`; positive and negative steps are supported, and `step` must be nonzero |
 | `table_format(rows)` | array of array of string → string | RES-2662: align columns with two spaces between them; short rows are padded with empty cells |
 | `format_float(value, decimals)` | (number, int) → string | RES-2662: fixed-point formatting with exactly `decimals` places; `decimals` must be non-negative |
 | `format_float_sci(value, significant_digits)` | (number, int) → string | RES-2662: lowercase scientific notation with the requested significant digits; the count must be positive |
@@ -856,6 +859,12 @@ bytes, and trims padding from the final column on each row. The numeric
 formatters return strings and raise a runtime error for the wrong value types
 or invalid precision/width arguments; a requested width smaller than the
 integer's printed form does not truncate it.
+
+The range generators accept Int or Float bounds and return Float arrays. Their
+count arguments must be non-negative integers; `linspace` and `logspace` use
+the first value when the count is one. `arange` follows the sign of `step`,
+returns an empty array when the direction cannot reach `stop`, and rejects
+results larger than 10,000,000 elements.
 
 ## Bytes Functions (Extended)
 
