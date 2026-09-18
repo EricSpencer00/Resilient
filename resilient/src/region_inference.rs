@@ -602,6 +602,25 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    let mut array_return_aliases: HashMap<&str, ArrayReturnAliasSummary> = HashMap::new();
+    for spanned in stmts {
+        if let crate::Node::Function {
+            name,
+            type_params,
+            parameters,
+            body,
+            return_type,
+            ..
+        } = &spanned.node
+            && type_params.is_empty()
+            && callee_table.contains_key(name.as_str())
+            && let Some(summary) =
+                array_return_alias_summary(body, parameters, return_type.as_deref())
+        {
+            array_return_aliases.insert(name.as_str(), summary);
+        }
+    }
+
     for spanned in stmts {
         let crate::Node::Function { body, .. } = &spanned.node else {
             continue;
@@ -652,14 +671,19 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    let summaries = AliasSummaries {
+        return_aliases: &return_aliases,
+        struct_return_aliases: &struct_return_aliases,
+        tuple_return_aliases: &tuple_return_aliases,
+        array_return_aliases: &array_return_aliases,
+    };
+
     // RES-4070: second increment — conditional-path-aware alias
     // tracking through `let` reference bindings.
     errors.extend(check_unannotated_let_alias(
         stmts,
         &callee_table,
-        &return_aliases,
-        &struct_return_aliases,
-        &tuple_return_aliases,
+        &summaries,
         &reference_fields,
         source_path,
     ));
@@ -688,9 +712,10 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 // - Alias facts are established only by operations with one unambiguous
 //   provenance: straight-line `let NAME = IDENT;` copies, direct reference
 //   returns, declared reference fields initialized by concrete struct
-//   literals (including nested paths), and non-negative constant array
-//   element/slice paths, including nested arrays, fields inside direct
-//   array-literal struct elements, and constant-bound slices of those arrays.
+//   literals (including nested paths), direct tuple and array returns, and
+//   non-negative constant array element/slice paths, including nested arrays,
+//   fields inside direct array-literal struct elements, and constant-bound
+//   slices of those arrays.
 //   Copying a reference
 //   binding cannot do anything but refer to the same region — there is no
 //   address-of or re-seating expression syntax in the language today.
@@ -709,7 +734,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 // dynamic or transformed array aliasing, and ambiguous interprocedural
 // paths. The tracked summaries stay sound because they require known
 // reference-typed fields, same-parameter return paths, or forwarding
-// through an already-proven helper, including direct tuple returns.
+// through an already-proven helper, including direct tuple and array
+// returns.
 // Use-after-move for plain bindings
 // remains deferred by the Copy/Move default-semantics decision —
 // `linear.rs` remains the only move-semantics surface.
@@ -733,6 +759,18 @@ struct StructReturnAliasSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TupleReturnAliasSummary {
     elements: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArrayReturnAliasSummary {
+    elements: Vec<(usize, usize)>,
+}
+
+struct AliasSummaries<'a> {
+    return_aliases: &'a HashMap<&'a str, usize>,
+    struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
+    tuple_return_aliases: &'a HashMap<&'a str, TupleReturnAliasSummary>,
+    array_return_aliases: &'a HashMap<&'a str, ArrayReturnAliasSummary>,
 }
 
 impl AliasState {
@@ -760,6 +798,7 @@ struct AliasWalker<'a> {
     return_aliases: &'a HashMap<&'a str, usize>,
     struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
     tuple_return_aliases: &'a HashMap<&'a str, TupleReturnAliasSummary>,
+    array_return_aliases: &'a HashMap<&'a str, ArrayReturnAliasSummary>,
     reference_fields: &'a HashSet<(String, String)>,
     source_path: &'a str,
     errors: Vec<String>,
@@ -1325,8 +1364,40 @@ impl<'a> AliasWalker<'a> {
                 *inclusive,
                 state,
             ),
+            crate::Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => self.array_call_element_roots(function, arguments, state),
             _ => Vec::new(),
         }
+    }
+
+    fn array_call_element_roots(
+        &self,
+        function: &crate::Node,
+        arguments: &[crate::Node],
+        state: &AliasState,
+    ) -> Vec<(usize, String)> {
+        let crate::Node::Identifier { name: callee, .. } = function else {
+            return Vec::new();
+        };
+        let Some(summary) = self.array_return_aliases.get(callee.as_str()) else {
+            return Vec::new();
+        };
+        summary
+            .elements
+            .iter()
+            .filter_map(|(element, param_idx)| {
+                let crate::Node::Identifier { name: argument, .. } = arguments.get(*param_idx)?
+                else {
+                    return None;
+                };
+                state
+                    .root_of(argument)
+                    .map(|root| (*element, root.to_owned()))
+            })
+            .collect()
     }
 
     /// Copy already-proven paths from an array-valued place into a new array
@@ -2055,24 +2126,24 @@ fn collect_rebound_names(node: &crate::Node, out: &mut Vec<String>) {
 /// RES-4070 (A-E5 increments 2–5): flag calls where two *different*
 /// identifiers provably refer to the same region — established by
 /// straight-line `let`-copies of reference bindings or narrow direct
-/// reference-return/struct-field/tuple-return summaries — and are passed as
-/// simultaneous reference arguments with at least one `&mut` slot.
+/// reference-return/struct-field/tuple-return/array-return summaries — and
+/// are passed as simultaneous reference arguments with at least one `&mut`
+/// slot.
 /// Conditional paths are merged by intersection; see the module-level
 /// soundness contract above.
 fn check_unannotated_let_alias(
     stmts: &[crate::Spanned<crate::Node>],
     callee_table: &HashMap<&str, &[(String, String)]>,
-    return_aliases: &HashMap<&str, usize>,
-    struct_return_aliases: &HashMap<&str, StructReturnAliasSummary>,
-    tuple_return_aliases: &HashMap<&str, TupleReturnAliasSummary>,
+    summaries: &AliasSummaries<'_>,
     reference_fields: &HashSet<(String, String)>,
     source_path: &str,
 ) -> Vec<String> {
     let mut walker = AliasWalker {
         callee_table,
-        return_aliases,
-        struct_return_aliases,
-        tuple_return_aliases,
+        return_aliases: summaries.return_aliases,
+        struct_return_aliases: summaries.struct_return_aliases,
+        tuple_return_aliases: summaries.tuple_return_aliases,
+        array_return_aliases: summaries.array_return_aliases,
         reference_fields,
         source_path,
         errors: Vec::new(),
@@ -2319,6 +2390,98 @@ fn tuple_return_aliases_for_value(
     let mut elements = Vec::new();
     collect_tuple_return_elements(value, "", parameters, &mut elements)?;
     (!elements.is_empty()).then_some(TupleReturnAliasSummary { elements })
+}
+
+fn array_return_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    return_type: Option<&str>,
+) -> Option<ArrayReturnAliasSummary> {
+    let return_type = return_type?.trim();
+    if return_type != "array" && !return_type.starts_with('[') && !return_type.starts_with("array<")
+    {
+        return None;
+    }
+
+    let mut returns = Vec::new();
+    collect_array_return_provenance(body, parameters, &mut returns);
+    let Some(Some(summary)) = returns.first() else {
+        return None;
+    };
+    if returns
+        .iter()
+        .any(|candidate| candidate.as_ref() != Some(summary))
+    {
+        return None;
+    }
+    Some(summary.clone())
+}
+
+fn collect_array_return_provenance(
+    node: &crate::Node,
+    parameters: &[(String, String)],
+    out: &mut Vec<Option<ArrayReturnAliasSummary>>,
+) {
+    match node {
+        crate::Node::ReturnStatement { value, .. } => {
+            out.push(
+                value
+                    .as_deref()
+                    .and_then(|value| array_return_aliases_for_value(value, parameters)),
+            );
+        }
+        crate::Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                collect_array_return_provenance(stmt, parameters, out);
+            }
+        }
+        crate::Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_array_return_provenance(consequence, parameters, out);
+            if let Some(alternative) = alternative {
+                collect_array_return_provenance(alternative, parameters, out);
+            }
+        }
+        crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
+            collect_array_return_provenance(body, parameters, out)
+        }
+        crate::Node::Match { arms, .. } => {
+            for (_pattern, _guard, body) in arms {
+                collect_array_return_provenance(body, parameters, out);
+            }
+        }
+        crate::Node::FunctionLiteral { .. } => {}
+        _ => {}
+    }
+}
+
+fn array_return_aliases_for_value(
+    value: &crate::Node,
+    parameters: &[(String, String)],
+) -> Option<ArrayReturnAliasSummary> {
+    let crate::Node::ArrayLiteral { items, .. } = value else {
+        return None;
+    };
+    let elements = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let crate::Node::Identifier { name, .. } = item else {
+                return None;
+            };
+            parameters
+                .iter()
+                .enumerate()
+                .find_map(|(param_idx, (ty, parameter))| {
+                    (parameter == name && region_from_type_str(ty).is_some())
+                        .then_some((index, param_idx))
+                })
+        })
+        .collect::<Vec<_>>();
+    (!elements.is_empty()).then_some(ArrayReturnAliasSummary { elements })
 }
 
 fn collect_tuple_return_elements(
@@ -3341,6 +3504,76 @@ mod tests {
         assert!(
             errors.is_empty(),
             "wrapped tuple returns must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_array_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x, &mut int y) -> array { return [x, y]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let items = make_array(x, y); set_both(x, items[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`items[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_array_paths_survive_alias_and_slice() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x, &mut int y) -> array { return [x, y]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { \
+                 let items = make_array(x, y); \
+                 let copy = items; \
+                 let selected = copy[0..1]; \
+                 set_both(x, selected[0]); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`selected[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn wrapped_reference_array_return_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { \
+                 let alias = x; return [alias]; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = make_array(x); set_both(x, items[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped array returns must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn ambiguous_reference_array_return_stays_conservative() {
+        let errors = run_alias_check(
+            "fn choose(&mut int x, &mut int y, int tag) -> array { \
+                 if (tag > 0) { return [x]; } else { return [y]; } \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y, int tag) { \
+                 let items = choose(x, y, tag); \
+                 set_both(x, items[0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "ambiguous array returns must stay conservative: {:?}",
             errors
         );
     }
