@@ -83,12 +83,17 @@
 //!    unbounded, and ambiguous projections retain the permissive `Any`
 //!    fallback.
 //!
+//! Fourth increment (RES-4067):
+//!
+//! 6. **`Self::AssocName` in inherited trait default bodies.** When an
+//!    `impl Trait for Concrete` omits a default-bodied method, the
+//!    typechecker rechecks that body with the impl's concrete associated
+//!    type bindings in scope. Explicit overrides keep their existing
+//!    checking path.
+//!
 //! Still out of scope — tracked in
 //! [issue #4067](https://github.com/EricSpencer00/Resilient/issues/4067):
 //!
-//! - `Self::AssocName` in trait *default* method bodies (shared
-//!   across impls — no single binding to resolve against until
-//!   per-impl dispatch).
 //! - Generic associated types and associated *constants*.
 //!
 //! Trait objects / `dyn Trait` (vtable dispatch) are a separate,
@@ -455,6 +460,33 @@ mod tests {
              }\n\
              fn main() {} main();";
         typecheck(src).unwrap_or_else(|e| panic!("unexpected error: {e}"));
+    }
+
+    #[test]
+    fn self_assoc_default_body_uses_inheriting_impl_binding() {
+        let src = "trait Container { type Item; fn item(self) -> Self::Item {\n\
+             let result: Self::Item = self.value; return result;\n\
+             } }\n\
+             struct Boxed { int value }\n\
+             impl Container for Boxed { type Item = int; }\n\
+             fn main() {} main();";
+        typecheck(src).unwrap_or_else(|e| panic!("default body should resolve Self::Item: {e}"));
+    }
+
+    #[test]
+    fn self_assoc_default_body_rejects_mismatched_impl_binding() {
+        let src = "trait Container { type Item; fn item(self) -> Self::Item {\n\
+             let result: Self::Item = self.value; return result;\n\
+             } }\n\
+             struct Boxed { int value }\n\
+             impl Container for Boxed { type Item = string; }\n\
+             fn main() {} main();";
+        let error = typecheck(src).expect_err("default body must use the concrete binding");
+        assert!(error.contains("let result"), "got: {error}");
+        assert!(
+            error.contains("String") || error.contains("string"),
+            "got: {error}"
+        );
     }
 
     #[test]
