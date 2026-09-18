@@ -412,6 +412,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   as `outer(x) -> inner(x)` therefore still exposes a constant path like
   `items[0]`. Only plain reference-parameter forwarding is accepted; recursive,
   wrapped, mixed, and ambiguous returns remain conservative.
+- **A-E5 increment 22 (RES-4070):** direct struct- and tuple-return provenance
+  composes through the same fixed-point helper chain. Wrappers forwarding a
+  known summary therefore preserve paths such as `holder.item` and `pair.0`.
+  Recursive, wrapped, mixed, and ambiguous returns remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
