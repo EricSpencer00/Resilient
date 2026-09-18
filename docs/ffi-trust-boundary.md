@@ -205,10 +205,37 @@ let snapshot = buffer_to_array(samples);
 `buffer_int` and `buffer_float` allocate zero-filled storage. `buffer_len`
 reports its element count, `buffer_get` and `buffer_set` enforce the buffer's
 element type and bounds, and `buffer_to_array` makes an ordinary snapshot.
-The buffer API is useful without FFI and deliberately keeps the C pointer
-conversion separate: the later `BufferPtr` binding will expose the same
-allocation to an `extern` function, while the buffer's lifetime remains
-owned by Resilient.
+`Buffer<Int>` and `Buffer<Float>` can now be passed to an `extern` function as
+caller-owned mutable `int64_t*` and `double*` storage. The borrow guard lasts
+through the complete call, while the allocation remains owned by Resilient.
+
+## A real-world binding: HST-core
+
+`resilient/examples/ffi_hstcore.rz` is the worked binding for the optional
+HST-core embedded ABI. It keeps the foreign handle opaque, uses `CStr` for the
+artifact path and version string, passes sparse indices and values as copied
+input arrays, and passes dense output through `Buffer<Float>`.
+
+The example intentionally binds `hst_apply_delta` and `hst_recompute_full`
+together. The first is the optimized sparse update; the second recomputes the
+same held input state from scratch. `outputs_agree` compares their dense
+buffers and places an `ensures result == true` postcondition on that comparison,
+so a divergence becomes a runtime contract violation rather than a silent
+benchmark result. This is differential evidence, not a proof that either
+implementation is correct.
+
+Two lifetime details are load-bearing:
+
+- `hst_close` owns the opaque context lifetime; do not call any other binding
+  with the handle after closing it.
+- `hst_state` returns a borrowed pointer invalidated by later mutating calls,
+  so the example deliberately uses the caller-owned output forms instead of
+  exposing that pointer to Resilient code.
+
+The optional example is marked `.interactive`, does not vendor a library or
+operator artifact, and is skipped by the golden suite when the dependency is
+absent. The exact ABI source is HST Studio's public `hstcore.h` and
+`hstcore-abi/abi.json`; keep declarations synchronized with those files.
 
 ## Summary
 

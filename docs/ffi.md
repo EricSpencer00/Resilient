@@ -63,6 +63,8 @@ Only primitive types are supported in FFI Phase 1:
 | `OpaquePtr` | `void*` (opaque)                               |
 | `Array<Int>`   | `const int64_t*` (RES-4225; in-parameter only) |
 | `Array<Float>` | `const double*` (RES-4225; in-parameter only)  |
+| `Buffer<Int>`  | `int64_t*` caller-owned mutable storage (RES-4230) |
+| `Buffer<Float>` | `double*` caller-owned mutable storage (RES-4230) |
 | `CStr`      | `const char*`, NUL-terminated (RES-4226)       |
 | `Callback`  | C function pointer (recognised in declarations; calls unsupported in Phase 1) |
 
@@ -178,6 +180,30 @@ reachable through the `printf`-style variadic path.
   for your function, declare the return as `OpaquePtr` instead.
 - A returned string that is not valid UTF-8 is a clean runtime error
   rather than a lossy conversion.
+
+### `Buffer<T>` — caller-owned output storage
+
+`Buffer<Int>` and `Buffer<Float>` are reference-semantics allocations that
+lower to mutable `int64_t*` and `double*` parameters. Unlike `Array<T>`, a
+foreign function can write through the pointer and the caller sees the same
+allocation afterward:
+
+```
+extern "libhelper.so" {
+    fn fill(samples: Buffer<Float>, n: Int32) -> Int32;
+}
+
+let samples = buffer_float(4);
+fill(samples, 4);
+println(buffer_get(samples, 0));
+```
+
+The buffer's element type is checked before the call, and its mutable borrow
+lasts through the complete foreign call so an alias cannot be borrowed at the
+same time. The C declaration still owns the length and bounds contract; the
+compiler passes the pointer but cannot prove that `n` fits the allocation.
+Buffers cannot be returned because the foreign side cannot transfer ownership
+of a Resilient allocation safely.
 
 ### `Array<T>` — buffer parameters
 

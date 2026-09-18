@@ -1,0 +1,5 @@
+# Requires a locally installed optional HST-core library and a compiled
+# operator artifact. Change the library name and artifact path in
+# ffi_hstcore.rz before running with a binary built using `--features ffi`.
+# The example is exempt from the golden-file audit because the dependency and
+# numeric output are intentionally environment-specific.
