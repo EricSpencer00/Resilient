@@ -54,6 +54,27 @@ contract for this HTTP wrapper; a future incompatible contract will use a new
 namespace such as `/v2`. The unversioned aliases are retained temporarily so
 existing clients can migrate without a flag-day change.
 
+### Opt-in streamed tool calls (RES-3960)
+
+Clients handling long-running calls can send `Accept: application/x-ndjson` to
+`POST /v1/mcp/call` (or its unversioned compatibility alias). The server
+responds with HTTP chunked transfer and writes two newline-delimited JSON
+records: a `progress` record immediately before dispatch, then a `result`
+record containing the normal MCP HTTP response under `result`.
+
+```sh
+curl -N http://127.0.0.1:8080/v1/mcp/call \
+  -H 'Accept: application/x-ndjson' \
+  -H 'content-type: application/json' \
+  -d '{"tool":"rz_compile","input":{"source":"println(42)"}}'
+```
+
+The final record includes `http_status` for the status the buffered JSON
+endpoint would have returned. Once streaming begins, the HTTP status line is
+`200 OK`; clients should use `http_status` and the nested response status for
+the final outcome. Requests without this `Accept` value keep the ordinary
+single JSON response.
+
 The HTTP wrapper is not a sandbox and is unauthenticated unless
 `RESILIENT_MCP_API_KEY` is configured. Read the
 [MCP HTTP security posture](MCP_SECURITY.md) before binding it beyond a
