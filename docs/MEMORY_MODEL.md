@@ -322,6 +322,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   summary, including chains discovered in a fixed point. Mixed
   parameters, unknown wrapper expressions, and nested closure returns
   remain opaque rather than being guessed.
+- **A-E5 increment 4 (RES-4070):** declared reference-typed struct fields
+  initialized directly from tracked references retain that provenance
+  through field reads. Value fields, unknown struct shapes, field writes,
+  arrays, and closure captures remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -339,13 +343,14 @@ Grounded in `resilient/src/region_inference.rs` and the
 - Conditional-path aliasing detection is *partial*. The let-alias pass
   above handles `if`/`while`/`for`/`match` path merging by intersection,
   but there is no Z3-backed branch-condition disjointness reasoning.
-  Alias facts established by struct fields, array elements, or closure
-  captures remain invisible.
+  Alias facts established by array elements or closure captures remain
+  invisible; known struct-field facts are limited to direct literals and
+  are killed on field writes.
 - No general whole-program or interprocedural alias analysis. The pass
   has only the narrow direct-reference return summary and proven-helper
   forwarding described above; it does not track references through
-  struct fields, statics, array elements, closures, or ambiguous return
-  paths.
+  statics, array elements, closures, or ambiguous return paths, and
+  struct-field tracking is limited to the direct-literal case above.
 - No borrow checker over local-to-local aliasing — there is no
   expression syntax in the language today to take a reference to
   another local (`&mut` only ever appears in parameter/`let` *type*
