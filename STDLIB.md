@@ -20,6 +20,37 @@ This document is a human-facing summary grouped by category.
 | `file_write(path, contents)` | (string, string) → Result<Void, String> | std-only |
 | `env(name)` | string → Result<String, String> | std-only; read-only env-var accessor |
 
+### Streaming file I/O
+
+| Name | Signature | Notes |
+|---|---|---|
+| `file_open(path, mode)` | (string, string) → Result<File, String> | std-only; modes are `"r"` (read), `"w"` (truncate/write), and `"rw"` (read/write, create if missing) |
+| `file_read_chunk(handle, max_bytes)` | (File, int) → Result<Bytes, String> | std-only; reads up to `max_bytes` from the current cursor; an empty `Bytes` signals EOF |
+| `file_write_chunk(handle, bytes)` | (File, Bytes) → Result<Int, String> | std-only; writes all bytes and returns the byte count |
+| `file_seek(handle, offset, whence)` | (File, int, string) → Result<Int, String> | std-only; `whence` is `"start"`, `"current"`, or `"end"`; returns the new cursor position |
+| `file_close(handle)` | File → Result<Void, String> | std-only; closes the handle; a second close returns `Err` |
+
+Streaming operations use a `File` handle returned by `file_open`. Every
+operation returns a `Result`, so missing files, invalid modes, closed handles,
+and I/O failures remain recoverable. `file_seek` requires a non-negative
+offset with `"start"`; offsets with `"current"` and `"end"` may be signed.
+
+### Filesystem metadata
+
+| Name | Signature | Notes |
+|---|---|---|
+| `file_exists(path)` | string → bool | std-only; true for an existing file, directory, or symlink |
+| `file_is_dir(path)` | string → bool | std-only; true only for an existing directory |
+| `file_is_file(path)` | string → bool | std-only; true only for an existing regular file |
+| `file_size(path)` | string → Result<Int, String> | std-only; returns the file size in bytes |
+| `file_stat(path)` | string → Result<FileMeta, String> | std-only; returns `size`, `modified` (Unix seconds), `is_dir`, and `is_file` fields |
+| `dir_list(path)` | string → Result<Array<String>, String> | std-only; returns sorted entry names, not full paths |
+
+The metadata predicates return `false` when a path is missing. The metadata
+operations return `Err` when the path cannot be inspected. These builtins are
+unavailable on the no-host-filesystem wasm playground: predicates return
+`false`, while metadata operations return `Err`.
+
 ## Numeric
 
 | Name | Signature | Notes |
