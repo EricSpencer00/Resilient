@@ -47,7 +47,8 @@ the hosted aliases from RES-3782 (`rz_compile`, `rz_format`, `rz_verify`,
 and related `rz_*` names) or the native MCP names (`resilient_compile`,
 `resilient_format`, `resilient_verify`, ...).
 
-The HTTP wrapper is unauthenticated and is not a sandbox. Read the
+The HTTP wrapper is not a sandbox and is unauthenticated unless
+`RESILIENT_MCP_API_KEY` is configured. Read the
 [MCP HTTP security posture](MCP_SECURITY.md) before binding it beyond a
 trusted local or private network; it covers authentication, TLS, exposed
 execution capabilities, limits, and deployment isolation.
@@ -77,6 +78,7 @@ safe out of the box:
 | Request body size cap | `RESILIENT_MCP_MAX_BODY_BYTES` | 10 MiB (`10 * 1024 * 1024`) | `413 Payload Too Large` |
 | Per-request compute/compile timeout | `RESILIENT_MCP_TIMEOUT_SECS` | 10 seconds | `504 Gateway Timeout` |
 | Per-IP rate limit | `RESILIENT_MCP_RATE_LIMIT_PER_MIN` | 100 requests/minute/IP | `429 Too Many Requests` |
+| Optional API-key authentication | `RESILIENT_MCP_API_KEY` | unset (disabled) | `401 Unauthorized` |
 
 ### Concurrency, logging, and shutdown (Phase 1, RES-3934/3937/3941/3942)
 
@@ -138,6 +140,26 @@ RESILIENT_MCP_TIMEOUT_SECS=5 \
 RESILIENT_MCP_RATE_LIMIT_PER_MIN=30 \
 rz mcp --http-port 8080
 ```
+
+### Optional API-key authentication (RES-3939)
+
+Set `RESILIENT_MCP_API_KEY` to require the exact value in an `X-API-Key`
+header on every non-preflight HTTP route, including health and metrics
+endpoints:
+
+```sh
+RESILIENT_MCP_API_KEY='replace-with-a-secret' \
+rz mcp --http-port 127.0.0.1:8080
+
+curl -s http://127.0.0.1:8080/health \
+  -H 'X-API-Key: replace-with-a-secret'
+```
+
+Missing and invalid keys both return `401 Unauthorized` with the same generic
+error body. An unset or empty variable disables the check for backwards
+compatibility. API keys do not provide encryption: use HTTPS or a private
+network, keep the key out of URLs and logs, and prefer a reverse proxy for
+rotation and per-user authorization.
 
 ---
 

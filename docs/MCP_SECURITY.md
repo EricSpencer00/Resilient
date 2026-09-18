@@ -12,11 +12,16 @@ HTTP wrapper is a sandbox.
 
 ## Security summary
 
-The HTTP wrapper is an unauthenticated, plain-HTTP adapter around the Resilient
-compiler and runtime:
+The HTTP wrapper is a plain-HTTP adapter around the Resilient compiler and
+runtime. It is unauthenticated unless `RESILIENT_MCP_API_KEY` is configured:
 
-- The wrapper does not validate `Authorization` headers or provide API-key
-  authentication.
+- When `RESILIENT_MCP_API_KEY` is set, every non-preflight HTTP route requires
+  the exact value in an `X-API-Key` header. Missing and invalid values both
+  return 401; CORS preflight requests remain unauthenticated so browsers can
+  discover the allowed header before sending the credentialed request.
+- When the variable is unset or empty, the wrapper does not authenticate
+  requests. This preserves the local/private default and is not suitable for
+  a public listener.
 - The `--http-port 8080` shorthand binds to `0.0.0.0:8080`. Use an explicit
   private or loopback address when the service is not intentionally public.
 - TLS termination, authentication, tenant isolation, and network policy belong
@@ -99,7 +104,9 @@ The recommended deployment pattern is:
 
 2. Terminate HTTPS at a reverse proxy or API gateway.
 3. Require the gateway's established authentication mechanism (for example,
-   an identity-aware proxy, mTLS, or a short-lived bearer token).
+   an identity-aware proxy, mTLS, or a short-lived bearer token). The built-in
+   `X-API-Key` mode is suitable for a single shared deployment credential, not
+   per-user authorization or key rotation.
 4. Permit only the required routes and tools, and apply proxy-side request,
    timeout, concurrency, and rate limits.
 5. Do not expose the backend port directly or put bearer tokens in URLs.

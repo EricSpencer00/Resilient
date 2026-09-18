@@ -64,7 +64,7 @@ fn cors_headers_are_present_by_default() {
     );
     assert_eq!(
         header(&health, "Access-Control-Allow-Headers"),
-        "Content-Type"
+        "Content-Type, X-API-Key"
     );
 }
 

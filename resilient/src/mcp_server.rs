@@ -93,7 +93,8 @@ const DEFAULT_SHUTDOWN_DRAIN_SECS: u64 = 30;
 /// - `RESILIENT_MCP_TIMEOUT_SECS` (default 10s)
 /// - `RESILIENT_MCP_RATE_LIMIT_PER_MIN` (default 100 req/min/IP)
 /// - `RESILIENT_MCP_CORS_ORIGIN` (default `*`)
-#[derive(Debug, Clone, Copy)]
+/// - `RESILIENT_MCP_API_KEY` (unset by default; enables `X-API-Key` auth)
+#[derive(Clone)]
 struct HttpHardeningConfig {
     max_body_bytes: usize,
     timeout: Duration,
@@ -103,6 +104,9 @@ struct HttpHardeningConfig {
     /// RES-3942: how long to wait for in-flight requests to finish
     /// after a shutdown signal before exiting anyway.
     shutdown_drain: Duration,
+    /// RES-3939: optional shared API key for HTTP callers. Stdio remains
+    /// unaffected because it never passes through this configuration.
+    api_key: Option<String>,
 }
 
 impl HttpHardeningConfig {
@@ -126,6 +130,9 @@ impl HttpHardeningConfig {
                 "RESILIENT_MCP_SHUTDOWN_DRAIN_SECS",
                 DEFAULT_SHUTDOWN_DRAIN_SECS,
             )),
+            api_key: std::env::var("RESILIENT_MCP_API_KEY")
+                .ok()
+                .filter(|key| !key.is_empty()),
         }
     }
 }
@@ -368,7 +375,7 @@ pub fn run_http(bind_addr: &str) -> io::Result<()> {
 
     shutdown_signal::install();
 
-    let config = HttpHardeningConfig::from_env();
+    let config = Arc::new(HttpHardeningConfig::from_env());
     let limiter = Arc::new(RateLimiterRegistry::new(
         config.rate_limit_per_min,
         config.rate_limit_per_min,
@@ -383,6 +390,7 @@ pub fn run_http(bind_addr: &str) -> io::Result<()> {
     let rx = Arc::new(std::sync::Mutex::new(rx));
     let mut workers = Vec::with_capacity(config.max_connections);
     for _ in 0..config.max_connections {
+        let config = Arc::clone(&config);
         let rx = Arc::clone(&rx);
         let limiter = Arc::clone(&limiter);
         let clock = Arc::clone(&clock);
@@ -454,6 +462,7 @@ pub fn fuzz_http_request(data: &[u8]) -> String {
         rate_limit_per_min: DEFAULT_RATE_LIMIT_PER_MIN,
         max_connections: DEFAULT_MAX_CONNECTIONS,
         shutdown_drain: Duration::from_secs(DEFAULT_SHUTDOWN_DRAIN_SECS),
+        api_key: None,
     };
 
     let _ = request_line_of(data);
@@ -655,6 +664,15 @@ fn http_response_for_request(request: &str, config: &HttpHardeningConfig) -> Str
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
 
+    // RES-3939: authentication is optional and applies only to the HTTP
+    // wrapper. Keep the response deliberately generic so callers cannot
+    // distinguish a missing key from a wrong key.
+    // CORS preflight carries no credentials by design; the actual request
+    // still goes through the API-key check before dispatch.
+    if method != "OPTIONS" && !request_has_valid_api_key(headers, config) {
+        return http_json(401, json!({ "status": "error", "error": "unauthorized" }));
+    }
+
     // RES-3935: defense-in-depth size check for callers that hand a
     // fully-buffered request straight to this function (the streaming
     // `handle_http_stream` path already short-circuits earlier).
@@ -837,6 +855,7 @@ fn http_tool_alias(tool: &str) -> &str {
 fn http_json(status: u16, body: Value) -> String {
     let reason = match status {
         200 => "OK",
+        401 => "Unauthorized",
         400 => "Bad Request",
         404 => "Not Found",
         413 => "Payload Too Large",
@@ -851,6 +870,18 @@ fn http_json(status: u16, body: Value) -> String {
         body.len(),
         cors_headers(),
     )
+}
+
+fn request_has_valid_api_key(headers: &str, config: &HttpHardeningConfig) -> bool {
+    let Some(expected) = config.api_key.as_deref() else {
+        return true;
+    };
+    headers.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("x-api-key") && value.trim() == expected
+    })
 }
 
 fn http_metrics_response() -> String {
@@ -901,7 +932,7 @@ fn http_cors_preflight() -> String {
 
 fn cors_headers() -> String {
     format!(
-        "Access-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nVary: Origin\r\n",
+        "Access-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-API-Key\r\nVary: Origin\r\n",
         cors_origin()
     )
 }
@@ -3528,6 +3559,7 @@ mod tests {
             rate_limit_per_min: DEFAULT_RATE_LIMIT_PER_MIN,
             max_connections: DEFAULT_MAX_CONNECTIONS,
             shutdown_drain: Duration::from_secs(DEFAULT_SHUTDOWN_DRAIN_SECS),
+            api_key: None,
         }
     }
 
@@ -3540,6 +3572,48 @@ mod tests {
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
         assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
         assert!(resp.contains("\"transport\":\"http\""), "got: {resp}");
+    }
+
+    #[test]
+    fn http_health_requires_configured_api_key() {
+        let mut config = test_config();
+        config.api_key = Some("test-secret".to_string());
+
+        let missing =
+            http_response_for_request("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n", &config);
+        assert!(
+            missing.starts_with("HTTP/1.1 401 Unauthorized"),
+            "got: {missing}"
+        );
+        assert!(missing.contains("unauthorized"), "got: {missing}");
+
+        let wrong = http_response_for_request(
+            "GET /health HTTP/1.1\r\nHost: localhost\r\nX-API-Key: wrong\r\n\r\n",
+            &config,
+        );
+        assert!(
+            wrong.starts_with("HTTP/1.1 401 Unauthorized"),
+            "got: {wrong}"
+        );
+
+        let valid = http_response_for_request(
+            "GET /health HTTP/1.1\r\nHost: localhost\r\nX-API-Key: test-secret\r\n\r\n",
+            &config,
+        );
+        assert!(valid.starts_with("HTTP/1.1 200 OK"), "got: {valid}");
+
+        let preflight = http_response_for_request(
+            "OPTIONS /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            &config,
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.1 204 No Content"),
+            "got: {preflight}"
+        );
+        assert!(
+            preflight.contains("Access-Control-Allow-Headers: Content-Type, X-API-Key"),
+            "got: {preflight}"
+        );
     }
 
     #[test]

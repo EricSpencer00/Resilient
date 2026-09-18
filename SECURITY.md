@@ -35,12 +35,13 @@ The `resilient-runtime` embedded crate has no file I/O or network surface and is
 
 ## MCP HTTP deployments
 
-The optional MCP HTTP wrapper is an unauthenticated, plain-HTTP adapter around
-the compiler and runtime. It inherits the ambient authority of its operating
-system user, and its tool registry includes program execution, file/process
-and network-capable standard-library operations, and external verification
-tools. CORS and the built-in body, timeout, rate, and worker limits are not a
-security boundary.
+The optional MCP HTTP wrapper is a plain-HTTP adapter around the compiler and
+runtime. It requires `RESILIENT_MCP_API_KEY` plus an `X-API-Key` header when
+that setting is configured; otherwise it is unauthenticated. It inherits the
+ambient authority of its operating system user, and its tool registry includes
+program execution, file/process and network-capable standard-library
+operations, and external verification tools. CORS and the built-in body,
+timeout, rate, and worker limits are not a security boundary.
 
 Keep the listener on loopback or a private network, or place it behind an
 authenticated TLS reverse proxy and an OS/container sandbox. Do not expose
