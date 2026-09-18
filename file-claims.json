@@ -4,13 +4,13 @@
       "branch": "res-4211-deterministic-mcp-overlap",
       "claimed_at": "2026-09-17T23:00:35Z"
     },
-    "docs/MEMORY_MODEL.md": {
-      "branch": "res-4070-structured-return-chain",
-      "claimed_at": "2026-09-18T22:21:21Z"
-    },
     "resilient/src/region_inference.rs": {
-      "branch": "res-4070-structured-return-chain",
-      "claimed_at": "2026-09-18T22:21:21Z"
+      "branch": "res-4070-nested-struct-return",
+      "claimed_at": "2026-09-18T22:35:22Z"
+    },
+    "docs/MEMORY_MODEL.md": {
+      "branch": "res-4070-nested-struct-return",
+      "claimed_at": "2026-09-18T22:35:22Z"
     }
   }
 }
