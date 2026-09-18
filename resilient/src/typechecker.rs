@@ -7211,6 +7211,11 @@ impl TypeChecker {
                 crate::intent_blocks::check(program, source_path)?;
                 crate::anti_regression::check(program, source_path)?;
                 crate::refinement_types::check(program, source_path)?;
+                // RES-3930 Phase B1: validate parser-preserved mappings
+                // from Resilient functions to external TLA+ actions.
+                // Proof checking and TLC integration follow in later
+                // Phase B increments.
+                crate::tla_refines::check(program, source_path)?;
                 crate::typestate_types::check(program, source_path)?;
                 crate::dependent_arrays::check(program, source_path)?;
                 crate::row_polymorphism::check(program, source_path)?;

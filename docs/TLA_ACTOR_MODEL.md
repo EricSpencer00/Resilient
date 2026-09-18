@@ -206,10 +206,14 @@ when jar is absent.
 
 ### Phase B3 — `@refines` (V2.1) + per-program extraction, if warranted
 
-- Implement `@refines(spec=..., action=...)` parsing (currently
-  entirely absent from `resilient/src/*.rs` — confirmed via grep).
-- Checker walks the annotated function's reachable call graph,
-  rejecting `extern fn` calls without `requires`/`ensures` (Q4).
+- **B1 delivered:** the compiler accepts
+  `@refines(spec = "X.tla", action = "Y")` on a function, validates
+  both string arguments, preserves the mapping, and rejects duplicate,
+  unknown, empty, or non-string arguments. It does not load TLC or the
+  referenced spec yet.
+- Implement the remaining checker: walk the annotated function's
+  reachable call graph, rejecting `extern fn` calls without
+  `requires`/`ensures` (Q4).
 - `EXTENDS runtime` becomes valid once B2's `runtime.tla` exists to
   extend.
 - Re-evaluate "if warranted": if usage data from B2 (do maintainers
