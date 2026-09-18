@@ -51,6 +51,21 @@ operations return `Err` when the path cannot be inspected. These builtins are
 unavailable on the no-host-filesystem wasm playground: predicates return
 `false`, while metadata operations return `Err`.
 
+### Process execution
+
+| Name | Signature | Notes |
+|---|---|---|
+| `exec(cmd, args)` | (string, array) → Result<ProcessResult, String> | RES-2558: run a command directly with string/int arguments; captures stdout, stderr, and exit code |
+| `exec_shell(cmd)` | string → Result<ProcessResult, String> | RES-2558: run a command through `sh -c` on Unix or `cmd /c` on Windows; supports shell pipelines and expansions |
+
+Both builtins return `Ok(ProcessResult)` when the process starts, even when
+its `exit_code` is non-zero. `ProcessResult` has `stdout`, `stderr`, and
+`exit_code` fields; a spawn failure is returned as `Err`. `exec_shell` passes
+the command text to the platform shell, so shell metacharacters are
+interpreted and untrusted command text must not be interpolated into it.
+Process execution is unavailable on the wasm playground and returns `Err`
+after argument validation.
+
 ### TCP and UDP networking
 
 | Name | Signature | Notes |
