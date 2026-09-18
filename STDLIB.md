@@ -826,6 +826,7 @@ so only the first such item is retained.
 | `array_chunks(arr, n)` | (array, int) → array of array | RES-1142: fixed-size chunks (last may be short) |
 | `array_chunks_exact(arr, n)` | (array, int) → array of array | RES-1142: fixed-size chunks (errors if not divisible) |
 | `array_windows(arr, n)` | (array, int) → array of array | RES-2648: sliding windows of size n |
+| `enumerate(arr)` | array → array of `[int, T]` pairs | RES-1164: pair each element with its zero-based index; empty input returns an empty array |
 | `array_zip3(a, b, c)` | (array, array, array) → array of tuple | RES-1164: zip three arrays |
 | `array_unzip(arr)` | array of (T, U) → (array of T, array of U) | RES-531: unzip array of 2-tuples |
 | `array_cumsum(arr)` | array of float → array of float | RES-1170: cumulative sum (float) |
