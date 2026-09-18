@@ -340,6 +340,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   tracked reference. Dynamic or negative indices, transformed arrays, and
   index writes remain conservative; a known index write kills only that
   element's fact, while an unknown write kills the whole array's facts.
+- **A-E5 increment 7 (RES-4070):** constant-bound slices of a tracked array
+  retain the provenance of the selected constant-index elements, including
+  omitted endpoints and inclusive upper bounds. Dynamic-bound slices and
+  other transformations remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
@@ -360,12 +364,12 @@ Grounded in `resilient/src/region_inference.rs` and the
   Alias facts established by dynamic or transformed array elements remain
   invisible; known struct-field facts are limited to direct literals and
   are killed on field writes. Closure bodies are checked using captured
-  facts, while array tracking is limited to direct literals and constant
-  index paths.
+  facts, while array tracking is limited to direct literals, constant index
+  paths, and constant-bound slices.
 - No general whole-program or interprocedural alias analysis. The pass
   has only the narrow direct-reference return summary and proven-helper
   forwarding described above; it does not track references through
-  statics, transformed array elements, or ambiguous return paths, and
+  statics, dynamically transformed array elements, or ambiguous return paths, and
   struct-field tracking is limited to the direct-literal case above.
 - No borrow checker over local-to-local aliasing — there is no
   expression syntax in the language today to take a reference to

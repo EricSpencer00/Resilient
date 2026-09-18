@@ -438,6 +438,15 @@ fn collect_calls_with_span<'a>(
             collect_calls_with_span(index, calls);
             collect_calls_with_span(value, calls);
         }
+        crate::Node::Slice { target, lo, hi, .. } => {
+            collect_calls_with_span(target, calls);
+            if let Some(lo) = lo {
+                collect_calls_with_span(lo, calls);
+            }
+            if let Some(hi) = hi {
+                collect_calls_with_span(hi, calls);
+            }
+        }
         crate::Node::InfixExpression { left, right, .. } => {
             collect_calls_with_span(left, calls);
             collect_calls_with_span(right, calls);
@@ -907,14 +916,83 @@ impl<'a> AliasWalker<'a> {
     }
 
     fn array_element_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(usize, String)> {
-        let crate::Node::ArrayLiteral { items, .. } = value else {
+        match value {
+            crate::Node::ArrayLiteral { items, .. } => items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| {
+                    self.returned_root(value, state).map(|root| (index, root))
+                })
+                .collect(),
+            crate::Node::Slice {
+                target,
+                lo,
+                hi,
+                inclusive,
+                ..
+            } => self.array_slice_element_roots(
+                target,
+                lo.as_deref(),
+                hi.as_deref(),
+                *inclusive,
+                state,
+            ),
+            _ => Vec::new(),
+        }
+    }
+
+    fn array_slice_element_roots(
+        &self,
+        target: &crate::Node,
+        lo: Option<&crate::Node>,
+        hi: Option<&crate::Node>,
+        inclusive: bool,
+        state: &AliasState,
+    ) -> Vec<(usize, String)> {
+        let Some(source) = Self::array_root(target) else {
             return Vec::new();
         };
-        items
-            .iter()
-            .enumerate()
-            .filter_map(|(index, value)| self.returned_root(value, state).map(|root| (index, root)))
-            .collect()
+        let start = match lo {
+            Some(lo) => match Self::nonnegative_integer(lo) {
+                Some(start) => start,
+                None => return Vec::new(),
+            },
+            None => 0,
+        };
+        let end = match hi.map(Self::nonnegative_integer) {
+            Some(Some(end)) => Some(if inclusive {
+                end.saturating_add(1)
+            } else {
+                end
+            }),
+            Some(None) => return Vec::new(),
+            None => None,
+        };
+        let prefix = format!("{source}[");
+        let mut roots = Vec::new();
+        for (place, root) in &state.aliases {
+            let Some(index_text) = place
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(']'))
+            else {
+                continue;
+            };
+            let Ok(index) = index_text.parse::<usize>() else {
+                continue;
+            };
+            if index < start || end.is_some_and(|end| index >= end) {
+                continue;
+            }
+            roots.push((index - start, root.clone()));
+        }
+        roots
+    }
+
+    fn nonnegative_integer(node: &crate::Node) -> Option<usize> {
+        let crate::Node::IntegerLiteral { value, .. } = node else {
+            return None;
+        };
+        (*value).try_into().ok()
     }
 
     fn walk_expr(&mut self, node: &crate::Node, state: &mut AliasState) {
@@ -1006,6 +1084,15 @@ impl<'a> AliasWalker<'a> {
             crate::Node::IndexExpression { target, index, .. } => {
                 self.walk_expr(target, state);
                 self.walk_expr(index, state);
+            }
+            crate::Node::Slice { target, lo, hi, .. } => {
+                self.walk_expr(target, state);
+                if let Some(lo) = lo {
+                    self.walk_expr(lo, state);
+                }
+                if let Some(hi) = hi {
+                    self.walk_expr(hi, state);
+                }
             }
             crate::Node::FunctionLiteral {
                 parameters,
@@ -2640,6 +2727,64 @@ mod tests {
         assert!(
             errors.is_empty(),
             "conditional element write must kill the post-match fact: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn constant_array_slice_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [0, x]; \
+                 let selected = items[1..2]; \
+                 set_both(x, selected[0]); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "slice alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("selected[0]"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn inclusive_constant_array_slice_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [0, x]; \
+                 let selected = items[1..=1]; \
+                 set_both(x, selected[0]); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "inclusive slice alias must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn dynamic_array_slice_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int hi) { \
+                 let items = [x]; \
+                 let selected = items[0..hi]; \
+                 set_both(x, selected[0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic slice must stay opaque: {:?}",
             errors
         );
     }
