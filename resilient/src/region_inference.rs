@@ -642,10 +642,10 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   provenance: straight-line `let NAME = IDENT;` copies, direct reference
 //   returns, declared reference fields initialized by concrete struct
 //   literals (including nested paths), and non-negative constant array
-//   element/slice paths, including fields inside direct array-literal
-//   struct elements. Copying a reference binding cannot do anything but refer
-//   to the same region — there is no address-of or re-seating expression
-//   syntax in the language today.
+//   element/slice paths, including fields inside direct array-literal struct
+//   elements and constant-bound slices of those arrays. Copying a reference
+//   binding cannot do anything but refer to the same region — there is no
+//   address-of or re-seating expression syntax in the language today.
 // - Any construct whose effect on a binding is not fully understood
 //   KILLS the fact rather than guessing: assignments kill (re-seating
 //   semantics not locked in), shadowing `let`s kill and detach the old
@@ -741,6 +741,7 @@ impl<'a> AliasWalker<'a> {
                 let field_roots = self.struct_field_roots(value, state);
                 let array_roots = self.array_element_roots(value, state);
                 let array_field_roots = self.array_field_roots(value, state);
+                let array_slice_field_roots = self.array_slice_field_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
                     && root != *name
@@ -754,6 +755,11 @@ impl<'a> AliasWalker<'a> {
                     state.aliases.insert(format!("{name}[{index}]"), root);
                 }
                 for (index, field, root) in array_field_roots {
+                    state
+                        .aliases
+                        .insert(format!("{name}[{index}].{field}"), root);
+                }
+                for (index, field, root) in array_slice_field_roots {
                     state
                         .aliases
                         .insert(format!("{name}[{index}].{field}"), root);
@@ -974,8 +980,8 @@ impl<'a> AliasWalker<'a> {
         value: &crate::Node,
         state: &AliasState,
     ) -> Vec<(usize, String, String)> {
-        // Only direct array literals are summarized. Slices and transformed
-        // arrays retain their existing opaque behavior.
+        // Only direct array literals are summarized here. Slice propagation
+        // is handled separately and transformed arrays remain opaque.
         let crate::Node::ArrayLiteral { items, .. } = value else {
             return Vec::new();
         };
@@ -990,6 +996,70 @@ impl<'a> AliasWalker<'a> {
             .collect()
     }
 
+    fn array_slice_field_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        let crate::Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            ..
+        } = value
+        else {
+            return Vec::new();
+        };
+        let Some(source) = Self::array_root(target) else {
+            return Vec::new();
+        };
+        let Some((start, end)) =
+            Self::constant_slice_bounds(lo.as_deref(), hi.as_deref(), *inclusive)
+        else {
+            return Vec::new();
+        };
+        let prefix = format!("{source}[");
+        let mut roots = Vec::new();
+        for (place, root) in &state.aliases {
+            let Some(rest) = place.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((index_text, field)) = rest.split_once("].") else {
+                continue;
+            };
+            let Ok(index) = index_text.parse::<usize>() else {
+                continue;
+            };
+            if index < start || end.is_some_and(|end| index >= end) {
+                continue;
+            }
+            roots.push((index - start, field.to_string(), root.clone()));
+        }
+        roots
+    }
+
+    fn constant_slice_bounds(
+        lo: Option<&crate::Node>,
+        hi: Option<&crate::Node>,
+        inclusive: bool,
+    ) -> Option<(usize, Option<usize>)> {
+        let start = match lo {
+            Some(lo) => Self::nonnegative_integer(lo)?,
+            None => 0,
+        };
+        let end = match hi.map(Self::nonnegative_integer) {
+            Some(Some(end)) => Some(if inclusive {
+                end.saturating_add(1)
+            } else {
+                end
+            }),
+            Some(None) => return None,
+            None => None,
+        };
+        Some((start, end))
+    }
+
     fn array_slice_element_roots(
         &self,
         target: &crate::Node,
@@ -1001,21 +1071,8 @@ impl<'a> AliasWalker<'a> {
         let Some(source) = Self::array_root(target) else {
             return Vec::new();
         };
-        let start = match lo {
-            Some(lo) => match Self::nonnegative_integer(lo) {
-                Some(start) => start,
-                None => return Vec::new(),
-            },
-            None => 0,
-        };
-        let end = match hi.map(Self::nonnegative_integer) {
-            Some(Some(end)) => Some(if inclusive {
-                end.saturating_add(1)
-            } else {
-                end
-            }),
-            Some(None) => return Vec::new(),
-            None => None,
+        let Some((start, end)) = Self::constant_slice_bounds(lo, hi, inclusive) else {
+            return Vec::new();
         };
         let prefix = format!("{source}[");
         let mut roots = Vec::new();
@@ -2893,6 +2950,25 @@ mod tests {
         );
         assert!(
             errors[0].contains("selected[0]"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn constant_array_slice_struct_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [new Holder { item: x }]; \
+                 let selected = items[0..1]; \
+                 set_both(x, selected[0].item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`selected[0].item`"),
             "unexpected message: {}",
             errors[0]
         );
