@@ -428,6 +428,16 @@ fn collect_calls_with_span<'a>(
             collect_calls_with_span(body, calls);
         }
         crate::Node::ForInStatement { body, .. } => collect_calls_with_span(body, calls),
+        crate::Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            collect_calls_with_span(target, calls);
+            collect_calls_with_span(index, calls);
+            collect_calls_with_span(value, calls);
+        }
         crate::Node::InfixExpression { left, right, .. } => {
             collect_calls_with_span(left, calls);
             collect_calls_with_span(right, calls);
@@ -637,7 +647,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   path executes, the violation is real.
 //
 // Deferred (see issue #4070): Z3-backed branch-condition disjointness,
-// aliasing through arrays, and ambiguous interprocedural
+// dynamic or transformed array aliasing, and ambiguous interprocedural
 // paths. The tracked summaries stay sound because they require known
 // reference-typed fields, same-parameter return paths, or forwarding
 // through an already-proven helper. Use-after-move for plain bindings
@@ -692,9 +702,10 @@ impl<'a> AliasWalker<'a> {
     /// survive under a token no new binding can join.
     fn kill_name(&mut self, state: &mut AliasState, name: &str) {
         let field_prefix = format!("{name}.");
-        state
-            .aliases
-            .retain(|place, _| place != name && !place.starts_with(&field_prefix));
+        let array_prefix = format!("{name}[");
+        state.aliases.retain(|place, _| {
+            place != name && !place.starts_with(&field_prefix) && !place.starts_with(&array_prefix)
+        });
         if state.live_roots.remove(name) || state.aliases.values().any(|r| r == name) {
             let fresh = format!("{name}\u{0}{}", self.detached);
             self.detached += 1;
@@ -717,6 +728,7 @@ impl<'a> AliasWalker<'a> {
                 self.walk_expr(value, state);
                 let new_root = self.returned_root(value, state);
                 let field_roots = self.struct_field_roots(value, state);
+                let array_roots = self.array_element_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
                     && root != *name
@@ -725,6 +737,9 @@ impl<'a> AliasWalker<'a> {
                 }
                 for (field, root) in field_roots {
                     state.aliases.insert(format!("{name}.{field}"), root);
+                }
+                for (index, root) in array_roots {
+                    state.aliases.insert(format!("{name}[{index}]"), root);
                 }
             }
             crate::Node::Assignment { name, value, .. } => {
@@ -735,6 +750,21 @@ impl<'a> AliasWalker<'a> {
             }
             crate::Node::ExpressionStatement { expr, .. } => self.walk_expr(expr, state),
             crate::Node::FieldAssignment { .. } => self.walk_expr(node, state),
+            crate::Node::IndexAssignment {
+                target,
+                index,
+                value,
+                ..
+            } => {
+                self.walk_expr(target, state);
+                self.walk_expr(index, state);
+                self.walk_expr(value, state);
+                if let Some(place) = Self::array_place(target, index) {
+                    self.kill_name(state, &place);
+                } else if let Some(root) = Self::array_root(target) {
+                    self.kill_name(state, &root);
+                }
+            }
             crate::Node::ReturnStatement { value: Some(v), .. } => self.walk_expr(v, state),
             crate::Node::ReturnStatement { value: None, .. } => {}
             crate::Node::IfStatement {
@@ -797,6 +827,10 @@ impl<'a> AliasWalker<'a> {
                 let place = Self::field_place(target, field)?;
                 state.aliases.get(&place).cloned()
             }
+            crate::Node::IndexExpression { target, index, .. } => {
+                let place = Self::array_place(target, index)?;
+                state.aliases.get(&place).cloned()
+            }
             crate::Node::CallExpression {
                 function,
                 arguments,
@@ -825,10 +859,30 @@ impl<'a> AliasWalker<'a> {
         Some(format!("{name}.{field}"))
     }
 
+    /// Return a canonical path for an array element when every index in the
+    /// path is a non-negative integer literal. Dynamic and negative indices
+    /// stay opaque because the runtime resolves them from the current array.
+    fn array_place(target: &crate::Node, index: &crate::Node) -> Option<String> {
+        let prefix = Self::array_root(target)?;
+        let crate::Node::IntegerLiteral { value, .. } = index else {
+            return None;
+        };
+        (*value >= 0).then(|| format!("{prefix}[{value}]"))
+    }
+
+    fn array_root(node: &crate::Node) -> Option<String> {
+        match node {
+            crate::Node::Identifier { name, .. } => Some(name.clone()),
+            crate::Node::IndexExpression { target, index, .. } => Self::array_place(target, index),
+            _ => None,
+        }
+    }
+
     fn place_name(node: &crate::Node) -> Option<String> {
         match node {
             crate::Node::Identifier { name, .. } => Some(name.clone()),
             crate::Node::FieldAccess { target, field, .. } => Self::field_place(target, field),
+            crate::Node::IndexExpression { target, index, .. } => Self::array_place(target, index),
             _ => None,
         }
     }
@@ -849,6 +903,17 @@ impl<'a> AliasWalker<'a> {
                 self.returned_root(value, state)
                     .map(|root| (field.clone(), root))
             })
+            .collect()
+    }
+
+    fn array_element_roots(&self, value: &crate::Node, state: &AliasState) -> Vec<(usize, String)> {
+        let crate::Node::ArrayLiteral { items, .. } = value else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| self.returned_root(value, state).map(|root| (index, root)))
             .collect()
     }
 
@@ -1033,7 +1098,10 @@ impl<'a> AliasWalker<'a> {
                     self.source_path, call_span.start.line, call_span.start.column
                 )
             };
-            let alias_detail = if names.iter().all(|name| !name.contains('.')) {
+            let alias_detail = if names
+                .iter()
+                .all(|name| !name.contains('.') && !name.contains('['))
+            {
                 "these bindings provably refer to the same region via `let` reference aliasing"
             } else {
                 "these places provably refer to the same region via tracked reference aliasing"
@@ -1118,6 +1186,21 @@ fn collect_rebound_names(node: &crate::Node, out: &mut Vec<String>) {
                 out.push(place);
             }
             collect_rebound_names(target, out);
+            collect_rebound_names(value, out);
+        }
+        crate::Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            if let Some(place) = AliasWalker::array_place(target, index) {
+                out.push(place);
+            } else if let Some(root) = AliasWalker::array_root(target) {
+                out.push(root);
+            }
+            collect_rebound_names(target, out);
+            collect_rebound_names(index, out);
             collect_rebound_names(value, out);
         }
         crate::Node::Block { stmts, .. } => {
@@ -2467,6 +2550,96 @@ mod tests {
         assert!(
             errors.is_empty(),
             "independent closure parameter must not alias captured reference: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn array_literal_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [x]; \
+                 set_both(x, items[0]); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "array element alias must be reported: {:?}",
+            errors
+        );
+        assert!(
+            errors[0].contains("items[0]") && errors[0].contains("tracked reference aliasing"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn array_literal_distinct_elements_with_same_root_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [x, x]; \
+                 set_both(items[0], items[1]); \
+             }",
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "array element aliases must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn array_element_write_kills_only_known_fact() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [x, x]; \
+                 items[0] = 0; \
+                 set_both(x, items[0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "known element write must kill its alias fact: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn dynamic_array_element_write_kills_array_facts() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int i) { \
+                 let items = [x]; \
+                 items[i] = 0; \
+                 set_both(x, items[0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic element write must kill array facts: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn conditional_array_element_write_kills_fact_after_match() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int tag) { \
+                 let items = [x]; \
+                 match tag { 0 => { items[0] = 0; }, _ => { println(\"keep\"); } } \
+                 set_both(x, items[0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "conditional element write must kill the post-match fact: {:?}",
             errors
         );
     }
