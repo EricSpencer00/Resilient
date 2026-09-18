@@ -954,6 +954,17 @@ rather than being silently masked.
 | `mat_transpose(m)` | array of array → array of array | RES-2658: matrix transpose |
 | `mat_identity(n)` | int → array of array | RES-2658: n×n identity matrix |
 | `mat_trace(m)` | array of array → number | RES-2658: sum of diagonal |
+| `mat_det(m)` | array of array → float | RES-2660: determinant of a square matrix via LU decomposition; errors for singular or non-square matrices |
+| `mat_inv(m)` | array of array → array of array | RES-2660: inverse of a square matrix via Gauss-Jordan elimination; errors for singular or non-square matrices |
+| `mat_solve(A, b)` | (array of array, array) → array of float | RES-2660: solves `Ax = b` with partial pivoting; `A` must be square and `b` must have one value per row |
+| `mat_norm_frobenius(m)` | array of array → float | RES-2660: square root of the sum of squared matrix elements |
+| `mat_rank(m)` | array of array → int | RES-2660: rank via Gaussian elimination; accepts rectangular matrices |
+| `mat_lu(m)` | array of array → array | RES-2660: partial-pivoting LU decomposition; returns `[L, U, P]` for a square matrix |
+
+Matrix arguments must be non-empty, rectangular arrays of numeric values. The
+decomposition and solve operations treat pivots below `1e-12` as singular;
+`mat_lu` returns a unit-diagonal lower-triangular `L`, an upper-triangular `U`,
+and an integer permutation vector `P`.
 
 ## Graph Algorithms
 
