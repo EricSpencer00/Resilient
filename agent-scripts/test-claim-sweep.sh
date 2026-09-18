@@ -19,7 +19,9 @@
 #   4. RES-3976 acceptance: claiming files never modifies the calling
 #      repo's working tree or index — proof that two concurrent claims
 #      cannot produce a feature-branch diff on file-claims.json.
-#   5. Concurrent-write safety: two claim-files.sh invocations racing to
+#   5. Runner identity independence: release-claims.sh succeeds without
+#      ambient Git author configuration.
+#   6. Concurrent-write safety: two claim-files.sh invocations racing to
 #      update the ref both succeed (one retries via compare-and-swap) and
 #      neither clobbers the other's claim.
 
@@ -138,7 +140,11 @@ echo "PASS: stale-claim sweep + conflict detection work against the ref-based st
 
 # --- 3: release-claims.sh releases exactly its branch's claims -------------
 
-if ! "$RELEASE_SCRIPT" "test-branch-RES2670" "" > "$TMP/release_out" 2>&1; then
+# GitHub-hosted runners do not guarantee a configured Git identity. Exercise
+# the release path with global/system Git config disabled; claims-ref.sh must
+# supply its own stable automation identity for the CAS commit.
+if ! env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$TMP/empty-gitconfig" \
+  "$RELEASE_SCRIPT" "test-branch-RES2670" "" > "$TMP/release_out" 2>&1; then
   cat "$TMP/release_out" >&2
   echo "FAIL: release-claims.sh exited non-zero" >&2
   exit 1

@@ -47,6 +47,10 @@
 # Overridable for tests:
 #   AGENT_CLAIMS_REMOTE  — remote name (default: origin)
 #   AGENT_CLAIMS_REF     — branch name on that remote (default: agent-claims)
+#   AGENT_CLAIMS_COMMIT_NAME — CAS commit author/committer name
+#                              (default: Resilient automation)
+#   AGENT_CLAIMS_COMMIT_EMAIL — CAS commit author/committer email
+#                               (default: resilient-agent@users.noreply.github.com)
 
 set -euo pipefail
 
@@ -86,17 +90,32 @@ claims_fetch_base() {
 claims_try_push() {
   local json_file="$1" message="$2"
   local remote ref blob tree commit
+  local commit_name commit_email
 
   remote="$(claims_remote_name)"
   ref="$(claims_ref_name)"
+  commit_name="${AGENT_CLAIMS_COMMIT_NAME:-Resilient automation}"
+  commit_email="${AGENT_CLAIMS_COMMIT_EMAIL:-resilient-agent@users.noreply.github.com}"
 
   blob="$(git hash-object -w -- "$json_file")"
   tree="$(printf '100644 blob %s\tfile-claims.json\n' "$blob" | git mktree)"
 
   if [ -n "${CLAIMS_BASE_SHA:-}" ]; then
-    commit="$(git commit-tree "$tree" -p "$CLAIMS_BASE_SHA" -m "$message")"
+    commit="$(
+      GIT_AUTHOR_NAME="$commit_name" \
+      GIT_AUTHOR_EMAIL="$commit_email" \
+      GIT_COMMITTER_NAME="$commit_name" \
+      GIT_COMMITTER_EMAIL="$commit_email" \
+        git commit-tree "$tree" -p "$CLAIMS_BASE_SHA" -m "$message"
+    )"
   else
-    commit="$(git commit-tree "$tree" -m "$message")"
+    commit="$(
+      GIT_AUTHOR_NAME="$commit_name" \
+      GIT_AUTHOR_EMAIL="$commit_email" \
+      GIT_COMMITTER_NAME="$commit_name" \
+      GIT_COMMITTER_EMAIL="$commit_email" \
+        git commit-tree "$tree" -m "$message"
+    )"
   fi
 
   if git push "$remote" "${commit}:refs/heads/${ref}" >/dev/null 2>&1; then
