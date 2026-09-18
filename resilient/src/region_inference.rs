@@ -603,25 +603,32 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
     }
 
     let mut array_return_aliases: HashMap<&str, ArrayReturnAliasSummary> = HashMap::new();
-    for spanned in stmts {
-        if let crate::Node::Function {
-            name,
-            type_params,
-            parameters,
-            body,
-            return_type,
-            ..
-        } = &spanned.node
-            && type_params.is_empty()
-            && callee_table.contains_key(name.as_str())
-            && let Some(summary) = array_return_alias_summary(
-                body,
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for spanned in stmts {
+            if let crate::Node::Function {
+                name,
+                type_params,
                 parameters,
-                return_type.as_deref(),
-                &reference_fields,
-            )
-        {
-            array_return_aliases.insert(name.as_str(), summary);
+                body,
+                return_type,
+                ..
+            } = &spanned.node
+                && type_params.is_empty()
+                && callee_table.contains_key(name.as_str())
+                && let Some(summary) = array_return_alias_summary(
+                    body,
+                    parameters,
+                    return_type.as_deref(),
+                    &reference_fields,
+                    &array_return_aliases,
+                )
+                && array_return_aliases.get(name.as_str()) != Some(&summary)
+            {
+                array_return_aliases.insert(name.as_str(), summary);
+                changed = true;
+            }
         }
     }
 
@@ -2403,6 +2410,7 @@ fn array_return_alias_summary(
     parameters: &[(String, String)],
     return_type: Option<&str>,
     reference_fields: &HashSet<(String, String)>,
+    known_returns: &HashMap<&str, ArrayReturnAliasSummary>,
 ) -> Option<ArrayReturnAliasSummary> {
     let return_type = return_type?.trim();
     if return_type != "array" && !return_type.starts_with('[') && !return_type.starts_with("array<")
@@ -2411,7 +2419,13 @@ fn array_return_alias_summary(
     }
 
     let mut returns = Vec::new();
-    collect_array_return_provenance(body, parameters, reference_fields, &mut returns);
+    collect_array_return_provenance(
+        body,
+        parameters,
+        reference_fields,
+        known_returns,
+        &mut returns,
+    );
     let Some(Some(summary)) = returns.first() else {
         return None;
     };
@@ -2428,17 +2442,24 @@ fn collect_array_return_provenance(
     node: &crate::Node,
     parameters: &[(String, String)],
     reference_fields: &HashSet<(String, String)>,
+    known_returns: &HashMap<&str, ArrayReturnAliasSummary>,
     out: &mut Vec<Option<ArrayReturnAliasSummary>>,
 ) {
     match node {
         crate::Node::ReturnStatement { value, .. } => {
             out.push(value.as_deref().and_then(|value| {
-                array_return_aliases_for_value(value, parameters, reference_fields)
+                array_return_aliases_for_value(value, parameters, reference_fields, known_returns)
             }));
         }
         crate::Node::Block { stmts, .. } => {
             for stmt in stmts {
-                collect_array_return_provenance(stmt, parameters, reference_fields, out);
+                collect_array_return_provenance(
+                    stmt,
+                    parameters,
+                    reference_fields,
+                    known_returns,
+                    out,
+                );
             }
         }
         crate::Node::IfStatement {
@@ -2446,17 +2467,35 @@ fn collect_array_return_provenance(
             alternative,
             ..
         } => {
-            collect_array_return_provenance(consequence, parameters, reference_fields, out);
+            collect_array_return_provenance(
+                consequence,
+                parameters,
+                reference_fields,
+                known_returns,
+                out,
+            );
             if let Some(alternative) = alternative {
-                collect_array_return_provenance(alternative, parameters, reference_fields, out);
+                collect_array_return_provenance(
+                    alternative,
+                    parameters,
+                    reference_fields,
+                    known_returns,
+                    out,
+                );
             }
         }
         crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
-            collect_array_return_provenance(body, parameters, reference_fields, out)
+            collect_array_return_provenance(body, parameters, reference_fields, known_returns, out)
         }
         crate::Node::Match { arms, .. } => {
             for (_pattern, _guard, body) in arms {
-                collect_array_return_provenance(body, parameters, reference_fields, out);
+                collect_array_return_provenance(
+                    body,
+                    parameters,
+                    reference_fields,
+                    known_returns,
+                    out,
+                );
             }
         }
         crate::Node::FunctionLiteral { .. } => {}
@@ -2468,13 +2507,47 @@ fn array_return_aliases_for_value(
     value: &crate::Node,
     parameters: &[(String, String)],
     reference_fields: &HashSet<(String, String)>,
+    known_returns: &HashMap<&str, ArrayReturnAliasSummary>,
 ) -> Option<ArrayReturnAliasSummary> {
-    if !matches!(value, crate::Node::ArrayLiteral { .. }) {
-        return None;
+    match value {
+        crate::Node::ArrayLiteral { .. } => {
+            let mut paths = Vec::new();
+            collect_array_return_paths(value, "", parameters, reference_fields, &mut paths);
+            (!paths.is_empty()).then_some(ArrayReturnAliasSummary { paths })
+        }
+        crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            let crate::Node::Identifier { name: callee, .. } = function.as_ref() else {
+                return None;
+            };
+            let summary = known_returns.get(callee.as_str())?;
+            let paths = summary
+                .paths
+                .iter()
+                .filter_map(|(path, parameter_idx)| {
+                    let crate::Node::Identifier { name: argument, .. } =
+                        arguments.get(*parameter_idx)?
+                    else {
+                        return None;
+                    };
+                    let outer_idx =
+                        parameters
+                            .iter()
+                            .enumerate()
+                            .find_map(|(idx, (ty, parameter))| {
+                                (parameter == argument && region_from_type_str(ty).is_some())
+                                    .then_some(idx)
+                            })?;
+                    Some((path.clone(), outer_idx))
+                })
+                .collect::<Vec<_>>();
+            (!paths.is_empty()).then_some(ArrayReturnAliasSummary { paths })
+        }
+        _ => None,
     }
-    let mut paths = Vec::new();
-    collect_array_return_paths(value, "", parameters, reference_fields, &mut paths);
-    (!paths.is_empty()).then_some(ArrayReturnAliasSummary { paths })
 }
 
 fn collect_array_return_paths(
@@ -3575,6 +3648,37 @@ mod tests {
             errors[0].contains("`x`") && errors[0].contains("`items[0]`"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_array_forward_chain_rejected() {
+        let errors = run_alias_check(
+            "fn outer(&mut int x) -> array { return inner(x); } \
+             fn inner(&mut int x) -> array { return [x]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = outer(x); set_both(x, items[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`items[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn wrapped_reference_array_forward_chain_stays_conservative() {
+        let errors = run_alias_check(
+            "fn outer(&mut int x) -> array { let alias = x; return inner(alias); } \
+             fn inner(&mut int x) -> array { return [x]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = outer(x); set_both(x, items[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped helper arguments must stay conservative: {:?}",
+            errors
         );
     }
 

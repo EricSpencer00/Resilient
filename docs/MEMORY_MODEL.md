@@ -407,6 +407,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   paths such as `items[0].0`, `items[0].item`, and `items[0][0]`. Wrapped
   leaves, dynamic/transformed arrays, and ambiguous return shapes remain
   conservative.
+- **A-E5 increment 21 (RES-4070):** direct array-return provenance composes
+  through a fixed-point chain of already-proven helper calls. A wrapper such
+  as `outer(x) -> inner(x)` therefore still exposes a constant path like
+  `items[0]`. Only plain reference-parameter forwarding is accepted; recursive,
+  wrapped, mixed, and ambiguous returns remain conservative.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
