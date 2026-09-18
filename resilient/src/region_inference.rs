@@ -342,10 +342,11 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   passing it somewhere is a genuine violation or an ordinary Copy.
 ///   Enforcing that now would risk false positives on every ordinary
 ///   value type in the corpus.
-/// - No general interprocedural analysis — only direct reference returns and
-///   concrete structs whose reference fields are initialized from parameters
-///   are summarized; arrays, tuples, closures, and ambiguous or wrapped
-///   return paths remain opaque across function boundaries.
+/// - No general interprocedural analysis — only direct reference returns,
+///   concrete structs whose reference fields are initialized from parameters,
+///   and direct tuples of reference parameters are summarized; arrays,
+///   closures, and ambiguous or wrapped return paths remain opaque across
+///   function boundaries.
 pub fn infer(program: &crate::Node, source_path: &str) -> Result<(), String> {
     let errors = check_unannotated_mut_alias(program, source_path);
     if errors.is_empty() {
@@ -582,6 +583,25 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    let mut tuple_return_aliases: HashMap<&str, TupleReturnAliasSummary> = HashMap::new();
+    for spanned in stmts {
+        if let crate::Node::Function {
+            name,
+            type_params,
+            parameters,
+            body,
+            return_type,
+            ..
+        } = &spanned.node
+            && type_params.is_empty()
+            && callee_table.contains_key(name.as_str())
+            && let Some(summary) =
+                tuple_return_alias_summary(body, parameters, return_type.as_deref())
+        {
+            tuple_return_aliases.insert(name.as_str(), summary);
+        }
+    }
+
     for spanned in stmts {
         let crate::Node::Function { body, .. } = &spanned.node else {
             continue;
@@ -639,6 +659,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         &callee_table,
         &return_aliases,
         &struct_return_aliases,
+        &tuple_return_aliases,
         &reference_fields,
         source_path,
     ));
@@ -688,7 +709,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 // dynamic or transformed array aliasing, and ambiguous interprocedural
 // paths. The tracked summaries stay sound because they require known
 // reference-typed fields, same-parameter return paths, or forwarding
-// through an already-proven helper. Use-after-move for plain bindings
+// through an already-proven helper, including direct tuple returns.
+// Use-after-move for plain bindings
 // remains deferred by the Copy/Move default-semantics decision —
 // `linear.rs` remains the only move-semantics surface.
 
@@ -706,6 +728,11 @@ struct AliasState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StructReturnAliasSummary {
     fields: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TupleReturnAliasSummary {
+    elements: Vec<(String, usize)>,
 }
 
 impl AliasState {
@@ -732,6 +759,7 @@ struct AliasWalker<'a> {
     callee_table: &'a HashMap<&'a str, &'a [(String, String)]>,
     return_aliases: &'a HashMap<&'a str, usize>,
     struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
+    tuple_return_aliases: &'a HashMap<&'a str, TupleReturnAliasSummary>,
     reference_fields: &'a HashSet<(String, String)>,
     source_path: &'a str,
     errors: Vec<String>,
@@ -944,6 +972,9 @@ impl<'a> AliasWalker<'a> {
                 if let Some(item) = Self::direct_tuple_item(tuple, *index) {
                     return self.returned_root(item, state);
                 }
+                if let Some(root) = self.tuple_call_element_root(tuple, *index, state) {
+                    return Some(root);
+                }
                 let place = Self::tuple_place(tuple, *index)?;
                 state.aliases.get(&place).cloned()
             }
@@ -1031,13 +1062,105 @@ impl<'a> AliasWalker<'a> {
         state: &AliasState,
     ) -> Vec<(String, String)> {
         let mut roots = Vec::new();
-        if let crate::Node::TupleLiteral { .. } = value {
-            self.collect_direct_tuple_roots(value, "", state, &mut roots);
-            return roots;
+        match value {
+            crate::Node::TupleLiteral { .. } => {
+                self.collect_direct_tuple_roots(value, "", state, &mut roots);
+            }
+            crate::Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
+                roots.extend(self.tuple_call_element_roots(function, arguments, state));
+            }
+            _ => self.collect_tuple_alias_roots(value, "", state, &mut roots),
         }
-
-        self.collect_tuple_alias_roots(value, "", state, &mut roots);
         roots
+    }
+
+    fn tuple_call_element_roots(
+        &self,
+        function: &crate::Node,
+        arguments: &[crate::Node],
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let crate::Node::Identifier { name: callee, .. } = function else {
+            return Vec::new();
+        };
+        let Some(summary) = self.tuple_return_aliases.get(callee.as_str()) else {
+            return Vec::new();
+        };
+        summary
+            .elements
+            .iter()
+            .filter_map(|(path, param_idx)| {
+                let crate::Node::Identifier { name: argument, .. } = arguments.get(*param_idx)?
+                else {
+                    return None;
+                };
+                state
+                    .root_of(argument)
+                    .map(|root| (path.clone(), root.to_owned()))
+            })
+            .collect()
+    }
+
+    fn tuple_call_element_root(
+        &self,
+        tuple: &crate::Node,
+        index: usize,
+        state: &AliasState,
+    ) -> Option<String> {
+        let path = Self::tuple_call_path(tuple, index)?;
+        let crate::Node::TupleIndex { tuple: call, .. } = tuple else {
+            return self
+                .tuple_call_element_roots_from_call(tuple, state)
+                .into_iter()
+                .find_map(|(candidate, root)| (candidate == path).then_some(root));
+        };
+        self.tuple_call_element_roots_from_call(Self::tuple_call_base(call)?, state)
+            .into_iter()
+            .find_map(|(candidate, root)| (candidate == path).then_some(root))
+    }
+
+    fn tuple_call_element_roots_from_call(
+        &self,
+        call: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } = call
+        else {
+            return Vec::new();
+        };
+        self.tuple_call_element_roots(function, arguments, state)
+    }
+
+    fn tuple_call_base(node: &crate::Node) -> Option<&crate::Node> {
+        match node {
+            crate::Node::CallExpression { .. } => Some(node),
+            crate::Node::TupleIndex { tuple, .. } => Self::tuple_call_base(tuple),
+            _ => None,
+        }
+    }
+
+    fn tuple_call_path(node: &crate::Node, index: usize) -> Option<String> {
+        match node {
+            crate::Node::CallExpression { .. } => Some(index.to_string()),
+            crate::Node::TupleIndex {
+                tuple,
+                index: nested_index,
+                ..
+            } => Some(format!(
+                "{}.{}",
+                Self::tuple_call_path(tuple, *nested_index)?,
+                index
+            )),
+            _ => None,
+        }
     }
 
     /// Collect reference leaves from a direct tuple literal, including
@@ -1929,11 +2052,11 @@ fn collect_rebound_names(node: &crate::Node, out: &mut Vec<String>) {
     }
 }
 
-/// RES-4070 (A-E5 increments 2–4): flag calls where two *different*
+/// RES-4070 (A-E5 increments 2–5): flag calls where two *different*
 /// identifiers provably refer to the same region — established by
-/// straight-line `let`-copies of reference bindings or a narrow direct
-/// reference-return/struct-field summary — and are passed as simultaneous
-/// reference arguments with at least one `&mut` slot.
+/// straight-line `let`-copies of reference bindings or narrow direct
+/// reference-return/struct-field/tuple-return summaries — and are passed as
+/// simultaneous reference arguments with at least one `&mut` slot.
 /// Conditional paths are merged by intersection; see the module-level
 /// soundness contract above.
 fn check_unannotated_let_alias(
@@ -1941,6 +2064,7 @@ fn check_unannotated_let_alias(
     callee_table: &HashMap<&str, &[(String, String)]>,
     return_aliases: &HashMap<&str, usize>,
     struct_return_aliases: &HashMap<&str, StructReturnAliasSummary>,
+    tuple_return_aliases: &HashMap<&str, TupleReturnAliasSummary>,
     reference_fields: &HashSet<(String, String)>,
     source_path: &str,
 ) -> Vec<String> {
@@ -1948,6 +2072,7 @@ fn check_unannotated_let_alias(
         callee_table,
         return_aliases,
         struct_return_aliases,
+        tuple_return_aliases,
         reference_fields,
         source_path,
         errors: Vec::new(),
@@ -2120,6 +2245,113 @@ fn struct_return_aliases_for_value(
     }
 
     Some(StructReturnAliasSummary { fields: aliases })
+}
+
+fn tuple_return_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    return_type: Option<&str>,
+) -> Option<TupleReturnAliasSummary> {
+    let return_type = return_type?.trim();
+    if !return_type.starts_with('(') || !return_type.ends_with(')') {
+        return None;
+    }
+
+    let mut returns = Vec::new();
+    collect_tuple_return_provenance(body, parameters, &mut returns);
+    let Some(Some(summary)) = returns.first() else {
+        return None;
+    };
+    if returns
+        .iter()
+        .any(|candidate| candidate.as_ref() != Some(summary))
+    {
+        return None;
+    }
+    Some(summary.clone())
+}
+
+fn collect_tuple_return_provenance(
+    node: &crate::Node,
+    parameters: &[(String, String)],
+    out: &mut Vec<Option<TupleReturnAliasSummary>>,
+) {
+    match node {
+        crate::Node::ReturnStatement { value, .. } => {
+            out.push(
+                value
+                    .as_deref()
+                    .and_then(|value| tuple_return_aliases_for_value(value, parameters)),
+            );
+        }
+        crate::Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                collect_tuple_return_provenance(stmt, parameters, out);
+            }
+        }
+        crate::Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_tuple_return_provenance(consequence, parameters, out);
+            if let Some(alternative) = alternative {
+                collect_tuple_return_provenance(alternative, parameters, out);
+            }
+        }
+        crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
+            collect_tuple_return_provenance(body, parameters, out)
+        }
+        crate::Node::Match { arms, .. } => {
+            for (_pattern, _guard, body) in arms {
+                collect_tuple_return_provenance(body, parameters, out);
+            }
+        }
+        crate::Node::FunctionLiteral { .. } => {}
+        _ => {}
+    }
+}
+
+fn tuple_return_aliases_for_value(
+    value: &crate::Node,
+    parameters: &[(String, String)],
+) -> Option<TupleReturnAliasSummary> {
+    let mut elements = Vec::new();
+    collect_tuple_return_elements(value, "", parameters, &mut elements)?;
+    (!elements.is_empty()).then_some(TupleReturnAliasSummary { elements })
+}
+
+fn collect_tuple_return_elements(
+    value: &crate::Node,
+    prefix: &str,
+    parameters: &[(String, String)],
+    elements: &mut Vec<(String, usize)>,
+) -> Option<()> {
+    let crate::Node::TupleLiteral { items, .. } = value else {
+        return None;
+    };
+    for (index, item) in items.iter().enumerate() {
+        let path = if prefix.is_empty() {
+            index.to_string()
+        } else {
+            format!("{prefix}.{index}")
+        };
+        if matches!(item, crate::Node::TupleLiteral { .. }) {
+            collect_tuple_return_elements(item, &path, parameters, elements)?;
+            continue;
+        }
+        let crate::Node::Identifier { name, .. } = item else {
+            return None;
+        };
+        let parameter_idx = parameters
+            .iter()
+            .enumerate()
+            .find_map(|(idx, (ty, parameter))| {
+                (parameter == name && region_from_type_str(ty).is_some()).then_some(idx)
+            })?;
+        elements.push((path, parameter_idx));
+    }
+    Some(())
 }
 
 /// Resolve a return expression to one of the enclosing function's reference
@@ -3061,6 +3293,54 @@ mod tests {
         assert!(
             errors.is_empty(),
             "wrapped helper returns must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_tuple_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (&mut int, &mut int) { return (x, y); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let pair = make_pair(x, y); set_both(x, pair.0); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`pair.0`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_nested_reference_tuple_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_nested(&mut int x, &mut int y) -> ((&mut int, &mut int), &mut int) { \
+                 return ((x, y), y); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let pair = make_nested(x, y); set_both(x, pair.0.0); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`pair.0.0`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn wrapped_reference_tuple_return_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (&mut int, &mut int) { \
+                 let first = x; return (first, y); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let pair = make_pair(x, y); set_both(x, pair.0); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped tuple returns must stay conservative: {:?}",
             errors
         );
     }
