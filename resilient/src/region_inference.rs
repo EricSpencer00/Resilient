@@ -2486,12 +2486,11 @@ impl<'a> AliasWalker<'a> {
         state: &AliasState,
     ) -> Vec<(String, String)> {
         let mut paths = Vec::new();
-        self.collect_known_constructor_paths(value, "", state, &mut paths);
+        Self::collect_known_constructor_paths(value, "", state, &mut paths);
         paths
     }
 
     fn collect_known_constructor_paths(
-        &self,
         value: &crate::Node,
         prefix: &str,
         state: &AliasState,
@@ -2520,13 +2519,13 @@ impl<'a> AliasWalker<'a> {
             crate::Node::TupleLiteral { items, .. } => {
                 for (index, item) in items.iter().enumerate() {
                     let path = format!("{prefix}.{index}");
-                    self.collect_known_constructor_paths(item, &path, state, paths);
+                    Self::collect_known_constructor_paths(item, &path, state, paths);
                 }
             }
             crate::Node::ArrayLiteral { items, .. } => {
                 for (index, item) in items.iter().enumerate() {
                     let path = format!("{prefix}[{index}]");
-                    self.collect_known_constructor_paths(item, &path, state, paths);
+                    Self::collect_known_constructor_paths(item, &path, state, paths);
                 }
             }
             _ => {}
