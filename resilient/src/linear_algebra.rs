@@ -307,8 +307,8 @@ pub(crate) fn builtin_mat_mul(args: &[Value]) -> RResult<Value> {
             let mut c = vec![vec![0.0f64; n]; m];
             for i in 0..m {
                 for j in 0..n {
-                    for l in 0..k {
-                        c[i][j] += a[i][l] * b[l][j];
+                    for (a_value, b_row) in a[i].iter().zip(&b) {
+                        c[i][j] += a_value * b_row[j];
                     }
                 }
             }
