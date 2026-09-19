@@ -344,6 +344,8 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   value type in the corpus.
 /// - No general interprocedural analysis — only direct reference returns,
 ///   direct `Some`/`Ok`/`Err` returns with one reference payload,
+///   direct tagged-enum constructor returns with unambiguous reference
+///   payload paths,
 ///   concrete structs whose reference fields are initialized from parameters,
 ///   and direct tuples of reference parameters are summarized; arrays,
 ///   closures, and ambiguous or wrapped return paths remain opaque across
@@ -676,6 +678,30 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    let mut tagged_enum_return_aliases: HashMap<&str, TaggedEnumReturnAliasSummary> =
+        HashMap::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for spanned in stmts {
+            if let crate::Node::Function {
+                name,
+                type_params,
+                parameters,
+                body,
+                ..
+            } = &spanned.node
+                && type_params.is_empty()
+                && callee_table.contains_key(name.as_str())
+                && let Some(summary) = tagged_enum_return_alias_summary(body, parameters)
+                && tagged_enum_return_aliases.get(name.as_str()) != Some(&summary)
+            {
+                tagged_enum_return_aliases.insert(name.as_str(), summary);
+                changed = true;
+            }
+        }
+    }
+
     for spanned in stmts {
         let crate::Node::Function { body, .. } = &spanned.node else {
             continue;
@@ -732,6 +758,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         tuple_return_aliases: &tuple_return_aliases,
         array_return_aliases: &array_return_aliases,
         option_result_return_aliases: &option_result_return_aliases,
+        tagged_enum_return_aliases: &tagged_enum_return_aliases,
     };
 
     // RES-4070: second increment — conditional-path-aware alias
@@ -775,6 +802,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   and constant-bound slices of those places,
 //   direct tuple and array returns, and
 //   direct `Some`/`Ok`/`Err` helper returns with one reference payload,
+//   direct tagged-enum helper returns with unambiguous payload paths,
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
 //   slices of those arrays.
@@ -837,12 +865,19 @@ struct OptionResultReturnAliasSummary {
     paths: Vec<(String, usize)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaggedEnumReturnAliasSummary {
+    constructor: String,
+    paths: Vec<(String, usize)>,
+}
+
 struct AliasSummaries<'a> {
     return_aliases: &'a HashMap<&'a str, usize>,
     struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
     tuple_return_aliases: &'a HashMap<&'a str, TupleReturnAliasSummary>,
     array_return_aliases: &'a HashMap<&'a str, ArrayReturnAliasSummary>,
     option_result_return_aliases: &'a HashMap<&'a str, OptionResultReturnAliasSummary>,
+    tagged_enum_return_aliases: &'a HashMap<&'a str, TaggedEnumReturnAliasSummary>,
 }
 
 impl AliasState {
@@ -874,6 +909,7 @@ struct AliasWalker<'a> {
     tuple_return_aliases: &'a HashMap<&'a str, TupleReturnAliasSummary>,
     array_return_aliases: &'a HashMap<&'a str, ArrayReturnAliasSummary>,
     option_result_return_aliases: &'a HashMap<&'a str, OptionResultReturnAliasSummary>,
+    tagged_enum_return_aliases: &'a HashMap<&'a str, TaggedEnumReturnAliasSummary>,
     reference_fields: &'a HashSet<(String, String)>,
     source_path: &'a str,
     errors: Vec<String>,
@@ -1396,25 +1432,35 @@ impl<'a> AliasWalker<'a> {
                 let crate::Node::Identifier { name, .. } = function.as_ref() else {
                     return Vec::new();
                 };
-                if !name.contains("::") {
+                if name.contains("::") {
+                    let mut roots = Vec::new();
+                    for (index, payload) in arguments.iter().enumerate() {
+                        if let Some(root) = self.returned_root(payload, state) {
+                            roots.push((index.to_string(), root));
+                        }
+                        for (path, root) in self.paths_below(payload, state) {
+                            roots.push((format!("{index}{path}"), root));
+                        }
+                        for (path, root) in self.struct_field_roots(payload, state) {
+                            roots.push((format!("{index}.{path}"), root));
+                        }
+                        for (path, root) in self.tuple_element_roots(payload, state) {
+                            roots.push((format!("{index}.{path}"), root));
+                        }
+                    }
+                    return roots;
+                }
+                let Some(summary) = self.tagged_enum_return_aliases.get(name.as_str()) else {
                     return Vec::new();
-                }
-                let mut roots = Vec::new();
-                for (index, payload) in arguments.iter().enumerate() {
-                    if let Some(root) = self.returned_root(payload, state) {
-                        roots.push((index.to_string(), root));
-                    }
-                    for (path, root) in self.paths_below(payload, state) {
-                        roots.push((format!("{index}{path}"), root));
-                    }
-                    for (path, root) in self.struct_field_roots(payload, state) {
-                        roots.push((format!("{index}.{path}"), root));
-                    }
-                    for (path, root) in self.tuple_element_roots(payload, state) {
-                        roots.push((format!("{index}.{path}"), root));
-                    }
-                }
-                roots
+                };
+                summary
+                    .paths
+                    .iter()
+                    .filter_map(|(path, parameter_idx)| {
+                        self.tracked_reference_argument_root(arguments.get(*parameter_idx)?, state)
+                            .map(|root| (path.clone(), root))
+                    })
+                    .collect()
             }
             _ => {
                 let Some(_constructor) = self.known_constructor_for(value, state) else {
@@ -2689,6 +2735,17 @@ impl<'a> AliasWalker<'a> {
                     .map(|summary| summary.constructor.clone())
             })
             .or_else(|| {
+                let crate::Node::CallExpression { function, .. } = value else {
+                    return None;
+                };
+                let crate::Node::Identifier { name, .. } = function.as_ref() else {
+                    return None;
+                };
+                self.tagged_enum_return_aliases
+                    .get(name.as_str())
+                    .map(|summary| summary.constructor.clone())
+            })
+            .or_else(|| {
                 Self::place_name(value)
                     .and_then(|place| state.known_constructors.get(&place).cloned())
             })
@@ -2720,6 +2777,13 @@ impl<'a> AliasWalker<'a> {
         if let crate::Node::CallExpression { function, .. } = value
             && let crate::Node::Identifier { name, .. } = function.as_ref()
             && let Some(summary) = self.option_result_return_aliases.get(name.as_str())
+        {
+            paths.push((prefix.to_owned(), summary.constructor.clone()));
+            return;
+        }
+        if let crate::Node::CallExpression { function, .. } = value
+            && let crate::Node::Identifier { name, .. } = function.as_ref()
+            && let Some(summary) = self.tagged_enum_return_aliases.get(name.as_str())
         {
             paths.push((prefix.to_owned(), summary.constructor.clone()));
             return;
@@ -3110,6 +3174,7 @@ fn check_unannotated_let_alias(
         tuple_return_aliases: summaries.tuple_return_aliases,
         array_return_aliases: summaries.array_return_aliases,
         option_result_return_aliases: summaries.option_result_return_aliases,
+        tagged_enum_return_aliases: summaries.tagged_enum_return_aliases,
         reference_fields,
         source_path,
         errors: Vec::new(),
@@ -3453,6 +3518,154 @@ fn option_result_return_aliases_for_value(
         constructor: name.clone(),
         paths: vec![("0".to_owned(), parameter_idx)],
     })
+}
+
+fn tagged_enum_return_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+) -> Option<TaggedEnumReturnAliasSummary> {
+    let mut returns = Vec::new();
+    collect_tagged_enum_return_provenance(body, parameters, &mut returns);
+    let Some(Some(summary)) = returns.first() else {
+        return None;
+    };
+    if returns
+        .iter()
+        .any(|candidate| candidate.as_ref() != Some(summary))
+    {
+        return None;
+    }
+    Some(summary.clone())
+}
+
+fn collect_tagged_enum_return_provenance(
+    node: &crate::Node,
+    parameters: &[(String, String)],
+    out: &mut Vec<Option<TaggedEnumReturnAliasSummary>>,
+) {
+    match node {
+        crate::Node::ReturnStatement { value, .. } => {
+            out.push(
+                value
+                    .as_deref()
+                    .and_then(|value| tagged_enum_return_aliases_for_value(value, parameters)),
+            );
+        }
+        crate::Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                collect_tagged_enum_return_provenance(stmt, parameters, out);
+            }
+        }
+        crate::Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_tagged_enum_return_provenance(consequence, parameters, out);
+            if let Some(alternative) = alternative {
+                collect_tagged_enum_return_provenance(alternative, parameters, out);
+            }
+        }
+        crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
+            collect_tagged_enum_return_provenance(body, parameters, out)
+        }
+        crate::Node::Match { arms, .. } => {
+            for (_pattern, _guard, body) in arms {
+                collect_tagged_enum_return_provenance(body, parameters, out);
+            }
+        }
+        crate::Node::FunctionLiteral { .. } => {}
+        _ => {}
+    }
+}
+
+fn tagged_enum_return_aliases_for_value(
+    value: &crate::Node,
+    parameters: &[(String, String)],
+) -> Option<TaggedEnumReturnAliasSummary> {
+    match value {
+        crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            let crate::Node::Identifier { name, .. } = function.as_ref() else {
+                return None;
+            };
+            if !name.contains("::") {
+                return None;
+            }
+            let mut paths = Vec::new();
+            for (index, payload) in arguments.iter().enumerate() {
+                collect_tagged_enum_return_paths(
+                    payload,
+                    &index.to_string(),
+                    parameters,
+                    &mut paths,
+                );
+            }
+            Some(TaggedEnumReturnAliasSummary {
+                constructor: name.clone(),
+                paths,
+            })
+        }
+        crate::Node::StructLiteral { name, fields, .. } if name.contains("::") => {
+            let mut paths = Vec::new();
+            for (field, payload) in fields {
+                collect_tagged_enum_return_paths(payload, field, parameters, &mut paths);
+            }
+            Some(TaggedEnumReturnAliasSummary {
+                constructor: name.clone(),
+                paths,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn collect_tagged_enum_return_paths(
+    value: &crate::Node,
+    prefix: &str,
+    parameters: &[(String, String)],
+    paths: &mut Vec<(String, usize)>,
+) {
+    if let Some(parameter_idx) = direct_reference_parameter_index(value, parameters) {
+        paths.push((prefix.to_owned(), parameter_idx));
+        return;
+    }
+    match value {
+        crate::Node::StructLiteral { fields, .. } => {
+            for (field, payload) in fields {
+                collect_tagged_enum_return_paths(
+                    payload,
+                    &format!("{prefix}.{field}"),
+                    parameters,
+                    paths,
+                );
+            }
+        }
+        crate::Node::TupleLiteral { items, .. } => {
+            for (index, payload) in items.iter().enumerate() {
+                collect_tagged_enum_return_paths(
+                    payload,
+                    &format!("{prefix}.{index}"),
+                    parameters,
+                    paths,
+                );
+            }
+        }
+        crate::Node::ArrayLiteral { items, .. } => {
+            for (index, payload) in items.iter().enumerate() {
+                collect_tagged_enum_return_paths(
+                    payload,
+                    &format!("{prefix}[{index}]"),
+                    parameters,
+                    paths,
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 fn tuple_return_alias_summary(
@@ -7753,6 +7966,41 @@ mod tests {
             errors.len(),
             1,
             "only the matching sliced constructor should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tagged_enum_constructor_identity_survives_direct_helper_returns() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               fn expose_item(&mut int value) -> Packet {
+                   return Packet::Item(new Holder { item: value });
+               }
+               fn expose_other(&mut int value) -> Packet {
+                   return Packet::Other(new Holder { item: value });
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   match expose_item(x) {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+                   let packet = expose_other(x);
+                   match packet {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "matching helper constructors should report: {:?}",
             errors
         );
     }
