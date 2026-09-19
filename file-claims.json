@@ -15,6 +15,10 @@
     "resilient/tests/it/associated_type_generic_local_annotation.rs": {
       "branch": "res-4067-generic-local-annotations",
       "claimed_at": "2026-09-19T20:13:09Z"
+    },
+    "resilient/tests/associated_type_generic_local_annotation.rs": {
+      "branch": "res-4067-generic-local-annotations",
+      "claimed_at": "2026-09-19T20:16:55Z"
     }
   }
 }
