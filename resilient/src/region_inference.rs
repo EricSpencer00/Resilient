@@ -1267,6 +1267,11 @@ impl<'a> AliasWalker<'a> {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
                 }
+                crate::Node::StructLiteral { .. } => {
+                    for (nested_field, root) in self.struct_field_roots(item, state) {
+                        roots.push((format!("{path}.{nested_field}"), root));
+                    }
+                }
                 crate::Node::CallExpression {
                     function,
                     arguments,
@@ -4623,6 +4628,39 @@ mod tests {
         assert!(
             errors.is_empty(),
             "unknown array values must stay opaque: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn direct_tuple_literal_struct_value_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let pair = (new Inner { item: x }, 0); set_both(x, pair.0.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("pair.0.item"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_tuple_literal_struct_value_preserves_nested_field() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } struct Outer { Inner inner } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let pair = (new Outer { inner: new Inner { item: x } }, 0); set_both(x, pair.0.inner.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn tuple_literal_value_struct_field_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Inner { int item } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let pair = (new Inner { item: x }, 0); set_both(x, pair.0.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "value fields must stay outside alias tracking: {:?}",
             errors
         );
     }
