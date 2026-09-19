@@ -573,6 +573,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   survives concrete struct-field places such as `wrapper.packet`, including
   whole-value copies of nested wrappers and variant-aware matching at those
   places. Dynamic, transformed, unknown, and ambiguous paths remain opaque.
+- **A-E5 increment 58 (RES-4070):** direct `Some`, `Ok`, and `Err` payload
+  provenance now survives concrete struct-field places such as
+  `wrapper.value`, including variant-aware matching and conservative rejection
+  of mismatched constructors. Dynamic, transformed, unknown, and ambiguous
+  paths remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
