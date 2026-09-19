@@ -605,6 +605,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   constructors returned by a helper with one unambiguous reference payload now
   retain constructor-aware provenance at callers. Mixed constructors, wrapped
   returns, recursive or ambiguous helpers, and unknown arguments remain opaque.
+- **A-E5 increment 65 (RES-4070):** direct tagged-enum constructors returned
+  by a helper now retain constructor identity and unambiguous reference payload
+  paths at callers. Mixed constructors, wrapped returns, recursive or
+  ambiguous helpers, and unknown arguments remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
