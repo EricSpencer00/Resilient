@@ -477,6 +477,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   through direct tuple-literal elements, so `let matrix = [[(x, 0)]]`
   exposes `matrix[0][0].0` and nested concrete tuple paths. Value elements
   and unknown shapes remain outside alias tracking.
+- **A-E5 increment 37 (RES-4070):** nested array provenance now rebases
+  canonical paths from tracked tuple and struct aliases, so `let pair =
+  (x, 0); let matrix = [[pair]]` exposes `matrix[0][0].0`. Unknown and
+  transformed values remain outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
