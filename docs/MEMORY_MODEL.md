@@ -565,6 +565,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   conservative whole-value `let` aliases of direct tagged-enum, `Some`, `Ok`,
   and `Err` values. Branch disagreement, shadowing, reassignment, and unknown
   or transformed values clear the tag rather than guessing.
+- **A-E5 increment 56 (RES-4070):** direct tagged-enum payload provenance now
+  survives constant tuple and array places such as `pair.0` and `items[0]`,
+  including variant-aware matching at those places. Dynamic indices,
+  transformed composites, unknown elements, and ambiguous paths remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
