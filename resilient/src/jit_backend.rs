@@ -16,12 +16,15 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::Node;
+
+type FnAstMap = HashMap<String, (Vec<(String, String)>, Node)>;
 
 /// RES-104: per-function lowering context. Threads the locals
 /// map (name → cranelift Variable) and the Variable counter
@@ -43,14 +46,15 @@ struct LowerCtx {
     /// the same map is used for the whole function body. Block
     /// scoping is a future ticket.
     locals: HashMap<String, Variable>,
-    /// RES-105: program-wide function map. Cloned (cheap — FuncId
-    /// is Copy) into each per-function LowerCtx so call sites
-    /// can resolve direct calls by name.
-    functions: HashMap<String, FuncId>,
-    /// RES-105: arity per declared function, keyed by name.
-    /// Used to validate call sites — mismatch is reported as a
-    /// clean Unsupported instead of letting Cranelift segfault.
-    function_arities: HashMap<String, usize>,
+    /// RES-105: program-wide function map. Shared by each per-function
+    /// LowerCtx so call sites can resolve direct calls by name without
+    /// copying the complete program metadata.
+    functions: Rc<HashMap<String, FuncId>>,
+    /// RES-105: arity per declared function, keyed by name. Shared by
+    /// each per-function LowerCtx. Used to validate call sites — mismatch
+    /// is reported as a clean Unsupported instead of letting Cranelift
+    /// segfault.
+    function_arities: Rc<HashMap<String, usize>>,
     /// RES-168: TCO state — the name of the currently-compiling
     /// function, set only by `compile_function` and `None` while
     /// lowering top-level `main`. A `ReturnStatement` whose value
@@ -75,9 +79,9 @@ struct LowerCtx {
     /// the program — `(parameters, body)` keyed by name. Needed
     /// to inline trivial leaf callees at call sites (the JIT
     /// otherwise only has module-local FuncIds, which can't be
-    /// re-lowered). Populated at `run_internal` time;
-    /// `compile_function` clones the map into each per-fn ctx.
-    fn_asts: HashMap<String, (Vec<(String, String)>, Node)>,
+    /// re-lowered). Populated at `run_internal` time and shared with
+    /// each per-function lowering context.
+    fn_asts: Rc<FnAstMap>,
     /// RES-175: when set, a `ReturnStatement` in the body lowers
     /// to `jump(merge, &[value])` — producing the value as the
     /// inlined expression's result — instead of the usual
@@ -107,7 +111,7 @@ struct LowerCtx {
     /// from a float/string one (both booleans and floats/strings need
     /// non-`iadd` handling at some call sites — see `is_bool_expr`
     /// and the `InfixExpression` arithmetic dispatch).
-    function_kind: HashMap<String, ValueKind>,
+    function_kind: Rc<HashMap<String, ValueKind>>,
     /// RES-4153: locals (including function parameters) currently
     /// known to have a statically-determined `ValueKind`, keyed by
     /// name. Populated wherever a `let`/parameter binding's static
@@ -129,17 +133,17 @@ impl LowerCtx {
         Self {
             next_var: 0,
             locals: HashMap::new(),
-            functions: HashMap::new(),
-            function_arities: HashMap::new(),
+            functions: Rc::new(HashMap::new()),
+            function_arities: Rc::new(HashMap::new()),
             current_fn: None,
             tco_target: None,
             param_vars: Vec::new(),
-            fn_asts: HashMap::new(),
+            fn_asts: Rc::new(HashMap::new()),
             inline_return_target: None,
             #[cfg(feature = "ffi")]
             foreign_entries: Vec::new(),
             imports,
-            function_kind: HashMap::new(),
+            function_kind: Rc::new(HashMap::new()),
             local_kind: HashMap::new(),
             local_struct_fields: HashMap::new(),
         }
@@ -2179,6 +2183,11 @@ fn run_internal(program: &Node) -> Result<(i64, bool, JitCache), JitError> {
         }
     }
 
+    let functions = Rc::new(functions);
+    let function_arities = Rc::new(function_arities);
+    let fn_asts = Rc::new(fn_asts);
+    let function_kind = Rc::new(function_kind);
+
     // ---------- Pass 2: compile each primary function body ----------
     // Aliases skip this loop — their FuncId points at the primary's
     // compiled code, so calls to them dispatch to the same entry.
@@ -2417,6 +2426,11 @@ pub(crate) fn jit_run_ast_with_entries(
         }
     }
 
+    let functions = Rc::new(functions);
+    let function_arities = Rc::new(function_arities);
+    let fn_asts = Rc::new(fn_asts);
+    let function_kind = Rc::new(function_kind);
+
     // ---------- Pass 2: compile user function bodies ----------
     for spanned in stmts {
         if let Node::Function {
@@ -2521,10 +2535,10 @@ fn compile_function_with_ffi(
     fn_name: &str,
     parameters: &[(String, String)],
     body: &Node,
-    functions: &HashMap<String, FuncId>,
-    function_arities: &HashMap<String, usize>,
-    fn_asts: &FnAstMap,
-    function_kind: &HashMap<String, ValueKind>,
+    functions: &Rc<HashMap<String, FuncId>>,
+    function_arities: &Rc<HashMap<String, usize>>,
+    fn_asts: &Rc<FnAstMap>,
+    function_kind: &Rc<HashMap<String, ValueKind>>,
     foreign_entries: &[ForeignJitEntry],
     imports: JitRuntimeImports,
     module: &mut JITModule,
@@ -2546,11 +2560,11 @@ fn compile_function_with_ffi(
         bcx.seal_block(entry);
 
         let mut lctx = LowerCtx::new(imports);
-        lctx.functions = functions.clone();
-        lctx.function_arities = function_arities.clone();
-        lctx.fn_asts = fn_asts.clone();
+        lctx.functions = Rc::clone(functions);
+        lctx.function_arities = Rc::clone(function_arities);
+        lctx.fn_asts = Rc::clone(fn_asts);
         lctx.foreign_entries = foreign_entries.to_vec();
-        lctx.function_kind = function_kind.clone();
+        lctx.function_kind = Rc::clone(function_kind);
         let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
         let mut param_vars: Vec<Variable> = Vec::with_capacity(parameters.len());
         for ((ty, name), pval) in parameters.iter().zip(block_params.iter()) {
@@ -2597,21 +2611,19 @@ fn compile_function_with_ffi(
 /// unsealed until lowering finishes so back-edges from tail
 /// calls (which re-`def_var` parameter Variables) can reconcile
 /// through Cranelift's SSA-construction phi inference.
-/// RES-175: alias for the per-name AST map threaded through the
-/// JIT. Hoisted to a type alias so the `compile_function`
-/// signature doesn't trip clippy's type-complexity lint.
-type FnAstMap = HashMap<String, (Vec<(String, String)>, Node)>;
-
+/// RES-175: alias for the per-name AST map threaded through the JIT.
+/// Hoisted to a type alias so the `compile_function` signature doesn't
+/// trip clippy's type-complexity lint.
 #[allow(clippy::too_many_arguments)] // RES-175: each arg is used
 fn compile_function(
     func_id: FuncId,
     fn_name: &str,
     parameters: &[(String, String)],
     body: &Node,
-    functions: &HashMap<String, FuncId>,
-    function_arities: &HashMap<String, usize>,
-    fn_asts: &FnAstMap,
-    function_kind: &HashMap<String, ValueKind>,
+    functions: &Rc<HashMap<String, FuncId>>,
+    function_arities: &Rc<HashMap<String, usize>>,
+    fn_asts: &Rc<FnAstMap>,
+    function_kind: &Rc<HashMap<String, ValueKind>>,
     imports: JitRuntimeImports,
     module: &mut JITModule,
 ) -> Result<(), JitError> {
@@ -2640,10 +2652,10 @@ fn compile_function(
         // identifier reads in the body resolve correctly. Capture
         // the Variables in declaration order for TCO back-edges.
         let mut lctx = LowerCtx::new(imports);
-        lctx.functions = functions.clone();
-        lctx.function_arities = function_arities.clone();
-        lctx.fn_asts = fn_asts.clone();
-        lctx.function_kind = function_kind.clone();
+        lctx.functions = Rc::clone(functions);
+        lctx.function_arities = Rc::clone(function_arities);
+        lctx.fn_asts = Rc::clone(fn_asts);
+        lctx.function_kind = Rc::clone(function_kind);
         // parameters: Vec<(String, String)> — (type, name) per
         // the AST. Name is the second element.
         let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
@@ -5773,6 +5785,26 @@ mod tests {
         assert_eq!(hits, 0);
         assert_eq!(misses, 2);
         assert_eq!(compiles, 2);
+    }
+
+    #[test]
+    fn jit_many_distinct_functions_preserve_result() {
+        let _g = JIT_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut src = String::new();
+        use std::fmt::Write as _;
+        for i in 0..32 {
+            writeln!(src, "fn f{i}(int x) {{ return x + {i}; }}").unwrap();
+        }
+        writeln!(src, "return f31(1);").unwrap();
+
+        let p = parse_program(&src);
+        let (result, hits, misses, compiles) = run_with_stats(&p).unwrap();
+        assert_eq!(result, 32);
+        assert_eq!(hits, 0);
+        assert_eq!(misses, 32);
+        assert_eq!(compiles, 32);
     }
 
     #[test]
