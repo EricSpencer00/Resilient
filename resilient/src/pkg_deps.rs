@@ -1422,14 +1422,17 @@ fn dep_source_display(source: &DepSource) -> String {
 /// return the path to a specific module file within it.
 ///
 /// Given `use mylib::foo;`, `dep_name` is `"mylib"` and `module` is
-/// `"foo"`. Returns the path to `<dep_root>/src/foo.rz` if it exists.
+/// `"foo"`. Returns the path to `<dep_root>/src/foo.rz` (or the directory
+/// module entry point `<dep_root>/src/foo/mod.rz`) if it exists.
 ///
 /// RES-4110: `module` may itself be a multi-segment path — e.g. given
 /// `use mylib::sub::leaf;`, `module` is `"sub::leaf"`. Each `::`-
-/// separated segment maps to a nested directory component, so this
+/// separated segment maps to a nested directory component, so this first
 /// resolves to `<dep_root>/src/sub/leaf.rz` rather than a literal
-/// `sub::leaf.rz` file (which could never exist). A single-segment
-/// module is unaffected: `"foo"` still resolves to `src/foo.rz`.
+/// `sub::leaf.rz` file (which could never exist), then falls back to the
+/// directory module entry point `<dep_root>/src/sub/leaf/mod.rz`. A
+/// single-segment module is unaffected: `"foo"` still prefers `src/foo.rz`
+/// and accepts `src/foo/mod.rz` when the file form is absent.
 ///
 /// Called from `imports.rs` as a fallback when a `use X::Y;` is
 /// neither a stdlib import nor a local file.
@@ -1453,15 +1456,36 @@ pub fn resolve_dep_module(
         resolve_one(project_root, dep, registry_index.as_deref()).map_err(|e| e.to_string())?;
     let mut module_file = resolved.src_dir.clone();
     let segments: Vec<&str> = module.split("::").collect();
-    let (last, dirs) = segments.split_last().expect("split on non-empty str");
+    let Some((last, dirs)) = segments.split_last() else {
+        return Ok(None);
+    };
+    if segments.iter().any(|segment| {
+        let segment = *segment;
+        segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.contains('/')
+            || segment.contains('\\')
+    }) {
+        return Ok(None);
+    }
     for dir in dirs {
         module_file.push(dir);
     }
     module_file.push(format!("{}.rz", last));
-    if module_file.exists() {
+    if module_file.is_file() {
         Ok(Some(module_file))
     } else {
-        Ok(None)
+        let directory_module = module_file
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(last)
+            .join("mod.rz");
+        if directory_module.is_file() {
+            Ok(Some(directory_module))
+        } else {
+            Ok(None)
+        }
     }
 }
 

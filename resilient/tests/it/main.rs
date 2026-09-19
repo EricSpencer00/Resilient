@@ -145,6 +145,7 @@ mod manifest_feature_command_copy_smoke;
 mod mcp_server_copy_smoke;
 mod mcp_syntax_resource_copy_smoke;
 mod mcp_tool_help_copy_smoke;
+mod module_path_resolution;
 mod noninterference_smoke;
 mod package_existence;
 mod panic_on_fault_smoke;
