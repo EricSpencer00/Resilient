@@ -4541,6 +4541,22 @@ fn collect_tuple_return_elements(
             crate::Node::CallExpression { .. } => {
                 collect_array_return_call_paths(item, &path, parameters, array_returns, elements)?;
             }
+            crate::Node::Slice { .. } => {
+                let summary = array_return_aliases_for_value(
+                    item,
+                    parameters,
+                    reference_fields,
+                    array_returns,
+                )?;
+                elements.extend(
+                    summary
+                        .paths
+                        .into_iter()
+                        .map(|(nested_path, parameter_idx)| {
+                            (format!("{path}{nested_path}"), parameter_idx)
+                        }),
+                );
+            }
             crate::Node::Identifier { name, .. } => {
                 let parameter_idx =
                     parameters
@@ -6192,6 +6208,37 @@ mod tests {
         assert!(
             errors.is_empty(),
             "dynamic nested helper slices must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tuple_helper_slice_element_preserves_path() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x, x]; } \
+             fn make_pair(&mut int x) -> (array, array) { return (make_array(x)[0..1], [x]); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = make_pair(x); set_both(x, pair.0[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`pair.0[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn tuple_helper_dynamic_slice_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x, x]; } \
+             fn make_pair(&mut int x, int end) -> (array, array) { return (make_array(x)[0..end], [x]); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int end) { let pair = make_pair(x, end); set_both(x, pair.0[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic tuple helper slices must stay conservative: {:?}",
             errors
         );
     }

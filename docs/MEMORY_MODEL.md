@@ -650,6 +650,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   array-return literals now preserve their rebased element and nested reference
   paths. Dynamic bounds, transformed sources, mixed returns, and ambiguous
   shapes remain opaque.
+- **A-E5 increment 76 (RES-4070):** constant-bound slices used as direct
+  tuple-return elements now preserve their rebased array-element and nested
+  reference paths. Dynamic bounds, transformed sources, mixed returns, and
+  ambiguous shapes remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
