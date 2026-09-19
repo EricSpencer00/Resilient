@@ -742,7 +742,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 // - Alias facts are established only by operations with one unambiguous
 //   provenance: straight-line `let NAME = IDENT;` copies, direct reference
 //   returns, declared reference fields initialized by concrete struct
-//   literals (including nested paths), direct tuple and array returns, and
+//   literals (including nested paths), direct tagged-enum constructors nested
+//   in concrete struct literals, direct tuple and array returns, and
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
 //   slices of those arrays.
@@ -1727,6 +1728,9 @@ impl<'a> AliasWalker<'a> {
                         state,
                         roots,
                     );
+                    for (nested_path, root) in self.tagged_enum_payload_roots(value, state) {
+                        roots.push((format!("{path}.{nested_path}"), root));
+                    }
                 }
                 crate::Node::CallExpression {
                     function,
@@ -1743,6 +1747,9 @@ impl<'a> AliasWalker<'a> {
                     }
                     for (nested_path, root) in self.array_return_roots(value, state) {
                         roots.push((format!("{path}{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.tagged_enum_payload_roots(value, state) {
+                        roots.push((format!("{path}.{nested_path}"), root));
                     }
                 }
                 crate::Node::TupleLiteral { .. } => {
@@ -2525,6 +2532,12 @@ impl<'a> AliasWalker<'a> {
             crate::Node::ArrayLiteral { items, .. } => {
                 for (index, item) in items.iter().enumerate() {
                     let path = format!("{prefix}[{index}]");
+                    Self::collect_known_constructor_paths(item, &path, state, paths);
+                }
+            }
+            crate::Node::StructLiteral { fields, .. } => {
+                for (field, item) in fields {
+                    let path = format!("{prefix}.{field}");
                     Self::collect_known_constructor_paths(item, &path, state, paths);
                 }
             }
@@ -6130,6 +6143,42 @@ mod tests {
             errors.len(),
             2,
             "only matching nested constructor arms should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn struct_field_constructor_places_remain_variant_aware() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               struct Wrapper { Packet packet }
+               struct Outer { Wrapper wrapper }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let outer = new Outer {
+                       wrapper: new Wrapper {
+                           packet: Packet::Item(new Holder { item: x }),
+                       },
+                   };
+                   match outer.wrapper.packet {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+                   let copy = outer;
+                   match copy.wrapper.packet {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "only matching struct-field constructor arms should report: {:?}",
             errors
         );
     }
