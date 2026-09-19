@@ -20,9 +20,13 @@
       "branch": "res-4111-jit-string-lowering-c",
       "claimed_at": "2026-09-19T19:45:15Z"
     },
+    "resilient/src/associated_types.rs": {
+      "branch": "res-4067-generic-local-annotations",
+      "claimed_at": "2026-09-19T20:10:04Z"
+    },
     "resilient/src/typechecker.rs": {
-      "branch": "res-4230-buffer-typecheck",
-      "claimed_at": "2026-09-19T20:09:52Z"
+      "branch": "res-4067-generic-local-annotations",
+      "claimed_at": "2026-09-19T20:10:04Z"
     }
   }
 }
