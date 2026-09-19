@@ -1577,6 +1577,11 @@ impl<'a> AliasWalker<'a> {
                     roots.push((format!("{prefix}.{field}"), root));
                 }
             }
+            crate::Node::TupleLiteral { .. } if nested_array_depth > 0 => {
+                for (path, root) in self.tuple_element_roots(value, state) {
+                    roots.push((format!("{prefix}.{path}"), root));
+                }
+            }
             crate::Node::Identifier { .. }
             | crate::Node::IndexExpression { .. }
             | crate::Node::Slice { .. } => {
@@ -5225,6 +5230,52 @@ mod tests {
         assert!(
             errors.is_empty(),
             "nested value-typed array fields must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn nested_array_literal_tuple_element_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[(x, 0)]]; \
+                 set_both(x, matrix[0][0].0); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`matrix[0][0].0`"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_array_literal_tuple_struct_field_preserves_nested_path() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[(new Inner { item: x }, 0)]]; \
+                 set_both(x, matrix[0][0].0.item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn nested_array_literal_tuple_value_element_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[(0, 1)]]; \
+                 set_both(x, matrix[0][0].0); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "nested value-typed tuple elements must stay outside alias tracking: {:?}",
             errors
         );
     }
