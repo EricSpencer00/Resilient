@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Resilient MCP HTTP Wrapper",
-    "description": "Machine-readable contract for the HTTP wrapper the Resilient compiler exposes over its MCP tool surface. See docs/MCP.md for prose documentation.",
+    "description": "Machine-readable contract for the HTTP wrapper the Resilient compiler exposes over its MCP tool surface. The /v1 paths are canonical for new integrations; matching unversioned paths are temporary compatibility aliases. See docs/MCP.md for prose documentation.",
     "version": "0.2.0"
   },
   "servers": [
@@ -33,7 +33,7 @@
     "/readyz": {
       "get": {
         "summary": "Readiness check",
-        "description": "Returns 200 when the build includes the Z3 verification backend and 503 when it does not. Use /health for liveness and /readyz for routing decisions.",
+        "description": "Returns 200 when the build includes the Z3 verification backend and 503 when it does not. Use /v1/health for liveness and /v1/readyz for routing decisions; the unversioned paths are compatibility aliases.",
         "operationId": "getReadiness",
         "responses": {
           "200": {

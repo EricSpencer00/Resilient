@@ -3717,6 +3717,56 @@ mod tests {
     }
 
     #[test]
+    fn http_versioned_and_legacy_routes_match_for_every_endpoint() {
+        for (method, legacy_path, versioned_path) in [
+            ("GET", "/health", "/v1/health"),
+            ("GET", "/readyz", "/v1/readyz"),
+            ("GET", "/metrics", "/v1/metrics"),
+            ("OPTIONS", "/health", "/v1/health"),
+            ("OPTIONS", "/readyz", "/v1/readyz"),
+            ("OPTIONS", "/metrics", "/v1/metrics"),
+            ("OPTIONS", "/mcp/call", "/v1/mcp/call"),
+        ] {
+            let legacy_request =
+                format!("{method} {legacy_path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let versioned_request =
+                format!("{method} {versioned_path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let legacy_response = http_response_for_request(&legacy_request, &test_config());
+            let versioned_response = http_response_for_request(&versioned_request, &test_config());
+            assert_eq!(
+                versioned_response, legacy_response,
+                "versioned route {versioned_path} diverged from {legacy_path}"
+            );
+        }
+
+        let body = r#"{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}"#;
+        let legacy_request = format!(
+            "POST /mcp/call HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let versioned_request = legacy_request.replace("POST /mcp/call ", "POST /v1/mcp/call ");
+        let legacy_response = http_response_for_request(&legacy_request, &test_config());
+        let versioned_response = http_response_for_request(&versioned_request, &test_config());
+        assert_eq!(
+            versioned_response, legacy_response,
+            "versioned MCP call diverged from its legacy alias"
+        );
+    }
+
+    #[test]
+    fn http_unknown_version_is_not_treated_as_a_legacy_alias() {
+        for path in ["/v2/health", "/v10/mcp/call", "/v1health"] {
+            let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let response = http_response_for_request(&request, &test_config());
+            assert!(
+                response.starts_with("HTTP/1.1 404 Not Found"),
+                "unexpected response for unsupported version path {path}: {response}"
+            );
+        }
+    }
+
+    #[test]
     fn http_health_requires_configured_api_key() {
         let mut config = test_config();
         config.api_key = Some("test-secret".to_string());

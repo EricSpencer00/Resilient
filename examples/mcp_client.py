@@ -22,7 +22,7 @@ _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def call_tool(base_url: str, tool: str, tool_input: dict) -> dict:
     payload = json.dumps({"tool": tool, "input": tool_input}).encode("utf-8")
     request = urllib.request.Request(
-        f"{base_url}/mcp/call",
+        f"{base_url}/v1/mcp/call",
         data=payload,
         headers={"content-type": "application/json"},
         method="POST",
@@ -35,7 +35,7 @@ def call_tool(base_url: str, tool: str, tool_input: dict) -> dict:
 
 
 def health(base_url: str) -> dict:
-    with _opener.open(f"{base_url}/health", timeout=5) as response:
+    with _opener.open(f"{base_url}/v1/health", timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

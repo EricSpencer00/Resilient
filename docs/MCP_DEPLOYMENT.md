@@ -47,10 +47,11 @@ Readiness check:
 curl http://127.0.0.1:8080/v1/readyz
 ```
 
-`/health` is the liveness probe and stays healthy as long as the process is
-accepting connections. `/readyz` is the routing probe: it returns `200` for a
-Z3-enabled build and `503` when the optional Z3 verification backend is not
-compiled in.
+`/v1/health` is the liveness probe and stays healthy as long as the process is
+accepting connections. `/v1/readyz` is the routing probe: it returns `200` for
+a Z3-enabled build and `503` when the optional Z3 verification backend is not
+compiled in. The unversioned `/health` and `/readyz` paths remain compatibility
+aliases for existing deployments.
 
 Tool call:
 
@@ -156,7 +157,7 @@ chunked transfer and sends a start record before dispatch followed by a final
 record containing the normal JSON response and its `http_status`. The default
 request headers and response format remain unchanged.
 
-### `GET /health`
+### `GET /v1/health`
 
 Returns:
 
@@ -169,7 +170,7 @@ Returns:
 }
 ```
 
-### `GET /readyz`
+### `GET /v1/readyz`
 
 Returns `200 OK` when the build is ready to serve verification requests:
 
@@ -186,7 +187,7 @@ Returns `200 OK` when the build is ready to serve verification requests:
 Without the `z3` feature, the same endpoint returns `503 Service Unavailable`
 with `"status": "not_ready"`, `"z3": "unavailable"`, and an `error` string.
 
-### `POST /mcp/call`
+### `POST /v1/mcp/call`
 
 Request:
 
@@ -244,7 +245,8 @@ Response:
   (`ts_ms=... peer=... method=... path=... status=... duration_ms=...
   bytes=...`) — point your platform's log collector at the container's
   stderr stream.
-- Monitor `GET /health` from outside the provider.
+- Monitor `GET /v1/health` from outside the provider. The unversioned
+  `/health` route remains available as a legacy alias.
 - Keep Z3 installed in the runtime image for verifier-backed tools.
 - Start with `rz_format`, `rz_compile`, and `rz_verify`; use an edge
   allow-list to keep execution, VM, and TLA tools private unless they are

@@ -9,6 +9,10 @@ See [MCP.md](MCP.md) for protocol/tool documentation and
 and response shapes below match the machine-readable contract in
 [openapi.json](openapi.json).
 
+HTTP examples use the canonical `/v1` namespace. The matching unversioned
+`/health`, `/readyz`, `/metrics`, and `/mcp/call` paths remain temporary
+compatibility aliases for existing clients.
+
 ---
 
 ## 1. curl (HTTP wrapper)
@@ -22,7 +26,7 @@ rz mcp --http-port 8080
 ### Health check
 
 ```sh
-curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:8080/v1/health
 ```
 
 ```json
@@ -31,99 +35,99 @@ curl -s http://127.0.0.1:8080/health
 
 ### Calling every exposed tool
 
-Each call POSTs to `/mcp/call` with `{"tool": "<name>", "input": {...}}`.
+Each call POSTs to `/v1/mcp/call` with `{"tool": "<name>", "input": {...}}`.
 Tool names may use either the native `resilient_*` name or the hosted
 `rz_*` alias where one exists (`rz_compile`, `rz_format`, `rz_verify`,
 `rz_parse`, `rz_typecheck`, `rz_run`, `rz_lint`, `rz_check`).
 
 ```sh
 # resilient_parse — syntax check
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_parse","input":{"source":"fn add(int a, int b) -> int { a + b }"}}'
 
 # resilient_typecheck — type diagnostics
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_typecheck","input":{"source":"fn f() -> int { \"hello\" }"}}'
 
 # resilient_run (alias: rz_run) — execute and capture stdout
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_run","input":{"source":"println(42)"}}'
 
 # resilient_lint (alias: rz_lint) — lint warnings
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_lint","input":{"source":"fn F(int x) -> int { x }"}}'
 
 # resilient_format (alias: rz_format) — pretty-print
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_format","input":{"source":"fn f(int x)->int{x+1}"}}'
 
 # resilient_check (alias: rz_check) — parse + typecheck + lint
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_check","input":{"source":"fn add(int a, int b) -> int { a + b }"}}'
 
 # resilient_verify (alias: rz_verify) — Z3 contract verification (requires --features z3)
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_verify","input":{"source":"fn div(int x, int y) -> int\n  requires y != 0\n{ x / y }"}}'
 
 # resilient_explain_lint — human-readable lint explanation
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_explain_lint","input":{"code":"L0010"}}'
 
 # resilient_symbols — extract named symbols
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_symbols","input":{"source":"fn add(int a, int b) -> int { a + b }"}}'
 
 # resilient_hover — type info at a byte offset
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_hover","input":{"source":"fn add(int a, int b) -> int { a + b }","offset":3}}'
 
 # resilient_compile (alias: rz_compile) — bytecode summary
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"rz_compile","input":{"source":"println(42)"}}'
 
 # resilient_disasm — full bytecode disassembly
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_disasm","input":{"source":"println(42)"}}'
 
 # resilient_vm_run — execute via the register-based bytecode VM
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_vm_run","input":{"source":"println(42)"}}'
 
 # resilient_tla_check — TLC model checking on an inline spec (needs Java + tla2tools.jar)
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_tla_check","input":{"spec":"---- MODULE M ----\nEXTENDS Naturals\nVARIABLE x\nInit == x = 0\nNext == x'"'"' = x + 1\n===="}}'
 
 # resilient_fingerprint — behavioral fingerprints per function
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_fingerprint","input":{"source":"fn add(int a, int b) -> int { a + b }"}}'
 
 # resilient_resilience_score — per-function A-F resilience grade
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_resilience_score","input":{"source":"fn add(int a, int b) -> int { a + b }"}}'
 
 # resilient_contract_infer — suggest requires/ensures clauses
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_contract_infer","input":{"source":"fn div(int x, int y) -> int { x / y }"}}'
 
 # resilient_call_graph — function call graph
-curl -s http://127.0.0.1:8080/mcp/call \
+curl -s http://127.0.0.1:8080/v1/mcp/call \
   -H 'content-type: application/json' \
   -d '{"tool":"resilient_call_graph","input":{"source":"fn a() -> int { b() } fn b() -> int { 1 }"}}'
 ```
@@ -175,7 +179,7 @@ _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def call_tool(base_url: str, tool: str, tool_input: dict) -> dict:
     payload = json.dumps({"tool": tool, "input": tool_input}).encode("utf-8")
     request = urllib.request.Request(
-        f"{base_url}/mcp/call",
+        f"{base_url}/v1/mcp/call",
         data=payload,
         headers={"content-type": "application/json"},
         method="POST",
@@ -188,7 +192,7 @@ def call_tool(base_url: str, tool: str, tool_input: dict) -> dict:
 
 
 def health(base_url: str) -> dict:
-    with _opener.open(f"{base_url}/health", timeout=5) as response:
+    with _opener.open(f"{base_url}/v1/health", timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -242,7 +246,7 @@ point Claude Code at the HTTP endpoint instead of spawning a process:
 {
   "mcpServers": {
     "resilient-http": {
-      "url": "http://127.0.0.1:8080/mcp/call",
+      "url": "http://127.0.0.1:8080/v1/mcp/call",
       "transport": "http"
     }
   }
@@ -250,7 +254,7 @@ point Claude Code at the HTTP endpoint instead of spawning a process:
 ```
 
 For a publicly hosted instance, replace the URL with the deployed
-endpoint (e.g. `https://resilient.example.com/mcp/call`) and put auth
+endpoint (e.g. `https://resilient.example.com/v1/mcp/call`) and put auth
 in front of it per the production checklist in
 [MCP_DEPLOYMENT.md](MCP_DEPLOYMENT.md#production-checklist) — the
 wrapper itself does not authenticate requests.

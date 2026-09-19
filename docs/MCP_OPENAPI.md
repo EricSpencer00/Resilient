@@ -7,6 +7,10 @@ unversioned compatibility aliases), their request/response
 schemas, and every status code the wrapper can return (`200`, `400`, `404`,
 `413`, `429`, `503`, `504`).
 
+The `/v1` paths are canonical for new integrations. The matching unversioned
+paths are legacy aliases with the same request and response behavior and are
+retained temporarily so existing clients can migrate without a flag day.
+
 `POST /v1/mcp/call` also supports an opt-in `Accept: application/x-ndjson`
 stream. That response is chunked and emits a progress record followed by a
 final record containing the ordinary JSON response; the machine-readable
