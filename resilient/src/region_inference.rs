@@ -1593,6 +1593,12 @@ impl<'a> AliasWalker<'a> {
                 for (path, root) in self.array_return_roots(value, state) {
                     roots.push((format!("{prefix}{path}"), root));
                 }
+                for (path, root) in self.tuple_element_roots(value, state) {
+                    roots.push((format!("{prefix}.{path}"), root));
+                }
+                for (field, root) in self.struct_field_roots(value, state) {
+                    roots.push((format!("{prefix}.{field}"), root));
+                }
             }
             _ => {}
         }
@@ -4490,6 +4496,45 @@ mod tests {
              fn caller(&mut int x) { let items = outer(x); set_both(x, items[0][0]); }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn nested_array_tuple_helper_path_alias_rejected() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (&mut int, &mut int) { return (x, y); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { \
+                 let matrix = [[make_pair(x, y)]]; \
+                 set_both(x, matrix[0][0].0); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`matrix[0][0].0`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_array_struct_helper_path_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int x) -> Holder { \
+                 return new Holder { item: x }; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[make_holder(x)]]; \
+                 set_both(x, matrix[0][0].item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`matrix[0][0].item`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
     }
 
     #[test]

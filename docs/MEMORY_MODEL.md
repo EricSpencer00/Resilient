@@ -481,6 +481,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   canonical paths from tracked tuple and struct aliases, so `let pair =
   (x, 0); let matrix = [[pair]]` exposes `matrix[0][0].0`. Unknown and
   transformed values remain outside alias tracking.
+- **A-E5 increment 38 (RES-4070):** nested array provenance now composes
+  already-proven tuple- and struct-return helper calls, so `let matrix =
+  [[make_pair(x)]]` exposes `matrix[0][0].0` and known struct fields remain
+  visible below the nested array path. Unknown and transformed values remain
+  outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
