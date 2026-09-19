@@ -476,6 +476,11 @@ pub enum VmError {
     StackUnderflow,
     /// A `LoadLocal`/`StoreLocal` index was `>= LOCALS`.
     LocalsOutOfBounds,
+    /// A function's call-frame metadata cannot hold the values its call
+    /// convention requires (`arity` for an ordinary call, or
+    /// `capture_count + arity` for a closure call). This is a malformed
+    /// function table, not a caller-visible local-slot error.
+    InvalidFunctionLayout(u16),
     /// The program counter — either the next instruction to fetch,
     /// or a `Jump`/`JumpIfFalse`/`JumpIfTrue` target — pointed
     /// outside the bounds of the instruction slice. Covers both
@@ -745,6 +750,17 @@ impl<
         Ok(base)
     }
 
+    fn validate_function_layout(
+        function_idx: u16,
+        function: FunctionDef<'_>,
+        required_locals: usize,
+    ) -> Result<(), VmError> {
+        if required_locals > function.local_count as usize {
+            return Err(VmError::InvalidFunctionLayout(function_idx));
+        }
+        Ok(())
+    }
+
     /// Overwrite a slot in the *current* frame's locals slab before
     /// a run (e.g. to seed top-level `let`s or, before calling
     /// `run`/`run_with_functions`, the entry frame's initial
@@ -864,6 +880,9 @@ impl<
         program: &'a [Instr],
         entry_frame: usize,
     ) -> Result<Value, VmError> {
+        if CALLS == 0 {
+            return Err(VmError::CallStackOverflow);
+        }
         self.frame = entry_frame;
         let mut current_func: Option<u16> = None;
         let mut code: &[Instr] = program;
@@ -924,6 +943,7 @@ impl<
                         .copied()
                         .ok_or(VmError::FunctionOutOfBounds(idx))?;
                     let arity = f.arity as usize;
+                    Self::validate_function_layout(idx, f, arity)?;
                     // RES-4083 (D-E1 tail): mirrors the host VM's
                     // `h_call` — a call into a `fails`-declaring
                     // function made anywhere inside an active `try`
@@ -959,7 +979,15 @@ impl<
                     let n_locals = f.local_count as usize;
                     let base = self.next_frame_base(self.frame, n_locals, functions)?;
                     self.frame_base[next_frame] = base;
-                    for slot in self.locals[base..base + n_locals].iter_mut() {
+                    let end = base
+                        .checked_add(n_locals)
+                        .ok_or(VmError::LocalsSlabExhausted)?;
+                    for slot in self
+                        .locals
+                        .get_mut(base..end)
+                        .ok_or(VmError::LocalsOutOfBounds)?
+                        .iter_mut()
+                    {
                         *slot = Value::Int(0);
                     }
                     for i in (0..arity).rev() {
@@ -1041,13 +1069,20 @@ impl<
                         .get(func_idx as usize)
                         .copied()
                         .ok_or(VmError::FunctionOutOfBounds(func_idx))?;
+                    let capture_count = f.capture_count as usize;
+                    let arity = f.arity as usize;
+                    let required_locals = capture_count
+                        .checked_add(arity)
+                        .ok_or(VmError::InvalidFunctionLayout(func_idx))?;
+                    if capture_count > MAX_CLOSURE_CAPTURES {
+                        return Err(VmError::InvalidFunctionLayout(func_idx));
+                    }
+                    Self::validate_function_layout(func_idx, f, required_locals)?;
                     let captures = self
                         .closure_slab
                         .get(slab_idx as usize)
                         .copied()
                         .ok_or(VmError::FunctionOutOfBounds(func_idx))?;
-                    let arity = f.arity as usize;
-                    let capture_count = f.capture_count as usize;
                     if self.try_sp > 0
                         && let Some(variant) = f.fails_variant
                     {
@@ -1075,7 +1110,15 @@ impl<
                     let n_locals = f.local_count as usize;
                     let base = self.next_frame_base(self.frame, n_locals, functions)?;
                     self.frame_base[next_frame] = base;
-                    for slot in self.locals[base..base + n_locals].iter_mut() {
+                    let end = base
+                        .checked_add(n_locals)
+                        .ok_or(VmError::LocalsSlabExhausted)?;
+                    for slot in self
+                        .locals
+                        .get_mut(base..end)
+                        .ok_or(VmError::LocalsOutOfBounds)?
+                        .iter_mut()
+                    {
                         *slot = Value::Int(0);
                     }
                     for i in (0..arity).rev() {
@@ -1112,6 +1155,7 @@ impl<
                         .copied()
                         .ok_or(VmError::FunctionOutOfBounds(idx))?;
                     let arity = f.arity as usize;
+                    Self::validate_function_layout(idx, f, arity)?;
                     if self.sp < arity {
                         return Err(VmError::StackUnderflow);
                     }
@@ -1140,7 +1184,12 @@ impl<
                             .ok_or(VmError::LocalsOutOfBounds)?;
                         *slot = v;
                     }
-                    for slot in self.locals[base + arity..end].iter_mut() {
+                    for slot in self
+                        .locals
+                        .get_mut(base + arity..end)
+                        .ok_or(VmError::LocalsOutOfBounds)?
+                        .iter_mut()
+                    {
                         *slot = Value::Int(0);
                     }
                     current_func = Some(idx);
@@ -1176,6 +1225,18 @@ impl<
                                 .ok_or(VmError::FunctionOutOfBounds(postcheck_idx))?
                                 .local_count
                                 as usize;
+                            let postcheck_required_locals = arity
+                                .checked_add(1)
+                                .ok_or(VmError::InvalidFunctionLayout(postcheck_idx))?;
+                            let postcheck = functions
+                                .get(postcheck_idx as usize)
+                                .copied()
+                                .ok_or(VmError::FunctionOutOfBounds(postcheck_idx))?;
+                            Self::validate_function_layout(
+                                postcheck_idx,
+                                postcheck,
+                                postcheck_required_locals,
+                            )?;
                             let base =
                                 self.next_frame_base(self.frame, postcheck_local_count, functions)?;
                             self.frame_base[next_frame] = base;
@@ -1197,7 +1258,13 @@ impl<
                                 .get_mut(base + arity)
                                 .ok_or(VmError::LocalsOutOfBounds)?;
                             *ret_slot = v;
-                            for slot in self.locals[base + arity + 1..base + postcheck_local_count]
+                            let postcheck_end = base
+                                .checked_add(postcheck_local_count)
+                                .ok_or(VmError::LocalsSlabExhausted)?;
+                            for slot in self
+                                .locals
+                                .get_mut(base + arity + 1..postcheck_end)
+                                .ok_or(VmError::LocalsOutOfBounds)?
                                 .iter_mut()
                             {
                                 *slot = Value::Int(0);
@@ -2787,5 +2854,132 @@ mod tests {
             vm.run_with_tries(&functions, &try_handlers, &program),
             Ok(Value::Int(-1))
         );
+    }
+
+    #[test]
+    fn call_rejects_arity_larger_than_function_frame_without_writing_locals() {
+        let callee = [Instr::Return];
+        let functions = [FunctionDef {
+            code: &callee,
+            arity: 1,
+            local_count: 0,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 0,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(7)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 0, 2, 0, 0, 1>::new();
+
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::InvalidFunctionLayout(0))
+        );
+    }
+
+    #[test]
+    fn closure_call_rejects_capture_and_arity_overflowing_frame() {
+        let callee = [Instr::Return];
+        let functions = [FunctionDef {
+            code: &callee,
+            arity: 1,
+            local_count: 1,
+            postcheck: None,
+            fails_variant: None,
+            capture_count: 1,
+        }];
+        let program = [
+            Instr::PushConst(Value::Int(8)),
+            Instr::PushConst(Value::Int(7)),
+            Instr::MakeClosure {
+                func_idx: 0,
+                capture_count: 1,
+            },
+            Instr::CallClosure,
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 0, 2, 0, 1, 1>::new();
+
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::InvalidFunctionLayout(0))
+        );
+    }
+
+    #[test]
+    fn tail_call_rejects_invalid_frame_before_constructing_a_reverse_range() {
+        let tail = [Instr::TailCall(1)];
+        let target = [Instr::Return];
+        let functions = [
+            FunctionDef {
+                code: &tail,
+                arity: 1,
+                local_count: 1,
+                postcheck: None,
+                fails_variant: None,
+                capture_count: 0,
+            },
+            FunctionDef {
+                code: &target,
+                arity: 1,
+                local_count: 0,
+                postcheck: None,
+                fails_variant: None,
+                capture_count: 0,
+            },
+        ];
+        let program = [
+            Instr::PushConst(Value::Int(7)),
+            Instr::Call(0),
+            Instr::Return,
+        ];
+        let mut vm = Vm::<8, 0, 2, 0, 0, 1>::new();
+
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::InvalidFunctionLayout(1))
+        );
+    }
+
+    #[test]
+    fn postcheck_rejects_frame_without_room_for_return_value() {
+        let body = [Instr::PushConst(Value::Int(1)), Instr::Return];
+        let check = [Instr::PushConst(Value::Bool(true)), Instr::Return];
+        let functions = [
+            FunctionDef {
+                code: &body,
+                arity: 0,
+                local_count: 0,
+                postcheck: Some(1),
+                fails_variant: None,
+                capture_count: 0,
+            },
+            FunctionDef {
+                code: &check,
+                arity: 1,
+                local_count: 0,
+                postcheck: None,
+                fails_variant: None,
+                capture_count: 0,
+            },
+        ];
+        let program = [Instr::Call(0), Instr::Return];
+        let mut vm = Vm::<8, 0, 3, 0, 0, 1>::new();
+
+        assert_eq!(
+            vm.run_with_functions(&functions, &program),
+            Err(VmError::InvalidFunctionLayout(1))
+        );
+    }
+
+    #[test]
+    fn zero_call_frame_capacity_is_a_typed_error() {
+        let program = [Instr::PushConst(Value::Int(1)), Instr::Return];
+        let mut vm = Vm::<2, 0, 0>::new();
+
+        assert_eq!(vm.run(&program), Err(VmError::CallStackOverflow));
     }
 }
