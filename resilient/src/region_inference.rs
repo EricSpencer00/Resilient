@@ -343,6 +343,7 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   Enforcing that now would risk false positives on every ordinary
 ///   value type in the corpus.
 /// - No general interprocedural analysis — only direct reference returns,
+///   direct `Some`/`Ok`/`Err` returns with one reference payload,
 ///   concrete structs whose reference fields are initialized from parameters,
 ///   and direct tuples of reference parameters are summarized; arrays,
 ///   closures, and ambiguous or wrapped return paths remain opaque across
@@ -651,6 +652,30 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         }
     }
 
+    let mut option_result_return_aliases: HashMap<&str, OptionResultReturnAliasSummary> =
+        HashMap::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for spanned in stmts {
+            if let crate::Node::Function {
+                name,
+                type_params,
+                parameters,
+                body,
+                ..
+            } = &spanned.node
+                && type_params.is_empty()
+                && callee_table.contains_key(name.as_str())
+                && let Some(summary) = option_result_return_alias_summary(body, parameters)
+                && option_result_return_aliases.get(name.as_str()) != Some(&summary)
+            {
+                option_result_return_aliases.insert(name.as_str(), summary);
+                changed = true;
+            }
+        }
+    }
+
     for spanned in stmts {
         let crate::Node::Function { body, .. } = &spanned.node else {
             continue;
@@ -706,6 +731,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
         struct_return_aliases: &struct_return_aliases,
         tuple_return_aliases: &tuple_return_aliases,
         array_return_aliases: &array_return_aliases,
+        option_result_return_aliases: &option_result_return_aliases,
     };
 
     // RES-4070: second increment — conditional-path-aware alias
@@ -748,6 +774,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   including their payload leaves through constant tuple/array places,
 //   and constant-bound slices of those places,
 //   direct tuple and array returns, and
+//   direct `Some`/`Ok`/`Err` helper returns with one reference payload,
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
 //   slices of those arrays.
@@ -804,11 +831,18 @@ struct ArrayReturnAliasSummary {
     paths: Vec<(String, usize)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OptionResultReturnAliasSummary {
+    constructor: String,
+    paths: Vec<(String, usize)>,
+}
+
 struct AliasSummaries<'a> {
     return_aliases: &'a HashMap<&'a str, usize>,
     struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
     tuple_return_aliases: &'a HashMap<&'a str, TupleReturnAliasSummary>,
     array_return_aliases: &'a HashMap<&'a str, ArrayReturnAliasSummary>,
+    option_result_return_aliases: &'a HashMap<&'a str, OptionResultReturnAliasSummary>,
 }
 
 impl AliasState {
@@ -839,6 +873,7 @@ struct AliasWalker<'a> {
     struct_return_aliases: &'a HashMap<&'a str, StructReturnAliasSummary>,
     tuple_return_aliases: &'a HashMap<&'a str, TupleReturnAliasSummary>,
     array_return_aliases: &'a HashMap<&'a str, ArrayReturnAliasSummary>,
+    option_result_return_aliases: &'a HashMap<&'a str, OptionResultReturnAliasSummary>,
     reference_fields: &'a HashSet<(String, String)>,
     source_path: &'a str,
     errors: Vec<String>,
@@ -1298,20 +1333,31 @@ impl<'a> AliasWalker<'a> {
         let crate::Node::Identifier { name, .. } = function.as_ref() else {
             return Vec::new();
         };
-        if !matches!(name.as_str(), "Some" | "Ok" | "Err") {
-            return Vec::new();
+        if matches!(name.as_str(), "Some" | "Ok" | "Err") {
+            let Some(payload) = arguments.first() else {
+                return Vec::new();
+            };
+            let mut roots = Vec::new();
+            if let Some(root) = self.returned_root(payload, state) {
+                roots.push(("0".to_owned(), root));
+            }
+            for (path, root) in self.paths_below(payload, state) {
+                roots.push((format!("0{path}"), root));
+            }
+            return roots;
         }
-        let Some(payload) = arguments.first() else {
+
+        let Some(summary) = self.option_result_return_aliases.get(name.as_str()) else {
             return Vec::new();
         };
-        let mut roots = Vec::new();
-        if let Some(root) = self.returned_root(payload, state) {
-            roots.push(("0".to_owned(), root));
-        }
-        for (path, root) in self.paths_below(payload, state) {
-            roots.push((format!("0{path}"), root));
-        }
-        roots
+        summary
+            .paths
+            .iter()
+            .filter_map(|(path, parameter_idx)| {
+                self.tracked_reference_argument_root(arguments.get(*parameter_idx)?, state)
+                    .map(|root| (path.clone(), root))
+            })
+            .collect()
     }
 
     /// Return known reference leaves carried by a concrete tagged-enum
@@ -2632,6 +2678,17 @@ impl<'a> AliasWalker<'a> {
         Self::known_constructor_name(value)
             .map(str::to_owned)
             .or_else(|| {
+                let crate::Node::CallExpression { function, .. } = value else {
+                    return None;
+                };
+                let crate::Node::Identifier { name, .. } = function.as_ref() else {
+                    return None;
+                };
+                self.option_result_return_aliases
+                    .get(name.as_str())
+                    .map(|summary| summary.constructor.clone())
+            })
+            .or_else(|| {
                 Self::place_name(value)
                     .and_then(|place| state.known_constructors.get(&place).cloned())
             })
@@ -2645,11 +2702,12 @@ impl<'a> AliasWalker<'a> {
         state: &AliasState,
     ) -> Vec<(String, String)> {
         let mut paths = Vec::new();
-        Self::collect_known_constructor_paths(value, "", state, &mut paths);
+        self.collect_known_constructor_paths(value, "", state, &mut paths);
         paths
     }
 
     fn collect_known_constructor_paths(
+        &self,
         value: &crate::Node,
         prefix: &str,
         state: &AliasState,
@@ -2657,6 +2715,13 @@ impl<'a> AliasWalker<'a> {
     ) {
         if let Some(constructor) = Self::known_constructor_name(value) {
             paths.push((prefix.to_owned(), constructor.to_owned()));
+            return;
+        }
+        if let crate::Node::CallExpression { function, .. } = value
+            && let crate::Node::Identifier { name, .. } = function.as_ref()
+            && let Some(summary) = self.option_result_return_aliases.get(name.as_str())
+        {
+            paths.push((prefix.to_owned(), summary.constructor.clone()));
             return;
         }
         if let Some(source) = Self::place_name(value) {
@@ -2678,19 +2743,19 @@ impl<'a> AliasWalker<'a> {
             crate::Node::TupleLiteral { items, .. } => {
                 for (index, item) in items.iter().enumerate() {
                     let path = format!("{prefix}.{index}");
-                    Self::collect_known_constructor_paths(item, &path, state, paths);
+                    self.collect_known_constructor_paths(item, &path, state, paths);
                 }
             }
             crate::Node::ArrayLiteral { items, .. } => {
                 for (index, item) in items.iter().enumerate() {
                     let path = format!("{prefix}[{index}]");
-                    Self::collect_known_constructor_paths(item, &path, state, paths);
+                    self.collect_known_constructor_paths(item, &path, state, paths);
                 }
             }
             crate::Node::StructLiteral { fields, .. } => {
                 for (field, item) in fields {
                     let path = format!("{prefix}.{field}");
-                    Self::collect_known_constructor_paths(item, &path, state, paths);
+                    self.collect_known_constructor_paths(item, &path, state, paths);
                 }
             }
             crate::Node::Slice {
@@ -3044,6 +3109,7 @@ fn check_unannotated_let_alias(
         struct_return_aliases: summaries.struct_return_aliases,
         tuple_return_aliases: summaries.tuple_return_aliases,
         array_return_aliases: summaries.array_return_aliases,
+        option_result_return_aliases: summaries.option_result_return_aliases,
         reference_fields,
         source_path,
         errors: Vec::new(),
@@ -3302,6 +3368,91 @@ fn collect_struct_return_aliases(
     }
 
     Some(())
+}
+
+fn option_result_return_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+) -> Option<OptionResultReturnAliasSummary> {
+    let mut returns = Vec::new();
+    collect_option_result_return_provenance(body, parameters, &mut returns);
+    let Some(Some(summary)) = returns.first() else {
+        return None;
+    };
+    if returns
+        .iter()
+        .any(|candidate| candidate.as_ref() != Some(summary))
+    {
+        return None;
+    }
+    Some(summary.clone())
+}
+
+fn collect_option_result_return_provenance(
+    node: &crate::Node,
+    parameters: &[(String, String)],
+    out: &mut Vec<Option<OptionResultReturnAliasSummary>>,
+) {
+    match node {
+        crate::Node::ReturnStatement { value, .. } => {
+            out.push(
+                value
+                    .as_deref()
+                    .and_then(|value| option_result_return_aliases_for_value(value, parameters)),
+            );
+        }
+        crate::Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                collect_option_result_return_provenance(stmt, parameters, out);
+            }
+        }
+        crate::Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_option_result_return_provenance(consequence, parameters, out);
+            if let Some(alternative) = alternative {
+                collect_option_result_return_provenance(alternative, parameters, out);
+            }
+        }
+        crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
+            collect_option_result_return_provenance(body, parameters, out)
+        }
+        crate::Node::Match { arms, .. } => {
+            for (_pattern, _guard, body) in arms {
+                collect_option_result_return_provenance(body, parameters, out);
+            }
+        }
+        crate::Node::FunctionLiteral { .. } => {}
+        _ => {}
+    }
+}
+
+fn option_result_return_aliases_for_value(
+    value: &crate::Node,
+    parameters: &[(String, String)],
+) -> Option<OptionResultReturnAliasSummary> {
+    let crate::Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = value
+    else {
+        return None;
+    };
+    let crate::Node::Identifier { name, .. } = function.as_ref() else {
+        return None;
+    };
+    if !matches!(name.as_str(), "Some" | "Ok" | "Err") {
+        return None;
+    }
+    let payload = arguments.first()?;
+    let parameter_idx = direct_reference_parameter_index(payload, parameters)?;
+    Some(OptionResultReturnAliasSummary {
+        constructor: name.clone(),
+        paths: vec![("0".to_owned(), parameter_idx)],
+    })
 }
 
 fn tuple_return_alias_summary(
@@ -7546,6 +7697,36 @@ mod tests {
             errors.len(),
             2,
             "matching sliced Option and Result payloads should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn option_result_constructor_identity_survives_direct_helper_returns() {
+        let errors = run_alias_check(
+            r#"fn expose_some(&mut int value) -> Option<&mut int> {
+                   return Some(value);
+               }
+               fn expose_err(&mut int value) -> Result<int, &mut int> {
+                   return Err(value);
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   match expose_some(x) {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+                   let result = expose_err(x);
+                   match result {
+                       Ok(alias) => { set_both(x, alias); },
+                       Err(alias) => { set_both(x, alias); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "matching helper constructors should report: {:?}",
             errors
         );
     }
