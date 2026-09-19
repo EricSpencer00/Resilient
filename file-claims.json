@@ -8,9 +8,29 @@
       "branch": "res-4070-const-if-alias",
       "claimed_at": "2026-09-19T20:38:39Z"
     },
-    "resilient/src/ffi_signatures.rs": {
-      "branch": "res-4230-ffi-buffer-types",
-      "claimed_at": "2026-09-19T21:23:30Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-4110-glob-import",
+      "claimed_at": "2026-09-19T21:27:10Z"
+    },
+    "resilient/src/imports.rs": {
+      "branch": "res-4110-glob-import",
+      "claimed_at": "2026-09-19T21:27:10Z"
+    },
+    "resilient/src/modules.rs": {
+      "branch": "res-4110-glob-import",
+      "claimed_at": "2026-09-19T21:27:10Z"
+    },
+    "resilient/tests/it/main.rs": {
+      "branch": "res-4110-glob-import",
+      "claimed_at": "2026-09-19T21:27:10Z"
+    },
+    "resilient/tests/it/inline_glob_import.rs": {
+      "branch": "res-4110-glob-import",
+      "claimed_at": "2026-09-19T21:27:10Z"
+    },
+    "docs/MODULE_SYSTEM.md": {
+      "branch": "res-4110-glob-import",
+      "claimed_at": "2026-09-19T21:27:10Z"
     }
   }
 }
