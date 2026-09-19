@@ -641,6 +641,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   array-return helpers now preserve unambiguous element and nested reference
   paths at callers. Dynamic bounds, transformed sources, reassignment, and
   unknown values remain opaque.
+- **A-E5 increment 74 (RES-4070):** direct array-return expressions that are
+  themselves constant-bound slices of literals or already-proven helper calls
+  now preserve unambiguous element and nested reference paths at callers.
+  Dynamic bounds, transformed sources, mixed returns, and ambiguous shapes
+  remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
