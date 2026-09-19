@@ -1651,7 +1651,10 @@ impl<'a> AliasWalker<'a> {
                     roots.push((format!("{prefix}.{path}"), root));
                 }
             }
-            crate::Node::Identifier { .. } | crate::Node::IndexExpression { .. } => {
+            crate::Node::Identifier { .. }
+            | crate::Node::FieldAccess { .. }
+            | crate::Node::IndexExpression { .. }
+            | crate::Node::TupleIndex { .. } => {
                 for (path, root) in self.paths_below(value, state) {
                     roots.push((format!("{prefix}{path}"), root));
                 }
@@ -5871,6 +5874,56 @@ mod tests {
             "dynamic nested array slices must stay outside alias tracking: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn nested_array_literal_field_access_preserves_nested_paths() {
+        let array_errors = run_alias_check(
+            "struct Source { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Source { items: [x] }; \
+                 let matrix = [[source.items]]; \
+                 set_both(x, matrix[0][0][0]); \
+             }",
+        );
+        assert_eq!(array_errors.len(), 1, "got: {:?}", array_errors);
+
+        let struct_errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Source { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Source { inner: new Inner { item: x } }; \
+                 let matrix = [[source.inner]]; \
+                 set_both(x, matrix[0][0].item); \
+             }",
+        );
+        assert_eq!(struct_errors.len(), 1, "got: {:?}", struct_errors);
+    }
+
+    #[test]
+    fn nested_array_literal_tuple_index_preserves_nested_paths() {
+        let array_errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = ([x], 0); \
+                 let matrix = [[pair.0]]; \
+                 set_both(x, matrix[0][0][0]); \
+             }",
+        );
+        assert_eq!(array_errors.len(), 1, "got: {:?}", array_errors);
+
+        let tuple_errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let pair = (new Inner { item: x }, 0); \
+                 let matrix = [[pair.0]]; \
+                 set_both(x, matrix[0][0].item); \
+             }",
+        );
+        assert_eq!(tuple_errors.len(), 1, "got: {:?}", tuple_errors);
     }
 
     #[test]
