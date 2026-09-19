@@ -742,10 +742,11 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 // - Alias facts are established only by operations with one unambiguous
 //   provenance: straight-line `let NAME = IDENT;` copies, direct reference
 //   returns, declared reference fields initialized by concrete struct
-//   literals (including nested paths), direct tagged-enum constructors nested
-//   in concrete struct literals, direct tuple and array returns, and
-//   non-negative constant array element/slice paths, including nested arrays,
-//   fields inside direct array-literal struct elements, and constant-bound
+//   literals (including nested paths), direct tagged-enum/Option/Result
+//   constructors nested in concrete struct literals, direct tuple and array
+//   returns, and non-negative constant array element/slice paths, including
+//   nested arrays, fields inside direct array-literal struct elements, and
+//   constant-bound
 //   slices of those arrays.
 //   Copying a reference
 //   binding cannot do anything but refer to the same region — there is no
@@ -1749,6 +1750,9 @@ impl<'a> AliasWalker<'a> {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
                     for (nested_path, root) in self.tagged_enum_payload_roots(value, state) {
+                        roots.push((format!("{path}.{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.option_result_payload_roots(value, state) {
                         roots.push((format!("{path}.{nested_path}"), root));
                     }
                 }
@@ -6179,6 +6183,38 @@ mod tests {
             errors.len(),
             2,
             "only matching struct-field constructor arms should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn option_result_struct_field_places_remain_variant_aware() {
+        let errors = run_alias_check(
+            r#"struct OptionWrapper { Option<&mut int> value }
+               struct ResultWrapper { Result<&mut int, int> value }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let some = new OptionWrapper { value: Some(x) };
+                   match some.value {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+                   let ok = new ResultWrapper { value: Ok(x) };
+                   match ok.value {
+                       Ok(alias) => { set_both(x, alias); },
+                       Err(_) => { println("err"); },
+                   }
+                   let err = new ResultWrapper { value: Err(x) };
+                   match err.value {
+                       Ok(alias) => { set_both(x, alias); },
+                       Err(alias) => { set_both(x, alias); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            3,
+            "only matching Option/Result constructor arms should report: {:?}",
             errors
         );
     }
