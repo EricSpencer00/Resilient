@@ -560,6 +560,18 @@ fn infer_mapped_array_return(callback_type: Option<&Type>, fallback: Type) -> Ty
     fallback
 }
 
+/// RES-3977: a flat-map callback contributes the element type of the
+/// array it returns. An unknown or untyped callback return stays
+/// conservative because flattening it cannot prove an element type.
+fn infer_flat_mapped_array_return(callback_type: Option<&Type>, fallback: Type) -> Type {
+    if let Some(Type::Function { return_type, .. }) = callback_type
+        && let Type::TypedArray(elem) = return_type.as_ref()
+    {
+        return Type::TypedArray(elem.clone());
+    }
+    fallback
+}
+
 /// RES-2713: map a literal-pattern node to its type so
 /// `match_pattern_binding_types` can validate that the literal is
 /// type-compatible with the match scrutinee.
@@ -11841,12 +11853,23 @@ impl TypeChecker {
                                 );
                                 if callee_name == "array_map" {
                                     infer_mapped_array_return(checked_arg_types.get(1), preserved)
+                                } else if callee_name == "array_flat_map" {
+                                    infer_flat_mapped_array_return(
+                                        checked_arg_types.get(1),
+                                        preserved,
+                                    )
                                 } else {
                                     preserved
                                 }
                             }
                             Node::FieldAccess { field, .. } if field == "map" => {
                                 infer_mapped_array_return(
+                                    checked_arg_types.first(),
+                                    effective_return,
+                                )
+                            }
+                            Node::FieldAccess { field, .. } if field == "flat_map" => {
+                                infer_flat_mapped_array_return(
                                     checked_arg_types.first(),
                                     effective_return,
                                 )
@@ -19814,6 +19837,35 @@ mod res3923_array_element_type {
         check_err(
             "fn main() { let xs = [1, 2, 3]; let ys = xs.map(fn(int x) -> bool { return x > 1; }); let bad: string = ys[0]; }\nmain();\n",
             "value has type bool",
+        );
+    }
+
+    #[test]
+    fn standalone_flat_map_tracks_callback_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_flat_map(xs, fn(int x) -> Array { return [x, x + 1]; }); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_ok(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_flat_map(xs, fn(int x) -> Array { return [x, x + 1]; }); let ok: int = ys[0]; }\nmain();\n",
+        );
+    }
+
+    #[test]
+    fn flat_map_method_tracks_callback_element_type() {
+        check_err(
+            "fn main() { let xs = [1, 2, 3]; let ys = xs.flat_map(fn(int x) -> Array { return [x, x + 1]; }); let bad: string = ys[0]; }\nmain();\n",
+            "value has type int",
+        );
+        check_ok(
+            "fn main() { let xs = [1, 2, 3]; let ys = xs.flat_map(fn(int x) -> Array { return [x, x + 1]; }); let ok: int = ys[0]; }\nmain();\n",
+        );
+    }
+
+    #[test]
+    fn flat_map_unknown_callback_result_stays_untyped() {
+        check_ok(
+            "fn main() { let xs = [1, 2, 3]; let ys = array_flat_map(xs, fn(int x) -> Array { return []; }); let ok: string = ys[0]; }\nmain();\n",
         );
     }
 
