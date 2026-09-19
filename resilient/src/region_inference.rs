@@ -335,7 +335,8 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   region-label substitution, and skipping avoids double-reporting.
 /// - Conditional paths use intersection merging and only retain direct
 ///   `let` copies plus the narrow direct-reference return summary below;
-///   Z3-backed branch-condition disjointness is not attempted.
+///   the only path feasibility recognized is a literal `true`/`false` `if`
+///   condition. Z3-backed branch-condition disjointness is not attempted.
 /// - No use-after-move detection: the language has no Copy/Move type
 ///   distinction outside `linear T` (see `linear.rs`), so there is no
 ///   sound way yet to tell whether re-reading a plain local after
@@ -1180,14 +1181,42 @@ impl<'a> AliasWalker<'a> {
                 ..
             } => {
                 self.walk_expr(condition, state);
-                let mut then_state = state.clone();
-                self.walk_stmt(consequence, &mut then_state);
-                let mut else_state = state.clone();
-                if let Some(alt) = alternative {
-                    self.walk_stmt(alt, &mut else_state);
+                let literal_condition = match condition.as_ref() {
+                    crate::Node::BooleanLiteral { value, .. } => Some(*value),
+                    _ => None,
+                };
+                if let Some(value) = literal_condition {
+                    // A literal condition makes one arm unreachable. Walk
+                    // the selected arm for diagnostics, but only propagate
+                    // conservative rebinding kills to the surrounding
+                    // scope. Branch-local `let` bindings are not copied into
+                    // the join point.
+                    let selected = if value {
+                        Some(consequence.as_ref())
+                    } else {
+                        alternative.as_deref()
+                    };
+                    if let Some(branch) = selected {
+                        let mut branch_state = state.clone();
+                        self.walk_stmt(branch, &mut branch_state);
+                        let mut assigned = Vec::new();
+                        collect_rebound_names(branch, &mut assigned);
+                        assigned.sort_unstable();
+                        assigned.dedup();
+                        for name in assigned {
+                            self.kill_name(state, &name);
+                        }
+                    }
+                } else {
+                    let mut then_state = state.clone();
+                    self.walk_stmt(consequence, &mut then_state);
+                    let mut else_state = state.clone();
+                    if let Some(alt) = alternative {
+                        self.walk_stmt(alt, &mut else_state);
+                    }
+                    *state = then_state;
+                    state.intersect(&else_state);
                 }
-                *state = then_state;
-                state.intersect(&else_state);
             }
             crate::Node::WhileStatement {
                 condition, body, ..
@@ -6961,6 +6990,39 @@ mod tests {
              }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn literal_if_selected_path_preserves_alias_for_post_if_call() {
+        // The assignment that kills y is in an unreachable else arm, so the
+        // alias is established on every feasible path to the call.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; \
+                 if true { println(\"keep\"); } else { y = 0; } \
+                 set_both(x, y); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn literal_unreachable_alias_call_stays_accepted() {
+        // A call in a statically unreachable arm must not be reported just
+        // because the alias facts are visible before the if.
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let y = x; \
+                 if false { set_both(x, y); } else { println(\"reachable\"); } \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "unreachable branch must stay outside alias checking: {:?}",
+            errors
+        );
     }
 
     #[test]
