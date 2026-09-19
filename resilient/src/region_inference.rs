@@ -1291,6 +1291,14 @@ impl<'a> AliasWalker<'a> {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
                 }
+                crate::Node::Identifier { .. }
+                | crate::Node::FieldAccess { .. }
+                | crate::Node::IndexExpression { .. }
+                | crate::Node::TupleIndex { .. } => {
+                    for (nested_path, root) in self.paths_below(item, state) {
+                        roots.push((format!("{path}{nested_path}"), root));
+                    }
+                }
                 _ => self.collect_tuple_alias_roots(item, &path, state, roots),
             }
         }
@@ -4735,6 +4743,44 @@ mod tests {
             errors[0].contains("pair.0[0]"),
             "message shape wrong: {}",
             errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_tuple_literal_array_alias_rejected() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let items = [x]; let pair = (items, 0); set_both(x, pair.0[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("pair.0[0]"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_tuple_literal_struct_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let holder = new Holder { item: x }; let pair = (holder, 0); set_both(x, pair.0.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("pair.0.item"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn unknown_composite_alias_inside_tuple_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let items = unknown(x); let pair = (items, 0); set_both(x, pair.0[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "unknown tuple composite values must stay opaque: {:?}",
+            errors
         );
     }
 
