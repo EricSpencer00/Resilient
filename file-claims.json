@@ -12,25 +12,9 @@
       "branch": "res-4070-array-nested-helper",
       "claimed_at": "2026-09-18T23:36:23Z"
     },
-    "resilient/src/jit_backend.rs": {
-      "branch": "res-4111-jit-string-lowering-c",
-      "claimed_at": "2026-09-19T19:38:34Z"
-    },
-    "resilient/src/jit_runtime.rs": {
-      "branch": "res-4111-jit-string-lowering-c",
-      "claimed_at": "2026-09-19T19:38:34Z"
-    },
-    "resilient/examples/jit_native_string_comparison.rz": {
-      "branch": "res-4111-jit-string-lowering-c",
-      "claimed_at": "2026-09-19T19:38:34Z"
-    },
-    "resilient/examples/jit_native_string_comparison.expected.txt": {
-      "branch": "res-4111-jit-string-lowering-c",
-      "claimed_at": "2026-09-19T19:38:34Z"
-    },
-    "resilient/tests/it/jit_string_comparison.rs": {
-      "branch": "res-4111-jit-string-lowering-c",
-      "claimed_at": "2026-09-19T19:38:34Z"
+    "resilient/tests/it/main.rs": {
+      "branch": "res-4110-module-path-resolution",
+      "claimed_at": "2026-09-19T19:40:17Z"
     }
   }
 }
