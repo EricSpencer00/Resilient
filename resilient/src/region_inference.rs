@@ -4411,6 +4411,18 @@ fn collect_array_return_paths(
             let _ =
                 collect_array_return_call_paths(value, prefix, parameters, known_returns, paths);
         }
+        crate::Node::Slice { .. } => {
+            if let Some(summary) =
+                array_return_aliases_for_value(value, parameters, reference_fields, known_returns)
+            {
+                paths.extend(
+                    summary
+                        .paths
+                        .into_iter()
+                        .map(|(path, parameter_idx)| (format!("{prefix}{path}"), parameter_idx)),
+                );
+            }
+        }
         crate::Node::Identifier { .. } => {
             if let Some(param_idx) = direct_reference_parameter_index(value, parameters) {
                 paths.push((prefix.to_owned(), param_idx));
@@ -6149,6 +6161,37 @@ mod tests {
         assert!(
             errors.is_empty(),
             "dynamic direct helper slices must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn nested_direct_array_helper_slice_preserves_path() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x, x]; } \
+             fn wrap(&mut int x) -> array { return [make_array(x)[0..1]]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let items = wrap(x); set_both(x, items[0][0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`items[0][0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_dynamic_array_helper_slice_stays_conservative() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x) -> array { return [x, x]; } \
+             fn wrap(&mut int x, int end) -> array { return [make_array(x)[0..end]]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int end) { let items = wrap(x, end); set_both(x, items[0][0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic nested helper slices must stay conservative: {:?}",
             errors
         );
     }
