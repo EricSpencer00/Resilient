@@ -2270,12 +2270,18 @@ impl<'a> AliasWalker<'a> {
                     for name in pattern_bindings {
                         self.kill_name(&mut arm_state, &name);
                     }
-                    Self::bind_struct_pattern_aliases(
-                        pat,
-                        "",
-                        &scrutinee_pattern_roots,
-                        &mut arm_state,
-                    );
+                    let can_bind_known_payload = Self::known_constructor_name(scrutinee)
+                        .is_none_or(|constructor| {
+                            Self::pattern_matches_constructor(pat, constructor)
+                        });
+                    if can_bind_known_payload {
+                        Self::bind_struct_pattern_aliases(
+                            pat,
+                            "",
+                            &scrutinee_pattern_roots,
+                            &mut arm_state,
+                        );
+                    }
                     if let Some(g) = guard {
                         self.walk_expr(g, &mut arm_state);
                     }
@@ -2391,6 +2397,63 @@ impl<'a> AliasWalker<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Return the constructor identity when the scrutinee is a direct
+    /// tagged-enum, Option, or Result constructor. Keeping this identity
+    /// alongside the payload paths prevents a known payload from leaking
+    /// into a statically mismatched match arm.
+    fn known_constructor_name(value: &crate::Node) -> Option<&str> {
+        match value {
+            crate::Node::StructLiteral { name, .. } if name.rsplit_once("::").is_some() => {
+                Some(name.as_str())
+            }
+            crate::Node::CallExpression { function, .. } => {
+                let crate::Node::Identifier { name, .. } = function.as_ref() else {
+                    return None;
+                };
+                (matches!(name.as_str(), "Some" | "Ok" | "Err") || name.contains("::"))
+                    .then_some(name.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    /// Check whether a pattern can select the known direct constructor. The
+    /// alias binder already stays conservative for OR and opaque patterns;
+    /// this additional check only prevents payload paths from a known
+    /// constructor being reused by a different variant arm.
+    fn pattern_matches_constructor(pattern: &crate::Pattern, constructor: &str) -> bool {
+        match pattern {
+            crate::Pattern::Bind(_, inner) => Self::pattern_matches_constructor(inner, constructor),
+            crate::Pattern::Or(branches) => branches
+                .iter()
+                .any(|branch| Self::pattern_matches_constructor(branch, constructor)),
+            crate::Pattern::Some(_) => constructor == "Some",
+            crate::Pattern::Ok(_) => constructor == "Ok",
+            crate::Pattern::Err(_) => constructor == "Err",
+            crate::Pattern::EnumVariant {
+                type_name,
+                variant_name,
+                ..
+            } => {
+                let Some((known_type, known_variant)) = constructor.rsplit_once("::") else {
+                    return false;
+                };
+                known_variant == variant_name
+                    && type_name
+                        .as_deref()
+                        .is_none_or(|pattern_type| pattern_type == known_type)
+            }
+            crate::Pattern::Identifier(_)
+            | crate::Pattern::Literal(_)
+            | crate::Pattern::Wildcard
+            | crate::Pattern::Range { .. }
+            | crate::Pattern::None
+            | crate::Pattern::Struct { .. }
+            | crate::Pattern::TupleStruct { .. }
+            | crate::Pattern::Tuple(_) => false,
         }
     }
 
@@ -5847,6 +5910,37 @@ mod tests {
                }"#,
         );
         assert_eq!(errors.len(), 2, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn mismatched_known_constructor_patterns_do_not_reuse_payload_paths() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   match Packet::Item(new Holder { item: x }) {
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                       Packet::Item(_) => { println("item"); },
+                   }
+                   match Some(x) {
+                       None => { println("none"); },
+                       Some(alias) => { println(alias); },
+                   }
+                   match Ok(x) {
+                       Err(alias) => { set_both(x, alias); },
+                       Ok(_) => { println("ok"); },
+                   }
+               }"#,
+        );
+        assert!(
+            errors.is_empty(),
+            "mismatched constructors must not inherit payload aliases: {:?}",
+            errors
+        );
     }
 
     #[test]
