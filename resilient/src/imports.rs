@@ -77,6 +77,11 @@ fn expand_recursive(
     std_imports: &mut Vec<StdImport>,
     in_flight: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
+    // RES-4110: resolve inline-module globs before file/dependency imports.
+    // This pass removes only `use mod::*` nodes, leaving the existing file
+    // import resolver and its visibility rules unchanged.
+    crate::modules::expand_inline_globs(program)?;
+
     let stmts = match program {
         Node::Program(stmts) => stmts,
         _ => return Ok(()),

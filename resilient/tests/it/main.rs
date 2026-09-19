@@ -118,6 +118,7 @@ mod help_layout_smoke;
 mod help_word_smoke;
 mod index_typecheck_smoke;
 mod info_flow_smoke;
+mod inline_glob_import;
 mod issue_template_test_location_smoke;
 mod jit_backend_header_copy_smoke;
 mod jit_comment_copy_smoke;
