@@ -3644,6 +3644,18 @@ impl Parser {
         self.record_error(format!("{}{}", prefix, msg));
     }
 
+    /// RES-4115: funnel for duplicate named-argument diagnostics.
+    /// This is a call-site shape error, not a duplicate declaration,
+    /// so it has its own registry entry (E0022) rather than sharing
+    /// E0011.
+    ///
+    /// Default output is byte-identical to the plain record_error call
+    /// it replaces; RESILIENT_RICH_DIAG=1 prefixes [E0022].
+    fn record_error_duplicate_named_arg(&mut self, msg: String) {
+        let prefix = if rich_diag_enabled() { "[E0022] " } else { "" };
+        self.record_error(format!("{}{}", prefix, msg));
+    }
+
     /// RES-307: recover at top-level after a parse error.
     ///
     /// Advances tokens until the cursor is positioned at:
@@ -9769,7 +9781,10 @@ impl Parser {
                 }
             };
             if used_names.iter().any(|n| n == &name) {
-                self.record_error(format!("Duplicate named argument `{}` in call", name));
+                self.record_error_duplicate_named_arg(format!(
+                    "Duplicate named argument `{}` in call",
+                    name
+                ));
             }
             used_names.push(name.clone());
             *seen_named = true;
@@ -62854,6 +62869,32 @@ struct Counter { int value; }"#,
             "expected duplicate-named-arg diagnostic, got: {:?}",
             errs
         );
+    }
+
+    #[test]
+    fn duplicate_named_arg_carries_e0022_only_in_rich_mode() {
+        let src = r#"
+            fn f(int x, int y) { return x + y; }
+            let r = f(x: 1, x: 2);
+        "#;
+        let (_program, errs) = parse(src);
+        let joined = errs.join("\n");
+        assert!(
+            joined.contains("Duplicate named argument") && joined.contains("x"),
+            "expected duplicate-named-arg diagnostic, got: {:?}",
+            errs
+        );
+        if std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1") {
+            assert!(
+                joined.contains("E0022"),
+                "expected E0022 in rich mode: {joined}"
+            );
+        } else {
+            assert!(
+                !joined.contains("E0022"),
+                "E0022 leaked into the default diagnostic: {joined}"
+            );
+        }
     }
 
     #[test]
