@@ -808,7 +808,8 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   tuple/struct destructuring and nested variant-aware match patterns,
 //   including their payload leaves through constant tuple/array places,
 //   and constant-bound slices of those places,
-//   direct tuple and array returns, and
+//   direct tuple and array returns, including straight-line whole-value local
+//   aliases inside those helpers, and
 //   direct `Some`/`Ok`/`Err` helper returns with one reference payload,
 //   forwarding through an already-proven Option/Result helper,
 //   including straight-line whole-value local aliases of those returns,
@@ -3876,6 +3877,16 @@ fn tuple_return_alias_summary(
         return None;
     }
 
+    if let Some(summary) = tuple_straight_line_local_alias_summary(
+        body,
+        parameters,
+        reference_fields,
+        known_returns,
+        array_returns,
+    ) {
+        return Some(summary);
+    }
+
     let mut returns = Vec::new();
     collect_tuple_return_provenance(
         body,
@@ -3895,6 +3906,56 @@ fn tuple_return_alias_summary(
         return None;
     }
     Some(summary.clone())
+}
+
+fn tuple_straight_line_local_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    reference_fields: &HashSet<(String, String)>,
+    known_returns: &HashMap<&str, TupleReturnAliasSummary>,
+    array_returns: &HashMap<&str, ArrayReturnAliasSummary>,
+) -> Option<TupleReturnAliasSummary> {
+    let crate::Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let mut locals = HashMap::new();
+    let mut returned = None;
+    for stmt in stmts {
+        match stmt {
+            crate::Node::LetStatement { name, value, .. } => {
+                let summary = match value.as_ref() {
+                    crate::Node::Identifier { name, .. } => locals.get(name).cloned(),
+                    value => tuple_return_aliases_for_value(
+                        value,
+                        parameters,
+                        reference_fields,
+                        known_returns,
+                        array_returns,
+                    ),
+                };
+                if let Some(summary) = summary {
+                    locals.insert(name.clone(), summary);
+                } else {
+                    locals.remove(name);
+                }
+            }
+            crate::Node::ReturnStatement { value, .. } => {
+                let crate::Node::Identifier { name, .. } = value.as_deref()? else {
+                    return None;
+                };
+                let summary = locals.get(name)?.clone();
+                if returned
+                    .as_ref()
+                    .is_some_and(|previous| previous != &summary)
+                {
+                    return None;
+                }
+                returned = Some(summary);
+            }
+            _ => return None,
+        }
+    }
+    returned
 }
 
 fn collect_tuple_return_provenance(
@@ -5427,6 +5488,22 @@ mod tests {
             "message shape wrong: {}",
             errors[0]
         );
+    }
+
+    #[test]
+    fn helper_returned_reference_tuple_survives_straight_line_local_alias() {
+        let errors = run_alias_check(
+            "fn make_pair(&mut int x, &mut int y) -> (&mut int, &mut int) { \
+                 let pair = (x, y); \
+                 return pair; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { \
+                 let pair = make_pair(x, y); \
+                 set_both(x, pair.0); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
     }
 
     #[test]
