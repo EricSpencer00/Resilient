@@ -647,6 +647,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
                     parameters,
                     return_type.as_deref(),
                     &reference_fields,
+                    &struct_return_aliases,
                     &tuple_return_aliases,
                     &array_return_aliases,
                 )
@@ -3898,6 +3899,7 @@ fn tuple_return_alias_summary(
     parameters: &[(String, String)],
     return_type: Option<&str>,
     reference_fields: &HashSet<(String, String)>,
+    struct_returns: &HashMap<&str, StructReturnAliasSummary>,
     known_returns: &HashMap<&str, TupleReturnAliasSummary>,
     array_returns: &HashMap<&str, ArrayReturnAliasSummary>,
 ) -> Option<TupleReturnAliasSummary> {
@@ -3910,6 +3912,7 @@ fn tuple_return_alias_summary(
         body,
         parameters,
         reference_fields,
+        struct_returns,
         known_returns,
         array_returns,
     ) {
@@ -3921,6 +3924,7 @@ fn tuple_return_alias_summary(
         body,
         parameters,
         reference_fields,
+        struct_returns,
         known_returns,
         array_returns,
         &mut returns,
@@ -3941,6 +3945,7 @@ fn tuple_straight_line_local_alias_summary(
     body: &crate::Node,
     parameters: &[(String, String)],
     reference_fields: &HashSet<(String, String)>,
+    struct_returns: &HashMap<&str, StructReturnAliasSummary>,
     known_returns: &HashMap<&str, TupleReturnAliasSummary>,
     array_returns: &HashMap<&str, ArrayReturnAliasSummary>,
 ) -> Option<TupleReturnAliasSummary> {
@@ -3958,6 +3963,7 @@ fn tuple_straight_line_local_alias_summary(
                         value,
                         parameters,
                         reference_fields,
+                        struct_returns,
                         known_returns,
                         array_returns,
                     ),
@@ -3991,6 +3997,7 @@ fn collect_tuple_return_provenance(
     node: &crate::Node,
     parameters: &[(String, String)],
     reference_fields: &HashSet<(String, String)>,
+    struct_returns: &HashMap<&str, StructReturnAliasSummary>,
     known_returns: &HashMap<&str, TupleReturnAliasSummary>,
     array_returns: &HashMap<&str, ArrayReturnAliasSummary>,
     out: &mut Vec<Option<TupleReturnAliasSummary>>,
@@ -4002,6 +4009,7 @@ fn collect_tuple_return_provenance(
                     value,
                     parameters,
                     reference_fields,
+                    struct_returns,
                     known_returns,
                     array_returns,
                 )
@@ -4013,6 +4021,7 @@ fn collect_tuple_return_provenance(
                     stmt,
                     parameters,
                     reference_fields,
+                    struct_returns,
                     known_returns,
                     array_returns,
                     out,
@@ -4028,6 +4037,7 @@ fn collect_tuple_return_provenance(
                 consequence,
                 parameters,
                 reference_fields,
+                struct_returns,
                 known_returns,
                 array_returns,
                 out,
@@ -4037,6 +4047,7 @@ fn collect_tuple_return_provenance(
                     alternative,
                     parameters,
                     reference_fields,
+                    struct_returns,
                     known_returns,
                     array_returns,
                     out,
@@ -4048,6 +4059,7 @@ fn collect_tuple_return_provenance(
                 body,
                 parameters,
                 reference_fields,
+                struct_returns,
                 known_returns,
                 array_returns,
                 out,
@@ -4059,6 +4071,7 @@ fn collect_tuple_return_provenance(
                     body,
                     parameters,
                     reference_fields,
+                    struct_returns,
                     known_returns,
                     array_returns,
                     out,
@@ -4074,6 +4087,7 @@ fn tuple_return_aliases_for_value(
     value: &crate::Node,
     parameters: &[(String, String)],
     reference_fields: &HashSet<(String, String)>,
+    struct_returns: &HashMap<&str, StructReturnAliasSummary>,
     known_returns: &HashMap<&str, TupleReturnAliasSummary>,
     array_returns: &HashMap<&str, ArrayReturnAliasSummary>,
 ) -> Option<TupleReturnAliasSummary> {
@@ -4109,6 +4123,7 @@ fn tuple_return_aliases_for_value(
         "",
         parameters,
         reference_fields,
+        struct_returns,
         array_returns,
         &mut elements,
     )?;
@@ -4492,6 +4507,37 @@ fn collect_array_return_call_paths(
     Some(())
 }
 
+fn collect_struct_return_call_paths(
+    value: &crate::Node,
+    prefix: &str,
+    parameters: &[(String, String)],
+    known_returns: &HashMap<&str, StructReturnAliasSummary>,
+    elements: &mut Vec<(String, usize)>,
+) -> Option<()> {
+    let crate::Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = value
+    else {
+        return None;
+    };
+    let crate::Node::Identifier { name: callee, .. } = function.as_ref() else {
+        return None;
+    };
+    let summary = known_returns.get(callee.as_str())?;
+    let mut mapped = Vec::new();
+    for (field, parameter_idx) in &summary.fields {
+        let crate::Node::Identifier { name: argument, .. } = arguments.get(*parameter_idx)? else {
+            return None;
+        };
+        let outer_idx = direct_reference_parameter_name_index(argument, parameters)?;
+        mapped.push((format!("{prefix}.{field}"), outer_idx));
+    }
+    elements.extend(mapped);
+    Some(())
+}
+
 fn direct_reference_parameter_index(
     value: &crate::Node,
     parameters: &[(String, String)],
@@ -4519,6 +4565,7 @@ fn collect_tuple_return_elements(
     prefix: &str,
     parameters: &[(String, String)],
     reference_fields: &HashSet<(String, String)>,
+    struct_returns: &HashMap<&str, StructReturnAliasSummary>,
     array_returns: &HashMap<&str, ArrayReturnAliasSummary>,
     elements: &mut Vec<(String, usize)>,
 ) -> Option<()> {
@@ -4538,6 +4585,7 @@ fn collect_tuple_return_elements(
                     &path,
                     parameters,
                     reference_fields,
+                    struct_returns,
                     array_returns,
                     elements,
                 )?;
@@ -4568,7 +4616,25 @@ fn collect_tuple_return_elements(
                 );
             }
             crate::Node::CallExpression { .. } => {
-                collect_array_return_call_paths(item, &path, parameters, array_returns, elements)?;
+                let array_paths = collect_array_return_call_paths(
+                    item,
+                    &path,
+                    parameters,
+                    array_returns,
+                    elements,
+                )
+                .is_some();
+                let struct_paths = collect_struct_return_call_paths(
+                    item,
+                    &path,
+                    parameters,
+                    struct_returns,
+                    elements,
+                )
+                .is_some();
+                if !array_paths && !struct_paths {
+                    return None;
+                }
             }
             crate::Node::Slice { .. } => {
                 let summary = array_return_aliases_for_value(
@@ -4596,6 +4662,7 @@ fn collect_tuple_return_elements(
                         })?;
                 elements.push((path, parameter_idx));
             }
+            crate::Node::IntegerLiteral { .. } => {}
             _ => return None,
         }
     }
@@ -5713,6 +5780,54 @@ mod tests {
              fn caller(&mut int x) { let pair = outer(x); set_both(x, pair.0.inner.item); }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn helper_returned_tuple_struct_helper_element_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int x) -> Holder { return new Holder { item: x }; } \
+             fn make_pair(&mut int x) -> (Holder, int) { return (make_holder(x), 0); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = make_pair(x); set_both(x, pair.0.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("pair.0.item"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_tuple_struct_helper_forward_chain_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int x) -> Holder { return new Holder { item: x }; } \
+             fn make_pair(&mut int x) -> (Holder, int) { return (make_holder(x), 0); } \
+             fn forward_pair(&mut int x) -> (Holder, int) { return make_pair(x); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = forward_pair(x); set_both(x, pair.0.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn wrapped_tuple_struct_helper_argument_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn make_holder(&mut int x) -> Holder { return new Holder { item: x }; } \
+             fn make_pair(&mut int x) -> (Holder, int) { \
+                 let alias = x; return (make_holder(alias), 0); \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let pair = make_pair(x); set_both(x, pair.0.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "wrapped tuple struct helper arguments must stay conservative: {:?}",
+            errors
+        );
     }
 
     #[test]
