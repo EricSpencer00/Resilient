@@ -743,10 +743,10 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   provenance: straight-line `let NAME = IDENT;` copies, direct reference
 //   returns, declared reference fields initialized by concrete struct
 //   literals (including nested paths), direct tagged-enum/Option/Result
-//   constructors nested in concrete struct literals, direct tuple and array
-//   returns, and non-negative constant array element/slice paths, including
-//   nested arrays, fields inside direct array-literal struct elements, and
-//   constant-bound
+//   constructors nested in concrete struct literals or transferred through
+//   tuple/struct destructuring, direct tuple and array returns, and
+//   non-negative constant array element/slice paths, including nested arrays,
+//   fields inside direct array-literal struct elements, and constant-bound
 //   slices of those arrays.
 //   Copying a reference
 //   binding cannot do anything but refer to the same region — there is no
@@ -975,6 +975,7 @@ impl<'a> AliasWalker<'a> {
             crate::Node::LetTupleDestructure { names, value, .. } => {
                 self.walk_expr(value, state);
                 let tuple_roots = self.tuple_element_roots(value, state);
+                let constructor_paths = self.known_constructor_paths(value, state);
                 for name in names {
                     self.kill_name(state, name);
                 }
@@ -992,9 +993,27 @@ impl<'a> AliasWalker<'a> {
                     };
                     state.aliases.insert(place, root);
                 }
+                for (path, constructor) in constructor_paths {
+                    let Some(path) = path.strip_prefix('.') else {
+                        continue;
+                    };
+                    let Some((index, suffix)) = Self::tuple_path_parts(path) else {
+                        continue;
+                    };
+                    let Some(name) = names.get(index) else {
+                        continue;
+                    };
+                    let place = if suffix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{name}{suffix}")
+                    };
+                    state.known_constructors.insert(place, constructor);
+                }
             }
             crate::Node::LetDestructureStruct { fields, value, .. } => {
                 self.walk_expr(value, state);
+                let constructor_paths = self.known_constructor_paths(value, state);
                 let mut field_roots = self.struct_field_roots(value, state);
                 for (path, root) in self.paths_below(value, state) {
                     let Some(path) = path.strip_prefix('.') else {
@@ -1014,6 +1033,17 @@ impl<'a> AliasWalker<'a> {
                             state
                                 .aliases
                                 .insert(format!("{local}{suffix}"), root.clone());
+                        }
+                    }
+                    let field_prefix = format!(".{field}");
+                    for (path, constructor) in &constructor_paths {
+                        let Some(suffix) = path.strip_prefix(&field_prefix) else {
+                            continue;
+                        };
+                        if suffix.is_empty() || suffix.starts_with('.') || suffix.starts_with('[') {
+                            state
+                                .known_constructors
+                                .insert(format!("{local}{suffix}"), constructor.clone());
                         }
                     }
                 }
@@ -7195,6 +7225,46 @@ mod tests {
              }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn constructor_identity_survives_tuple_and_struct_destructuring() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               struct OptionWrapper { Option<&mut int> value }
+               struct ResultWrapper { Result<&mut int, int> value }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let pair = (Packet::Item(new Holder { item: x }), 0);
+                   let (packet, _) = pair;
+                   match packet {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+                   let option_wrapper = new OptionWrapper { value: Some(x) };
+                   let OptionWrapper { value: some, .. } = option_wrapper;
+                   match some {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+                   let result_wrapper = new ResultWrapper { value: Err(x) };
+                   let ResultWrapper { value: err, .. } = result_wrapper;
+                   match err {
+                       Ok(alias) => { set_both(x, alias); },
+                       Err(alias) => { set_both(x, alias); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            3,
+            "only matching destructured constructor arms should report: {:?}",
+            errors
+        );
     }
 
     #[test]
