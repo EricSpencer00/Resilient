@@ -868,6 +868,10 @@ impl<'a> AliasWalker<'a> {
             crate::Node::LetStatement { name, value, .. } => {
                 self.walk_expr(value, state);
                 let new_root = self.returned_root(value, state);
+                // A whole-value copy preserves every already-proven
+                // canonical path below the source place, including
+                // struct fields that have no dedicated root summary.
+                let composite_roots = self.paths_below(value, state);
                 let field_roots = self.struct_field_roots(value, state);
                 let array_roots = self.array_element_roots(value, state);
                 let array_return_roots = self.array_return_roots(value, state);
@@ -884,6 +888,9 @@ impl<'a> AliasWalker<'a> {
                     && root != *name
                 {
                     state.aliases.insert(name.clone(), root);
+                }
+                for (path, root) in composite_roots {
+                    state.aliases.insert(format!("{name}{path}"), root);
                 }
                 for (field, root) in field_roots {
                     state.aliases.insert(format!("{name}.{field}"), root);
@@ -6198,6 +6205,23 @@ mod tests {
             "array tuple nested path must be reported: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn composite_let_copy_preserves_struct_paths() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let source = new Outer { inner: new Inner { item: x } }; \
+                 let copy = source; \
+                 let nested = source.inner; \
+                 set_both(x, copy.inner.item); \
+                 set_both(x, nested.item); \
+             }",
+        );
+        assert_eq!(errors.len(), 2, "got: {:?}", errors);
     }
 
     #[test]

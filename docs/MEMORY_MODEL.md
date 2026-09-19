@@ -526,6 +526,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   reference arguments are tracked field, constant-index, or constant-tuple
   places. Unknown, dynamic, transformed, wrapped, and ambiguous arguments
   remain outside alias tracking.
+- **A-E5 increment 47 (RES-4070):** whole-value `let` copies now retain
+  canonical paths below tracked composite places, so copying a struct or a
+  nested struct field preserves its reference fields just like existing
+  tuple and array copies. Dynamic, transformed, unknown, value-only, and
+  ambiguous paths remain outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
