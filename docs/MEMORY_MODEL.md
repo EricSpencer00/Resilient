@@ -453,6 +453,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   from already-proven struct-return helper calls placed inside their fields,
   so `let outer = new Outer { inner: make_inner(x) }` exposes
   `outer.inner.item`. Unknown calls and non-identifier arguments remain opaque.
+- **A-E5 increment 31 (RES-4070):** direct tuple literals now compose paths
+  from already-proven struct-return helper calls placed inside their elements,
+  so `let pair = (make_inner(x), 0)` exposes `pair.0.item`. Unknown calls and
+  non-identifier arguments remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
