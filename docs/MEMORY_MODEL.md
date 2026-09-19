@@ -521,6 +521,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   `[[source.items]]` and `[[pair.0]]` expose aliases below the nested array
   path. Dynamic, transformed, unknown, value-only, and ambiguous places
   remain outside alias tracking.
+- **A-E5 increment 46 (RES-4070):** known reference-return, struct-return,
+  tuple-return, and array-return helpers now retain provenance when their
+  reference arguments are tracked field, constant-index, or constant-tuple
+  places. Unknown, dynamic, transformed, wrapped, and ambiguous arguments
+  remain outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
