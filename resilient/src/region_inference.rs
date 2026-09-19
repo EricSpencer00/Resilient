@@ -745,6 +745,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   literals (including nested paths), direct tagged-enum/Option/Result
 //   constructors nested in concrete struct literals or transferred through
 //   tuple/struct destructuring and nested variant-aware match patterns,
+//   including their payload leaves through constant tuple/array places,
 //   direct tuple and array returns, and
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
@@ -895,6 +896,7 @@ impl<'a> AliasWalker<'a> {
                 let array_slice_tuple_roots = self.array_slice_tuple_roots(value, state);
                 let array_slice_nested_roots = self.array_slice_nested_roots(value, state);
                 let tuple_roots = self.tuple_element_roots(value, state);
+                let array_option_result_roots = self.array_option_result_roots(value, state);
                 let array_tagged_roots = self.array_tagged_enum_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
@@ -952,6 +954,11 @@ impl<'a> AliasWalker<'a> {
                 }
                 for (index, root) in tuple_roots {
                     state.aliases.insert(format!("{name}.{index}"), root);
+                }
+                for (index, path, root) in array_option_result_roots {
+                    state
+                        .aliases
+                        .insert(format!("{name}[{index}].{path}"), root);
                 }
                 for (path, root) in enum_payload_roots {
                     state.aliases.insert(format!("{name}.{path}"), root);
@@ -1634,6 +1641,9 @@ impl<'a> AliasWalker<'a> {
                     for (index, root) in self.array_element_roots(item, state) {
                         roots.push((format!("{path}[{index}]"), root));
                     }
+                    for (index, nested_path, root) in self.array_option_result_roots(item, state) {
+                        roots.push((format!("{path}[{index}].{nested_path}"), root));
+                    }
                     for (index, nested_path, root) in self.array_tagged_enum_roots(item, state) {
                         roots.push((format!("{path}[{index}].{nested_path}"), root));
                     }
@@ -1663,6 +1673,9 @@ impl<'a> AliasWalker<'a> {
                     }
                     for (nested_path, root) in self.array_return_roots(item, state) {
                         roots.push((format!("{path}{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.option_result_payload_roots(item, state) {
+                        roots.push((format!("{path}.{nested_path}"), root));
                     }
                     for (nested_path, root) in self.tagged_enum_payload_roots(item, state) {
                         roots.push((format!("{path}.{nested_path}"), root));
@@ -2625,6 +2638,25 @@ impl<'a> AliasWalker<'a> {
             .enumerate()
             .flat_map(|(index, item)| {
                 self.tagged_enum_payload_roots(item, state)
+                    .into_iter()
+                    .map(move |(path, root)| (index, path, root))
+            })
+            .collect()
+    }
+
+    fn array_option_result_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        let crate::Node::ArrayLiteral { items, .. } = value else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .enumerate()
+            .flat_map(|(index, item)| {
+                self.option_result_payload_roots(item, state)
                     .into_iter()
                     .map(move |(path, root)| (index, path, root))
             })
@@ -7350,6 +7382,31 @@ mod tests {
             errors.len(),
             3,
             "only matching nested constructors should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn option_result_constructor_payloads_survive_tuple_and_array_places() {
+        let errors = run_alias_check(
+            r#"fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let pair = (Some(x), 0);
+                   match pair.0 {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+                   let items = [Err(x)];
+                   match items[0] {
+                       Ok(alias) => { set_both(x, alias); },
+                       Err(alias) => { set_both(x, alias); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "matching Option and Result payloads should report: {:?}",
             errors
         );
     }

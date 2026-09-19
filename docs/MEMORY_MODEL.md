@@ -587,6 +587,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   nested path before rebinding payload leaves. Matching `Some`, `Ok`, `Err`, or
   tagged-enum patterns retain aliases; mismatched and opaque patterns remain
   conservative.
+- **A-E5 increment 61 (RES-4070):** direct `Some`, `Ok`, and `Err` payload
+  provenance now survives constant tuple and array places such as `pair.0`
+  and `items[0]`, including variant-aware matching at those places. Dynamic
+  indices, transformed composites, unknown elements, and ambiguous paths
+  remain opaque.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
