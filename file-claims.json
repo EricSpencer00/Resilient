@@ -12,29 +12,9 @@
       "branch": "res-4070-array-nested-helper",
       "claimed_at": "2026-09-18T23:36:23Z"
     },
-    "resilient/src/diag.rs": {
-      "branch": "res-4115-duplicate-named-arg-code",
-      "claimed_at": "2026-09-19T19:38:10Z"
-    },
-    "resilient/src/error_explain.rs": {
-      "branch": "res-4115-duplicate-named-arg-code",
-      "claimed_at": "2026-09-19T19:38:10Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-4115-duplicate-named-arg-code",
-      "claimed_at": "2026-09-19T19:38:10Z"
-    },
-    "docs/errors/index.md": {
-      "branch": "res-4115-duplicate-named-arg-code",
-      "claimed_at": "2026-09-19T19:38:10Z"
-    },
-    "docs/errors/E0022.md": {
-      "branch": "res-4115-duplicate-named-arg-code",
-      "claimed_at": "2026-09-19T19:38:10Z"
-    },
-    "resilient/tests/it/docs_error_registry_generation_smoke.rs": {
-      "branch": "res-4115-duplicate-named-arg-code",
-      "claimed_at": "2026-09-19T19:38:10Z"
+    "docs/MODULE_SYSTEM.md": {
+      "branch": "res-4110-module-path-resolution",
+      "claimed_at": "2026-09-19T19:38:16Z"
     }
   }
 }
