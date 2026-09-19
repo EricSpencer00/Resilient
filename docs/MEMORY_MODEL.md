@@ -561,6 +561,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   `Err` constructors now retain their identity while match payload paths are
   rebound. A known payload cannot leak into a mismatched variant arm; opaque
   and non-constructor scrutinees keep the existing conservative behavior.
+- **A-E5 increment 55 (RES-4070):** constructor identity now survives
+  conservative whole-value `let` aliases of direct tagged-enum, `Some`, `Ok`,
+  and `Err` values. Branch disagreement, shadowing, reassignment, and unknown
+  or transformed values clear the tag rather than guessing.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
