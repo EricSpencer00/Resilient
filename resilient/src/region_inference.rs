@@ -1537,7 +1537,13 @@ impl<'a> AliasWalker<'a> {
         };
         let mut roots = Vec::new();
         for (index, item) in items.iter().enumerate() {
-            self.collect_nested_array_literal_roots(item, &format!("[{index}]"), state, &mut roots);
+            self.collect_nested_array_literal_roots(
+                item,
+                &format!("[{index}]"),
+                0,
+                state,
+                &mut roots,
+            );
         }
         roots
     }
@@ -1546,6 +1552,7 @@ impl<'a> AliasWalker<'a> {
         &self,
         value: &crate::Node,
         prefix: &str,
+        nested_array_depth: usize,
         state: &AliasState,
         roots: &mut Vec<(String, String)>,
     ) {
@@ -1556,7 +1563,18 @@ impl<'a> AliasWalker<'a> {
                     if let Some(root) = self.returned_root(item, state) {
                         roots.push((path.clone(), root));
                     }
-                    self.collect_nested_array_literal_roots(item, &path, state, roots);
+                    self.collect_nested_array_literal_roots(
+                        item,
+                        &path,
+                        nested_array_depth + 1,
+                        state,
+                        roots,
+                    );
+                }
+            }
+            crate::Node::StructLiteral { .. } if nested_array_depth > 0 => {
+                for (field, root) in self.struct_field_roots(value, state) {
+                    roots.push((format!("{prefix}.{field}"), root));
                 }
             }
             crate::Node::Identifier { .. }
@@ -5158,6 +5176,55 @@ mod tests {
         assert!(
             errors.is_empty(),
             "value-typed array fields must stay outside alias tracking: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn nested_array_literal_struct_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[new Holder { item: x }]]; \
+                 set_both(x, matrix[0][0].item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`matrix[0][0].item`"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn nested_array_literal_struct_field_preserves_nested_path() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[new Outer { inner: new Inner { item: x } }]]; \
+                 set_both(x, matrix[0][0].inner.item); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn nested_array_literal_value_struct_field_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Holder { int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let matrix = [[new Holder { item: x }]]; \
+                 set_both(x, matrix[0][0].item); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "nested value-typed array fields must stay outside alias tracking: {:?}",
             errors
         );
     }
