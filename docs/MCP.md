@@ -81,19 +81,21 @@ The HTTP wrapper is not a sandbox and is unauthenticated unless
 trusted local or private network; it covers authentication, TLS, exposed
 execution capabilities, limits, and deployment isolation.
 
-### `GET /metrics`
+### `GET /v1/metrics`
 
 Returns process-local request counters and a Prometheus text-format latency
 histogram. The endpoint reports total requests, 4xx/5xx responses, cumulative
 latency buckets through 10 seconds, total latency, and request count. Metrics
-are reset when the MCP HTTP process restarts.
+are reset when the MCP HTTP process restarts. The unversioned `/metrics` path
+is retained as a compatibility alias.
 
-### `GET /readyz`
+### `GET /v1/readyz`
 
 Returns `200 OK` when the build includes the Z3 verification backend and
 `503 Service Unavailable` otherwise. Use this readiness probe for scheduler
-orchestrator routing; `/health` remains a liveness check that only reports
-whether the HTTP process is accepting connections.
+orchestrator routing; `/v1/health` remains a liveness check that only reports
+whether the HTTP process is accepting connections. The unversioned `/readyz`
+and `/health` paths remain compatibility aliases.
 
 ### Hardening (Phase 1, RES-3934/3935/3936/3938/3944)
 
@@ -135,7 +137,7 @@ rejected for size/rate-limit reasons) emits one structured line to
 stderr:
 
 ```
-ts_ms=1737331200000 peer=127.0.0.1 method=POST path=/mcp/call status=200 duration_ms=42 bytes=128
+ts_ms=1737331200000 peer=127.0.0.1 method=POST path=/v1/mcp/call status=200 duration_ms=42 bytes=128
 ```
 
 Fields: `ts_ms` (Unix epoch milliseconds), `peer` (client IP), `method`,
@@ -180,9 +182,12 @@ endpoints:
 RESILIENT_MCP_API_KEY='replace-with-a-secret' \
 rz mcp --http-port 127.0.0.1:8080
 
-curl -s http://127.0.0.1:8080/health \
+curl -s http://127.0.0.1:8080/v1/health \
   -H 'X-API-Key: replace-with-a-secret'
 ```
+
+The unversioned `/health` alias also accepts the key for backward
+compatibility.
 
 Missing and invalid keys both return `401 Unauthorized` with the same generic
 error body. An unset or empty variable disables the check for backwards
