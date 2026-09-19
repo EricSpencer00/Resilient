@@ -1269,6 +1269,11 @@ impl<'a> AliasWalker<'a> {
                     {
                         roots.push((format!("{path}.{nested_path}"), root));
                     }
+                    for (nested_field, root) in
+                        self.struct_call_field_roots(function, arguments, state)
+                    {
+                        roots.push((format!("{path}.{nested_field}"), root));
+                    }
                 }
                 _ => self.collect_tuple_alias_roots(item, &path, state, roots),
             }
@@ -4508,6 +4513,39 @@ mod tests {
         assert!(
             errors.is_empty(),
             "unknown tuple helper values must stay opaque: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn direct_tuple_literal_struct_helper_element_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } fn make_inner(&mut int x) -> Inner { return new Inner { item: x }; } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let pair = (make_inner(x), 0); set_both(x, pair.0.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("pair.0.item"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_tuple_literal_struct_helper_chain_preserves_nested_field() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } fn make_inner(&mut int x) -> Inner { return new Inner { item: x }; } fn forward(&mut int x) -> Inner { return make_inner(x); } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let pair = (forward(x), 0); set_both(x, pair.0.item); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn unknown_struct_helper_inside_tuple_literal_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let pair = (unknown(x), 0); set_both(x, pair.0.item); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "unknown struct helper values must stay opaque: {:?}",
             errors
         );
     }
