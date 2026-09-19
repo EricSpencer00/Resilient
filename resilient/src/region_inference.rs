@@ -811,8 +811,9 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   direct `Some`/`Ok`/`Err` helper returns with one reference payload,
 //   forwarding through an already-proven Option/Result helper,
 //   including straight-line whole-value local aliases of those returns,
-//   direct tagged-enum helper returns with unambiguous payload paths, including
-//   forwarding through an already-proven helper,
+//   direct tagged-enum helper returns with unambiguous payload paths,
+//   including straight-line whole-value local aliases and forwarding through
+//   an already-proven helper,
 //   non-negative constant array element/slice paths, including nested arrays,
 //   fields inside direct array-literal struct elements, and constant-bound
 //   slices of those arrays.
@@ -3597,6 +3598,11 @@ fn tagged_enum_return_alias_summary(
     parameters: &[(String, String)],
     known_returns: &HashMap<&str, TaggedEnumReturnAliasSummary>,
 ) -> Option<TaggedEnumReturnAliasSummary> {
+    if let Some(summary) =
+        tagged_enum_straight_line_local_alias_summary(body, parameters, known_returns)
+    {
+        return Some(summary);
+    }
     let mut returns = Vec::new();
     collect_tagged_enum_return_provenance(body, parameters, known_returns, &mut returns);
     let Some(Some(summary)) = returns.first() else {
@@ -3609,6 +3615,48 @@ fn tagged_enum_return_alias_summary(
         return None;
     }
     Some(summary.clone())
+}
+
+fn tagged_enum_straight_line_local_alias_summary(
+    body: &crate::Node,
+    parameters: &[(String, String)],
+    known_returns: &HashMap<&str, TaggedEnumReturnAliasSummary>,
+) -> Option<TaggedEnumReturnAliasSummary> {
+    let crate::Node::Block { stmts, .. } = body else {
+        return None;
+    };
+    let mut locals = HashMap::new();
+    let mut returned = None;
+    for stmt in stmts {
+        match stmt {
+            crate::Node::LetStatement { name, value, .. } => {
+                let summary = match value.as_ref() {
+                    crate::Node::Identifier { name, .. } => locals.get(name).cloned(),
+                    value => tagged_enum_return_aliases_for_value(value, parameters, known_returns),
+                };
+                if let Some(summary) = summary {
+                    locals.insert(name.clone(), summary);
+                } else {
+                    locals.remove(name);
+                }
+            }
+            crate::Node::ReturnStatement { value, .. } => {
+                let crate::Node::Identifier { name, .. } = value.as_deref()? else {
+                    return None;
+                };
+                let summary = locals.get(name)?.clone();
+                if returned
+                    .as_ref()
+                    .is_some_and(|previous| previous != &summary)
+                {
+                    return None;
+                }
+                returned = Some(summary);
+            }
+            _ => return None,
+        }
+    }
+    returned
 }
 
 fn collect_tagged_enum_return_provenance(
@@ -8165,6 +8213,35 @@ mod tests {
             errors.len(),
             1,
             "only the matching helper chain should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tagged_enum_constructor_identity_survives_straight_line_local_aliases() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               fn expose_item(&mut int value) -> Packet {
+                   let packet = Packet::Item(new Holder { item: value });
+                   return packet;
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let packet = expose_item(x);
+                   match packet {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the matching local alias constructor should report: {:?}",
             errors
         );
     }
