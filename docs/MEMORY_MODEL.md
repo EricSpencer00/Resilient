@@ -545,6 +545,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   rebase known reference leaves onto their arm-local bindings, including
   nested struct and tuple subpatterns. OR, literal, wildcard, dynamic,
   transformed, unknown, and ambiguous patterns remain outside alias tracking.
+- **A-E5 increment 51 (RES-4070):** concrete tuple match patterns now rebase
+  known reference leaves onto their arm-local bindings, including nested tuple
+  paths. OR, literal, wildcard, dynamic, transformed, unknown, and ambiguous
+  patterns remain outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
