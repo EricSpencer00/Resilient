@@ -4141,6 +4141,29 @@ fn array_straight_line_local_alias_summary(
             crate::Node::LetStatement { name, value, .. } => {
                 let summary = match value.as_ref() {
                     crate::Node::Identifier { name, .. } => locals.get(name).cloned(),
+                    crate::Node::Slice {
+                        target,
+                        lo,
+                        hi,
+                        inclusive,
+                        ..
+                    } => {
+                        let summary = match target.as_ref() {
+                            crate::Node::Identifier { name, .. } => locals.get(name).cloned(),
+                            target => array_return_aliases_for_value(
+                                target,
+                                parameters,
+                                reference_fields,
+                                known_returns,
+                            ),
+                        };
+                        rebase_array_slice_alias_summary(
+                            summary,
+                            lo.as_deref(),
+                            hi.as_deref(),
+                            *inclusive,
+                        )
+                    }
                     value => array_return_aliases_for_value(
                         value,
                         parameters,
@@ -4171,6 +4194,33 @@ fn array_straight_line_local_alias_summary(
         }
     }
     returned
+}
+
+fn rebase_array_slice_alias_summary(
+    summary: Option<ArrayReturnAliasSummary>,
+    lo: Option<&crate::Node>,
+    hi: Option<&crate::Node>,
+    inclusive: bool,
+) -> Option<ArrayReturnAliasSummary> {
+    let summary = summary?;
+    let (start, end) = AliasWalker::constant_slice_bounds(lo, hi, inclusive)?;
+    let paths = summary
+        .paths
+        .iter()
+        .filter_map(|(path, parameter_idx)| {
+            let rest = path.strip_prefix('[')?;
+            let close = rest.find(']')?;
+            let index = rest[..close].parse::<usize>().ok()?;
+            if index < start || end.is_some_and(|end| index >= end) {
+                return None;
+            }
+            Some((
+                format!("[{}]{}", index - start, &rest[close + 1..]),
+                *parameter_idx,
+            ))
+        })
+        .collect::<Vec<_>>();
+    (!paths.is_empty()).then_some(ArrayReturnAliasSummary { paths })
 }
 
 fn collect_array_return_provenance(
@@ -6002,6 +6052,60 @@ mod tests {
         assert!(
             errors.is_empty(),
             "wrapped array returns must stay conservative: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_array_slice_survives_straight_line_local_alias() {
+        let errors = run_alias_check(
+            "fn make_array(&mut int x, &mut int y) -> array { return [x, y]; } \
+             fn select(&mut int x, &mut int y) -> array { \
+                 let items = make_array(x, y); let selected = items[0..1]; \
+                 return selected; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { let selected = select(x, y); set_both(x, selected[0]); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`x`") && errors[0].contains("`selected[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn helper_returned_reference_array_slice_nested_path_survives() {
+        let errors = run_alias_check(
+            "fn make_items(&mut int x) -> array { return [(x, 0), (x, 1)]; } \
+             fn select(&mut int x) -> array { \
+                 let items = make_items(x); let selected = items[0..1]; \
+                 return selected; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { let selected = select(x); set_both(x, selected[0].0); }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`selected[0].0`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn dynamic_array_helper_slice_stays_conservative() {
+        let errors = run_alias_check(
+            "fn select(&mut int x, int end) -> array { \
+                 let items = [x]; let selected = items[0..end]; return selected; \
+             } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int end) { let selected = select(x, end); set_both(x, selected[0]); }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic helper slice bounds must stay conservative: {:?}",
             errors
         );
     }
