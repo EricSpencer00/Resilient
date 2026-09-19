@@ -1418,6 +1418,38 @@ impl<'a> AliasWalker<'a> {
                     {
                         roots.push((format!("{path}.{nested_field}"), root));
                     }
+                    for (nested_path, root) in self.tuple_element_roots(value, state) {
+                        roots.push((format!("{path}.{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.array_return_roots(value, state) {
+                        roots.push((format!("{path}{nested_path}"), root));
+                    }
+                }
+                crate::Node::TupleLiteral { .. } => {
+                    for (nested_path, root) in self.tuple_element_roots(value, state) {
+                        roots.push((format!("{path}.{nested_path}"), root));
+                    }
+                }
+                crate::Node::ArrayLiteral { .. } => {
+                    for (index, root) in self.array_element_roots(value, state) {
+                        roots.push((format!("{path}[{index}]"), root));
+                    }
+                    for (index, nested_field, root) in self.array_field_roots(value, state) {
+                        roots.push((format!("{path}[{index}].{nested_field}"), root));
+                    }
+                    for (index, nested_path, root) in self.array_tuple_roots(value, state) {
+                        roots.push((format!("{path}[{index}].{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.nested_array_literal_roots(value, state) {
+                        roots.push((format!("{path}{nested_path}"), root));
+                    }
+                }
+                crate::Node::Identifier { .. }
+                | crate::Node::IndexExpression { .. }
+                | crate::Node::Slice { .. } => {
+                    for (nested_path, root) in self.paths_below(value, state) {
+                        roots.push((format!("{path}{nested_path}"), root));
+                    }
                 }
                 _ => {}
             }
@@ -4778,6 +4810,101 @@ mod tests {
             "struct Inner { &mut int item } struct Outer { Inner inner } fn make_inner(&mut int x) -> Inner { return new Inner { item: x }; } fn forward(&mut int x) -> Inner { return make_inner(x); } fn set_both(&mut int a, &mut int b) {} fn caller(&mut int x) { let outer = new Outer { inner: forward(x) }; set_both(x, outer.inner.item); }",
         );
         assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn direct_struct_literal_tuple_helper_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { (&mut int, &mut int) pair } \
+             fn make_pair(&mut int x, &mut int y) -> (&mut int, &mut int) { return (x, y); } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { \
+                 let holder = new Holder { pair: make_pair(x, y) }; \
+                 set_both(x, holder.pair.0); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`holder.pair.0`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_struct_literal_array_helper_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { array items } \
+             fn make_array(&mut int x) -> array { return [x]; } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = new Holder { items: make_array(x) }; \
+                 set_both(x, holder.items[0]); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("`holder.items[0]`"),
+            "message shape wrong: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn direct_struct_literal_tuple_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { (&mut int, &mut int) pair } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, &mut int y) { \
+                 let holder = new Holder { pair: (x, y) }; \
+                 set_both(x, holder.pair.0); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn direct_struct_literal_array_field_alias_rejected() {
+        let errors = run_alias_check(
+            "struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = new Holder { items: [x] }; \
+                 set_both(x, holder.items[0]); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn direct_struct_literal_composite_value_fields_stay_conservative() {
+        let tuple_errors = run_alias_check(
+            "struct Holder { (int, int) pair } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = new Holder { pair: (0, 1) }; \
+                 set_both(x, holder.pair.0); \
+             }",
+        );
+        assert!(
+            tuple_errors.is_empty(),
+            "value tuple fields must stay outside alias tracking: {:?}",
+            tuple_errors
+        );
+
+        let array_errors = run_alias_check(
+            "struct Holder { array items } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = new Holder { items: [0] }; \
+                 set_both(x, holder.items[0]); \
+             }",
+        );
+        assert!(
+            array_errors.is_empty(),
+            "value array fields must stay outside alias tracking: {:?}",
+            array_errors
+        );
     }
 
     #[test]

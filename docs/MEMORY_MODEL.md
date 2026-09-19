@@ -486,6 +486,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   [[make_pair(x)]]` exposes `matrix[0][0].0` and known struct fields remain
   visible below the nested array path. Unknown and transformed values remain
   outside alias tracking.
+- **A-E5 increment 39 (RES-4070):** struct literals now retain proven tuple
+  and array paths stored in their fields, including direct literals, aliases,
+  and known helper returns. For example, `holder.pair.0` and
+  `holder.items[0]` remain linked to their reference parameters while value
+  fields stay outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
