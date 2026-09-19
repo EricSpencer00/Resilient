@@ -1,0 +1,14 @@
+// RES-4111: exercises native JIT lowering for all String comparisons.
+// The explicit top-level return keeps this side-effecting program on the
+// native path while preserving the interpreter/VM output contract.
+let lhs = "abc";
+let rhs = "abd";
+println(lhs == rhs);
+println(lhs != rhs);
+println(lhs < rhs);
+println(lhs <= rhs);
+println(rhs > lhs);
+println(rhs >= lhs);
+println("" <= "");
+println("z" > "aa");
+return 0;
