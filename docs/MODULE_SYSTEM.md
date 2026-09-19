@@ -132,8 +132,11 @@ This applies to file-based (`use "path.rz"`) and dependency-module
 multi-segment module path — `use dep_name::sub::leaf;` — now resolves
 each `::`-separated segment before the last as a nested directory
 component (`<dep_root>/src/sub/leaf.rz`), rather than failing to find a
-file literally named `sub::leaf.rz`. Single-segment module paths
-(`use dep_name::foo;` → `<dep_root>/src/foo.rz`) are unaffected.
+file literally named `sub::leaf.rz`. For either a single- or
+multi-segment path, the file form is preferred and the directory module
+entry point (`<dep_root>/src/sub/leaf/mod.rz`) is accepted as a fallback.
+Single-segment file paths (`use dep_name::foo;` → `<dep_root>/src/foo.rz`)
+remain unchanged.
 
 ### Glob-import (`use mod::*;`) — deferred, v1.x decision (RES-4110)
 
