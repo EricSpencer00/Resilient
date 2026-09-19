@@ -1059,6 +1059,83 @@ impl<'a> AliasWalker<'a> {
         }
     }
 
+    /// Return known reference leaves below a struct-valued match scrutinee.
+    /// Direct literals and summarized struct-return calls are collected
+    /// alongside canonical paths already tracked for a named place.
+    fn struct_pattern_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let mut roots = self.struct_field_roots(value, state);
+        for (path, root) in self.paths_below(value, state) {
+            let Some(path) = path.strip_prefix('.') else {
+                continue;
+            };
+            roots.push((path.to_owned(), root));
+        }
+        roots
+    }
+
+    /// Rebase canonical leaves selected by a concrete struct pattern onto
+    /// the pattern's local bindings. OR-patterns and other shapes without a
+    /// single known path remain killed by the caller.
+    fn bind_struct_pattern_aliases(
+        pattern: &crate::Pattern,
+        prefix: &str,
+        roots: &[(String, String)],
+        state: &mut AliasState,
+    ) {
+        match pattern {
+            crate::Pattern::Identifier(name) => {
+                for (path, root) in roots {
+                    let Some(suffix) = path.strip_prefix(prefix) else {
+                        continue;
+                    };
+                    if suffix.is_empty() || suffix.starts_with('.') || suffix.starts_with('[') {
+                        state
+                            .aliases
+                            .insert(format!("{name}{suffix}"), root.clone());
+                    }
+                }
+            }
+            crate::Pattern::Bind(name, inner) => {
+                let whole_value = crate::Pattern::Identifier(name.clone());
+                Self::bind_struct_pattern_aliases(&whole_value, prefix, roots, state);
+                Self::bind_struct_pattern_aliases(inner, prefix, roots, state);
+            }
+            crate::Pattern::Struct { fields, .. } => {
+                for (field, subpattern) in fields {
+                    let path = if prefix.is_empty() {
+                        field.clone()
+                    } else {
+                        format!("{prefix}.{field}")
+                    };
+                    Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                }
+            }
+            crate::Pattern::TupleStruct { fields, .. } | crate::Pattern::Tuple(fields) => {
+                for (index, subpattern) in fields.iter().enumerate() {
+                    let path = if prefix.is_empty() {
+                        index.to_string()
+                    } else {
+                        format!("{prefix}.{index}")
+                    };
+                    Self::bind_struct_pattern_aliases(subpattern, &path, roots, state);
+                }
+            }
+            crate::Pattern::Literal(_)
+            | crate::Pattern::Wildcard
+            | crate::Pattern::Or(_)
+            | crate::Pattern::Range { .. }
+            | crate::Pattern::Some(_)
+            | crate::Pattern::None
+            | crate::Pattern::Ok(_)
+            | crate::Pattern::Err(_)
+            | crate::Pattern::EnumVariant { .. } => {}
+        }
+    }
+
     /// Resolve the region carried by a value expression when the pass can
     /// prove that it is a reference alias. Direct identifiers are the
     /// existing local-copy rule. Calls are accepted only through narrow
@@ -2042,6 +2119,7 @@ impl<'a> AliasWalker<'a> {
                 scrutinee, arms, ..
             } => {
                 self.walk_expr(scrutinee, state);
+                let scrutinee_field_roots = self.struct_pattern_roots(scrutinee, state);
                 // Pattern bindings can shadow outer names without a
                 // `let`, so remove those names from the incoming facts
                 // before checking the arm. Facts established before the
@@ -2057,6 +2135,12 @@ impl<'a> AliasWalker<'a> {
                     for name in pattern_bindings {
                         self.kill_name(&mut arm_state, &name);
                     }
+                    Self::bind_struct_pattern_aliases(
+                        pat,
+                        "",
+                        &scrutinee_field_roots,
+                        &mut arm_state,
+                    );
                     if let Some(g) = guard {
                         self.walk_expr(g, &mut arm_state);
                     }
@@ -5534,6 +5618,32 @@ mod tests {
             "nested pattern shadow must not reuse outer alias: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn match_struct_pattern_preserves_composite_paths() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner, (&mut int, int) pair } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = new Outer { \
+                     inner: new Inner { item: x }, \
+                     pair: (x, 0), \
+                 }; \
+                 match holder { \
+                     Outer { \
+                         inner: Inner { item }, \
+                         pair: (first, _), \
+                     } => { \
+                         set_both(x, item); \
+                         set_both(x, first); \
+                     }, \
+                     _ => { println(\"unreachable\"); }, \
+                 } \
+             }",
+        );
+        assert_eq!(errors.len(), 2, "got: {:?}", errors);
     }
 
     #[test]
