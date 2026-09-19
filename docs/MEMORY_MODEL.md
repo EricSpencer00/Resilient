@@ -496,6 +496,11 @@ Grounded in `resilient/src/region_inference.rs` and the
   `let pair = (items, 0)` exposes `pair.0[0]` and `(holder, 0)` exposes
   `pair.0.item`. Unknown, transformed, dynamic, and value-only places remain
   outside alias tracking.
+- **A-E5 increment 41 (RES-4070):** direct tuple literals now retain proven
+  paths from constant array slices used as tuple elements, so
+  `let pair = (items[1..2], 0)` exposes `pair.0[0]` and nested tuple or
+  struct paths. Dynamic, transformed, unknown, and ambiguous slices remain
+  outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5

@@ -1299,6 +1299,20 @@ impl<'a> AliasWalker<'a> {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
                 }
+                crate::Node::Slice { .. } => {
+                    for (index, root) in self.array_element_roots(item, state) {
+                        roots.push((format!("{path}[{index}]"), root));
+                    }
+                    for (index, field, root) in self.array_slice_field_roots(item, state) {
+                        roots.push((format!("{path}[{index}].{field}"), root));
+                    }
+                    for (index, nested_path, root) in self.array_slice_tuple_roots(item, state) {
+                        roots.push((format!("{path}[{index}].{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.array_slice_nested_roots(item, state) {
+                        roots.push((format!("{path}{nested_path}"), root));
+                    }
+                }
                 _ => self.collect_tuple_alias_roots(item, &path, state, roots),
             }
         }
@@ -5965,6 +5979,65 @@ mod tests {
             errors.len(),
             1,
             "nested array tuple slice path must be reported: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn tuple_literal_slice_preserves_element_alias() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [0, x]; \
+                 let pair = (items[1..2], 0); \
+                 set_both(x, pair.0[0]); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
+        assert!(
+            errors[0].contains("pair.0[0]"),
+            "unexpected message: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn tuple_literal_slice_preserves_nested_paths() {
+        let tuple_errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [(x, 0)]; \
+                 let pair = (items[0..1], 0); \
+                 set_both(x, pair.0[0].0); \
+             }",
+        );
+        assert_eq!(tuple_errors.len(), 1, "got: {:?}", tuple_errors);
+
+        let struct_errors = run_alias_check(
+            "struct Holder { &mut int item } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let items = [new Holder { item: x }]; \
+                 let pair = (items[0..1], 0); \
+                 set_both(x, pair.0[0].item); \
+             }",
+        );
+        assert_eq!(struct_errors.len(), 1, "got: {:?}", struct_errors);
+    }
+
+    #[test]
+    fn dynamic_slice_inside_tuple_stays_conservative() {
+        let errors = run_alias_check(
+            "fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x, int hi) { \
+                 let items = [x]; \
+                 let pair = (items[0..hi], 0); \
+                 set_both(x, pair.0[0]); \
+             }",
+        );
+        assert!(
+            errors.is_empty(),
+            "dynamic tuple slices must stay outside alias tracking: {:?}",
             errors
         );
     }
