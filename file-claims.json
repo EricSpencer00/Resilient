@@ -15,6 +15,10 @@
     "resilient/tests/jit_string_comparison.rs": {
       "branch": "res-4111-jit-string-lowering-c",
       "claimed_at": "2026-09-19T19:42:17Z"
+    },
+    "resilient/tests/fixtures/jit_native_string_comparison.rz": {
+      "branch": "res-4111-jit-string-lowering-c",
+      "claimed_at": "2026-09-19T19:45:15Z"
     }
   }
 }
