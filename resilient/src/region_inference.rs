@@ -873,7 +873,7 @@ impl<'a> AliasWalker<'a> {
             }
             crate::Node::LetStatement { name, value, .. } => {
                 self.walk_expr(value, state);
-                let known_constructor = self.known_constructor_for(value, state);
+                let known_constructor_paths = self.known_constructor_paths(value, state);
                 let new_root = self.returned_root(value, state);
                 // A whole-value copy preserves every already-proven
                 // canonical path below the source place, including
@@ -892,6 +892,7 @@ impl<'a> AliasWalker<'a> {
                 let array_slice_tuple_roots = self.array_slice_tuple_roots(value, state);
                 let array_slice_nested_roots = self.array_slice_nested_roots(value, state);
                 let tuple_roots = self.tuple_element_roots(value, state);
+                let array_tagged_roots = self.array_tagged_enum_roots(value, state);
                 self.kill_name(state, name);
                 if let Some(root) = new_root
                     && root != *name
@@ -955,8 +956,18 @@ impl<'a> AliasWalker<'a> {
                 for (path, root) in tagged_enum_roots {
                     state.aliases.insert(format!("{name}.{path}"), root);
                 }
-                if let Some(constructor) = known_constructor {
-                    state.known_constructors.insert(name.clone(), constructor);
+                for (index, path, root) in array_tagged_roots {
+                    state
+                        .aliases
+                        .insert(format!("{name}[{index}].{path}"), root);
+                }
+                for (path, constructor) in known_constructor_paths {
+                    let place = if path.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{name}{path}")
+                    };
+                    state.known_constructors.insert(place, constructor);
                 }
             }
             crate::Node::LetTupleDestructure { names, value, .. } => {
@@ -1274,7 +1285,25 @@ impl<'a> AliasWalker<'a> {
                 }
                 roots
             }
-            _ => Vec::new(),
+            _ => {
+                let Some(_constructor) = self.known_constructor_for(value, state) else {
+                    return Vec::new();
+                };
+                let Some(source) = Self::place_name(value) else {
+                    return Vec::new();
+                };
+                let prefix = format!("{source}.");
+                state
+                    .aliases
+                    .iter()
+                    .filter_map(|(place, root)| {
+                        place
+                            .strip_prefix(&prefix)
+                            .filter(|suffix| Self::valid_path_suffix(&format!(".{suffix}")))
+                            .map(|suffix| (suffix.to_owned(), root.clone()))
+                    })
+                    .collect()
+            }
         }
     }
 
@@ -1535,6 +1564,9 @@ impl<'a> AliasWalker<'a> {
                     for (index, root) in self.array_element_roots(item, state) {
                         roots.push((format!("{path}[{index}]"), root));
                     }
+                    for (index, nested_path, root) in self.array_tagged_enum_roots(item, state) {
+                        roots.push((format!("{path}[{index}].{nested_path}"), root));
+                    }
                     for (nested_path, root) in self.nested_array_literal_roots(item, state) {
                         roots.push((format!("{path}{nested_path}"), root));
                     }
@@ -1561,6 +1593,9 @@ impl<'a> AliasWalker<'a> {
                     }
                     for (nested_path, root) in self.array_return_roots(item, state) {
                         roots.push((format!("{path}{nested_path}"), root));
+                    }
+                    for (nested_path, root) in self.tagged_enum_payload_roots(item, state) {
+                        roots.push((format!("{path}.{nested_path}"), root));
                     }
                 }
                 crate::Node::Identifier { .. }
@@ -2437,10 +2472,84 @@ impl<'a> AliasWalker<'a> {
     fn known_constructor_for(&self, value: &crate::Node, state: &AliasState) -> Option<String> {
         Self::known_constructor_name(value)
             .map(str::to_owned)
-            .or_else(|| match value {
-                crate::Node::Identifier { name, .. } => state.known_constructors.get(name).cloned(),
-                _ => None,
+            .or_else(|| {
+                Self::place_name(value)
+                    .and_then(|place| state.known_constructors.get(&place).cloned())
             })
+    }
+
+    /// Collect constructor tags at direct constant tuple and array paths.
+    /// Transformed values and dynamic paths are intentionally omitted.
+    fn known_constructor_paths(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(String, String)> {
+        let mut paths = Vec::new();
+        self.collect_known_constructor_paths(value, "", state, &mut paths);
+        paths
+    }
+
+    fn collect_known_constructor_paths(
+        &self,
+        value: &crate::Node,
+        prefix: &str,
+        state: &AliasState,
+        paths: &mut Vec<(String, String)>,
+    ) {
+        if let Some(constructor) = Self::known_constructor_name(value) {
+            paths.push((prefix.to_owned(), constructor.to_owned()));
+            return;
+        }
+        if let Some(source) = Self::place_name(value) {
+            let source_tag = state.known_constructors.get(&source).cloned();
+            if let Some(constructor) = source_tag {
+                paths.push((prefix.to_owned(), constructor));
+            }
+            for (place, constructor) in &state.known_constructors {
+                let Some(suffix) = place.strip_prefix(&source) else {
+                    continue;
+                };
+                if !suffix.is_empty() && Self::valid_path_suffix(suffix) {
+                    paths.push((format!("{prefix}{suffix}"), constructor.clone()));
+                }
+            }
+            return;
+        }
+        match value {
+            crate::Node::TupleLiteral { items, .. } => {
+                for (index, item) in items.iter().enumerate() {
+                    let path = format!("{prefix}.{index}");
+                    self.collect_known_constructor_paths(item, &path, state, paths);
+                }
+            }
+            crate::Node::ArrayLiteral { items, .. } => {
+                for (index, item) in items.iter().enumerate() {
+                    let path = format!("{prefix}[{index}]");
+                    self.collect_known_constructor_paths(item, &path, state, paths);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn array_tagged_enum_roots(
+        &self,
+        value: &crate::Node,
+        state: &AliasState,
+    ) -> Vec<(usize, String, String)> {
+        let crate::Node::ArrayLiteral { items, .. } = value else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .enumerate()
+            .flat_map(|(index, item)| {
+                self.tagged_enum_payload_roots(item, state)
+                    .into_iter()
+                    .map(move |(path, root)| (index, path, root))
+            })
+            .collect()
     }
 
     /// Check whether a pattern can select the known direct constructor. The
@@ -5992,6 +6101,36 @@ mod tests {
         assert!(
             errors.is_empty(),
             "constructor tags must survive direct aliases: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn nested_constructor_places_remain_variant_aware() {
+        let errors = run_alias_check(
+            r#"struct Holder { &mut int item }
+               enum Packet {
+                   Item(Holder),
+                   Other(Holder),
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   let pair = (Packet::Item(new Holder { item: x }), 0);
+                   match pair.0 {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+                   let items = [Packet::Item(new Holder { item: x })];
+                   match items[0] {
+                       Packet::Item(alias) => { set_both(x, alias.item); },
+                       Packet::Other(alias) => { set_both(x, alias.item); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            2,
+            "only matching nested constructor arms should report: {:?}",
             errors
         );
     }
