@@ -465,6 +465,10 @@ Grounded in `resilient/src/region_inference.rs` and the
   direct array-literal elements, so `let pair = ([x], 0)` exposes
   `pair.0[0]` and nested constant array paths. Unknown and transformed values
   remain opaque.
+- **A-E5 increment 34 (RES-4070):** tuple provenance now composes through
+  direct struct-literal elements, so `let pair = (new Inner { item: x }, 0)`
+  exposes `pair.0.item` and nested concrete struct paths. Value fields and
+  unknown shapes remain outside alias tracking.
 - When the syntactic signature-level rule rejects a program, a Z3
   fallback using the function's `requires` preconditions may still
   accept it (RES-393 D1), if the `z3` feature is enabled. The new A-E5
