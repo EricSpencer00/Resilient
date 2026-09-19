@@ -344,6 +344,7 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 ///   value type in the corpus.
 /// - No general interprocedural analysis — only direct reference returns,
 ///   direct `Some`/`Ok`/`Err` returns with one reference payload,
+///   and forwarding through an already-proven Option/Result helper,
 ///   direct tagged-enum constructor returns with unambiguous reference
 ///   payload paths, including forwarding through an already-proven helper,
 ///   concrete structs whose reference fields are initialized from parameters,
@@ -669,7 +670,11 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
             } = &spanned.node
                 && type_params.is_empty()
                 && callee_table.contains_key(name.as_str())
-                && let Some(summary) = option_result_return_alias_summary(body, parameters)
+                && let Some(summary) = option_result_return_alias_summary(
+                    body,
+                    parameters,
+                    &option_result_return_aliases,
+                )
                 && option_result_return_aliases.get(name.as_str()) != Some(&summary)
             {
                 option_result_return_aliases.insert(name.as_str(), summary);
@@ -803,6 +808,7 @@ pub fn check_unannotated_mut_alias(program: &crate::Node, source_path: &str) -> 
 //   and constant-bound slices of those places,
 //   direct tuple and array returns, and
 //   direct `Some`/`Ok`/`Err` helper returns with one reference payload,
+//   forwarding through an already-proven Option/Result helper,
 //   direct tagged-enum helper returns with unambiguous payload paths, including
 //   forwarding through an already-proven helper,
 //   non-negative constant array element/slice paths, including nested arrays,
@@ -3440,9 +3446,10 @@ fn collect_struct_return_aliases(
 fn option_result_return_alias_summary(
     body: &crate::Node,
     parameters: &[(String, String)],
+    known_returns: &HashMap<&str, OptionResultReturnAliasSummary>,
 ) -> Option<OptionResultReturnAliasSummary> {
     let mut returns = Vec::new();
-    collect_option_result_return_provenance(body, parameters, &mut returns);
+    collect_option_result_return_provenance(body, parameters, known_returns, &mut returns);
     let Some(Some(summary)) = returns.first() else {
         return None;
     };
@@ -3458,19 +3465,18 @@ fn option_result_return_alias_summary(
 fn collect_option_result_return_provenance(
     node: &crate::Node,
     parameters: &[(String, String)],
+    known_returns: &HashMap<&str, OptionResultReturnAliasSummary>,
     out: &mut Vec<Option<OptionResultReturnAliasSummary>>,
 ) {
     match node {
         crate::Node::ReturnStatement { value, .. } => {
-            out.push(
-                value
-                    .as_deref()
-                    .and_then(|value| option_result_return_aliases_for_value(value, parameters)),
-            );
+            out.push(value.as_deref().and_then(|value| {
+                option_result_return_aliases_for_value(value, parameters, known_returns)
+            }));
         }
         crate::Node::Block { stmts, .. } => {
             for stmt in stmts {
-                collect_option_result_return_provenance(stmt, parameters, out);
+                collect_option_result_return_provenance(stmt, parameters, known_returns, out);
             }
         }
         crate::Node::IfStatement {
@@ -3478,17 +3484,22 @@ fn collect_option_result_return_provenance(
             alternative,
             ..
         } => {
-            collect_option_result_return_provenance(consequence, parameters, out);
+            collect_option_result_return_provenance(consequence, parameters, known_returns, out);
             if let Some(alternative) = alternative {
-                collect_option_result_return_provenance(alternative, parameters, out);
+                collect_option_result_return_provenance(
+                    alternative,
+                    parameters,
+                    known_returns,
+                    out,
+                );
             }
         }
         crate::Node::WhileStatement { body, .. } | crate::Node::ForInStatement { body, .. } => {
-            collect_option_result_return_provenance(body, parameters, out)
+            collect_option_result_return_provenance(body, parameters, known_returns, out)
         }
         crate::Node::Match { arms, .. } => {
             for (_pattern, _guard, body) in arms {
-                collect_option_result_return_provenance(body, parameters, out);
+                collect_option_result_return_provenance(body, parameters, known_returns, out);
             }
         }
         crate::Node::FunctionLiteral { .. } => {}
@@ -3499,6 +3510,7 @@ fn collect_option_result_return_provenance(
 fn option_result_return_aliases_for_value(
     value: &crate::Node,
     parameters: &[(String, String)],
+    known_returns: &HashMap<&str, OptionResultReturnAliasSummary>,
 ) -> Option<OptionResultReturnAliasSummary> {
     let crate::Node::CallExpression {
         function,
@@ -3511,14 +3523,21 @@ fn option_result_return_aliases_for_value(
     let crate::Node::Identifier { name, .. } = function.as_ref() else {
         return None;
     };
-    if !matches!(name.as_str(), "Some" | "Ok" | "Err") {
-        return None;
+    if matches!(name.as_str(), "Some" | "Ok" | "Err") {
+        let payload = arguments.first()?;
+        let parameter_idx = direct_reference_parameter_index(payload, parameters)?;
+        return Some(OptionResultReturnAliasSummary {
+            constructor: name.clone(),
+            paths: vec![("0".to_owned(), parameter_idx)],
+        });
     }
-    let payload = arguments.first()?;
-    let parameter_idx = direct_reference_parameter_index(payload, parameters)?;
+    let summary = known_returns.get(name.as_str())?;
+    let (path, parameter_idx) = summary.paths.first()?;
+    let argument = arguments.get(*parameter_idx)?;
+    let outer_idx = direct_reference_parameter_index(argument, parameters)?;
     Some(OptionResultReturnAliasSummary {
-        constructor: name.clone(),
-        paths: vec![("0".to_owned(), parameter_idx)],
+        constructor: summary.constructor.clone(),
+        paths: vec![(path.clone(), outer_idx)],
     })
 }
 
@@ -7956,6 +7975,31 @@ mod tests {
             errors.len(),
             2,
             "matching helper constructors should report: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn option_result_constructor_identity_survives_helper_return_chains() {
+        let errors = run_alias_check(
+            r#"fn expose_some(&mut int value) -> Option<&mut int> {
+                   return Some(value);
+               }
+               fn forward_some(&mut int value) -> Option<&mut int> {
+                   return expose_some(value);
+               }
+               fn set_both(&mut int a, &mut int b) {}
+               fn caller(&mut int x) {
+                   match forward_some(x) {
+                       Some(alias) => { set_both(x, alias); },
+                       None => { println("none"); },
+                   }
+               }"#,
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the matching helper chain should report: {:?}",
             errors
         );
     }
