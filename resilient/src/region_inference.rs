@@ -962,6 +962,31 @@ impl<'a> AliasWalker<'a> {
                     state.aliases.insert(place, root);
                 }
             }
+            crate::Node::LetDestructureStruct { fields, value, .. } => {
+                self.walk_expr(value, state);
+                let mut field_roots = self.struct_field_roots(value, state);
+                for (path, root) in self.paths_below(value, state) {
+                    let Some(path) = path.strip_prefix('.') else {
+                        continue;
+                    };
+                    field_roots.push((path.to_owned(), root));
+                }
+                for (_, local) in fields {
+                    self.kill_name(state, local);
+                }
+                for (field, local) in fields {
+                    for (path, root) in &field_roots {
+                        let Some(suffix) = path.strip_prefix(field) else {
+                            continue;
+                        };
+                        if suffix.is_empty() || suffix.starts_with('.') || suffix.starts_with('[') {
+                            state
+                                .aliases
+                                .insert(format!("{local}{suffix}"), root.clone());
+                        }
+                    }
+                }
+            }
             crate::Node::Assignment { name, value, .. } => {
                 self.walk_expr(value, state);
                 // Re-seating semantics for reference bindings are not
@@ -6451,6 +6476,42 @@ mod tests {
             "value element must not inherit a later tuple alias: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn struct_destructure_preserves_composite_paths() {
+        let errors = run_alias_check(
+            "struct Inner { &mut int item } \
+             struct Outer { Inner inner, Array items, (&mut int, int) pair } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let outer = new Outer { \
+                     inner: new Inner { item: x }, \
+                     items: [new Inner { item: x }], \
+                     pair: (x, 0), \
+                 }; \
+                 let Outer { inner, items, pair, .. } = outer; \
+                 set_both(x, inner.item); \
+                 set_both(x, items[0].item); \
+                 set_both(x, pair.0); \
+             }",
+        );
+        assert_eq!(errors.len(), 3, "got: {:?}", errors);
+    }
+
+    #[test]
+    fn struct_destructure_value_field_stays_conservative() {
+        let errors = run_alias_check(
+            "struct Holder { &mut int item, int value } \
+             fn set_both(&mut int a, &mut int b) {} \
+             fn caller(&mut int x) { \
+                 let holder = new Holder { item: x, value: 0 }; \
+                 let Holder { item: alias, value, .. } = holder; \
+                 set_both(x, alias); \
+                 set_both(x, value); \
+             }",
+        );
+        assert_eq!(errors.len(), 1, "got: {:?}", errors);
     }
 
     #[test]
